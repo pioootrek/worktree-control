@@ -24,6 +24,9 @@ const snapshot: ProjectSnapshot = {
     tlsCaPath: null,
     executable: "pnpm",
     args: ["run", "dev"],
+    environment: {},
+    environmentProfiles: [{ name: "default", environment: {} }],
+    selectedEnvironmentProfile: "default",
     healthcheckPath: "/",
     startupTimeoutMs: 45_000,
     selectedWorktreePath: "/code/web",
@@ -92,6 +95,10 @@ describe("MCP loopback server", () => {
       operationError: null,
     }));
     const releaseAgentClaim = vi.fn();
+    const setProjectEnvironment = vi.fn(() => ({ ...snapshot.project, environment: { PLAYWRIGHT_E2E: "1" } }));
+    const saveEnvironmentProfile = vi.fn(async () => snapshot.project);
+    const selectEnvironmentProfile = vi.fn(async () => snapshot.project);
+    const deleteEnvironmentProfile = vi.fn(() => snapshot.project);
     const service = {
       dashboard,
       serverCapacity: vi.fn(() => capacity),
@@ -99,6 +106,10 @@ describe("MCP loopback server", () => {
       claimProject,
       renewAgentClaim: vi.fn(() => reservation),
       releaseAgentClaim,
+      setProjectEnvironment,
+      saveEnvironmentProfile,
+      selectEnvironmentProfile,
+      deleteEnvironmentProfile,
     } as unknown as ControlService;
     const controller = createMcpControllerServer({ service, port: 0, accessToken: "mcp-test-token-with-enough-entropy" });
     controllers.push(controller);
@@ -117,6 +128,28 @@ describe("MCP loopback server", () => {
         Origin: "http://attacker.invalid",
       },
     })).status).toBe(403);
+    const staleSession = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Accept: "application/json, text/event-stream",
+        Authorization: "Bearer mcp-test-token-with-enough-entropy",
+        "Content-Type": "application/json",
+        "Mcp-Session-Id": "session-lost-after-controller-restart",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    expect(staleSession.status).toBe(404);
+    expect(await staleSession.json()).toMatchObject({ error: { message: "MCP session not found." } });
+    const missingSession = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Accept: "application/json, text/event-stream",
+        Authorization: "Bearer mcp-test-token-with-enough-entropy",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+    });
+    expect(missingSession.status).toBe(400);
     const transport = new StreamableHTTPClientTransport(endpoint, {
       requestInit: { headers: { Authorization: "Bearer mcp-test-token-with-enough-entropy" } },
     });
@@ -128,6 +161,11 @@ describe("MCP loopback server", () => {
       "get_project_status",
       "get_project_storage",
       "list_worktrees",
+      "set_project_environment",
+      "list_environment_profiles",
+      "save_environment_profile",
+      "select_environment_profile",
+      "delete_environment_profile",
       "claim_project",
       "renew_project_claim",
       "release_project_claim",
@@ -149,6 +187,21 @@ describe("MCP loopback server", () => {
     const storageResult = await client.callTool({ name: "get_project_storage", arguments: { projectId } });
     const storageText = (storageResult as { content: Array<{ type: "text"; text: string }> }).content[0].text;
     expect(JSON.parse(storageText)[0]).toMatchObject({ worktreePath: "/code/web", nextCacheBytes: 300_000 });
+
+    await client.callTool({
+      name: "set_project_environment",
+      arguments: { projectId, environment: { PLAYWRIGHT_E2E: "1" } },
+    });
+    expect(setProjectEnvironment).toHaveBeenCalledWith(projectId, { PLAYWRIGHT_E2E: "1" }, expect.stringMatching(/^agent:mcp:/));
+
+    const profiles = await client.callTool({ name: "list_environment_profiles", arguments: { projectId } });
+    expect(JSON.stringify(profiles)).toContain("default");
+    await client.callTool({ name: "save_environment_profile", arguments: { projectId, name: "e2e", environment: { PLAYWRIGHT_E2E: "1" } } });
+    expect(saveEnvironmentProfile).toHaveBeenCalledWith(projectId, "e2e", { PLAYWRIGHT_E2E: "1" }, expect.stringMatching(/^agent:mcp:/));
+    await client.callTool({ name: "select_environment_profile", arguments: { projectId, name: "e2e" } });
+    expect(selectEnvironmentProfile).toHaveBeenCalled();
+    await client.callTool({ name: "delete_environment_profile", arguments: { projectId, name: "e2e" } });
+    expect(deleteEnvironmentProfile).toHaveBeenCalled();
 
     const claim = await client.callTool({
       name: "claim_project",

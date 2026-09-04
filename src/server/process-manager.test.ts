@@ -22,6 +22,9 @@ function project(port: number): Project {
     tlsCaPath: null,
     executable: process.execPath,
     args: ["-e", "require('node:http').createServer((_,r)=>r.end('ok')).listen(Number(process.env.PORT),'127.0.0.1')"],
+    environment: {},
+    environmentProfiles: [{ name: "default", environment: {} }],
+    selectedEnvironmentProfile: "default",
     healthcheckPath: "/",
     startupTimeoutMs: 5000,
     selectedWorktreePath: process.cwd(),
@@ -60,6 +63,16 @@ describe("ProcessManager", () => {
     expect(manager.snapshot(fixture.id).phase).toBe("running");
     await manager.stop(fixture.id);
     expect(manager.snapshot(fixture.id).phase).toBe("stopped");
+  });
+
+  it("injects project environment overrides into the child process", async () => {
+    const manager = new ProcessManager();
+    managers.push(manager);
+    const fixture = project(await unusedPort());
+    fixture.environment = { SWITCHER_TEST_VALUE: "injected" };
+    fixture.args = ["-e", "require('node:http').createServer((_,r)=>r.end(process.env.SWITCHER_TEST_VALUE)).listen(Number(process.env.PORT),'127.0.0.1')"];
+    await manager.start(fixture, process.cwd());
+    expect(await (await fetch(`http://127.0.0.1:${fixture.port}`)).text()).toBe("injected");
   });
 
   it("does not kill an unrelated process occupying the port", async () => {

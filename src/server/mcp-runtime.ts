@@ -81,10 +81,14 @@ export class McpRuntime {
       return;
     }
     if (!session) {
-      response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+      const status = sessionId ? 404 : 400;
+      response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({
         jsonrpc: "2.0",
-        error: { code: -32000, message: "Invalid or missing MCP session ID." },
+        error: {
+          code: -32000,
+          message: sessionId ? "MCP session not found." : "Missing MCP session ID.",
+        },
         id: null,
       }));
       return;
@@ -217,6 +221,52 @@ export class McpRuntime {
       inputSchema: { projectId: z.string().uuid() },
       annotations: { readOnlyHint: true, idempotentHint: true },
     }, async ({ projectId }) => jsonContent((await english(() => this.service.projectSnapshot(projectId))).worktrees));
+
+    server.registerTool("set_project_environment", {
+      description: "Replace a project's literal development-server environment overrides. The server must be stopped; PORT and NODE_ENV are reserved.",
+      inputSchema: {
+        projectId: z.string().uuid(),
+        environment: z.record(z.string(), z.string()),
+      },
+      annotations: { destructiveHint: true, idempotentHint: true },
+    }, async ({ projectId, environment }) => jsonContent({
+      project: await english(() => this.service.setProjectEnvironment(projectId, environment, owner())),
+      restartRequired: true,
+    }));
+
+    server.registerTool("list_environment_profiles", {
+      description: "List a project's named environment profiles and the selected profile.",
+      inputSchema: { projectId: z.string().uuid() },
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    }, async ({ projectId }) => {
+      const project = (await english(() => this.service.projectSnapshot(projectId))).project;
+      return jsonContent({ selectedProfile: project.selectedEnvironmentProfile, profiles: project.environmentProfiles });
+    });
+
+    server.registerTool("save_environment_profile", {
+      description: "Create or replace a named literal environment profile. Editing the selected profile requires a stopped server.",
+      inputSchema: { projectId: z.string().uuid(), name: z.string().min(1).max(40), environment: z.record(z.string(), z.string()) },
+      annotations: { destructiveHint: true, idempotentHint: true },
+    }, async ({ projectId, name, environment }) => jsonContent({
+      project: await english(() => this.service.saveEnvironmentProfile(projectId, name, environment, owner())),
+    }));
+
+    server.registerTool("select_environment_profile", {
+      description: "Select an existing environment profile for subsequent managed-server starts. The server must be stopped.",
+      inputSchema: { projectId: z.string().uuid(), name: z.string().min(1).max(40) },
+      annotations: { destructiveHint: true, idempotentHint: true },
+    }, async ({ projectId, name }) => jsonContent({
+      project: await english(() => this.service.selectEnvironmentProfile(projectId, name, owner())),
+      restartRequired: true,
+    }));
+
+    server.registerTool("delete_environment_profile", {
+      description: "Delete a non-default, non-selected environment profile.",
+      inputSchema: { projectId: z.string().uuid(), name: z.string().min(1).max(40) },
+      annotations: { destructiveHint: true, idempotentHint: true },
+    }, async ({ projectId, name }) => jsonContent({
+      project: await english(() => this.service.deleteEnvironmentProfile(projectId, name, owner())),
+    }));
 
     server.registerTool("claim_project", {
       description: "Acquire an expiring agent claim and atomically move/start the project server on a discovered worktree. The claim remains held if startup fails.",

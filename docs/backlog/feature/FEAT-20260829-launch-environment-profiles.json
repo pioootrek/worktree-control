@@ -24,6 +24,16 @@
       "author": "user",
       "date": "2026-08-29",
       "text": "Extend environment configuration with directories and make appropriate profile operations available to agents through MCP."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-08-31",
+      "text": "Implemented the first vertical slice: validated literal per-project environment overrides persisted in SQLite, editable in the dashboard, replaceable through MCP, and injected into shell-free managed process launches. PORT and NODE_ENV are reserved, active servers must be stopped before changes, and audit/log payloads record variable names without values. Named profiles, secret references, env files, working directories, PATH prefixes, required directories, and CLI support remain open."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-08-31",
+      "text": "Extended the literal-variable slice with named per-project profiles. Existing overrides migrate into default; dashboard users can create/copy, edit, select, delete, and save-and-restart profiles, while MCP exposes list/save/select/delete operations. Profile selection persists across worktree switches. Secret references, environment files, working directories, PATH prefixes, required directories, scoped MCP capabilities, and CLI support remain open."
     }
   ],
   "priority": "next",

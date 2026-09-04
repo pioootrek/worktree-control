@@ -129,6 +129,29 @@ describe("SqliteStateStore", () => {
     store.close();
   });
 
+  it("persists project environment profiles without values in audit details", () => {
+    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-store-env-"));
+    directories.push(directory);
+    const databasePath = join(directory, "state.sqlite3");
+    const store = new SqliteStateStore(databasePath);
+    const project = store.addProject(projectInput("E2E", "/code/e2e", 3216));
+    store.saveProjectEnvironmentProfile(project.id, { name: "e2e", environment: { PLAYWRIGHT_E2E: "1" } }, "agent:mcp:test");
+    store.selectProjectEnvironmentProfile(project.id, "e2e", "agent:mcp:test");
+    expect(store.getProject(project.id)).toMatchObject({
+      selectedEnvironmentProfile: "e2e",
+      environment: { PLAYWRIGHT_E2E: "1" },
+      environmentProfiles: expect.arrayContaining([{ name: "e2e", environment: { PLAYWRIGHT_E2E: "1" } }]),
+    });
+    store.deleteProjectEnvironmentProfile(project.id, "default", "agent:mcp:test");
+    expect(store.getProject(project.id)?.environmentProfiles).toEqual([{ name: "e2e", environment: { PLAYWRIGHT_E2E: "1" } }]);
+    store.close();
+    const database = new Database(databasePath);
+    const audit = database.prepare("SELECT actor, details_json FROM audit_events WHERE event_type = 'project.environment_profile_saved'").get() as { actor: string; details_json: string };
+    expect(audit.actor).toBe("agent:mcp:test");
+    expect(JSON.parse(audit.details_json)).toEqual({ profileName: "e2e", variableNames: ["PLAYWRIGHT_E2E"] });
+    database.close();
+  });
+
   it("persists controller-wide server capacity settings", () => {
     const store = createStore();
     expect(store.getServerCapacitySettings()).toEqual({ enabled: false, limit: 2 });
@@ -231,6 +254,8 @@ describe("SqliteStateStore", () => {
     expect(inspected.prepare("SELECT 1 FROM schema_migrations WHERE version = 4").get()).toBeTruthy();
     expect(inspected.prepare("SELECT 1 FROM schema_migrations WHERE version = 5").get()).toBeTruthy();
     expect(inspected.prepare("SELECT 1 FROM schema_migrations WHERE version = 6").get()).toBeTruthy();
+    expect(inspected.prepare("SELECT 1 FROM schema_migrations WHERE version = 7").get()).toBeTruthy();
+    expect(inspected.prepare("SELECT 1 FROM schema_migrations WHERE version = 8").get()).toBeTruthy();
     inspected.close();
   });
 });

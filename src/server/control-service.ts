@@ -11,6 +11,9 @@ import { AllowlistedWorktreeCacheCleaner, type WorktreeCacheCleaner, type Worktr
 
 const AGENT_LEASE_DEFAULT_SECONDS = 30 * 60;
 const AGENT_LEASE_MAX_SECONDS = 8 * 60 * 60;
+const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const RESERVED_ENVIRONMENT_NAMES = new Set(["PORT", "NODE_ENV"]);
+const ENVIRONMENT_PROFILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 interface OperationActor {
   owner: string;
@@ -176,6 +179,79 @@ export class ControlService {
         caPath: command.tls.caPath,
       });
     });
+  }
+
+  setProjectEnvironment(projectId: string, environment: Record<string, string>, actor = "local-user"): Project {
+    const project = this.requireProject(projectId);
+    const phase = this.processes.snapshot(projectId).phase;
+    if (phase === "running" || phase === "starting" || phase === "stopping") {
+      throw new Error("Zatrzymaj serwer przed zmianą zmiennych środowiskowych.");
+    }
+    const normalized = this.validateEnvironment(environment);
+    this.store.updateProjectEnvironment(project.id, normalized, actor);
+    this.logs.controller("project.environment_updated", { projectId, variableNames: Object.keys(normalized), actor });
+    return this.requireProject(projectId);
+  }
+
+  async saveEnvironmentProfile(projectId: string, name: string, environment: Record<string, string>, actor = "local-user", restart = false): Promise<Project> {
+    const project = this.requireProject(projectId);
+    const profileName = this.validateProfileName(name);
+    const normalized = this.validateEnvironment(environment);
+    const active = this.isProjectActive(projectId);
+    const changesActiveProfile = project.selectedEnvironmentProfile === profileName;
+    if (active && changesActiveProfile && !restart) throw new Error("Zatrzymaj serwer lub wybierz zapis z restartem.");
+    if (active && changesActiveProfile) await this.operate(projectId, "stop");
+    this.store.saveProjectEnvironmentProfile(projectId, { name: profileName, environment: normalized }, actor);
+    this.logs.controller("project.environment_profile_saved", { projectId, profileName, variableNames: Object.keys(normalized), actor });
+    if (active && changesActiveProfile) await this.operate(projectId, "start");
+    return this.requireProject(projectId);
+  }
+
+  async selectEnvironmentProfile(projectId: string, name: string, actor = "local-user", restart = false): Promise<Project> {
+    const project = this.requireProject(projectId);
+    const profileName = this.validateProfileName(name);
+    if (!project.environmentProfiles.some((profile) => profile.name === profileName)) throw new Error("Nie znaleziono profilu środowiska.");
+    if (project.selectedEnvironmentProfile === profileName) return project;
+    const active = this.isProjectActive(projectId);
+    if (active && !restart) throw new Error("Zatrzymaj serwer lub wybierz profil z restartem.");
+    if (active) await this.operate(projectId, "stop");
+    this.store.selectProjectEnvironmentProfile(projectId, profileName, actor);
+    this.logs.controller("project.environment_profile_selected", { projectId, profileName, actor });
+    if (active) await this.operate(projectId, "start");
+    return this.requireProject(projectId);
+  }
+
+  deleteEnvironmentProfile(projectId: string, name: string, actor = "local-user"): Project {
+    const project = this.requireProject(projectId);
+    const profileName = this.validateProfileName(name);
+    if (profileName === "default") throw new Error("Profilu default nie można usunąć.");
+    if (project.selectedEnvironmentProfile === profileName) throw new Error("Nie można usunąć aktywnego profilu środowiska.");
+    if (!project.environmentProfiles.some((profile) => profile.name === profileName)) throw new Error("Nie znaleziono profilu środowiska.");
+    this.store.deleteProjectEnvironmentProfile(projectId, profileName, actor);
+    this.logs.controller("project.environment_profile_deleted", { projectId, profileName, actor });
+    return this.requireProject(projectId);
+  }
+
+  private validateEnvironment(environment: Record<string, string>): Record<string, string> {
+    const entries = Object.entries(environment);
+    if (entries.length > 100) throw new Error("Można ustawić maksymalnie 100 zmiennych środowiskowych.");
+    for (const [name, value] of entries) {
+      if (!ENVIRONMENT_NAME.test(name) || name.length > 128) throw new Error(`Nieprawidłowa nazwa zmiennej środowiskowej: ${name}.`);
+      if (RESERVED_ENVIRONMENT_NAMES.has(name)) throw new Error(`Zmienna ${name} jest zarządzana przez kontroler.`);
+      if (typeof value !== "string" || value.length > 8192 || value.includes("\0")) throw new Error(`Nieprawidłowa wartość zmiennej ${name}.`);
+    }
+    return Object.fromEntries(entries.sort(([left], [right]) => left.localeCompare(right)));
+  }
+
+  private validateProfileName(name: string): string {
+    const normalized = name.trim();
+    if (!ENVIRONMENT_PROFILE_NAME.test(normalized) || normalized.length > 40) throw new Error("Nieprawidłowa nazwa profilu środowiska.");
+    return normalized;
+  }
+
+  private isProjectActive(projectId: string): boolean {
+    const phase = this.processes.snapshot(projectId).phase;
+    return phase === "running" || phase === "starting" || phase === "stopping";
   }
 
   async reserve(input: ReservationRequest): Promise<void> {

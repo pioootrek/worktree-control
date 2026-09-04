@@ -139,7 +139,7 @@ export class ProcessManager {
 
     const child = spawn(project.executable, project.args, {
       cwd: worktreePath,
-      env: { ...process.env, PORT: String(project.port) },
+      env: { ...process.env, ...project.environment, PORT: String(project.port) },
       detached: process.platform !== "win32",
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],

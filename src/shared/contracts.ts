@@ -1,6 +1,11 @@
 export type RuntimePhase = "stopped" | "starting" | "running" | "stopping" | "failed";
 export type DevServerTlsMode = "off" | "generated" | "custom";
 
+export interface EnvironmentProfile {
+  name: string;
+  environment: Record<string, string>;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -12,6 +17,9 @@ export interface Project {
   tlsCaPath: string | null;
   executable: string;
   args: string[];
+  environment: Record<string, string>;
+  environmentProfiles: EnvironmentProfile[];
+  selectedEnvironmentProfile: string;
   healthcheckPath: string;
   startupTimeoutMs: number;
   selectedWorktreePath: string | null;

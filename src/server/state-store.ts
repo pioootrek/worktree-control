@@ -1,4 +1,4 @@
-import type { DevServerTlsMode, Project, Reservation, ServerCapacitySettings, WorktreeStorageHistoryPoint, WorktreeStorageSnapshot } from "@/shared/contracts";
+import type { DevServerTlsMode, EnvironmentProfile, Project, Reservation, ServerCapacitySettings, WorktreeStorageHistoryPoint, WorktreeStorageSnapshot } from "@/shared/contracts";
 
 export interface WorktreeStorageSample extends WorktreeStorageHistoryPoint {
   projectId: string;
@@ -43,6 +43,10 @@ export interface StateStore {
   getProject(id: string): Project | null;
   addProject(input: ProjectRegistration): Project;
   updateProjectLaunch(projectId: string, input: ProjectLaunchUpdate): void;
+  updateProjectEnvironment(projectId: string, environment: Record<string, string>, actor: string): void;
+  saveProjectEnvironmentProfile(projectId: string, profile: EnvironmentProfile, actor: string): void;
+  deleteProjectEnvironmentProfile(projectId: string, profileName: string, actor: string): void;
+  selectProjectEnvironmentProfile(projectId: string, profileName: string, actor: string): void;
   setSelectedWorktree(projectId: string, path: string): void;
   getServerCapacitySettings(): ServerCapacitySettings;
   setServerCapacitySettings(settings: ServerCapacitySettings): void;
