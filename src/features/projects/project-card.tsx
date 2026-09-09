@@ -94,7 +94,7 @@ export function ProjectCard({
   };
 
   return (
-    <Card className="overflow-hidden border-white/8 bg-card/75 shadow-xl shadow-black/10 backdrop-blur-sm">
+    <Card data-project-id={project.id} className="overflow-hidden border-white/8 bg-card/75 shadow-xl shadow-black/10 backdrop-blur-sm">
       <CardHeader className="pb-4">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">

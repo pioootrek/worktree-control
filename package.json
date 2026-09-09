@@ -40,6 +40,8 @@
     "start": "node dist/cli/index.js start",
     "smoke:package": "node scripts/package-smoke.mjs",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:e2e": "playwright test --config playwright.e2e.config.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "test:modules": "vitest run src/server/modules src/server/infrastructure src/architecture.test.ts",
