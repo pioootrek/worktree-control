@@ -142,4 +142,15 @@ Kierunek: [plan trybów](../NOTE-20260909-self-hosted-saas-plan/authentication-m
   Brak bramek aktywacji open (wymóg planu). Testy: transport open (historia
   `none`, powrót do token → 401 i aktor nieważny), resolver, auth-service, CLI,
   UI `access.spec.ts` (open).
-  `node:check` run 5e2fdcb6… exit 0 (processOutcome passed). Commit D; dalej build + test:ui.
+  `node:check` run 5e2fdcb6… exit 0 (processOutcome passed). D = `5d5bf66`;
+  `node:build` 21ed2774… passed, `node:test:ui` 4bdd982a… passed (observed_match).
+- 2026-09-26 PR E (gałąź `t3code/auth-stage1-e-admin-socket`) — projekt:
+  `paths.adminSocketPath = <stateDirectory>/admin.sock`; kontroler przy starcie
+  (trzyma lock, więc istniejący socket jest nieaktualny → unlink tylko gdy to
+  socket) ustawia katalog 0700, nasłuch HTTP na unix socket, chmod 0600.
+  POST `/auth` `{command, value?}` → wspólna funkcja wykonawcza z
+  `auth-management.ts` (aktor `local-admin`). Po zmianie polityki: zamknięcie
+  wszystkich sesji MCP (`McpRuntime.close` przez `mcp.closeSessions()`) i
+  rozłączenie SSE (`EventStream.disconnectAll`). CLI `auth`: gdy lock zajęty →
+  zapytanie przez socket zamiast błędu. Przeglądarka: `connectDashboardEvents`
+  z `onUnauthorized` → bootstrap → formularz przy 401.
