@@ -42,7 +42,7 @@ export function restoreControllerBackup(source: string, databasePath: string, at
   const check=new Database(databaseFile,{readonly:true,fileMustExist:true}); try {
     if (check.pragma("integrity_check",{simple:true})!=="ok") throw new Error("SQLite integrity check failed.");
     const actual=(check.prepare("SELECT max(version) version FROM schema_migrations").get() as {version:number}).version;
-    if(actual!==manifest.database.schemaVersion||actual>24) throw new Error("Unsupported or inconsistent database schema version.");
+    if(actual!==manifest.database.schemaVersion||actual>25) throw new Error("Unsupported or inconsistent database schema version.");
     const required=check.prepare("SELECT DISTINCT sha256, size FROM knowledge_attachments ORDER BY sha256").all() as Array<{sha256:string;size:number}>;
     if(JSON.stringify(required)!==JSON.stringify(manifest.attachments.map(x=>({sha256:x.sha256,size:x.size})).sort((a,b)=>a.sha256.localeCompare(b.sha256)))) throw new Error("Backup attachment manifest is incomplete.");
   } finally { check.close(); }

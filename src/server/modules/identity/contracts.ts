@@ -1,5 +1,6 @@
 import type { KnowledgeProject } from "@/shared/contracts/knowledge";
-export type PrincipalKind = "owner" | "agent" | "worker";
+/** `installation` is the single installation-wide authority; it never holds credentials or grants. */
+export type PrincipalKind = "owner" | "agent" | "worker" | "installation";
 export type IdentityStatus = "active" | "revoked";
 
 export interface Principal {

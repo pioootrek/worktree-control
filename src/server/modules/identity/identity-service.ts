@@ -258,7 +258,7 @@ export class IdentityService {
     const principal = this.store.getPrincipal(input.principalId);
     const project = this.store.getKnowledgeProject(input.projectId);
     const permissions = [...new Set(input.permissions)].sort();
-    if (!principal || principal.status !== "active" || principal.kind === "worker") {
+    if (!principal || principal.status !== "active" || principal.kind === "worker" || principal.kind === "installation") {
       throw new IdentityError("invalid_request", "Grant można nadać wyłącznie aktywnemu właścicielowi lub agentowi.");
     }
     if (!project || project.status !== "active") {
@@ -280,7 +280,7 @@ export class IdentityService {
   listKnowledgeGrants(principalId: string, actor: AuthenticatedPrincipal): KnowledgeProjectGrant[] {
     this.requireOwnerSession(actor);
     const principal = this.store.getPrincipal(principalId);
-    if (!principal || principal.kind === "worker") throw new IdentityError("invalid_request", "Nie znaleziono właściciela ani agenta.");
+    if (!principal || principal.kind === "worker" || principal.kind === "installation") throw new IdentityError("invalid_request", "Nie znaleziono właściciela ani agenta.");
     return this.store.listKnowledgeProjectGrants(principalId);
   }
 

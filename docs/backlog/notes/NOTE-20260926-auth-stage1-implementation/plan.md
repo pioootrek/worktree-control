@@ -70,3 +70,23 @@ Kierunek: [plan trybów](../NOTE-20260909-self-hosted-saas-plan/authentication-m
 ## Dziennik
 
 - 2026-09-26: projekt zapisany; rozpoczęto PR A.
+- 2026-09-26 PR A (gałąź `t3code/auth-stage1-a-policy`), gotowe i przetestowane:
+  migracja 25 (`rebuildTable` w `migrations.ts`, FK OFF poza transakcją +
+  `foreign_key_check`), `INSTALLATION_PRINCIPAL_ID = "installation"`, polityka
+  domyślna `legacy` dla każdej bazy w A; moduł `src/server/modules/authentication/`
+  (`AuthenticationService`: status/generateToken/rotateToken/setMode/
+  assertStartupPolicy/verifyInstallationToken; `ENFORCED_MODES = {legacy}`);
+  `infrastructure/sqlite/authentication-queries.ts` (fail-closed parse, audyt bez
+  sekretu); `PrincipalKind` + `installation`, granty go odrzucają. Testy: 15/15.
+  Decyzja w A: świeża baza też startuje w `legacy`; domyślne `token` dla nowych
+  instalacji wchodzi razem z egzekwowaniem (B) i poprawą fixture'ów e2e/https.
+  Następne w A: CLI `auth` (offline, lock) + `assertStartupPolicy` w `start`.
+- 2026-09-26 PR A, cd.: CLI `src/cli/auth-management.ts` (walidacja argumentów
+  przed lockiem, odmowa przy działającym kontrolerze, JSON na wyjściu, aktor
+  `local-cli`), `start` wywołuje `assertStartupPolicy` przed uruchomieniem.
+  Naprawa: migracja 25 jest idempotentna (`rebuildTable(from, to)` pomija tabelę
+  z nowym CHECK), bo testy naprawcze kasują rekordy migracji > 12. Testy
+  docelowe 125/125, eslint OK. Backup: limit wersji schematu podniesiony do 25
+  (`controller-backup.ts`). `node:check` run 2b4ea1c6… exit 0 (processOutcome
+  passed, 451 testów; „failed” tylko z atrybucji dirty_source). PR A zacommitowany
+  lokalnie, bez push. Następne: PR B (egzekwowanie trybu `token`).

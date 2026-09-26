@@ -18,6 +18,7 @@ import {
   validatePublicControllerBackend,
 } from "./controller-addresses";
 import { writeCliLine } from "./output";
+import { runAuthCommand } from "./auth-management";
 import { runIdentityCommand } from "./identity-management";
 import { runBackupCommand } from "./backup-management";
 import { pairingUrl } from "./pairing-url";
@@ -31,6 +32,7 @@ import { DirectoryBrowser } from "../server/directory-browser";
 import { EventStream } from "../server/events";
 import { FileLogWriter } from "../server/log-writer";
 import { ProjectLifecycle } from "../server/modules/lifecycle";
+import { AuthenticationService } from "../server/modules/authentication";
 import { IdentityService } from "../server/modules/identity";
 import { KnowledgeAttachmentService, KnowledgeService } from "../server/modules/knowledge";
 import { createMcpControllerServer } from "../server/mcp-http-server";
@@ -72,6 +74,10 @@ async function main(): Promise<void> {
   }
   if (command === "knowledge") {
     await runKnowledgeCommand(knowledgeArgs!.args, paths, { write: writeCliLine });
+    return;
+  }
+  if (command === "auth") {
+    await runAuthCommand(process.argv.slice(3), paths, { write: writeCliLine });
     return;
   }
   if (command === "identity") {
@@ -130,6 +136,13 @@ async function main(): Promise<void> {
   const events = new EventStream();
   const logs = new FileLogWriter(paths.logDirectory);
   const store = new SqliteStateStore(paths.databasePath);
+  try {
+    new AuthenticationService(store).assertStartupPolicy();
+  } catch (error) {
+    store.close();
+    controllerLock.release();
+    throw error;
+  }
   const memoryWarningMiB = optionalPositiveNumber(option("--memory-warning-mib"), "Memory warning threshold");
   const processes = new ProcessManager((projectId) => events.publish({ kinds: ["runtime"], projectIds: [projectId] }), logs, {
     memoryWarningThresholdBytes: memoryWarningMiB === null ? null : Math.round(memoryWarningMiB * 1024 * 1024),
