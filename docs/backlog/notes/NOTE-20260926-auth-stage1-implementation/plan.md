@@ -165,4 +165,12 @@ Kierunek: [plan trybów](../NOTE-20260909-self-hosted-saas-plan/authentication-m
   Przeglądarka: SSE 401 → `onUnauthorized` → bootstrap → formularz. Testy:
   admin-socket, CLI przez socket, SSE 401, unieważnienie na żywo (prawdziwe MCP
   i SSE w `installation-token-transports.test.ts`).
-  `node:check` run 161768e2… exit 0 (processOutcome passed). Commit E; dalej build + test:integration/https/e2e.
+  `node:check` run 161768e2… exit 0 (processOutcome passed). E = `d70790d`;
+  `node:build` 2a682bb7… passed, `node:test:integration` 8b1bf258… passed,
+  `node:test:e2e` d75ca410… passed. `node:test:https` e2eff032… NIE uruchomiony:
+  profil kolejki `tooling` nie ma `CADDY_BIN` (błąd konfiguracji vitest przed
+  testami) — niezweryfikowane, nie obchodzić bez zgody właściciela.
+- PR F (gałąź `t3code/auth-stage1-f-default`) — plan: świeża baza → `token`
+  bez tokena (start odmawia z instrukcją `auth token generate`), istniejąca →
+  `legacy`; fixture'y integration/e2e generują token offline przed startem;
+  README + instrukcja migracji tej instalacji; pełna macierz.
