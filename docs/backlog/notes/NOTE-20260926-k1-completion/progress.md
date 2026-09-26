@@ -76,5 +76,4 @@ właściciela). Drobne obserwacje (nie blokują K1):
 ## Decyzje do etapu 1 (2026-09-26)
 
 - Tryb tej instalacji po wdrożeniu etapu 1: `token` (decyzja właściciela).
-- Kanał administracyjny: rekomendacja unix socket 0600 w katalogu 0700; oczekuje
-  na potwierdzenie. Zapisane w notes[] FEAT-20260829-independent-auth-modes.
+- Kanał administracyjny: unix socket 0600 w katalogu 0700 — zatwierdzony przez właściciela. Zapisane w notes[] FEAT-20260829-independent-auth-modes.
