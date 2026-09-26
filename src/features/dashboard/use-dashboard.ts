@@ -26,9 +26,12 @@ const emptyPending = (): PendingRefresh => ({ bootstrap: false, projectIds: new 
 const ACCESS_TOKEN_KEY = "worktree-switcher-token";
 const KNOWLEDGE_TOKEN_KEY = "worktree-switcher-knowledge-token";
 
-/** The installation token authorizes runtime and knowledge alike, so it never needs a second sign-in. */
+/** Placeholder credential in open mode, where the controller ignores credentials entirely. */
+export const OPEN_ACCESS = "open-mode";
+
+/** The installation token (or open mode) authorizes runtime and knowledge alike: no second sign-in. */
 export function isInstallationToken(token: string): boolean {
-  return token.startsWith("wsi_");
+  return token.startsWith("wsi_") || token === OPEN_ACCESS;
 }
 
 function newestResources(current: RuntimeResourceMetrics, incoming: RuntimeResourceMetrics): RuntimeResourceMetrics {
@@ -168,11 +171,11 @@ export function useDashboard() {
     inFlight.current = null;
   }, []);
 
-  const signIn = useCallback((value: string) => {
+  const signIn = useCallback((value: string, persist = true) => {
     const accessToken = value.trim();
     if (!accessToken) return;
     resetRequests();
-    window.sessionStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
+    if (persist) window.sessionStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
     setAccessRequired(null);
     setLoading(true);
     setToken(accessToken);
@@ -190,20 +193,29 @@ export function useDashboard() {
   }, [resetRequests]);
 
   useEffect(() => {
+    const probe = new AbortController();
     const initialRefresh = window.setTimeout(() => {
       const fragment = new URLSearchParams(window.location.hash.slice(1));
       const accessToken = fragment.get("token") ?? window.sessionStorage.getItem(ACCESS_TOKEN_KEY);
       if (window.location.hash) window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
       setKnowledgeToken(window.sessionStorage.getItem(KNOWLEDGE_TOKEN_KEY) ?? "");
-      if (!accessToken) {
-        setLoading(false);
-        setAccessRequired("missing");
+      if (accessToken) {
+        signIn(accessToken);
         return;
       }
-      signIn(accessToken);
+      // Open mode accepts requests without credentials; anything else asks for a token.
+      void fetch("/api/dashboard", { cache: "no-store", signal: probe.signal }).then((response) => {
+        if (response.ok) signIn(OPEN_ACCESS, false);
+        else throw new Error("Credentials required");
+      }).catch(() => {
+        if (probe.signal.aborted) return;
+        setLoading(false);
+        setAccessRequired("missing");
+      });
     }, 0);
     return () => {
       window.clearTimeout(initialRefresh);
+      probe.abort();
       resetRequests();
     };
   }, [resetRequests, signIn]);

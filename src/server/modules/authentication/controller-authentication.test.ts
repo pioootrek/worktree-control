@@ -9,6 +9,9 @@ const SCOPED = `wts_22222222-2222-4222-8222-222222222222_${"b".repeat(64)}`;
 const installationActor: AuthenticatedPrincipal = {
   principalId: "installation", principalKind: "installation", credentialId: "11111111-1111-4111-8111-111111111111", authenticationMethod: "installation_token",
 };
+const anonymousActor: AuthenticatedPrincipal = {
+  principalId: "installation", principalKind: "installation", credentialId: "open", authenticationMethod: "none",
+};
 const agentActor: AuthenticatedPrincipal = {
   principalId: "agent-1", principalKind: "agent", credentialId: "22222222-2222-4222-8222-222222222222", authenticationMethod: "agent_token",
 };
@@ -18,6 +21,7 @@ function resolve(mode: AuthenticationMode, bearer: string | null, legacy = false
     authentication: {
       mode: () => mode,
       authenticateInstallation: (token) => mode === "token" && token === INSTALLATION ? installationActor : null,
+      anonymousInstallation: () => mode === "open" ? anonymousActor : null,
     },
     identity: {
       authenticateBearer: (token) => {
@@ -43,8 +47,14 @@ describe("controller credential resolution", () => {
     expect(resolve("token", "wts_forged")).toBeNull();
   });
 
-  it("never falls back for modes without enforcement", () => {
-    for (const mode of ["open", "better-auth"] as const) {
+  it("treats every caller as the anonymous installation authority in open mode", () => {
+    for (const [bearer, legacy] of [[null, false], [null, true], [INSTALLATION, false], [SCOPED, false], ["garbage", false]] as const) {
+      expect(resolve("open", bearer, legacy)).toEqual({ kind: "installation", actor: anonymousActor });
+    }
+  });
+
+  it("never falls back for a provider without enforcement", () => {
+    for (const mode of ["better-auth"] as const) {
       expect(resolve(mode, null, true)).toBeNull();
       expect(resolve(mode, INSTALLATION)).toBeNull();
       expect(resolve(mode, SCOPED)).toBeNull();

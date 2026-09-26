@@ -40,15 +40,16 @@ export function dashboardFixture(): ControllerDashboardResponse {
 export async function mountDashboard(
   page: Page,
   data = dashboardFixture(),
-  options: { failDashboardRefreshAfterProjectRemoval?: boolean; accessToken?: string; openWithToken?: boolean } = {},
+  options: { failDashboardRefreshAfterProjectRemoval?: boolean; accessToken?: string; openWithToken?: boolean; openMode?: boolean } = {},
 ) {
   const accessToken = options.accessToken ?? "ui-fixture-token";
+  const openMode = options.openMode ?? false;
   const webRoot = resolve("out");
   if (!existsSync(resolve(webRoot, "index.html"))) throw new Error("Run pnpm build before pnpm test:ui.");
   const requests: Array<{ path: string; method: string; body: unknown }> = [];
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.addInitScript((accessToken) => {
+  await page.addInitScript(({ accessToken, openMode }) => {
     // The fixture owns event delivery; count subscriptions to catch accidental duplication.
     const nativeFetch = window.fetch.bind(window);
     const encoder = new TextEncoder();
@@ -73,7 +74,7 @@ export async function mountDashboard(
       events.lastUrl = `${url.pathname}${url.search}`;
       events.lastToken = new Headers(init?.headers).get("X-Worktree-Switcher-Token") ?? "";
       events.lastKnowledgeToken = new Headers(init?.headers).get("Authorization") ?? "";
-      if (events.lastToken !== accessToken) return new Response("Unauthorized", { status: 401 });
+      if (!openMode && events.lastToken !== accessToken) return new Response("Unauthorized", { status: 401 });
       let streamController: ReadableStreamDefaultController<Uint8Array>;
       let connected = true;
       const cleanup = () => {
@@ -107,13 +108,13 @@ export async function mountDashboard(
       }, { once: true });
       return new Response(body, { headers: { "Content-Type": "text/event-stream" } });
     }) as typeof fetch;
-  }, accessToken);
+  }, { accessToken, openMode });
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     if (url.origin !== "http://switcher.test") return route.abort();
     if (url.pathname.startsWith("/api/")) {
       const request = route.request();
-      if (request.headers()["x-worktree-switcher-token"] !== accessToken) {
+      if (!openMode && request.headers()["x-worktree-switcher-token"] !== accessToken) {
         return route.fulfill({ status: 401, json: { error: "Missing fixture session" } });
       }
       if (request.method() === "GET") {

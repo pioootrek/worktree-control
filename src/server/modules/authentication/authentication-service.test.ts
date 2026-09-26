@@ -151,4 +151,20 @@ describe("installation authentication policy", () => {
     expect(auth.authenticateInstallation(first)).toBeNull();
     expect(auth.isCurrentInstallationActor(actor!)).toBe(false);
   });
+
+  it("selects open mode without a token and treats its anonymous actor as current only while open", () => {
+    const memory = memoryStore();
+    const auth = service(memory.store, ["legacy", "token", "open"]);
+    expect(auth.anonymousInstallation()).toBeNull();
+
+    expect(auth.setMode("open", "local-cli").mode).toBe("open");
+    const anonymous = auth.anonymousInstallation()!;
+    expect(anonymous).toEqual({ principalId: "installation", principalKind: "installation", credentialId: "open", authenticationMethod: "none" });
+    expect(auth.isCurrentInstallationActor(anonymous)).toBe(true);
+    expect(auth.authenticateInstallation(auth.generateToken("local-cli").token)).toBeNull();
+
+    auth.setMode("token", "local-cli");
+    expect(auth.anonymousInstallation()).toBeNull();
+    expect(auth.isCurrentInstallationActor(anonymous)).toBe(false);
+  });
 });

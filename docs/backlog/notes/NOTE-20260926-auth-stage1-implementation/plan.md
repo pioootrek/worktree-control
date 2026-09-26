@@ -129,3 +129,17 @@ Kierunek: [plan trybów](../NOTE-20260909-self-hosted-saas-plan/authentication-m
   `node:check` run 74b25655… exit 0; C = `42f223b` + `9a2dc56` (kolejność
   route w access.spec). `node:build` 9eda74bd… passed, `node:test:ui`
   32914509… passed (68, observed_match). Następne: PR D (tryb open).
+- 2026-09-26 PR D (gałąź `t3code/auth-stage1-d-open` na C), kod + testy gotowe:
+  `open` w `ENFORCED_MODES`; `anonymousInstallation()` → aktor `installation`,
+  `credentialId: "open"`, metoda `none`, ważny tylko gdy tryb = open. Resolver:
+  w open każdy wywołujący (także z tokenem scoped/wsi/śmieciem) = anonimowy
+  autorytet instalacji (granty nie są granicą, zgodnie z planem). MCP bez
+  nagłówka w open. `/api/dashboard` zwraca `authentication {mode, listen}`,
+  `McpStatus.authentication` `bearer|none`. UI: sonda `/api/dashboard` bez
+  tokena → `OPEN_ACCESS` (nie zapisywany), czerwony badge „Open mode — no
+  authentication (host:port)”, bez „Sign out”. CLI: `config mcp` bez nagłówków
+  w open, ostrzeżenie `cli.openMode` przy starcie, `cli.tokenMode` w token.
+  Brak bramek aktywacji open (wymóg planu). Testy: transport open (historia
+  `none`, powrót do token → 401 i aktor nieważny), resolver, auth-service, CLI,
+  UI `access.spec.ts` (open).
+  `node:check` run 5e2fdcb6… exit 0 (processOutcome passed). Commit D; dalej build + test:ui.

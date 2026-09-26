@@ -12,19 +12,25 @@ export interface ControllerAuthenticationDependencies {
   authentication?: {
     mode(): AuthenticationMode;
     authenticateInstallation(token: string): AuthenticatedPrincipal | null;
+    anonymousInstallation(): AuthenticatedPrincipal | null;
   };
   identity?: Pick<IdentityService, "authenticateBearer">;
 }
 
 /**
  * Resolves transport credentials under the active mode. Legacy secrets work only in `legacy`,
- * the installation token only in `token`; any other mode rejects both and never falls back.
+ * the installation token only in `token`. `open` ignores credentials: grants are no boundary for
+ * anonymous callers. Any other mode rejects everything and never falls back.
  */
 export function resolveControllerAuthentication(
   dependencies: ControllerAuthenticationDependencies,
   credentials: ControllerCredentials,
 ): ControllerAuthentication | null {
   const mode = dependencies.authentication?.mode() ?? "legacy";
+  if (mode === "open") {
+    const actor = dependencies.authentication?.anonymousInstallation();
+    return actor ? { kind: "installation", actor } : null;
+  }
   const { bearer } = credentials;
   if (bearer?.startsWith("wsi_")) {
     const actor = mode === "token" ? dependencies.authentication?.authenticateInstallation(bearer) : null;

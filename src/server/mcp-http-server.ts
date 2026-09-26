@@ -23,11 +23,12 @@ function authenticate(
   dependencies: ControllerAuthenticationDependencies,
 ): ControllerAuthentication | null {
   const header = request.headers.authorization;
-  if (!header?.startsWith("Bearer ")) return null;
-  const token = header.slice("Bearer ".length);
+  // Open mode needs no header; every other mode rejects a missing bearer in the resolver.
+  const token = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : null;
   return resolveControllerAuthentication(dependencies, {
     bearer: token,
     legacySecretValid: () => {
+      if (token === null) return false;
       const supplied = Buffer.from(token);
       const expectedBuffer = Buffer.from(expected);
       return supplied.length === expectedBuffer.length && timingSafeEqual(supplied, expectedBuffer);

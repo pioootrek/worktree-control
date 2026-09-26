@@ -37,6 +37,9 @@ describe("MCP configuration and controller access tokens", () => {
     const { token } = JSON.parse(output[0]!) as { token: string };
     expect(mcpConfigToken(appPaths, { environment: {} })).toBe(INSTALLATION_TOKEN_PLACEHOLDER);
     expect(mcpConfigToken(appPaths, { environment: { WORKTREE_SWITCHER_TOKEN: token } })).toBe(token);
+
+    await runAuthCommand(["mode", "set", "open"], appPaths, { write: () => undefined });
+    expect(mcpConfigToken(appPaths, { environment: {} })).toBeNull();
   });
 
   it("reads the mode of a running service from its access record without opening the database", () => {

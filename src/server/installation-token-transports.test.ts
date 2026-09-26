@@ -21,7 +21,7 @@ import type { DirectoryBrowser } from "./directory-browser";
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
-async function setup() {
+async function setup(mode: "token" | "open" = "token") {
   const directory = mkdtempSync(join(tmpdir(), "installation-token-"));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   writeFileSync(join(directory, "index.html"), "<title>Dashboard</title>");
@@ -37,7 +37,7 @@ async function setup() {
   identity.setKnowledgeGrant({ principalId: agent.id, projectId: project.id, permissions: ["knowledge:read"] }, owner);
   const agentToken = identity.issueAgentToken({ principalId: agent.id, label: "reader" }, owner).token;
   const installationToken = authentication.generateToken("test").token;
-  authentication.setMode("token", "test");
+  authentication.setMode(mode, "test");
 
   const events = new EventStream();
   cleanups.push(() => events.close());
@@ -148,5 +148,34 @@ describe("installation token mode across transports", () => {
     expect((await fetch(`${f.base}/api/metrics`, { headers: { "X-Worktree-Switcher-Token": rotated } })).status).toBe(200);
     // Long-lived consumers such as SSE filters recheck the actor and lose knowledge access at once.
     expect(() => f.identity.authorizeKnowledge(actor, f.project.id, "knowledge:read")).toThrow("Nieprawidłowe lub nieaktywne poświadczenie.");
+  });
+
+  it("requires no credentials in open mode and records anonymous installation authority", async () => {
+    const f = await setup("open");
+    expect((await fetch(`${f.base}/api/metrics`)).status).toBe(200);
+    const dashboard = await (await fetch(`${f.base}/api/dashboard`)).json() as { authentication: { mode: string; listen: string } };
+    expect(dashboard.authentication).toEqual({ mode: "open", listen: "127.0.0.1:0" });
+    // Grants are no boundary for anonymous callers: even a read-only agent credential is ignored.
+    const created = await f.knowledgeCall(f.agentToken, "create_task", {
+      projectId: f.project.id, title: "Anonymous task", description: "Open mode", idempotencyKey: "open-task",
+    });
+    expect(created.status).toBe(200);
+    const bootstrap = await fetch(`${f.base}/api/identity/bootstrap`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    expect(bootstrap.status).toBe(401);
+
+    const client = new Client({ name: "anonymous", version: "1" });
+    await client.connect(new StreamableHTTPClientTransport(f.endpoint));
+    cleanups.push(() => client.close());
+    expect((await client.listTools()).tools.map(({ name }) => name)).toEqual(expect.arrayContaining(["list_projects", "knowledge_create_task"]));
+
+    const database = new Database(f.databasePath, { readonly: true });
+    const history = database.prepare("SELECT principal_id, authentication_method FROM knowledge_history WHERE record_kind = 'task'").all();
+    database.close();
+    expect(history).toEqual([{ principal_id: "installation", authentication_method: "none" }]);
+
+    const anonymous = f.authentication.anonymousInstallation()!;
+    f.authentication.setMode("token", "test");
+    expect((await fetch(`${f.base}/api/metrics`)).status).toBe(401);
+    expect(() => f.identity.authorizeKnowledge(anonymous, f.project.id, "knowledge:read")).toThrow("Nieprawidłowe lub nieaktywne poświadczenie.");
   });
 });

@@ -53,7 +53,7 @@ export function McpStatusDialog({ status }: { status: McpStatus }) {
             <Metric label={t("mcp.sessions")} value={String(status.activeSessions)} />
             <Metric label={t("mcp.transport")} value={t("mcp.streamableHttp")} />
             <Metric label={t("mcp.network")} value={t("mcp.loopback")} />
-            <Metric label={t("mcp.authentication")} value={t("mcp.bearerToken")} />
+            <Metric label={t("mcp.authentication")} value={t(status.authentication === "none" ? "mcp.noAuthentication" : "mcp.bearerToken")} />
           </dl>
 
           <div className="space-y-2">

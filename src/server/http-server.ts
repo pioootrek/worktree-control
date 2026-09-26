@@ -536,6 +536,7 @@ export function createControllerServer(options: {
           json(response, 200, {
             ...localizedDashboard(await options.service.dashboard(), locale),
             mcp: options.mcpStatus(),
+            authentication: { mode: options.authentication?.mode() ?? "legacy", listen: `${options.host}:${options.port}` },
           });
           return;
         }

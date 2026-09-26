@@ -110,9 +110,10 @@ async function main(): Promise<void> {
     throw new Error(translate(locale, "cli.invalidMcpPort"));
   }
   if (command === "config" && process.argv[3] === "mcp") {
+    const token = mcpConfigToken(paths);
     writeCliLine(JSON.stringify({
       url: `http://127.0.0.1:${mcpPort}/mcp`,
-      headers: { Authorization: `Bearer ${mcpConfigToken(paths)}` },
+      ...(token === null ? {} : { headers: { Authorization: `Bearer ${token}` } }),
     }, null, 2));
     return;
   }
@@ -190,7 +191,7 @@ async function main(): Promise<void> {
       endpoint: mcp ? mcpEndpoint : null,
       transport: "streamable-http",
       network: "loopback",
-      authentication: "bearer",
+      authentication: authentication.mode() === "open" ? "none" : "bearer",
       activeSessions: mcpSessions.size,
     }),
     webRoot,
@@ -243,7 +244,9 @@ async function main(): Promise<void> {
     writeCliLine(translate(locale, "cli.accessLink", { url: advertisedAddress }));
   }
   writeCliLine(translate(locale, "cli.logs", { path: paths.logDirectory }));
-  if (!serviceMode) writeCliLine(translate(locale, "cli.secret"));
+  if (authenticationMode === "open") writeCliLine(translate(locale, "cli.openMode", { address: `${host}:${port}` }));
+  else if (authenticationMode === "token") writeCliLine(translate(locale, "cli.tokenMode"));
+  else if (!serviceMode) writeCliLine(translate(locale, "cli.secret"));
   if (mcp) {
     writeCliLine(translate(locale, "cli.mcpListening", { url: mcpEndpoint }));
     writeCliLine(translate(locale, "cli.mcpConfig"));

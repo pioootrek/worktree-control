@@ -24,7 +24,7 @@ import { AllProjectsWorktrees } from "@/features/projects/all-projects-worktrees
 import { ALL_PROJECTS, useProjectSelection } from "./project-selection";
 import { KnowledgeDashboard } from "@/features/knowledge/knowledge-dashboard";
 import { AccessTokenForm } from "./access-token-form";
-import { useDashboard } from "./use-dashboard";
+import { OPEN_ACCESS, useDashboard } from "./use-dashboard";
 
 export function Dashboard() {
   const { locale, setLocale, t } = useI18n();
@@ -88,7 +88,10 @@ export function Dashboard() {
               <Languages aria-hidden />{locale === "pl" ? "EN" : "PL"}
             </Button>
             <ThemeToggle />
-            {token && <Button variant="outline" size="sm" onClick={signOut}><LogOut aria-hidden />{t("access.signOut")}</Button>}
+            {data.authentication?.mode === "open" && (
+              <Badge variant="destructive" className="h-9 px-3 font-normal">{t("access.openMode", { listen: data.authentication.listen })}</Badge>
+            )}
+            {token && token !== OPEN_ACCESS && <Button variant="outline" size="sm" onClick={signOut}><LogOut aria-hidden />{t("access.signOut")}</Button>}
             <AddProjectDialog open={dialogOpen} onOpenChange={setDialogOpen} mutate={mutate} token={token} />
           </div>
         </header>

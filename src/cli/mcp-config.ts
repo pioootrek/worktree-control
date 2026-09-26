@@ -32,16 +32,17 @@ function currentMode(paths: AppPaths, processExists: (pid: number) => boolean): 
 }
 
 /**
- * Bearer for `config mcp`. The raw installation token is never stored, so token mode uses
- * WORKTREE_SWITCHER_TOKEN or prints a placeholder rather than the rejected legacy mcp-token.
+ * Bearer for `config mcp`, or null when open mode needs none. The raw installation token is never
+ * stored, so token mode uses WORKTREE_SWITCHER_TOKEN or prints a placeholder, never the mcp-token.
  */
-export function mcpConfigToken(paths: AppPaths, dependencies: McpConfigDependencies = {}): string {
+export function mcpConfigToken(paths: AppPaths, dependencies: McpConfigDependencies = {}): string | null {
   const environment = dependencies.environment ?? process.env;
   const supplied = environment.WORKTREE_SWITCHER_TOKEN;
   if (supplied?.startsWith("wsi_")) return supplied;
   const mode = currentMode(paths, dependencies.processExists ?? ((pid) => {
     try { process.kill(pid, 0); return true; } catch { return false; }
   }));
+  if (mode === "open") return null;
   if (mode !== null && mode !== "legacy") return INSTALLATION_TOKEN_PLACEHOLDER;
   return loadOrCreateSecret(paths.mcpTokenPath);
 }

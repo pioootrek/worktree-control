@@ -30,9 +30,10 @@ export interface IssuedInstallationToken {
 }
 
 const TOKEN_PREFIX = "wsi";
+const OPEN_CREDENTIAL_ID = "open";
 const MODES = new Set<AuthenticationMode>(["legacy", "open", "token", "better-auth"]);
 /** Modes whose enforcement exists in every transport. Selecting any other mode is refused. */
-const ENFORCED_MODES: ReadonlySet<AuthenticationMode> = new Set(["legacy", "token"]);
+const ENFORCED_MODES: ReadonlySet<AuthenticationMode> = new Set(["legacy", "token", "open"]);
 
 function hashToken(token: string): Buffer {
   return createHash("sha256").update(token, "utf8").digest();
@@ -75,11 +76,22 @@ export class AuthenticationService implements InstallationAuthority {
     };
   }
 
+  /** Open mode: every caller acts as the anonymous installation authority, recorded as `none`. */
+  anonymousInstallation(): AuthenticatedPrincipal | null {
+    if (this.store.getAuthenticationPolicy().mode !== "open") return null;
+    return {
+      principalId: INSTALLATION_PRINCIPAL_ID,
+      principalKind: "installation",
+      credentialId: OPEN_CREDENTIAL_ID,
+      authenticationMethod: "none",
+    };
+  }
+
   isCurrentInstallationActor(actor: AuthenticatedPrincipal): boolean {
     const policy = this.store.getAuthenticationPolicy();
-    return actor.principalId === INSTALLATION_PRINCIPAL_ID
-      && actor.principalKind === "installation"
-      && actor.authenticationMethod === "installation_token"
+    if (actor.principalId !== INSTALLATION_PRINCIPAL_ID || actor.principalKind !== "installation") return false;
+    if (actor.authenticationMethod === "none") return policy.mode === "open" && actor.credentialId === OPEN_CREDENTIAL_ID;
+    return actor.authenticationMethod === "installation_token"
       && policy.mode === "token"
       && policy.token?.id === actor.credentialId;
   }
