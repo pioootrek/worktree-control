@@ -126,4 +126,6 @@ Kierunek: [plan trybów](../NOTE-20260909-self-hosted-saas-plan/authentication-m
   pairing z URL) dla `project`/`service status`; `config mcp` przez
   `src/cli/mcp-config.ts` (env `wsi_`, w trybie token placeholder, nigdy
   mcp-token). UI: `tests/ui/access.spec.ts`, fixture z parametrem tokena.
-  `node:check` run 74b25655… exit 0; commit C przed build + test:ui (w toku).
+  `node:check` run 74b25655… exit 0; C = `42f223b` + `9a2dc56` (kolejność
+  route w access.spec). `node:build` 9eda74bd… passed, `node:test:ui`
+  32914509… passed (68, observed_match). Następne: PR D (tryb open).
