@@ -14,6 +14,8 @@ interface McpRuntimeLike {
 
 export interface McpControllerServer {
   server: Server;
+  /** Ends every MCP session so clients must reconnect under the current authentication policy. */
+  closeSessions(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -113,6 +115,9 @@ export function createMcpControllerServer(options: {
 
   return {
     server,
+    async closeSessions() {
+      if (runtimePromise) await (await runtimePromise).close();
+    },
     async close() {
       if (runtimePromise) await (await runtimePromise).close();
       if (!server.listening) return;

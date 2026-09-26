@@ -277,6 +277,8 @@ export function useDashboard() {
         }
       },
       onError: () => { streamInterrupted.current = true; setConnectionError(t("dashboard.connectionLost")); },
+      // After a rotation or mode change the bootstrap read shows the sign-in form on 401.
+      onUnauthorized: () => void reconcile(token, { bootstrap: true }),
     });
     return () => events.close();
   }, [token, knowledgeToken, reconcile, t]);

@@ -5,6 +5,13 @@ export {
   type IssuedInstallationToken,
 } from "./authentication-service";
 export {
+  AUTHENTICATION_COMMAND_USAGE,
+  authenticationCommandFromArgs,
+  executeAuthenticationCommand,
+  parseAuthenticationCommand,
+  type AuthenticationCommand,
+} from "./authentication-commands";
+export {
   resolveControllerAuthentication,
   type ControllerAuthenticationDependencies,
   type ControllerCredentials,

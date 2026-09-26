@@ -17,6 +17,7 @@ import { createControllerServer } from "./http-server";
 import { createMcpControllerServer } from "./mcp-http-server";
 import { EventStream } from "./events";
 import type { DirectoryBrowser } from "./directory-browser";
+import { authenticationAdminHandler } from "./authentication-admin";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -67,7 +68,7 @@ async function setup(mode: "token" | "open" = "token") {
     cleanups.push(() => client.close());
     return client;
   };
-  return { databasePath, authentication, identity, project, agentToken, installationToken, base, endpoint, knowledgeCall, mcpClient };
+  return { databasePath, authentication, identity, project, agentToken, installationToken, base, endpoint, knowledgeCall, mcpClient, mcp, events };
 }
 
 describe("installation token mode across transports", () => {
@@ -177,5 +178,32 @@ describe("installation token mode across transports", () => {
     f.authentication.setMode("token", "test");
     expect((await fetch(`${f.base}/api/metrics`)).status).toBe(401);
     expect(() => f.identity.authorizeKnowledge(anonymous, f.project.id, "knowledge:read")).toThrow("Nieprawidłowe lub nieaktywne poświadczenie.");
+  });
+
+  it("ends live MCP sessions and event streams when the admin channel changes the policy", async () => {
+    const f = await setup();
+    const client = await f.mcpClient(f.installationToken);
+    expect((await client.listTools()).tools.length).toBeGreaterThan(0);
+    const stream = await fetch(`${f.base}/api/events`, { headers: { "X-Worktree-Switcher-Token": f.installationToken } });
+    expect(stream.status).toBe(200);
+    const reader = stream.body!.getReader();
+    await reader.read();
+
+    const admin = authenticationAdminHandler({
+      authentication: f.authentication,
+      closeMcpSessions: () => f.mcp.closeSessions(),
+      disconnectEvents: () => f.events.disconnectAll(),
+    });
+    expect(await admin({ command: "status" })).toMatchObject({ mode: "token" });
+    await expect(client.listTools()).resolves.toBeDefined();
+
+    const rotated = await admin({ command: "token rotate" }) as { token: string };
+    let ended = false;
+    while (!ended) ended = (await reader.read()).done;
+    await expect(client.listTools()).rejects.toThrow();
+    const fresh = await f.mcpClient(rotated.token);
+    expect((await fresh.listTools()).tools.length).toBeGreaterThan(0);
+    await expect(admin({ command: "mode set", value: "legacy" })).rejects.toThrow("Dostępne tryby");
+    await expect(admin({ command: "drop tables" })).rejects.toThrow("Available auth commands");
   });
 });

@@ -25,6 +25,7 @@ import { pairingUrl } from "./pairing-url";
 import { openProjectGateway, runDoctorCommand, runProjectCommand } from "./project-management";
 import { controllerAccessToken, localDashboardEndpoint, publicDashboardEndpoint, readServiceAccess, removeServiceAccess, writeServiceAccess } from "./service-access";
 import { mcpConfigToken } from "./mcp-config";
+import { listenAdminSocket, type AdminSocketServer } from "../server/admin-socket";
 import { buildServiceStartArguments } from "./service-install";
 import { UserServiceManager } from "./service-manager";
 import { ControlService } from "../server/control-service";
@@ -34,6 +35,7 @@ import { EventStream } from "../server/events";
 import { FileLogWriter } from "../server/log-writer";
 import { ProjectLifecycle } from "../server/modules/lifecycle";
 import { AuthenticationService } from "../server/modules/authentication";
+import { authenticationAdminHandler } from "../server/authentication-admin";
 import { IdentityService } from "../server/modules/identity";
 import { KnowledgeAttachmentService, KnowledgeService } from "../server/modules/knowledge";
 import { createMcpControllerServer } from "../server/mcp-http-server";
@@ -219,26 +221,46 @@ async function main(): Promise<void> {
   const advertisedOrigin = publicOrigin ?? directControllerOrigin(lanHost, port);
   // Outside legacy mode the pairing token grants nothing, so links open the sign-in screen instead.
   const authenticationMode = authentication.mode();
-  const accessLink = (origin: string) => authenticationMode === "legacy"
+  const accessLink = (origin: string, mode = authentication.mode()) => mode === "legacy"
     ? pairingUrl(origin, accessToken, sessionId)
     : new URL("/", origin).toString();
   const advertisedAddress = accessLink(advertisedOrigin);
   const interactiveAddress = accessLink(interactiveControllerOrigin(localOrigin, publicOrigin));
   const serviceMode = process.argv.includes("--service-mode");
+  const startedAt = new Date().toISOString();
+  const recordServiceAccess = () => writeServiceAccess(paths.serviceAccessPath, {
+    pid: process.pid,
+    startedAt,
+    version: packageJson.version,
+    dashboardEndpoint: advertisedOrigin,
+    localDashboardEndpoint: localOrigin,
+    publicDashboardEndpoint: advertisedOrigin,
+    mcpEndpoint: mcp ? mcpEndpoint : null,
+    accessUrl: accessLink(advertisedOrigin),
+    logDirectory: paths.logDirectory,
+    authenticationMode: authentication.mode(),
+  });
+  let adminSocket: AdminSocketServer;
+  try {
+    adminSocket = await listenAdminSocket(paths.adminSocketPath, authenticationAdminHandler({
+      authentication,
+      closeMcpSessions: async () => { await mcp?.closeSessions(); },
+      disconnectEvents: () => events.disconnectAll(),
+      onPolicyChanged: (command) => {
+        if (serviceMode) recordServiceAccess();
+        logs.controller("authentication.policy_changed", { command, mode: authentication.mode() });
+      },
+    }));
+  } catch (error) {
+    await mcp?.close();
+    await controller.close();
+    await service.shutdown();
+    controllerLock.release();
+    throw error;
+  }
   writeCliLine(translate(locale, "cli.listening", { host, port }));
   if (serviceMode) {
-    writeServiceAccess(paths.serviceAccessPath, {
-      pid: process.pid,
-      startedAt: new Date().toISOString(),
-      version: packageJson.version,
-      dashboardEndpoint: advertisedOrigin,
-      localDashboardEndpoint: localOrigin,
-      publicDashboardEndpoint: advertisedOrigin,
-      mcpEndpoint: mcp ? mcpEndpoint : null,
-      accessUrl: advertisedAddress,
-      logDirectory: paths.logDirectory,
-      authenticationMode,
-    });
+    recordServiceAccess();
     writeCliLine("Service access URL: worktree-switcher service url");
   } else {
     writeCliLine(translate(locale, "cli.accessLink", { url: advertisedAddress }));
@@ -259,7 +281,7 @@ async function main(): Promise<void> {
     closing = true;
     writeCliLine(translate(locale, "cli.stopping"));
     try {
-      const listeners = await Promise.allSettled([mcp?.close(), controller.close()]);
+      const listeners = await Promise.allSettled([mcp?.close(), controller.close(), adminSocket.close()]);
       const listenerFailures = listeners.filter((result) => result.status === "rejected");
       let serviceFailure: unknown = null;
       try {

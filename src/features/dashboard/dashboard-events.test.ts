@@ -131,4 +131,16 @@ describe("dashboard event stream", () => {
       vi.useRealTimers();
     }
   });
+
+  it("stops retrying and reports a rejected credential once", async () => {
+    const fetcher = vi.fn(async () => new Response("Unauthorized", { status: 401 }));
+    const onUnauthorized = vi.fn();
+    const onError = vi.fn();
+    const events = connectDashboardEvents({ token: "rotated", onEvent: () => undefined, onError, onUnauthorized, fetcher, retryDelayMs: 1 });
+    await vi.waitFor(() => expect(onUnauthorized).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+    events.close();
+  });
 });

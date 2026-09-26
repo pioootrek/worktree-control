@@ -5,6 +5,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { listenAdminSocket } from "../server/admin-socket";
 import { acquireControllerLock } from "../server/controller-lock";
 import { resolveAppPaths } from "../server/paths";
 import { SqliteStateStore } from "../server/sqlite-store";
@@ -70,11 +71,19 @@ describe("auth administration CLI", () => {
     }
   });
 
-  it("refuses to open the database beside a running controller", async () => {
+  it("never opens the database beside a running controller and uses its admin socket instead", async () => {
     const appPaths = paths();
     const lock = acquireControllerLock(appPaths.controllerLockPath);
     try {
-      await expect(runAuthCommand(["status"], appPaths)).rejects.toThrow("The controller is running");
+      await expect(runAuthCommand(["status"], appPaths)).rejects.toThrow("without an admin socket");
+      const requests: unknown[] = [];
+      const admin = await listenAdminSocket(appPaths.adminSocketPath, (body) => { requests.push(body); return { mode: "token" }; });
+      try {
+        expect(await run(["mode", "set", "token"], appPaths)).toEqual({ mode: "token" });
+        expect(requests).toEqual([{ command: "mode set", value: "token" }]);
+      } finally {
+        await admin.close();
+      }
     } finally {
       lock.release();
     }

@@ -1,58 +1,53 @@
 import type { AppPaths } from "../server/paths";
-import { acquireControllerLock, ControllerAlreadyRunningError, type ControllerLock } from "../server/controller-lock";
-import { AuthenticationService } from "../server/modules/authentication";
+import { requestAdminSocket } from "../server/admin-socket";
+import { acquireControllerLock, ControllerAlreadyRunningError } from "../server/controller-lock";
+import {
+  AuthenticationService,
+  authenticationCommandFromArgs,
+  executeAuthenticationCommand,
+} from "../server/modules/authentication";
 import { SqliteStateStore } from "../server/sqlite-store";
 
 export interface AuthCommandDependencies {
   write?: (line: string) => void;
 }
 
-const USAGE = "Available auth commands: status, token generate, token rotate, mode set <open|token|better-auth>";
 const ACTOR = "local-cli";
 
-function lockForAdministration(paths: AppPaths): ControllerLock {
-  try {
-    return acquireControllerLock(paths.controllerLockPath);
-  } catch (error) {
-    if (error instanceof ControllerAlreadyRunningError) {
-      throw new Error(`The controller is running (PID ${error.pid}). Stop it before changing authentication; this command opens the database only while the controller is stopped.`);
-    }
-    throw error;
-  }
-}
-
+/**
+ * A stopped controller is administered offline under the singleton lock; a running one through
+ * its owner-only admin socket, so the database never gets a second owner.
+ */
 export async function runAuthCommand(
   args: string[],
   paths: AppPaths,
   dependencies: AuthCommandDependencies = {},
 ): Promise<void> {
   const write = dependencies.write ?? console.log;
-  const [group, action, value, ...rest] = args;
-  const command = [group, action].filter(Boolean).join(" ");
-  const valid = (group === "status" && action === undefined)
-    || (group === "token" && (action === "generate" || action === "rotate") && value === undefined)
-    || (group === "mode" && action === "set" && value !== undefined && rest.length === 0);
-  if (!valid) throw new Error(USAGE);
+  const request = authenticationCommandFromArgs(args);
 
-  const lock = lockForAdministration(paths);
+  let lock;
+  try {
+    lock = acquireControllerLock(paths.controllerLockPath);
+  } catch (error) {
+    if (!(error instanceof ControllerAlreadyRunningError)) throw error;
+    let result: unknown;
+    try {
+      result = await requestAdminSocket(paths.adminSocketPath, request);
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code === "ENOENT" || (cause as NodeJS.ErrnoException).code === "ECONNREFUSED") {
+        throw new Error(`The controller is running (PID ${error.pid}) without an admin socket at ${paths.adminSocketPath}. Restart it with this version, or stop it to change authentication offline.`);
+      }
+      throw cause;
+    }
+    write(JSON.stringify(result, null, 2));
+    return;
+  }
   let store: SqliteStateStore | null = null;
   try {
     store = new SqliteStateStore(paths.databasePath);
-    const service = new AuthenticationService(store);
-    switch (command) {
-      case "status":
-        write(JSON.stringify(service.status(), null, 2));
-        return;
-      case "token generate":
-        write(JSON.stringify(service.generateToken(ACTOR), null, 2));
-        return;
-      case "token rotate":
-        write(JSON.stringify(service.rotateToken(ACTOR), null, 2));
-        return;
-      case "mode set":
-        write(JSON.stringify(service.setMode(value!, ACTOR), null, 2));
-        return;
-    }
+    const { result } = executeAuthenticationCommand(new AuthenticationService(store), request, ACTOR);
+    write(JSON.stringify(result, null, 2));
   } finally {
     store?.close();
     lock.release();

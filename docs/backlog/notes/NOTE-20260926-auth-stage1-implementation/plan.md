@@ -154,3 +154,15 @@ Kierunek: [plan trybów](../NOTE-20260909-self-hosted-saas-plan/authentication-m
   rozłączenie SSE (`EventStream.disconnectAll`). CLI `auth`: gdy lock zajęty →
   zapytanie przez socket zamiast błędu. Przeglądarka: `connectDashboardEvents`
   z `onUnauthorized` → bootstrap → formularz przy 401.
+- 2026-09-26 PR E, kod + testy gotowe: `modules/authentication/authentication-commands.ts`
+  (parse z argumentów i ścisły z JSON, `executeAuthenticationCommand` →
+  `policyChanged` dla rotate i realnej zmiany trybu; generate nie unieważnia),
+  `src/server/admin-socket.ts` (`listenAdminSocket` 0700/0600, usuwa tylko stary
+  socket, odmawia zwykłego pliku; `requestAdminSocket`),
+  `src/server/authentication-admin.ts` (handler: zamyka sesje MCP i SSE, w
+  service-mode przepisuje service-access), `paths.adminSocketPath`. CLI `auth`:
+  lock wolny → offline; zajęty → socket; brak socketu → komunikat o restarcie.
+  Przeglądarka: SSE 401 → `onUnauthorized` → bootstrap → formularz. Testy:
+  admin-socket, CLI przez socket, SSE 401, unieważnienie na żywo (prawdziwe MCP
+  i SSE w `installation-token-transports.test.ts`).
+  `node:check` run 161768e2… exit 0 (processOutcome passed). Commit E; dalej build + test:integration/https/e2e.
