@@ -737,8 +737,8 @@ function applyMigrations(database: Database.Database): void {
 
 }
 
-/** Stable principal representing installation-wide authority in every database. */
-export const INSTALLATION_PRINCIPAL_ID = "installation";
+/** Frozen copy of the installation principal ID so migration 25 never follows later code changes. */
+const INSTALLATION_PRINCIPAL_ID = "installation";
 
 /** Replaces one table constraint; skips tables already carrying it so repaired migration records can rerun safely. */
 function rebuildTable(database: Database.Database, table: string, from: string, to: string): void {

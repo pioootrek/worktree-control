@@ -4,7 +4,7 @@ import { knowledgeSchemas, type KnowledgeOperation, type KnowledgeFailure } from
 import { localDashboardEndpoint, readServiceAccess } from "./service-access";
 import { acquireControllerLock } from "../server/controller-lock";
 import { SqliteStateStore } from "../server/sqlite-store";
-import { IdentityService } from "../server/modules/identity";
+import { authenticateOfflineActor } from "./offline-actor";
 import { executeHubImport, planHubImport, KnowledgeError, type HubImportPlanOptions, type HubImportPlan } from "../server/modules/knowledge";
 
 function option(args: string[], name: string): string {
@@ -39,7 +39,7 @@ export function runHubImportExecuteCommand(args: string[], paths: AppPaths, depe
   const revisionRaw=args.includes("--expected-target-revision")?option(args,"--expected-target-revision"):undefined,expectedTargetRevision=revisionRaw===undefined?undefined:Number(revisionRaw);
   if(expectedTargetRevision!==undefined&&(!Number.isInteger(expectedTargetRevision)||expectedTargetRevision<1)) throw new Error("invalid_request: Expected target revision must be positive.");
   const lock=acquireControllerLock(paths.controllerLockPath);
-  try{const store=new SqliteStateStore(paths.databasePath);try{const identity=new IdentityService(store),actor=identity.authenticateBearer(token);
+  try{const store=new SqliteStateStore(paths.databasePath);try{const {identity,actor}=authenticateOfflineActor(store,token);
     const result=executeHubImport(store,identity,actor,{plan,targetProjectId:option(args,"--target-id"),targetProjectName:option(args,"--target-name"),batchId:args.includes("--batch-id")?option(args,"--batch-id"):undefined,chunkSize,expectedTargetRevision,attachmentDirectory:paths.knowledgeAttachmentDirectory});
     (dependencies.write??console.log)(JSON.stringify(result,null,2));
   }finally{store.close();}}finally{lock.release();}

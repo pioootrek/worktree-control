@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 
 import type {
   CredentialAuthenticationRecord,
+  AuthenticatedPrincipal,
   IdentityStore,
+  InstallationAuthority,
   KnowledgeProject,
   KnowledgeProjectGrant,
   KnowledgeProjectRuntimeLink,
@@ -21,10 +23,11 @@ function hash(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-function fixture() {
+function fixture(installationAuthority?: InstallationAuthority) {
   const principals = new Map<string, Principal>([
     ["owner-1", { id: "owner-1", kind: "owner", status: "active" }],
     ["agent-1", { id: "agent-1", kind: "agent", status: "active" }],
+    ["installation", { id: "installation", kind: "installation", status: "active" }],
   ]);
   const credentials = new Map<string, CredentialAuthenticationRecord>([[OWNER_CREDENTIAL_ID, {
     id: OWNER_CREDENTIAL_ID,
@@ -89,7 +92,7 @@ function fixture() {
     getKnowledgeProjectRuntimeLink: (projectId) => links.get(projectId) ?? null,
     saveKnowledgeProjectRuntimeLink: (link) => { links.set(link.projectId, link); },
   };
-  const service = new IdentityService(store, () => NOW, () => AGENT_CREDENTIAL_ID, () => "b".repeat(64));
+  const service = new IdentityService(store, () => NOW, () => AGENT_CREDENTIAL_ID, () => "b".repeat(64), installationAuthority);
   return { service, principals, credentials, projects, grants };
 }
 
@@ -282,5 +285,41 @@ describe("IdentityService", () => {
     expect(grants.get(`${agent.id}:${project.id}`)?.revokedAt).toBe(NOW);
     expect(service.revokeAgent(agent.id, owner).status).toBe("revoked");
     expect(service.listAgents(owner)).toContainEqual(expect.objectContaining({ id: agent.id, status: "revoked" }));
+  });
+
+  it("gives the current installation authority owner-level access but never an owner session", () => {
+    let current = true;
+    const { service, projects } = fixture({ isCurrentInstallationActor: () => current });
+    const installation: AuthenticatedPrincipal = {
+      principalId: "installation", principalKind: "installation", credentialId: "token-1", authenticationMethod: "installation_token",
+    };
+    const agent = service.createAgent(installation);
+    const project = service.createKnowledgeProject({ name: "Installation project" }, installation);
+    expect(service.issueAgentToken({ principalId: agent.id, label: "worker" }, installation).token).toMatch(/^wts_/);
+    expect(() => service.authorizeKnowledge(installation, project.id, "knowledge:approve")).not.toThrow();
+    expectCode(() => service.authorizeKnowledge(installation, "missing", "knowledge:read"), "knowledge_forbidden");
+    projects.set(project.id, { ...projects.get(project.id)!, status: "archived" });
+    expectCode(() => service.authorizeKnowledge(installation, project.id, "knowledge:write"), "knowledge_forbidden");
+    expectCode(() => service.renewOwnerSession({}, installation), "owner_authentication_required");
+    expectCode(() => service.setKnowledgeGrant({
+      principalId: "installation", projectId: project.id, permissions: ["knowledge:read"],
+    }, installation), "invalid_request");
+    expect(service.describeIdentity(installation)).toEqual({
+      principal: { id: "installation", kind: "installation", status: "active" },
+      credential: null,
+      knowledgeGrants: [],
+      installationAuthority: true,
+    });
+
+    current = false;
+    expectCode(() => service.createAgent(installation), "invalid_credential");
+    expectCode(() => service.authorizeKnowledge(installation, project.id, "knowledge:read"), "invalid_credential");
+  });
+
+  it("rejects an installation actor when no installation authority is wired", () => {
+    const { service } = fixture();
+    expectCode(() => service.listAgents({
+      principalId: "installation", principalKind: "installation", credentialId: "token-1", authenticationMethod: "installation_token",
+    }), "invalid_credential");
   });
 });

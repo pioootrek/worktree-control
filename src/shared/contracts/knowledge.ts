@@ -76,7 +76,7 @@ export interface KnowledgeHistoryEntry {
   operation: "created" | "updated" | "archived" | "linked" | "unlinked" | "approved" | "superseded";
   previousJson: string | null;
   principalId: string;
-  authenticationMethod: "owner_session" | "agent_token" | "worker_token";
+  authenticationMethod: "owner_session" | "agent_token" | "worker_token" | "installation_token" | "none";
   revision: number;
   createdAt: string;
 }

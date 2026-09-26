@@ -129,4 +129,26 @@ describe("installation authentication policy", () => {
     expect(code(() => service(memoryStore({ mode: "token", token: null, generation: 0 }).store, ["legacy", "token"]).assertStartupPolicy()))
       .toBe("installation_token_missing");
   });
+
+  it("authenticates the installation actor only in token mode and only with the current token", () => {
+    const memory = memoryStore();
+    const auth = service(memory.store, ["legacy", "token"]);
+    const first = auth.generateToken("local-cli").token;
+    expect(auth.authenticateInstallation(first)).toBeNull();
+
+    auth.setMode("token", "local-cli");
+    const actor = auth.authenticateInstallation(first);
+    expect(actor).toEqual({
+      principalId: "installation",
+      principalKind: "installation",
+      credentialId: "11111111-1111-4111-8111-111111111111",
+      authenticationMethod: "installation_token",
+    });
+    expect(auth.isCurrentInstallationActor(actor!)).toBe(true);
+    expect(auth.isCurrentInstallationActor({ ...actor!, principalKind: "owner" })).toBe(false);
+
+    auth.rotateToken("local-cli");
+    expect(auth.authenticateInstallation(first)).toBeNull();
+    expect(auth.isCurrentInstallationActor(actor!)).toBe(false);
+  });
 });

@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { acquireControllerLock } from "../server/controller-lock";
 import { resolveAppPaths } from "../server/paths";
+import { SqliteStateStore } from "../server/sqlite-store";
 import { runAuthCommand } from "./auth-management";
+import { authenticateOfflineActor } from "./offline-actor";
 
 const directories: string[] = [];
 
@@ -72,6 +74,25 @@ describe("auth administration CLI", () => {
       await expect(runAuthCommand(["status"], appPaths)).rejects.toThrow("The controller is running");
     } finally {
       lock.release();
+    }
+  });
+
+  it("selects token mode only after a token exists and then authenticates offline callers with it", async () => {
+    const appPaths = paths();
+    await expect(runAuthCommand(["mode", "set", "token"], appPaths)).rejects.toThrow("auth token generate");
+    const { token } = await run(["token", "generate"], appPaths) as { token: string };
+
+    let store = new SqliteStateStore(appPaths.databasePath);
+    expect(() => authenticateOfflineActor(store, token)).toThrow("Nieprawidłowe lub nieaktywne poświadczenie.");
+    store.close();
+
+    expect((await run(["mode", "set", "token"], appPaths)).mode).toBe("token");
+    store = new SqliteStateStore(appPaths.databasePath);
+    try {
+      expect(authenticateOfflineActor(store, token).actor).toMatchObject({ principalId: "installation", authenticationMethod: "installation_token" });
+      expect(() => authenticateOfflineActor(store, "pairing")).toThrow("Nieprawidłowe lub nieaktywne poświadczenie.");
+    } finally {
+      store.close();
     }
   });
 });

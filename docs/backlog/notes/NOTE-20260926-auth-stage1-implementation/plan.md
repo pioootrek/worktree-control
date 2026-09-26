@@ -90,3 +90,26 @@ Kierunek: [plan trybów](../NOTE-20260909-self-hosted-saas-plan/authentication-m
   (`controller-backup.ts`). `node:check` run 2b4ea1c6… exit 0 (processOutcome
   passed, 451 testów; „failed” tylko z atrybucji dirty_source). PR A zacommitowany
   lokalnie, bez push. Następne: PR B (egzekwowanie trybu `token`).
+- 2026-09-26 PR B (gałąź `t3code/auth-stage1-b-token` na A), zacommitowany
+  lokalnie; `node:check` run ed57de47… exit 0 (processOutcome passed). Zakres: `resolveControllerAuthentication` (moduł authentication) — jedyne
+  miejsce reguł: `wsi_` tylko w `token`, sekret legacy (pairing/mcp-token)
+  tylko w `legacy`, scoped `wts_` w legacy i token, inne tryby → null.
+  `ControllerAuthentication` + `installation`; `AuthenticationMethod` +
+  `installation_token`/`none`; `InstallationAuthority` (identity) implementuje
+  `AuthenticationService.isCurrentInstallationActor` (tryb token + id tokena →
+  rotacja unieważnia aktora). Identity: `requireOwnerSession` = sesja właściciela
+  LUB instalacja; `renewOwnerSession` tylko prawdziwy właściciel; approve dla
+  instalacji; `describeIdentity` instalacji → `credential: null`,
+  `installationAuthority: true`. HTTP: runtime przyjmuje token instalacji w
+  `X-Worktree-Switcher-Token` lub Bearer; bootstrap właściciela tylko w legacy;
+  SSE filtruje wiedzę aktorem instalacji. MCP: sesja instalacji = narzędzia
+  runtime + wiedzy + get_identity. CLI offline (`knowledge execute-import`,
+  `backup export/import-project`) przez `src/cli/offline-actor.ts`.
+  `ENFORCED_MODES = {legacy, token}`. Otwarte (C/E): CLI `project-management`
+  i `service open`/`config mcp` używają pairing/mcp-token — w trybie token nie
+  zadziałają do C/E.
+  Testy B: `installation-token-transports.test.ts` (prawdziwe HTTP/MCP/SQLite:
+  runtime, legacy odrzucone, historia `installation_token`, narzędzia MCP,
+  rotacja), `controller-authentication.test.ts` (macierz trybów), testy
+  identity/auth-service/CLI. README celowo bez zmian do F (dashboard w C).
+  Następne: PR C (dashboard jednego tokena, `service open`, `config mcp`).

@@ -26,3 +26,6 @@ export interface AuthenticationStore {
   getAuthenticationPolicy(): AuthenticationPolicy;
   saveAuthenticationPolicy(policy: AuthenticationPolicy, event: string, actor: string): void;
 }
+
+/** Fixed principal ID of the installation authority, created by migration 25. */
+export const INSTALLATION_PRINCIPAL_ID = "installation";

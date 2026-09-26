@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
+import { INSTALLATION_PRINCIPAL_ID } from "./contracts";
 import type {
   AuthenticationMode,
   AuthenticationPolicy,
@@ -7,6 +8,7 @@ import type {
   AuthenticationStore,
   InstallationTokenRecord,
 } from "./contracts";
+import type { AuthenticatedPrincipal, InstallationAuthority } from "@/server/modules/identity";
 
 export type AuthenticationErrorCode =
   | "auth_provider_unavailable"
@@ -30,7 +32,7 @@ export interface IssuedInstallationToken {
 const TOKEN_PREFIX = "wsi";
 const MODES = new Set<AuthenticationMode>(["legacy", "open", "token", "better-auth"]);
 /** Modes whose enforcement exists in every transport. Selecting any other mode is refused. */
-const ENFORCED_MODES: ReadonlySet<AuthenticationMode> = new Set(["legacy"]);
+const ENFORCED_MODES: ReadonlySet<AuthenticationMode> = new Set(["legacy", "token"]);
 
 function hashToken(token: string): Buffer {
   return createHash("sha256").update(token, "utf8").digest();
@@ -44,7 +46,7 @@ function publicStatus(policy: AuthenticationPolicy): AuthenticationStatus {
   };
 }
 
-export class AuthenticationService {
+export class AuthenticationService implements InstallationAuthority {
   constructor(
     private readonly store: AuthenticationStore,
     private readonly clock: () => string = () => new Date().toISOString(),
@@ -55,6 +57,31 @@ export class AuthenticationService {
 
   status(): AuthenticationStatus {
     return publicStatus(this.store.getAuthenticationPolicy());
+  }
+
+  mode(): AuthenticationMode {
+    return this.store.getAuthenticationPolicy().mode;
+  }
+
+  /** Returns the installation actor only while token mode is active and the token is current. */
+  authenticateInstallation(token: string): AuthenticatedPrincipal | null {
+    const policy = this.store.getAuthenticationPolicy();
+    if (policy.mode !== "token" || !policy.token || !this.verifyInstallationToken(token)) return null;
+    return {
+      principalId: INSTALLATION_PRINCIPAL_ID,
+      principalKind: "installation",
+      credentialId: policy.token.id,
+      authenticationMethod: "installation_token",
+    };
+  }
+
+  isCurrentInstallationActor(actor: AuthenticatedPrincipal): boolean {
+    const policy = this.store.getAuthenticationPolicy();
+    return actor.principalId === INSTALLATION_PRINCIPAL_ID
+      && actor.principalKind === "installation"
+      && actor.authenticationMethod === "installation_token"
+      && policy.mode === "token"
+      && policy.token?.id === actor.credentialId;
   }
 
   generateToken(actor: string): IssuedInstallationToken {

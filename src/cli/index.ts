@@ -136,8 +136,9 @@ async function main(): Promise<void> {
   const events = new EventStream();
   const logs = new FileLogWriter(paths.logDirectory);
   const store = new SqliteStateStore(paths.databasePath);
+  const authentication = new AuthenticationService(store);
   try {
-    new AuthenticationService(store).assertStartupPolicy();
+    authentication.assertStartupPolicy();
   } catch (error) {
     store.close();
     controllerLock.release();
@@ -153,7 +154,7 @@ async function main(): Promise<void> {
     kinds: ["tests", "controller"],
     ...(projectId ? { projectIds: [projectId] } : {}),
   }));
-  const identity = new IdentityService(store);
+  const identity = new IdentityService(store, undefined, undefined, undefined, authentication);
   const attachments = new KnowledgeAttachmentService(store, identity, paths.knowledgeAttachmentDirectory);
   const knowledge = new KnowledgeService(store, identity, undefined, undefined, events.publishKnowledge, attachments);
   const service = new ControlService(store, new SystemGitWorktreeReader(), processes, logs, undefined, storage, undefined, undefined, tests, lifecycle, knowledge);
@@ -166,6 +167,7 @@ async function main(): Promise<void> {
     port: mcpPort,
     accessToken: loadOrCreateSecret(paths.mcpTokenPath),
     identity,
+    authentication,
     onDiagnostic: (message, details) => {
       const mcpSessionId = typeof details?.sessionId === "string" ? details.sessionId : null;
       if (message === "mcp.session_started" && mcpSessionId) {
@@ -195,6 +197,7 @@ async function main(): Promise<void> {
     port,
     accessToken,
     identity,
+    authentication,
     publicOrigin,
   });
   try {
