@@ -205,3 +205,17 @@ Kierunek: [plan trybów](../NOTE-20260909-self-hosted-saas-plan/authentication-m
   jako właściciel); `docs/authentication.md` (tryby, `auth`, migracja legacy →
   token); README zaktualizowane. `vitest run src/cli` 52/52. Następnie: commit
   i pełna macierz check/build/integration/e2e/ui.
+- 2026-09-26 PR F ZAMKNIĘTY lokalnie: commit `a369ffd` (squash WIP). Na drzewie
+  1e9ed6f (różni się od a369ffd tylko usunięciem martwego `cli.tokenMissing` i
+  poprawkami dokumentacji): `node:check` db394831… passed, `node:build`
+  5c3e8374… passed, `node:test:integration` 4bffe3dc… passed, `node:test:e2e`
+  8cff94b7… passed, `node:test:ui` 2685cea2… passed — wszystkie
+  observed_match. Na a369ffd: `node:check` 8cdf8f4f… passed, `node:build`
+  58f9ab83… passed. NIEZWERYFIKOWANE: `node:test:https` (brak CADDY_BIN) i
+  `scripts/package-smoke.mjs` (poza presetami kolejki). Uwaga: start w trybie
+  token bez tokena kończy się błędem `installation_token_missing`
+  (`assertStartupPolicy`) — usługa systemd zrestartuje się do limitu.
+  Stos A–F lokalnie, bez push/PR. Zamknięcie FEAT-20260829 (done/) dopiero na
+  `main` po scaleniu stosu. Follow-up: lokalne CLI przez admin socket zamiast
+  `WORKTREE_SWITCHER_TOKEN`; migracja tej instalacji według
+  `docs/authentication.md` (wymaga zgody właściciela).
