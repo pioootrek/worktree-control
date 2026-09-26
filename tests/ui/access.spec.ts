@@ -4,6 +4,8 @@ import { mountDashboard } from "./dashboard-fixture";
 const INSTALLATION_TOKEN = `wsi_11111111-1111-4111-8111-111111111111_${"a".repeat(64)}`;
 
 test("signs in with the installation token once for the dashboard and knowledge", async ({ page }) => {
+  // Routes registered after the fixture take precedence over its catch-all API handler.
+  const f = await mountDashboard(page, undefined, { accessToken: INSTALLATION_TOKEN, openWithToken: false });
   const identityHeaders: string[] = [];
   await page.route("**/api/identity", route => {
     identityHeaders.push(route.request().headers().authorization ?? "");
@@ -16,7 +18,6 @@ test("signs in with the installation token once for the dashboard and knowledge"
     if (operation === "project") return route.fulfill({ json: project });
     return route.fulfill({ json: { items: [], nextOffset: null, total: 0, counts: { active: 0, now: 0, next: 0, blocked: 0, done: 0, all: 0 } } });
   });
-  const f = await mountDashboard(page, undefined, { accessToken: INSTALLATION_TOKEN, openWithToken: false });
 
   await expect(page.getByRole("heading", { name: "Sign in to Worktree Switcher" })).toBeVisible();
   await page.getByLabel("Access token", { exact: true }).fill(`${INSTALLATION_TOKEN.slice(0, -1)}b`);
