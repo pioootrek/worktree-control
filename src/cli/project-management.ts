@@ -32,7 +32,11 @@ export interface ProjectCommandDependencies {
 
 export async function openProjectGateway(paths: AppPaths, locale: Locale): Promise<ProjectGateway> {
   const access = readServiceAccess(paths.serviceAccessPath);
-  if (access && processExists(access.pid)) return new ControllerProjectGateway(localDashboardEndpoint(access), controllerAccessToken(access), locale);
+  if (access && processExists(access.pid)) {
+    const token = controllerAccessToken(access);
+    if (!token && access.authenticationMode === "token") throw new Error(translate(locale, "cli.project.installationTokenRequired"));
+    return new ControllerProjectGateway(localDashboardEndpoint(access), token, locale);
+  }
 
   let lock: ControllerLock;
   try {

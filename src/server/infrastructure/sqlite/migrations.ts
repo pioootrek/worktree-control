@@ -333,11 +333,12 @@ const schema = `
 `;
 
 export function initializeSchema(database: Database.Database): void {
+  const fresh = !database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'projects'").get();
   database.exec(schema);
-  applyMigrations(database);
+  applyMigrations(database, fresh);
 }
 
-function applyMigrations(database: Database.Database): void {
+function applyMigrations(database: Database.Database, fresh: boolean): void {
   if (!hasMigration(database, 2)) {
     database.transaction(() => {
       database.prepare(`
@@ -724,7 +725,11 @@ function applyMigrations(database: Database.Database): void {
         database.prepare(`
           INSERT OR IGNORE INTO controller_settings(key, value_json, updated_at)
           VALUES ('authentication', ?, ?)
-        `).run(JSON.stringify({ mode: "legacy", token: null, generation: 0 }), new Date().toISOString());
+        `).run(
+          // New installations require the installation token; existing ones keep legacy protection until migrated.
+          JSON.stringify({ mode: fresh ? "token" : "legacy", token: null, generation: 0 }),
+          new Date().toISOString(),
+        );
         if ((database.pragma("foreign_key_check") as unknown[]).length) {
           throw new Error("Migration 25 would leave dangling principal references.");
         }

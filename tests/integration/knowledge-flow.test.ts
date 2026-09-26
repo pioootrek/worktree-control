@@ -9,10 +9,10 @@ describe("built knowledge controller and CLI", () => {
 
   it("keeps knowledge and idempotency across restart with no runtime projects", async () => {
     fixture = await startControllerFixture(0);
-    const owner = await fixture.request<{ token: string; principalId: string }>("/api/identity/bootstrap", { method: "POST", body: "{}" });
+    // The installation authority administers knowledge; owner bootstrap exists only in legacy mode.
+    const owner = { token: fixture.installationToken };
     const admin = <T>(input: unknown) => fixture!.request<T>("/api/identity/admin", { method: "POST", headers: { Authorization: `Bearer ${owner.token}` }, body: JSON.stringify(input) });
     const { project } = await admin<{ project: { id: string } }>({ action: "create-knowledge-project", name: "Detached knowledge" });
-    await admin({ action: "grant-knowledge", principalId: owner.principalId, projectId: project.id, permissions: ["knowledge:read", "knowledge:write"] });
     const { principal } = await admin<{ principal: { id: string } }>({ action: "create-agent" });
     await admin({ action: "grant-knowledge", principalId: principal.id, projectId: project.id, permissions: ["knowledge:read", "knowledge:write"] });
     const agent = await admin<{ token: string }>({ action: "issue-agent-token", principalId: principal.id, label: "integration" });
@@ -37,10 +37,10 @@ describe("built knowledge controller and CLI", () => {
   });
   it("hands an approved decision and open question to a third MCP session and detects a stale CLI export", async () => {
     fixture = await startControllerFixture(0);
-    const owner = await fixture.request<{ token: string; principalId: string }>("/api/identity/bootstrap", { method: "POST", body: "{}" });
+    // The installation authority administers knowledge; owner bootstrap exists only in legacy mode.
+    const owner = { token: fixture.installationToken };
     const admin = <T>(input: unknown) => fixture!.request<T>("/api/identity/admin", { method: "POST", headers: { Authorization: `Bearer ${owner.token}` }, body: JSON.stringify(input) });
     const { project } = await admin<{ project: { id: string } }>({ action: "create-knowledge-project", name: "K4 synthetic" });
-    await admin({ action: "grant-knowledge", principalId: owner.principalId, projectId: project.id, permissions: ["knowledge:read", "knowledge:write", "knowledge:approve", "knowledge:export"] });
     const tokens: string[] = [];
     for (let index = 0; index < 3; index++) {
       const { principal } = await admin<{ principal: { id: string } }>({ action: "create-agent" });

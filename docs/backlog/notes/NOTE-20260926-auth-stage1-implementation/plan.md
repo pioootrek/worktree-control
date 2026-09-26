@@ -174,3 +174,34 @@ Kierunek: [plan trybów](../NOTE-20260909-self-hosted-saas-plan/authentication-m
   bez tokena (start odmawia z instrukcją `auth token generate`), istniejąca →
   `legacy`; fixture'y integration/e2e generują token offline przed startem;
   README + instrukcja migracji tej instalacji; pełna macierz.
+- 2026-09-26 PR F W TOKU (commit WIP na `t3code/auth-stage1-f-default`): świeża
+  baza → `token` bez tokena (`initializeSchema` wykrywa brak tabeli `projects`;
+  migracja 25 zapisuje `token`/`legacy`), `auth` ignoruje `--data-dir/--state-dir`
+  (`withoutPathOptions`). Testy jednostkowe zaktualizowane: `vitest run src`
+  474/474. ZROBIONE po WIP: (1) fixture (token przez `auth token generate`,
+  `installationToken`, accessUrl z fragmentem) i (2) knowledge-flow. Wcześniej:
+  NIE ZROBIONE: (1) `tests/support/controller-fixture.ts` — przed
+  pierwszym startem `node dist/cli/index.js auth token generate --data-dir
+  <data> --state-dir <state>`, token instalacji jako X-header i Bearer MCP,
+  `accessUrl = ${endpoint}/#token=${token}`; (2) `tests/integration/knowledge-flow.test.ts`
+  — zamiast `/api/identity/bootstrap` (tylko legacy) użyć tokena instalacji do
+  admin/approve; (3) `tests/https/controller-https.test.ts` i
+  `scripts/package-smoke.mjs` — to samo (nieweryfikowalne tu: brak CADDY_BIN);
+  (4) README + instrukcja migracji tej instalacji do token; (5) `node:check`,
+  build, test:ui, test:integration, test:e2e.
+- 2026-09-26 PR F cd.: `node:build` 29269a30… passed (HEAD e9852cb).
+  `node:test:integration` c6df43d2… w toku. Niezacommitowane: fixture `cli()`
+  przekazuje `WORKTREE_SWITCHER_TOKEN` (CLI na żywo w trybie token tego
+  wymaga); `controller-https.test.ts` i `package-smoke.mjs` przerobione na tryb
+  token (token offline przed startem, brak sekretu w access record, redakcja
+  `wsi_`) — niezweryfikowane (brak CADDY_BIN / smoke poza kolejką). Obserwacja
+  do follow-upu: lokalne CLI w trybie token wymaga zmiennej
+  `WORKTREE_SWITCHER_TOKEN`; rozważyć przekazywanie przez admin socket.
+- 2026-09-26 PR F cd. 2: integration c6df43d2… exit 0, ale źródło zmieniane w
+  trakcie (dirty_source) — nie liczy się. Dodane: komunikat `cli.tokenMissing`
+  przy starcie w trybie token bez tokena; `cli.project.installationTokenRequired`;
+  `WORKTREE_SWITCHER_TOKEN` jako fallback w knowledge/backup/identity CLI;
+  identity CLI offline używa `authenticateOfflineActor` (token instalacji działa
+  jako właściciel); `docs/authentication.md` (tryby, `auth`, migracja legacy →
+  token); README zaktualizowane. `vitest run src/cli` 52/52. Następnie: commit
+  i pełna macierz check/build/integration/e2e/ui.

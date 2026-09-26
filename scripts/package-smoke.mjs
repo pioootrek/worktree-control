@@ -46,6 +46,7 @@ async function step(name, task) {
 function redact(value) {
   return value
     .replaceAll(SENTINEL, "[REDACTED]")
+    .replace(/wsi_[A-Za-z0-9_-]+/g, "wsi_[REDACTED]")
     .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, "Bearer [REDACTED]")
     .replace(/(https?:\/\/)[^@\s/]+@/gi, "$1[REDACTED]@")
     .replace(/(_authToken\s*=\s*)\S+/gi, "$1[REDACTED]");
@@ -286,6 +287,12 @@ async function main() {
     check(listed.length === 1 && listed[0].repositoryPath === fixture && listed[0].port === fixturePort, "Offline CLI registration mismatch.");
   });
   const project = JSON.parse((await run(cliCommand, ["project", "list", "--json", ...common], { cwd: root, env: runtimeEnv })).stdout)[0];
+  // New installations run in token mode; the installation token authorizes every transport.
+  const token = await step("installation-token", async () => {
+    const generated = JSON.parse((await run(cliCommand, ["auth", "token", "generate", ...common], { cwd: root, env: runtimeEnv })).stdout);
+    check(typeof generated.token === "string" && generated.token.startsWith("wsi_"), "Installation token was not generated.");
+    return generated.token;
+  });
 
   let stdout = "";
   let stderr = "";
@@ -303,14 +310,14 @@ async function main() {
     check(response.ok, `Dashboard returned ${response.status}.`);
     return value;
   }, "Controller did not become ready"));
-  check(!stdout.includes("#token=") && !stdout.includes(SENTINEL), "Controller output exposed a secret.");
+  check(!stdout.includes("#token=") && !stdout.includes(token) && !stdout.includes(SENTINEL), "Controller output exposed a secret.");
 
   const accessUrl = new URL(access.accessUrl);
   check(access.version === metadata.version, "Controller access record version does not match the installed package.");
   check(accessUrl.origin === publicOrigin, "Packaged controller did not advertise the configured public origin.");
   check(access.publicDashboardEndpoint === publicOrigin, "Packaged controller did not record its public endpoint.");
   check(access.localDashboardEndpoint === `http://127.0.0.1:${dashboardPort}`, "Packaged controller did not record its local CLI endpoint.");
-  const dashboardToken = check(new URLSearchParams(accessUrl.hash.slice(1)).get("token"), "Dashboard token missing from private access record.");
+  check(access.authenticationMode === "token" && accessUrl.hash === "", "Token-mode access record exposed a secret or the wrong mode.");
   await step("packaged-assets", async () => {
     const htmlResponse = await fetch(`http://127.0.0.1:${dashboardPort}/`);
     const html = await htmlResponse.text();
@@ -324,16 +331,15 @@ async function main() {
     }
     const denied = await fetch(`http://127.0.0.1:${dashboardPort}/api/dashboard`);
     check(denied.status === 401, "Dashboard API accepted a missing token.");
-    const allowed = await fetch(`http://127.0.0.1:${dashboardPort}/api/dashboard`, { headers: { "X-Worktree-Switcher-Token": dashboardToken } });
+    const allowed = await fetch(`http://127.0.0.1:${dashboardPort}/api/dashboard`, { headers: { "X-Worktree-Switcher-Token": token } });
     check(allowed.ok && (await allowed.json()).projects.length === 1, "Authenticated dashboard API failed.");
   });
 
   await step("live-cli-forwarding", async () => {
-    const listed = JSON.parse((await run(cliCommand, ["project", "list", "--json", ...common], { cwd: root, env: runtimeEnv })).stdout);
+    const listed = JSON.parse((await run(cliCommand, ["project", "list", "--json", ...common], { cwd: root, env: { ...runtimeEnv, WORKTREE_SWITCHER_TOKEN: token } })).stdout);
     check(listed[0].id === project.id, "Live CLI did not forward to the singleton controller.");
   });
 
-  const token = (await readFile(join(data, "mcp-token"), "utf8")).trim();
   const unauthorized = await fetch(`http://127.0.0.1:${mcpPort}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   check(unauthorized.status === 401, "MCP accepted an unauthorized request.");
   const { Client } = await import(pathToFileURL(join(packageRoot, "node_modules", "@modelcontextprotocol", "sdk", "dist", "esm", "client", "index.js")));

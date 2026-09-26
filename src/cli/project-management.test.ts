@@ -182,6 +182,29 @@ describe("project management CLI", () => {
     }
   });
 
+  it("asks for the installation token when a token-mode controller is running", async () => {
+    const dataDirectory = temporaryDirectory("worktree-switcher-cli-token-data-");
+    const stateDirectory = temporaryDirectory("worktree-switcher-cli-token-state-");
+    const paths = resolveAppPaths(dataDirectory, stateDirectory);
+    writeServiceAccess(paths.serviceAccessPath, {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      version: "0.0.1",
+      dashboardEndpoint: "http://127.0.0.1:1",
+      mcpEndpoint: null,
+      accessUrl: "http://127.0.0.1:1/",
+      logDirectory: paths.logDirectory,
+      authenticationMode: "token",
+    });
+    const previous = process.env.WORKTREE_SWITCHER_TOKEN;
+    delete process.env.WORKTREE_SWITCHER_TOKEN;
+    try {
+      await expect(openProjectGateway(paths, "en")).rejects.toThrow("Set WORKTREE_SWITCHER_TOKEN");
+    } finally {
+      if (previous !== undefined) process.env.WORKTREE_SWITCHER_TOKEN = previous;
+    }
+  });
+
   it("refuses offline database access through a typed live-controller lock", async () => {
     const dataDirectory = temporaryDirectory("worktree-switcher-cli-lock-data-");
     const stateDirectory = temporaryDirectory("worktree-switcher-cli-lock-state-");

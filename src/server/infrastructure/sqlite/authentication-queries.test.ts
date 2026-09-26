@@ -79,6 +79,13 @@ describe("authentication policy SQLite persistence", () => {
     database.close();
   });
 
+  it("starts a new installation in token mode without a token", () => {
+    const store = new SqliteStateStore(databasePath());
+    expect(store.getAuthenticationPolicy()).toEqual({ mode: "token", token: null, generation: 0 });
+    expect(() => new AuthenticationService(store).assertStartupPolicy()).toThrow("auth token generate");
+    store.close();
+  });
+
   it("persists the token verifier across restarts and audits changes without the secret", () => {
     const path = databasePath();
     const first = new SqliteStateStore(path);
@@ -100,7 +107,7 @@ describe("authentication policy SQLite persistence", () => {
     expect(audit).toEqual([{
       event_type: "authentication.token_generated",
       actor: "local-cli",
-      details_json: JSON.stringify({ mode: "legacy", tokenPrefix: issued.status.token?.prefix, generation: 1 }),
+      details_json: JSON.stringify({ mode: "token", tokenPrefix: issued.status.token?.prefix, generation: 1 }),
     }]);
     database.close();
   });

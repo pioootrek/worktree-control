@@ -34,7 +34,7 @@ afterEach(() => {
 describe("auth administration CLI", () => {
   it("reports status, emits the token once and rotates it without persisting the secret", async () => {
     const appPaths = paths();
-    expect(await run(["status"], appPaths)).toEqual({ mode: "legacy", token: null, generation: 0 });
+    expect(await run(["status"], appPaths)).toEqual({ mode: "token", token: null, generation: 0 });
 
     const generated = await run(["token", "generate"], appPaths) as { token: string; status: { generation: number } };
     expect(generated.token).toMatch(/^wsi_[0-9a-f-]{36}_[0-9a-f]{64}$/);
@@ -58,7 +58,7 @@ describe("auth administration CLI", () => {
     const appPaths = paths();
     await expect(runAuthCommand(["mode", "set", "better-auth"], appPaths)).rejects.toThrow("Better Auth: to be implemented soon.");
     await expect(runAuthCommand(["mode", "set", "legacy"], appPaths)).rejects.toThrow("Dostępne tryby");
-    expect((await run(["status"], appPaths)).mode).toBe("legacy");
+    expect((await run(["status"], appPaths)).mode).toBe("token");
     expect((await run(["mode", "set", "open"], appPaths)).mode).toBe("open");
     await expect(runAuthCommand(["mode", "set", "better-auth"], appPaths)).rejects.toThrow("Better Auth: to be implemented soon.");
     expect((await run(["status"], appPaths)).mode).toBe("open");
@@ -89,15 +89,14 @@ describe("auth administration CLI", () => {
     }
   });
 
-  it("selects token mode only after a token exists and then authenticates offline callers with it", async () => {
+  it("keeps a new installation unusable until a token exists and then authenticates offline callers with it", async () => {
     const appPaths = paths();
     await expect(runAuthCommand(["mode", "set", "token"], appPaths)).rejects.toThrow("auth token generate");
-    const { token } = await run(["token", "generate"], appPaths) as { token: string };
-
     let store = new SqliteStateStore(appPaths.databasePath);
-    expect(() => authenticateOfflineActor(store, token)).toThrow("Nieprawidłowe lub nieaktywne poświadczenie.");
+    expect(() => authenticateOfflineActor(store, `wsi_11111111-1111-4111-8111-111111111111_${"a".repeat(64)}`)).toThrow("Nieprawidłowe lub nieaktywne poświadczenie.");
     store.close();
 
+    const { token } = await run(["token", "generate"], appPaths) as { token: string };
     expect((await run(["mode", "set", "token"], appPaths)).mode).toBe("token");
     store = new SqliteStateStore(appPaths.databasePath);
     try {

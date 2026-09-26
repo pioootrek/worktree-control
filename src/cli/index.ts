@@ -80,7 +80,7 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "auth") {
-    await runAuthCommand(process.argv.slice(3), paths, { write: writeCliLine });
+    await runAuthCommand(withoutPathOptions(process.argv.slice(3)), paths, { write: writeCliLine });
     return;
   }
   if (command === "identity") {
@@ -419,6 +419,16 @@ async function printServiceStatus(manager: UserServiceManager, paths: ReturnType
   } else {
     writeCliLine(`Logs: ${paths.logDirectory}`);
   }
+}
+
+/** Drops the global --data-dir/--state-dir options that `paths` already consumed. */
+function withoutPathOptions(args: string[]): string[] {
+  const result: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === "--data-dir" || args[index] === "--state-dir") index++;
+    else result.push(args[index]!);
+  }
+  return result;
 }
 
 function validatedPort(value: string, label: string): number {

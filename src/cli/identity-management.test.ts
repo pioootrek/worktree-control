@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { acquireControllerLock } from "../server/controller-lock";
 import { resolveAppPaths } from "../server/paths";
+import { runAuthCommand } from "./auth-management";
 import { runIdentityCommand } from "./identity-management";
 import { writeServiceAccess } from "./service-access";
 
@@ -43,6 +44,20 @@ describe("identity management CLI", () => {
     expect(persisted).not.toContain(result.token);
     database.close();
     await expect(runIdentityCommand(["bootstrap-owner"], appPaths)).rejects.toThrow("Właściciel został już zainicjalizowany");
+  });
+
+  it("lets the installation token administer identity offline in token mode", async () => {
+    const appPaths = paths();
+    const generated: string[] = [];
+    await runAuthCommand(["token", "generate"], appPaths, { write: (line) => generated.push(line) });
+    const { token } = JSON.parse(generated[0]!) as { token: string };
+    const output: string[] = [];
+    await runIdentityCommand(["create-knowledge-project", "--name", "Installation"], appPaths, {
+      write: (line) => output.push(line),
+      environment: { WORKTREE_SWITCHER_TOKEN: token },
+    });
+    expect((JSON.parse(output[0]!) as { project: { name: string } }).project.name).toBe("Installation");
+    await expect(runIdentityCommand(["list-agents"], appPaths, { environment: {} })).rejects.toThrow("WORKTREE_SWITCHER_TOKEN");
   });
 
   it("respects the singleton lock instead of opening an offline database beside the controller", async () => {

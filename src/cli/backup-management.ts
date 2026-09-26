@@ -18,7 +18,7 @@ export async function runBackupCommand(args: string[], paths: AppPaths, applicat
       finally { store.close(); }
     } else if(operation==="restore") { restoreControllerBackup(input[0]!,paths.databasePath,paths.knowledgeAttachmentDirectory); write("Backup restored.");
     } else {
-      const token=environment.WORKTREE_SWITCHER_OWNER_TOKEN; if(!token) throw new Error("Set WORKTREE_SWITCHER_OWNER_TOKEN to an active owner session.");
+      const token=environment.WORKTREE_SWITCHER_OWNER_TOKEN??environment.WORKTREE_SWITCHER_TOKEN; if(!token) throw new Error("Set WORKTREE_SWITCHER_OWNER_TOKEN to an active owner session or WORKTREE_SWITCHER_TOKEN to the installation token.");
       const store=new SqliteStateStore(paths.databasePath); try { const {identity,actor}=authenticateOfflineActor(store,token);
         const result=operation==="export-project"?exportKnowledgeProject(store,identity,input[0]!,input[1]!,paths.knowledgeAttachmentDirectory,actor,{applicationVersion})
           :importKnowledgeProject(store,identity,input[0]!,paths.knowledgeAttachmentDirectory,actor); write(JSON.stringify(result,null,2));

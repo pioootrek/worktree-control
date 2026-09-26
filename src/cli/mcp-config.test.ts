@@ -25,15 +25,12 @@ const record = (overrides: Partial<ServiceAccessRecord> = {}): ServiceAccessReco
 });
 
 describe("MCP configuration and controller access tokens", () => {
-  it("keeps the legacy mcp-token until token mode is selected, then never prints it", async () => {
+  it("never prints the legacy mcp-token for a new token-mode installation", async () => {
     const appPaths = paths();
-    const legacy = mcpConfigToken(appPaths, { environment: {} });
-    expect(legacy).not.toMatch(/^wsi_/);
-    expect(mcpConfigToken(appPaths, { environment: {} })).toBe(legacy);
+    expect(mcpConfigToken(appPaths, { environment: {} })).toBe(INSTALLATION_TOKEN_PLACEHOLDER);
 
     const output: string[] = [];
     await runAuthCommand(["token", "generate"], appPaths, { write: (line) => output.push(line) });
-    await runAuthCommand(["mode", "set", "token"], appPaths, { write: () => undefined });
     const { token } = JSON.parse(output[0]!) as { token: string };
     expect(mcpConfigToken(appPaths, { environment: {} })).toBe(INSTALLATION_TOKEN_PLACEHOLDER);
     expect(mcpConfigToken(appPaths, { environment: { WORKTREE_SWITCHER_TOKEN: token } })).toBe(token);

@@ -1,7 +1,8 @@
 import type { AppPaths } from "../server/paths";
 import { acquireControllerLock } from "../server/controller-lock";
-import { IdentityService, type AuthenticatedPrincipal, type KnowledgePermission } from "../server/modules/identity";
+import { IdentityService, type KnowledgePermission } from "../server/modules/identity";
 import { SqliteStateStore } from "../server/sqlite-store";
+import { authenticateOfflineActor } from "./offline-actor";
 import { localDashboardEndpoint, readServiceAccess } from "./service-access";
 
 export interface IdentityCommandDependencies {
@@ -34,10 +35,12 @@ function requiredOption(args: string[], name: string): string {
   return value;
 }
 
-function ownerActor(service: IdentityService, dependencies: IdentityCommandDependencies): AuthenticatedPrincipal {
-  const token = (dependencies.environment ?? process.env)[OWNER_TOKEN_ENV]?.trim();
-  if (!token) throw new Error(`Set ${OWNER_TOKEN_ENV} to an active owner session token.`);
-  return service.authenticateBearer(token);
+/** An owner session, or in token mode the installation token, administers identity. */
+function administratorToken(dependencies: IdentityCommandDependencies): string {
+  const environment = dependencies.environment ?? process.env;
+  const token = environment[OWNER_TOKEN_ENV]?.trim() || environment.WORKTREE_SWITCHER_TOKEN?.trim();
+  if (!token) throw new Error(`Set ${OWNER_TOKEN_ENV} to an active owner session token or WORKTREE_SWITCHER_TOKEN to the installation token.`);
+  return token;
 }
 
 function sessionInput(args: string[]) {
@@ -112,8 +115,7 @@ async function runThroughController(
   dependencies: IdentityCommandDependencies,
   write: (line: string) => void,
 ): Promise<void> {
-  const token = (dependencies.environment ?? process.env)[OWNER_TOKEN_ENV]?.trim();
-  if (!token) throw new Error(`Set ${OWNER_TOKEN_ENV} to an active owner session token.`);
+  const token = administratorToken(dependencies);
   const response = await fetch(`${endpoint.replace(/\/$/, "")}/api/identity/admin`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -179,50 +181,50 @@ export async function runIdentityCommand(
       return;
     }
 
-    const actor = ownerActor(service, dependencies);
+    const { identity, actor } = authenticateOfflineActor(store, administratorToken(dependencies));
     let result: unknown;
     switch (action) {
       case "create-agent":
-        result = { principal: service.createAgent(actor) };
+        result = { principal: identity.createAgent(actor) };
         break;
       case "renew-owner":
-        result = service.renewOwnerSession(sessionInput(args), actor);
+        result = identity.renewOwnerSession(sessionInput(args), actor);
         break;
       case "list-agents":
-        result = { principals: service.listAgents(actor) };
+        result = { principals: identity.listAgents(actor) };
         break;
       case "revoke-agent":
-        result = { principal: service.revokeAgent(requiredOption(args, "--principal-id"), actor) };
+        result = { principal: identity.revokeAgent(requiredOption(args, "--principal-id"), actor) };
         break;
       case "issue-agent-token":
-        result = service.issueAgentToken({
+        result = identity.issueAgentToken({
           principalId: requiredOption(args, "--principal-id"),
           label: requiredOption(args, "--label"),
           expiresAt: option(args, "--expires-at"),
         }, actor);
         break;
       case "list-agent-tokens":
-        result = { credentials: service.listAgentCredentials(requiredOption(args, "--principal-id"), actor) };
+        result = { credentials: identity.listAgentCredentials(requiredOption(args, "--principal-id"), actor) };
         break;
       case "revoke-token":
-        service.revokeCredential(requiredOption(args, "--credential-id"), actor);
+        identity.revokeCredential(requiredOption(args, "--credential-id"), actor);
         result = { revoked: true };
         break;
       case "create-knowledge-project":
-        result = { project: service.createKnowledgeProject({ name: requiredOption(args, "--name") }, actor) };
+        result = { project: identity.createKnowledgeProject({ name: requiredOption(args, "--name") }, actor) };
         break;
       case "grant-knowledge":
-        result = { grant: service.setKnowledgeGrant({
+        result = { grant: identity.setKnowledgeGrant({
           principalId: requiredOption(args, "--principal-id"),
           projectId: requiredOption(args, "--project-id"),
           permissions: permissions(args),
         }, actor) };
         break;
       case "list-knowledge-grants":
-        result = { grants: service.listKnowledgeGrants(requiredOption(args, "--principal-id"), actor) };
+        result = { grants: identity.listKnowledgeGrants(requiredOption(args, "--principal-id"), actor) };
         break;
       case "revoke-knowledge-grant":
-        result = { grant: service.revokeKnowledgeGrant(
+        result = { grant: identity.revokeKnowledgeGrant(
           requiredOption(args, "--principal-id"), requiredOption(args, "--project-id"), actor,
         ) };
         break;
