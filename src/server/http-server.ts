@@ -444,10 +444,18 @@ export function createControllerServer(options: {
           const value = strictRecord(await readJson(request), ["label", "sessionLifetimeSeconds"]);
           const lifetime = value.sessionLifetimeSeconds;
           if (lifetime !== undefined && typeof lifetime !== "number") throw new Error("Nieprawidłowe pole sessionLifetimeSeconds.");
-          json(response, 200, options.identity.bootstrapOwnerSession({
-            label: optionalString(value, "label", 120),
-            sessionLifetimeSeconds: lifetime,
-          }));
+          try {
+            json(response, 200, options.identity.bootstrapOwnerSession({
+              label: optionalString(value, "label", 120),
+              sessionLifetimeSeconds: lifetime,
+            }));
+          } catch (error) {
+            if (error instanceof IdentityError && error.code === "owner_already_initialized") {
+              json(response, 409, { code: error.code, error: localizeServerMessage(error.message, locale) });
+              return;
+            }
+            throw error;
+          }
           return;
         }
         if (url.pathname === "/api/identity/admin") {

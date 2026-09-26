@@ -1,0 +1,27 @@
+{
+  "changed": [
+    "persisted owner and agent principals, verifier-only revocable credentials, knowledge projects, project grants and runtime links on the controller-owned SQLite connection",
+    "exposed owner bootstrap, offline recovery, renewal, agent and credential lifecycle and grant management through shared identity operations used by HTTP and CLI",
+    "limited scoped MCP sessions to knowledge tools and get_identity, rejected credential changes inside an MCP session and rechecked grants, revocation and expiry on every knowledge operation and SSE event",
+    "reported a repeated owner bootstrap through HTTP as a localized 409 owner_already_initialized conflict instead of a generic 400"
+  ],
+  "date": "2026-09-26",
+  "followup_ids": [
+    "FEAT-20260829-independent-auth-modes",
+    "FEAT-20260829-scoped-mcp-agent-tokens"
+  ],
+  "id": "DONE-20260926-knowledge-k1-identity",
+  "item_id": "FEAT-20260913-knowledge-k1-identity",
+  "schema_version": 1,
+  "source": "FEAT-20260913-knowledge-k1-identity; NOTE-20260926-k1-completion; commits cdd21e9, 6065312, 20c2de5 and d9bd6ea",
+  "summary": [
+    "Knowledge operations enforce durable project-scoped authority, distinguish owner-session approval from agent or legacy access and never expose raw credential material.",
+    "The remaining owner-flow work (one installation credential instead of a second knowledge sign-in and implicit owner access to new projects) moves to authentication stage 1 per the 2026-09-17 owner direction; scoped agent restrictions and historical actors stay as delivered."
+  ],
+  "title": "Added durable knowledge identity and scoped access",
+  "validation": [
+    "The acceptance-to-test matrix in NOTE-20260926-k1-completion maps every K1 criterion to passing tests in identity, SQLite, HTTP, MCP, SSE, CLI, attachment, transfer and memory suites.",
+    "Queued pnpm check run 6d7a770c-f0aa-4ac7-bfef-285b585eef1a passed ESLint, TypeScript, 437 Vitest tests in 64 files and seven resource tests with exit 0; its source attribution changed only because backlog files were written during the run.",
+    "Hub fmt and validate plus git diff --check passed. No production build or browser pass was needed because the change did not touch bundling or dashboard code."
+  ]
+}
