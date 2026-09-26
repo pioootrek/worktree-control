@@ -23,7 +23,8 @@ import { runIdentityCommand } from "./identity-management";
 import { runBackupCommand } from "./backup-management";
 import { pairingUrl } from "./pairing-url";
 import { openProjectGateway, runDoctorCommand, runProjectCommand } from "./project-management";
-import { localDashboardEndpoint, publicDashboardEndpoint, readServiceAccess, removeServiceAccess, writeServiceAccess } from "./service-access";
+import { controllerAccessToken, localDashboardEndpoint, publicDashboardEndpoint, readServiceAccess, removeServiceAccess, writeServiceAccess } from "./service-access";
+import { mcpConfigToken } from "./mcp-config";
 import { buildServiceStartArguments } from "./service-install";
 import { UserServiceManager } from "./service-manager";
 import { ControlService } from "../server/control-service";
@@ -111,7 +112,7 @@ async function main(): Promise<void> {
   if (command === "config" && process.argv[3] === "mcp") {
     writeCliLine(JSON.stringify({
       url: `http://127.0.0.1:${mcpPort}/mcp`,
-      headers: { Authorization: `Bearer ${loadOrCreateSecret(paths.mcpTokenPath)}` },
+      headers: { Authorization: `Bearer ${mcpConfigToken(paths)}` },
     }, null, 2));
     return;
   }
@@ -215,8 +216,13 @@ async function main(): Promise<void> {
   const lanHost = wildcardHost ? findLanAddress() ?? browserHost : host;
   const localOrigin = directControllerOrigin(browserHost, port);
   const advertisedOrigin = publicOrigin ?? directControllerOrigin(lanHost, port);
-  const advertisedAddress = pairingUrl(advertisedOrigin, accessToken, sessionId);
-  const interactiveAddress = pairingUrl(interactiveControllerOrigin(localOrigin, publicOrigin), accessToken, sessionId);
+  // Outside legacy mode the pairing token grants nothing, so links open the sign-in screen instead.
+  const authenticationMode = authentication.mode();
+  const accessLink = (origin: string) => authenticationMode === "legacy"
+    ? pairingUrl(origin, accessToken, sessionId)
+    : new URL("/", origin).toString();
+  const advertisedAddress = accessLink(advertisedOrigin);
+  const interactiveAddress = accessLink(interactiveControllerOrigin(localOrigin, publicOrigin));
   const serviceMode = process.argv.includes("--service-mode");
   writeCliLine(translate(locale, "cli.listening", { host, port }));
   if (serviceMode) {
@@ -230,6 +236,7 @@ async function main(): Promise<void> {
       mcpEndpoint: mcp ? mcpEndpoint : null,
       accessUrl: advertisedAddress,
       logDirectory: paths.logDirectory,
+      authenticationMode,
     });
     writeCliLine("Service access URL: worktree-switcher service url");
   } else {
@@ -366,8 +373,7 @@ async function printServiceStatus(manager: UserServiceManager, paths: ReturnType
     writeCliLine(`Logs: ${currentAccess.logDirectory}`);
     writeCliLine("Access URL: worktree-switcher service url");
     try {
-      const accessUrl = new URL(currentAccess.accessUrl);
-      const token = new URLSearchParams(accessUrl.hash.slice(1)).get("token");
+      const token = controllerAccessToken(currentAccess);
       if (token) {
         const response = await fetch(`${localDashboardEndpoint(currentAccess)}/api/dashboard`, {
           headers: { "X-Worktree-Switcher-Token": token },

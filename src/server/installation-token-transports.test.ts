@@ -79,7 +79,7 @@ describe("installation token mode across transports", () => {
     expect((await dashboard({ Authorization: `Bearer ${f.installationToken}` })).status).toBe(200);
     expect((await dashboard({ "X-Worktree-Switcher-Token": "pairing" })).status).toBe(401);
     expect((await dashboard({ Authorization: `Bearer ${f.agentToken}` })).status).toBe(401);
-    expect((await dashboard({ "X-Worktree-Switcher-Token": `${f.installationToken.slice(0, -1)}0` })).status).toBe(401);
+    expect((await dashboard({ "X-Worktree-Switcher-Token": `${f.installationToken.slice(0, -1)}${f.installationToken.endsWith("0") ? "1" : "0"}` })).status).toBe(401);
     const bootstrap = await fetch(`${f.base}/api/identity/bootstrap`, {
       method: "POST", headers: { "X-Worktree-Switcher-Token": "pairing", "Content-Type": "application/json" }, body: "{}",
     });
@@ -96,6 +96,13 @@ describe("installation token mode across transports", () => {
       projectId: f.project.id, title: "Reader task", description: "Reader has no write grant", idempotencyKey: "reader-task",
     });
     expect(denied.status).toBe(403);
+
+    const projects = await (await f.knowledgeCall(f.installationToken, "projects", {})).json() as { items: Array<{ id: string; writable: boolean }> };
+    expect(projects.items).toEqual([expect.objectContaining({ id: f.project.id, writable: true })]);
+    const readerProjects = await (await f.knowledgeCall(f.agentToken, "projects", {})).json() as { items: Array<{ writable: boolean }> };
+    expect(readerProjects.items).toEqual([expect.objectContaining({ writable: false })]);
+    const project = await (await f.knowledgeCall(f.installationToken, "project", { projectId: f.project.id })).json() as { writable: boolean };
+    expect(project.writable).toBe(true);
 
     const identity = await fetch(`${f.base}/api/identity`, { headers: { Authorization: `Bearer ${f.installationToken}` } });
     expect(await identity.json()).toEqual({

@@ -53,7 +53,7 @@ export interface KnowledgeStore {
   listMemories(projectId: string, limit: number, offset: number, query: string, includeInactive: boolean, taskId?: string): KnowledgePage<KnowledgeMemory>;
   saveMemory(memory: KnowledgeMemory, expectedRevision: number | null, operation: string, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeMemory>;
   searchKnowledge(projectId: string, limit: number, offset: number, options: KnowledgeSearchOptions): KnowledgePage<KnowledgeSearchHit>;
-  listKnowledgeProjects(principalId: string, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary>;
+  listKnowledgeProjects(principalId: string | null, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary>;
   createTask(task: KnowledgeTask, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeTask>;
   getKnowledgeProject(id: string): KnowledgeProject | null;
   hasRuntimeProject(id: string): boolean;

@@ -80,13 +80,14 @@ export class KnowledgeService {
       case "project": {
         this.identity.authorizeKnowledge(actor, request.input.projectId, "knowledge:read");
         const project = this.store.getKnowledgeProject(request.input.projectId)!;
-        const grant = this.identity.describeIdentity(actor).knowledgeGrants.find(grant => grant.projectId === project.id);
-        return { ...project, writable: grant?.permissions.includes("knowledge:write") ?? false };
+        const identity = this.identity.describeIdentity(actor);
+        const grant = identity.knowledgeGrants.find(grant => grant.projectId === project.id);
+        return { ...project, writable: identity.installationAuthority === true || (grant?.permissions.includes("knowledge:write") ?? false) };
       }
       case "projects": {
-        this.identity.describeIdentity(actor);
+        const identity = this.identity.describeIdentity(actor);
         const page = this.page(request.input);
-        return this.store.listKnowledgeProjects(actor.principalId, page.limit, page.offset);
+        return this.store.listKnowledgeProjects(identity.installationAuthority ? null : actor.principalId, page.limit, page.offset);
       }
       case "threads": {
         const page = this.listThreads(request.input.projectId, actor, request.input);

@@ -23,6 +23,13 @@ interface PendingRefresh {
 }
 
 const emptyPending = (): PendingRefresh => ({ bootstrap: false, projectIds: new Set(), sections: new Set() });
+const ACCESS_TOKEN_KEY = "worktree-switcher-token";
+const KNOWLEDGE_TOKEN_KEY = "worktree-switcher-knowledge-token";
+
+/** The installation token authorizes runtime and knowledge alike, so it never needs a second sign-in. */
+export function isInstallationToken(token: string): boolean {
+  return token.startsWith("wsi_");
+}
 
 function newestResources(current: RuntimeResourceMetrics, incoming: RuntimeResourceMetrics): RuntimeResourceMetrics {
   if (!current.sampledAt) return incoming;
@@ -34,12 +41,14 @@ export function useDashboard() {
   const { locale, t } = useI18n();
   const [data, setData] = useState<ControllerDashboardResponse>({ projects: [], capacity: EMPTY_CAPACITY, testQueue: EMPTY_TEST_QUEUE, mcp: EMPTY_MCP_STATUS });
   const [token, setToken] = useState("");
-  const [knowledgeToken, setKnowledgeToken] = useState("");
+  const [accessRequired, setAccessRequired] = useState<"missing" | "invalid" | null>(null);
+  const [scopedKnowledgeToken, setKnowledgeToken] = useState("");
+  const knowledgeToken = isInstallationToken(token) ? token : scopedKnowledgeToken;
   const [knowledgeSessionVersion, setKnowledgeSessionVersion] = useState(0);
   const [knowledgeChange, setKnowledgeChange] = useState({ version: 0, projectIds: [] as string[] });
   const changeKnowledgeToken = useCallback((value: string) => {
-    if (value) window.sessionStorage.setItem("worktree-switcher-knowledge-token", value);
-    else window.sessionStorage.removeItem("worktree-switcher-knowledge-token");
+    if (value) window.sessionStorage.setItem(KNOWLEDGE_TOKEN_KEY, value);
+    else window.sessionStorage.removeItem(KNOWLEDGE_TOKEN_KEY);
     setKnowledgeToken(value);
     setKnowledgeSessionVersion(current => current + 1);
   }, []);
@@ -72,6 +81,15 @@ export function useDashboard() {
               signal: controller.signal,
               headers: { "Accept-Language": locale, "X-Worktree-Switcher-Token": accessToken },
             });
+            if (response.status === 401) {
+              if (generation.current !== activeGeneration) return;
+              // A rotated or mistyped token cannot recover by retrying; ask for the current one.
+              generation.current += 1;
+              window.sessionStorage.removeItem(ACCESS_TOKEN_KEY);
+              setToken("");
+              setAccessRequired("invalid");
+              return;
+            }
             const dashboard = await parseResponse<ControllerDashboardResponse>(response, t("http.error", { status: response.status }));
             if (generation.current !== activeGeneration) return;
             setData((current) => {
@@ -142,35 +160,60 @@ export function useDashboard() {
     return operation;
   }, [locale, t]);
 
-  useEffect(() => {
+  const resetRequests = useCallback(() => {
     generation.current += 1;
-    let focusHandler: (() => void) | null = null;
+    requestAbort.current?.abort();
+    requestAbort.current = null;
+    pending.current = emptyPending();
+    inFlight.current = null;
+  }, []);
+
+  const signIn = useCallback((value: string) => {
+    const accessToken = value.trim();
+    if (!accessToken) return;
+    resetRequests();
+    window.sessionStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
+    setAccessRequired(null);
+    setLoading(true);
+    setToken(accessToken);
+    void reconcile(accessToken, { bootstrap: true });
+  }, [reconcile, resetRequests]);
+
+  const signOut = useCallback(() => {
+    resetRequests();
+    window.sessionStorage.removeItem(ACCESS_TOKEN_KEY);
+    window.sessionStorage.removeItem(KNOWLEDGE_TOKEN_KEY);
+    setToken("");
+    setKnowledgeToken("");
+    setKnowledgeSessionVersion(current => current + 1);
+    setAccessRequired("missing");
+  }, [resetRequests]);
+
+  useEffect(() => {
     const initialRefresh = window.setTimeout(() => {
       const fragment = new URLSearchParams(window.location.hash.slice(1));
-      const accessToken = fragment.get("token") ?? window.sessionStorage.getItem("worktree-switcher-token");
+      const accessToken = fragment.get("token") ?? window.sessionStorage.getItem(ACCESS_TOKEN_KEY);
+      if (window.location.hash) window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+      setKnowledgeToken(window.sessionStorage.getItem(KNOWLEDGE_TOKEN_KEY) ?? "");
       if (!accessToken) {
         setLoading(false);
-        setConnectionError(t("dashboard.missingToken"));
+        setAccessRequired("missing");
         return;
       }
-      window.sessionStorage.setItem("worktree-switcher-token", accessToken);
-      if (window.location.hash) window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-      setKnowledgeToken(window.sessionStorage.getItem("worktree-switcher-knowledge-token") ?? "");
-      setToken(accessToken);
-      void reconcile(accessToken, { bootstrap: true });
-      focusHandler = () => void reconcile(accessToken, { bootstrap: true });
-      window.addEventListener("focus", focusHandler);
+      signIn(accessToken);
     }, 0);
     return () => {
-      generation.current += 1;
       window.clearTimeout(initialRefresh);
-      requestAbort.current?.abort();
-      requestAbort.current = null;
-      pending.current = emptyPending();
-      inFlight.current = null;
-      if (focusHandler) window.removeEventListener("focus", focusHandler);
+      resetRequests();
     };
-  }, [reconcile, t]);
+  }, [resetRequests, signIn]);
+
+  useEffect(() => {
+    if (!token) return;
+    const focusHandler = () => void reconcile(token, { bootstrap: true });
+    window.addEventListener("focus", focusHandler);
+    return () => window.removeEventListener("focus", focusHandler);
+  }, [reconcile, token]);
 
   // A credential change must update the shared stream's HTTP headers, but does not
   // restart runtime bootstrap, abort runtime reads or install another subscription.
@@ -293,5 +336,7 @@ export function useDashboard() {
     };
   }, [monitoredProjectIds, t, token]);
 
-  return { data, observedAt, token, knowledgeToken, knowledgeSessionVersion, changeKnowledgeToken, knowledgeChange, loading, error: connectionError ?? error, notice, dismissNotice: () => setNotice(null), mutate, setError, runningCount };
+  return { data, observedAt, token, accessRequired, signIn, signOut, knowledgeToken, knowledgeSessionVersion,
+    // An installation token also signs in to knowledge, so leaving knowledge leaves the dashboard.
+    changeKnowledgeToken: isInstallationToken(token) ? (value: string) => { if (!value) signOut(); } : changeKnowledgeToken, knowledgeChange, loading, error: connectionError ?? error, notice, dismissNotice: () => setNotice(null), mutate, setError, runningCount };
 }

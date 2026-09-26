@@ -726,7 +726,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   attachmentCountForProject(projectId: string): number { return this.knowledge.attachmentCountForProject(projectId); }
   attachmentTargetExists(projectId: string, kind: KnowledgeAttachment["recordKind"], id: string): boolean { return this.knowledge.attachmentTargetExists(projectId,kind,id); }
 
-  listKnowledgeProjects(principalId: string, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary> {
+  listKnowledgeProjects(principalId: string | null, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary> {
     return this.knowledge.listKnowledgeProjects(principalId, limit, offset);
   }
 

@@ -143,12 +143,15 @@ export class KnowledgeQueries implements KnowledgeStore {
     return this.page(rows, limit, offset);
   }
 
-  listKnowledgeProjects(principalId: string, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary> {
-    const rows = this.database.prepare(`SELECT p.*, EXISTS(SELECT 1 FROM json_each(g.permissions_json) WHERE value = 'knowledge:write') AS writable
+  /** A null principal is the installation authority: every project, always writable. */
+  listKnowledgeProjects(principalId: string | null, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary> {
+    const rows = (principalId === null
+      ? this.database.prepare("SELECT p.*, 1 AS writable FROM knowledge_projects p ORDER BY p.name, p.id LIMIT ? OFFSET ?").all(limit + 1, offset)
+      : this.database.prepare(`SELECT p.*, EXISTS(SELECT 1 FROM json_each(g.permissions_json) WHERE value = 'knowledge:write') AS writable
       FROM knowledge_projects p JOIN knowledge_project_grants g ON g.project_id = p.id
       WHERE g.principal_id = ? AND g.revoked_at IS NULL
       AND EXISTS(SELECT 1 FROM json_each(g.permissions_json) WHERE value = 'knowledge:read')
-      ORDER BY p.name, p.id LIMIT ? OFFSET ?`).all(principalId, limit + 1, offset) as Array<{ id: string; name: string; status: KnowledgeProject["status"]; revision: number; created_at: string; updated_at: string; writable: number }>;
+      ORDER BY p.name, p.id LIMIT ? OFFSET ?`).all(principalId, limit + 1, offset)) as Array<{ id: string; name: string; status: KnowledgeProject["status"]; revision: number; created_at: string; updated_at: string; writable: number }>;
     return this.page(rows.map(row => ({ id: row.id, name: row.name, status: row.status, revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at, writable: Boolean(row.writable) })), limit, offset);
   }
 

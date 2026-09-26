@@ -16,18 +16,19 @@ import { TestsDashboard } from "@/features/verification/tests-dashboard";
 import { TestQueueDialog } from "@/features/verification/test-queue-dialog";
 import { dashboardSummary } from "@/i18n/messages";
 import { useI18n } from "@/i18n/provider";
-import { AlertTriangle, CheckCircle2, Languages, LoaderCircle, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Languages, LoaderCircle, LogOut, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ProjectNavigation, projectSections, type ProjectSection } from "./project-navigation";
 import { ProjectSwitcher } from "./project-switcher";
 import { AllProjectsWorktrees } from "@/features/projects/all-projects-worktrees";
 import { ALL_PROJECTS, useProjectSelection } from "./project-selection";
 import { KnowledgeDashboard } from "@/features/knowledge/knowledge-dashboard";
+import { AccessTokenForm } from "./access-token-form";
 import { useDashboard } from "./use-dashboard";
 
 export function Dashboard() {
   const { locale, setLocale, t } = useI18n();
-  const { data, observedAt, token, loading, error, notice, dismissNotice, mutate, setError, runningCount, knowledgeToken, knowledgeSessionVersion, changeKnowledgeToken, knowledgeChange } = useDashboard();
+  const { data, observedAt, token, accessRequired, signIn, signOut, loading, error, notice, dismissNotice, mutate, setError, runningCount, knowledgeToken, knowledgeSessionVersion, changeKnowledgeToken, knowledgeChange } = useDashboard();
   const [section, setSection] = useState<ProjectSection>("worktrees");
   useEffect(() => {
     const sync = () => {
@@ -87,6 +88,7 @@ export function Dashboard() {
               <Languages aria-hidden />{locale === "pl" ? "EN" : "PL"}
             </Button>
             <ThemeToggle />
+            {token && <Button variant="outline" size="sm" onClick={signOut}><LogOut aria-hidden />{t("access.signOut")}</Button>}
             <AddProjectDialog open={dialogOpen} onOpenChange={setDialogOpen} mutate={mutate} token={token} />
           </div>
         </header>
@@ -121,7 +123,9 @@ export function Dashboard() {
           </Alert>
         )}
 
-        {loading ? (
+        {accessRequired ? (
+          <AccessTokenForm invalid={accessRequired === "invalid"} onSubmit={signIn} />
+        ) : loading ? (
           <div className="grid place-items-center py-28 text-muted-foreground">
             <LoaderCircle className="mb-3 size-6 animate-spin motion-reduce:animate-none" aria-hidden />
             {t("dashboard.connecting")}

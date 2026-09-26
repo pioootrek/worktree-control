@@ -113,3 +113,17 @@ Kierunek: [plan trybów](../NOTE-20260909-self-hosted-saas-plan/authentication-m
   rotacja), `controller-authentication.test.ts` (macierz trybów), testy
   identity/auth-service/CLI. README celowo bez zmian do F (dashboard w C).
   Następne: PR C (dashboard jednego tokena, `service open`, `config mcp`).
+- 2026-09-26 PR C (gałąź `t3code/auth-stage1-c-dashboard` na B), kod gotowy:
+  poprawka backendu z B — `projects`/`project` dla instalacji listują wszystkie
+  projekty jako writable (`listKnowledgeProjects(null, …)`); test manipulacji
+  tokenem w B był niestabilny (1/16), poprawiony. Przeglądarka:
+  `AccessTokenForm` (brak tokena lub 401 → formularz, klucze `access.*`,
+  usunięty `dashboard.missingToken`), `signIn`/`signOut` w `use-dashboard`,
+  token `wsi_` służy też wiedzy (bez drugiego logowania; wylogowanie z wiedzy =
+  pełne wylogowanie), `approvable` dla `installationAuthority`. CLI: `start`
+  poza legacy daje link bez pairing tokena i zapisuje `authenticationMode` w
+  service-access; `controllerAccessToken` (env `WORKTREE_SWITCHER_TOKEN` albo
+  pairing z URL) dla `project`/`service status`; `config mcp` przez
+  `src/cli/mcp-config.ts` (env `wsi_`, w trybie token placeholder, nigdy
+  mcp-token). UI: `tests/ui/access.spec.ts`, fixture z parametrem tokena.
+  `node:check` run 74b25655… exit 0; commit C przed build + test:ui (w toku).
