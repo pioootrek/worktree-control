@@ -72,3 +72,9 @@ właściciela). Drobne obserwacje (nie blokują K1):
   `done/DONE-20260926-knowledge-k1-identity.json` w jednym commicie z poprawką 409.
   Reszta „owner flow” (drugie logowanie wiedzy w UI, self-grant) → etap 1.
 - Kolejny etap: FEAT-20260829-independent-auth-modes (etap 1).
+
+## Decyzje do etapu 1 (2026-09-26)
+
+- Tryb tej instalacji po wdrożeniu etapu 1: `token` (decyzja właściciela).
+- Kanał administracyjny: rekomendacja unix socket 0600 w katalogu 0700; oczekuje
+  na potwierdzenie. Zapisane w notes[] FEAT-20260829-independent-auth-modes.

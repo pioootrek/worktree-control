@@ -32,6 +32,16 @@
       "author": "agent:codex",
       "date": "2026-09-17",
       "text": "Stage 1 plan saved in NOTE-20260909-self-hosted-saas-plan/authentication-modes-and-plugin.md. This is planning only; no live mode, token or runtime was changed. Open is an explicit installation trust policy, and global-token authority is distinct from optional scoped agent tokens."
+    },
+    {
+      "author": "user",
+      "date": "2026-09-26",
+      "text": "This installation (llm-worker) should run in token mode after stage 1 ships."
+    },
+    {
+      "author": "agent:claude",
+      "date": "2026-09-26",
+      "text": "Admin-channel recommendation pending owner confirmation: a Unix domain socket in the 0700 app data directory with 0600 permissions, as used by Docker, tailscaled and containerd. Stage 1 stores only the token verifier, so the CLI can no longer read the raw secret from a 0600 service-access file and call loopback HTTP as it does today. OS file permissions become the authority. Linux and macOS are the supported platforms; Windows is out of scope."
     }
   ],
   "priority": "next",
