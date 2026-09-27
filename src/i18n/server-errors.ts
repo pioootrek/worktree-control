@@ -2,6 +2,7 @@ import type { Locale } from "./messages";
 
 const exactEnglish = new Map<string, string>([
   ["Nazwa projektu jest wymagana.", "Project name is required."],
+  ["Właściciel został już zainicjalizowany.", "The owner has already been initialized."],
   ["Port musi być liczbą od 1024 do 65535.", "Port must be an integer between 1024 and 65535."],
   ["Repozytorium nie ma dostępnego worktree.", "The repository has no available worktree."],
   ["Zatrzymaj serwer przed zmianą ustawień HTTPS.", "Stop the server before changing HTTPS settings."],

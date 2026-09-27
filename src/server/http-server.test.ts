@@ -9,7 +9,7 @@ import { ControlService } from "./control-service";
 import { DirectoryBrowser } from "./directory-browser";
 import { EventStream } from "./events";
 import { createControllerServer, type ControllerServer } from "./http-server";
-import type { IdentityService } from "./modules/identity";
+import { IdentityError, type IdentityService } from "./modules/identity";
 
 const controllers: ControllerServer[] = [];
 const directories: string[] = [];
@@ -214,6 +214,24 @@ describe("controller access boundary", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ principalId: "owner-1", token: "owner-token" });
     expect(bootstrapOwnerSession).toHaveBeenCalledWith({ label: "First owner", sessionLifetimeSeconds: 300 });
+  });
+
+  it("reports a repeated owner bootstrap as a conflict", async () => {
+    const bootstrapOwnerSession = vi.fn(() => {
+      throw new IdentityError("owner_already_initialized", "Właściciel został już zainicjalizowany.");
+    });
+    const { base } = await fixture({ identity: { bootstrapOwnerSession } as unknown as IdentityService });
+
+    const response = await fetch(`${base}/api/identity/bootstrap`, {
+      method: "POST",
+      headers: { "Accept-Language": "en", "X-Worktree-Switcher-Token": "test-access-token", "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      code: "owner_already_initialized",
+      error: "The owner has already been initialized.",
+    });
   });
 
   it("requires the event token in a header and rejects cross-origin event reads", async () => {

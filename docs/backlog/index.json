@@ -13,16 +13,6 @@
     },
     {
       "area": "core",
-      "id": "FEAT-20260913-knowledge-k1-identity",
-      "path": "feature/FEAT-20260913-knowledge-k1-identity.json",
-      "priority": "now",
-      "risk_level": "high",
-      "status": "in-progress",
-      "title": "Add durable knowledge identity and scoped access",
-      "type": "feature"
-    },
-    {
-      "area": "core",
       "id": "FEAT-20260829-independent-auth-modes",
       "path": "feature/FEAT-20260829-independent-auth-modes.json",
       "priority": "next",
@@ -153,6 +143,40 @@
     }
   ],
   "notes": [
+    {
+      "author": "agent:claude",
+      "created": "2026-09-26",
+      "files": [
+        "progress.md"
+      ],
+      "id": "NOTE-20260926-k1-completion",
+      "path": "notes/NOTE-20260926-k1-completion",
+      "status": "active",
+      "tags": [
+        "authentication",
+        "identity",
+        "knowledge",
+        "validation"
+      ],
+      "title": "Domknięcie K1: audyt tożsamości, dowody testów i przekazanie do etapu 1"
+    },
+    {
+      "author": "agent:claude",
+      "created": "2026-09-26",
+      "files": [
+        "plan.md"
+      ],
+      "id": "NOTE-20260926-auth-stage1-implementation",
+      "path": "notes/NOTE-20260926-auth-stage1-implementation",
+      "status": "active",
+      "tags": [
+        "authentication",
+        "plan",
+        "migration",
+        "cli"
+      ],
+      "title": "Etap 1 uwierzytelniania: projekt implementacji i dziennik"
+    },
     {
       "author": "agent:codex",
       "created": "2026-09-13",

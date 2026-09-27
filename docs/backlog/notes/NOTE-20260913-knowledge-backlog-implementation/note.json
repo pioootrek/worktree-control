@@ -6,7 +6,7 @@
     "related_ids": [
       "FEAT-20260905-shared-project-memory"
     ],
-    "summary": "Plan K0-K9 przeniesienia funkcjonalności Huba. Aktualna decyzja właściciela: najpierw działający przepływ na SQLite; migracja do PostgreSQL później. Zastępuje wcześniejsze PostgreSQL-first i wymóg dwóch adapterów. K1 nadal wymaga domknięcia dostępu właściciela oraz zarządzania agentami i grantami."
+    "summary": "Plan K0-K9 przeniesienia funkcjonalności Huba. Aktualna decyzja właściciela: najpierw działający przepływ na SQLite; migracja do PostgreSQL później. Zastępuje wcześniejsze PostgreSQL-first i wymóg dwóch adapterów. K1 zamknięte 2026-09-26 (DONE-20260926-knowledge-k1-identity); pozostały przepływ właściciela przechodzi do etapu 1 trybów uwierzytelniania."
   },
   "created": "2026-09-13",
   "files": [
@@ -17,7 +17,7 @@
     "database-portability.md"
   ],
   "id": "NOTE-20260913-knowledge-backlog-implementation",
-  "last_reviewed": "2026-09-13",
+  "last_reviewed": "2026-09-26",
   "schema_version": 1,
   "status": "active",
   "tags": [
