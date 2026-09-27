@@ -35,7 +35,9 @@ export async function openProjectGateway(paths: AppPaths, locale: Locale): Promi
   if (access && processExists(access.pid)) {
     const token = controllerAccessToken(access);
     if (!token && access.authenticationMode === "token") throw new Error(translate(locale, "cli.project.installationTokenRequired"));
-    return new ControllerProjectGateway(localDashboardEndpoint(access), token, locale);
+    // An open-mode controller authenticates nobody, so no token is needed.
+    const credential = access.authenticationMode === "open" ? token ?? "" : token;
+    return new ControllerProjectGateway(localDashboardEndpoint(access), credential, locale);
   }
 
   let lock: ControllerLock;
@@ -226,8 +228,9 @@ class ControllerProjectGateway implements ProjectGateway {
   private readonly token: string;
   private readonly endpoints: string[];
 
+  /** An empty token sends no credential header; null means no usable access record. */
   constructor(endpoint: string, token: string | null, private readonly locale: Locale) {
-    if (!token) throw new Error(translate(locale, "cli.project.controllerUnavailable"));
+    if (token === null) throw new Error(translate(locale, "cli.project.controllerUnavailable"));
     this.token = token;
     this.endpoints = controllerEndpoints(endpoint);
   }
@@ -258,7 +261,7 @@ class ControllerProjectGateway implements ProjectGateway {
           headers: {
             "Accept-Language": this.locale,
             "Content-Type": "application/json",
-            "X-Worktree-Switcher-Token": this.token,
+            ...(this.token ? { "X-Worktree-Switcher-Token": this.token } : {}),
             ...init.headers,
           },
           signal: AbortSignal.timeout(15_000),

@@ -20,6 +20,7 @@ export function redact(value) {
   return String(value)
     .replaceAll(SECRET_MARKER, "[REDACTED]")
     .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, "Bearer [REDACTED]")
+    .replace(/wsi_[A-Za-z0-9_-]+/g, "wsi_[REDACTED]")
     .replace(/([#?&](?:token|access_token)=)[^\s&#]+/gi, "$1[REDACTED]")
     .replace(/(_authToken\s*=\s*)\S+/gi, "$1[REDACTED]");
 }
@@ -195,7 +196,7 @@ async function readCurrentAccess(stateDirectory) {
   return JSON.parse(await readFile(accessPath, "utf8"));
 }
 
-async function verifyDashboard(stateDirectory, expectedVersion, environment) {
+async function verifyDashboard(stateDirectory, expectedVersion, environment, token) {
   let access;
   try {
     access = await waitFor(() => readCurrentAccess(stateDirectory), "service access record was not created");
@@ -203,9 +204,9 @@ async function verifyDashboard(stateDirectory, expectedVersion, environment) {
     throw new Error(`${error instanceof Error ? error.message : String(error)}; ${await serviceDiagnostic(environment)}`);
   }
   check(access.version === expectedVersion, "running service version does not match candidate provenance");
-  const url = new URL(access.accessUrl);
-  const token = new URLSearchParams(url.hash.slice(1)).get("token");
-  check(token, "service access record has no browser token");
+  // New installations run in token mode: the access record carries no secret.
+  check(access.authenticationMode === "token", "service does not run in token mode");
+  check(new URL(access.accessUrl).hash === "", "service access record exposes a browser token");
   const response = await fetch(`${access.localDashboardEndpoint}/api/dashboard`, {
     headers: { "X-Worktree-Switcher-Token": token },
     signal: AbortSignal.timeout(2_000),
@@ -265,6 +266,7 @@ async function main() {
   let serviceMayExist = false;
   let browserRecord;
   let firstServicePid;
+  let installationToken;
 
   const record = async (collection, name, task) => {
     const phase = { name, startedAt: new Date().toISOString(), completedAt: null, outcome: "failed", evidence: null };
@@ -383,11 +385,14 @@ async function main() {
       const metadata = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
       check(metadata.version === provenance.package.version, "installed package version does not match provenance");
       await run(process.execPath, ["-e", "require('better-sqlite3')"], { cwd: packageRoot, env: serviceEnvironment });
+      const generated = await run(cli, ["auth", "token", "generate", "--data-dir", options.dataDirectory, "--state-dir", options.stateDirectory], { env: serviceEnvironment });
+      installationToken = JSON.parse(generated.stdout).token;
+      check(/^wsi_/.test(installationToken ?? ""), "installation token was not generated");
       serviceMayExist = true;
       await run(cli, installArguments, { env: serviceEnvironment });
       const active = await waitForActive(serviceEnvironment);
       firstServicePid = active.pid;
-      const dashboard = await verifyDashboard(options.stateDirectory, provenance.package.version, serviceEnvironment);
+      const dashboard = await verifyDashboard(options.stateDirectory, provenance.package.version, serviceEnvironment, installationToken);
       const definition = await readFile(definitionPath, "utf8");
       const definitionEvidence = inspectSystemdDefinition(definition, {
         nodePath: resolve(process.execPath),
@@ -399,7 +404,7 @@ async function main() {
         forbiddenPaths: [process.env.GITHUB_WORKSPACE, dirname(options.candidate)],
       });
       check(((await stat(definitionPath)).mode & 0o777) === 0o600, "service definition is not owner-only");
-      check(!/[#?&](?:token|access_token)=|Bearer\s+/i.test(definition), "service definition contains credential material");
+      check(!/[#?&](?:token|access_token)=|Bearer\s+|wsi_/i.test(definition), "service definition contains credential material");
       await run("systemd-analyze", ["--user", "verify", definitionPath], { env: serviceEnvironment });
       const enabled = await run("systemctl", ["--user", "is-enabled", UNIT_NAME], { env: serviceEnvironment });
       check(enabled.stdout.trim() === "enabled", "service is not enabled for the user session");
@@ -415,7 +420,7 @@ async function main() {
       check(reinstall.stdout.includes("Service already up to date"), "repeated install was not reported as idempotent");
       const unchanged = await waitForActive(serviceEnvironment);
       check(unchanged.pid === firstServicePid, "idempotent install restarted the controller");
-      return { pidUnchanged: true, statusSafe: true, dashboard: await verifyDashboard(options.stateDirectory, provenance.package.version, serviceEnvironment) };
+      return { pidUnchanged: true, statusSafe: true, dashboard: await verifyDashboard(options.stateDirectory, provenance.package.version, serviceEnvironment, installationToken) };
     });
 
     await record("phases", "open-and-restart", async () => {
@@ -423,11 +428,11 @@ async function main() {
       await run(cli, ["service", "open", "--state-dir", options.stateDirectory], { env: serviceEnvironment });
       const recorded = await waitFor(() => readFile(browserRecord, "utf8"), "fake browser did not receive the access URL");
       const opened = new URL(recorded);
-      check(opened.hostname === "127.0.0.1" && new URLSearchParams(opened.hash.slice(1)).has("token"), "service open did not pass a local authenticated URL");
+      check(opened.hostname === "127.0.0.1" && opened.hash === "", "service open did not pass the local sign-in URL without a secret");
       await rm(browserRecord, { force: true });
       await run(cli, ["service", "restart", "--state-dir", options.stateDirectory], { env: serviceEnvironment });
       const restarted = await waitForActive(serviceEnvironment, firstServicePid);
-      await verifyDashboard(options.stateDirectory, provenance.package.version, serviceEnvironment);
+      await verifyDashboard(options.stateDirectory, provenance.package.version, serviceEnvironment, installationToken);
       return { fakeBrowserUsed: true, pidChanged: true, pid: restarted.pid };
     });
 
@@ -437,7 +442,7 @@ async function main() {
         await writeFile(options.sessionReady, `${before.pid}\n`, { mode: 0o600 });
         await waitFor(() => stat(options.sessionContinue), "session restart coordinator did not continue", SESSION_TIMEOUT);
         await waitForActive(serviceEnvironment, before.pid);
-        await verifyDashboard(options.stateDirectory, provenance.package.version, serviceEnvironment);
+        await verifyDashboard(options.stateDirectory, provenance.package.version, serviceEnvironment, installationToken);
         return { managerRestarted: true, enabledServiceStarted: true, pidChanged: true };
       });
     } else {
@@ -450,7 +455,7 @@ async function main() {
       check(!existsSync(join(options.stateDirectory, "service-access.json")), "clean stop left a service access record");
       await run(cli, installArguments, { env: serviceEnvironment });
       await waitForActive(serviceEnvironment);
-      await verifyDashboard(options.stateDirectory, provenance.package.version, serviceEnvironment);
+      await verifyDashboard(options.stateDirectory, provenance.package.version, serviceEnvironment, installationToken);
       await run(cli, ["service", "stop", "--state-dir", options.stateDirectory], { env: serviceEnvironment });
       await waitForInactive(serviceEnvironment);
       return { stopClean: true, repeatedInstallStartedService: true };

@@ -21,6 +21,7 @@
     "dist/cli",
     "out",
     "skills",
+    "docs/authentication.md",
     "docs/controller-https.md",
     "docs/dependency-licenses.md",
     "docs/package-trial.md",

@@ -112,7 +112,7 @@ async function main(): Promise<void> {
     throw new Error(translate(locale, "cli.invalidMcpPort"));
   }
   if (command === "config" && process.argv[3] === "mcp") {
-    const token = mcpConfigToken(paths);
+    const token = await mcpConfigToken(paths);
     writeCliLine(JSON.stringify({
       url: `http://127.0.0.1:${mcpPort}/mcp`,
       ...(token === null ? {} : { headers: { Authorization: `Bearer ${token}` } }),
@@ -399,9 +399,9 @@ async function printServiceStatus(manager: UserServiceManager, paths: ReturnType
     writeCliLine("Access URL: worktree-switcher service url");
     try {
       const token = controllerAccessToken(currentAccess);
-      if (token) {
+      if (token || currentAccess.authenticationMode === "open") {
         const response = await fetch(`${localDashboardEndpoint(currentAccess)}/api/dashboard`, {
-          headers: { "X-Worktree-Switcher-Token": token },
+          headers: token ? { "X-Worktree-Switcher-Token": token } : {},
           signal: AbortSignal.timeout(1_000),
         });
         if (response.ok) {

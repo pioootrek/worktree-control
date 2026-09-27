@@ -182,6 +182,44 @@ describe("project management CLI", () => {
     }
   });
 
+  it("reaches an open-mode controller without any credential", async () => {
+    const dataDirectory = temporaryDirectory("worktree-switcher-cli-open-data-");
+    const stateDirectory = temporaryDirectory("worktree-switcher-cli-open-state-");
+    const paths = resolveAppPaths(dataDirectory, stateDirectory);
+    const seen: Array<string | undefined> = [];
+    const server = createServer((request, response) => {
+      seen.push(request.headers["x-worktree-switcher-token"] as string | undefined);
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ projects: [] }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    writeServiceAccess(paths.serviceAccessPath, {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      version: "0.0.1",
+      dashboardEndpoint: endpoint,
+      mcpEndpoint: null,
+      accessUrl: `${endpoint}/`,
+      logDirectory: paths.logDirectory,
+      authenticationMode: "open",
+    });
+    const previous = process.env.WORKTREE_SWITCHER_TOKEN;
+    delete process.env.WORKTREE_SWITCHER_TOKEN;
+    const gateway = await openProjectGateway(paths, "en");
+    try {
+      expect((await gateway.dashboard()).projects).toEqual([]);
+      expect(seen).toEqual([undefined]);
+    } finally {
+      await gateway.close();
+      if (previous !== undefined) process.env.WORKTREE_SWITCHER_TOKEN = previous;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("asks for the installation token when a token-mode controller is running", async () => {
     const dataDirectory = temporaryDirectory("worktree-switcher-cli-token-data-");
     const stateDirectory = temporaryDirectory("worktree-switcher-cli-token-state-");

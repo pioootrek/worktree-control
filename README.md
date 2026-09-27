@@ -247,7 +247,7 @@ sandbox for untrusted code.
 
 ## Roadmap
 
-The [authentication roadmap](docs/backlog/notes/NOTE-20260909-self-hosted-saas-plan/authentication-modes-and-plugin.md)
+The [authentication roadmap](https://github.com/pioootrek/worktree-switcher/blob/main/docs/backlog/notes/NOTE-20260909-self-hosted-saas-plan/authentication-modes-and-plugin.md)
 has two stages. The first is available: CLI-selected `open` (no authentication),
 `token` (one CLI-generated token for all functions, including knowledge) and a
 reserved `better-auth` mode that reports the provider as unavailable; see

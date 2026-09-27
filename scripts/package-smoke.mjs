@@ -166,6 +166,7 @@ async function main() {
       "package/dist/cli/index.js",
       "package/out/index.html",
       "package/skills/worktree-switcher/SKILL.md",
+      "package/docs/authentication.md",
       "package/docs/package-trial.md",
       "package/docs/user-service.md",
       "package/LICENSE",

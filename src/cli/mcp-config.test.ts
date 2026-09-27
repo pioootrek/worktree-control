@@ -27,26 +27,41 @@ const record = (overrides: Partial<ServiceAccessRecord> = {}): ServiceAccessReco
 describe("MCP configuration and controller access tokens", () => {
   it("never prints the legacy mcp-token for a new token-mode installation", async () => {
     const appPaths = paths();
-    expect(mcpConfigToken(appPaths, { environment: {} })).toBe(INSTALLATION_TOKEN_PLACEHOLDER);
+    expect(await mcpConfigToken(appPaths, { environment: {} })).toBe(INSTALLATION_TOKEN_PLACEHOLDER);
 
     const output: string[] = [];
     await runAuthCommand(["token", "generate"], appPaths, { write: (line) => output.push(line) });
     const { token } = JSON.parse(output[0]!) as { token: string };
-    expect(mcpConfigToken(appPaths, { environment: {} })).toBe(INSTALLATION_TOKEN_PLACEHOLDER);
-    expect(mcpConfigToken(appPaths, { environment: { WORKTREE_SWITCHER_TOKEN: token } })).toBe(token);
+    expect(await mcpConfigToken(appPaths, { environment: {} })).toBe(INSTALLATION_TOKEN_PLACEHOLDER);
+    expect(await mcpConfigToken(appPaths, { environment: { WORKTREE_SWITCHER_TOKEN: token } })).toBe(token);
 
     await runAuthCommand(["mode", "set", "open"], appPaths, { write: () => undefined });
-    expect(mcpConfigToken(appPaths, { environment: {} })).toBeNull();
+    expect(await mcpConfigToken(appPaths, { environment: {} })).toBeNull();
   });
 
-  it("reads the mode of a running service from its access record without opening the database", () => {
+  it("reads the mode of a running service from its access record without opening the database", async () => {
     const appPaths = paths();
     const lock = acquireControllerLock(appPaths.controllerLockPath);
     try {
       writeServiceAccess(appPaths.serviceAccessPath, record({ authenticationMode: "token" }));
-      expect(mcpConfigToken(appPaths, { environment: {}, processExists: () => true })).toBe(INSTALLATION_TOKEN_PLACEHOLDER);
+      expect(await mcpConfigToken(appPaths, { environment: {}, processExists: () => true })).toBe(INSTALLATION_TOKEN_PLACEHOLDER);
       writeServiceAccess(appPaths.serviceAccessPath, record());
-      expect(mcpConfigToken(appPaths, { environment: {}, processExists: () => true })).not.toBe(INSTALLATION_TOKEN_PLACEHOLDER);
+      expect(await mcpConfigToken(appPaths, { environment: {}, processExists: () => true })).not.toBe(INSTALLATION_TOKEN_PLACEHOLDER);
+    } finally {
+      lock.release();
+    }
+  });
+
+  it("asks a foreground controller's admin socket instead of guessing the legacy token", async () => {
+    const appPaths = paths();
+    const lock = acquireControllerLock(appPaths.controllerLockPath);
+    try {
+      const status = (mode: string) => ({ environment: {}, requestStatus: async () => ({ mode, token: null, generation: 1 }) });
+      expect(await mcpConfigToken(appPaths, status("token"))).toBe(INSTALLATION_TOKEN_PLACEHOLDER);
+      expect(await mcpConfigToken(appPaths, status("open"))).toBeNull();
+      expect(await mcpConfigToken(appPaths, status("legacy"))).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      await expect(mcpConfigToken(appPaths, { environment: {}, requestStatus: async () => { throw new Error("ENOENT"); } }))
+        .rejects.toThrow("MCP credential is unknown");
     } finally {
       lock.release();
     }
