@@ -1,7 +1,7 @@
 # K1: domknięcie tożsamości i scoped access — dziennik postępu
 
 Start: 2026-09-26. Baza: `65775e9` (main). Gałąź: `t3code/review-authentication-backlog`.
-Zadanie: [FEAT-20260913-knowledge-k1-identity](../../feature/FEAT-20260913-knowledge-k1-identity.json).
+Zadanie: FEAT-20260913-knowledge-k1-identity, zamknięte w [DONE-20260926-knowledge-k1-identity](../../done/DONE-20260926-knowledge-k1-identity.json).
 Kierunek: [globalne tryby](../NOTE-20260909-self-hosted-saas-plan/authentication-modes-and-plugin.md)
 — K1 NIE implementuje trybów open/token (to FEAT-20260829-independent-auth-modes);
 K1 domyka istniejącą tożsamość, granty i scoped MCP tak, by etap 1 mógł na niej stanąć.
