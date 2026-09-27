@@ -1,6 +1,6 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-09-09"
+last_reviewed: "2026-09-27"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
@@ -179,26 +179,18 @@ closed.
 
 ## Persistence
 
-Application code depends on a transactional `StateStore` rather than SQL APIs.
-The unit of work groups project configuration, reservations, and audit events
-so one use case can commit them atomically:
+Application services depend on operation-specific persistence interfaces.
+`src/server/state-store.ts` defines runtime/project operations; identity,
+authentication and knowledge modules define their own contracts. These are
+implemented by `SqliteStateStore` and query helpers on one controller-owned
+`better-sqlite3` connection. Atomic operations own their transactions inside
+that adapter; there is no public generic `StateStore.transaction` API.
 
-```ts
-interface StateStore {
-  transaction<T>(work: (tx: StateTransaction) => T): T
-}
-
-interface StateTransaction {
-  projects: ProjectStore
-  reservations: ReservationStore
-  audit: AuditStore
-}
-```
-
-The MVP uses `better-sqlite3`: it is stable, provides prebuilt binaries for
-major supported platforms, and avoids depending on the current release-candidate
-status of Node's built-in `node:sqlite` module. The driver remains private to
-the adapter so it can be replaced without changing application services.
+Knowledge uses independent project IDs, revision checks, history and
+idempotency records. Removing a runtime project detaches its knowledge link
+without deleting knowledge. Logical project transfer and full-controller
+backup are different recovery operations; neither changes the authoritative
+write location of an existing Hub project automatically.
 
 On Linux the database lives at
 `$XDG_DATA_HOME/worktree-switcher/state.sqlite3`, falling back to
@@ -239,8 +231,10 @@ and audit semantics; SQLite alone does not make the application multi-user.
 
 ## Project configuration model
 
-The following is the application/API representation, not a JSON file persisted
-on disk:
+The following is an illustrative configuration model from the initial design,
+not a current API payload or importable configuration file. Current project
+contracts live in `src/shared/contracts.ts`; persisted fields and migrations
+live in the SQLite adapter:
 
 ```json
 {
@@ -299,6 +293,21 @@ The concrete executable and arguments are resolved against the selected
 worktree before every start. Django therefore uses a worktree-local `.venv` or
 `venv` when present and otherwise invokes `python3`, always through `shell:false`.
 
+## Installation authentication
+
+The shared authentication module enforces the stored installation mode across
+HTTP, MCP and live subscriptions. New databases default to `token` and cannot
+start until a token has been generated. Existing databases migrate to `legacy`;
+`open` is explicit and `better-auth` is an unavailable provider. Installation
+tokens are stored as verifiers, and rotation invalidates active sessions.
+Local administration uses an owner-only Unix socket while running or the
+singleton lock while stopped. Scoped knowledge credentials keep their grants;
+they do not expose runtime claim/configuration tools.
+
+See [authentication modes](authentication.md) for commands, migration and the
+remaining open-mode CLI limitation in knowledge, identity administration and
+logical import/export.
+
 ## CLI and package
 
 The public npm package is `worktree-switcher` with one `bin` entry of the same
@@ -307,6 +316,9 @@ supports:
 
 ```text
 worktree-switcher [start] [--no-open]
+worktree-switcher auth status
+worktree-switcher auth token generate|rotate
+worktree-switcher auth mode set open|token|better-auth
 worktree-switcher config path
 worktree-switcher config mcp
 worktree-switcher project add <path> [--name <name>] [--port <port>] [--preset auto|node|django]
@@ -318,8 +330,9 @@ worktree-switcher service status|start|stop|restart|open|url|uninstall
 ```
 
 Project mutations share `ControlService` with HTTP and MCP. When the user
-service is running, the CLI uses its owner-only access record and authenticated
-HTTP API. When no controller owns the state, the CLI acquires the same
+service is running, project CLI commands use its owner-only access record and
+HTTP API. Token mode requires `WORKTREE_SWITCHER_TOKEN`; open mode does not.
+When no controller owns the state, the CLI acquires the same
 singleton lock before opening SQLite. A foreground controller without a safe
 access record causes a clear refusal instead of concurrent database access.
 
@@ -327,7 +340,9 @@ Until the package is published, source-checkout commands use the built entry
 point:
 
 ```bash
+node dist/cli/index.js auth token generate
 node dist/cli/index.js start
+# Stop the foreground controller before installing the service.
 node dist/cli/index.js service install
 ```
 

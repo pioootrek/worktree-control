@@ -7,14 +7,14 @@
       "NOTE-20260909-self-hosted-saas-plan",
       "NOTE-20260926-k1-completion"
     ],
-    "summary": "Implementation design and running log for authentication stage 1: persisted policy, installation token, installation principal migration, Unix-socket admin channel and six stacked PR slices."
+    "summary": "Stage 1 A–F and review fixes merged in PR #54; main CI 36312411574 passed all jobs including HTTPS and package smoke/lifecycle. The task remains open for credential-free knowledge/identity/import/export CLI paths in open mode, identified during the 2026-09-27 reconciliation."
   },
   "created": "2026-09-26",
   "files": [
     "plan.md"
   ],
   "id": "NOTE-20260926-auth-stage1-implementation",
-  "last_reviewed": "2026-09-26",
+  "last_reviewed": "2026-09-27",
   "schema_version": 1,
   "status": "active",
   "tags": [

@@ -42,6 +42,11 @@
       "author": "human:pioootrek",
       "date": "2026-09-05",
       "text": "Owner supplied Secret Runtime v2 documentation and requested inclusion in Switcher. Original files are preserved in NOTE-20260905-secret-runtime-proposal; docs/environment-runtime-plan.md defines the integration direction. Reuse existing profiles and workers for scoped secret delivery; the original PostgreSQL/Rust stack, standalone vault, provider sync, rotation, and all-now milestone priorities are not automatically adopted."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-27",
+      "text": "2026-09-27 reconciliation: literal runtime/test profiles and their existing MCP operations are delivered. No evidence that secret references, environment-file references or monorepo-relative working directories have shipped. Keep these as independent, need-driven slices; runtime capability scopes remain in FEAT-20260829-scoped-mcp-agent-tokens. No new implementation selected by this documentation pass."
     }
   ],
   "priority": "next",

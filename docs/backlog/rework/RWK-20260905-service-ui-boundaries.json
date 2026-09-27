@@ -15,11 +15,16 @@
       "author": "agent:codex",
       "date": "2026-09-05",
       "text": "Owner authorized code decomposition as a backlog direction on 2026-09-05. Counts are from the d4a2c8d assessment. This item schedules incremental extraction; the backlog edit itself does not refactor application code."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-27",
+      "text": "Main 17d0c9d7e5be6d3f451298cdb7b364dbf25f5200 already separates runtime/lifecycle/environment/verification/dashboard/status, knowledge/identity/authentication, feature UI, SQLite query helpers and migrations; import-boundary/cycle checks run in CI. The original 1326/802-line problem statement is historical. Remaining concentrations include HTTP/MCP routing, CLI bootstrap and facade project/claim/maintenance operations. Extract only the next touched responsibility and preserve one SQLite owner and shared lifecycle. Cache lifecycle serialization was completed separately in DONE-20260908-cache-lifecycle-serialization."
     }
   ],
   "priority": "next",
   "problem": [
-    "The dashboard combines project cards, tests, environment settings, TLS, capacity, and resource views in 1326 lines. ControlService combines multiple operation families in 802 lines, while SqliteStateStore has 1055 lines. Editing one behavior requires loading and reviewing substantial unrelated code."
+    "The initial service/UI/SQLite decomposition is implemented. HTTP/MCP routing, CLI bootstrap and remaining facade project/claim/maintenance operations still mix responsibilities; future extraction should follow the next concrete workflow rather than repeat completed moves."
   ],
   "risk": {
     "dimensions": [
@@ -31,14 +36,14 @@
   },
   "schema_version": 1,
   "scope": [
-    "Extract dashboard compositions by existing responsibility: project runtime, tests, environment settings, capacity, and TLS. Keep owned UI primitives separate and preserve translations and accessible interactions.",
-    "Keep ControlService as the public facade while extracting test/profile and runtime/maintenance use cases where touched. Preserve one shared lock/capacity authority; never create independent locks in extracted services.",
-    "Split SQLite mapping/query helpers and migrations into cohesive modules without adding database owners, changing schema, or altering transaction boundaries.",
-    "Work in small behavior-preserving commits after the urgent fixes, starting with the area needed by the next task. No framework migration, generic plugin framework, microservices, or line-count target."
+    "Preserve the delivered module APIs, feature-local UI/data access, extracted SQLite helpers/migrations and automated import-boundary checks.",
+    "When a workflow requires changes, extract its remaining HTTP/MCP routing, bootstrap wiring or facade responsibility behind explicit APIs. Avoid a repository-wide rename or line-count target.",
+    "Retain ControlService compatibility, one database owner, transaction boundaries and one lifecycle/capacity authority shared by runtime, tests and maintenance.",
+    "Validate affected service/transport and browser behavior for each bounded extraction. Do not create empty future modules or treat this item as a prerequisite for using delivered features."
   ],
   "source": "Repository assessment and owner direction on 2026-09-05",
   "status": "open",
-  "title": "Split service and dashboard responsibilities in small verified changes",
+  "title": "Extract remaining transport, bootstrap and facade responsibilities when needed",
   "type": "rework",
   "validation": [
     "Existing focused service, persistence, HTTP/MCP, and localization tests must still pass. Add tests only for uncovered behavior that an extraction could change.",

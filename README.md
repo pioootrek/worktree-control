@@ -118,6 +118,14 @@ shared logs.
 | Cache maintenance | Remove a stopped, unlocked Next.js worktree's `.next` cache with confirmation |
 | Dashboard | Use English or Polish, desktop or mobile layouts, and explicit Git metadata refresh |
 | Authentication | Choose `token` (one installation token for every function) or `open` mode from the CLI; rotate the token without a restart |
+| Shared project knowledge | Record discussions, tasks and memory through the dashboard, MCP and CLI; search, approve revisions, and export context |
+| Knowledge recovery and import | Store attachments, back up the controller, transfer knowledge projects and import Hub records through CLI planning and resumable execution |
+
+Knowledge has its own durable project identity and does not require a running
+development server. Its implementation is on `main`; migrating an existing
+Hub project still requires an accepted pilot and an explicit choice of one
+authoritative write location. See the
+[knowledge delivery status](https://github.com/pioootrek/worktree-switcher/blob/main/docs/backlog/notes/NOTE-20260913-knowledge-backlog-implementation/implementation-plan.md).
 
 For Node.js, Switcher detects pnpm, npm, Yarn and Bun projects with a `dev`
 script. Next.js uses `PORT`; Vite, Astro and Nuxt receive port arguments.
@@ -251,28 +259,31 @@ The [authentication roadmap](https://github.com/pioootrek/worktree-switcher/blob
 has two stages. The first is available: CLI-selected `open` (no authentication),
 `token` (one CLI-generated token for all functions, including knowledge) and a
 reserved `better-auth` mode that reports the provider as unavailable; see
-[authentication modes](docs/authentication.md). The second, an optional Better
-Auth plugin for account login, is planned. The core remains MIT. Plugin
+[authentication modes](docs/authentication.md). Credential-free `open` mode
+still has CLI gaps in knowledge, identity administration and logical import/export; see the known limitation in the
+authentication guide. The second stage, an optional Better Auth plugin for
+account login, is planned. The core remains MIT. Plugin
 commercial terms and activation are undecided.
 
 The next complete workflow is **push a commit, ask your worker to verify it, and
 read the result from your existing client**. The worker will fetch the requested
 SHA itself into an isolated run workspace, without moving your active dev worktree.
 
-Remote verification has implementation work on separate branches:
+Remote verification foundations are merged on `main`:
 [request authorization](https://github.com/pioootrek/worktree-switcher/pull/28),
 [admission persistence](https://github.com/pioootrek/worktree-switcher/pull/29),
 [exact-commit workspaces](https://github.com/pioootrek/worktree-switcher/pull/30)
 and [attempt records](https://github.com/pioootrek/worktree-switcher/pull/31).
-These are foundations, not an available end-to-end remote worker feature on
-`main`. Follow the [remote verification plan](https://github.com/pioootrek/worktree-switcher/blob/main/docs/remote-verification-plan.md)
+Enrollment, connected-worker dispatch, queue execution and caller transports
+remain to be integrated into an end-to-end remote workflow. Follow the
+[remote verification plan](https://github.com/pioootrek/worktree-switcher/blob/main/docs/remote-verification-plan.md)
 for delivery gates, recovery tests and current scope.
 
 The longer-term direction is an optional, maintainer-operated SaaS for
 coordination, with customer-owned execution workers. Self-hosting is intended to
-remain complete and independent. Hosted accounts, organization isolation, shared
-project memory and agent-fleet coordination are planned; there is no hosted
-signup or pricing offer today. See the
+remain complete and independent. Hosted accounts, organization isolation,
+playbooks, instruction composition and agent-fleet coordination are planned;
+there is no hosted signup or pricing offer today. See the
 [self-hosted and SaaS plan](https://github.com/pioootrek/worktree-switcher/blob/main/docs/backlog/notes/NOTE-20260909-self-hosted-saas-plan/implementation-plan.md).
 
 ## CLI and documentation

@@ -1,6 +1,6 @@
 ---
 audience: "people running Worktree Switcher and choosing how callers authenticate"
-last_reviewed: "2026-09-26"
+last_reviewed: "2026-09-27"
 source_of_truth: "authentication modes, the auth CLI, and migration from legacy access"
 status: "active"
 ---
@@ -70,6 +70,16 @@ badge and the controller prints its listening address on start.
 ```bash
 worktree-switcher auth mode set open
 ```
+
+### Known CLI limitation, reviewed 2026-09-27
+
+The backend accepts credential-free requests in `open` mode, but the current
+knowledge CLI, identity administration, Hub `execute-import` and logical
+`backup export-project` / `import-project` commands still reject an absent
+token environment variable before applying the mode. Full controller
+`backup create` / `restore` are separate and do not have this precondition.
+This is tracked as the remaining stage 1 CLI fix; do not treat a green
+installation test as acceptance of these credential-free paths.
 
 ## Move a legacy installation to token mode
 

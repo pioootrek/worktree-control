@@ -1,5 +1,15 @@
 # Remote commit verification: implementation slices and acceptance gates
 
+## Current delivery status, 2026-09-27
+
+At main `17d0c9d`, request/grant persistence, exact-SHA workspace preparation
+and attempt transitions are implemented. They cover parts of slices 1–3;
+they do not constitute a connected worker. Do not restart those components
+from scratch. Remaining work is enrollment and credential lifecycle, queue
+execution, outbound dispatch/recovery, caller transports and owner acceptance.
+The original baseline and next-step recommendation below are historical.
+See [the reconciliation](../NOTE-20260829-readiness-assessment/reconciliation-20260927.md).
+
 Date: 2026-09-11. Inspected baseline: `d429eb9` (`main`).
 Owner: `FEAT-20260905-remote-commit-verification`.
 Status: implementation plan; remote execution is not implemented by this document.
@@ -169,7 +179,8 @@ Review before merge; deploy only after checks and when the installed controller 
 idle. Keep remote dispatch opt-in and independently disableable. Rollback stops new
 submissions, retains uncertain attempts/results and preserves local verification.
 
-The next implementation task is slice 1. Before coding, finalize the allowed-ref
+At the original planning baseline, the next task was slice 1; use the current
+delivery status above when selecting remaining work. Before coding, finalize the allowed-ref
 policy, credential expiry/revocation behavior and protocol state table in its tests.
 Provider-specific enrollment UX, polling intervals and supported initial toolchains
 are implementation decisions to validate in their slices, not completed contracts.

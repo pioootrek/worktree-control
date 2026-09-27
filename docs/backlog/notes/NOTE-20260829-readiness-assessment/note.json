@@ -14,15 +14,16 @@
       }
     ],
     "editor": "agent:codex",
-    "summary": "Read assessment-20260905.md first. The owner prioritizes personal utility and time/token efficiency while explicitly preserving a reusable public experiment. Three urgent fixes have source or reproduction evidence; follow-up work covers accurate verification, compact MCP, incremental decomposition, and portable package checks. findings.md preserves the superseded 2026-08-29 assessment."
+    "summary": "Read reconciliation-20260927.md first for current delivery, evidence and remaining work at main 17d0c9d7e5be6d3f451298cdb7b364dbf25f5200. Earlier assessments are dated history. Stage 1 is delivered with a residual open-mode CLI gap; knowledge K2–K6 is implemented, while project cutover and remote workers remain incomplete."
   },
   "created": "2026-08-29",
   "files": [
     "assessment-20260905.md",
-    "findings.md"
+    "findings.md",
+    "reconciliation-20260927.md"
   ],
   "id": "NOTE-20260829-readiness-assessment",
-  "last_reviewed": "2026-09-05",
+  "last_reviewed": "2026-09-27",
   "schema_version": 1,
   "status": "active",
   "tags": [

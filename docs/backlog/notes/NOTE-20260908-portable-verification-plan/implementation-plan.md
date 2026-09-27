@@ -1,5 +1,16 @@
 # Portable verification and package smoke plan
 
+## Current evidence, 2026-09-27
+
+[Main CI 36312411574](https://github.com/pioootrek/worktree-switcher/actions/runs/36312411574)
+passed at `17d0c9d`, including producer check/build/HTTPS/integration/UI/E2E,
+artifact smoke on Node 22.23.2 and 24.21.0, and the packaged Linux systemd
+lifecycle job. This supplies the previously pending evidence for portable CI
+and package-trial slices 1–3. Populated package upgrade/failure recovery,
+recorded real-client acceptance and durable release handoff remain open.
+Earlier pending-CI statements below describe their dated baseline. No real
+macOS trial, owner-service change or publication is claimed.
+
 Date: 2026-09-08. Inspected main:
 `2eb1f06640c6254f14e4b9b7ce7f20b0836bb2bb` (after PR #15).
 Item: `FEAT-20260905-portable-verification`.

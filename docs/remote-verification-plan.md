@@ -7,6 +7,15 @@ status: "active"
 
 # Remote verification of pushed commits
 
+## Implementation status, 2026-09-27
+
+On `main` at `17d0c9d`, request authorization/persistence, attempt-state
+operations and exact-SHA workspace preparation are implemented with tests.
+Enrollment and worker credentials, outbound dispatch, finite-queue execution,
+reconnect/cancellation and caller transports remain incomplete. The workflow
+below is the acceptance target, not a currently available remote command.
+See the [remaining implementation slices](backlog/notes/NOTE-20260909-self-hosted-saas-plan/remote-verification-implementation.md).
+
 ## Owner need and priority
 
 The owner wants to work with an LLM remotely, including from a lightweight
@@ -23,7 +32,8 @@ priority; queue reliability and truthful source attribution are foundations.
 Track delivery in
 [FEAT-20260905-remote-commit-verification](backlog/feature/FEAT-20260905-remote-commit-verification.json).
 
-This is planned work, not a deployed service. Other people's willingness to
+The complete connected-worker workflow remains planned; its foundations alone
+do not constitute a deployed remote service. Other people's willingness to
 pay remains a hypothesis; start with the owner's real workflow.
 
 ## First complete workflow

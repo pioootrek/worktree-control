@@ -1,5 +1,15 @@
 # Etap 1 uwierzytelniania: projekt implementacji i dziennik
 
+## Stan po scaleniu, 2026-09-27
+
+PR #54 scalony do main `17d0c9d`. CI 36312411574 przeszło w całości,
+włącznie z HTTPS, package-smoke dla obu wersji Node i systemd lifecycle.
+Wcześniejszy brak lokalnego CADDY_BIN i nieudane próby smoke są historyczne.
+Pozostaje luka credential-free CLI dla wiedzy, administracji tożsamością
+i logicznego importu/eksportu w trybie open, potwierdzona inspekcją kodu.
+[Przegląd](../NOTE-20260829-readiness-assessment/reconciliation-20260927.md)
+opisuje pozostały zakres istniejącego zadania; nie powtarzać etapów A–F.
+
 Start: 2026-09-26. Baza: `e3f4b4c` (gałąź `t3code/review-authentication-backlog`).
 Zadanie: [FEAT-20260829-independent-auth-modes](../../feature/FEAT-20260829-independent-auth-modes.json).
 Kierunek: [plan trybów](../NOTE-20260909-self-hosted-saas-plan/authentication-modes-and-plugin.md).

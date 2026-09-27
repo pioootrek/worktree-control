@@ -1,5 +1,16 @@
 # Tryby uwierzytelniania i opcjonalny plugin Better Auth
 
+## Aktualny stan, 2026-09-27
+
+Etap 1 A–F i poprawki review są scalone w PR #54 (`main` `17d0c9d`),
+a CI 36312411574 jest zielone. CLI wyboru trybu i tokena jest dostępne;
+Better Auth pozostaje niedostępnym dostawcą. Zadanie etapu 1 nadal obejmuje
+konkretną lukę: CLI wiedzy, administracji tożsamością oraz logicznego
+importu/eksportu wymaga tokena przed sprawdzeniem trybu open. Szczegóły są w
+[przeglądzie](../NOTE-20260829-readiness-assessment/reconciliation-20260927.md).
+Opis bazowego kodu i propozycje etapu 1 niżej zachowują historię decyzji;
+bieżące polecenia i ograniczenia opisuje [instrukcja auth](../../../authentication.md).
+
 Data: 2026-09-17. Baza przeglądu: `a727fd8` na `main`.
 Status: plan; zapis nie zmienia działającego kontrolera ani jego konfiguracji.
 
@@ -20,7 +31,7 @@ wcześniejsze niezależne przełączniki Web/MCP oraz wymóg osobnego tokena wie
 w podstawowym przepływie właściciela. Scoped tokeny agentów pozostają opcjonalnym,
 osobnym zakresem; nie są warunkiem użycia wszystkich funkcji przez właściciela.
 
-## Sprawdzony stan kodu
+## Historyczny stan kodu z 2026-09-17
 
 - `src/cli/index.ts` składa kontroler, SQLite, identity, knowledge, HTTP i MCP.
   Nadal istnieją token parowania Web i odrębny token MCP.
@@ -36,7 +47,8 @@ osobnym zakresem; nie są warunkiem użycia wszystkich funkcji przez właścicie
 ## Etap 1: jedna polityka dostępu całej instalacji
 
 Proponowany kontrakt CLI, do potwierdzenia testami pomocy i zgodności podczas
-implementacji; poniższe polecenia nie są jeszcze dostępne:
+implementacji. Polecenia są już dostępne po etapie 1; zapis zachowuje
+pierwotny zakres:
 
 ```text
 worktree-switcher auth status

@@ -1,5 +1,10 @@
 # Decyzja: najpierw działające SQLite, PostgreSQL później
 
+Aktualizacja 2026-09-27: wybór SQLite pozostaje aktualny. K0 i K1 są zamknięte,
+a K2–K6 mają implementację na main. Poniższe wymagania odbioru K1 zachowują
+historię decyzji, nie oznaczają ponownego otwarcia K1. Pozostały zakres jest
+w [aktualnym stanie planu](implementation-plan.md).
+
 Status: aktualna decyzja właściciela z 2026-09-13. Zastępuje wcześniejszy
 kierunek PostgreSQL-first oraz wymaganie równoległego wspierania dwóch baz.
 

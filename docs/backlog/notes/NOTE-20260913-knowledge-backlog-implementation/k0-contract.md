@@ -1,5 +1,11 @@
 # K0: kontrakt wiedzy i importu Huba
 
+Aktualizacja 2026-09-27: K0 zamknięte w
+[DONE-20260927-knowledge-k0-contracts](../../done/DONE-20260927-knowledge-k0-contracts.json).
+To historyczny kontrakt wejściowy. Aktualne API i schematy wynikają z kodu;
+stan K1–K9 opisuje [plan wdrożenia](implementation-plan.md). Zamknięcie K0
+nie zatwierdza migracji prawdziwego projektu.
+
 Stan: techniczny kontrakt wejściowy dla K1–K6, ustalony 2026-09-13. Nie jest
 to kontrakt dostępnego już API ani zgoda na zapis prawdziwych danych.
 

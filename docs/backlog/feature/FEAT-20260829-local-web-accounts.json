@@ -37,6 +37,11 @@
       "author": "agent:codex",
       "date": "2026-09-17",
       "text": "Stage 2 plan in NOTE-20260909-self-hosted-saas-plan/authentication-modes-and-plugin.md uses an optional provider package, one owner first, and leaves multi-user/organization scope for later. Better Auth MIT permits commercial use with notices; this does not create exclusivity or prevent third-party providers. No dependency was installed."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-27",
+      "text": "The core stage 1 mode/provider boundary is on main; better-auth still fails with auth_provider_unavailable and no Better Auth package is installed. This remains new implementation, not release polish. The residual open-mode CLI bug belongs to FEAT-20260829-independent-auth-modes. Keep the one-owner plugin scope and defer commercial/activation decisions."
     }
   ],
   "priority": "later",

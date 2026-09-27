@@ -25,11 +25,16 @@
       "author": "agent:codex",
       "date": "2026-09-05",
       "text": "Kept the implemented reset-now behavior distinct from optional convenience features. The race fix is next and must not wait for CLI, token scopes, or a before-start feature."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-27",
+      "text": "Dashboard reset and shared lifecycle serialization are delivered; the correctness dependency closed in DONE-20260908-cache-lifecycle-serialization. Only optional CLI or one-shot before-start convenience remains, to be selected from an observed workflow. Do not reopen the fixed deletion race."
     }
   ],
   "priority": "later",
   "problem": [
-    "Authenticated dashboard reset-now already exists. Optional CLI access and one-shot reset-before-start are not implemented; the existing deletion race is tracked as a separate correctness fix."
+    "Dashboard cache reset and lifecycle serialization are implemented. Optional CLI access and one-shot reset-before-start remain unimplemented convenience features."
   ],
   "risk": {
     "dimensions": [

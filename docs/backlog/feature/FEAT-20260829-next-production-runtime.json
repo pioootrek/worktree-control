@@ -20,6 +20,11 @@
       "author": "agent:codex",
       "date": "2026-09-05",
       "text": "Reprioritized under the 2026-09-05 owner-first, reusable-experiment direction. Revisit when a reproducible production-only debugging need recurs. Queue existing build presets meanwhile; do not introduce another build scheduler or bypass managed finite verification."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-27",
+      "text": "Reconciliation confirms managed development launch and finite build presets, not a build-then-serve production runtime. Keep this optional later feature; a successful build preset must not be described as production serving."
     }
   ],
   "priority": "later",

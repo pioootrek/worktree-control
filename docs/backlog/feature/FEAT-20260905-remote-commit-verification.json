@@ -50,12 +50,16 @@
       "author": "agent:codex",
       "date": "2026-09-11",
       "text": "Implementation resumed on t3code/remote-commit-verification by integrating the previously reviewed remote contracts, SQLite persistence, exact-SHA workspace and attempt-state series with current main. The integration preserves the main-line launch-preset repair and adds a regression-tested migration path for databases opened on the pre-merge remote branch. Focused tests, pnpm check and pnpm build pass. This is not feature completion: one-time enrollment, credential hashes/expiry/revocation, versioned worker protocol, queue execution and transports remain open."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-27",
+      "text": "Reconciled main 17d0c9d7e5be6d3f451298cdb7b364dbf25f5200: remote-verification service/contracts, SQLite requests/attempts and exact-SHA workspace preparation are already merged, with focused tests. No complete remote worker transport/runner is wired into CLI, HTTP or MCP. Remaining work: enrollment and revocable worker credentials, a versioned outbound protocol, integration with finite-job execution, reconnect/cancel/recovery behavior, caller transports and an exact-SHA owner trial. Earlier instructions to begin slice 1 are historical."
     }
   ],
   "priority": "next",
   "problem": [
-    "Local or remote LLM conversations lack a convenient way to request heavy verification on a prepared customer-owned machine and bring trustworthy results back into the workflow.",
-    "Branch movement, disconnected workers, and retries can make remotely reported verification ambiguous unless execution targets and attempts are durable."
+    "Remote request authorization/persistence, attempt transitions and exact-SHA workspace preparation exist, but there is no end-to-end connected-worker execution workflow. Enrollment, dispatch, queue execution, reconciliation and caller transports remain to be integrated."
   ],
   "risk": {
     "dimensions": [

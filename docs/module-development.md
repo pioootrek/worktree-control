@@ -1,6 +1,6 @@
 ---
 audience: "contributors developing and testing application modules"
-last_reviewed: "2026-09-07"
+last_reviewed: "2026-09-27"
 source_of_truth: "implemented module entry points and focused verification workflow"
 status: "active"
 ---
@@ -8,8 +8,10 @@ status: "active"
 # Developing a module
 
 The controller still has one process and one database owner. `ControlService`
-is the compatibility facade used by HTTP, MCP, and CLI. It constructs and
-connects the application modules; existing constructor arguments remain valid.
+is the compatibility facade for runtime operations. Bootstrap in
+`src/cli/index.ts` constructs identity, authentication and knowledge services;
+the facade and extracted transport handlers share those services. Runtime
+modules still share the facade's lifecycle dependencies.
 
 ## Where to change a workflow
 
@@ -20,6 +22,8 @@ connects the application modules; existing constructor arguments remain valid.
 | Runtime start/stop/switch or TLS | `src/server/modules/runtime/` and shared `lifecycle/` | `src/features/runtime/` and project-card composition | `pnpm test src/server/control-service-capacity.test.ts src/server/control-service-agent.test.ts src/server/modules/lifecycle` |
 | Test-run SQL or storage history | `src/server/infrastructure/sqlite/test-run-queries.ts` or `storage-queries.ts` | Owning feature, if payload presentation changes | `pnpm test src/server/infrastructure/sqlite` |
 | Remote verification admission, identity storage, and exact-commit workspaces | `src/server/modules/remote-verification/`, `src/server/infrastructure/sqlite/remote-verification-queries.ts`, and `src/server/infrastructure/git/remote-verification-workspace.ts` | None until a transport slice is implemented | `pnpm test src/server/modules/remote-verification src/server/infrastructure/sqlite src/server/infrastructure/git` |
+| Installation authentication and live administration | `src/server/modules/authentication/`, `src/server/admin-socket.ts`, `src/cli/auth-management.ts` | Dashboard access form and shared session | `pnpm test src/server/modules/authentication src/server/installation-token-transports.test.ts src/cli/auth-management.test.ts` |
+| Knowledge identity, content and recovery | `src/server/modules/identity/`, `src/server/modules/knowledge/`, SQLite knowledge helpers and extracted transports | `src/features/knowledge/` | `pnpm test src/server/modules/identity src/server/infrastructure/sqlite src/server/knowledge-transports.test.ts`; built integration and knowledge UI suites |
 | Schema upgrade | `src/server/infrastructure/sqlite/migrations.ts` | None | `pnpm test src/server/infrastructure/sqlite` |
 | Session, event subscription, dashboard refresh | `src/features/dashboard/use-dashboard.ts` | `src/features/dashboard/dashboard.tsx` | `pnpm build` followed by `pnpm test:ui` |
 | Dashboard read projection and Git refresh admission | `src/server/modules/dashboard/` and `src/server/git-worktrees.ts` | `src/features/dashboard/use-dashboard.ts` | `pnpm test src/server/modules/dashboard src/server/control-service-dashboard.test.ts src/server/events.test.ts` |
@@ -96,10 +100,10 @@ claim, and uses no real project, session token, or controller database. It
 checks rendered components, translated labels, mutation payloads, draft settings,
 dialog focus restoration, test output, and one active event subscription.
 It does not verify a live SSE transport, real Git discovery, process lifecycle,
-or a live dashboard/controller integration. At a 390-pixel viewport the header
-toolbar still extends beyond the viewport; these interaction checks are not a
-responsive-layout acceptance test. Existing HTTP/MCP and service tests
-cover those boundaries; a live managed-server test needs a separate claim.
+or a live dashboard/controller integration. Current UI suites include mobile
+layout checks, but these are fixture evidence. Separate `test:integration`,
+`test:https` and `test:e2e` suites exercise built controllers and owned fixture
+processes. A test against a managed development server needs a separate claim.
 
 `src/architecture.test.ts` resolves both relative and `@/` imports. It rejects
 server/CLI/Node/SQLite dependencies in browser code and shared contracts,
@@ -109,13 +113,15 @@ cycles in local imports, including type-only imports.
 ## Deliberately remaining work
 
 The facade still owns project registration/removal, reservation and claim
-operations, cache maintenance, and controller shutdown. HTTP/MCP adapters and
-bootstrap retain their existing locations.
+operations, cache maintenance, and controller shutdown. Most runtime HTTP/MCP
+routing and bootstrap retain their existing locations; knowledge handlers
+already live under `src/server/transports/`.
 Extract these when their next workflow needs it, using the same lifecycle.
 
-In particular, asynchronous cache deletion already lacks lifecycle serialization;
-its race is tracked separately as `FIX-20260905-cache-lifecycle-serialization`.
-This extraction preserves that behavior and does not present it as fixed.
+Cache deletion already shares lifecycle serialization with runtime, reservations,
+project removal and test admission. That race was fixed in
+[DONE-20260908-cache-lifecycle-serialization](backlog/done/DONE-20260908-cache-lifecycle-serialization.json).
+Preserve the shared authority during further extraction.
 Dashboard event classification and browser reconciliation live at the existing
 event/feature boundaries; feature composition still has one SSE subscription
 and one metrics timer.

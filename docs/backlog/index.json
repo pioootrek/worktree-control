@@ -3,22 +3,12 @@
   "items": [
     {
       "area": "core",
-      "id": "FEAT-20260913-knowledge-k0-contracts",
-      "path": "feature/FEAT-20260913-knowledge-k0-contracts.json",
-      "priority": "now",
-      "risk_level": "high",
-      "status": "in-progress",
-      "title": "Fix knowledge contracts and Hub import baseline",
-      "type": "feature"
-    },
-    {
-      "area": "core",
       "id": "FEAT-20260829-independent-auth-modes",
       "path": "feature/FEAT-20260829-independent-auth-modes.json",
       "priority": "next",
       "risk_level": "high",
-      "status": "open",
-      "title": "Configure global open, token and Better Auth modes from CLI",
+      "status": "in-progress",
+      "title": "Complete credential-free knowledge and administration CLI flows in open mode",
       "type": "feature"
     },
     {
@@ -38,7 +28,7 @@
       "priority": "next",
       "risk_level": "medium",
       "status": "open",
-      "title": "Prepare a reusable package trial and an optional first npm release",
+      "title": "Finish package upgrade/recovery trial and release handoff",
       "type": "feature"
     },
     {
@@ -48,7 +38,7 @@
       "priority": "next",
       "risk_level": "medium",
       "status": "open",
-      "title": "Complete integrated verification of independent project switching",
+      "title": "Finish owner-workflow acceptance of independent project switching",
       "type": "feature"
     },
     {
@@ -68,7 +58,7 @@
       "priority": "next",
       "risk_level": "medium",
       "status": "open",
-      "title": "Add shared project memory, discussions, and backlog for humans and agents",
+      "title": "Finish knowledge pilot and cutover, then deliver playbook and instruction workflows",
       "type": "feature"
     },
     {
@@ -78,7 +68,7 @@
       "priority": "next",
       "risk_level": "medium",
       "status": "open",
-      "title": "Split service and dashboard responsibilities in small verified changes",
+      "title": "Extract remaining transport, bootstrap and facade responsibilities when needed",
       "type": "rework"
     },
     {
@@ -118,7 +108,7 @@
       "priority": "later",
       "risk_level": "high",
       "status": "open",
-      "title": "Issue scoped MCP access tokens for coding agents",
+      "title": "Extend scoped agent credentials to runtime projects, claims and configuration",
       "type": "feature"
     },
     {
@@ -561,7 +551,8 @@
       "created": "2026-08-29",
       "files": [
         "assessment-20260905.md",
-        "findings.md"
+        "findings.md",
+        "reconciliation-20260927.md"
       ],
       "id": "NOTE-20260829-readiness-assessment",
       "path": "notes/NOTE-20260829-readiness-assessment",

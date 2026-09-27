@@ -74,12 +74,16 @@
       "author": "agent:codex",
       "date": "2026-09-13",
       "text": "Owner clarified that t3code/implement-llmopshub-worker-delegation is the integration branch. This supersedes the preceding slice-to-main workflow: new slice branches start from the current integration branch after the preceding slice merges and target it by PR; the final integration PR targets main after acceptance of the agreed feature scope. Existing K0/K1 is already on integration and requires review of a fixed commit range and final SHA, without rewriting history or a self-PR. Further fixes use slice PRs; K2 starts after K0/K1 acceptance and required fixes merge. Canonical backlog stays on main, and slice acceptance does not close the parent feature."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-27",
+      "text": "Main 17d0c9d7e5be6d3f451298cdb7b364dbf25f5200 includes K2–K6 services, SQLite, HTTP/MCP/CLI, dashboard, memory/context, attachments, backups, logical project transfer and resumable Hub import (PRs #42–#48), plus K7a pilot tooling and fidelity/UX corrections (#49–#52). K1 is closed; K0 is reconciled in DONE-20260927-knowledge-k0-contracts. CI 36312411574 passes automated knowledge coverage, but does not run the private K7 live pilot or approve migration. Remaining: reconcile K2–K6 acceptance against code/tests, refresh K7a scripts for current authentication, retain a current pilot/restore report, and explicitly cut over one project with one write source. K8/K9 playbooks and instruction inspection/composition remain future implementation. This repository continues using its Git-backed backlog."
     }
   ],
   "priority": "next",
   "problem": [
-    "Useful conclusions and out-of-scope findings from human-agent conversations need a durable place where another human or model can discover, discuss, and continue them.",
-    "The current Git-backed Hub captures backlog plans but requires repository synchronization and an indirect human feedback flow. Switcher already provides related project and verification context."
+    "The core knowledge workflow and Hub import are implemented, but the umbrella still lacks a current stage-by-stage acceptance record and a confirmed real-project cutover with restore evidence. K7 pilot tooling predates default token-mode startup. Playbooks, instruction inspection and approved-rule composition remain unimplemented."
   ],
   "risk": {
     "dimensions": [
@@ -92,16 +96,16 @@
   },
   "schema_version": 1,
   "scope": [
-    "Use the linked plan as a phased umbrella; start with a bounded local thread/reply/search/task flow and split implementation slices before coding.",
-    "Reuse SQLite infrastructure and shared application services exposed through web/API, MCP, and CLI. Keep knowledge independent of server claims and worktree lifetime.",
-    "Preserve durable authorship, revision history, explicit decision provenance, retry safety, bounded reads, and linked evidence. Generate versioned Markdown/JSON snapshots when needed.",
-    "Plan a loss-aware import from LLM Ops Hub and one explicit write-location cutover per project. GitHub is not required for knowledge operations.",
-    "Keep the module able to run independently for optional future hosting. Accounts, remote access, tenant isolation, pricing, and hosted deployment remain later design work.",
-    "After the core workflow, add playbooks and report-only health monitoring, repository instruction inspection, then AGENTS.md assembly from explicitly approved scoped rules. Preserve per-document repository-owned versus service-generated source-of-truth boundaries; see delivery phases 4-6."
+    "Retain the delivered SQLite knowledge flow: project identity, threads/replies/tasks, revisions and retries, memory approval/search/context, attachments, controller backup, logical project transfer and resumable Hub import.",
+    "Reconcile K2–K6 criteria against existing implementations and main CI. Do not equate a merged slice or passing fixture with every migration acceptance criterion.",
+    "Update K7a pilot setup and live-client authentication for current token-mode defaults, then record an isolated import, real UI/two-agent workflow and restore trial against a fixed revision.",
+    "Cut over one explicitly selected project only after its import and recovery acceptance. Keep the repository-backed Hub authoritative until that decision; preserve rollback and avoid two writable sources.",
+    "After the core pilot, deliver K8 playbooks and report-only instruction inspection, then K9 preview/apply of approved scoped rules. Keep repository-owned documents authoritative unless explicitly transferred.",
+    "Keep hosted accounts, organization isolation, PostgreSQL migration, pricing and autonomous agent execution in their separate later work."
   ],
   "source": "Owner discussion on 2026-09-05; docs/shared-project-memory-plan.md",
   "status": "open",
-  "title": "Add shared project memory, discussions, and backlog for humans and agents",
+  "title": "Finish knowledge pilot and cutover, then deliver playbook and instruction workflows",
   "type": "feature",
   "validation": [
     "A human and two agent sessions save a discussion, reply, find it, and create a linked task without starting or claiming a managed server.",

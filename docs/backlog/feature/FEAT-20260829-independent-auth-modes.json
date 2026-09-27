@@ -47,11 +47,16 @@
       "author": "user",
       "date": "2026-09-26",
       "text": "Approved the Unix domain socket admin channel (0600 socket in the 0700 app data directory) for administering a running controller."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-27",
+      "text": "Reconciled against main 17d0c9d7e5be6d3f451298cdb7b364dbf25f5200 and successful CI https://github.com/pioootrek/worktree-switcher/actions/runs/36312411574. Stage 1 A–F and review fixes are merged in PR #54: persisted policy, open/token transport authentication, default token mode, migration, browser login, token rotation and online Unix-socket administration. Do not reimplement these. Source review found remaining credential-free CLI gaps: runKnowledgeCommand, runHubImportExecuteCommand, identity administratorToken and logical backup export/import require a token before applying open-mode policy. CI success does not cover this missing acceptance case. Keep this item open for these paths and their focused transport tests; Better Auth is separate."
     }
   ],
   "priority": "next",
   "problem": [
-    "Runtime, MCP and knowledge currently use separate credential paths. The owner needs one CLI-selected installation mode and one generated token covering all functions, without a second knowledge login."
+    "Global authentication modes are implemented on main, but knowledge CLI, identity administration and logical export/import still reject absent token environment variables before applying open-mode policy. This contradicts the agreed credential-free open-mode workflow."
   ],
   "risk": {
     "dimensions": [
@@ -64,29 +69,22 @@
   },
   "schema_version": 1,
   "scope": [
-    "Implement stage 1 of NOTE-20260909-self-hosted-saas-plan/authentication-modes-and-plugin.md: one persisted installation-wide open, token or better-auth setting controlled by local administrator CLI.",
-    "Open mode requires no authentication for any enabled Web/API/MCP/knowledge flow, including writes, approvals, attachments and export/import. Record anonymous installation authority honestly; preserve validation, process ownership, reservations and origin protections. Explicit CLI selection is sufficient; do not add a password, token, TLS prerequisite or confirmation gate for open mode.",
-    "Token mode uses one CLI-generated installation credential across runtime, knowledge and all functions exposed by each transport. A browser session may derive from that credential, but no separate knowledge credential or grant setup is required for the installation owner. Keep optional scoped agent credentials limited to their grants.",
-    "Add CLI status, mode selection, token generation and explicit rotation through shared operations. Online configuration uses an OS-protected local administrative channel; offline access retains the controller singleton lock. Mode changes are not exposed through anonymous HTTP or MCP tools.",
-    "Store only the token verifier, emit the secret through private CLI output, retain it across controller restarts and invalidate derived sessions on rotation. Define service-open and config-mcp behavior without hidden credential generation or leaking secrets in arguments/logs.",
-    "Unify caller context across HTTP/MCP/CLI, SSE, identity administration and knowledge. Migrate existing pairing, MCP and knowledge credentials explicitly without silently expanding old token privileges or rewriting historical identities.",
-    "Expose better-auth as an unavailable provider in stage 1: stable auth_provider_unavailable error and to-be-implemented message, unchanged active mode. A configured provider missing at startup fails before exposing operations, with no fallback to open.",
-    "Validate and apply mode transitions atomically; invalidate old browser/MCP sessions and subscriptions without restarting managed project servers or losing existing reservation semantics. New installs default to token and existing installs remain protected until explicit migration."
+    "Preserve delivered stage 1 behavior: persisted open/token/legacy policy, default token mode, verifier-only tokens, shared browser login, Unix-socket mode administration, rotation and session invalidation.",
+    "Make online knowledge CLI and online/offline identity-administration commands honor open mode without requiring a token environment variable. Preserve strict token/scoped-credential validation in protected modes, safe endpoint discovery and singleton ownership.",
+    "Apply open-mode installation authority to offline Hub execute-import and logical backup export/import without requiring a dummy credential. Preserve the singleton lock and record anonymous authority honestly.",
+    "Keep Better Auth implementation, runtime-scoped delegation and convenience routing of other CLI operations through the admin socket outside this residual fix."
   ],
   "source": "Owner authentication roadmap decision on 2026-09-17; supersedes independent Web/MCP switches",
-  "status": "open",
-  "title": "Configure global open, token and Better Auth modes from CLI",
+  "status": "in-progress",
+  "title": "Complete credential-free knowledge and administration CLI flows in open mode",
   "trigger": [
     "Owner requested this as authentication roadmap stage 1 on 2026-09-17; stage 2 Better Auth depends on its shared provider boundary."
   ],
   "type": "feature",
   "validation": [
-    "Run the complete HTTP/MCP/CLI/browser matrix in open and token modes, including runtime, test admission, existing/new knowledge projects, approvals, attachments, export/import, identity administration and SSE. Token mode must need only one installation credential; open mode must need none.",
-    "Verify missing/wrong/rotated tokens fail in token mode, restarts preserve the token, generation does not implicitly rotate, and rotation invalidates all derived sessions and existing subscriptions.",
-    "Verify anonymous operations and shared-token operations do not falsely identify a particular human; retain historical IDs, records and grants. Existing scoped tokens do not inherit installation-token privileges.",
-    "Verify unsupported better-auth selection leaves the active mode unchanged, manually configured missing providers fail closed, and no configuration failure selects open.",
-    "Verify online/offline CLI administration respects OS authority and singleton ownership, anonymous requests cannot change modes, and MCP cannot mint credentials or bypass its tool/claim rules.",
-    "Verify migration of service access and client configuration, secret-free diagnostics, browser flows, pnpm check, build and packaged installation according to repository verification rules."
+    "With all WORKTREE_SWITCHER_*TOKEN variables absent, verify online knowledge reads/writes and identity administration against a real open-mode controller, plus offline identity administration, Hub import and logical project export/import under the singleton lock.",
+    "Verify the same commands reject missing, invalid and revoked credentials in protected modes, scoped tokens retain their grants, and open-mode history records authenticationMethod none.",
+    "Run focused CLI/transport regressions and the supported check/build and packaged verification affected by the fix. Reuse main CI 36312411574 as evidence for delivered stage 1, not as proof of the missing open-mode CLI cases."
   ],
   "value": [
     "One explicit installation policy removes repeated knowledge authentication and keeps a complete MIT self-hosted edition while establishing the optional provider boundary."

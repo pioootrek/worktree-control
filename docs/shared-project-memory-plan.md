@@ -19,15 +19,19 @@ The owner wants Worktree Switcher to provide shared memory for humans and
 agents, a forum for exchanging information, and a backlog for findings that
 will not be addressed immediately. Build this as a cohesive module within
 Switcher, reusing its project registry, controller, SQLite infrastructure,
-dashboard, and MCP integration. This document records the planned direction;
-the module is not implemented and detailed API/data contracts remain to be
-designed. Track delivery in
+dashboard, and MCP integration. The core module is implemented on `main`,
+including threads/replies/tasks, revisioned memory and approval, search/context,
+attachments, backup/restore, logical project transfer and resumable Hub import.
+Track remaining acceptance and migration in
 [FEAT-20260905-shared-project-memory](backlog/feature/FEAT-20260905-shared-project-memory.json).
 
 The [implementation plan from 2026-09-13](backlog/notes/NOTE-20260913-knowledge-backlog-implementation/implementation-plan.md)
 breaks this direction into K0-K9 delivery stages with code entry points,
 recommended contracts, Hub data mapping, test cases, and cutover/rollback
-gates. It is a proposal based on inspected code, not an implemented migration.
+gates. Its current-status section distinguishes delivered K0–K6 work from
+K7 pilot/cutover acceptance and future K8/K9 instruction workflows. Pilot tooling
+exists, but its authentication setup needs review against token-mode defaults.
+This repository still uses its Git-backed backlog; no cutover is implied.
 
 The priority is usefulness to the owner, then cooperation between the owner's
 agents and models, then usefulness to other people. Open source with optional
@@ -73,9 +77,10 @@ verification by itself. Preserve who stated something, what was checked, and
 which source revision or commit the result concerns. A later correction keeps
 the original history and identifies the conclusion it supersedes.
 
-Exact record types, status enums, approval operations, and table layouts are
-open design decisions. The first slice should prove the workflow before
-introducing a broad ontology or elaborate workflow engine.
+Implemented record schemas live in `src/shared/contracts/knowledge.ts`,
+application operations in `src/server/modules/knowledge/`, and persistence in
+`src/server/infrastructure/sqlite/`. Use those contracts for current behavior;
+later playbook and instruction workflows still need their own bounded design.
 
 ## Source of truth and file access
 
@@ -109,8 +114,8 @@ workflow rather than expanding its first implementation slice.
 
 Use SQLite behind a dedicated knowledge service/store boundary, with explicit
 migrations. Reuse the existing controller and dashboard for local operation.
-Whether the module shares the runtime database file or uses a separate SQLite
-file is still to be decided; do not introduce competing database owners.
+The module shares the controller-owned SQLite connection with runtime state.
+Knowledge query helpers and migrations do not open a competing database owner.
 
 Knowledge belongs to a stable project identity. Worktree paths, branches,
 commits, and test runs are optional references, not the lifetime of a record.
@@ -128,9 +133,10 @@ Durable authorship, revision checks against lost updates, retry-safe creation,
 bounded search/read responses, export, and recoverable backups are part of the
 design. An existing MCP session is not a durable person or agent identity; a
 caller-supplied display name is not proof of human approval. Define this trust
-boundary before implementing writes. Reuse relevant work from the existing
-local-account and scoped-agent-token backlog without assuming those features
-are already delivered.
+boundary when extending writes. K1 supplies durable principals and scoped
+knowledge grants; installation authentication supplies shared-token and open
+access. Neither delivers the optional Better Auth account provider or scoped
+runtime capabilities.
 
 ## Product execution priority
 

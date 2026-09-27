@@ -116,11 +116,16 @@
       "author": "agent:codex",
       "date": "2026-09-09",
       "text": "Resource acceptance is complete under NOTE-20260909-controller-resource-budget and docs/resource-budget.md. Implementation 8a0d5d0 incorporates PR #20, passes three canonical measurements (109.8-122.4 MiB post-cycle RSS; 15.75-28.75 MiB growth), detects the 128 MiB negative control with graceful cleanup, and passes check/build, 11 integration, 5 UI and 2 real E2E tests. This closes only RWK-20260829-idle-memory-budget. Keep this feature open for its remaining owner-workflow and focused acceptance evidence; these isolated fixtures are not an observed owner session."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-27",
+      "text": "Main 17d0c9d7e5be6d3f451298cdb7b364dbf25f5200 now has real-controller integration and real browser E2E suites, all passed in CI 36312411574. The canonical resource evidence remains dated 2026-09-09; no new benchmark or owner session was run for this reconciliation. Remaining acceptance: map the criteria to these existing suites, perform the focused owner workflow and record exact revision, reservations, independent switching, failure isolation and UI behavior. Do not rebuild the already delivered runtime or test suites."
     }
   ],
   "priority": "next",
   "problem": [
-    "Multi-project switching, the static dashboard, SQLite, reservations, and MCP are implemented. Their integrated failure and resource behavior still needs bounded acceptance evidence, and the assessment found process cleanup and refresh amplification defects."
+    "Independent switching, capacity, reservations, process cleanup, refresh coordination and real-controller suites are implemented. Remaining work is a concise criterion-to-evidence reconciliation and a recorded owner workflow; automated fixtures do not establish that acceptance."
   ],
   "risk": {
     "dimensions": [
@@ -139,7 +144,7 @@
   ],
   "source": "Product planning conversation on 2026-08-29",
   "status": "open",
-  "title": "Complete integrated verification of independent project switching",
+  "title": "Finish owner-workflow acceptance of independent project switching",
   "type": "feature",
   "validation": [
     "Switch three isolated fixture projects between worktrees and verify only the selected runtime restarts, ports stay stable, and reservations remain authoritative.",

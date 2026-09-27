@@ -31,11 +31,16 @@
       "author": "agent:codex",
       "date": "2026-09-17",
       "text": "The 2026-09-17 roadmap in NOTE-20260909-self-hosted-saas-plan/authentication-modes-and-plugin.md makes one installation token sufficient for all owner functions. This item remains optional least-privilege delegation; it must not force migration away from that token. Open mode deliberately has no anonymous access boundary to enforce grants against."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-27",
+      "text": "K1 delivered revocable project-scoped knowledge credentials; stage 1 added the unified installation token. These do not implement runtime capabilities. In mcp-runtime.ts a principal session returns after knowledge/get_identity registration, before runtime tools. Keep this item for projects:read/claims:manage/profiles:select/config:write, runtime discovery filtering, audit and lease binding, plus CLI/dashboard management; reuse existing identity primitives."
     }
   ],
   "priority": "later",
   "problem": [
-    "The MCP listener currently uses one persistent bearer token shared by every local client. That is sufficient for the initial fixed read-and-claim tool set, but it cannot safely distinguish agents, restrict projects, revoke one client, or authorize higher-impact persistent configuration changes."
+    "Scoped knowledge credentials and the full-access installation token exist. Runtime-scoped capabilities, project-filtered runtime discovery and binding runtime reservations/audit to durable agent identity remain missing; knowledge credentials currently expose only knowledge/get_identity tools."
   ],
   "risk": {
     "dimensions": [
@@ -59,7 +64,7 @@
   ],
   "source": "Product discussion on 2026-08-29",
   "status": "open",
-  "title": "Issue scoped MCP access tokens for coding agents",
+  "title": "Extend scoped agent credentials to runtime projects, claims and configuration",
   "trigger": [
     "Revisit when distinct client/project permissions are needed. Preserve the existing authentication and session ownership until then; compact status and owner-authorized runtime tools can ship independently."
   ],

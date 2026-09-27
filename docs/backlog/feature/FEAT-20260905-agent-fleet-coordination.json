@@ -28,6 +28,11 @@
       "author": "human:pioootrek",
       "date": "2026-09-05",
       "text": "Owner requested preserving the technical specialist handover: task addressed to a named agent or role queue, linked forum thread, durable inbox, and explicit acceptance. Pull-based MCP reading comes first; recording a message does not start an LLM session. See the task/thread/inbox section of the fleet plan."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-27",
+      "text": "Identity and knowledge are delivered foundations, not a fleet implementation. Durable assignments, addressed inboxes/acknowledgements, atomic task/thread/inbox handoff and exact-revision review coverage remain new work. Preserve the owner decision to finish remote commit verification before autonomous fleet execution; no new launcher or coordination implementation is selected here."
     }
   ],
   "priority": "later",

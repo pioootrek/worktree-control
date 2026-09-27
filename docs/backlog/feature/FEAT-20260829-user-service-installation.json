@@ -42,6 +42,11 @@
       "author": "agent:codex",
       "date": "2026-09-05",
       "text": "Moved later because daily Linux operation already has historical evidence. This remains necessary before claiming fully validated macOS service support; it does not block a clearly scoped Linux-first experiment."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-27",
+      "text": "CI 36312411574 supplies real packaged Linux systemd lifecycle evidence, including isolated session-manager restart, singleton/port-conflict behavior and idempotent removal. Remaining: populated package upgrade and failure recovery (shared with the package trial item), unexpected-controller-failure/owned-child acceptance, and a real macOS LaunchAgent trial. No user service was changed during reconciliation."
     }
   ],
   "priority": "later",

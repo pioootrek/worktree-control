@@ -1,6 +1,6 @@
 ---
 audience: "contributors and coding agents"
-last_reviewed: "2026-09-09"
+last_reviewed: "2026-09-27"
 source_of_truth: "product intent and initial architecture of Worktree Switcher"
 status: "active"
 ---
@@ -38,22 +38,24 @@ For example, one Switch instance may run all of the following concurrently:
 Switching the frontend worktree must not interrupt the backend or documentation
 servers.
 
-The planned extension for shared human/agent memory, discussions, and backlog
-is described in [Shared project memory plan](shared-project-memory-plan.md).
-It reuses Switcher's infrastructure while keeping knowledge independent of
-runtime ownership. This is a planned module, not current functionality; the
-existing repository-backed backlog remains in use until an explicit migration.
+Shared human/agent memory, discussions, tasks, attachments and Hub import are
+implemented on `main`; see [shared project memory](shared-project-memory-plan.md)
+for delivered stages and remaining pilot/cutover work. Knowledge has a durable
+project identity independent of runtime ownership. The existing repository-backed
+backlog remains authoritative until an explicit, verified migration.
 The subsequent [agent coordination plan](agent-fleet-coordination-plan.md)
-adds assignments, messages, and evidence across sessions. Together these are
-a planned operations-hub direction, not an implemented autonomous fleet or a
-decision to rename the product.
+adds assignments, messages, and evidence across sessions. Agent coordination
+and autonomous execution remain planned; delivered knowledge does not imply an
+implemented fleet or a decision to rename the product.
 
 The first remote-execution experiment is
 [verification of pushed commits on customer-owned workers](remote-verification-plan.md).
 An existing LLM client or human requests a configured check for an exact SHA
 and receives its result. It follows urgent runtime reliability work and
 precedes autonomous fleet execution; a full forum or paid SaaS is not required.
-This is planned work, not a currently supported remote endpoint.
+Request/attempt persistence and exact-SHA workspace preparation are implemented.
+Worker connectivity, queue execution and caller transports remain incomplete;
+there is no supported end-to-end remote endpoint yet.
 
 The [environment runtime plan](environment-runtime-plan.md) incorporates the
 owner's Secret Runtime proposal through scoped worker-side credential delivery.
@@ -163,10 +165,13 @@ Switcher control plane.
 
 The npm package and executable are both named `worktree-switcher`. A global
 user-level installation registered as an operating-system user service is the
-recommended daily-use path; `npx` and foreground operation remain evaluation
-and diagnostic paths. Running `worktree-switcher` or `worktree-switcher start`
+recommended daily-use path. The package remains private and unpublished; use
+the verified tarball or a source build for foreground evaluation and diagnostics.
+Running `worktree-switcher` or `worktree-switcher start`
 starts one foreground controller, opens the browser, and owns its managed child
-processes. `--no-open` supports headless use.
+processes. New installations first require `auth token generate`; existing
+installations retain legacy mode until explicitly migrated. `--no-open` supports
+headless use. See [authentication](authentication.md), including its CLI limitation.
 
 The CLI installs a systemd user service on Linux or a LaunchAgent on macOS
 without requiring root. The service starts with the user's platform session,
@@ -181,8 +186,8 @@ process tree it started. It never terminates an unknown process merely because
 that process occupies a configured port. Leaving managed servers running after
 controller exit is not part of the MVP.
 
-Implemented supporting commands cover `config path`, `config mcp`,
-`project add|list|remove`, `doctor`, and the
+Implemented supporting commands cover `auth`, `identity`, `knowledge`,
+`backup`, `config path`, `config mcp`, `project add|list|remove`, `doctor`, and the
 `service install|status|start|stop|restart|open|url|uninstall` lifecycle.
 Project commands delegate to an authenticated running user service or acquire
 the controller singleton lock for offline access. Standalone platform binaries

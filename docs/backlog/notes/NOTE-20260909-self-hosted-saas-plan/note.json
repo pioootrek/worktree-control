@@ -9,7 +9,7 @@
       "FEAT-20260913-knowledge-k1-identity"
     ],
     "remote_verification_baseline": "d429eb9",
-    "summary": "Staged self-hosted and SaaS direction with delivery gates. The 2026-09-17 authentication roadmap adds CLI-selected open/token/better-auth modes, one token across runtime and knowledge, then an optional Better Auth provider package. Commercial activation remains undecided. Planning only."
+    "summary": "Remote verification foundations and authentication stage 1 are on main. Full worker execution, Better Auth and SaaS remain planned. Stage 1 has residual credential-free CLI gaps recorded in its existing item. Read current status annotations before historical implementation sequences; commercial activation remains undecided."
   },
   "created": "2026-09-09",
   "files": [
@@ -18,7 +18,7 @@
     "authentication-modes-and-plugin.md"
   ],
   "id": "NOTE-20260909-self-hosted-saas-plan",
-  "last_reviewed": "2026-09-17",
+  "last_reviewed": "2026-09-27",
   "schema_version": 1,
   "status": "active",
   "tags": [

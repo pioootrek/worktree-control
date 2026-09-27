@@ -1,0 +1,26 @@
+{
+  "changed": [
+    "Recorded stable knowledge identity/deletion, caller authority, revisions, idempotency and loss-aware Hub mapping contracts, including explicitly deferred downstream decisions.",
+    "Captured the privacy-safe Hub inventory, standalone synthetic open/done/note/attachment fixture and negative scenarios.",
+    "Recorded clean-source unit/resource baselines and three canonical resource measurements."
+  ],
+  "date": "2026-09-27",
+  "followup_ids": [
+    "FEAT-20260905-shared-project-memory",
+    "FEAT-20260829-independent-auth-modes"
+  ],
+  "id": "DONE-20260927-knowledge-k0-contracts",
+  "item_id": "FEAT-20260913-knowledge-k0-contracts",
+  "schema_version": 1,
+  "source": "FEAT-20260913-knowledge-k0-contracts; commits 3e060ef and 57a6996; main 17d0c9d7e5be6d3f451298cdb7b364dbf25f5200; NOTE-20260829-readiness-assessment/reconciliation-20260927.md",
+  "summary": [
+    "Closed the bounded K0 planning/baseline deliverable after reviewing its contract, inventory, synthetic fixture and recorded measurements. K1 has a separate completed outcome.",
+    "This closes contracts and baselines only. It does not certify every K2–K6 criterion, migrate a real backlog or approve K7 cutover. Remaining implementation and acceptance belong to the knowledge umbrella."
+  ],
+  "title": "Established knowledge contracts, Hub fixture and resource baseline",
+  "validation": [
+    "Reviewed k0-contract.md, k0-hub-inventory.json and k0-baseline.json against the implemented identity/knowledge/import boundaries on main.",
+    "Retained historical evidence: 303 tests in 47 files and seven resource-contract tests passed with observed_match; three canonical measurements passed with graceful cleanup and growth 26.50/27.00/27.25 MiB. No new resource run is claimed.",
+    "Documentation reconciliation uses the pinned Hub validator for the canonical backlog and standalone fixture, plus git diff --check; see the reconciliation note for current validation results."
+  ]
+}

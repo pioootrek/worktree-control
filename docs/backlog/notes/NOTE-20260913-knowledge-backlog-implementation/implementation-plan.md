@@ -1,5 +1,29 @@
 # Wdrożenie backloga i pamięci projektu w Worktree Switcher
 
+## Aktualny stan, 2026-09-27
+
+Sprawdzona rewizja `main`: `17d0c9d`. Poniższa sekwencja K0–K9 opisuje plan
+z 13 września; nie należy ponownie zaczynać implementacji od K0/K1.
+
+| Etap | Dostarczone | Pozostały odbiór lub implementacja |
+| --- | --- | --- |
+| K0 | Kontrakt, inwentaryzacja, fixture i pomiary; DONE-20260927-knowledge-k0-contracts | Zamknięty zakres przygotowawczy, bez zgody na migrację danych. |
+| K1 | Trwała tożsamość i granty; DONE-20260926-knowledge-k1-identity | Globalny dostęp dostarczył etap 1 auth; jego luka CLI w open ma własny wpis. |
+| K2–K3 | Serwis/SQLite, HTTP/MCP/CLI i dashboard, PR #42/#43 | Powiązać kryteria z bieżącymi testami, bez ponownej implementacji. |
+| K4 | Pamięć, zatwierdzanie rewizji, wyszukiwanie i kontekst, PR #44 | Zachować testy kontekstu kolejnej sesji i unieważniania zatwierdzeń. |
+| K5 | Załączniki, backup kontrolera i logiczny transfer projektu, PR #45/#46 | Potwierdzić restore na danych wybranego pilota. |
+| K6 | Planowanie i wznawialny import Huba, PR #47/#48 oraz poprawki #51/#52 | Sprawdzić raport mapowania i nierozwiązane relacje dla wybranego źródła. |
+| K7a | Skrypty odizolowanego pilota i poprawki GUI/importu, PR #49–#52 | Zaktualizować setup/logowanie pod token-mode i zachować świeże dowody próby. |
+| K7 | Brak potwierdzonego przełączenia w tym przeglądzie | Jeden wybrany projekt, jedno miejsce zapisu, odbiór importu/restore i próba codziennej pracy. |
+| K8–K9 | Plan | Playbooki, inspekcja instrukcji i składanie zatwierdzonych reguł. |
+
+[Przegląd dowodów i luk](../NOTE-20260829-readiness-assessment/reconciliation-20260927.md)
+odróżnia zielone CI od odbioru rzeczywistej migracji. Git-backed backlog tego
+repozytorium pozostaje źródłem prawdy. Etapy K2–K7a są już scalone na main;
+opis gałęzi integracyjnej niżej dotyczy zakończonej serii PR-ów.
+
+## Historyczny plan
+
 Stan: propozycja wdrożenia z 2026-09-13, bez zmian runtime i bez migracji danych.
 Zadanie nadrzędne: [FEAT-20260905-shared-project-memory](../../feature/FEAT-20260905-shared-project-memory.json).
 Kierunek produktu: [shared-project-memory-plan.md](../../../shared-project-memory-plan.md).
@@ -469,7 +493,7 @@ zaliczonym testem. W raporcie pilotażu zachować manifest importu oraz dowód
 odtworzenia. Zmiany samych dokumentów wymagają Hub `fmt`, `validate` i
 `git diff --check`.
 
-## Najbliższy krok implementacyjny
+## Historyczny pierwszy krok z 2026-09-13
 
 Rozpocząć od K0 i K1: inwentaryzacji importu, kontraktu trwałego projektu
 oraz tożsamości i uprawnień wiedzy. Pierwszy pokaz działania powinien kończyć
