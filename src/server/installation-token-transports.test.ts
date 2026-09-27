@@ -18,6 +18,10 @@ import { createMcpControllerServer } from "./mcp-http-server";
 import { EventStream } from "./events";
 import type { DirectoryBrowser } from "./directory-browser";
 import { authenticationAdminHandler } from "./authentication-admin";
+import type { AppPaths } from "./paths";
+import { runKnowledgeCommand } from "../cli/knowledge-management";
+import { runIdentityCommand } from "../cli/identity-management";
+import { writeServiceAccess } from "../cli/service-access";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -36,7 +40,7 @@ async function setup(mode: "token" | "open" = "token") {
   const project = identity.createKnowledgeProject({ name: "Shared" }, owner);
   const agent = identity.createAgent(owner);
   identity.setKnowledgeGrant({ principalId: agent.id, projectId: project.id, permissions: ["knowledge:read"] }, owner);
-  const agentToken = identity.issueAgentToken({ principalId: agent.id, label: "reader" }, owner).token;
+  const { token: agentToken, credential: agentCredential } = identity.issueAgentToken({ principalId: agent.id, label: "reader" }, owner);
   const installationToken = authentication.generateToken("test").token;
   authentication.setMode(mode, "test");
 
@@ -68,7 +72,16 @@ async function setup(mode: "token" | "open" = "token") {
     cleanups.push(() => client.close());
     return client;
   };
-  return { databasePath, authentication, identity, project, agentToken, installationToken, base, endpoint, knowledgeCall, mcpClient, mcp, events };
+  // CLI commands discover this controller; the database path must never be opened offline.
+  const cliPaths = { serviceAccessPath: join(directory, "access.json"), databasePath: join(directory, "never-open.sqlite3"), controllerLockPath: join(directory, "never-lock") } as AppPaths;
+  writeServiceAccess(cliPaths.serviceAccessPath, { pid: process.pid, startedAt: new Date().toISOString(), version: "test", dashboardEndpoint: base, mcpEndpoint: endpoint.href, accessUrl: base, logDirectory: directory });
+  const cli = async (command: "knowledge" | "identity", args: string[], environment: Record<string, string> = {}) => {
+    const output: string[] = [];
+    const run = command === "knowledge" ? runKnowledgeCommand : runIdentityCommand;
+    await run(args, cliPaths, { environment, write: (line) => output.push(line) });
+    return JSON.parse(output[0]!) as Record<string, unknown>;
+  };
+  return { databasePath, authentication, identity, project, agent, agentToken, agentCredential, installationToken, base, endpoint, knowledgeCall, mcpClient, mcp, events, cli };
 }
 
 describe("installation token mode across transports", () => {
@@ -178,6 +191,48 @@ describe("installation token mode across transports", () => {
     f.authentication.setMode("token", "test");
     expect((await fetch(`${f.base}/api/metrics`)).status).toBe(401);
     expect(() => f.identity.authorizeKnowledge(anonymous, f.project.id, "knowledge:read")).toThrow("Nieprawidłowe lub nieaktywne poświadczenie.");
+  });
+
+  it("runs knowledge and identity CLI commands against an open-mode controller without token variables", async () => {
+    const f = await setup("open");
+    const task = (await f.cli("knowledge", ["create_task", "--json", JSON.stringify({
+      projectId: f.project.id, title: "CLI task", description: "Open mode CLI", idempotencyKey: "open-cli-task",
+    })])).value as { id: string };
+    expect(task.id).toEqual(expect.any(String));
+    expect((await f.cli("knowledge", ["projects"])).items).toEqual([expect.objectContaining({ id: f.project.id, writable: true })]);
+    const agent = (await f.cli("identity", ["create-agent"])).principal as { id: string };
+    await f.cli("identity", ["grant-knowledge", "--principal-id", agent.id, "--project-id", f.project.id, "--permissions", "knowledge:read"]);
+    expect((await f.cli("identity", ["list-knowledge-grants", "--principal-id", agent.id])).grants)
+      .toEqual([expect.objectContaining({ projectId: f.project.id, permissions: ["knowledge:read"] })]);
+
+    const database = new Database(f.databasePath, { readonly: true });
+    const history = database.prepare("SELECT principal_id, authentication_method FROM knowledge_history WHERE record_kind = 'task'").all();
+    database.close();
+    expect(history).toEqual([{ principal_id: "installation", authentication_method: "none" }]);
+  });
+
+  it("keeps CLI credentials mandatory in token mode and scoped agent tokens within their grants", async () => {
+    const f = await setup();
+    const create = (environment: Record<string, string>, key: string) => f.cli("knowledge", ["create_task", "--json", JSON.stringify({
+      projectId: f.project.id, title: "Protected", description: "Token mode", idempotencyKey: key,
+    })], environment);
+    await expect(create({}, "missing")).rejects.toThrow("WORKTREE_SWITCHER_KNOWLEDGE_TOKEN");
+    await expect(f.cli("identity", ["list-agents"])).rejects.toThrow("WORKTREE_SWITCHER_OWNER_TOKEN");
+    const forged = `${f.installationToken.slice(0, -1)}${f.installationToken.endsWith("0") ? "1" : "0"}`;
+    await expect(create({ WORKTREE_SWITCHER_TOKEN: forged }, "forged")).rejects.toThrow("invalid_credential");
+    await expect(f.cli("identity", ["list-agents"], { WORKTREE_SWITCHER_TOKEN: forged })).rejects.toThrow("A valid access token is required.");
+
+    // A read-only agent reads through the CLI but cannot write or administer identity.
+    const reader = { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: f.agentToken };
+    expect((await f.cli("knowledge", ["projects"], reader)).items).toEqual([expect.objectContaining({ id: f.project.id, writable: false })]);
+    await expect(create(reader, "reader")).rejects.toThrow("knowledge_forbidden");
+    await expect(f.cli("identity", ["list-agents"], { WORKTREE_SWITCHER_OWNER_TOKEN: f.agentToken })).rejects.toThrow("sesji właściciela");
+
+    const installation = { WORKTREE_SWITCHER_TOKEN: f.installationToken };
+    expect((await f.cli("identity", ["list-agents"], installation)).principals).toEqual([expect.objectContaining({ id: f.agent.id })]);
+    await f.cli("identity", ["revoke-token", "--credential-id", f.agentCredential.id], installation);
+    await expect(f.cli("knowledge", ["projects"], reader)).rejects.toThrow("invalid_credential");
+    await create(installation, "installation");
   });
 
   it("ends live MCP sessions and event streams when the admin channel changes the policy", async () => {

@@ -60,6 +60,39 @@ describe("identity management CLI", () => {
     await expect(runIdentityCommand(["list-agents"], appPaths, { environment: {} })).rejects.toThrow("WORKTREE_SWITCHER_TOKEN");
   });
 
+  it("administers identity offline in open mode without token variables and rejects again in token mode", async () => {
+    const appPaths = paths();
+    const status: string[] = [];
+    await runAuthCommand(["token", "generate"], appPaths, { write: (line) => status.push(line) });
+    const { token } = JSON.parse(status[0]!) as { token: string };
+    await runAuthCommand(["mode", "set", "open"], appPaths, { write: () => {} });
+    const output: string[] = [];
+    const anonymous = { environment: {}, write: (line: string) => output.push(line) };
+    await runIdentityCommand(["create-agent"], appPaths, anonymous);
+    const agent = (JSON.parse(output.pop()!) as { principal: { id: string } }).principal;
+    await runIdentityCommand(["create-knowledge-project", "--name", "Open"], appPaths, anonymous);
+    const project = (JSON.parse(output.pop()!) as { project: { id: string } }).project;
+    await runIdentityCommand(["grant-knowledge", "--principal-id", agent.id, "--project-id", project.id, "--permissions", "knowledge:read"], appPaths, anonymous);
+    await runIdentityCommand(["issue-agent-token", "--principal-id", agent.id, "--label", "Open"], appPaths, anonymous);
+    const issued = JSON.parse(output.pop()!) as { credential: { id: string }; token: string };
+
+    const lock = acquireControllerLock(appPaths.controllerLockPath);
+    try {
+      await expect(runIdentityCommand(["list-agents"], appPaths, anonymous)).rejects.toThrow("already running");
+    } finally {
+      lock.release();
+    }
+
+    await runAuthCommand(["mode", "set", "token"], appPaths, { write: () => {} });
+    await expect(runIdentityCommand(["list-agents"], appPaths, { environment: {} })).rejects.toThrow("WORKTREE_SWITCHER_OWNER_TOKEN");
+    await expect(runIdentityCommand(["list-agents"], appPaths, { environment: { WORKTREE_SWITCHER_TOKEN: `${token}0` } })).rejects.toThrow("Nieprawidłowe lub nieaktywne");
+    await expect(runIdentityCommand(["list-agents"], appPaths, { environment: { WORKTREE_SWITCHER_OWNER_TOKEN: issued.token } })).rejects.toThrow("sesji właściciela");
+    await runIdentityCommand(["list-agents"], appPaths, { environment: { WORKTREE_SWITCHER_TOKEN: token }, write: (line) => output.push(line) });
+    expect(JSON.parse(output.pop()!)).toEqual({ principals: [expect.objectContaining({ id: agent.id })] });
+    await runAuthCommand(["token", "rotate"], appPaths, { write: () => {} });
+    await expect(runIdentityCommand(["list-agents"], appPaths, { environment: { WORKTREE_SWITCHER_TOKEN: token } })).rejects.toThrow("Nieprawidłowe lub nieaktywne");
+  });
+
   it("respects the singleton lock instead of opening an offline database beside the controller", async () => {
     const appPaths = paths();
     const lock = acquireControllerLock(appPaths.controllerLockPath);

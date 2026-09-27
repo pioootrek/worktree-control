@@ -71,15 +71,19 @@ badge and the controller prints its listening address on start.
 worktree-switcher auth mode set open
 ```
 
-### Known CLI limitation, reviewed 2026-09-27
+### CLI in open mode
 
-The backend accepts credential-free requests in `open` mode, but the current
-knowledge CLI, identity administration, Hub `execute-import` and logical
-`backup export-project` / `import-project` commands still reject an absent
-token environment variable before applying the mode. Full controller
-`backup create` / `restore` are separate and do not have this precondition.
-This is tracked as the remaining stage 1 CLI fix; do not treat a green
-installation test as acceptance of these credential-free paths.
+CLI commands need no token environment variable in `open` mode. The online
+knowledge CLI and identity administration omit the `Authorization` header and
+the controller applies the active mode. Offline identity administration, Hub
+`knowledge execute-import` and logical `backup export-project` /
+`import-project` read the persisted mode after acquiring the singleton lock.
+Every such caller acts as the anonymous installation authority. Knowledge
+history records it as `authenticationMethod: none`; Hub import batches record
+only the `installation` principal. A token variable set in
+`open` mode is ignored. In `token` and `legacy` modes the same commands still
+reject a missing, invalid or revoked credential, and scoped agent tokens keep
+their grants.
 
 ## Move a legacy installation to token mode
 
