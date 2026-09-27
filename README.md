@@ -259,10 +259,8 @@ The [authentication roadmap](https://github.com/pioootrek/worktree-switcher/blob
 has two stages. The first is available: CLI-selected `open` (no authentication),
 `token` (one CLI-generated token for all functions, including knowledge) and a
 reserved `better-auth` mode that reports the provider as unavailable; see
-[authentication modes](docs/authentication.md). Credential-free `open` mode
-still has CLI gaps in knowledge, identity administration and logical import/export; see the known limitation in the
-authentication guide. The second stage, an optional Better Auth plugin for
-account login, is planned. The core remains MIT. Plugin
+[authentication modes](docs/authentication.md). The second stage, an optional
+Better Auth plugin for account login, is planned. The core remains MIT. Plugin
 commercial terms and activation are undecided.
 
 The next complete workflow is **push a commit, ask your worker to verify it, and
@@ -406,7 +404,9 @@ Example `memory.json` (replace IDs and the source revision):
 
 In token mode the installation token grants full knowledge access, and a
 scoped agent token grants what its grants allow. `identity` and `knowledge`
-commands read the installation token from `WORKTREE_SWITCHER_TOKEN`. In `legacy` mode, knowledge
+commands read the installation token from `WORKTREE_SWITCHER_TOKEN`. In `open`
+mode they need no token variable and act as the anonymous installation
+authority. In `legacy` mode, knowledge
 requires an owner session or a scoped agent token. The pairing token and shared
 runtime MCP token do not grant knowledge access. Use
 `worktree-switcher identity bootstrap-owner` for the initial owner, then supply

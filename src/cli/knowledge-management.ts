@@ -5,6 +5,7 @@ import { localDashboardEndpoint, readServiceAccess } from "./service-access";
 import { acquireControllerLock } from "../server/controller-lock";
 import { SqliteStateStore } from "../server/sqlite-store";
 import { authenticateOfflineActor } from "./offline-actor";
+import { cliCredential, KNOWLEDGE_CREDENTIAL_REQUIRED, KNOWLEDGE_CREDENTIAL_VARIABLES, OWNER_CREDENTIAL_REQUIRED, OWNER_CREDENTIAL_VARIABLES } from "./credentials";
 import { executeHubImport, planHubImport, KnowledgeError, type HubImportPlanOptions, type HubImportPlan } from "../server/modules/knowledge";
 
 function option(args: string[], name: string): string {
@@ -28,19 +29,21 @@ export function runHubImportPlanCommand(args: string[], write: (line: string) =>
 export function runHubImportExecuteCommand(args: string[], paths: AppPaths, dependencies: {
   write?: (line: string) => void;
   environment?: Readonly<Record<string, string | undefined>>;
+  /** Test seam replacing re-planning against the pinned Hub validator. */
+  verifyPlan?: (plan: HubImportPlan) => HubImportPlan;
 } = {}): void {
   const allowed = new Set(["--plan-file", "--target-id", "--target-name", "--batch-id", "--chunk-size", "--expected-target-revision"]);
   for (let index=1;index<args.length;index+=2) if(!allowed.has(args[index]!)||!args[index+1]||args[index+1]!.startsWith("--")) throw new Error("Usage: knowledge execute-import --plan-file <path> --target-id <id> --target-name <name> [--batch-id <id>] [--chunk-size <1..500>] [--expected-target-revision <revision>]");
   const file=option(args,"--plan-file"); if(statSync(file).size>64*1024*1024) throw new Error("limit_exceeded: Import plan is too large.");
   let plan:HubImportPlan; try{plan=JSON.parse(readFileSync(file,"utf8")) as HubImportPlan;}catch{throw new Error("invalid_request: Invalid import plan JSON.");}
-  const environment=dependencies.environment??process.env,token=environment.WORKTREE_SWITCHER_OWNER_TOKEN??environment.WORKTREE_SWITCHER_TOKEN; if(!token) throw new Error("Set WORKTREE_SWITCHER_OWNER_TOKEN to an active owner session or WORKTREE_SWITCHER_TOKEN to the installation token.");
+  const token=cliCredential(dependencies.environment??process.env,OWNER_CREDENTIAL_VARIABLES);
   const chunkRaw=args.includes("--chunk-size")?option(args,"--chunk-size"):undefined,chunkSize=chunkRaw===undefined?undefined:Number(chunkRaw);
   if(chunkSize!==undefined&&(!Number.isInteger(chunkSize)||chunkSize<1||chunkSize>500)) throw new Error("invalid_request: Chunk size must be between 1 and 500.");
   const revisionRaw=args.includes("--expected-target-revision")?option(args,"--expected-target-revision"):undefined,expectedTargetRevision=revisionRaw===undefined?undefined:Number(revisionRaw);
   if(expectedTargetRevision!==undefined&&(!Number.isInteger(expectedTargetRevision)||expectedTargetRevision<1)) throw new Error("invalid_request: Expected target revision must be positive.");
   const lock=acquireControllerLock(paths.controllerLockPath);
-  try{const store=new SqliteStateStore(paths.databasePath);try{const {identity,actor}=authenticateOfflineActor(store,token);
-    const result=executeHubImport(store,identity,actor,{plan,targetProjectId:option(args,"--target-id"),targetProjectName:option(args,"--target-name"),batchId:args.includes("--batch-id")?option(args,"--batch-id"):undefined,chunkSize,expectedTargetRevision,attachmentDirectory:paths.knowledgeAttachmentDirectory});
+  try{const store=new SqliteStateStore(paths.databasePath);try{const {identity,actor}=authenticateOfflineActor(store,token,OWNER_CREDENTIAL_REQUIRED);
+    const result=executeHubImport(store,identity,actor,{plan,targetProjectId:option(args,"--target-id"),targetProjectName:option(args,"--target-name"),batchId:args.includes("--batch-id")?option(args,"--batch-id"):undefined,chunkSize,expectedTargetRevision,attachmentDirectory:paths.knowledgeAttachmentDirectory},undefined,dependencies.verifyPlan);
     (dependencies.write??console.log)(JSON.stringify(result,null,2));
   }finally{store.close();}}finally{lock.release();}
 }
@@ -83,16 +86,16 @@ export async function runKnowledgeCommand(args: string[], paths: AppPaths, depen
   if (!parsed.success) throw new Error("invalid_request: Invalid knowledge input.");
   const body = JSON.stringify({ operation, input: parsed.data });
   if (Buffer.byteLength(body) > (operation === "create_attachment" ? 14_100_000 : 65536)) throw new Error("limit_exceeded: Knowledge request exceeds its operation limit.");
-  const environment = dependencies.environment ?? process.env;
-  const token = environment.WORKTREE_SWITCHER_KNOWLEDGE_TOKEN ?? environment.WORKTREE_SWITCHER_OWNER_TOKEN ?? environment.WORKTREE_SWITCHER_TOKEN;
-  if (!token) throw new Error("Set WORKTREE_SWITCHER_KNOWLEDGE_TOKEN to a scoped agent token or owner session, or WORKTREE_SWITCHER_TOKEN to the installation token.");
+  // Without a credential the controller's active mode decides: open mode acts anonymously.
+  const token = cliCredential(dependencies.environment ?? process.env, KNOWLEDGE_CREDENTIAL_VARIABLES);
   const access = readServiceAccess(paths.serviceAccessPath);
   if (!access) throw new Error("Controller unavailable. Knowledge CLI requires the running service.");
   const response = await fetch(`${localDashboardEndpoint(access).replace(/\/$/, "")}/api/knowledge`, {
-    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body, redirect: "error", signal: AbortSignal.timeout(30000),
   });
   const result = await response.json() as KnowledgeFailure;
+  if (response.status === 401 && !token) throw new Error(KNOWLEDGE_CREDENTIAL_REQUIRED);
   if (!response.ok) throw new Error(JSON.stringify(result));
   (dependencies.write ?? console.log)(JSON.stringify(result, null, 2));
 }

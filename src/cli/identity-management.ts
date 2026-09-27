@@ -2,6 +2,7 @@ import type { AppPaths } from "../server/paths";
 import { acquireControllerLock } from "../server/controller-lock";
 import { IdentityService, type KnowledgePermission } from "../server/modules/identity";
 import { SqliteStateStore } from "../server/sqlite-store";
+import { cliCredential, OWNER_CREDENTIAL_REQUIRED, OWNER_CREDENTIAL_VARIABLES } from "./credentials";
 import { authenticateOfflineActor } from "./offline-actor";
 import { localDashboardEndpoint, readServiceAccess } from "./service-access";
 
@@ -10,7 +11,6 @@ export interface IdentityCommandDependencies {
   environment?: Readonly<Record<string, string | undefined>>;
 }
 
-const OWNER_TOKEN_ENV = "WORKTREE_SWITCHER_OWNER_TOKEN";
 const KNOWLEDGE_PERMISSIONS = new Set<KnowledgePermission>([
   "knowledge:read", "knowledge:write", "knowledge:approve", "knowledge:export", "knowledge:import",
   "attachments:read", "attachments:write",
@@ -35,12 +35,12 @@ function requiredOption(args: string[], name: string): string {
   return value;
 }
 
-/** An owner session, or in token mode the installation token, administers identity. */
-function administratorToken(dependencies: IdentityCommandDependencies): string {
-  const environment = dependencies.environment ?? process.env;
-  const token = environment[OWNER_TOKEN_ENV]?.trim() || environment.WORKTREE_SWITCHER_TOKEN?.trim();
-  if (!token) throw new Error(`Set ${OWNER_TOKEN_ENV} to an active owner session token or WORKTREE_SWITCHER_TOKEN to the installation token.`);
-  return token;
+/**
+ * An owner session, or in token mode the installation token, administers identity. Absence is
+ * resolved by the active mode: open mode administers as the anonymous installation authority.
+ */
+function administratorToken(dependencies: IdentityCommandDependencies): string | undefined {
+  return cliCredential(dependencies.environment ?? process.env, OWNER_CREDENTIAL_VARIABLES);
 }
 
 function sessionInput(args: string[]) {
@@ -118,11 +118,12 @@ async function runThroughController(
   const token = administratorToken(dependencies);
   const response = await fetch(`${endpoint.replace(/\/$/, "")}/api/identity/admin`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), "Content-Type": "application/json" },
     body: JSON.stringify(administrationPayload(args)),
     signal: AbortSignal.timeout(15_000),
   });
   const body = await response.json() as { error?: string } & Record<string, unknown>;
+  if (response.status === 401 && !token) throw new Error(OWNER_CREDENTIAL_REQUIRED);
   if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
   write(JSON.stringify(body, null, 2));
 }
@@ -181,7 +182,7 @@ export async function runIdentityCommand(
       return;
     }
 
-    const { identity, actor } = authenticateOfflineActor(store, administratorToken(dependencies));
+    const { identity, actor } = authenticateOfflineActor(store, administratorToken(dependencies), OWNER_CREDENTIAL_REQUIRED);
     let result: unknown;
     switch (action) {
       case "create-agent":
