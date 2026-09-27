@@ -18,6 +18,7 @@ test("lifecycle arguments require an explicit non-root UID", () => {
 test("lifecycle reports redact browser and bearer credentials", () => {
   const value = redact("Bearer abc.DEF-123 http://127.0.0.1/#token=private-value package-lifecycle-secret-must-not-leak");
   assert.equal(value, "Bearer [REDACTED] http://127.0.0.1/#token=[REDACTED] [REDACTED]");
+  assert.equal(redact(`token wsi_${"0".repeat(8)}-aaaa_${"f".repeat(64)}`), "token wsi_[REDACTED]");
 });
 
 test("systemd definition must point at installed paths and omit builder paths", () => {

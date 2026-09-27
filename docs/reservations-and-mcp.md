@@ -1,6 +1,6 @@
 ---
 audience: "product owner and contributors discussing agent coordination"
-last_reviewed: "2026-09-08"
+last_reviewed: "2026-09-27"
 source_of_truth: "implemented reservation and local MCP integration design"
 status: "active"
 ---
@@ -96,9 +96,10 @@ http://127.0.0.1:47832/mcp
 
 It runs inside the existing controller, so connecting an agent does not create
 another persistent Node.js process. The MCP SDK is loaded lazily on first use.
-The endpoint requires a persistent bearer token stored in an owner-only file;
-`worktree-switcher config mcp` prints the client configuration on explicit
-request. A future stdio command may act as a compatibility proxy for clients
+In `token` mode the endpoint requires the installation token as a bearer token;
+`legacy` installations use a persistent token stored in an owner-only file, and
+`open` mode requires none. `worktree-switcher config mcp` prints the client
+configuration on explicit request. See [authentication modes](authentication.md). A future stdio command may act as a compatibility proxy for clients
 without Streamable HTTP support.
 
 Read-only MCP resources:
@@ -235,8 +236,9 @@ applied to a finished run.
 
 ## Security and audit
 
-- The MCP endpoint binds only to `127.0.0.1`, validates `Origin`, and requires a
-  bearer token read from a protected local file rather than command-line args.
+- The MCP endpoint binds only to `127.0.0.1`, validates `Origin`, and requires
+  the active mode's bearer token (none in `open` mode). The token never travels
+  in command-line arguments.
 - Every mutation records actor, MCP client identity, project, worktree, reason,
   timestamp, outcome, and lease ID without recording the raw token.
 - SQLite persists reservations and append-only audit events; the controller is

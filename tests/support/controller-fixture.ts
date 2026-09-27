@@ -19,6 +19,8 @@ export interface HttpResult<T> { status: number; ok: boolean; body: T & { error?
 export interface FixtureMcpClient { call<T>(name: string, args?: Record<string, unknown>): Promise<T>; close(): Promise<void> }
 export interface ControllerFixture {
   endpoint: string; accessUrl: string; projects: FixtureProject[];
+  /** New installations run in token mode; this installation token authorizes every transport. */
+  installationToken: string;
   request<T>(path: string, init?: RequestInit): Promise<T>;
   requestResult<T>(path: string, init?: RequestInit): Promise<HttpResult<T>>;
   mcp(token?: string): Promise<FixtureMcpClient>;
@@ -103,13 +105,18 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
   const repositories = await Promise.all(Array.from({ length: projectCount }, (_, index) => createRepository(base, `project-${String.fromCharCode(97 + index)}`, kinds[index]!)));
   const ports = await Promise.all(Array.from({ length: projectCount + 2 }, () => freePort()));
   const controllerPort = ports.pop()!, mcpPort = ports.pop()!;
-  let child: ChildProcess | undefined, endpoint = `http://127.0.0.1:${controllerPort}`, accessUrl = "", token = "";
+  let child: ChildProcess | undefined, endpoint = `http://127.0.0.1:${controllerPort}`, accessUrl = "";
+  const generated = await exec(process.execPath, [join(repositoryRoot, "dist/cli/index.js"), "auth", "token", "generate"], {
+    cwd: repositoryRoot, env: { ...process.env, WORKTREE_SWITCHER_DATA_DIR: data, WORKTREE_SWITCHER_STATE_DIR: state }, timeout: 30000,
+  });
+  const token = (JSON.parse(generated.stdout) as { token: string }).token;
   const start = async () => {
     let output = "";
     child = spawn(process.execPath, [join(repositoryRoot, "dist/cli/index.js"), "start", "--service-mode", "--host", "127.0.0.1", "--port", String(controllerPort), "--mcp-port", String(mcpPort), "--no-open", "--data-dir", data, "--state-dir", state, "--browse-root", base, "--web-root", join(repositoryRoot, "out")], { cwd: repositoryRoot, stdio: ["ignore", "pipe", "pipe"] });
     child.stdout?.on("data", (chunk) => { output += chunk.toString(); }); child.stderr?.on("data", (chunk) => { output += chunk.toString(); });
     const access = await waitFor(async () => { try { return JSON.parse(await readFile(join(state, "service-access.json"), "utf8")) as { accessUrl: string }; } catch { return null; } }, WAIT_MS, () => `Controller did not publish service access.\n${output}`);
-    accessUrl = access.accessUrl; const parsed = new URL(accessUrl); token = new URLSearchParams(parsed.hash.slice(1)).get("token")!; endpoint = parsed.origin;
+    // Token mode publishes no secret; the browser receives the installation token in the fragment.
+    endpoint = new URL(access.accessUrl).origin; accessUrl = `${endpoint}/#token=${encodeURIComponent(token)}`;
   };
   const stop = async () => {
     if (!child) return;
@@ -129,9 +136,9 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
       const result = await request<{ project: { id: string } }>("/api/projects", { method: "POST", body: JSON.stringify({ name, repositoryPath: repositories[index]!.main, port: ports[index], launchPreset: kinds[index] }) });
       projects.push({ id: result.project.id, name, port: ports[index]!, kind: kinds[index]!, ...repositories[index]! });
     }
-    const fixture: ControllerFixture = { endpoint, accessUrl, projects, request, requestResult,
+    const fixture: ControllerFixture = { endpoint, accessUrl, projects, request, requestResult, installationToken: token,
       async mcp(scopedToken?: string) {
-        const mcpToken = scopedToken ?? (await readFile(join(data, "mcp-token"), "utf8")).trim(); const client = new Client({ name: `capacity-${randomUUID()}`, version: "1" });
+        const mcpToken = scopedToken ?? token; const client = new Client({ name: `capacity-${randomUUID()}`, version: "1" });
         await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${mcpPort}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${mcpToken}` } } }));
         return { async call<T>(name: string, args: Record<string, unknown> = {}) {
           const result = await client.callTool({ name, arguments: args });
@@ -156,7 +163,7 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
       async cli(args, environment = {}, pathMode = "environment") {
         const pathArgs = pathMode === "flags" ? ["--data-dir", data, "--state-dir", state] : [];
         const result = await exec(process.execPath, [join(repositoryRoot, "dist/cli/index.js"), ...args, ...pathArgs], {
-          cwd: repositoryRoot, env: { ...process.env, ...environment, WORKTREE_SWITCHER_DATA_DIR: pathMode === "flags" ? undefined : data, WORKTREE_SWITCHER_STATE_DIR: pathMode === "flags" ? undefined : state }, timeout: 30000,
+          cwd: repositoryRoot, env: { ...process.env, WORKTREE_SWITCHER_TOKEN: token, ...environment, WORKTREE_SWITCHER_DATA_DIR: pathMode === "flags" ? undefined : data, WORKTREE_SWITCHER_STATE_DIR: pathMode === "flags" ? undefined : state }, timeout: 30000,
         });
         return result.stdout;
       },

@@ -1,6 +1,6 @@
 ---
 audience: "self-hosters exposing the dashboard through HTTPS"
-last_reviewed: "2026-09-10"
+last_reviewed: "2026-09-27"
 source_of_truth: "supported Caddy reverse-proxy transport for the local controller"
 status: "active"
 ---
@@ -36,12 +36,11 @@ buffering option is required.
 
 ## Caddyfile logging guard
 
-The dashboard sends its pairing token in the
-`X-Worktree-Switcher-Token` request header. Caddy's default redaction covers
+The dashboard sends its access token (the installation token, or the pairing
+token in `legacy` mode) in the `X-Worktree-Switcher-Token` request header. Caddy's default redaction covers
 standard authorization headers, but this product-specific header must be
 removed from both runtime diagnostics and access logs. Keep both filters below.
-The controller no longer accepts the permanent pairing token in an SSE query
-string.
+The controller does not accept an access token in an SSE query string.
 
 ```caddyfile
 {
@@ -101,9 +100,10 @@ node dist/cli/index.js service install \
   --public-url https://switcher.home.arpa
 ```
 
-Then verify `worktree-switcher service status`, print the private pairing URL
-with `worktree-switcher service url`, and open it on a device that trusts the
-CA. Never place that URL in shared logs or documentation.
+Then verify `worktree-switcher service status`, open the address printed by
+`worktree-switcher service url` on a device that trusts the CA, and sign in with
+the installation token. In `legacy` mode that URL contains the private pairing
+token. Never place a token or pairing URL in shared logs or documentation.
 
 ## Public domain with an ACME certificate
 
@@ -127,7 +127,8 @@ node dist/cli/index.js service install \
   --public-url https://switcher.example.com
 ```
 
-Public TLS protects transport; the pairing URL is still an owner credential.
+Public TLS protects transport; the installation token (or the `legacy` pairing
+URL) is still an owner credential.
 This setup is not a multi-user account system and does not authorize publishing
 the dashboard to arbitrary users.
 
@@ -166,11 +167,11 @@ or expose its plaintext port as an accidental fallback.
 After every initial setup, upgrade, or certificate replacement:
 
 1. `service status` and `project list` work locally even with Caddy stopped.
-2. The pairing page, API mutation, and live updates work through HTTPS.
+2. The sign-in page, API mutation, and live updates work through HTTPS.
 3. A foreign or `null` browser Origin is rejected.
 4. A wrong hostname, missing CA trust, or expired certificate fails visibly.
 5. Plain HTTP on the public TLS port does not serve the dashboard.
-6. Caddy runtime and access logs do not contain the pairing token.
+6. Caddy runtime and access logs do not contain the access token.
 7. The MCP endpoint remains loopback-only.
 
 The repository runs the same boundary with a generated fixture CA, a built

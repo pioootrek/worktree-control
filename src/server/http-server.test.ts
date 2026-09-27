@@ -122,6 +122,7 @@ describe("controller access boundary", () => {
         authentication: "bearer",
         activeSessions: 2,
       },
+      authentication: { mode: "legacy", listen: "0.0.0.0:0" },
     });
     expect(dashboard).toHaveBeenCalledOnce();
   });

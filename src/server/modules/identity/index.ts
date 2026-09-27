@@ -12,11 +12,13 @@ export {
 export type {
   AuthenticatedPrincipal,
   AuthenticatedIdentity,
+  AuthenticationMethod,
   ControllerAuthentication,
   CredentialAuthenticationRecord,
   CredentialKind,
   IdentityStatus,
   IdentityStore,
+  InstallationAuthority,
   KnowledgePermission,
   KnowledgeProject,
   KnowledgeProjectGrant,

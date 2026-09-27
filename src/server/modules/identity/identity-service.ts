@@ -5,6 +5,7 @@ import type {
   AuthenticatedPrincipal,
   CredentialAuthenticationRecord,
   IdentityStore,
+  InstallationAuthority,
   KnowledgePermission,
   KnowledgeProject,
   KnowledgeProjectGrant,
@@ -105,6 +106,7 @@ export class IdentityService {
     private readonly clock: () => string = () => new Date().toISOString(),
     private readonly id: () => string = randomUUID,
     private readonly secret: () => string = () => randomBytes(32).toString("hex"),
+    private readonly installationAuthority?: InstallationAuthority,
   ) {}
 
   bootstrapOwnerSession(input: BootstrapOwnerInput = {}): BootstrappedOwner {
@@ -129,7 +131,10 @@ export class IdentityService {
   }
 
   renewOwnerSession(input: BootstrapOwnerInput, actor: AuthenticatedPrincipal): BootstrappedOwner {
-    this.requireOwnerSession(actor);
+    this.requireCurrentAuthentication(actor);
+    if (!isOwnerSession(actor)) {
+      throw new IdentityError("owner_authentication_required", "Ta operacja wymaga uwierzytelnionej sesji właściciela.");
+    }
     const now = this.clock();
     const issued = this.createOwnerSessionToken(actor.principalId, input, now, "Local owner renewal");
     this.store.saveCredential(issued.record, actor.principalId);
@@ -172,6 +177,9 @@ export class IdentityService {
   describeIdentity(actor: AuthenticatedPrincipal): AuthenticatedIdentity {
     this.requireCurrentAuthentication(actor);
     const principal = this.store.getPrincipal(actor.principalId)!;
+    if (principal.kind === "installation") {
+      return { principal, credential: null, knowledgeGrants: [], installationAuthority: true };
+    }
     const credential = this.store.getCredentialForAuthentication(actor.credentialId)!;
     return {
       principal,
@@ -258,7 +266,7 @@ export class IdentityService {
     const principal = this.store.getPrincipal(input.principalId);
     const project = this.store.getKnowledgeProject(input.projectId);
     const permissions = [...new Set(input.permissions)].sort();
-    if (!principal || principal.status !== "active" || principal.kind === "worker") {
+    if (!principal || principal.status !== "active" || principal.kind === "worker" || principal.kind === "installation") {
       throw new IdentityError("invalid_request", "Grant można nadać wyłącznie aktywnemu właścicielowi lub agentowi.");
     }
     if (!project || project.status !== "active") {
@@ -280,7 +288,7 @@ export class IdentityService {
   listKnowledgeGrants(principalId: string, actor: AuthenticatedPrincipal): KnowledgeProjectGrant[] {
     this.requireOwnerSession(actor);
     const principal = this.store.getPrincipal(principalId);
-    if (!principal || principal.kind === "worker") throw new IdentityError("invalid_request", "Nie znaleziono właściciela ani agenta.");
+    if (!principal || principal.kind === "worker" || principal.kind === "installation") throw new IdentityError("invalid_request", "Nie znaleziono właściciela ani agenta.");
     return this.store.listKnowledgeProjectGrants(principalId);
   }
 
@@ -308,6 +316,13 @@ export class IdentityService {
   ): void {
     this.requireCurrentAuthentication(actor);
     const project = this.store.getKnowledgeProject(projectId);
+    if (actor.principalKind === "installation") {
+      // The installation authority holds every permission; only the project state still applies.
+      if (!project || (project.status !== "active" && permission !== "knowledge:read" && !options.allowArchived)) {
+        throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
+      }
+      return;
+    }
     const grant = this.store.getKnowledgeProjectGrant(actor.principalId, projectId);
     if (
       !project
@@ -315,22 +330,32 @@ export class IdentityService {
       || !grant
       || grant.revokedAt !== null
       || !grant.permissions.includes(permission)
-      || (permission === "knowledge:approve"
-        && (actor.principalKind !== "owner" || actor.authenticationMethod !== "owner_session"))
+      || (permission === "knowledge:approve" && !isOwnerSession(actor))
     ) {
       throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
     }
   }
 
+  /** Owner-level authority: an owner session or the current installation authority. */
   requireOwnerSession(actor: AuthenticatedPrincipal): void {
     this.requireCurrentAuthentication(actor);
-    if (actor.principalKind !== "owner" || actor.authenticationMethod !== "owner_session") {
+    if (!isOwnerSession(actor) && actor.principalKind !== "installation") {
       throw new IdentityError("owner_authentication_required", "Ta operacja wymaga uwierzytelnionej sesji właściciela.");
     }
   }
 
   private requireCurrentAuthentication(actor: AuthenticatedPrincipal): void {
     const principal = this.store.getPrincipal(actor.principalId);
+    if (actor.principalKind === "installation") {
+      if (
+        principal?.kind !== "installation"
+        || principal.status !== "active"
+        || !this.installationAuthority?.isCurrentInstallationActor(actor)
+      ) {
+        throw new IdentityError("invalid_credential", "Nieprawidłowe lub nieaktywne poświadczenie.");
+      }
+      return;
+    }
     const credential = this.store.getCredentialForAuthentication(actor.credentialId);
     const now = this.clock();
     if (
@@ -395,4 +420,8 @@ export class IdentityService {
     const expiresAt = lifetime === undefined ? null : new Date(Date.parse(now) + lifetime * 1000).toISOString();
     return this.createTokenRecord(principalId, "owner_session", label, now, expiresAt);
   }
+}
+
+function isOwnerSession(actor: AuthenticatedPrincipal): boolean {
+  return actor.principalKind === "owner" && actor.authenticationMethod === "owner_session";
 }

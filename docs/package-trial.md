@@ -1,6 +1,6 @@
 ---
 audience: "people installing a verified Worktree Switcher trial tarball"
-last_reviewed: "2026-09-11"
+last_reviewed: "2026-09-27"
 source_of_truth: "trial artifact installation, first run, upgrade, and removal"
 status: "active"
 ---
@@ -62,14 +62,22 @@ resolves production dependencies at that time; the tarball checksum does not
 freeze their transitive versions. Keep the smoke report supplied with a release
 candidate when exact resolved dependencies matter for diagnosis.
 
+A new installation runs in `token` mode. Generate the installation token once
+and save it in a password manager; the controller refuses to start without it.
+See [authentication modes](authentication.md).
+
+```bash
+worktree-switcher auth token generate
+```
+
 To run without a service manager:
 
 ```bash
 worktree-switcher start --host 127.0.0.1
 ```
 
-Keep the private pairing URL printed by that foreground process out of logs and
-issues. Stop it with `Ctrl-C` before installing the background service.
+Open the printed address and sign in with the installation token. Keep the
+token out of logs and issues. Stop it with `Ctrl-C` before installing the background service.
 
 ## Install the user service
 
@@ -81,8 +89,7 @@ worktree-switcher service status
 worktree-switcher service open
 ```
 
-`service open` reads the current private pairing link; a link from an earlier
-controller process is intentionally stale. For custom ports, directories, or a
+`service open` opens the dashboard sign-in page. For custom ports, directories, or a
 public HTTPS origin, follow the bundled [user-service guide](user-service.md)
 and [HTTPS guide](controller-https.md).
 

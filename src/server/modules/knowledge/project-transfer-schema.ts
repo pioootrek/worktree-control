@@ -28,7 +28,7 @@ const memory = z.strictObject({ ...record, title: z.string().min(1).max(200), bo
 const relation = z.strictObject({ ...record, type: z.enum(["derived_from", "blocks", "relates_to", "supersedes"]), source_kind: recordKind, source_id: id, target_kind: recordKind, target_id: id, revision, ...authored });
 const history = z.strictObject({ ordinal: z.number().int().positive(), ...projectId, record_kind: z.enum(["project", "thread", "reply", "task", "memory", "relation"]), record_id: id,
   operation: z.enum(["created", "updated", "archived", "linked", "unlinked", "approved", "superseded"]), previous_json: nullableJson(z.unknown()), principal_id: id,
-  authentication_method: z.enum(["owner_session", "agent_token", "worker_token"]), revision, created_at: timestamp });
+  authentication_method: z.enum(["owner_session", "agent_token", "worker_token", "installation_token", "none"]), revision, created_at: timestamp });
 const attachment = z.strictObject({ ...record, record_kind: recordKind, record_id: id, filename: z.string().min(1).max(255), media_type: z.string().min(1).max(255),
   size: z.number().int().positive(), sha256: z.string().regex(/^[a-f0-9]{64}$/), ...authored });
 const importSource = z.strictObject({ ...record, source_id:id, source_repository:z.string().min(1).max(4096), source_commit:z.string().regex(/^[a-f0-9]{40}$/), source_path:z.string().min(1).max(4096), legacy_id:z.string().max(160).nullable(),

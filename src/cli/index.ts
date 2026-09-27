@@ -18,11 +18,14 @@ import {
   validatePublicControllerBackend,
 } from "./controller-addresses";
 import { writeCliLine } from "./output";
+import { runAuthCommand } from "./auth-management";
 import { runIdentityCommand } from "./identity-management";
 import { runBackupCommand } from "./backup-management";
 import { pairingUrl } from "./pairing-url";
 import { openProjectGateway, runDoctorCommand, runProjectCommand } from "./project-management";
-import { localDashboardEndpoint, publicDashboardEndpoint, readServiceAccess, removeServiceAccess, writeServiceAccess } from "./service-access";
+import { controllerAccessToken, localDashboardEndpoint, publicDashboardEndpoint, readServiceAccess, removeServiceAccess, writeServiceAccess } from "./service-access";
+import { mcpConfigToken } from "./mcp-config";
+import { listenAdminSocket, type AdminSocketServer } from "../server/admin-socket";
 import { buildServiceStartArguments } from "./service-install";
 import { UserServiceManager } from "./service-manager";
 import { ControlService } from "../server/control-service";
@@ -31,6 +34,8 @@ import { DirectoryBrowser } from "../server/directory-browser";
 import { EventStream } from "../server/events";
 import { FileLogWriter } from "../server/log-writer";
 import { ProjectLifecycle } from "../server/modules/lifecycle";
+import { AuthenticationService } from "../server/modules/authentication";
+import { authenticationAdminHandler } from "../server/authentication-admin";
 import { IdentityService } from "../server/modules/identity";
 import { KnowledgeAttachmentService, KnowledgeService } from "../server/modules/knowledge";
 import { createMcpControllerServer } from "../server/mcp-http-server";
@@ -74,6 +79,10 @@ async function main(): Promise<void> {
     await runKnowledgeCommand(knowledgeArgs!.args, paths, { write: writeCliLine });
     return;
   }
+  if (command === "auth") {
+    await runAuthCommand(withoutPathOptions(process.argv.slice(3)), paths, { write: writeCliLine });
+    return;
+  }
   if (command === "identity") {
     await runIdentityCommand(process.argv.slice(3), paths, { write: writeCliLine });
     return;
@@ -103,9 +112,10 @@ async function main(): Promise<void> {
     throw new Error(translate(locale, "cli.invalidMcpPort"));
   }
   if (command === "config" && process.argv[3] === "mcp") {
+    const token = await mcpConfigToken(paths);
     writeCliLine(JSON.stringify({
       url: `http://127.0.0.1:${mcpPort}/mcp`,
-      headers: { Authorization: `Bearer ${loadOrCreateSecret(paths.mcpTokenPath)}` },
+      ...(token === null ? {} : { headers: { Authorization: `Bearer ${token}` } }),
     }, null, 2));
     return;
   }
@@ -130,6 +140,14 @@ async function main(): Promise<void> {
   const events = new EventStream();
   const logs = new FileLogWriter(paths.logDirectory);
   const store = new SqliteStateStore(paths.databasePath);
+  const authentication = new AuthenticationService(store);
+  try {
+    authentication.assertStartupPolicy();
+  } catch (error) {
+    store.close();
+    controllerLock.release();
+    throw error;
+  }
   const memoryWarningMiB = optionalPositiveNumber(option("--memory-warning-mib"), "Memory warning threshold");
   const processes = new ProcessManager((projectId) => events.publish({ kinds: ["runtime"], projectIds: [projectId] }), logs, {
     memoryWarningThresholdBytes: memoryWarningMiB === null ? null : Math.round(memoryWarningMiB * 1024 * 1024),
@@ -140,7 +158,7 @@ async function main(): Promise<void> {
     kinds: ["tests", "controller"],
     ...(projectId ? { projectIds: [projectId] } : {}),
   }));
-  const identity = new IdentityService(store);
+  const identity = new IdentityService(store, undefined, undefined, undefined, authentication);
   const attachments = new KnowledgeAttachmentService(store, identity, paths.knowledgeAttachmentDirectory);
   const knowledge = new KnowledgeService(store, identity, undefined, undefined, events.publishKnowledge, attachments);
   const service = new ControlService(store, new SystemGitWorktreeReader(), processes, logs, undefined, storage, undefined, undefined, tests, lifecycle, knowledge);
@@ -153,6 +171,7 @@ async function main(): Promise<void> {
     port: mcpPort,
     accessToken: loadOrCreateSecret(paths.mcpTokenPath),
     identity,
+    authentication,
     onDiagnostic: (message, details) => {
       const mcpSessionId = typeof details?.sessionId === "string" ? details.sessionId : null;
       if (message === "mcp.session_started" && mcpSessionId) {
@@ -174,7 +193,7 @@ async function main(): Promise<void> {
       endpoint: mcp ? mcpEndpoint : null,
       transport: "streamable-http",
       network: "loopback",
-      authentication: "bearer",
+      authentication: authentication.mode() === "open" ? "none" : "bearer",
       activeSessions: mcpSessions.size,
     }),
     webRoot,
@@ -182,6 +201,7 @@ async function main(): Promise<void> {
     port,
     accessToken,
     identity,
+    authentication,
     publicOrigin,
   });
   try {
@@ -199,28 +219,56 @@ async function main(): Promise<void> {
   const lanHost = wildcardHost ? findLanAddress() ?? browserHost : host;
   const localOrigin = directControllerOrigin(browserHost, port);
   const advertisedOrigin = publicOrigin ?? directControllerOrigin(lanHost, port);
-  const advertisedAddress = pairingUrl(advertisedOrigin, accessToken, sessionId);
-  const interactiveAddress = pairingUrl(interactiveControllerOrigin(localOrigin, publicOrigin), accessToken, sessionId);
+  // Outside legacy mode the pairing token grants nothing, so links open the sign-in screen instead.
+  const authenticationMode = authentication.mode();
+  const accessLink = (origin: string, mode = authentication.mode()) => mode === "legacy"
+    ? pairingUrl(origin, accessToken, sessionId)
+    : new URL("/", origin).toString();
+  const advertisedAddress = accessLink(advertisedOrigin);
+  const interactiveAddress = accessLink(interactiveControllerOrigin(localOrigin, publicOrigin));
   const serviceMode = process.argv.includes("--service-mode");
+  const startedAt = new Date().toISOString();
+  const recordServiceAccess = () => writeServiceAccess(paths.serviceAccessPath, {
+    pid: process.pid,
+    startedAt,
+    version: packageJson.version,
+    dashboardEndpoint: advertisedOrigin,
+    localDashboardEndpoint: localOrigin,
+    publicDashboardEndpoint: advertisedOrigin,
+    mcpEndpoint: mcp ? mcpEndpoint : null,
+    accessUrl: accessLink(advertisedOrigin),
+    logDirectory: paths.logDirectory,
+    authenticationMode: authentication.mode(),
+  });
+  let adminSocket: AdminSocketServer;
+  try {
+    adminSocket = await listenAdminSocket(paths.adminSocketPath, authenticationAdminHandler({
+      authentication,
+      closeMcpSessions: async () => { await mcp?.closeSessions(); },
+      disconnectEvents: () => events.disconnectAll(),
+      onPolicyChanged: (command) => {
+        if (serviceMode) recordServiceAccess();
+        logs.controller("authentication.policy_changed", { command, mode: authentication.mode() });
+      },
+    }));
+  } catch (error) {
+    await mcp?.close();
+    await controller.close();
+    await service.shutdown();
+    controllerLock.release();
+    throw error;
+  }
   writeCliLine(translate(locale, "cli.listening", { host, port }));
   if (serviceMode) {
-    writeServiceAccess(paths.serviceAccessPath, {
-      pid: process.pid,
-      startedAt: new Date().toISOString(),
-      version: packageJson.version,
-      dashboardEndpoint: advertisedOrigin,
-      localDashboardEndpoint: localOrigin,
-      publicDashboardEndpoint: advertisedOrigin,
-      mcpEndpoint: mcp ? mcpEndpoint : null,
-      accessUrl: advertisedAddress,
-      logDirectory: paths.logDirectory,
-    });
+    recordServiceAccess();
     writeCliLine("Service access URL: worktree-switcher service url");
   } else {
     writeCliLine(translate(locale, "cli.accessLink", { url: advertisedAddress }));
   }
   writeCliLine(translate(locale, "cli.logs", { path: paths.logDirectory }));
-  if (!serviceMode) writeCliLine(translate(locale, "cli.secret"));
+  if (authenticationMode === "open") writeCliLine(translate(locale, "cli.openMode", { address: `${host}:${port}` }));
+  else if (authenticationMode === "token") writeCliLine(translate(locale, "cli.tokenMode"));
+  else if (!serviceMode) writeCliLine(translate(locale, "cli.secret"));
   if (mcp) {
     writeCliLine(translate(locale, "cli.mcpListening", { url: mcpEndpoint }));
     writeCliLine(translate(locale, "cli.mcpConfig"));
@@ -233,7 +281,7 @@ async function main(): Promise<void> {
     closing = true;
     writeCliLine(translate(locale, "cli.stopping"));
     try {
-      const listeners = await Promise.allSettled([mcp?.close(), controller.close()]);
+      const listeners = await Promise.allSettled([mcp?.close(), controller.close(), adminSocket.close()]);
       const listenerFailures = listeners.filter((result) => result.status === "rejected");
       let serviceFailure: unknown = null;
       try {
@@ -350,11 +398,10 @@ async function printServiceStatus(manager: UserServiceManager, paths: ReturnType
     writeCliLine(`Logs: ${currentAccess.logDirectory}`);
     writeCliLine("Access URL: worktree-switcher service url");
     try {
-      const accessUrl = new URL(currentAccess.accessUrl);
-      const token = new URLSearchParams(accessUrl.hash.slice(1)).get("token");
-      if (token) {
+      const token = controllerAccessToken(currentAccess);
+      if (token || currentAccess.authenticationMode === "open") {
         const response = await fetch(`${localDashboardEndpoint(currentAccess)}/api/dashboard`, {
-          headers: { "X-Worktree-Switcher-Token": token },
+          headers: token ? { "X-Worktree-Switcher-Token": token } : {},
           signal: AbortSignal.timeout(1_000),
         });
         if (response.ok) {
@@ -372,6 +419,16 @@ async function printServiceStatus(manager: UserServiceManager, paths: ReturnType
   } else {
     writeCliLine(`Logs: ${paths.logDirectory}`);
   }
+}
+
+/** Drops the global --data-dir/--state-dir options that `paths` already consumed. */
+function withoutPathOptions(args: string[]): string[] {
+  const result: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === "--data-dir" || args[index] === "--state-dir") index++;
+    else result.push(args[index]!);
+  }
+  return result;
 }
 
 function validatedPort(value: string, label: string): number {

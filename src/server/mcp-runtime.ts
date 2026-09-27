@@ -145,7 +145,8 @@ export class McpRuntime {
   }
 
   private authenticationKey(authentication: ControllerAuthentication): string {
-    return authentication.kind === "legacy" ? "legacy" : `credential:${authentication.actor.credentialId}`;
+    if (authentication.kind === "legacy") return "legacy";
+    return `${authentication.kind}:${authentication.actor.credentialId}`;
   }
 
   private createSession(authentication: ControllerAuthentication): McpSession {
@@ -186,7 +187,7 @@ export class McpRuntime {
 
   private createProtocolServer(session: McpSession): McpServer {
     const server = new McpServer({ name: "worktree-switcher", version: packageJson.version });
-    if (session.authentication.kind === "principal") {
+    if (session.authentication.kind !== "legacy") {
       const actor = session.authentication.actor;
       registerKnowledgeTools(server, this.service, actor);
       server.registerTool("get_identity", {
@@ -196,7 +197,8 @@ export class McpRuntime {
         if (!this.identity) throw new Error("Scoped identity authentication is unavailable.");
         return jsonContent(this.identity.describeIdentity(actor));
       });
-      return server;
+      // Scoped credentials stop here; the installation authority also controls the runtime.
+      if (session.authentication.kind === "principal") return server;
     }
     const owner = () => {
       if (!session.owner) throw new Error("MCP session is not initialized.");

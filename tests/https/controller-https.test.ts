@@ -225,7 +225,7 @@ describe("controller HTTPS through Caddy", () => {
     if (directory) await rm(directory, { recursive: true, force: true });
   });
 
-  it("keeps pairing, API, SSE and local CLI available without plaintext downgrade or secret logging", async () => {
+  it("keeps the access page, API, SSE and local CLI available without plaintext downgrade or secret logging", async () => {
     const backendPort = await freePort();
     const publicPort = await freePort();
     const unusedPort = await freePort();
@@ -246,6 +246,10 @@ describe("controller HTTPS through Caddy", () => {
       "--host", "127.0.0.1", "--port", String(backendPort),
       "--data-dir", data, "--state-dir", state, "--browse-root", directory, "--web-root", join(repositoryRoot, "out"),
     ];
+    const generated = await execFileAsync(process.execPath, [
+      join(repositoryRoot, "dist/cli/index.js"), "auth", "token", "generate", "--data-dir", data, "--state-dir", state,
+    ], { env: controlledEnvironment });
+    const token = (JSON.parse(generated.stdout) as { token: string }).token;
     controller = startProcess(process.execPath, controllerArguments, controlledEnvironment);
     const directAccess = await waitFor(async () => {
       try {
@@ -271,7 +275,8 @@ describe("controller HTTPS through Caddy", () => {
     expect(access.localDashboardEndpoint).toBe(`http://127.0.0.1:${backendPort}`);
     expect(access.publicDashboardEndpoint).toBe(publicOrigin);
     expect((await stat(join(state, "service-access.json"))).mode & 0o777).toBe(0o600);
-    const token = new URLSearchParams(new URL(access.accessUrl).hash.slice(1)).get("token")!;
+    // Token mode never publishes a secret in the access record.
+    expect(new URL(access.accessUrl).hash).toBe("");
 
     await expect(secureRequest({ port: publicPort })).rejects.toThrow();
     expect(await fetch(`http://127.0.0.1:${backendPort}/`).then((response) => response.status)).toBe(200);
@@ -299,9 +304,9 @@ describe("controller HTTPS through Caddy", () => {
 
     await startCaddy(backendPort);
     const caContents = await readFile(ca.certificate);
-    const pairing = await secureRequest({ port: publicPort, ca: caContents, path: `/?marker=${syntheticMarker}` });
-    expect(pairing.status).toBe(200);
-    expect(pairing.body).toContain("Worktree Switcher");
+    const landing = await secureRequest({ port: publicPort, ca: caContents, path: `/?marker=${syntheticMarker}` });
+    expect(landing.status).toBe(200);
+    expect(landing.body).toContain("Worktree Switcher");
 
     const dashboard = await secureRequest({ port: publicPort, ca: caContents, path: "/api/dashboard", token, origin: publicOrigin });
     expect(dashboard.status).toBe(200);
@@ -329,7 +334,7 @@ describe("controller HTTPS through Caddy", () => {
 
     const cli = await execFileAsync(process.execPath, [
       join(repositoryRoot, "dist/cli/index.js"), "project", "list", "--json", "--data-dir", data, "--state-dir", state,
-    ], { env: controlledEnvironment });
+    ], { env: { ...controlledEnvironment, WORKTREE_SWITCHER_TOKEN: token } });
     expect(JSON.parse(cli.stdout)).toEqual([]);
 
     await expect(secureRequest({ port: publicPort, ca: caContents, servername: "wrong.localhost" })).rejects.toThrow();
@@ -396,12 +401,11 @@ describe("controller HTTPS through Caddy", () => {
     });
     try {
       const page = await browser.newPage();
-      await page.goto(access.accessUrl);
+      await page.goto(`${publicOrigin}/#token=${encodeURIComponent(token)}`);
       await page.getByRole("heading", { name: /Add your first project|Dodaj pierwszy projekt/ }).waitFor({ state: "visible" });
       const browserUrl = new URL(page.url());
       expect(browserUrl.origin).toBe(publicOrigin);
       expect(browserUrl.hash).toBe("");
-      expect(browserUrl.searchParams.get("session")).toBeTruthy();
     } finally {
       await browser.close();
     }

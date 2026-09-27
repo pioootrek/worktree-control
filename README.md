@@ -39,6 +39,11 @@ prevent an unrelated terminal or client from starting its own processes.
 
 ## Quick start
 
+> **Upgrading?** Existing installations keep their pairing link and MCP token
+> until you switch modes. New installations need an installation token before
+> the first start. Read the
+> [upgrade notes and breaking changes](docs/authentication.md#upgrade-notes-and-breaking-changes).
+
 **Status:** working prototype. A private `0.1.0-trial.1` tarball flow is available;
 there is no npm registry release. The CLI and data model may change. Linux x64 is
 the primary verified platform. macOS has a service installer, with limitations
@@ -57,11 +62,14 @@ git clone https://github.com/pioootrek/worktree-switcher.git
 cd worktree-switcher
 pnpm install --frozen-lockfile
 pnpm build
+node dist/cli/index.js auth token generate
 node dist/cli/index.js start --host 127.0.0.1
 ```
 
-Open the **full private URL** printed by the controller. It includes the token
-needed to pair your browser. Then:
+`auth token generate` prints the installation token once. Save it in a password
+manager. Open the address printed by the controller and sign in with the token.
+See [authentication modes](docs/authentication.md) for `open` mode, rotation and
+migration of older installations. Then:
 
 1. Select **Add project**, choose a local Git repository and assign a port.
 2. Pick one of its discovered worktrees and select **Start**.
@@ -88,10 +96,11 @@ The installer uses a Linux systemd user service or a macOS LaunchAgent. It does
 not require `sudo` or change your firewall. See the
 [user-service guide](docs/user-service.md) for options, updates and removal.
 
-**After a restart, use `service open` or `service url` to obtain the current
-pairing link.** Each controller start changes the browser token and session;
-an old link will not pair a new browser session. MCP has a separate persistent
-token. Keep both kinds of credential out of issues and shared logs.
+`service open` and `service url` print the dashboard address; sign in with the
+installation token. Installations created before authentication modes stay in
+`legacy` mode, where each controller start changes the browser pairing link and
+MCP has a separate persistent token. Keep every credential out of issues and
+shared logs.
 
 ## What is available on main
 
@@ -108,6 +117,7 @@ token. Keep both kinds of credential out of issues and shared logs.
 | Monitoring | Inspect runtime logs, Linux process-group RAM/CPU, and cached worktree disk usage |
 | Cache maintenance | Remove a stopped, unlocked Next.js worktree's `.next` cache with confirmation |
 | Dashboard | Use English or Polish, desktop or mobile layouts, and explicit Git metadata refresh |
+| Authentication | Choose `token` (one installation token for every function) or `open` mode from the CLI; rotate the token without a restart |
 
 For Node.js, Switcher detects pnpm, npm, Yarn and Bun projects with a `dev`
 script. Next.js uses `PORT`; Vite, Astro and Nuxt receive port arguments.
@@ -140,8 +150,9 @@ Configure your MCP-capable client with the output of:
 node dist/cli/index.js config mcp
 ```
 
-This prints the loopback Streamable HTTP endpoint and its bearer token. Store
-that configuration privately in your client. Client configuration formats vary;
+This prints the loopback Streamable HTTP endpoint. In token mode it prints a
+placeholder for the bearer token; set `WORKTREE_SWITCHER_TOKEN` first to include
+the installation token. Store that configuration privately in your client. Client configuration formats vary;
 Switcher does not require you to replace your current editor or agent.
 
 The intended server workflow is:
@@ -223,8 +234,9 @@ Switcher can execute project code under your OS user. Use trusted repositories
 and clients. Shell-free process spawning, claims and preset allowlists are not a
 sandbox for untrusted code.
 
-- Browser API requests and event streams require authentication; cross-origin
-  browser mutations are rejected.
+- In `token` mode, browser, API, event-stream, MCP and online CLI requests
+  require the installation token; cross-origin browser mutations are rejected.
+  `open` mode removes authentication and belongs only on a trusted loopback host.
 - The directory picker stays within its configured root. The controller stops
   only verified process trees it owns, never an unknown process occupying a port.
 - Literal environment profile values are stored in SQLite. Use them for
@@ -236,11 +248,12 @@ sandbox for untrusted code.
 ## Roadmap
 
 The [authentication roadmap](https://github.com/pioootrek/worktree-switcher/blob/main/docs/backlog/notes/NOTE-20260909-self-hosted-saas-plan/authentication-modes-and-plugin.md)
-has two planned stages: CLI-selected `open` (no authentication), `token` (one
-CLI-generated token for all functions, including knowledge), and `better-auth`
-(initially unavailable); then an optional Better Auth plugin for account login.
-The core remains MIT. Plugin commercial terms and activation are undecided.
-These modes are planned, not currently available CLI commands.
+has two stages. The first is available: CLI-selected `open` (no authentication),
+`token` (one CLI-generated token for all functions, including knowledge) and a
+reserved `better-auth` mode that reports the provider as unavailable; see
+[authentication modes](docs/authentication.md). The second, an optional Better
+Auth plugin for account login, is planned. The core remains MIT. Plugin
+commercial terms and activation are undecided.
 
 The next complete workflow is **push a commit, ask your worker to verify it, and
 read the result from your existing client**. The worker will fetch the requested
@@ -279,6 +292,7 @@ offline access takes the singleton lock before opening state.
 
 | Guide | Use it for |
 | --- | --- |
+| [Authentication modes](docs/authentication.md) | `token` and `open` modes, token rotation, upgrade notes and migration |
 | [User service](docs/user-service.md) | Installation, restarts, access links, logs and removal |
 | [Package trial](docs/package-trial.md) | Verified tarball, checksum, user-prefix install, upgrade and removal |
 | [Controller HTTPS](docs/controller-https.md) | Caddy, certificates, public origin and backend binding |
@@ -379,8 +393,11 @@ Example `memory.json` (replace IDs and the source revision):
 }
 ```
 
-Knowledge requires an owner session or a scoped agent token. The existing
-pairing token and shared runtime MCP token do not grant knowledge access. Use
+In token mode the installation token grants full knowledge access, and a
+scoped agent token grants what its grants allow. `identity` and `knowledge`
+commands read the installation token from `WORKTREE_SWITCHER_TOKEN`. In `legacy` mode, knowledge
+requires an owner session or a scoped agent token. The pairing token and shared
+runtime MCP token do not grant knowledge access. Use
 `worktree-switcher identity bootstrap-owner` for the initial owner, then supply
 that session through `WORKTREE_SWITCHER_OWNER_TOKEN` for identity administration.
 Use `identity renew-owner` before expiry; `identity recover-owner` is a local

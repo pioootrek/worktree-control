@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 export interface AppPaths {
+  adminSocketPath: string;
   controllerLockPath: string;
   dataDirectory: string;
   databasePath: string;
@@ -32,6 +33,7 @@ export function resolveAppPaths(dataDirectory?: string, stateDirectory?: string)
     : join(stateBase, "worktree-switcher");
 
   return {
+    adminSocketPath: join(appStateDirectory, "admin.sock"),
     controllerLockPath: join(appStateDirectory, "controller.lock"),
     dataDirectory: appDirectory,
     databasePath: join(appDirectory, "state.sqlite3"),

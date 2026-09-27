@@ -14,7 +14,7 @@ export async function knowledgeRequest<T, K extends KnowledgeOperation = Knowled
   return value as T;
 }
 
-export interface KnowledgeIdentity { principal: { id: string; kind: string }; credential: { kind: string } }
+export interface KnowledgeIdentity { principal: { id: string; kind: string }; credential: { kind: string } | null; installationAuthority?: boolean }
 export async function knowledgeIdentity(token: string, signal?: AbortSignal): Promise<KnowledgeIdentity> {
   const response = await fetch("/api/identity", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal });
   if (!response.ok) throw new KnowledgeClientError(response.status === 401 || response.status === 403

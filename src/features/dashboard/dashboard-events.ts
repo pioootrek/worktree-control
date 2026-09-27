@@ -73,6 +73,8 @@ export function connectDashboardEvents(options: {
   knowledgeToken?: string;
   onEvent: EventHandler;
   onError: () => void;
+  /** A rejected credential cannot recover by retrying; the stream stops and reports it once. */
+  onUnauthorized?: () => void;
   fetcher?: Fetcher;
   retryDelayMs?: number;
 }): { close(): void } {
@@ -95,6 +97,12 @@ export function connectDashboardEvents(options: {
           },
           signal: controller.signal,
         });
+        if (response.status === 401 && options.onUnauthorized) {
+          await response.body?.cancel();
+          closed = true;
+          options.onUnauthorized();
+          return;
+        }
         if (!response.ok) {
           await response.body?.cancel();
           throw new Error(`Dashboard event stream returned HTTP ${response.status}.`);

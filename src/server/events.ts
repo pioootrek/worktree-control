@@ -88,6 +88,13 @@ export class EventStream {
     this.knowledgePending.clear();
   }
 
+  /** Ends current subscriptions, which reconnect under the current authentication policy. */
+  disconnectAll(): void {
+    for (const client of this.clients) client.end();
+    this.clients.clear();
+    this.knowledgeReaders.clear();
+  }
+
   close(): void {
     if (this.knowledgeTimer) clearTimeout(this.knowledgeTimer);
     this.knowledgeReaders.clear();

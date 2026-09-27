@@ -13,7 +13,7 @@ import { nullLogWriter } from "../server/log-writer";
 import type { AppPaths } from "../server/paths";
 import { ProcessManager } from "../server/process-manager";
 import { SqliteStateStore } from "../server/sqlite-store";
-import { localDashboardEndpoint, readServiceAccess } from "./service-access";
+import { controllerAccessToken, localDashboardEndpoint, readServiceAccess } from "./service-access";
 
 const execFileAsync = promisify(execFile);
 
@@ -32,7 +32,13 @@ export interface ProjectCommandDependencies {
 
 export async function openProjectGateway(paths: AppPaths, locale: Locale): Promise<ProjectGateway> {
   const access = readServiceAccess(paths.serviceAccessPath);
-  if (access && processExists(access.pid)) return new ControllerProjectGateway(localDashboardEndpoint(access), access.accessUrl, locale);
+  if (access && processExists(access.pid)) {
+    const token = controllerAccessToken(access);
+    if (!token && access.authenticationMode === "token") throw new Error(translate(locale, "cli.project.installationTokenRequired"));
+    // An open-mode controller authenticates nobody, so no token is needed.
+    const credential = access.authenticationMode === "open" ? token ?? "" : token;
+    return new ControllerProjectGateway(localDashboardEndpoint(access), credential, locale);
+  }
 
   let lock: ControllerLock;
   try {
@@ -222,10 +228,9 @@ class ControllerProjectGateway implements ProjectGateway {
   private readonly token: string;
   private readonly endpoints: string[];
 
-  constructor(endpoint: string, accessUrl: string, private readonly locale: Locale) {
-    const parsed = new URL(accessUrl);
-    const token = new URLSearchParams(parsed.hash.slice(1)).get("token");
-    if (!token) throw new Error(translate(locale, "cli.project.controllerUnavailable"));
+  /** An empty token sends no credential header; null means no usable access record. */
+  constructor(endpoint: string, token: string | null, private readonly locale: Locale) {
+    if (token === null) throw new Error(translate(locale, "cli.project.controllerUnavailable"));
     this.token = token;
     this.endpoints = controllerEndpoints(endpoint);
   }
@@ -256,7 +261,7 @@ class ControllerProjectGateway implements ProjectGateway {
           headers: {
             "Accept-Language": this.locale,
             "Content-Type": "application/json",
-            "X-Worktree-Switcher-Token": this.token,
+            ...(this.token ? { "X-Worktree-Switcher-Token": this.token } : {}),
             ...init.headers,
           },
           signal: AbortSignal.timeout(15_000),

@@ -352,12 +352,20 @@ export interface McpStatus {
   endpoint: string | null;
   transport: "streamable-http";
   network: "loopback";
-  authentication: "bearer";
+  authentication: "bearer" | "none";
   activeSessions: number;
+}
+
+/** Installation-wide authentication shown to every signed-in client; never includes secrets. */
+export interface ControllerAuthenticationStatus {
+  mode: "legacy" | "open" | "token" | "better-auth";
+  /** Address the controller listens on, so open mode shows what it exposes. */
+  listen: string;
 }
 
 export interface ControllerDashboardResponse extends DashboardResponse {
   mcp: McpStatus;
+  authentication?: ControllerAuthenticationStatus;
 }
 
 export interface DirectoryListing {

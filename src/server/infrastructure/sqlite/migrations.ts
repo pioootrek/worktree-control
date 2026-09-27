@@ -333,11 +333,12 @@ const schema = `
 `;
 
 export function initializeSchema(database: Database.Database): void {
+  const fresh = !database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'projects'").get();
   database.exec(schema);
-  applyMigrations(database);
+  applyMigrations(database, fresh);
 }
 
-function applyMigrations(database: Database.Database): void {
+function applyMigrations(database: Database.Database, fresh: boolean): void {
   if (!hasMigration(database, 2)) {
     database.transaction(() => {
       database.prepare(`
@@ -702,6 +703,65 @@ function applyMigrations(database: Database.Database): void {
     })();
   }
 
+  if (!hasMigration(database, 25)) {
+    // Rebuilding the parent of many foreign keys requires enforcement off outside the transaction.
+    database.pragma("foreign_keys = OFF");
+    try {
+      database.transaction(() => {
+        rebuildTable(
+          database,
+          "remote_principals",
+          "CHECK(kind IN ('owner', 'agent', 'worker'))",
+          "CHECK(kind IN ('owner', 'agent', 'worker', 'installation'))",
+        );
+        rebuildTable(
+          database,
+          "knowledge_history",
+          "CHECK(authentication_method IN ('owner_session', 'agent_token', 'worker_token'))",
+          "CHECK(authentication_method IN ('owner_session', 'agent_token', 'worker_token', 'installation_token', 'none'))",
+        );
+        database.prepare("INSERT OR IGNORE INTO remote_principals(id, kind, status) VALUES (?, 'installation', 'active')")
+          .run(INSTALLATION_PRINCIPAL_ID);
+        database.prepare(`
+          INSERT OR IGNORE INTO controller_settings(key, value_json, updated_at)
+          VALUES ('authentication', ?, ?)
+        `).run(
+          // New installations require the installation token; existing ones keep legacy protection until migrated.
+          JSON.stringify({ mode: fresh ? "token" : "legacy", token: null, generation: 0 }),
+          new Date().toISOString(),
+        );
+        if ((database.pragma("foreign_key_check") as unknown[]).length) {
+          throw new Error("Migration 25 would leave dangling principal references.");
+        }
+        recordMigration(database, 25);
+      })();
+    } finally {
+      database.pragma("foreign_keys = ON");
+    }
+  }
+
+}
+
+/** Frozen copy of the installation principal ID so migration 25 never follows later code changes. */
+const INSTALLATION_PRINCIPAL_ID = "installation";
+
+/** Replaces one table constraint; skips tables already carrying it so repaired migration records can rerun safely. */
+function rebuildTable(database: Database.Database, table: string, from: string, to: string): void {
+  const current = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql: string } | undefined;
+  if (!current) throw new Error(`Missing table ${table}.`);
+  if (current.sql.includes(to)) return;
+  if (!current.sql.includes(from)) throw new Error(`Unexpected ${table} definition; refusing to rebuild it.`);
+  const next = current.sql.replace(from, to);
+  const indexes = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL")
+    .all(table) as Array<{ sql: string }>;
+  const replacement = `${table}_rebuild`;
+  database.exec(next.replace(/^CREATE TABLE (?:IF NOT EXISTS )?"?\w+"?/, `CREATE TABLE ${replacement}`));
+  database.exec(`
+    INSERT INTO ${replacement} SELECT * FROM ${table};
+    DROP TABLE ${table};
+    ALTER TABLE ${replacement} RENAME TO ${table};
+  `);
+  for (const index of indexes) database.exec(index.sql);
 }
 
 function ensureLaunchPresetColumn(database: Database.Database): void {

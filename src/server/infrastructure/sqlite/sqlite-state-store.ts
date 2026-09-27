@@ -26,6 +26,7 @@ import type {
   Principal,
   PrincipalCredential,
 } from "@/server/modules/identity";
+import type { AuthenticationPolicy, AuthenticationStore } from "@/server/modules/authentication";
 import type { HubImportBatch, HubImportExecutionStore, HubImportMapping, KnowledgeHistoryEntry, KnowledgeMutationContext, KnowledgeMutationResult, KnowledgePage, KnowledgeProjectSnapshot, KnowledgeRelation, KnowledgeReply, KnowledgeRuntimeLinkResult, KnowledgeStore, KnowledgeTask, KnowledgeThread } from "@/server/modules/knowledge";
 import { KnowledgeError } from "@/server/modules/knowledge";
 import Database from "better-sqlite3";
@@ -37,16 +38,18 @@ import { IdentityQueries } from "./identity-queries";
 import { KnowledgeQueries } from "./knowledge-queries";
 import { mapProject, type ProjectRow } from "./project-mapping";
 import { equalHash, mapReservation, type ReservationRow } from "./reservation-mapping";
+import { AuthenticationQueries } from "./authentication-queries";
 import { RemoteVerificationQueries } from "./remote-verification-queries";
 import { StorageQueries } from "./storage-queries";
 import { TestRunQueries } from "./test-run-queries";
 
-export class SqliteStateStore implements StateStore, IdentityStore, KnowledgeStore, HubImportExecutionStore, RemoteVerificationStore, RemoteVerificationAttemptStore, RemoteVerificationProvisioningStore {
+export class SqliteStateStore implements StateStore, AuthenticationStore, IdentityStore, KnowledgeStore, HubImportExecutionStore, RemoteVerificationStore, RemoteVerificationAttemptStore, RemoteVerificationProvisioningStore {
   private readonly database: Database.Database;
   private readonly testRuns: TestRunQueries;
   private readonly storage: StorageQueries;
   private readonly remoteVerification: RemoteVerificationQueries;
   private readonly identity: IdentityQueries;
+  private readonly authentication: AuthenticationQueries;
   private readonly knowledge: KnowledgeQueries;
 
   constructor(databasePath: string) {
@@ -60,6 +63,7 @@ export class SqliteStateStore implements StateStore, IdentityStore, KnowledgeSto
     this.storage = new StorageQueries(this.database);
     this.remoteVerification = new RemoteVerificationQueries(this.database);
     this.identity = new IdentityQueries(this.database);
+    this.authentication = new AuthenticationQueries(this.database);
     this.knowledge = new KnowledgeQueries(this.database);
   }
 
@@ -522,6 +526,14 @@ export class SqliteStateStore implements StateStore, IdentityStore, KnowledgeSto
     })();
   }
 
+  getAuthenticationPolicy(): AuthenticationPolicy {
+    return this.authentication.getAuthenticationPolicy();
+  }
+
+  saveAuthenticationPolicy(policy: AuthenticationPolicy, event: string, actor: string): void {
+    this.authentication.saveAuthenticationPolicy(policy, event, actor);
+  }
+
   getServerCapacitySettings(): ServerCapacitySettings {
     const row = this.database.prepare("SELECT value_json FROM controller_settings WHERE key = 'server_capacity'")
       .get() as { value_json: string } | undefined;
@@ -714,7 +726,7 @@ export class SqliteStateStore implements StateStore, IdentityStore, KnowledgeSto
   attachmentCountForProject(projectId: string): number { return this.knowledge.attachmentCountForProject(projectId); }
   attachmentTargetExists(projectId: string, kind: KnowledgeAttachment["recordKind"], id: string): boolean { return this.knowledge.attachmentTargetExists(projectId,kind,id); }
 
-  listKnowledgeProjects(principalId: string, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary> {
+  listKnowledgeProjects(principalId: string | null, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary> {
     return this.knowledge.listKnowledgeProjects(principalId, limit, offset);
   }
 

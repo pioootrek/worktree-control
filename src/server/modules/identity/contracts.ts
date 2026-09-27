@@ -1,5 +1,6 @@
 import type { KnowledgeProject } from "@/shared/contracts/knowledge";
-export type PrincipalKind = "owner" | "agent" | "worker";
+/** `installation` is the single installation-wide authority; it never holds credentials or grants. */
+export type PrincipalKind = "owner" | "agent" | "worker" | "installation";
 export type IdentityStatus = "active" | "revoked";
 
 export interface Principal {
@@ -9,6 +10,8 @@ export interface Principal {
 }
 
 export type CredentialKind = "owner_session" | "agent_token" | "worker_token";
+/** Stored credentials plus the installation-wide token and the unauthenticated `open` mode. */
+export type AuthenticationMethod = CredentialKind | "installation_token" | "none";
 
 export interface PrincipalCredential {
   id: string;
@@ -32,12 +35,18 @@ export interface AuthenticatedPrincipal {
   principalId: string;
   principalKind: PrincipalKind;
   credentialId: string;
-  authenticationMethod: CredentialKind;
+  authenticationMethod: AuthenticationMethod;
 }
 
 export type ControllerAuthentication =
   | { kind: "legacy" }
+  | { kind: "installation"; actor: AuthenticatedPrincipal }
   | { kind: "principal"; actor: AuthenticatedPrincipal };
+
+/** Confirms that an installation actor still matches the active authentication policy. */
+export interface InstallationAuthority {
+  isCurrentInstallationActor(actor: AuthenticatedPrincipal): boolean;
+}
 
 export type KnowledgePermission =
   | "knowledge:read"
@@ -58,8 +67,10 @@ export interface KnowledgeProjectGrant {
 
 export interface AuthenticatedIdentity {
   principal: Principal;
-  credential: PrincipalCredential;
+  /** Null for the installation authority, which has no stored credential or grants. */
+  credential: PrincipalCredential | null;
   knowledgeGrants: Array<Pick<KnowledgeProjectGrant, "projectId" | "permissions">>;
+  installationAuthority?: true;
 }
 
 export interface KnowledgeProjectRuntimeLink {

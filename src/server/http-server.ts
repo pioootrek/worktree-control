@@ -10,7 +10,8 @@ import { localeFrom } from "../i18n/messages";
 import { localizeServerMessage } from "../i18n/server-errors";
 import { DirectoryBrowser } from "./directory-browser";
 import { EventStream } from "./events";
-import { IdentityError, type AuthenticatedPrincipal, type IdentityService, type KnowledgePermission } from "./modules/identity";
+import { resolveControllerAuthentication, type ControllerAuthenticationDependencies } from "./modules/authentication";
+import { IdentityError, type AuthenticatedPrincipal, type ControllerAuthentication, type IdentityService, type KnowledgePermission } from "./modules/identity";
 
 const JSON_LIMIT = 64 * 1024;
 const MIME_TYPES: Record<string, string> = {
@@ -384,9 +385,31 @@ export function createControllerServer(options: {
   port: number;
   accessToken: string;
   identity?: IdentityService;
+  authentication?: ControllerAuthenticationDependencies["authentication"];
   publicOrigin?: string;
 }): ControllerServer {
   const fallbackOrigin = `http://${options.host}:${options.port}`;
+  const dependencies = { authentication: options.authentication, identity: options.identity };
+  /** Dashboard and runtime API: the pairing token in legacy mode, the installation token in token mode. */
+  const authenticateRuntime = (request: IncomingMessage): ControllerAuthentication | null => {
+    const header = request.headers["x-worktree-switcher-token"];
+    const bearer = bearerToken(request);
+    const candidate = typeof header === "string" && header.startsWith("wsi_") ? header
+      : bearer?.startsWith("wsi_") ? bearer : null;
+    const result = resolveControllerAuthentication(dependencies, {
+      bearer: candidate,
+      legacySecretValid: () => hasValidToken(request, options.accessToken),
+    });
+    return result?.kind === "legacy" || result?.kind === "installation" ? result : null;
+  };
+  /** Knowledge and identity API: a scoped credential or the installation token as a bearer. */
+  const authenticateActor = (request: IncomingMessage): AuthenticatedPrincipal | null => {
+    const result = resolveControllerAuthentication(dependencies, {
+      bearer: bearerToken(request),
+      legacySecretValid: () => false,
+    });
+    return result && result.kind !== "legacy" ? result.actor : null;
+  };
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", request.headers.host ? `http://${request.headers.host}` : fallbackOrigin);
     const locale = localeFrom(request.headers["accept-language"]);
@@ -403,12 +426,8 @@ export function createControllerServer(options: {
             json(response, 405, { code: "method_not_allowed", error: "Use POST." });
             return;
           }
-          let actor: AuthenticatedPrincipal;
-          try {
-            const token = bearerToken(request);
-            if (!token || !options.identity) throw new Error("Missing identity");
-            actor = options.identity.authenticateBearer(token);
-          } catch {
+          const actor = authenticateActor(request);
+          if (!actor) {
             json(response, 401, { code: "invalid_credential", error: "An active knowledge credential is required." });
             return;
           }
@@ -428,7 +447,8 @@ export function createControllerServer(options: {
             json(response, 403, { error: localizeServerMessage("Odrzucono żądanie z obcego originu.", locale) });
             return;
           }
-          if (!hasValidToken(request, options.accessToken)) {
+          // Owner bootstrap belongs to legacy mode; token mode starts from the installation authority.
+          if (authenticateRuntime(request)?.kind !== "legacy") {
             json(response, 401, { error: localizeServerMessage("Brak prawidłowego klucza dostępu.", locale) });
             return;
           }
@@ -463,12 +483,8 @@ export function createControllerServer(options: {
             json(response, 403, { error: localizeServerMessage("Odrzucono żądanie z obcego originu.", locale) });
             return;
           }
-          const token = bearerToken(request);
-          let actor: AuthenticatedPrincipal;
-          try {
-            if (!token || !options.identity) throw new Error("invalid credential");
-            actor = options.identity.authenticateBearer(token);
-          } catch {
+          const actor = authenticateActor(request);
+          if (!actor || !options.identity) {
             json(response, 401, { error: localizeServerMessage("Brak prawidłowego klucza dostępu.", locale) });
             return;
           }
@@ -493,10 +509,9 @@ export function createControllerServer(options: {
             json(response, 403, { error: localizeServerMessage("Odrzucono żądanie z obcego originu.", locale) });
             return;
           }
-          const token = bearerToken(request);
           try {
-            if (!token || !options.identity) throw new Error("invalid credential");
-            const actor = options.identity.authenticateBearer(token);
+            const actor = authenticateActor(request);
+            if (!actor || !options.identity) throw new Error("invalid credential");
             if (request.method !== "GET") {
               response.setHeader("Allow", "GET");
               json(response, 405, { error: "Method not allowed." });
@@ -508,7 +523,8 @@ export function createControllerServer(options: {
           }
           return;
         }
-        if (!hasValidToken(request, options.accessToken)) {
+        const runtimeAuthentication = authenticateRuntime(request);
+        if (!runtimeAuthentication) {
           json(response, 401, { error: localizeServerMessage("Brak prawidłowego klucza dostępu.", locale) });
           return;
         }
@@ -520,6 +536,7 @@ export function createControllerServer(options: {
           json(response, 200, {
             ...localizedDashboard(await options.service.dashboard(), locale),
             mcp: options.mcpStatus(),
+            authentication: { mode: options.authentication?.mode() ?? "legacy", listen: `${options.host}:${options.port}` },
           });
           return;
         }
@@ -549,12 +566,9 @@ export function createControllerServer(options: {
             "Content-Type": "text/event-stream",
             "X-Accel-Buffering": "no",
           });
-          const knowledgeToken = bearerToken(request);
-          let knowledgeActor: AuthenticatedPrincipal | undefined;
-          try {
-            if (knowledgeToken && options.identity) knowledgeActor = options.identity.authenticateBearer(knowledgeToken);
-          } catch { /* Invalid optional knowledge credentials must not interrupt runtime events. */ }
-          const actor = knowledgeActor;
+          // Invalid optional knowledge credentials must not interrupt runtime events.
+          const actor = authenticateActor(request)
+            ?? (runtimeAuthentication.kind === "installation" ? runtimeAuthentication.actor : undefined);
           options.events.add(response, actor && options.identity ? (projectId) => {
             // authorizeKnowledge rechecks credential expiry, revocation and grants without recording passive usage.
             options.identity!.authorizeKnowledge(actor, projectId, "knowledge:read");
