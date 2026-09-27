@@ -9,7 +9,7 @@ pozostaje otwarte.
 
 | Element | Wartość |
 | --- | --- |
-| Implementacja skryptów | `e64e65dfbc73200deedeaba1912883f9dbb5669b` (gałąź `feat/knowledge-pilot-token-mode`, czyste drzewo) |
+| Implementacja skryptów | `64237349e6f1485f74ed3dddbb6fe5665e5b9dad` (gałąź `feat/knowledge-pilot-token-mode`, czyste drzewo) |
 | Baza implementacji | `origin/main` `81069845634a3fed6365589ae32a5c3430a57478` |
 | Importowane źródło backloga | commit `81069845634a3fed6365589ae32a5c3430a57478`, `docs/backlog` |
 | Walidator Huba | przypięty `22afb656c74b2fde84cb92f1aefcf8b427697cc6`, czysty checkout, `valid: true` |
@@ -17,14 +17,17 @@ pozostaje otwarte.
 | Schemat SQLite | 25 |
 | Tryb uwierzytelniania kopii | `token` |
 
-Kolejne commity tej gałęzi zmieniają tylko dokumentację backloga; nie zmieniają
-skryptów ani kodu użytego w próbie.
+Pierwszy przebieg na `e64e65d` dał te same wyniki. Po przeglądzie zaostrzono
+asercje odrzucenia złego tokena w CLI (kod wyjścia 1 i treść odmowy) oraz
+kontrolę kolejnej sesji, po czym całą próbę powtórzono na `6423734` w świeżym
+katalogu. Poniższe wyniki dotyczą tego przebiegu. Kolejne commity gałęzi
+zmieniają tylko dokumentację backloga.
 
 ## Weryfikacja przez kolejkę Worktree Switcher
 
-- `node:check` na `e64e65d`: przeszedł (lint, typecheck, 71 plików / 483 testy
-  vitest, 7 testów zasobów); atrybucja źródła `observed_match`.
-- `node:build` na `e64e65d`: przeszedł; atrybucja `observed_match`.
+- `node:check` na `6423734`: przeszedł (lint, typecheck, vitest, testy zasobów);
+  atrybucja źródła `observed_match`. Na `e64e65d`: 71 plików / 483 testy.
+- `node:build` na `6423734`: przeszedł; atrybucja `observed_match`.
 
 Serwer pilota uruchomiono wyłącznie claimem MCP na worktree gałęzi, z osobnym
 profilem środowiska wskazującym prywatny katalog pilota i osobny port MCP.
@@ -37,7 +40,8 @@ baza kontrolera nie była otwierana.
 Wszystkie kontrole przeszły:
 
 1. `auth token generate` przez publiczne CLI inicjalizuje tryb tokenowy świeżej
-   bazy; offline CLI tożsamości odrzuca brak i zły token, przyjmuje token instalacji.
+   bazy; offline CLI tożsamości odrzuca brak i zły token (kod 1 i treść odmowy),
+   przyjmuje token instalacji.
 2. Import w 10 partiach po najwyżej 32 mapowania jako principal `installation`; staging
    niewidoczny, kursor przetrwał ponowne otwarcie połączenia, pełna publikacja.
 3. Liczności, oryginalne payloady, hashe źródeł i bajty załączników zgodne z planem.
@@ -67,9 +71,10 @@ Wszystkie kontrole przeszły:
 
 ## Wynik live: GUI, CLI i dwa klienty MCP
 
-Wszystkie 12 kontroli przeszło w pierwszym przebiegu:
+Wszystkie 12 kontroli przeszło:
 
-1. HTTP, MCP i online CLI odrzucają brak i zły token.
+1. HTTP, MCP i online CLI odrzucają brak i zły token; dla CLI sprawdzany jest
+   kod 1 i treść odmowy.
 2. Online CLI z tokenem instalacji tworzy dwóch agentów, granty i tokeny;
    token agenta czyta wiedzę przez CLI.
 3. Dwa klienty MCP uwierzytelniają się jako różni agenci, bez narzędzi runtime
@@ -84,8 +89,9 @@ Wszystkie 12 kontroli przeszło w pierwszym przebiegu:
    pytanie i nie może zatwierdzić (`knowledge_forbidden`).
 10. Właściciel zatwierdza w GUI; historia przypisuje utworzenie agentowi 1
     (`agent_token`), a zatwierdzenie instalacji (`installation_token`).
-11. Nowa sesja MCP, wywołanie CLI i nowa sesja przeglądarki odczytują
-    zatwierdzoną decyzję i otwarte pytanie dla zadania.
+11. Nowa sesja MCP i wywołanie CLI odczytują w kontekście zadania zatwierdzoną
+    decyzję i otwarte pytanie; nowa sesja przeglądarki pokazuje zatwierdzoną
+    decyzję i wymienia pytanie na liście.
 12. Widok pamięci przy 390 px nie ma poziomego przepełnienia.
 
 Zrzuty ekranu obejrzano ręcznie: zadanie człowieka, decyzja „Active · Approved”
