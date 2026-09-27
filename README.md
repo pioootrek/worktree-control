@@ -39,6 +39,11 @@ prevent an unrelated terminal or client from starting its own processes.
 
 ## Quick start
 
+> **Upgrading?** Existing installations keep their pairing link and MCP token
+> until you switch modes. New installations need an installation token before
+> the first start. Read the
+> [upgrade notes and breaking changes](docs/authentication.md#upgrade-notes-and-breaking-changes).
+
 **Status:** working prototype. A private `0.1.0-trial.1` tarball flow is available;
 there is no npm registry release. The CLI and data model may change. Linux x64 is
 the primary verified platform. macOS has a service installer, with limitations
@@ -112,6 +117,7 @@ shared logs.
 | Monitoring | Inspect runtime logs, Linux process-group RAM/CPU, and cached worktree disk usage |
 | Cache maintenance | Remove a stopped, unlocked Next.js worktree's `.next` cache with confirmation |
 | Dashboard | Use English or Polish, desktop or mobile layouts, and explicit Git metadata refresh |
+| Authentication | Choose `token` (one installation token for every function) or `open` mode from the CLI; rotate the token without a restart |
 
 For Node.js, Switcher detects pnpm, npm, Yarn and Bun projects with a `dev`
 script. Next.js uses `PORT`; Vite, Astro and Nuxt receive port arguments.
@@ -228,8 +234,9 @@ Switcher can execute project code under your OS user. Use trusted repositories
 and clients. Shell-free process spawning, claims and preset allowlists are not a
 sandbox for untrusted code.
 
-- Browser API requests and event streams require authentication; cross-origin
-  browser mutations are rejected.
+- In `token` mode, browser, API, event-stream, MCP and online CLI requests
+  require the installation token; cross-origin browser mutations are rejected.
+  `open` mode removes authentication and belongs only on a trusted loopback host.
 - The directory picker stays within its configured root. The controller stops
   only verified process trees it owns, never an unknown process occupying a port.
 - Literal environment profile values are stored in SQLite. Use them for
@@ -285,6 +292,7 @@ offline access takes the singleton lock before opening state.
 
 | Guide | Use it for |
 | --- | --- |
+| [Authentication modes](docs/authentication.md) | `token` and `open` modes, token rotation, upgrade notes and migration |
 | [User service](docs/user-service.md) | Installation, restarts, access links, logs and removal |
 | [Package trial](docs/package-trial.md) | Verified tarball, checksum, user-prefix install, upgrade and removal |
 | [Controller HTTPS](docs/controller-https.md) | Caddy, certificates, public origin and backend binding |

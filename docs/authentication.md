@@ -89,3 +89,28 @@ worktree-switcher auth mode set open
 
 If a client still fails, run `auth status` to confirm the mode and the token
 prefix. Rotate the token if it may have leaked.
+
+## Upgrade notes and breaking changes
+
+Upgrading an existing installation keeps it in `legacy` mode. The pairing link,
+`mcp-token` and owner sessions keep working until you migrate. These changes
+apply after the upgrade:
+
+- **No downgrade.** The upgrade applies database migration 25. Controller
+  backups record schema version 25, and older versions refuse to restore them.
+- **No return to `legacy`.** After you select `token` or `open`, the pairing
+  link and `mcp-token` stop working permanently.
+- **Knowledge exports.** History entries can record the `installation_token`
+  and `none` authentication methods. Older versions reject such exports.
+- **Owner bootstrap over HTTP** (`/api/identity/bootstrap`) works only in
+  `legacy` mode. The offline `identity bootstrap-owner` command is unchanged.
+
+New installations differ from earlier releases:
+
+- `start` and the user service refuse to run until `auth token generate`
+  creates the installation token.
+- The controller prints no pairing link. `service open` and `service url` show
+  the sign-in page.
+- `config mcp` prints a token placeholder unless `WORKTREE_SWITCHER_TOKEN` is
+  set.
+- Online CLI commands need `WORKTREE_SWITCHER_TOKEN`.

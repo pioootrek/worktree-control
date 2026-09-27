@@ -1,6 +1,6 @@
 ---
 audience: "people running Worktree Switcher on a development machine"
-last_reviewed: "2026-09-11"
+last_reviewed: "2026-09-27"
 source_of_truth: "user-service installation, operation, logs, and removal"
 status: "active"
 ---
@@ -31,6 +31,14 @@ controller share the same state directory.
 worktree-switcher doctor
 ```
 
+A new installation runs in `token` mode and refuses to start without an
+installation token. Generate it once before installing the service and save it
+privately; see [authentication modes](authentication.md).
+
+```bash
+worktree-switcher auth token generate
+```
+
 The examples below use the executable installed into a user-owned npm prefix.
 When developing from a source checkout, use `node dist/cli/index.js` in its
 place after a successful build.
@@ -52,8 +60,8 @@ The definition stores absolute paths to Node.js, the built CLI, dashboard
 assets, data, and runtime state. It also stores the chosen host and ports. Its
 controlled `PATH` includes standard system directories and the directories of
 any supported package managers (`pnpm`, `npm`, `yarn`, or `bun`) found during
-installation. It does not contain the browser pairing token or MCP bearer
-token.
+installation. It does not contain the installation token, the browser pairing
+token or the MCP bearer token.
 
 Installation is idempotent. Running the same command again keeps the existing
 process. If the generated definition would change, the command stops and asks
@@ -120,14 +128,16 @@ Open the dashboard:
 worktree-switcher service open
 ```
 
-On a headless machine, print the private URL and open it on an allowed device:
+Sign in with the installation token. On a headless machine, print the address
+and open it on an allowed device:
 
 ```bash
 worktree-switcher service url
 ```
 
-`service url` prints a credential. Do not paste it into logs, issues, source
-files, or a shared shell transcript. The underlying access record is stored
+In `token` and `open` modes the address contains no secret. In `legacy` mode
+`service url` prints a pairing credential; do not paste it into logs, issues,
+source files, or a shared shell transcript. The underlying access record is stored
 with owner-only permissions and is removed during a clean stop.
 
 ## Start, stop, and restart
@@ -228,7 +238,7 @@ Uninstall stops the controller, disables and removes its user-service
 definition, and reloads the service manager where needed. It preserves:
 
 - the SQLite database
-- the MCP token
+- the `legacy` MCP token, if present
 - project and controller logs
 - project configuration and claims
 

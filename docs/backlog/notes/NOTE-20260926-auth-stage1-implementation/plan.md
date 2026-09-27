@@ -219,3 +219,10 @@ Kierunek: [plan trybów](../NOTE-20260909-self-hosted-saas-plan/authentication-m
   `main` po scaleniu stosu. Follow-up: lokalne CLI przez admin socket zamiast
   `WORKTREE_SWITCHER_TOKEN`; migracja tej instalacji według
   `docs/authentication.md` (wymaga zgody właściciela).
+- 2026-09-27 Dokumentacja przed PR: sekcja „Upgrade notes and breaking changes”
+  w `docs/authentication.md` (brak downgrade po migracji 25, brak powrotu do
+  legacy, eksport wiedzy z nowymi metodami, bootstrap HTTP tylko legacy, nowe
+  instalacje wymagają tokena), ramka w README, aktualizacja package-trial,
+  user-service, controller-https, reservations-and-mcp. Właściciel wybrał
+  wariant A: 2 PR-y — (1) K1 + dokumenty decyzji (`t3code/review-authentication-backlog`
+  → main), (2) etap 1 A–F (`t3code/auth-stage1-f-default` → gałąź PR 1).
