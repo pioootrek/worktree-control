@@ -14,7 +14,7 @@
       }
     ],
     "editor": "agent:codex",
-    "summary": "Read reconciliation-20260927.md first for current delivery, evidence and remaining work at main 17d0c9d7e5be6d3f451298cdb7b364dbf25f5200. Earlier assessments are dated history. Stage 1 is delivered with a residual open-mode CLI gap; knowledge K2–K6 is implemented, while project cutover and remote workers remain incomplete."
+    "summary": "Read the completion update in reconciliation-20260927.md: PR #55 fixed the residual open-mode CLI gap; main bc0dd74 passed CI 36342502959 and authentication is closed. Twelve items remain open. Next is the isolated token-mode knowledge pilot; earlier observations retain their baseline."
   },
   "created": "2026-08-29",
   "files": [

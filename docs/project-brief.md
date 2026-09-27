@@ -171,7 +171,7 @@ Running `worktree-switcher` or `worktree-switcher start`
 starts one foreground controller, opens the browser, and owns its managed child
 processes. New installations first require `auth token generate`; existing
 installations retain legacy mode until explicitly migrated. `--no-open` supports
-headless use. See [authentication](authentication.md), including its CLI limitation.
+headless use. See [authentication](authentication.md) for CLI access and migration.
 
 The CLI installs a systemd user service on Linux or a LaunchAgent on macOS
 without requiring root. The service starts with the user's platform session,

@@ -304,9 +304,9 @@ Local administration uses an owner-only Unix socket while running or the
 singleton lock while stopped. Scoped knowledge credentials keep their grants;
 they do not expose runtime claim/configuration tools.
 
-See [authentication modes](authentication.md) for commands, migration and the
-remaining open-mode CLI limitation in knowledge, identity administration and
-logical import/export.
+See [authentication modes](authentication.md) for commands and migration.
+Knowledge CLI, identity administration and logical import/export now apply
+the active policy when no token variable is present, including open mode.
 
 ## CLI and package
 

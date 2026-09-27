@@ -1,0 +1,29 @@
+{
+  "changed": [
+    "Stage 1 supplies persisted open/token/legacy policy, default token mode for fresh databases, verifier-only installation tokens, rotation, shared browser access and OS-protected online/offline administration.",
+    "Shared CLI credential selection returns an optional nonempty token; online requests omit Authorization when absent and offline commands delegate to resolveControllerAuthentication after taking the singleton lock.",
+    "Updated user documentation and added regressions for missing credentials in open mode, protected-mode rejection, scoped permissions, anonymous history and offline lock refusal."
+  ],
+  "date": "2026-09-27",
+  "followup_ids": [
+    "FEAT-20260905-shared-project-memory",
+    "FEAT-20260829-local-web-accounts",
+    "FEAT-20260829-scoped-mcp-agent-tokens"
+  ],
+  "id": "DONE-20260927-independent-auth-modes",
+  "item_id": "FEAT-20260829-independent-auth-modes",
+  "schema_version": 1,
+  "source": "FEAT-20260829-independent-auth-modes; PR #54 and PR #55; fix 21869042577d02acf6839c406b80b16b6a8b42d1; merged main bc0dd745cfcee17f1c0a57cd667c5f7a265ec361; https://github.com/pioootrek/worktree-switcher/actions/runs/36342502959",
+  "summary": [
+    "Closed authentication stage 1 and its residual CLI inconsistency after PR #55 merged and main CI passed. CLI credential absence is now resolved by the shared persisted policy instead of being rejected before open-mode authorization.",
+    "Open-mode knowledge operations, online/offline identity administration, offline Hub import and logical project transfer work without token variables. Protected modes retain credential validation and scoped grants; singleton ownership is preserved.",
+    "This records source delivery and CI acceptance, not a change to the installed controller or completion of the knowledge pilot. Better Auth and scoped runtime delegation remain separate work."
+  ],
+  "title": "Delivered installation authentication and credential-free CLI in open mode",
+  "validation": [
+    "Main CI https://github.com/pioootrek/worktree-switcher/actions/runs/36342502959 succeeded for bc0dd745cfcee17f1c0a57cd667c5f7a265ec361: check-build, packaged Linux service lifecycle and package smoke on Node 22.23.2/24.21.0. The check-build job includes check, build, HTTPS, integration, UI and E2E.",
+    "Reviewed new CLI coverage in installation-token-transports.test.ts, identity-management.test.ts, knowledge-management.test.ts and backup-management.test.ts. Online tests use a real HTTP controller; offline tests use isolated SQLite state and singleton locks.",
+    "The offline Hub-import CLI regression injects plan verification and therefore does not independently certify the pinned-validator/import-planning path. That path and real-project migration remain knowledge acceptance work.",
+    "The documentation closure uses canonical Hub fmt/validate, relative-link validation and git diff --check. No new local application test or live installation mutation is claimed."
+  ]
+}

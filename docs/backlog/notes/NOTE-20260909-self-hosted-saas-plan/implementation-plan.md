@@ -3,8 +3,8 @@
 ## Current delivery status, 2026-09-27
 
 The HTTPS path and authentication stage 1 have implementation and main CI
-evidence at `17d0c9d`. Stage 1 retains a credential-free knowledge/admin CLI
-gap in open mode. Knowledge core and remote-verification foundations are also
+evidence at `17d0c9d`. PR #55 closes the residual open-mode CLI gap at
+`bc0dd74`, with successful main CI 36342502959. Knowledge core and remote-verification foundations are also
 merged; full remote execution, Better Auth and SaaS remain incomplete.
 Read [the reconciliation](../NOTE-20260829-readiness-assessment/reconciliation-20260927.md)
 before treating the dated stages below as a list of unimplemented work.

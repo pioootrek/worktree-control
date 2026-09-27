@@ -9,7 +9,7 @@
       "FEAT-20260913-knowledge-k1-identity"
     ],
     "remote_verification_baseline": "d429eb9",
-    "summary": "Remote verification foundations and authentication stage 1 are on main. Full worker execution, Better Auth and SaaS remain planned. Stage 1 has residual credential-free CLI gaps recorded in its existing item. Read current status annotations before historical implementation sequences; commercial activation remains undecided."
+    "summary": "Authentication stage 1 and its residual CLI fix are complete in DONE-20260927-independent-auth-modes, with main CI evidence at bc0dd74. Knowledge core and remote-verification foundations are merged. Full workers, Better Auth and SaaS remain planned; commercial activation is undecided."
   },
   "created": "2026-09-09",
   "files": [

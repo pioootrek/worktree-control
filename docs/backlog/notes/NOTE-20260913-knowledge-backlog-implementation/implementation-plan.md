@@ -8,7 +8,7 @@ z 13 września; nie należy ponownie zaczynać implementacji od K0/K1.
 | Etap | Dostarczone | Pozostały odbiór lub implementacja |
 | --- | --- | --- |
 | K0 | Kontrakt, inwentaryzacja, fixture i pomiary; DONE-20260927-knowledge-k0-contracts | Zamknięty zakres przygotowawczy, bez zgody na migrację danych. |
-| K1 | Trwała tożsamość i granty; DONE-20260926-knowledge-k1-identity | Globalny dostęp dostarczył etap 1 auth; jego luka CLI w open ma własny wpis. |
+| K1 | Trwała tożsamość i granty; DONE-20260926-knowledge-k1-identity | Etap 1 auth i luka CLI w open zamknięte w DONE-20260927-independent-auth-modes. |
 | K2–K3 | Serwis/SQLite, HTTP/MCP/CLI i dashboard, PR #42/#43 | Powiązać kryteria z bieżącymi testami, bez ponownej implementacji. |
 | K4 | Pamięć, zatwierdzanie rewizji, wyszukiwanie i kontekst, PR #44 | Zachować testy kontekstu kolejnej sesji i unieważniania zatwierdzeń. |
 | K5 | Załączniki, backup kontrolera i logiczny transfer projektu, PR #45/#46 | Potwierdzić restore na danych wybranego pilota. |

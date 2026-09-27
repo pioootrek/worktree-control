@@ -42,6 +42,11 @@
       "author": "agent:codex",
       "date": "2026-09-27",
       "text": "The core stage 1 mode/provider boundary is on main; better-auth still fails with auth_provider_unavailable and no Better Auth package is installed. This remains new implementation, not release polish. The residual open-mode CLI bug belongs to FEAT-20260829-independent-auth-modes. Keep the one-owner plugin scope and defer commercial/activation decisions."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-27",
+      "text": "Authentication stage 1, including the remaining CLI open-mode paths, is closed in DONE-20260927-independent-auth-modes after PR #55 and main CI 36342502959. Its earlier CLI gap note is historical. Better Auth remains a separate, unimplemented optional provider."
     }
   ],
   "priority": "later",

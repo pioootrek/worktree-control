@@ -7,7 +7,7 @@
       "NOTE-20260909-self-hosted-saas-plan",
       "NOTE-20260926-k1-completion"
     ],
-    "summary": "Stage 1 A–F and review fixes merged in PR #54; main CI 36312411574 passed all jobs including HTTPS and package smoke/lifecycle. The task remains open for credential-free knowledge/identity/import/export CLI paths in open mode, identified during the 2026-09-27 reconciliation."
+    "summary": "Completed stage 1 A–F in PR #54 and the residual credential-free CLI fix in PR #55. Main bc0dd74 passed CI 36342502959, including package smoke and Linux lifecycle. Outcome: DONE-20260927-independent-auth-modes. Import-batch authentication-method metadata and the token-mode pilot remain in the knowledge item."
   },
   "created": "2026-09-26",
   "files": [
@@ -16,7 +16,7 @@
   "id": "NOTE-20260926-auth-stage1-implementation",
   "last_reviewed": "2026-09-27",
   "schema_version": 1,
-  "status": "active",
+  "status": "archived",
   "tags": [
     "authentication",
     "plan",

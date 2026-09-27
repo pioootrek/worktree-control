@@ -4,10 +4,10 @@
 
 Etap 1 A–F i poprawki review są scalone w PR #54 (`main` `17d0c9d`),
 a CI 36312411574 jest zielone. CLI wyboru trybu i tokena jest dostępne;
-Better Auth pozostaje niedostępnym dostawcą. Zadanie etapu 1 nadal obejmuje
-konkretną lukę: CLI wiedzy, administracji tożsamością oraz logicznego
-importu/eksportu wymaga tokena przed sprawdzeniem trybu open. Szczegóły są w
-[przeglądzie](../NOTE-20260829-readiness-assessment/reconciliation-20260927.md).
+Better Auth pozostaje niedostępnym dostawcą. PR #55 (`bc0dd74`) naprawił
+pozostałą lukę CLI wiedzy, administracji tożsamością i logicznego importu/eksportu
+w trybie open. Main CI 36342502959 przeszło; etap 1 jest zamknięty w
+[DONE-20260927-independent-auth-modes](../../done/DONE-20260927-independent-auth-modes.json).
 Opis bazowego kodu i propozycje etapu 1 niżej zachowują historię decyzji;
 bieżące polecenia i ograniczenia opisuje [instrukcja auth](../../../authentication.md).
 
@@ -24,7 +24,7 @@ Status: plan; zapis nie zmienia działającego kontrolera ani jego konfiguracji.
    Rdzeń pozostaje MIT. Osobny plugin jest proponowanym sposobem dostarczania
    płatnej integracji; cena, licencja własnego kodu i aktywacja pozostają otwarte.
 
-Etap 1 aktualizuje [zadanie trybów dostępu](../../feature/FEAT-20260829-independent-auth-modes.json).
+Etap 1 ma [zapis zakończenia](../../done/DONE-20260927-independent-auth-modes.json).
 Etap 2 aktualizuje [zadanie kont](../../feature/FEAT-20260829-local-web-accounts.json).
 Nie tworzyć równoległych implementacji tych samych funkcji. Nowy kierunek zastępuje
 wcześniejsze niezależne przełączniki Web/MCP oraz wymóg osobnego tokena wiedzy

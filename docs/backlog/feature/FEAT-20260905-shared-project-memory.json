@@ -79,6 +79,11 @@
       "author": "agent:codex",
       "date": "2026-09-27",
       "text": "Main 17d0c9d7e5be6d3f451298cdb7b364dbf25f5200 includes K2–K6 services, SQLite, HTTP/MCP/CLI, dashboard, memory/context, attachments, backups, logical project transfer and resumable Hub import (PRs #42–#48), plus K7a pilot tooling and fidelity/UX corrections (#49–#52). K1 is closed; K0 is reconciled in DONE-20260927-knowledge-k0-contracts. CI 36312411574 passes automated knowledge coverage, but does not run the private K7 live pilot or approve migration. Remaining: reconcile K2–K6 acceptance against code/tests, refresh K7a scripts for current authentication, retain a current pilot/restore report, and explicitly cut over one project with one write source. K8/K9 playbooks and instruction inspection/composition remain future implementation. This repository continues using its Git-backed backlog."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-27",
+      "text": "PR #55 fixed the credential-free CLI gap and main bc0dd74 passed CI 36342502959; authentication is closed in DONE-20260927-independent-auth-modes. Next bounded task: adapt scripts/knowledge-pilot.ts and knowledge-pilot-live.mjs to token-mode initialization and browser/MCP access, then run isolated import, two-agent/UI context and logical/controller restore against a fixed revision. Preserve the Git-backed source and do not cut over a real project. PR #55 additionally reports that knowledge_import_batches records actor_principal_id but no authentication method; the pilot report must distinguish this limitation from knowledge-history attribution and retain it as follow-up, without guessing historical methods."
     }
   ],
   "priority": "next",

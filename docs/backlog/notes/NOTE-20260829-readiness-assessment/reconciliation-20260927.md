@@ -1,5 +1,21 @@
 # Delivery and remaining work, 2026-09-27
 
+## Completion update after PR #55
+
+At main `bc0dd745cfcee17f1c0a57cd667c5f7a265ec361`, PR #55 fixes the open-mode
+CLI inconsistency found below. [Main CI 36342502959](https://github.com/pioootrek/worktree-switcher/actions/runs/36342502959)
+passed all jobs. Authentication closes in
+[DONE-20260927-independent-auth-modes](../../done/DONE-20260927-independent-auth-modes.json),
+leaving 12 open items. The earlier 13-item count and findings below describe
+the inspected `17d0c9d` baseline. Next is the token-mode knowledge pilot on an
+isolated copy; the Git-backed backlog remains authoritative.
+
+PR #55 also records that import batches retain actor principal but not the
+authentication method. This limitation is carried into the knowledge item;
+it is not a renewed requirement for a token in open mode.
+
+## Original reconciliation
+
 Inspected application revision: `17d0c9d7e5be6d3f451298cdb7b364dbf25f5200`
 on `main`. This assessment supersedes earlier readiness summaries for current
 status. It reconciles documentation and backlog; it does not change application
@@ -45,7 +61,7 @@ Thirteen items remain open after the K0 closure. Their canonical JSON records
 contain the current residual scope; their earlier notes remain historical.
 K1 was already closed in `DONE-20260926-knowledge-k1-identity`.
 
-## Authentication acceptance gap found during reconciliation
+## Historical authentication gap, fixed by PR #55
 
 The backend supports anonymous installation authority in `open` mode, but these
 CLI entry points require a nonempty token before using that policy:
@@ -60,10 +76,9 @@ CLI entry points require a nonempty token before using that policy:
   do not have this token precondition.
 
 This is source-level evidence. No live mutation or new reproduction was run.
-The early rejection is independent of the selected mode. The existing task
-now requires tests with every token environment variable absent in `open`,
-plus protected-mode and scoped-access regressions. Do not close it solely
-because stage 1 merged or the existing suite is green.
+The early rejection was independent of the selected mode. The residual task
+required tests with every token environment variable absent in `open`, plus protected-mode and scoped-access regressions. PR #55 now
+supplies that fix and coverage; see the completion update above.
 
 ## Knowledge delivery and migration boundary
 
@@ -89,7 +104,7 @@ and K9 approved-rule composition follow it.
 
 ## Suggested next work
 
-First fix the bounded open-mode CLI inconsistency. Then refresh and run the
+The bounded open-mode CLI inconsistency is now fixed. Refresh and run the
 isolated knowledge pilot before proposing any real-project cutover. For the
 next larger implementation, the recorded owner direction still puts remote
 commit verification ahead of autonomous fleet execution. Package
