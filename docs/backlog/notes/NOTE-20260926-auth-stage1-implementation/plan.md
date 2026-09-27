@@ -226,3 +226,18 @@ Kierunek: [plan trybów](../NOTE-20260909-self-hosted-saas-plan/authentication-m
   user-service, controller-https, reservations-and-mcp. Właściciel wybrał
   wariant A: 2 PR-y — (1) K1 + dokumenty decyzji (`t3code/review-authentication-backlog`
   → main), (2) etap 1 A–F (`t3code/auth-stage1-f-default` → gałąź PR 1).
+- 2026-09-27 Review n8n (#53, #54) i CI: 3 wątki inline, wszystkie `fix` i
+  rozwiązane. #53: martwy link w audycie K1 → done/ (90907d3). #54: `config mcp`
+  przy kontrolerze na pierwszym planie pyta admin socket o tryb zamiast
+  zwracać legacy `mcp-token`; CLI projektów i `service status` działają w
+  `open` bez tokena (c8b7428). CI: `package-service-lifecycle` padał, bo
+  `scripts/package-lifecycle-trial.mjs` instalował usługę bez tokena —
+  poprawione; `package-smoke` padał na linku README do notatki backlogu
+  (również na main) i do niespakowanego `docs/authentication.md` — link na URL,
+  plik dodany do `files`. Merge #53 → #54 (ecb3348). Kolejka na ecb3348:
+  `node:check` feaf2923… passed, `node:build` fc4dc4db… passed,
+  `node:test:integration` 431faf8f… passed.
+  CI po ecb3348: #53 zielony (check-build, lifecycle, smoke 22/24); #54
+  lifecycle i check-build passed, `package-smoke` padał w scenariuszu
+  „damaged asset” (świeża baza bez tokena → kontroler kończy pracę) —
+  scenariusz generuje teraz token przed startem.

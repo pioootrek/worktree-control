@@ -248,6 +248,8 @@ async function main() {
     const negativeData = join(root, "negative-data");
     const negativeState = join(root, "negative-state");
     await Promise.all([mkdir(negativeData), mkdir(negativeState), rename(index, damaged)]);
+    // New installations refuse to start without an installation token.
+    await run(cliCommand, ["auth", "token", "generate", "--data-dir", negativeData, "--state-dir", negativeState], { cwd: root, env: runtimeEnv });
     const port = await freePort();
     const mcp = await freePort();
     const child = spawn(cliCommand, ["start", "--service-mode", "--no-open", "--host", "127.0.0.1", "--port", String(port), "--mcp-port", String(mcp), "--data-dir", negativeData, "--state-dir", negativeState], {
