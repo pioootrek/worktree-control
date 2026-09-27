@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { acquireControllerLock } from "../src/server/controller-lock";
 import { createControllerBackup, restoreControllerBackup } from "../src/server/controller-backup";
 import { SqliteStateStore } from "../src/server/infrastructure/sqlite/sqlite-state-store";
+import { AuthenticationService, resolveControllerAuthentication } from "../src/server/modules/authentication";
 import { IdentityService } from "../src/server/modules/identity";
 import { executeHubImport, exportKnowledgeProject, importKnowledgeProject, planHubImport } from "../src/server/modules/knowledge";
 
@@ -15,9 +16,9 @@ if (!repository || !commit || !validatorRepository || !destination || process.ar
   throw new Error("Usage: tsx scripts/knowledge-pilot.ts <repository> <commit SHA> <validator repository> <new destination>");
 }
 const root = resolve(destination);
+process.umask(0o077); // Databases, exports and backups stay private to the operator.
 mkdirSync(root, { mode: 0o700 }); // Never reuse or overwrite a previous pilot.
 const save = (name: string, value: unknown) => writeFileSync(join(root, name), JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
-const checks: string[] = [];
 const projectId = "k7a-worktree-switcher";
 const database = join(root, "data/state.sqlite3");
 const attachments = join(root, "data/knowledge-attachments");
@@ -26,17 +27,47 @@ const sourceDirty = Boolean(execFileSync("git", ["status", "--porcelain"], { enc
 const plan = planHubImport({ repository, commit, sourceId: "worktree-switcher", validatorRepository });
 save("plan.json", plan);
 save("pilot.json", { implementation, sourceDirty, repository: resolve(repository), commit, projectId, mappingVersion: plan.mappingVersion, liveWrites: false });
+// The public CLI initializes token mode offline, exactly as an operator would. Credentials travel
+// through pipes and environment variables only; they are never printed or passed as arguments.
+const pathArgs = ["--data-dir", join(root, "data"), "--state-dir", join(root, "state")];
+const cli = (args: string[], token?: string) => {
+  const environment = { ...process.env };
+  for (const name of ["WORKTREE_SWITCHER_TOKEN", "WORKTREE_SWITCHER_OWNER_TOKEN", "WORKTREE_SWITCHER_KNOWLEDGE_TOKEN", "WORKTREE_SWITCHER_DATA_DIR", "WORKTREE_SWITCHER_STATE_DIR"]) delete environment[name];
+  if (token) environment.WORKTREE_SWITCHER_TOKEN = token;
+  const result = spawnSync(process.execPath, ["--import", "tsx", "src/cli/index.ts", ...args, ...pathArgs], { encoding: "utf8", env: environment, timeout: 60_000 });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+};
+const generated = cli(["auth", "token", "generate"]);
+assert.equal(generated.status, 0, "auth token generate failed");
+const issued = JSON.parse(generated.stdout) as { token: string; status: { mode: string; token: { prefix: string } | null } };
+assert.equal(issued.status.mode, "token");
+assert.match(issued.token, /^wsi_[0-9a-f-]{36}_[0-9a-f]{64}$/);
+const installationToken = issued.token;
+writeFileSync(join(root, "installation-token"), installationToken, { mode: 0o600 });
+const refused = cli(["identity", "list-agents"]);
+assert.notEqual(refused.status, 0);
+assert.match(refused.stderr, /requires a credential/);
+assert.notEqual(cli(["identity", "list-agents"], `wsi_${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}_${"0".repeat(64)}`).status, 0);
+assert.equal(cli(["identity", "list-agents"], installationToken).status, 0);
+const checks: string[] = ["CLI initializes token mode; offline identity CLI rejects missing and wrong credentials and accepts the installation token"];
 const lock = acquireControllerLock(join(root, "state/controller.lock"));
 let store = new SqliteStateStore(database);
+/** Resolves the installation token under the persisted mode, as every transport does. */
+function installationActor(current: SqliteStateStore) {
+  const authentication = new AuthenticationService(current);
+  const identity = new IdentityService(current, undefined, undefined, undefined, authentication);
+  const result = resolveControllerAuthentication({ authentication, identity }, { bearer: installationToken, legacySecretValid: () => false });
+  if (result?.kind !== "installation") throw new Error("The installation token was not accepted.");
+  return { identity, actor: result.actor };
+}
 try {
-  const owner = new IdentityService(store).bootstrapOwnerSession({ sessionLifetimeSeconds: 1800 });
-  writeFileSync(join(root, "owner-token"), owner.token, { mode: 0o600 });
+  assert.equal(new AuthenticationService(store).status().mode, "token");
   await store.backup(join(root, "identity-baseline.sqlite3"));
   const input = { plan, targetProjectId: projectId, targetProjectName: "Worktree Switcher — PILOT COPY", chunkSize: 32, attachmentDirectory: attachments };
   let batch;
   do {
-    const identity = new IdentityService(store);
-    batch = executeHubImport(store, identity, identity.authenticateBearer(owner.token), input);
+    const { identity, actor } = installationActor(store);
+    batch = executeHubImport(store, identity, actor, input);
     if (batch.status === "staging") assert.equal(store.getKnowledgeProject(projectId), null);
     console.log(JSON.stringify({ stage: "import", cursor: batch.cursor, total: batch.totalItems, status: batch.status }));
     store.close();
@@ -72,7 +103,52 @@ try {
   const importedReplies=new Map(snapshot.importSources.filter(row=>row.target_kind==="historical_comment").map(row=>[row.target_id,row]));
   for(const reply of snapshot.replies){const source=importedReplies.get(reply.id);if(!source) continue;const payload=JSON.parse(String(source.original_payload_json)) as Record<string,unknown>;assert.equal(typeof payload.author==="string"&&payload.author.length>0,true);assert.equal(typeof payload.date==="string"&&payload.date.length>0,true);}
   checks.push("completion summaries and historical comment attribution remain readable from provenance");
-  const identity = new IdentityService(store), actor = identity.authenticateBearer(owner.token);
+  // Every item keeps its title; open-item status/priority survive unless a completion closed it.
+  const payloadOf = (row: Record<string, unknown>) => JSON.parse(String(row.original_payload_json)) as Record<string, unknown>;
+  const taskTargets = new Map<string, string>(), completedTargets = new Set<string>();
+  for (const row of snapshot.importSources) {
+    if (row.target_kind !== "task" && row.target_kind !== "task_completion") continue;
+    if (typeof row.legacy_id === "string") taskTargets.set(row.legacy_id, String(row.target_id));
+    const itemId = payloadOf(row).item_id;
+    if (row.target_kind === "task_completion") { completedTargets.add(String(row.target_id)); if (typeof itemId === "string" && itemId) taskTargets.set(itemId, String(row.target_id)); }
+  }
+  for (const row of snapshot.importSources.filter(row => row.target_kind === "task")) {
+    const payload = payloadOf(row), task = snapshot.tasks.find(candidate => candidate.id === row.target_id)!;
+    assert.equal(task.title, payload.title);
+    if (completedTargets.has(String(task.id))) continue;
+    assert.equal(task.status, payload.status === "in-progress" ? "in_progress" : payload.status);
+    assert.equal(task.priority, payload.priority);
+  }
+  const expectedRelations = new Set<string>();
+  for (const row of snapshot.importSources) {
+    const payload = payloadOf(row), source = taskTargets.get(String(row.legacy_id));
+    const links = row.target_kind === "task" && payload.links && typeof payload.links === "object" ? payload.links as Record<string, unknown> : {};
+    for (const legacy of Array.isArray(links.related_ids) ? links.related_ids : []) {
+      const target = taskTargets.get(String(legacy));
+      if (source && target && source !== target) expectedRelations.add(`relates_to:${[source, target].sort().join(":")}`);
+    }
+    const followups = row.target_kind === "task_completion" && Array.isArray(payload.followup_ids) ? payload.followup_ids : [];
+    for (const legacy of followups) {
+      const followup = taskTargets.get(String(legacy));
+      if (source && followup && source !== followup) expectedRelations.add(`derived_from:${followup}:${source}`);
+    }
+  }
+  const taskRelations = new Set(snapshot.relations.filter(row => row.source_kind === "task" && row.target_kind === "task").map(row => row.type === "relates_to"
+    ? `relates_to:${[String(row.source_id), String(row.target_id)].sort().join(":")}` : `${String(row.type)}:${String(row.source_id)}:${String(row.target_id)}`));
+  assert.deepEqual([...taskRelations].sort(), [...expectedRelations].sort());
+  assert.ok(expectedRelations.size > 0);
+  const attachmentHashes = plan.mappings.filter(mapping => mapping.targetKind === "attachment").map(mapping => mapping.sourceSha256).sort();
+  assert.deepEqual(snapshot.attachments.map(row => String(row.sha256)).sort(), attachmentHashes);
+  checks.push("every imported item keeps title/status/priority; resolved related_ids and followup_ids become exactly the imported task relations; attachment hashes equal the committed note files");
+  // Known limitation: the batch keeps the importing principal but not how it authenticated.
+  const publishedBatch = store.getHubImport(batch.id)!;
+  assert.equal(publishedBatch.actorPrincipalId, "installation");
+  assert.equal("authenticationMethod" in publishedBatch, false);
+  const importedRecords = [...snapshot.tasks, ...snapshot.memories, ...snapshot.replies, ...snapshot.threads];
+  assert.ok(importedRecords.every(row => row.created_by === "installation"));
+  const importAttribution = { batchActorPrincipalId: publishedBatch.actorPrincipalId, batchAuthenticationMethod: "not recorded", importedRecordCreator: "installation", importedHistoryRows: snapshot.history.length };
+  checks.push("import batch and imported records name the installation principal; the batch has no authentication-method field");
+  const { identity, actor } = installationActor(store);
   executeHubImport(store, identity, actor, input);
   assert.deepEqual(store.exportKnowledgeProject(projectId), snapshot);
   checks.push("identical import is a no-op");
@@ -81,8 +157,8 @@ try {
   copyFileSync(join(root, "identity-baseline.sqlite3"), join(root, "logical-restore.sqlite3"));
   const restored = new SqliteStateStore(join(root, "logical-restore.sqlite3"));
   try {
-    const restoredIdentity = new IdentityService(restored);
-    importKnowledgeProject(restored, restoredIdentity, join(root, "project-export"), join(root, "logical-attachments"), restoredIdentity.authenticateBearer(owner.token));
+    const restoredActor = installationActor(restored);
+    importKnowledgeProject(restored, restoredActor.identity, join(root, "project-export"), join(root, "logical-attachments"), restoredActor.actor);
     assert.deepEqual(restored.exportKnowledgeProject(projectId), snapshot);
   } finally { restored.close(); }
   checks.push("logical export/restore matches the full snapshot with a separate identity baseline");
@@ -92,7 +168,7 @@ try {
   try { assert.deepEqual(physical.exportKnowledgeProject(projectId), snapshot); } finally { physical.close(); }
   checks.push("controller backup/restore matches the full knowledge snapshot");
   const knownArchived = new Set(plan.mappings.filter(m => m.sourceKind === "done").map(m => (m.originalPayload as Record<string, unknown>)?.item_id));
-  const report = { implementation, sourceDirty, sourceCommit: commit, planId: plan.planId, mappingVersion:plan.mappingVersion, schemaVersion:store.schemaVersion(), checks, counts: Object.fromEntries(Object.entries(snapshot).filter(([, value]) => Array.isArray(value)).map(([key, value]) => [key, (value as unknown[]).length])), unresolvedRelations: plan.unresolvedRelations, unresolvedWithArchivedTarget: plan.unresolvedRelations.filter(r => knownArchived.has(r.targetLegacyId)).length, cutoverApproved: false };
+  const report = { implementation, sourceDirty, sourceCommit: commit, planId: plan.planId, mappingVersion:plan.mappingVersion, schemaVersion:store.schemaVersion(), checks, authenticationMode: new AuthenticationService(store).status().mode, importAttribution, taskRelations: expectedRelations.size, counts: Object.fromEntries(Object.entries(snapshot).filter(([, value]) => Array.isArray(value)).map(([key, value]) => [key, (value as unknown[]).length])), unresolvedRelations: plan.unresolvedRelations, unresolvedWithArchivedTarget: plan.unresolvedRelations.filter(r => knownArchived.has(r.targetLegacyId)).length, cutoverApproved: false };
   save("report.json", report);
   console.log(JSON.stringify({ stage: "complete", checks, counts: report.counts, unresolved: report.unresolvedRelations.length }));
 } catch (error) {
