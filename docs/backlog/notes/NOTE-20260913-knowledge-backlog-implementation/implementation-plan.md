@@ -13,7 +13,7 @@ z 13 września; nie należy ponownie zaczynać implementacji od K0/K1.
 | K4 | Pamięć, zatwierdzanie rewizji, wyszukiwanie i kontekst, PR #44 | Zachować testy kontekstu kolejnej sesji i unieważniania zatwierdzeń. |
 | K5 | Załączniki, backup kontrolera i logiczny transfer projektu, PR #45/#46 | Potwierdzić restore na danych wybranego pilota. |
 | K6 | Planowanie i wznawialny import Huba, PR #47/#48 oraz poprawki #51/#52 | Sprawdzić raport mapowania i nierozwiązane relacje dla wybranego źródła. |
-| K7a | Skrypty odizolowanego pilota i poprawki GUI/importu, PR #49–#52 | Zaktualizować setup/logowanie pod token-mode i zachować świeże dowody próby. |
+| K7a | Skrypty pilota i poprawki GUI/importu, PR #49–#52; token-mode i próba na kopii przy `6423734` ([raport](k7a-token-pilot-20260927.md)) | Zapisywać metodę uwierzytelnienia partii importu; próba nie zatwierdza przełączenia. |
 | K7 | Brak potwierdzonego przełączenia w tym przeglądzie | Jeden wybrany projekt, jedno miejsce zapisu, odbiór importu/restore i próba codziennej pracy. |
 | K8–K9 | Plan | Playbooki, inspekcja instrukcji i składanie zatwierdzonych reguł. |
 

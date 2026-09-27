@@ -84,11 +84,16 @@
       "author": "agent:codex",
       "date": "2026-09-27",
       "text": "PR #55 fixed the credential-free CLI gap and main bc0dd74 passed CI 36342502959; authentication is closed in DONE-20260927-independent-auth-modes. Next bounded task: adapt scripts/knowledge-pilot.ts and knowledge-pilot-live.mjs to token-mode initialization and browser/MCP access, then run isolated import, two-agent/UI context and logical/controller restore against a fixed revision. Preserve the Git-backed source and do not cut over a real project. PR #55 additionally reports that knowledge_import_batches records actor_principal_id but no authentication method; the pilot report must distinguish this limitation from knowledge-history attribution and retain it as follow-up, without guessing historical methods."
+    },
+    {
+      "author": "agent:claude",
+      "date": "2026-09-27",
+      "text": "K7a token-mode pilot on an isolated copy: scripts at 64237349e6f1485f74ed3dddbb6fe5665e5b9dad (branch feat/knowledge-pilot-token-mode; first run at e64e65d gave the same results before review tightened the wrong-credential and later-session assertions) imported docs/backlog from 81069845634a3fed6365589ae32a5c3430a57478 with pinned validator 22afb65. Queue check and build passed at that revision. Offline: 9/9 checks (CLI token initialization, resumable import, payloads/hashes, titles/status/priority, 74 task relations, 143 attachments, no-op re-import, logical and controller restore). Live via Worktree Switcher claim: 12/12 checks (negative auth on HTTP/MCP/CLI, CLI-provisioned agents, two MCP clients, GUI token sign-in, human task, agent decision/question, GUI approval with agent_token/installation_token history, later-session context). Report: NOTE-20260913-knowledge-backlog-implementation/k7a-token-pilot-20260927.md. Import batches still record actor_principal_id (installation here) without an authentication method; imported records have no history rows. Follow-up: record the method for new batches and mark older ones unknown, without guessing. No project was cut over; the Git-backed backlog stays authoritative and this item stays open."
     }
   ],
   "priority": "next",
   "problem": [
-    "The core knowledge workflow and Hub import are implemented, but the umbrella still lacks a current stage-by-stage acceptance record and a confirmed real-project cutover with restore evidence. K7 pilot tooling predates default token-mode startup. Playbooks, instruction inspection and approved-rule composition remain unimplemented."
+    "The core knowledge workflow and Hub import are implemented, and the token-mode K7a pilot passed on an isolated copy, but the umbrella still lacks a stage-by-stage K2–K6 acceptance record and a confirmed real-project cutover. Import batches do not record how the importing principal authenticated. Playbooks, instruction inspection and approved-rule composition remain unimplemented."
   ],
   "risk": {
     "dimensions": [

@@ -14,6 +14,10 @@ PR #55 also records that import batches retain actor principal but not the
 authentication method. This limitation is carried into the knowledge item;
 it is not a renewed requirement for a token in open mode.
 
+The token-mode K7a pilot later passed on an isolated copy; see
+[k7a-token-pilot-20260927.md](../NOTE-20260913-knowledge-backlog-implementation/k7a-token-pilot-20260927.md).
+The import-batch limitation remains open and no project was cut over.
+
 ## Original reconciliation
 
 Inspected application revision: `17d0c9d7e5be6d3f451298cdb7b364dbf25f5200`
