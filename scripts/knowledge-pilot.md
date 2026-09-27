@@ -96,7 +96,8 @@ node scripts/knowledge-pilot-live.mjs /absolute/new/private/pilot-directory
 This finite script needs Playwright's Chromium. It:
 
 - requires `authenticationMode: "token"` in the pilot's service access record;
-- checks that HTTP, MCP and the online CLI reject missing and wrong credentials;
+- checks that HTTP, MCP and the online CLI reject missing and wrong credentials
+  with the expected refusal, not merely a failing exit;
 - provisions two scoped agents through the online CLI with the installation
   token and reads knowledge through the CLI with an agent token;
 - connects two MCP clients as distinct agents without runtime or test-queue tools;
@@ -106,8 +107,9 @@ This finite script needs Playwright's Chromium. It:
   idempotent retry, agent 2 adds a question and cannot approve;
 - approves the decision in the GUI and checks that history attributes creation
   to agent 1 (`agent_token`) and approval to the installation (`installation_token`);
-- opens a new MCP session, a CLI call and a new browser session that read the
-  approved decision and open question for the task;
+- opens a new MCP session and a CLI call that read the approved decision and
+  open question in the task context, and a new browser session that shows the
+  approved decision and lists the question;
 - checks the memory view at 390px without horizontal overflow.
 
 Each run adds fresh test records and agents to the copy. `live-report.json` and

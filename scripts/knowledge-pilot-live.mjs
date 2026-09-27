@@ -70,9 +70,11 @@ try {
   assert.equal((await fetch(new URL("/api/dashboard", endpoint), { headers: { "X-Worktree-Switcher-Token": installation } })).status, 200);
   for (const token of [null, wrong]) await assert.rejects(new Client({ name: "k7a-denied", version: "1" }).connect(new StreamableHTTPClientTransport(new URL(access.mcpEndpoint), token ? { requestInit: { headers: { Authorization: `Bearer ${token}` } } } : undefined)));
   const anonymous = cli(["knowledge", "tasks", "--json", JSON.stringify({ projectId, limit: 1 })]);
-  assert.notEqual(anonymous.status, 0);
+  assert.equal(anonymous.status, 1);
   assert.match(anonymous.stderr, /requires a credential/);
-  assert.notEqual(cli(["identity", "list-agents"], { WORKTREE_SWITCHER_TOKEN: wrong }).status, 0);
+  const wrongCredential = cli(["identity", "list-agents"], { WORKTREE_SWITCHER_TOKEN: wrong });
+  assert.equal(wrongCredential.status, 1);
+  assert.match(wrongCredential.stderr, /A valid access token is required/);
   checks.push("token mode rejects missing and wrong credentials over HTTP, MCP and online CLI");
 
   // The owner provisions both agents through the online CLI with the installation token.
@@ -185,15 +187,18 @@ try {
   assert.ok(context.openQuestions.some(item => item.id === question.value.id));
   const cliContext = cliJson(["knowledge", "task_context", "--json", JSON.stringify({ projectId, taskId: task.id })], { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: agentTokens[1].token });
   assert.ok(cliContext.decisions.some(item => item.id === decision.value.id));
+  assert.ok(cliContext.openQuestions.some(item => item.id === question.value.id));
   const laterPage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   try {
     laterPage.setDefaultTimeout(10000);
     await laterPage.addInitScript(() => localStorage.setItem("worktree-switcher-locale", "en"));
     await signInThroughForm(laterPage);
     await laterPage.goto(url.href);
+    await laterPage.getByRole("heading", { name: decisionInput.title, exact: true }).waitFor();
     await laterPage.getByText("Active · Approved", { exact: true }).waitFor();
+    await laterPage.getByText(`K7a question ${run}`, { exact: true }).waitFor();
   } finally { await laterPage.close(); }
-  checks.push("a new MCP session, the CLI and a new browser session read the approved decision and open question for the task");
+  checks.push("a new MCP session and the CLI read the approved decision and open question in task context; a new browser session shows the approved decision and lists the question");
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: join(root, "mobile-memory.png"), fullPage: true });

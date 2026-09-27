@@ -45,9 +45,11 @@ assert.match(issued.token, /^wsi_[0-9a-f-]{36}_[0-9a-f]{64}$/);
 const installationToken = issued.token;
 writeFileSync(join(root, "installation-token"), installationToken, { mode: 0o600 });
 const refused = cli(["identity", "list-agents"]);
-assert.notEqual(refused.status, 0);
+assert.equal(refused.status, 1);
 assert.match(refused.stderr, /requires a credential/);
-assert.notEqual(cli(["identity", "list-agents"], `wsi_${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}_${"0".repeat(64)}`).status, 0);
+const wrongCredential = cli(["identity", "list-agents"], `wsi_${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}_${"0".repeat(64)}`);
+assert.equal(wrongCredential.status, 1);
+assert.match(wrongCredential.stderr, /Nieprawidłowe lub nieaktywne poświadczenie/); // IdentityError invalid_credential
 assert.equal(cli(["identity", "list-agents"], installationToken).status, 0);
 const checks: string[] = ["CLI initializes token mode; offline identity CLI rejects missing and wrong credentials and accepts the installation token"];
 const lock = acquireControllerLock(join(root, "state/controller.lock"));
