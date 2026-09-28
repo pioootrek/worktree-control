@@ -42,6 +42,7 @@ for (const width of [320, 390]) {
     await selectAllProjects(page);
 
     const row = page.locator("[data-all-projects] [data-worktree-row]");
+    await expect(page.locator("[data-all-projects]").getByRole("columnheader", { name: "Project and branch" })).toHaveCount(1);
     const action = row.getByRole("button", { name: "Start", exact: true });
     await expect(row).toContainText(first.project.name);
     await expect(row).toContainText(first.worktrees[0].branch);
@@ -67,6 +68,17 @@ for (const width of [320, 390]) {
     await expect(row).toBeVisible();
   });
 }
+
+test("aggregate server disclosure includes transitions without calling them running", async ({ page }) => {
+  const data = dashboardFixture();
+  data.projects[0].runtime.phase = "starting";
+  data.projects[0].runtime.worktreePath = data.projects[0].worktrees[0].path;
+  await mountDashboard(page, data);
+  await selectAllProjects(page);
+  const overview = page.locator("[data-all-projects]");
+  await expect(overview.getByText("Servers running or changing state: 1")).toBeVisible();
+  await expect(overview.locator("[data-worktree-row]")).toContainText("Starting");
+});
 
 test("a failed startup belongs to its attempted worktree and a foreign claim blocks actions", async ({ page }) => {
   const data = dashboardFixture();

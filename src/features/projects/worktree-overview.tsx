@@ -79,7 +79,7 @@ export function WorktreeOverview({ snapshots, aggregate = false, rowActions, bus
       </Button>)}
     </div>
     {aggregate && activeSnapshots.length > 0 ? <details className="text-xs text-muted-foreground">
-      <summary className="cursor-pointer">{t("worktreeLayout.runningProjects", { count: activeSnapshots.length })}</summary>
+      <summary className="cursor-pointer">{t("worktreeLayout.activeProjects", { count: activeSnapshots.length })}</summary>
       <div className="mt-2 flex flex-wrap gap-2">{activeSnapshots.map((entry) => <Button key={entry.project.id} variant="outline" size="sm" className="h-auto max-w-full whitespace-normal py-2 text-left" onClick={() => { setQuery(entry.project.name); changeFilter("running"); }}>
         <Server aria-hidden /><span className="min-w-0 break-all">{entry.project.name} · {entry.worktrees.find((w) => w.path === entry.runtime.worktreePath)?.branch ?? entry.runtime.worktreePath}</span><RuntimeBadge phase={entry.runtime.phase} />
       </Button>)}</div>
@@ -113,8 +113,8 @@ export function WorktreeOverview({ snapshots, aggregate = false, rowActions, bus
     {filter !== "all" ? <p className="text-xs text-muted-foreground">{t("worktreeLayout.activeFilter", { filter: t(`overview.filter.${filter}`) })} <Button variant="link" size="sm" className="h-auto px-1 py-0 text-xs" onClick={() => changeFilter("all")}>{t("worktreeLayout.clearFilter")}</Button></p> : null}
     <div className="min-w-0 rounded-md border border-border" role="region" aria-label={t("project.worktreeTable")}>
       <Table className="w-full table-fixed text-left max-md:block max-md:border-0">
-        <TableHeader className="max-md:hidden"><TableRow>
-          <TableHead className="w-[42%]">{t("project.branch")}</TableHead>
+        <TableHeader className="max-md:sr-only"><TableRow>
+          <TableHead className="w-[42%]">{t(aggregate ? "worktreeLayout.projectAndBranch" : "project.branch")}</TableHead>
           <TableHead className="w-[33%]">{t("overview.condition")}</TableHead>
           <TableHead className="w-[25%] text-right">{t("row.actions")}</TableHead>
         </TableRow></TableHeader>
@@ -123,8 +123,8 @@ export function WorktreeOverview({ snapshots, aggregate = false, rowActions, bus
           const phase: RuntimePhase = rowSnapshot.runtime.worktreePath === w.path ? rowSnapshot.runtime.phase : "stopped";
           return <TableRow key={JSON.stringify([rowSnapshot.project.id, w.path])} data-worktree-row className={`${running ? "bg-primary/[0.04]" : ""} max-md:block max-md:w-full max-md:rounded-md max-md:border max-md:bg-card/40`}>
             <TableCell className="min-w-0 whitespace-normal py-3 align-top max-md:block max-md:px-3 max-md:pb-1">
-              {aggregate ? <p className="break-words text-xs text-muted-foreground">{rowSnapshot.project.name}</p> : null}
-              <p className="break-all font-mono text-sm font-medium leading-snug">{w.branch ?? "detached HEAD"}</p>
+              {aggregate ? <p className="break-words text-xs text-muted-foreground"><span className="sr-only">{t("aggregate.project")}: </span>{rowSnapshot.project.name}</p> : null}
+              <p className="break-all font-mono text-sm font-medium leading-snug"><span className="sr-only">{t("project.branch")}: </span>{w.branch ?? "detached HEAD"}</p>
             </TableCell>
             <TableCell className="min-w-0 whitespace-normal align-top max-md:block max-md:px-3 max-md:py-1">
               <div className="flex flex-wrap items-center gap-1.5">
