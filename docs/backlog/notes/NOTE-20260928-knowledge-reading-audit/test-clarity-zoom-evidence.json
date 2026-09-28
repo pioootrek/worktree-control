@@ -1,0 +1,56 @@
+{
+  "method": "chrome.tabs.setZoom(2), direct CDP Page.captureScreenshot",
+  "source": "f7b6f1d70555a920c359b73e46b3c14141e76ade",
+  "metrics": {
+    "layoutViewport": {
+      "pageX": 0,
+      "pageY": 1298,
+      "clientWidth": 1440,
+      "clientHeight": 913
+    },
+    "visualViewport": {
+      "offsetX": 0,
+      "offsetY": 0,
+      "pageX": 0,
+      "pageY": 649,
+      "clientWidth": 1440,
+      "clientHeight": 913,
+      "scale": 1,
+      "zoom": 2
+    },
+    "contentSize": {
+      "x": 0,
+      "y": 0,
+      "width": 1440,
+      "height": 2348
+    },
+    "cssLayoutViewport": {
+      "pageX": 0,
+      "pageY": 649,
+      "clientWidth": 720,
+      "clientHeight": 456
+    },
+    "cssVisualViewport": {
+      "offsetX": 0,
+      "offsetY": 0,
+      "pageX": 0,
+      "pageY": 649,
+      "clientWidth": 720,
+      "clientHeight": 456.5,
+      "scale": 1,
+      "zoom": 2
+    },
+    "cssContentSize": {
+      "x": 0,
+      "y": 0,
+      "width": 720,
+      "height": 1174
+    }
+  },
+  "viewport": {
+    "width": 720,
+    "scrollWidth": 720,
+    "focus": "Poka\u017c wynik"
+  },
+  "errors": []
+}

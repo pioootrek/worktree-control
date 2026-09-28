@@ -96,7 +96,10 @@ Distinguish the revision recorded at enqueue from observations immediately befor
 and after execution. None of these observations proves every intermediate state.
 A test's output action targets that exact run. Runtime-failure navigation targets
 the matching project and known attempted worktree; never infer the failed branch
-from the currently selected worktree.
+from the currently selected worktree. Failure labels describe observed facts:
+a generic failed phase does not prove a startup failure rather than a later
+crash or stop failure. If a diagnostic recommends a recovery action, expose
+that action in the same view whenever the user is authorized to perform it.
 
 ## Focus, scrolling and small screens
 

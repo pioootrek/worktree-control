@@ -7,7 +7,8 @@
       58,
       59,
       60,
-      61
+      61,
+      62
     ],
     "related_ids": [
       "NOTE-20260928-knowledge-reading-audit",
@@ -33,7 +34,7 @@
     {
       "author": "agent:codex",
       "date": "2026-09-28",
-      "text": "Candidate c55aafb passes managed check (486 unit +7 resource), build, and 88/88 UI tests. Corrected actual 768px expanded-path overflow; source-scope focus warning fixed. n8n review target all accepted once. Pilot running on integration checkout, claim released. Await GitHub CI and review dispositions before merge."
+      "text": "Candidate c55aafb passes managed check (486 unit + 7 resource), build, and 88/88 UI tests. Corrected actual 768px expanded-path overflow; source-scope focus warning fixed. n8n review target all accepted once. Pilot running on integration checkout, claim released. Await GitHub CI and review dispositions before merge."
     },
     {
       "author": "agent:codex",
@@ -53,7 +54,7 @@
     {
       "author": "agent:codex",
       "date": "2026-09-28",
-      "text": "Knowledge reading PR #59 merged as 3ac66f9 after green Verify run 36449727795 on 68f30b7 (check/build/HTTPS/integration/UI/E2E/package Node 22+24/systemd lifecycle). Managed check passed 495 unit +7 resource tests, build passed, final UI passed 102/102. Six pilot screenshots, original download hash and limitations are in reading-progress.md. Two n8n review findings fixed, one path-regex false positive disproved; all three threads resolved. Claude hit its session limit and did not review; Kimi/Codex completed. Preview remains on reading integration worktree with claim released. Keep broader rework open; discuss Markdown origin/intended format with owner before choosing subsequent scope."
+      "text": "Knowledge reading PR #59 merged as 3ac66f9 after green Verify run 36449727795 on 68f30b7 (check/build/HTTPS/integration/UI/E2E/package Node 22+24/systemd lifecycle). Managed check passed 495 unit + 7 resource tests, build passed, final UI passed 102/102. Six pilot screenshots, original download hash and limitations are in reading-progress.md. Two n8n review findings fixed, one path-regex false positive disproved; all three threads resolved. Claude hit its session limit and did not review; Kimi/Codex completed. Preview remains on reading integration worktree with claim released. Keep broader rework open; discuss Markdown origin/intended format with owner before choosing subsequent scope."
     },
     {
       "author": "human:pioootrek",
@@ -78,7 +79,7 @@
     {
       "author": "agent:codex",
       "date": "2026-09-28",
-      "text": "Session scope fix PR #61 merged as cb295e4 after green Verify 36455440278 on c579e36. Managed check passed 495 unit +7 resource checks, build passed, final UI passed 107/107. Pilot confirms only the global Preferences Sign out for shared installation access, cleared visible content/credentials and successful re-login; scoped disconnect preserves runtime access. Kimi/Codex n8n reviews found no actionable issues; Claude hit session limit. See session-actions-followup.md and screenshot. Preview contains both PR #60 and #61 on session-actions worktree, claim released. Broader rework stays open; Markdown origin/intended-format discussion remains deferred for the owner."
+      "text": "Session scope fix PR #61 merged as cb295e4 after green Verify 36455440278 on c579e36. Managed check passed 495 unit + 7 resource checks, build passed, final UI passed 107/107. Pilot confirms only the global Preferences Sign out for shared installation access, cleared visible content/credentials and successful re-login; scoped disconnect preserves runtime access. Kimi/Codex n8n reviews found no actionable issues; Claude hit session limit. See session-actions-followup.md and screenshot. Preview contains both PR #60 and #61 on session-actions worktree, claim released. Broader rework stays open; Markdown origin/intended-format discussion remains deferred for the owner."
     },
     {
       "author": "human:pioootrek",
@@ -89,6 +90,11 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "Test-result clarity delegated to Sol high on rework/test-result-clarity from f4f002a. Real pilot RT04 diagnosis: matched clean observations and current HEAD but stale snapshot metadata, so unknown freshness is correct. Preserve attribution/freshness gates and expose reasons/recovery. See test-clarity-plan.md."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-28",
+      "text": "Test-result clarity PR #62 merged as 0e84aef after green Verify 36479300247 on f7b6f1d. Managed check passed 498 unit + 7 resource tests; build passed; final UI 115/115 passed. Pilot confirms separate outcome/source/relevance, scoped Git recovery without falsely certifying dirty code, exact failure-log navigation, focus return, mobile and actual 200% zoom. Three n8n review threads fixed and resolved; Claude publication denied by its session, duplicate finding independently validated. Standards updated and report/screenshots in test-clarity-progress.md. Preview remains on test-result-clarity worktree, claim released. Broader GUI rework remains in-progress for remaining accepted audit scope."
     }
   ],
   "priority": "now",
