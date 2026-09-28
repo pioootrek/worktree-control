@@ -26,6 +26,20 @@ function imageMime(file: KnowledgeAttachment): string {
 function displayPath(file: KnowledgeAttachment): string {
   return "relativePath" in file && typeof file.relativePath === "string" ? file.relativePath : file.filename;
 }
+function sameAttachment(left: KnowledgeAttachment, right: KnowledgeAttachment): boolean {
+  return left.id === right.id && left.projectId === right.projectId && left.recordKind === right.recordKind && left.recordId === right.recordId
+    && left.filename === right.filename && left.mediaType === right.mediaType && left.size === right.size && left.sha256 === right.sha256
+    && left.createdBy === right.createdBy && left.createdAt === right.createdAt && displayPath(left) === displayPath(right);
+}
+function keepUnchangedAttachments(previous: KnowledgeAttachment[] | null, incoming: KnowledgeAttachment[]): KnowledgeAttachment[] {
+  if (!previous) return incoming;
+  const byId = new Map(previous.map(file => [file.id, file]));
+  const merged = incoming.map(file => {
+    const old = byId.get(file.id);
+    return old && sameAttachment(old, file) ? old : file;
+  });
+  return previous.length === merged.length && previous.every((file, index) => file === merged[index]) ? previous : merged;
+}
 function formatLabel(file: KnowledgeAttachment): string {
   const extension = file.filename.match(/\.([^.]+)$/)?.[1];
   return extension && extension.length <= 8 ? extension.toUpperCase() : "FILE";
@@ -116,7 +130,6 @@ function Documents(props: Props) {
   const { t } = useI18n();
   const { token, projectId, recordId, recordKind, changeVersion, onDocumentChange } = props;
   const [files, setFiles] = useState<KnowledgeAttachment[] | null>(null);
-  const [filesVersion, setFilesVersion] = useState<number | null>(null);
   const [listingError, setListingError] = useState(false);
   const [retry, setRetry] = useState(0);
   const [selectedId, setSelectedId] = useState(() => currentDocumentId(props));
@@ -148,8 +161,8 @@ function Documents(props: Props) {
           if (page.nextOffset === null || page.nextOffset <= offset || !page.items.length) break;
           offset = page.nextOffset;
         }
-        if (!abort.signal.aborted) { setFiles(discovered); setFilesVersion(changeVersion); setListingError(false); }
-      } catch { if (!abort.signal.aborted) { setFiles(null); setFilesVersion(changeVersion); setListingError(true); } }
+        if (!abort.signal.aborted) { setFiles(previous => keepUnchangedAttachments(previous, discovered)); setListingError(false); }
+      } catch { if (!abort.signal.aborted) { setFiles(null); setListingError(true); } }
     })();
     return () => abort.abort();
   }, [token, projectId, recordId, recordKind, changeVersion, retry]);
@@ -172,7 +185,7 @@ function Documents(props: Props) {
     if (!id) noteHashRef.current = null;
     setSelectedId(id ?? "");
   };
-  const currentFiles = filesVersion === changeVersion ? files : null;
+  const currentFiles = files;
   const selected = currentFiles?.find(file => file.id === selectedId);
   return <section className="min-w-0 space-y-3 border-t border-border pt-4" aria-label={t("knowledge.documents")}>
     <h4 className={selectedId ? "sr-only" : "flex items-center gap-2 font-medium"}><Paperclip aria-hidden className="size-4" />{t("knowledge.documents")}</h4>

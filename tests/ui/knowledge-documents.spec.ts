@@ -4,7 +4,8 @@ import { dashboardFixture, mountDashboard } from "./dashboard-fixture";
 
 const project = { id: "knowledge-only", name: "Knowledge", status: "active", writable: true, revision: 1, createdAt: "2026-01-01", updatedAt: "2026-01-01" };
 const note = { id: "memory-1", projectId: project.id, title: "Storage decision", body: "Read the plan attached to this note.", category: "decision", tags: [], legacyId: null, sources: [], status: "active", supersededBy: null, approval: null, revision: 1, createdBy: "owner", createdAt: "2026-01-01", updatedAt: "2026-01-01" };
-const markdown = "# Storage plan\n\n| Stage | Result |\n| --- | --- |\n| One | SQLite |\n\n```ts\nconst owner = true;\n```\n\n[Portability](./database-portability.md)\n\n[Jump](#storage-plan)\n\n![Diagram](../assets/diagram.png)\n\n[Unsafe](javascript:alert(1))\n\n<img src=x onerror=alert(1)>\n\n![Remote](https://tracker.example/remote.png)";
+const markdown = "# Storage plan\n\n| Stage | Result |\n| --- | --- |\n| One | SQLite |\n\n```ts\nconst owner = true;\n```\n\n[Portability](./database-portability.md)\n\n[Jump](#storage-plan)\n\n![Diagram](../assets/diagram.png)\n\n[Unsafe](javascript:alert(1))\n\n<img src=x onerror=alert(1)>\n\n![Remote](https://tracker.example/remote.png)"
+  + Array.from({ length: 80 }, (_, index) => `\n\nParagraph ${index + 1}: a document remains readable during routine refreshes.`).join("");
 const bytesById: Record<string, Buffer> = {
   plan: Buffer.from(markdown),
   portability: Buffer.from("# Portability\n\nOne controller owns SQLite."),
@@ -25,8 +26,12 @@ async function mountDocuments(page: Page) {
   const fixture = await mountDashboard(page, data);
   const requests: Array<{ operation: string; input: Record<string, unknown>; token: string }> = [];
   let denied = false;
+  let denyListing = false;
+  let listedFiles = files;
+  let nextListingGate: Promise<void> | null = null;
+  let completedListings = 0;
   await page.route("**/api/identity", route => route.fulfill({ json: { principal: { id: "owner", kind: "owner" }, credential: { kind: "owner_session" } } }));
-  await page.route("**/api/knowledge", route => {
+  await page.route("**/api/knowledge", async route => {
     const { operation, input } = route.request().postDataJSON();
     requests.push({ operation, input, token: route.request().headers().authorization ?? "" });
     const result = (items: unknown[]) => ({ items, nextOffset: null });
@@ -35,10 +40,17 @@ async function mountDocuments(page: Page) {
     if (operation === "search") return route.fulfill({ json: result([{ ...note, kind: "memory", excerpt: note.body, threadId: null }]) });
     if (operation === "memory") return route.fulfill({ json: note });
     if (operation === "history") return route.fulfill({ json: result([]) });
-    if (operation === "attachments") return route.fulfill({ json: result(files) });
+    if (operation === "attachments") {
+      const gate = nextListingGate; nextListingGate = null;
+      if (gate) await gate;
+      if (denyListing) await route.fulfill({ status: 403, json: { code: "forbidden", error: "Denied" } });
+      else await route.fulfill({ json: result(listedFiles) });
+      completedListings += 1;
+      return;
+    }
     if (operation === "attachment") {
       if (denied) return route.fulfill({ status: 403, json: { code: "forbidden", error: "Denied" } });
-      const file = files.find(item => item.id === input.attachmentId);
+      const file = listedFiles.find(item => item.id === input.attachmentId);
       if (!file) return route.fulfill({ status: 404, json: { code: "not_found", error: "Not found" } });
       return route.fulfill({ json: { attachment: file, dataBase64: bytesById[file.id]?.toString("base64") ?? "" } });
     }
@@ -51,7 +63,13 @@ async function mountDocuments(page: Page) {
   await page.getByRole("tab", { name: "Memory", exact: true }).click();
   await page.getByRole("link", { name: note.title, exact: true }).click();
   await expect(page.getByRole("heading", { name: "Documents" })).toBeVisible();
-  return { ...fixture, requests, deny: (value: boolean) => { denied = value; } };
+  return { ...fixture, requests, deny: (value: boolean) => { denied = value; }, denyListing: (value: boolean) => { denyListing = value; },
+    setListing: (value: typeof files) => { listedFiles = value; }, completedListings: () => completedListings,
+    holdNextListing: () => { let release!: () => void; nextListingGate = new Promise<void>(resolve => { release = resolve; }); return release; } };
+}
+
+async function refreshKnowledge(page: Page) {
+  await page.evaluate(() => (window as unknown as { fixtureEvents: { emit: (event: string, value: unknown) => void } }).fixtureEvents.emit("knowledge-changed", { projectIds: ["knowledge-only"] }));
 }
 
 test("Markdown document opens by URL, links only to an authorized sibling, and Back restores the note", async ({ page }) => {
@@ -134,5 +152,55 @@ test("signing out clears an open document before a different credential can read
   await page.getByLabel("Knowledge credential", { exact: true }).fill("second-credential");
   await page.getByRole("button", { name: "Sign in to knowledge", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Storage plan" })).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+});
+
+test("routine refresh preserves an open document, while changed or denied listings invalidate it", async ({ page }) => {
+  const fixture = await mountDocuments(page);
+  await page.getByRole("link", { name: "Open: implementation-plan.md" }).click();
+  const code = page.getByRole("region", { name: "Document code" });
+  await expect(code).toContainText("const owner = true");
+  await expect(page.getByRole("img", { name: "Diagram" })).toBeVisible();
+  await code.focus();
+  const reader = page.locator("[data-memory-detail]");
+  await reader.evaluate(element => { element.scrollTop = 400; });
+  const previousScroll = await reader.evaluate(element => element.scrollTop);
+  expect(previousScroll).toBeGreaterThan(0);
+  const previewReads = fixture.requests.filter(call => call.operation === "attachment").length;
+  const initialListings = fixture.completedListings();
+  const release = fixture.holdNextListing();
+  await refreshKnowledge(page);
+  await expect.poll(() => fixture.requests.filter(call => call.operation === "attachments").length).toBe(initialListings + 1);
+  await expect(code).toBeVisible();
+  await expect(code).toBeFocused();
+  expect(await reader.evaluate(element => element.scrollTop)).toBe(previousScroll);
+  expect(fixture.requests.filter(call => call.operation === "attachment")).toHaveLength(previewReads);
+  release();
+  await expect.poll(() => fixture.completedListings()).toBe(initialListings + 1);
+  await expect(code).toBeVisible();
+  expect(await reader.evaluate(element => element.scrollTop)).toBe(previousScroll);
+  expect(fixture.requests.filter(call => call.operation === "attachment")).toHaveLength(previewReads);
+
+  fixture.setListing(files.map(file => file.id === "plan" ? { ...file, sha256: "changed" } : file));
+  await refreshKnowledge(page);
+  await expect.poll(() => fixture.completedListings()).toBe(initialListings + 2);
+  await expect.poll(() => fixture.requests.filter(call => call.operation === "attachment" && call.input.attachmentId === "plan").length).toBe(2);
+  await expect(code).toBeVisible();
+
+  fixture.setListing(files.filter(file => file.id !== "plan"));
+  await refreshKnowledge(page);
+  await expect.poll(() => fixture.completedListings()).toBe(initialListings + 3);
+  await expect(page.getByText("Document is unavailable in this note.", { exact: true }).last()).toBeVisible();
+  await expect(code).toHaveCount(0);
+
+  fixture.setListing(files);
+  await refreshKnowledge(page);
+  await expect.poll(() => fixture.completedListings()).toBe(initialListings + 4);
+  await expect(code).toBeVisible();
+  fixture.denyListing(true);
+  await refreshKnowledge(page);
+  await expect.poll(() => fixture.completedListings()).toBe(initialListings + 5);
+  await expect(page.getByText("Could not read attachments.", { exact: false })).toBeVisible();
+  await expect(code).toHaveCount(0);
   expect(fixture.errors).toEqual([]);
 });
