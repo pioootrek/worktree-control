@@ -75,7 +75,7 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
   };
   useEffect(() => { if (pageLoaded && listRef.current) listRef.current.scrollTop = listScrollRef.current; }, [pageLoaded, listScrollRef]);
   useEffect(() => {
-    if (documentOpen) focusedMobileRecordId.current = "";
+    if (documentOpen) focusedMobileRecordId.current = recordId;
     if (recordId && record && !documentOpen && !new URLSearchParams(window.location.search).has("document") && focusedMobileRecordId.current !== recordId && window.matchMedia("(max-width: 1023px)").matches) {
       readerRef.current?.querySelector<HTMLElement>("h3")?.focus();
       focusedMobileRecordId.current = recordId;
