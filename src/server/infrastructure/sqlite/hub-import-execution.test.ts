@@ -64,7 +64,7 @@ describe("K6b Hub import execution",()=>{
     execute(f.store,f.identity,f.owner,{plan:plan([task,comment]),targetProjectId:"fallback",targetProjectName:"Fallback"});
     const thread=f.store.listThreads("fallback",25,0).items[0]!;
     const db=new Database(join(f.root,"state.sqlite3"));
-    const expectRaw=()=>expect(f.store.getThread("fallback",thread.id)?.presentation).toMatchObject({displayTitle:thread.title,imported:false});
+    const expectRaw=()=>{const actual=f.store.getThread("fallback",thread.id)!;expect(actual.presentation).toMatchObject({displayTitle:actual.title,imported:false});};
     const source=db.prepare("SELECT id FROM knowledge_import_sources WHERE project_id='fallback' AND target_kind='task'").get() as {id:string};
     db.prepare("UPDATE knowledge_import_sources SET target_revision=NULL WHERE id=?").run(source.id);expectRaw();
     db.prepare("UPDATE knowledge_import_sources SET target_revision=1 WHERE id=?").run(source.id);
@@ -76,8 +76,8 @@ describe("K6b Hub import execution",()=>{
     db.prepare("UPDATE knowledge_import_sources SET source_commit=? WHERE project_id='fallback' AND target_kind='historical_comment'").run("d".repeat(40));
     db.prepare("UPDATE knowledge_import_sources SET source_path=? WHERE project_id='fallback' AND target_kind='historical_comment'").run(`${sourcePath}#notes/1`);expectRaw();
     db.prepare("UPDATE knowledge_import_sources SET source_path=? WHERE project_id='fallback' AND target_kind='historical_comment'").run(`${sourcePath}#notes/0`);
-    db.prepare("INSERT INTO knowledge_relations SELECT 'extra-relation',project_id,type,source_kind,source_id,target_kind,target_id,revision,created_by,created_at FROM knowledge_relations WHERE project_id='fallback'").run();expectRaw();
-    db.prepare("DELETE FROM knowledge_relations WHERE id='extra-relation'").run();
+    db.prepare("UPDATE knowledge_relations SET type='relates_to' WHERE project_id='fallback'").run();expectRaw();
+    db.prepare("UPDATE knowledge_relations SET type='derived_from' WHERE project_id='fallback'").run();
     db.prepare("UPDATE knowledge_threads SET title='Edited discussion' WHERE id=?").run(thread.id);expectRaw();
     db.prepare("UPDATE knowledge_threads SET title=? ,body='Edited body' WHERE id=?").run(thread.title,thread.id);expectRaw();
     db.close();f.store.close();
