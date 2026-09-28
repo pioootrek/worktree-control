@@ -11,6 +11,7 @@
     "layout_owner_direction": "Owner authorized whole-layout rework and standards on 2026-09-28; implementation delegated to Sol on worktrees.",
     "owner_feedback": "owner-feedback.md",
     "owner_feedback_status": "Four owner-annotated screenshots identify unused memory space, dense discussion list, weak content hierarchy, marked project/tab navigation and misaligned backlog filters. Concrete layout solutions remain agent proposals.",
+    "reading_progress": "reading-progress.md",
     "reading_stage_plan": "reading-stage-plan.md",
     "related_ids": [
       "FEAT-20260905-shared-project-memory",
@@ -94,7 +95,14 @@
     "rework-screenshots/knowledge-desktop-en-light-1366.png",
     "rework-screenshots/memory-reader-en-light.png",
     "rework-screenshots/knowledge-real-200percent-cdp.png",
-    "reading-stage-plan.md"
+    "reading-stage-plan.md",
+    "reading-screenshots/final-note-desktop-pl.png",
+    "reading-screenshots/final-document-desktop-pl.png",
+    "reading-screenshots/final-document-mobile-pl.png",
+    "reading-screenshots/final-document-desktop-en-light.png",
+    "reading-screenshots/final-document-short-en-light.png",
+    "reading-screenshots/final-document-200pct-en-light.png",
+    "reading-progress.md"
   ],
   "id": "NOTE-20260928-knowledge-reading-audit",
   "last_reviewed": "2026-09-28",
