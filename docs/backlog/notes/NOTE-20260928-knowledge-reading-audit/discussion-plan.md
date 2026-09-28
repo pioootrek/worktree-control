@@ -32,4 +32,4 @@ Browser coverage: meaningful imported/native rows, consistent reader topic and s
 
 ## Implementation availability
 
-The Sol agent accepted the contract but its turn stopped at the account usage limit before writing application or test code. The implementation worktree remains clean on 114ccbd. Root requested an owner decision whether another available model may perform the delegated implementation; the prior Sol preference is still binding until answered. Baseline browser session is closed, its claim released, and the accepted previous preview continues running. No PR or n8n dispatch exists for this stage yet.
+The initial Sol turn stopped at the account usage limit before writing code. The owner reset that limit and explicitly requested continuing with Sol; implementation resumed in the same worktree. The prior model-choice question is resolved. Baseline browser session is closed, its claim released, and the accepted previous preview continues running.
