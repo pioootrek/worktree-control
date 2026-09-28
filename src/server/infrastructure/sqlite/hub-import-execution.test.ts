@@ -10,6 +10,8 @@ import { IdentityService } from "@/server/modules/identity";
 import { AuthenticationService } from "@/server/modules/authentication";
 import { calculateHubImportPlanHash, executeHubImport, exportKnowledgeProject, importKnowledgeProject, KnowledgeService, type HubImportMapping, type HubImportPlan } from "@/server/modules/knowledge";
 import { SqliteStateStore } from "./sqlite-state-store";
+import { KnowledgeQueries } from "./knowledge-queries";
+import { verifiedThreadSourceSql } from "./knowledge-thread-presentation";
 
 const roots:string[]=[];
 afterEach(()=>roots.splice(0).forEach(root=>rmSync(root,{recursive:true,force:true})));
@@ -36,6 +38,11 @@ describe("K6b Hub import execution",()=>{
     expect(original.threads[0]).toMatchObject({title:"Imported discussion: A",body:`Historical comments imported from ${sourcePath}`});
     expect(original.threads[0]).not.toHaveProperty("presentation");
     const db=new Database(join(f.root,"state.sqlite3"));
+    new KnowledgeQueries(db);
+    const queryPlan=db.prepare(`EXPLAIN QUERY PLAN WITH verified AS (${verifiedThreadSourceSql(true)}) SELECT * FROM verified`)
+      .all({projectId:"topics",id:imported.id}) as Array<{detail:string}>;
+    expect(queryPlan.some(step=>step.detail.includes("sqlite_autoindex_knowledge_threads_1"))).toBe(true);
+    expect(queryPlan.some(step=>step.detail.includes("knowledge_import_sources_project"))).toBe(true);
     const native={id:"native-lookalike",projectId:"topics",title:"Imported discussion: A",body:`Historical comments imported from ${sourcePath}`,
       revision:1,createdBy:"installation",createdAt:NOW,updatedAt:NOW};
     f.store.createThread(native,{actor:f.owner,projectId:"topics",idempotencyKey:"native",requestHash:"a".repeat(64)});
@@ -70,8 +77,10 @@ describe("K6b Hub import execution",()=>{
     db.prepare("UPDATE knowledge_import_sources SET target_revision=1 WHERE id=?").run(source.id);
     db.prepare("UPDATE knowledge_import_sources SET original_payload_json='{' WHERE id=?").run(source.id);expectRaw();
     db.prepare("UPDATE knowledge_import_sources SET original_payload_json=? WHERE id=?").run(JSON.stringify(task.originalPayload),source.id);
-    db.prepare("UPDATE knowledge_tasks SET revision=2 WHERE project_id='fallback'").run();expectRaw();
-    db.prepare("UPDATE knowledge_tasks SET revision=1 WHERE project_id='fallback'").run();
+    db.prepare("UPDATE knowledge_tasks SET revision=2,status='in_progress',description='Work has started' WHERE project_id='fallback'").run();
+    expect(f.store.getThread("fallback",thread.id)?.presentation).toMatchObject({displayTitle:"Original decision",imported:true});
+    db.prepare("UPDATE knowledge_tasks SET title='Changed decision',revision=3 WHERE project_id='fallback'").run();expectRaw();
+    db.prepare("UPDATE knowledge_tasks SET title='Original decision' WHERE project_id='fallback'").run();
     db.prepare("UPDATE knowledge_import_sources SET source_commit=? WHERE project_id='fallback' AND target_kind='historical_comment'").run("e".repeat(40));expectRaw();
     db.prepare("UPDATE knowledge_import_sources SET source_commit=? WHERE project_id='fallback' AND target_kind='historical_comment'").run("d".repeat(40));
     db.prepare("UPDATE knowledge_import_sources SET source_path=? WHERE project_id='fallback' AND target_kind='historical_comment'").run(`${sourcePath}#notes/1`);expectRaw();

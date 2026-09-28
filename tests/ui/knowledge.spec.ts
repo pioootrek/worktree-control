@@ -142,7 +142,7 @@ for (const tab of ["Backlog", "Discussions"] as const) {
     });
     await page.getByRole("tab", { name: tab, exact: true }).click();
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
-    await page.getByLabel("Search titles", { exact: true }).fill("Reader");
+    await page.getByLabel(tab === "Backlog" ? "Search titles" : "Search discussions", { exact: true }).fill("Reader");
     await page.getByRole("button", { name: "Filter", exact: true }).click();
     await page.getByRole("link", { name: "Reader 5", exact: true }).click();
     const list = page.locator("[data-knowledge-list]");
@@ -175,7 +175,7 @@ for (const tab of ["Backlog", "Discussions"] as const) {
     await expect(restore).toBeInViewport();
     await restore.click();
     await expect(list).toBeVisible();
-    await expect(page.getByLabel("Search titles", { exact: true })).toHaveValue("Reader");
+    await expect(page.getByLabel(tab === "Backlog" ? "Search titles" : "Search discussions", { exact: true })).toHaveValue("Reader");
     await expect(page).toHaveURL(new RegExp(`record=${tab}-5`));
     expect(f.errors).toEqual([]);
   });
@@ -188,10 +188,10 @@ test("mobile reader hides list controls and returns focus to the selected discus
   await page.getByRole("tab", { name: "Discussions", exact: true }).click();
   await page.getByRole("link", { name: "Mobile decision", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Mobile decision" })).toBeFocused();
-  await expect(page.getByLabel("Search titles", { exact: true })).toBeHidden();
+  await expect(page.getByLabel("Search discussions", { exact: true })).toBeHidden();
   await page.getByRole("button", { name: "Back to list" }).click();
   await expect(page.getByRole("link", { name: "Mobile decision", exact: true })).toBeFocused();
-  await expect(page.getByLabel("Search titles", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Search discussions", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Mobile decision", exact: true }).click();
   await page.goBack();
   await expect(page.getByRole("link", { name: "Mobile decision", exact: true })).toBeFocused();

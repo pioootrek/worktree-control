@@ -280,7 +280,7 @@ export class KnowledgeQueries implements KnowledgeStore {
   }
 
   listThreads(projectId: string, limit: number, offset: number, filters: KnowledgeFilters = {}): KnowledgePage<KnowledgeThread> {
-    const rows = this.database.prepare(`WITH verified AS (${verifiedThreadSourceSql}), matched AS (
+    const rows = this.database.prepare(`WITH verified AS (${verifiedThreadSourceSql(false)}), matched AS (
       SELECT t.*, v.display_title, v.source_preview FROM knowledge_threads t
       LEFT JOIN verified v ON v.thread_id=t.id WHERE t.project_id=@projectId
         AND (instr(knowledge_fold(coalesce(v.display_title,t.title)),knowledge_fold(@query))>0
@@ -292,7 +292,7 @@ export class KnowledgeQueries implements KnowledgeStore {
     return this.page(rows.map(mapThread), limit, offset);
   }
   getThread(projectId: string, id: string): KnowledgeThread | null {
-    const row = this.database.prepare(`WITH verified AS (${verifiedThreadSourceSql})
+    const row = this.database.prepare(`WITH verified AS (${verifiedThreadSourceSql(true)})
       SELECT t.*,v.display_title,v.source_preview,
         (SELECT count(*) FROM knowledge_replies r WHERE r.project_id=t.project_id AND r.thread_id=t.id) reply_count
       FROM knowledge_threads t LEFT JOIN verified v ON v.thread_id=t.id WHERE t.project_id=@projectId AND t.id=@id`)
