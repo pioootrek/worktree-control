@@ -52,6 +52,16 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "Knowledge reading PR #59 merged as 3ac66f9 after green Verify run 36449727795 on 68f30b7 (check/build/HTTPS/integration/UI/E2E/package Node 22+24/systemd lifecycle). Managed check passed 495 unit +7 resource tests, build passed, final UI passed 102/102. Six pilot screenshots, original download hash and limitations are in reading-progress.md. Two n8n review findings fixed, one path-regex false positive disproved; all three threads resolved. Claude hit its session limit and did not review; Kimi/Codex completed. Preview remains on reading integration worktree with claim released. Keep broader rework open; discuss Markdown origin/intended format with owner before choosing subsequent scope."
+    },
+    {
+      "author": "human:pioootrek",
+      "date": "2026-09-28",
+      "text": "After Expand reader I cannot return to the previous layout; Show list is not visible. Follow-up fix authorized under the ongoing GUI rework."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-28",
+      "text": "Reader return follow-up delegated to Sol high on fix/knowledge-reader-return from b1ac6cb. Both Knowledge and Memory currently place the layout toggle inside scrolling content. Move controls outside the scroll region, preserve reading/list state, and cover long-content expand/restore and responsive transitions. Logout wording remains a separate observed issue."
     }
   ],
   "priority": "now",

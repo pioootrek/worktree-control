@@ -97,6 +97,9 @@ control the user just operated.
 Operating lists normally scroll the page. A desktop reader may deliberately
 have separate list/content scroll areas; consoles may own their scroll. Name
 those regions and prevent sticky UI from covering focused elements or hits.
+Keep desktop reader expand/restore controls outside the scrolling content so
+the previous layout remains reachable at every reading position. Expanding or
+restoring a reader retains the selected record, filters, and list position.
 An automatically collapsed log section must not silently retain a frozen
 buffer. Its hit count must follow live output, or its paused state and resume
 action must remain visible while collapsed.
