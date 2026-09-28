@@ -49,7 +49,8 @@ describe("K6b Hub import execution",()=>{
     f.store.createThread(native,{actor:f.owner,projectId:"topics",idempotencyKey:"native",requestHash:"a".repeat(64)});
     expect(f.store.getThread("topics",native.id)?.presentation).toMatchObject({displayTitle:native.title,preview:native.body,imported:false,replyCount:0});
     for(let index=0;index<30;index++) db.prepare("INSERT INTO knowledge_threads VALUES (?,?,?,?,1,?,?,?)")
-      .run(`extra-${index}`,"topics",`Other ${index}`,"Body","installation",NOW,NOW);
+      .run(`extra-${index}`,"topics",`Other ${index}`,"Body","installation",NOW,"2026-09-16T10:00:00.000Z");
+    expect(f.store.listThreads("topics",25,0).items.map(thread=>thread.id)).not.toContain(imported.id);
     const matching=(query:string)=>f.store.listThreads("topics",1,0,{query}).items.map(thread=>thread.id);
     expect(matching("ło\u0301dz\u0301 STORAGE")).toEqual([imported.id]);
     expect(matching(imported.id)).toEqual([imported.id]);
