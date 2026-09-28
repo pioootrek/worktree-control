@@ -742,6 +742,37 @@ for (const width of [390, 1440]) {
   });
 }
 
+for (const [metadataState, width] of [["stale", 390], ["missing", 1440]] as const) {
+  test(`dirty worktree with ${metadataState} Git metadata keeps last-read relevance at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const data = dashboardFixture();
+    const snapshot = data.projects[0];
+    const run = testRunFixture();
+    const observation = { observedAt: run.finishedAt!, head: snapshot.worktrees[0].head, branch: "main", dirty: false,
+      statusDigest: "clean", statusEntries: 0, complete: true, errorCode: null };
+    run.source = { ...run.source, enqueue: { ...observation }, preflight: { ...observation }, finish: { ...observation },
+      queueComparison: "match", executionComparison: "match", attribution: "observed_match", reasonCodes: [] };
+    snapshot.testRuns = [run];
+    snapshot.worktrees[0].dirty = true;
+    if (metadataState === "stale") snapshot.metadata!.status = "stale";
+    else delete snapshot.metadata;
+    const { requests, errors } = await mountDashboard(page, data);
+    if (width < 768) await page.getByRole("button", { name: "Toggle navigation", exact: true }).click();
+    await page.getByRole("navigation").getByRole("button", { name: "Tests", exact: true }).click();
+    const screen = page.locator("[data-tests-dashboard]");
+    const entry = width < 1280 ? screen.locator("[data-test-result]") : screen.getByRole("tabpanel").locator("tbody tr");
+    await expect(entry).toContainText("At execution: Source matched at observation points");
+    await expect(entry.getByText(/^Now: Local changes at last read(?: · |$)/)).toBeVisible();
+    await expect(entry).toContainText(metadataState === "stale" ? "Git data is stale" : "Current Git data missing");
+    await screen.getByRole("button", { name: "Result: test · main" }).click();
+    const drawer = page.getByRole("dialog");
+    await expect(drawer.getByText(/^Now: Local changes at last read$/)).toBeVisible();
+    await expect(drawer).not.toContainText("Now: Matches current commit");
+    expect(requests).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+}
+
 for (const [width, locale] of [[320, "en"], [1440, "pl"]] as const) {
   test(`stale Git metadata explains an observed source match and refreshes in ${locale} at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: width === 320 ? 600 : 900 });
