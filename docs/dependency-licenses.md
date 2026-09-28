@@ -1,13 +1,13 @@
 ---
 audience: "maintainers preparing public source and package releases"
-last_reviewed: "2026-08-29"
+last_reviewed: "2026-09-28"
 source_of_truth: "production dependency license review"
 status: "active"
 ---
 
 # Production dependency license review
 
-Review date: 2026-08-29
+Review date: 2026-09-28
 
 The production graph was inspected from the locked pnpm installation with:
 
@@ -15,13 +15,13 @@ The production graph was inspected from the locked pnpm installation with:
 pnpm licenses list --prod --json
 ```
 
-The review covered 384 package entries across these license identifiers:
+The review covered 485 package entries across these license identifiers:
 
 | License | Packages |
 | --- | ---: |
-| MIT | 342 |
-| ISC | 18 |
-| Apache-2.0 | 8 |
+| MIT | 438 |
+| ISC | 19 |
+| Apache-2.0 | 11 |
 | BSD-3-Clause | 7 |
 | BSD-2-Clause | 4 |
 | BlueOak-1.0.0 | 2 |
@@ -33,6 +33,9 @@ The review covered 384 package entries across these license identifiers:
 The direct runtime dependencies use MIT, ISC, or Apache-2.0 licenses. The
 copied shadcn/ui component source is MIT-licensed and its notice is preserved
 in `THIRD_PARTY_NOTICES.md`.
+
+The document reader adds `react-markdown@10.1.0` and `remark-gfm@4.0.1`,
+both MIT-licensed, with their parsing dependencies included in the counts above.
 
 Three transitive entries need explicit attention during package releases:
 
