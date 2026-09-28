@@ -735,8 +735,8 @@ test("Memory resets list scroll for a new search or page and restores it after r
 
   await list.getByRole("link", { name: "Beta 40", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Beta 40", exact: true })).toBeVisible();
+  await expect.poll(() => scroll.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
   const readingOffset = await scroll.evaluate(node => node.scrollTop);
-  expect(readingOffset).toBeGreaterThan(0);
   await page.goBack();
   await expect.poll(() => scroll.evaluate(node => Math.abs(node.scrollTop - readingOffset) < 3)).toBe(true);
   await expect(query).toHaveValue("Beta");
