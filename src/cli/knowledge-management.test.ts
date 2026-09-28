@@ -71,16 +71,19 @@ describe("knowledge execute-import CLI authentication", () => {
     const lock = acquireControllerLock(paths.controllerLockPath);
     try { expect(() => runHubImportExecuteCommand(args(file, "open"), paths, { environment: {}, verifyPlan })).toThrow("already running"); }
     finally { lock.release(); }
-    runHubImportExecuteCommand(args(file, "open"), paths, { environment: {}, verifyPlan, write: () => {} });
+    const openOutput: string[] = [];
+    runHubImportExecuteCommand(args(file, "open"), paths, { environment: {}, verifyPlan, write: line => openOutput.push(line) });
+    expect(JSON.parse(openOutput[0]!)).toMatchObject({ actorPrincipalId: "installation", authenticationMethod: "none" });
     const database = new Database(paths.databasePath, { readonly: true });
-    // Import batches record the acting principal only; open mode acts as the installation authority.
-    expect(database.prepare("SELECT target_project_id, actor_principal_id, status FROM knowledge_import_batches").all())
-      .toEqual([{ target_project_id: "open", actor_principal_id: "installation", status: "published" }]);
+    expect(database.prepare("SELECT target_project_id, actor_principal_id, authentication_method, status FROM knowledge_import_batches").all())
+      .toEqual([{ target_project_id: "open", actor_principal_id: "installation", authentication_method: "none", status: "published" }]);
     database.close();
 
     await runAuthCommand(["mode", "set", "token"], paths, { write: () => {} });
     expect(() => runHubImportExecuteCommand(args(file, "missing"), paths, { environment: {}, verifyPlan })).toThrow("WORKTREE_SWITCHER_OWNER_TOKEN");
     expect(() => runHubImportExecuteCommand(args(file, "invalid"), paths, { environment: { WORKTREE_SWITCHER_TOKEN: `${token}0` }, verifyPlan })).toThrow("Nieprawidłowe lub nieaktywne");
-    runHubImportExecuteCommand(args(file, "token"), paths, { environment: { WORKTREE_SWITCHER_TOKEN: token }, verifyPlan, write: () => {} });
+    const tokenOutput: string[] = [];
+    runHubImportExecuteCommand(args(file, "token"), paths, { environment: { WORKTREE_SWITCHER_TOKEN: token }, verifyPlan, write: line => tokenOutput.push(line) });
+    expect(JSON.parse(tokenOutput[0]!)).toMatchObject({ actorPrincipalId: "installation", authenticationMethod: "installation_token" });
   });
 });

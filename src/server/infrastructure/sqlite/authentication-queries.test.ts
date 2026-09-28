@@ -55,7 +55,7 @@ describe("authentication policy SQLite persistence", () => {
     downgradeToMigration24(path);
 
     const store = new SqliteStateStore(path);
-    expect(store.schemaVersion()).toBe(25);
+    expect(store.schemaVersion()).toBe(26);
     expect(store.getPrincipal("owner-1")).toEqual({ id: "owner-1", kind: "owner", status: "active" });
     expect(store.getPrincipal("installation")).toEqual({ id: "installation", kind: "installation", status: "active" });
     expect(store.getAuthenticationPolicy()).toEqual({ mode: "legacy", token: null, generation: 0 });

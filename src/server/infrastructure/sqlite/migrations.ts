@@ -740,6 +740,14 @@ function applyMigrations(database: Database.Database, fresh: boolean): void {
     }
   }
 
+  if (!hasMigration(database, 26)) {
+    database.transaction(() => {
+      // The default labels populated pre-migration batches; it is not a live actor method.
+      database.exec("ALTER TABLE knowledge_import_batches ADD COLUMN authentication_method TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK(authentication_method IN ('owner_session', 'agent_token', 'worker_token', 'installation_token', 'none', 'legacy_unknown'))");
+      recordMigration(database, 26);
+    })();
+  }
+
 }
 
 /** Frozen copy of the installation principal ID so migration 25 never follows later code changes. */

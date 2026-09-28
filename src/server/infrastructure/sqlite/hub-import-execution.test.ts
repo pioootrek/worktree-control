@@ -2,10 +2,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync }
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { IdentityService } from "@/server/modules/identity";
+import { AuthenticationService } from "@/server/modules/authentication";
 import { calculateHubImportPlanHash, executeHubImport, exportKnowledgeProject, importKnowledgeProject, type HubImportMapping, type HubImportPlan } from "@/server/modules/knowledge";
 import { SqliteStateStore } from "./sqlite-state-store";
 
@@ -59,14 +61,58 @@ describe("K6b Hub import execution",()=>{
       mapping("docs/backlog/notes/NOTE-one/note.json","note","memory",{id:"NOTE-one",title:"Decision",body:{answer:42},tags:["import"]}),
     ]),input={plan:source,targetProjectId:"imported",targetProjectName:"Imported",chunkSize:1};
     const first=execute(f.store,f.identity,f.owner,input);
-    expect(first).toMatchObject({status:"staging",cursor:1,totalItems:2});
+    expect(first).toMatchObject({status:"staging",cursor:1,totalItems:2,authenticationMethod:"owner_session"});
     expect(f.store.getKnowledgeProject("imported")).toBeNull();
     const published=execute(f.store,f.identity,f.owner,input);
-    expect(published).toMatchObject({status:"published",cursor:2});
+    expect(published).toMatchObject({status:"published",cursor:2,authenticationMethod:"owner_session"});
     expect(f.store.listTasks("imported",25,0).items).toMatchObject([{title:"One",status:"in_progress",priority:"now"}]);
     expect(f.store.listMemories("imported",25,0,"",true).items).toMatchObject([{title:"Decision",status:"active",legacyId:"NOTE-one",approval:null}]);
     expect(execute(f.store,f.identity,f.owner,input)).toEqual(published);
     expect(f.store.listTasks("imported",25,0).items).toHaveLength(1); f.store.close();
+  });
+
+  it("keeps the creation method across a reopen, different authorized method, no-op and failed reset",()=>{
+    const root=mkdtempSync(join(tmpdir(),"hub-import-method-"));roots.push(root);
+    const path=join(root,"state.sqlite3");let store=new SqliteStateStore(path);
+    let auth=new AuthenticationService(store),identity=new IdentityService(store,()=>NOW,undefined,undefined,auth);
+    const token=auth.generateToken("test").token,tokenActor=auth.authenticateInstallation(token)!;
+    const source=plan([mapping("docs/backlog/feature/one.json","task","task",{id:"one",title:"One"}),mapping("docs/backlog/feature/two.json","task","task",{id:"two",title:"Two"})]);
+    const input={plan:source,targetProjectId:"method",targetProjectName:"Method",chunkSize:1,batchId:"method-batch"};
+    expect(execute(store,identity,tokenActor,input)).toMatchObject({status:"staging",authenticationMethod:"installation_token"});
+    store.close();store=new SqliteStateStore(path);auth=new AuthenticationService(store);identity=new IdentityService(store,()=>NOW,undefined,undefined,auth);
+    auth.setMode("open","test");const openActor=auth.anonymousInstallation()!;
+    const published=execute(store,identity,openActor,input);
+    expect(published).toMatchObject({status:"published",authenticationMethod:"installation_token",actorPrincipalId:"installation"});
+    expect(execute(store,identity,openActor,input)).toEqual(published);
+
+    const orphan=mapping("docs/backlog/feature/missing.json#notes/0","task_note","historical_comment",{id:"missing:note:0",text:"Orphan"});
+    const failedInput={plan:plan([orphan]),targetProjectId:"failed-method",targetProjectName:"Failed method",batchId:"failed-method-batch"};
+    expect(()=>execute(store,identity,openActor,failedInput)).toThrow();
+    expect(store.getHubImport(failedInput.batchId)).toMatchObject({status:"failed",authenticationMethod:"none"});
+    auth.setMode("token","test");
+    expect(()=>execute(store,identity,auth.authenticateInstallation(token)!,failedInput)).toThrow();
+    expect(store.getHubImport(failedInput.batchId)).toMatchObject({status:"failed",authenticationMethod:"none"});
+    store.close();
+  });
+
+  it("marks populated pre-migration batches unknown and preserves that on resume and no-op",()=>{
+    const f=fixture(),path=join(f.root,"state.sqlite3");
+    const publishedInput={plan:plan([mapping("docs/backlog/feature/one.json","task","task",{id:"one",title:"One"})]),targetProjectId:"old-published",targetProjectName:"Old published",batchId:"old-published-batch"};
+    const stagedInput={plan:plan([mapping("docs/backlog/feature/one.json","task","task",{id:"one",title:"One"}),mapping("docs/backlog/feature/two.json","task","task",{id:"two",title:"Two"})]),targetProjectId:"old-staged",targetProjectName:"Old staged",batchId:"old-staged-batch",chunkSize:1};
+    expect(execute(f.store,f.identity,f.owner,publishedInput).status).toBe("published");
+    expect(execute(f.store,f.identity,f.owner,stagedInput).status).toBe("staging");
+    f.store.close();
+    const old=new Database(path);
+    old.exec("ALTER TABLE knowledge_import_batches DROP COLUMN authentication_method; DELETE FROM schema_migrations WHERE version = 26");
+    expect((old.prepare("SELECT count(*) AS count FROM knowledge_import_batches").get() as {count:number}).count).toBe(2);
+    old.close();
+    const store=new SqliteStateStore(path),identity=new IdentityService(store,()=>NOW);
+    expect(store.schemaVersion()).toBe(26);
+    expect(store.getHubImport(publishedInput.batchId)).toMatchObject({status:"published",authenticationMethod:"legacy_unknown"});
+    expect(store.getHubImport(stagedInput.batchId)).toMatchObject({status:"staging",cursor:1,authenticationMethod:"legacy_unknown"});
+    expect(execute(store,identity,f.owner,publishedInput).authenticationMethod).toBe("legacy_unknown");
+    expect(execute(store,identity,f.owner,stagedInput)).toMatchObject({status:"published",authenticationMethod:"legacy_unknown"});
+    store.close();
   });
 
   it("rolls the entire publication back if a staged mapping cannot be linked",()=>{
