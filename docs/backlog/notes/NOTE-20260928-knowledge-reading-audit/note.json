@@ -6,11 +6,12 @@
     "evidence": "evidence.json",
     "foundation_progress": "foundation-progress.md",
     "implementation_plan": "implementation-plan.md",
-    "implementation_status": "GUI foundation PR #58 ready for review: c55aafb managed check/build and 88 UI tests passed; pilot visual evidence recorded, n8n all accepted, GitHub CI/review pending. Pilot remains running with agent claim released.",
+    "implementation_status": "Foundation PR #58 merged after green CI and 94 UI tests; reading stage 2 started from 84cdd44 with Sol agents on isolated worktrees. See foundation-progress.md and reading-stage-plan.md.",
     "layout_direction": "layout-direction.md",
     "layout_owner_direction": "Owner authorized whole-layout rework and standards on 2026-09-28; implementation delegated to Sol on worktrees.",
     "owner_feedback": "owner-feedback.md",
     "owner_feedback_status": "Four owner-annotated screenshots identify unused memory space, dense discussion list, weak content hierarchy, marked project/tab navigation and misaligned backlog filters. Concrete layout solutions remain agent proposals.",
+    "reading_stage_plan": "reading-stage-plan.md",
     "related_ids": [
       "FEAT-20260905-shared-project-memory",
       "NOTE-20260911-approved-gui-direction"
@@ -92,7 +93,8 @@
     "rework-screenshots/knowledge-reader-mobile-320.png",
     "rework-screenshots/knowledge-desktop-en-light-1366.png",
     "rework-screenshots/memory-reader-en-light.png",
-    "rework-screenshots/knowledge-real-200percent-cdp.png"
+    "rework-screenshots/knowledge-real-200percent-cdp.png",
+    "reading-stage-plan.md"
   ],
   "id": "NOTE-20260928-knowledge-reading-audit",
   "last_reviewed": "2026-09-28",

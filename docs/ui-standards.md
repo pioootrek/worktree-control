@@ -107,6 +107,25 @@ scrolling. Secondary data can be disclosed. Keep the mobile frame compact;
 large error messages remain readable even when they take more space. Menus
 and panels must fit a short viewport and be scrollable when necessary.
 
+## Reading documents
+
+Give a document a stable address within its authorized project and parent
+record. Opening, returning and browser Back/Forward preserve the surrounding
+reading context. Put supported documents in the main reading path; keep
+downloading the unchanged original as a separate action.
+
+Treat document contents as data. Do not execute embedded HTML or scripts,
+resolve local filesystem paths, or automatically fetch external images.
+Relative links target known authorized attachments; missing and ambiguous
+targets need an explicit state. Bound preview size and disclose unsupported,
+oversized, invalid or inaccessible files without presenting them as empty.
+
+Present imported structured content only when recorded provenance proves its
+relationship to the current body. Native edits take precedence over historical
+source material. Keep original content accessible in secondary details.
+Headings, lists, tables and code have distinct readable treatments; wide tables
+and code may scroll locally without making the entire page scroll sideways.
+
 ## Verification and exceptions
 
 Review actual content, including long names, empty/error states, foreign
