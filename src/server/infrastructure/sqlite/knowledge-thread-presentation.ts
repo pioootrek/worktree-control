@@ -31,7 +31,8 @@ export function importedTaskPreview(value: unknown): string {
 
 export function compactPreview(value: string): string {
   const text = value.replace(/\s+/gu, " ").trim();
-  return text.length > 180 ? `${text.slice(0, 179).trimEnd()}…` : text;
+  const characters = Array.from(text);
+  return characters.length > 180 ? `${characters.slice(0, 179).join("").trimEnd()}…` : text;
 }
 
 export function importedRecordId(projectId: unknown, sourceId: unknown, sourcePath: unknown, kind: unknown): string {
