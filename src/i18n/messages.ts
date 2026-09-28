@@ -2,6 +2,11 @@ export type Locale = "pl" | "en";
 export type TranslationValues = Record<string, string | number>;
 
 const pl = {
+  "knowledgeLayout.moreFilters": "Więcej filtrów",
+  "knowledgeLayout.moreDetails": "Więcej szczegółów",
+  "knowledgeLayout.reader": "Czytnik wpisu",
+  "knowledgeLayout.expandReader": "Rozszerz czytnik",
+  "knowledgeLayout.showList": "Pokaż listę",
   "knowledge.previouslyApproved": "Wcześniej zatwierdzone",
   "knowledge.discardDraft": "Odrzuć lokalny szkic",
   "knowledge.discardDraftHelp": "Pierwszy zapis został przyjęty. Możesz odrzucić ten lokalny szkic i otworzyć zapisany wpis z listy. Odrzucenie nie usuwa wpisu.",
@@ -670,6 +675,11 @@ const pl = {
 } as const;
 
 const en: Record<keyof typeof pl, string> = {
+  "knowledgeLayout.moreFilters": "More filters",
+  "knowledgeLayout.moreDetails": "More details",
+  "knowledgeLayout.reader": "Record reader",
+  "knowledgeLayout.expandReader": "Expand reader",
+  "knowledgeLayout.showList": "Show list",
   "knowledge.previouslyApproved": "Previously approved",
   "knowledge.discardDraft": "Discard local draft",
   "knowledge.discardDraftHelp": "The first save was accepted. You can discard this local draft and open the saved record from the list. Discarding does not delete the record.",

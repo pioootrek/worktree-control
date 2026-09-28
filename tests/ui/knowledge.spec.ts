@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { dashboardFixture, mountDashboard } from "./dashboard-fixture";
+import { selectLanguage } from "./shell-actions";
 
 async function mountKnowledge(page: Page) {
   await page.addInitScript(() => sessionStorage.setItem("worktree-switcher-knowledge-token", "knowledge-fixture"));
@@ -62,7 +63,61 @@ test("historical imported replies distinguish source attribution from the import
   const f=await mountKnowledge(page);f.records.push({id:"historical-thread",projectId:"knowledge-only",title:"Imported discussion",body:"Context",revision:1,createdBy:"owner"});f.replies.push({id:"historical-reply",threadId:"historical-thread",body:"Historical comment",revision:1,createdBy:"import-owner",historicalImport:{sourceAuthor:"Ada",sourceDate:"2026-09-13",sourceDateStatus:"valid"}});
   await page.getByRole("tab",{name:"Discussions",exact:true}).click();await page.getByRole("button",{name:"Refresh",exact:true}).click();await page.getByRole("link",{name:"Imported discussion",exact:true}).click();
   await expect(page.getByText("Author: import-owner · revision 1",{exact:true})).toBeVisible();await expect(page.getByText("Historical import source — author: Ada · date: 2026-09-13",{exact:true})).toBeVisible();
-  await page.getByRole("button",{name:"Switch language to Polish"}).click();await expect(page.getByText("Źródło historyczne importu — autor: Ada · data: 2026-09-13",{exact:true})).toBeVisible();
+  await selectLanguage(page);await expect(page.getByText("Źródło historyczne importu — autor: Ada · data: 2026-09-13",{exact:true})).toBeVisible();
+});
+
+test("knowledge uses the available list width, then gives discussions a readable, expandable reader", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const f = await mountKnowledge(page);
+  f.records.push({ id: "discussion-layout", projectId: "knowledge-only", title: "Storage tradeoffs", body: "Initial context", revision: 1, createdBy: "owner" });
+  f.replies.push({ id: "reply-layout", threadId: "discussion-layout", body: "Use a single SQLite owner", revision: 1, createdBy: "reviewer" });
+  await page.getByRole("tab", { name: "Discussions", exact: true }).click();
+  const layout = page.locator("[data-knowledge-layout]");
+  const list = page.locator("[data-knowledge-list]");
+  await expect(page.locator("[data-knowledge-detail]")).toBeHidden();
+  expect((await list.boundingBox())!.width).toBeGreaterThan((await layout.boundingBox())!.width * 0.9);
+  await page.getByRole("link", { name: "Storage tradeoffs", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Storage tradeoffs" })).toBeVisible();
+  const reader = page.locator("[data-knowledge-detail]");
+  expect((await reader.boundingBox())!.width).toBeGreaterThan((await list.boundingBox())!.width);
+  const order = await reader.locator("article h3, article [aria-label='Replies'], article details").evaluateAll(nodes => nodes.map(node => node.tagName.toLowerCase()));
+  expect(order.slice(0, 3)).toEqual(["h3", "section", "details"]);
+  await expect(reader.getByText("Use a single SQLite owner", { exact: true })).toBeVisible();
+  await reader.getByRole("button", { name: "Expand reader" }).click();
+  await expect(list).toBeHidden();
+  expect((await reader.boundingBox())!.width).toBeGreaterThan((await layout.boundingBox())!.width * 0.9);
+  await reader.getByRole("button", { name: "Show list" }).click();
+  await expect(list).toBeVisible();
+  expect(f.errors).toEqual([]);
+});
+
+test("mobile reader hides list controls and returns focus to the selected discussion", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const f = await mountKnowledge(page);
+  f.records.push({ id: "mobile-thread", projectId: "knowledge-only", title: "Mobile decision", body: "Readable context", revision: 1, createdBy: "owner" });
+  await page.getByRole("tab", { name: "Discussions", exact: true }).click();
+  await page.getByRole("link", { name: "Mobile decision", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Mobile decision" })).toBeFocused();
+  await expect(page.getByLabel("Search titles", { exact: true })).toBeHidden();
+  await page.getByRole("button", { name: "Back to list" }).click();
+  await expect(page.getByRole("link", { name: "Mobile decision", exact: true })).toBeFocused();
+  await expect(page.getByLabel("Search titles", { exact: true })).toBeVisible();
+  expect(f.errors).toEqual([]);
+});
+
+test("reading a project without write access keeps mutation controls disabled", async ({ page }) => {
+  const f = await mountKnowledge(page);
+  f.records.push({ id: "shared-task", projectId: "knowledge-only", title: "Shared task", description: "Readable evidence", status: "open", priority: "next", revision: 1, createdBy: "owner" });
+  await page.route("**/api/knowledge", route => {
+    if (route.request().postDataJSON().operation === "project") return route.fulfill({ json: { id: "knowledge-only", name: "Knowledge without server", status: "active", writable: false, revision: 1, createdAt: "2026-01-01", updatedAt: "2026-01-01" } });
+    return route.fallback();
+  });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("link", { name: "Shared task", exact: true }).click();
+  await expect(page.getByText("Readable evidence", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add task", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Edit task", exact: true })).toBeDisabled();
+  expect(f.errors).toEqual([]);
 });
 
 test("knowledge without runtime: discussion, reply, task, filters and static deep link", async ({ page }) => {
@@ -122,7 +177,7 @@ test("conflict and failed save keep drafts after reload; knowledge events avoid 
 test("Polish and mobile knowledge navigation has labeled fields and no overflow", async ({ page }) => {
   await mountKnowledge(page);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "Switch language to Polish" }).click();
+  await selectLanguage(page);
   await expect(page.getByLabel("Projekt wiedzy", { exact: true })).toBeVisible();
   expect((await page.getByLabel("Projekt wiedzy", { exact: true }).boundingBox())!.width).toBeGreaterThan(280);
   expect((await page.getByLabel("Szukaj w tytułach", { exact: true }).boundingBox())!.width).toBeGreaterThan(280);
@@ -352,6 +407,23 @@ async function addMemory(page: Page, title: string, category = "decision") {
   await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible();
 }
 
+test("memory list fills the workspace and mobile detail returns to its entry", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const f = await mountMemory(page);
+  const layout = page.locator("[data-memory-layout]");
+  const list = page.locator("[data-memory-list]");
+  expect((await list.boundingBox())!.width).toBeGreaterThan((await layout.boundingBox())!.width * 0.9);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await addMemory(page, "Navigation note");
+  await expect(page.getByRole("heading", { name: "Navigation note" })).toBeFocused();
+  await expect(list).toBeHidden();
+  await expect(page.getByLabel("Search titles, content and memory", { exact: true })).toBeHidden();
+  await page.getByRole("button", { name: "Back to list", exact: true }).click();
+  await expect(page.getByRole("link", { name: "Navigation note", exact: true })).toBeFocused();
+  await expect(page.getByLabel("Search titles, content and memory", { exact: true })).toBeVisible();
+  expect(f.errors).toEqual([]);
+});
+
 test("memory approval, edit invalidation, archive, supersession and context export", async ({ page }) => {
   const f = await mountMemory(page);
   await addMemory(page, "Storage decision");
@@ -387,10 +459,13 @@ test("memory approval, edit invalidation, archive, supersession and context expo
   await page.getByRole("button", { name: "Supersede with this record", exact: true }).click();
   await expect(page.getByText("Superseded · Previously approved", { exact: true })).toBeVisible();
   await expect(page.getByText("Approved by owner, revision 6", { exact: true })).toBeVisible();
+  await page.getByText("More details", { exact: true }).click();
   await expect(page.getByRole("link", { name: "Replacement: memory-2 · r1", exact: true })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "Switch language to Polish" }).click();
+  await selectLanguage(page);
   await expect(page.getByRole("button", { name: "Zatwierdź tę rewizję", exact: true })).toBeDisabled();
+  await expect(page.getByLabel("Szukaj w tytułach, treści i pamięci", { exact: true })).toBeHidden();
+  await page.getByRole("button", { name: "Wróć do listy", exact: true }).click();
   await expect(page.getByLabel("Szukaj w tytułach, treści i pamięci", { exact: true })).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("k4-memory-mobile-pl.png"), fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -496,6 +571,7 @@ test("memory selection and browser Back preserve filters and a later results pag
     return route.fulfill({ json: { items, nextOffset: input.offset === 0 ? 25 : null } });
   });
   await page.getByLabel("Search titles, content and memory", { exact: true }).fill("Private");
+  await page.getByRole("button", { name: "More filters" }).click();
   await page.getByLabel("Tag", { exact: true }).fill("scope");
   await page.getByLabel("Legacy ID", { exact: true }).fill("OLD-1");
   await page.getByLabel("Status", { exact: true }).selectOption("archived");
@@ -516,7 +592,7 @@ test("memory selection and browser Back preserve filters and a later results pag
   await expect(page.getByLabel("Search titles, content and memory", { exact: true })).toHaveValue("Private");
   await expect(page.getByLabel("Tag", { exact: true })).toHaveValue("scope");
   await expect(page.getByLabel("Status", { exact: true })).toHaveValue("archived");
-  await expect(page.getByRole("button", { name: "Next page", exact: true }).first()).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Next page", exact: true }).first()).toHaveCount(0);
   await page.getByRole("button", { name: "Edit memory", exact: true }).click();
   await expect(page.getByLabel("Title", { exact: true })).toHaveValue("Private A");
   expect(f.errors).toEqual([]);
