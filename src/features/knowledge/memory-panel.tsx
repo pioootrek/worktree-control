@@ -160,15 +160,15 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
       </div>
       {recordId && <article ref={readerRef} tabIndex={-1} className="min-h-0 min-w-0 space-y-4 overflow-y-auto overscroll-contain p-5 sm:p-7" role="region" aria-label={t("knowledgeLayout.reader")} data-memory-detail>
         <div className="flex justify-between"><Button variant="ghost" className="lg:hidden" onClick={() => { returnFocusIdRef.current = recordId; onSelect("memory", ""); }}><ArrowLeft aria-hidden className="size-4" />{t("knowledge.backToList")}</Button><Button variant="ghost" className="ml-auto hidden lg:inline-flex" aria-pressed={readerExpanded} onClick={() => setReaderExpanded(!readerExpanded)}>{readerExpanded ? <Shrink aria-hidden className="size-4" /> : <Expand aria-hidden className="size-4" />}{t(readerExpanded ? "knowledgeLayout.showList" : "knowledgeLayout.expandReader")}</Button></div>
-        {record ? <div className="mx-auto max-w-4xl space-y-5">
-        <h3 tabIndex={-1} className="break-words text-2xl font-semibold leading-tight">{record.title}</h3>
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+        {record ? <div className={`mx-auto max-w-4xl ${documentOpen ? "space-y-3" : "space-y-5"}`}>
+        <h3 tabIndex={-1} className={`break-words font-semibold ${documentOpen ? "text-base leading-snug" : "text-2xl leading-tight"}`}>{record.title}</h3>
+        {!documentOpen && <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
           <span className="font-medium text-foreground">{t(`knowledge.${record.status}`)} · {t(record.approval?.revision === record.revision ? "knowledge.approved" : record.approval && record.status === "superseded" ? "knowledge.previouslyApproved" : "knowledge.proposed")}</span>
           <span aria-hidden>·</span><span>{t(`knowledge.${record.category}`)}</span>
           {record.reading?.kind === "imported-note" && <><span aria-hidden>·</span><span>{t("knowledge.importedNote")}</span></>}
           <span aria-hidden>·</span><span>{t("knowledge.recordMetadata", { revision: record.revision })}</span>
           <span aria-hidden>·</span><span>{t("knowledge.updatedAt", { date: new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(new Date(record.updatedAt)) })}</span>
-        </div>
+        </div>}
         {!documentOpen && record.approval && <p className="break-words text-sm">{t("knowledge.approvedBy", { author: record.approval.principalId, revision: record.approval.revision })}</p>}
         {!documentOpen && (record.reading?.kind === "imported-note" && record.reading.bodyFormat !== "text"
           ? <p className="max-w-[75ch] whitespace-pre-wrap break-words text-base leading-7">{record.reading.summary || t("knowledge.importedSummaryFallback")}</p>
