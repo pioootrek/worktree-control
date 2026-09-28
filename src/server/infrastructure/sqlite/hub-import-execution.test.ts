@@ -380,14 +380,16 @@ describe("K6b Hub import execution",()=>{
 
   it("derives attachment paths only from matching note and byte provenance",()=>{
     const f=fixture(),notes=["NOTE-one","NOTE-two"].map(id=>mapping(`docs/backlog/notes/${id}/note.json`,"note","memory",{id,title:id,body:"Note"}));
-    const files=["NOTE-one/assets/proof.txt","NOTE-one/evidence/proof.txt","NOTE-two/assets/proof.txt"];
+    const files=["NOTE-one/assets/proof.txt","NOTE-one/evidence/proof.txt","NOTE-one/Assets/Plan_V1.md","NOTE-two/assets/proof.txt"];
     const contents=new Map(files.map((path,index)=>[`docs/backlog/notes/${path}`,Buffer.from(`proof-${index}`)]));
     const attachments:HubImportMapping[]=Array.from(contents,([sourcePath,bytes])=>({sourcePath,sourceKind:"attachment",targetKind:"attachment",legacyId:null,disposition:"mapped",sourceSha256:createHash("sha256").update(bytes).digest("hex"),size:bytes.byteLength,mappedFields:[],sourceOnlyFields:[]}));
     executeHubImport(f.store,f.identity,f.owner,{plan:plan([...notes,...attachments]),targetProjectId:"paths",targetProjectName:"Paths",attachmentDirectory:join(f.root,"path-attachments")},()=>NOW,value=>value,(_plan,path)=>contents.get(path)!);
     const memories=f.store.listMemories("paths",10,0,"",true).items;
     const one=memories.find(item=>item.title==="NOTE-one")!,two=memories.find(item=>item.title==="NOTE-two")!;
     const oneFiles=f.store.listAttachments("paths","memory",one.id,10,0).items,twoFiles=f.store.listAttachments("paths","memory",two.id,10,0).items;
-    expect(oneFiles.map(item=>item.relativePath).sort()).toEqual(["assets/proof.txt","evidence/proof.txt"]);
+    expect(oneFiles.map(item=>item.relativePath).sort()).toEqual(["Assets/Plan_V1.md","assets/proof.txt","evidence/proof.txt"]);
+    const planFile=oneFiles.find(item=>item.relativePath==="Assets/Plan_V1.md")!;
+    expect(f.store.getAttachment("paths",planFile.id)?.relativePath).toBe("Assets/Plan_V1.md");
     expect(twoFiles.map(item=>item.relativePath)).toEqual(["assets/proof.txt"]);
     expect(f.store.getAttachment("paths",oneFiles[0]!.id)?.relativePath).toBe(oneFiles[0]!.relativePath);
     const db=new Database(join(f.root,"state.sqlite3"));
