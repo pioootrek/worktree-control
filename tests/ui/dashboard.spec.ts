@@ -729,13 +729,180 @@ for (const width of [390, 1440]) {
     const screen = page.locator("[data-tests-dashboard]");
     const entry = width < 1280 ? screen.locator("[data-test-result]") : screen.getByRole("tabpanel").locator("tbody tr");
     await expect(entry.getByText("At execution: Source matched at observation points", { exact: true })).toBeVisible();
-    await expect(entry.getByText("Now: Local changes", { exact: true })).toBeVisible();
+    await expect(entry).toContainText("Now: Local changes");
+    await expect(entry).toContainText("Local changes at last read");
     await expect(screen.getByRole("button", { name: /Possibly outdated/ })).toContainText("1");
     await screen.getByRole("button", { name: "Result: test · main" }).click();
     const drawer = page.getByRole("dialog");
     await expect(drawer).toContainText("Now: Local changes");
-    await expect(drawer).toContainText("The latest Git read found local changes in this worktree. The test result is not confirmed current.");
+    await expect(drawer).toContainText("The last read found local changes. The result does not confirm their contents");
     await expect(drawer).not.toContainText("Now: Matches current commit");
+    expect(requests).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+}
+
+for (const [metadataState, width] of [["stale", 390], ["missing", 1440]] as const) {
+  test(`dirty worktree with ${metadataState} Git metadata keeps last-read relevance at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const data = dashboardFixture();
+    const snapshot = data.projects[0];
+    const run = testRunFixture();
+    const observation = { observedAt: run.finishedAt!, head: snapshot.worktrees[0].head, branch: "main", dirty: false,
+      statusDigest: "clean", statusEntries: 0, complete: true, errorCode: null };
+    run.source = { ...run.source, enqueue: { ...observation }, preflight: { ...observation }, finish: { ...observation },
+      queueComparison: "match", executionComparison: "match", attribution: "observed_match", reasonCodes: [] };
+    snapshot.testRuns = [run];
+    snapshot.worktrees[0].dirty = true;
+    if (metadataState === "stale") snapshot.metadata!.status = "stale";
+    else delete snapshot.metadata;
+    const { requests, errors } = await mountDashboard(page, data);
+    if (width < 768) await page.getByRole("button", { name: "Toggle navigation", exact: true }).click();
+    await page.getByRole("navigation").getByRole("button", { name: "Tests", exact: true }).click();
+    const screen = page.locator("[data-tests-dashboard]");
+    const entry = width < 1280 ? screen.locator("[data-test-result]") : screen.getByRole("tabpanel").locator("tbody tr");
+    await expect(entry).toContainText("At execution: Source matched at observation points");
+    await expect(entry.getByText(/^Now: Local changes at last read(?: · |$)/)).toBeVisible();
+    await expect(entry).toContainText(metadataState === "stale" ? "Git data is stale" : "Current Git data missing");
+    await screen.getByRole("button", { name: "Result: test · main" }).click();
+    const drawer = page.getByRole("dialog");
+    await expect(drawer.getByText(/^Now: Local changes at last read$/)).toBeVisible();
+    await expect(drawer).toContainText(metadataState === "stale"
+      ? "Project Git metadata is stale. Refresh it to compare this result with the current worktree."
+      : "Current project Git metadata is missing. Refresh it to reassess this result.");
+    await expect(drawer).not.toContainText("Now: Matches current commit");
+    expect(requests).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("refreshing a dirty worktree keeps relevance unknown until Git reports it clean", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const data = dashboardFixture();
+  const snapshot = data.projects[0];
+  const run = testRunFixture();
+  const observation = { observedAt: run.finishedAt!, head: snapshot.worktrees[0].head, branch: "main", dirty: false,
+    statusDigest: "clean", statusEntries: 0, complete: true, errorCode: null };
+  run.source = { ...run.source, enqueue: { ...observation }, preflight: { ...observation }, finish: { ...observation },
+    queueComparison: "match", executionComparison: "match", attribution: "observed_match", reasonCodes: [] };
+  snapshot.testRuns = [run];
+  snapshot.worktrees[0].dirty = true;
+  const { requests, errors } = await mountDashboard(page, data);
+  await page.getByRole("button", { name: "Toggle navigation", exact: true }).click();
+  await page.getByRole("navigation").getByRole("button", { name: "Tests", exact: true }).click();
+  const screen = page.locator("[data-tests-dashboard]");
+  await screen.getByRole("button", { name: "Result: test · main" }).click();
+  const drawer = page.getByRole("dialog");
+  const refresh = drawer.getByRole("button", { name: "Refresh worktree metadata" });
+  await expect(refresh).toBeVisible();
+  await refresh.click();
+  await expect(drawer).toContainText("Now: Local changes");
+  await expect(drawer).not.toContainText("Now: Matches current commit");
+  await expect(refresh).toBeEnabled();
+  snapshot.worktrees[0].dirty = false;
+  await refresh.click();
+  await expect(drawer).toContainText("Now: Matches current commit");
+  await expect(refresh).toHaveCount(0);
+  expect(requests.filter((request) => request.path === "/api/projects/web/metadata/refresh")).toHaveLength(2);
+  expect(errors).toEqual([]);
+});
+
+for (const [width, locale] of [[320, "en"], [1440, "pl"]] as const) {
+  test(`stale Git metadata explains an observed source match and refreshes in ${locale} at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: width === 320 ? 600 : 900 });
+    const data = dashboardFixture();
+    const snapshot = data.projects[0];
+    const run = testRunFixture();
+    const observation = { observedAt: run.finishedAt!, head: snapshot.worktrees[0].head, branch: "main", dirty: false,
+      statusDigest: "clean", statusEntries: 0, complete: true, errorCode: null };
+    run.source = { ...run.source, enqueue: observation, preflight: observation, finish: observation,
+      queueComparison: "match", executionComparison: "match", attribution: "observed_match", reasonCodes: [] };
+    snapshot.testRuns = [run];
+    snapshot.metadata!.status = "stale";
+    const { requests, errors } = await mountDashboard(page, data, { metadataRefreshFailures: 1 });
+    if (locale === "pl") await selectLanguage(page, "en");
+    if (width < 768) await page.getByRole("button", { name: translate(locale, "dashboard.toggleNavigation") }).click();
+    await page.getByRole("navigation").getByRole("button", { name: translate(locale, "dashboard.navTests"), exact: true }).click();
+    const screen = page.locator("[data-tests-dashboard]");
+    const entry = width < 1280 ? screen.locator("[data-test-result]") : screen.getByRole("tabpanel").locator("tbody tr");
+    await expect(entry).toContainText(translate(locale, "testSource.observed_match"));
+    await expect(entry).toContainText(translate(locale, "testView.reason.metadata_stale"));
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await screen.getByRole("button", { name: translate(locale, "testView.detailsFor", { name: "test", branch: "main" }) }).click();
+    const drawer = page.getByRole("dialog");
+    await expect(drawer).toContainText(translate(locale, "testView.reasonDetail.metadata_stale"));
+    await expect(drawer).toContainText(`${translate(locale, "testView.queuedRevision")}: ${run.worktreeHead}`);
+    await expect(drawer).toContainText(`${translate(locale, "testView.preflightRevision")}: ${observation.head}`);
+    await drawer.getByRole("button", { name: translate(locale, "testView.jumpToOutput") }).click();
+    await expect(drawer.getByRole("region", { name: translate(locale, "tests.output") })).toBeFocused();
+    await drawer.getByRole("button", { name: translate(locale, "metadata.refresh") }).click();
+    await expect(drawer.getByRole("alert")).toContainText("Fixture Git refresh failed");
+    await drawer.getByRole("button", { name: translate(locale, "metadata.refresh") }).click();
+    await expect(drawer.getByRole("alert")).toHaveCount(0);
+    await expect(drawer).toContainText(translate(locale, "testView.source.current"));
+    await page.keyboard.press("Escape");
+    await expect(screen.getByRole("button", { name: translate(locale, "testView.detailsFor", { name: "test", branch: "main" }) })).toBeFocused();
+    expect(requests.filter((request) => request.path === "/api/projects/web/metadata/refresh")).toHaveLength(2);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("a cancelled queued run says the command never started, with a localized close control", async ({ page }) => {
+  const data = dashboardFixture();
+  const run = testRunFixture({ phase: "cancelled", startedAt: null, exitCode: null });
+  run.source = { ...run.source, attribution: "pending", processOutcome: "cancelled" };
+  data.projects[0].testRuns = [run];
+  await mountDashboard(page, data);
+  await selectLanguage(page, "en");
+  await page.getByRole("navigation").getByRole("button", { name: "Testy", exact: true }).click();
+  await page.getByRole("tab", { name: "Historia", exact: true }).click();
+  await page.locator("[data-tests-dashboard]").getByRole("button", { name: "Wynik: test · main" }).click();
+  const drawer = page.getByRole("dialog");
+  await expect(drawer).toContainText("Nie uruchomiono polecenia");
+  await expect(drawer).not.toContainText("Oczekuje na sprawdzenie źródła");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Uruchom test", exact: true }).click();
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Zamknij", exact: true })).toBeVisible();
+});
+
+for (const aggregate of [false, true]) {
+  test(`server failure logs open the exact project and worktree from ${aggregate ? "all projects" : "one project"}`, async ({ page }) => {
+    const width = aggregate ? 390 : 1440;
+    await page.setViewportSize({ width, height: 844 });
+    const data = dashboardFixture();
+    const api = structuredClone(data.projects[0]);
+    api.project.id = "api";
+    api.project.name = "Fixture API";
+    api.worktrees = [{ ...api.worktrees[0], path: "/fixture/api", branch: "failed-main" },
+      { ...api.worktrees[0], path: "/fixture/api-other", branch: "healthy-other" }];
+    const failureLog = aggregate ? "api served requests, then exited with code 7" : "api startup exit 7";
+    api.runtime = { ...api.runtime, phase: "failed", worktreePath: "/fixture/api",
+      startedAt: aggregate ? "2026-01-01T12:00:00.000Z" : null,
+      failure: aggregate ? { code: "process_exit", title: "Process exited", message: "Server exited after serving requests",
+        suggestion: "Inspect logs", technicalDetails: "exit_code=7" } : null,
+      error: "Server failed", logs: [failureLog] };
+    data.projects.push(api);
+    const { requests, errors } = await mountDashboard(page, data);
+    const picker = page.locator('header [role="combobox"]');
+    await picker.click();
+    await page.getByRole("option", { name: aggregate ? /All projects/ : /Fixture API/ }).click();
+    const overview = page.locator("[data-worktree-overview]");
+    const failedRow = overview.locator("tbody tr").filter({ hasText: "failed-main" });
+    const otherRow = overview.locator("tbody tr").filter({ hasText: "healthy-other" });
+    await expect(failedRow.getByRole("button", { name: "Server failure logs: Fixture API · failed-main" })).toBeVisible();
+    await expect(otherRow.getByRole("button", { name: /Server failure logs/ })).toHaveCount(0);
+    if (aggregate) await expect(overview.locator("tbody tr").filter({ hasText: "Fixture Web" }).getByRole("button", { name: /Server failure logs/ })).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await failedRow.getByRole("button", { name: "Server failure logs: Fixture API · failed-main" }).click();
+    await expect(picker).toContainText("Fixture API");
+    await expect(page).toHaveURL(/view=logs/);
+    const console = page.locator('[data-log-console][data-project-id="api"]');
+    await expect(console.getByRole("heading", { name: "Fixture API" })).toBeFocused();
+    await expect(console).toContainText("Server failure logs");
+    await expect(console).toContainText(failureLog);
+    await expect(page.locator('[data-log-console][data-project-id="web"]')).toHaveCount(0);
+    if (aggregate) await page.getByRole("button", { name: "Toggle navigation" }).click();
+    await expect(page.getByRole("navigation").getByRole("button", { name: "Logs", exact: true })).toHaveAttribute("aria-current", "page");
     expect(requests).toEqual([]);
     expect(errors).toEqual([]);
   });

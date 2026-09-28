@@ -40,13 +40,14 @@ export function dashboardFixture(): ControllerDashboardResponse {
 export async function mountDashboard(
   page: Page,
   data = dashboardFixture(),
-  options: { failDashboardRefreshAfterProjectRemoval?: boolean; accessToken?: string; openWithToken?: boolean; openMode?: boolean } = {},
+  options: { failDashboardRefreshAfterProjectRemoval?: boolean; metadataRefreshFailures?: number; accessToken?: string; openWithToken?: boolean; openMode?: boolean } = {},
 ) {
   const accessToken = options.accessToken ?? "ui-fixture-token";
   const openMode = options.openMode ?? false;
   const webRoot = resolve("out");
   if (!existsSync(resolve(webRoot, "index.html"))) throw new Error("Run pnpm build before pnpm test:ui.");
   const requests: Array<{ path: string; method: string; body: unknown }> = [];
+  let metadataRefreshFailures = options.metadataRefreshFailures ?? 0;
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(({ accessToken, openMode }) => {
@@ -149,7 +150,13 @@ export async function mountDashboard(
           if (request.method() !== "DELETE") return route.fulfill({ status: 405, json: { error: "Method not allowed" } });
           data.projects = data.projects.filter(({ project }) => project.id !== "web");
           break;
-        case "/api/projects/web/metadata/refresh": break;
+        case "/api/projects/web/metadata/refresh":
+          if (metadataRefreshFailures > 0) {
+            metadataRefreshFailures -= 1;
+            return route.fulfill({ status: 503, json: { error: "Fixture Git refresh failed" } });
+          }
+          snapshot.metadata = { status: "fresh", lastSuccessfulAt: now, lastAttemptAt: now, retryAt: null, error: null };
+          break;
         case "/api/settings/capacity": Object.assign(data.capacity, body); break;
         case "/api/settings/test-queue": Object.assign(data.testQueue, body); break;
         case "/api/projects/web/tls": snapshot.project.tlsMode = body.mode; break;

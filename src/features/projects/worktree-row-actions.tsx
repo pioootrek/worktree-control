@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useRef, useState } from "react";
-import { ExternalLink, Info, LoaderCircle, LockKeyhole, MoreHorizontal, Play, RefreshCw, RotateCcw, Square, UnlockKeyhole } from "lucide-react";
+import { ExternalLink, Info, LoaderCircle, LockKeyhole, MoreHorizontal, Play, RefreshCw, RotateCcw, ScrollText, Square, UnlockKeyhole } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -17,10 +17,11 @@ export interface WorktreeRowActionsProps {
   pendingPath: string | null;
   onOperate: (operation: "start" | "stop" | "restart" | "switch", path: string) => void;
   onReserve: (action: "acquire" | "release" | "force-release", path: string) => void;
+  onOpenLogs: () => void;
   details?: { size: string; measuredAt: string | null; lastLaunch: string; lastCommit: string; mergeUnknown: boolean };
 }
 
-export function WorktreeRowActions({ snapshot, worktree, busy, pendingPath, onOperate, onReserve, details }: WorktreeRowActionsProps) {
+export function WorktreeRowActions({ snapshot, worktree, busy, pendingPath, onOperate, onReserve, onOpenLogs, details }: WorktreeRowActionsProps) {
   const { t, locale } = useI18n();
   const [dialog, setDialog] = useState<"switch" | "details" | "release" | null>(null);
   const targetDescriptionId = useId();
@@ -65,6 +66,7 @@ export function WorktreeRowActions({ snapshot, worktree, busy, pendingPath, onOp
             : <><Play aria-hidden />{t("row.start")}</>}
     </Button>
     <span id={targetDescriptionId} className="sr-only">{t("worktreeLayout.actionTarget", { project: project.name, branch })}</span>
+    {located && runtime.phase === "failed" ? <Button size="sm" variant="outline" aria-label={t("worktreeLayout.serverFailureLogsFor", { project: project.name, branch })} onClick={onOpenLogs}><ScrollText aria-hidden />{t("worktreeLayout.serverFailureLogs")}</Button> : null}
     {reservation && !(running && located) ? <span className="text-xs text-muted-foreground">{t("row.reserved")}</span> : null}
     <DropdownMenu>
       <DropdownMenuTrigger asChild><Button ref={menuTrigger} variant="ghost" size="icon-sm" aria-label={t("worktreeLayout.moreForProject", { branch, project: project.name })}><MoreHorizontal aria-hidden /></Button></DropdownMenuTrigger>

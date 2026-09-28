@@ -8,10 +8,11 @@ import { useI18n } from "@/i18n/provider";
 import type { ProjectSnapshot } from "@/shared/contracts";
 import { WorktreeOverview } from "./worktree-overview";
 
-export function AllProjectsWorktrees({ snapshots, mutate, setError }: {
+export function AllProjectsWorktrees({ snapshots, mutate, setError, onOpenLogs }: {
   snapshots: ProjectSnapshot[];
   mutate: Mutate;
   setError: (message: string | null) => void;
+  onOpenLogs: (projectId: string) => void;
 }) {
   const { t } = useI18n();
   const [pending, setPending] = useState<{ projectId: string; path: string | null } | null>(null);
@@ -47,7 +48,7 @@ export function AllProjectsWorktrees({ snapshots, mutate, setError }: {
         const error = snapshot.discoveryError || snapshot.runtime.error || snapshot.metadata?.error;
         return error ? <Alert key={snapshot.project.id} variant="warning"><AlertTitle>{snapshot.project.name}</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null;
       })}
-      <WorktreeOverview snapshots={snapshots} aggregate busy={pending !== null} refreshing={refreshing || snapshots.some((s) => s.metadata?.status === "refreshing")} onRefresh={() => void refresh()}
+      <WorktreeOverview snapshots={snapshots} aggregate busy={pending !== null} refreshing={refreshing || snapshots.some((s) => s.metadata?.status === "refreshing")} onRefresh={() => void refresh()} onOpenLogs={onOpenLogs}
         rowActions={(snapshot) => ({
           busy: pending !== null || refreshing || ["starting", "stopping"].includes(snapshot.runtime.phase),
           pendingPath: pending?.projectId === snapshot.project.id ? pending.path : null,

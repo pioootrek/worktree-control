@@ -46,6 +46,7 @@ export function Dashboard() {
   const systemTrigger = useRef<HTMLButtonElement>(null);
   const projectTrigger = useRef<HTMLButtonElement>(null);
   const emptyAddTrigger = useRef<HTMLButtonElement>(null);
+  const pendingLogFocus = useRef<string | null>(null);
   const { dark, toggle: toggleTheme } = useTheme();
   const { selectedProjectId, selectProject } = useProjectSelection();
   const allProjects = selectedProjectId === ALL_PROJECTS;
@@ -62,6 +63,19 @@ export function Dashboard() {
     if (url.href !== window.location.href) window.history.pushState(null, "", url);
     window.scrollTo({ top: 0, behavior: "instant" });
   };
+  const openFailedLogs = (projectId: string) => {
+    pendingLogFocus.current = projectId;
+    selectProject(projectId);
+    selectSection("logs");
+  };
+  useEffect(() => {
+    if (section !== "logs" || pendingLogFocus.current !== selectedProjectId) return;
+    const frame = requestAnimationFrame(() => {
+      const heading = document.querySelector<HTMLElement>("[data-logs-dashboard] [data-log-console] h3");
+      if (heading) { heading.focus(); pendingLogFocus.current = null; }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [section, selectedProjectId, loading, data.projects]);
 
   const sectionLabel = t(projectSections.find((item) => item.id === section)!.label);
 
@@ -142,7 +156,7 @@ export function Dashboard() {
           <EmptyState buttonRef={emptyAddTrigger} onAdd={() => setDialogOpen(true)} />
         ) : (
           <section id="projects" className="grid gap-7" aria-label={t("dashboard.projects")}>
-            {section === "logs" ? <LogsDashboard key={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id} snapshots={allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []} aggregate={allProjects} /> : section === "resources" ? <ResourcesDashboard key={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id} snapshots={allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []} aggregate={allProjects} mutate={mutate} setError={setError} /> : section === "tests" ? <TestsDashboard now={observedAt} key={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id} snapshots={allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []} aggregate={allProjects} mutate={mutate} setError={setError} /> : allProjects && section === "worktrees" ? <AllProjectsWorktrees snapshots={data.projects} mutate={mutate} setError={setError} /> : (allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []).map((snapshot) => <ProjectCard key={snapshot.project.id} snapshot={snapshot} section={section} mutate={mutate} setError={setError} token={token} />)}
+            {section === "logs" ? <LogsDashboard key={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id} snapshots={allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []} aggregate={allProjects} /> : section === "resources" ? <ResourcesDashboard key={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id} snapshots={allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []} aggregate={allProjects} mutate={mutate} setError={setError} /> : section === "tests" ? <TestsDashboard now={observedAt} key={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id} snapshots={allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []} aggregate={allProjects} mutate={mutate} setError={setError} /> : allProjects && section === "worktrees" ? <AllProjectsWorktrees snapshots={data.projects} mutate={mutate} setError={setError} onOpenLogs={openFailedLogs} /> : (allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []).map((snapshot) => <ProjectCard key={snapshot.project.id} snapshot={snapshot} section={section} mutate={mutate} setError={setError} token={token} onOpenLogs={openFailedLogs} />)}
           </section>
         )}
         </div>

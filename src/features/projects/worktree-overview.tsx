@@ -29,10 +29,10 @@ function bytes(value: number) {
   return `${(value / 1024 ** unit).toFixed(unit ? 1 : 0)} ${units[unit]}`;
 }
 
-export function WorktreeOverview({ snapshots, aggregate = false, rowActions, busy, refreshing, onRefresh }: {
+export function WorktreeOverview({ snapshots, aggregate = false, rowActions, busy, refreshing, onRefresh, onOpenLogs }: {
   snapshots: ProjectSnapshot[]; aggregate?: boolean;
   rowActions: (snapshot: ProjectSnapshot) => Pick<WorktreeRowActionsProps, "busy" | "pendingPath" | "onOperate" | "onReserve">;
-  busy: boolean; refreshing: boolean; onRefresh: () => void;
+  busy: boolean; refreshing: boolean; onRefresh: () => void; onOpenLogs: (projectId: string) => void;
 }) {
   const snapshot = snapshots[0];
   const scopeId = aggregate ? "all-projects" : snapshot.project.id;
@@ -135,7 +135,7 @@ export function WorktreeOverview({ snapshots, aggregate = false, rowActions, bus
                 {w.locked || rowSnapshot.reservation?.worktreePath === w.path ? <Badge variant="outline"><ShieldCheck aria-hidden />{t("overview.reserved")}</Badge> : null}
               </div>
             </TableCell>
-            <TableCell className="whitespace-normal align-top max-md:block max-md:px-3 max-md:pb-3 max-md:pt-2"><WorktreeRowActions snapshot={rowSnapshot} worktree={w} details={{ size: size === null ? t("overview.unknown") : bytes(size), measuredAt: measuredAt ? `${date(measuredAt)} · ${measurementStatus}` : null, lastLaunch: date(lastLaunch), lastCommit: date(lastCommit), mergeUnknown: w.merged == null }} {...rowActions(rowSnapshot)} /></TableCell>
+            <TableCell className="whitespace-normal align-top max-md:block max-md:px-3 max-md:pb-3 max-md:pt-2"><WorktreeRowActions snapshot={rowSnapshot} worktree={w} onOpenLogs={() => onOpenLogs(rowSnapshot.project.id)} details={{ size: size === null ? t("overview.unknown") : bytes(size), measuredAt: measuredAt ? `${date(measuredAt)} · ${measurementStatus}` : null, lastLaunch: date(lastLaunch), lastCommit: date(lastCommit), mergeUnknown: w.merged == null }} {...rowActions(rowSnapshot)} /></TableCell>
           </TableRow>;
         })}
         {!visible.length ? <TableRow className="max-md:block"><TableCell colSpan={3} className="h-24 text-center text-muted-foreground max-md:block">{t("project.noMatchingWorktrees")}</TableCell></TableRow> : null}

@@ -37,12 +37,14 @@ export function ProjectCard({
   mutate,
   setError,
   token,
+  onOpenLogs,
 }: {
   snapshot: ProjectSnapshot;
   section: ProjectSection;
   mutate: Mutate;
   setError: (message: string | null) => void;
   token: string;
+  onOpenLogs: (projectId: string) => void;
 }) {
   const { locale, t } = useI18n();
   const { project, runtime, reservation, worktrees } = snapshot;
@@ -237,7 +239,7 @@ export function ProjectCard({
               <p className="mt-4 text-sm text-destructive">{runtime.error}</p>
             ) : null}
 
-        {section === "worktrees" && <WorktreeOverview snapshots={[snapshot]} rowActions={() => ({ pendingPath, busy: isBusy, onOperate: (operation, path) => void act(operation, path), onReserve: (action, path) => void reserve(action, path) })} busy={isBusy} refreshing={metadata?.status === "refreshing"} onRefresh={() => void refreshMetadata()} />}
+        {section === "worktrees" && <WorktreeOverview snapshots={[snapshot]} rowActions={() => ({ pendingPath, busy: isBusy, onOperate: (operation, path) => void act(operation, path), onReserve: (action, path) => void reserve(action, path) })} busy={isBusy} refreshing={metadata?.status === "refreshing"} onRefresh={() => void refreshMetadata()} onOpenLogs={onOpenLogs} />}
 
         {section !== "worktrees" && <><div className="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
           <div className="min-w-0 space-y-2">

@@ -24,14 +24,60 @@ describe("test result presentation", () => {
     const snapshot = dashboardFixture().projects[0];
     const run = testRunFixture();
     run.source.attribution = "observed_match";
-    run.source.finish = { head: snapshot.worktrees[0].head, branch: "main", dirty: false, observedAt: run.finishedAt!, statusDigest: "clean", statusEntries: 0, complete: true, errorCode: null };
+    const observation = { head: snapshot.worktrees[0].head, branch: "main", dirty: false, observedAt: run.finishedAt!,
+      statusDigest: "clean", statusEntries: 0, complete: true, errorCode: null };
+    run.source.enqueue = { ...observation };
+    run.source.preflight = { ...observation };
+    run.source.finish = { ...observation };
     snapshot.testRuns = [run];
     expect(testResults([snapshot])[0].freshness).toBe("current");
     snapshot.worktrees[0].dirty = true;
-    expect(testResults([snapshot])[0].freshness).toBe("unknown");
+    expect(testResults([snapshot])[0]).toMatchObject({ freshness: "unknown", reasons: ["current_dirty"] });
     snapshot.worktrees[0].dirty = false; snapshot.worktrees[0].head = "new-head";
-    expect(testResults([snapshot])[0].freshness).toBe("older");
+    expect(testResults([snapshot])[0]).toMatchObject({ freshness: "older", reasons: ["head_changed"] });
     snapshot.worktrees[0].head = run.source.finish.head!; snapshot.metadata!.status = "stale";
-    expect(testResults([snapshot])[0].freshness).toBe("unknown");
+    expect(testResults([snapshot])[0]).toMatchObject({ freshness: "unknown", reasons: ["metadata_stale"], sourceAtRun: "observed_match" });
+    snapshot.metadata!.status = "fresh"; snapshot.worktrees[0].statusError = "git timeout";
+    expect(testResults([snapshot])[0]).toMatchObject({ freshness: "unknown", reasons: ["status_error"] });
+    delete snapshot.worktrees[0].statusError; run.source.finish!.complete = false;
+    expect(testResults([snapshot])[0]).toMatchObject({ freshness: "unknown", reasons: ["incomplete_observation"] });
+  });
+  it("keeps queued and pre-start observations separate when a run never starts", () => {
+    const snapshot = dashboardFixture().projects[0];
+    const run = testRunFixture({ phase: "failed", startedAt: null, exitCode: null });
+    run.source.attribution = "changed";
+    run.source.processOutcome = null;
+    run.source.preflight = { observedAt: run.finishedAt!, head: "other-head", branch: "main", dirty: false,
+      statusDigest: "clean", statusEntries: 0, complete: true, errorCode: null };
+    snapshot.testRuns = [run];
+    const row = testResults([snapshot])[0];
+    expect(row).toMatchObject({ result: "failed", preflightHead: "other-head", freshness: "older", reasons: ["head_changed", "source_changed"] });
+    expect(row.run.worktreeHead).not.toBe(row.preflightHead);
+  });
+  it("does not describe cancelled pre-start or legacy runs as pending forever", () => {
+    const snapshot = dashboardFixture().projects[0];
+    const cancelled = testRunFixture({ id: "cancelled", phase: "cancelled", startedAt: null, source: { ...testRunFixture().source, attribution: "pending", processOutcome: "cancelled" } });
+    const legacy = testRunFixture({ id: "legacy", source: { ...testRunFixture().source, attribution: "legacy_unknown", processOutcome: null } });
+    snapshot.testRuns = [cancelled, legacy];
+    const rows = testResults([snapshot]);
+    expect(rows.find((row) => row.run.id === "cancelled")).toMatchObject({ result: "cancelled", freshness: "unknown", sourceAtRun: "not_started", reasons: ["not_started"] });
+    expect(rows.find((row) => row.run.id === "legacy")).toMatchObject({ result: "passed", freshness: "unknown", sourceAtRun: "legacy_unknown" });
+    expect(rows.find((row) => row.run.id === "legacy")!.reasons).toContain("legacy_source");
+  });
+  it("shows both known local changes and missing current metadata without certifying freshness", () => {
+    const snapshot = dashboardFixture().projects[0];
+    const run = testRunFixture();
+    run.source.attribution = "observed_match";
+    const observation = { observedAt: run.finishedAt!, head: snapshot.worktrees[0].head, branch: "main", dirty: false,
+      statusDigest: "clean", statusEntries: 0, complete: true, errorCode: null };
+    run.source.enqueue = { ...observation };
+    run.source.preflight = { ...observation };
+    run.source.finish = { ...observation };
+    snapshot.worktrees[0].dirty = true;
+    delete snapshot.metadata;
+    snapshot.testRuns = [run];
+    expect(testResults([snapshot])[0]).toMatchObject({ freshness: "unknown", reasons: ["current_dirty", "metadata_missing"] });
+    snapshot.worktrees = [];
+    expect(testResults([snapshot])[0].reasons).toContain("missing_worktree");
   });
 });
