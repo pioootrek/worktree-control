@@ -26,6 +26,11 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "PR #58 implements foundation plus compact Tests/Resources/Logs adoption. Managed check/build passed ce44a32; isolated pilot visual acceptance recorded in foundation-progress.md. Candidate19dd38d fixes UI test selectors; second suite, n8n review and CI pending. Remaining Knowledge document/title/search work keeps this record open."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-28",
+      "text": "Candidate c55aafb passes managed check (486 unit +7 resource), build, and 88/88 UI tests. Corrected actual 768px expanded-path overflow; source-scope focus warning fixed. n8n review target all accepted once. Pilot running on integration checkout, claim released. Await GitHub CI and review dispositions before merge."
     }
   ],
   "priority": "now",

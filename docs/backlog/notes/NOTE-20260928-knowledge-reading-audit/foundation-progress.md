@@ -4,12 +4,24 @@ Owner authorized implementation on 2026-09-28. Code was delegated to three Sol
 agents on separate worktrees; root integrated and ran serialized verification.
 UI standards are now in `docs/ui-standards.md`.
 
-PR: https://github.com/pioootrek/worktree-switcher/pull/58 (draft, not merged).
-Application source captured: `ce44a32`; candidate `19dd38d` adds test corrections
-only. Managed check passed with lint, typecheck, 486 unit tests and 7 resource
-tests. Managed build passed. First UI run: 70 passed, 18 failed; trace review
-identified stale selectors/expectations, now corrected. Second UI run pending.
-External n8n review and final CI acceptance remain pending.
+PR: https://github.com/pioootrek/worktree-switcher/pull/58 (ready for review,
+not merged). n8n accepted one review request for target `all` on 2026-09-28.
+
+Application source captured visually: `ce44a32`. Final candidate `c55aafb`
+also fixes the 768px expanded-path overflow and scopes focus by project/tab/id.
+Its managed verification passed with observed source match:
+
+- `pnpm check`: lint without warnings, typecheck, 486 unit tests, 7 resource tests;
+  run `aa4bef9e-841c-4da0-94ed-a5c7e62ca3fb`.
+- `pnpm build`: run `f29cf474-098a-4999-a552-7219122a6a5a`.
+- `pnpm test:ui`: 88/88 passed, run `8f2ffca7-d19e-4fca-93ae-99a8c916ced7`.
+
+Earlier UI iterations were 70/88 then 87/88; obsolete test selectors were
+corrected and the remaining actual 768px overflow was fixed. The existing
+viewport bound assertion was preserved and passed on the final source.
+External review dispositions and GitHub CI acceptance remain pending.
+The isolated pilot remains running on the integration worktree; the agent
+claim was released after acceptance.
 
 ## Implemented scope
 
