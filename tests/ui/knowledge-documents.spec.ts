@@ -21,6 +21,8 @@ const files = [
 
 async function mountDocuments(page: Page) {
   await page.addInitScript(() => sessionStorage.setItem("worktree-switcher-knowledge-token", "knowledge-fixture"));
+  const data = dashboardFixture(); data.projects = [];
+  const fixture = await mountDashboard(page, data);
   const requests: Array<{ operation: string; input: Record<string, unknown>; token: string }> = [];
   let denied = false;
   await page.route("**/api/identity", route => route.fulfill({ json: { principal: { id: "owner", kind: "owner" }, credential: { kind: "owner_session" } } }));
@@ -42,8 +44,6 @@ async function mountDocuments(page: Page) {
     }
     return route.fulfill({ status: 404, json: { code: "not_found", error: "Not found" } });
   });
-  const data = dashboardFixture(); data.projects = [];
-  const fixture = await mountDashboard(page, data);
   const navigation = page.getByRole("button", { name: "Knowledge", exact: true });
   if (!await navigation.isVisible()) await page.getByRole("button", { name: "Toggle navigation" }).click();
   await navigation.click();
