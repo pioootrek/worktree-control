@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { translate } from "../../src/i18n/messages";
 import { dashboardFixture, mountDashboard } from "./dashboard-fixture";
 
 async function selectAllProjects(page: import("@playwright/test").Page) {
@@ -47,7 +48,7 @@ for (const width of [320, 390]) {
     await expect(row).toContainText(first.project.name);
     await expect(row).toContainText(first.worktrees[0].branch);
     await expect(row).toContainText("Stopped");
-    await expect(row).toContainText("Dirty");
+    await expect(row).toContainText(translate("en", "project.dirty"));
     await expect(action).toBeVisible();
     const bounds = await action.boundingBox();
     expect(bounds).not.toBeNull();
