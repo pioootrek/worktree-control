@@ -19,8 +19,9 @@ import {
 import type { KnowledgeProject, KnowledgeProjectRuntimeLink } from "@/server/modules/identity";
 import type { KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
 import { readingFromImport } from "./knowledge-memory-reading";
+import { compactPreview, importedRecordId, importedTaskPreview, importedTaskTopic, verifiedThreadSourceSql } from "./knowledge-thread-presentation";
 
-type ThreadRow = { id: string; project_id: string; title: string; body: string; revision: number; created_by: string; created_at: string; updated_at: string };
+type ThreadRow = { id: string; project_id: string; title: string; body: string; revision: number; created_by: string; created_at: string; updated_at: string; display_title?: string | null; source_preview?: string | null; reply_count?: number };
 type ReplyRow = { id: string; project_id: string; thread_id: string; body: string; revision: number; created_by: string; created_at: string; updated_at: string; import_source_id?: string | null; source_author?: unknown; source_date?: unknown };
 type TaskRow = { id: string; project_id: string; title: string; description: string; status: KnowledgeTask["status"]; priority: KnowledgeTask["priority"]; revision: number; created_by: string; created_at: string; updated_at: string };
 type HistoryRow = { id: number; project_id: string; record_kind: KnowledgeHistoryEntry["recordKind"]; record_id: string; operation: KnowledgeHistoryEntry["operation"]; previous_json: string | null; principal_id: string; authentication_method: KnowledgeHistoryEntry["authenticationMethod"]; revision: number; created_at: string };
@@ -31,7 +32,9 @@ const mapMemory = (row: MemoryRow): KnowledgeMemory => ({ id: row.id, projectId:
 
 type IdempotencyRow = { request_hash: string; result_json: string };
 
-const mapThread = (row: ThreadRow): KnowledgeThread => ({ id: row.id, projectId: row.project_id, title: row.title, body: row.body, revision: row.revision, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at });
+const mapThread = (row: ThreadRow): KnowledgeThread => ({ id: row.id, projectId: row.project_id, title: row.title, body: row.body, revision: row.revision, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at,
+  ...(row.reply_count === undefined ? {} : { presentation: { displayTitle: row.display_title ?? row.title,
+    preview: row.display_title ? row.source_preview ?? "" : compactPreview(row.body), imported: Boolean(row.display_title), replyCount: row.reply_count } }) });
 function historicalDate(value: unknown): Pick<NonNullable<KnowledgeReply["historicalImport"]>, "sourceDate" | "sourceDateStatus"> {
   if (value === null || value === undefined || value === "") return { sourceDate: null, sourceDateStatus: "missing" };
   const sourceDate = typeof value === "string" ? value : JSON.stringify(value);
@@ -51,6 +54,9 @@ const mapTask = (row: TaskRow): KnowledgeTask => ({ id: row.id, projectId: row.p
 export class KnowledgeQueries implements KnowledgeStore {
   constructor(private readonly database: Database.Database) {
     database.function("knowledge_fold", { deterministic: true }, value => String(value).normalize("NFC").toLowerCase());
+    database.function("knowledge_import_record_id", { deterministic: true }, importedRecordId);
+    database.function("knowledge_import_topic", { deterministic: true }, importedTaskTopic);
+    database.function("knowledge_import_preview", { deterministic: true }, importedTaskPreview);
   }
 
   saveAttachment(value: KnowledgeAttachment, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeAttachment> {
@@ -274,10 +280,23 @@ export class KnowledgeQueries implements KnowledgeStore {
   }
 
   listThreads(projectId: string, limit: number, offset: number, filters: KnowledgeFilters = {}): KnowledgePage<KnowledgeThread> {
-    return this.page((this.database.prepare("SELECT * FROM knowledge_threads WHERE project_id = ? AND instr(knowledge_fold(title), knowledge_fold(?)) > 0 ORDER BY updated_at DESC, id LIMIT ? OFFSET ?").all(projectId, filters.query ?? "", limit + 1, offset) as ThreadRow[]).map(mapThread), limit, offset);
+    const rows = this.database.prepare(`WITH verified AS (${verifiedThreadSourceSql(false)}), matched AS (
+      SELECT t.*, v.display_title, v.source_preview FROM knowledge_threads t
+      LEFT JOIN verified v ON v.thread_id=t.id WHERE t.project_id=@projectId
+        AND (instr(knowledge_fold(coalesce(v.display_title,t.title)),knowledge_fold(@query))>0
+          OR instr(knowledge_fold(t.title),knowledge_fold(@query))>0
+          OR instr(knowledge_fold(t.id),knowledge_fold(@query))>0))
+      SELECT matched.*, (SELECT count(*) FROM knowledge_replies r WHERE r.project_id=matched.project_id AND r.thread_id=matched.id) reply_count
+      FROM matched ORDER BY updated_at DESC,id LIMIT @limit OFFSET @offset`)
+      .all({ projectId, query: filters.query ?? "", limit: limit + 1, offset }) as ThreadRow[];
+    return this.page(rows.map(mapThread), limit, offset);
   }
   getThread(projectId: string, id: string): KnowledgeThread | null {
-    const row = this.database.prepare("SELECT * FROM knowledge_threads WHERE project_id = ? AND id = ?").get(projectId, id) as ThreadRow | undefined;
+    const row = this.database.prepare(`WITH verified AS (${verifiedThreadSourceSql(true)})
+      SELECT t.*,v.display_title,v.source_preview,
+        (SELECT count(*) FROM knowledge_replies r WHERE r.project_id=t.project_id AND r.thread_id=t.id) reply_count
+      FROM knowledge_threads t LEFT JOIN verified v ON v.thread_id=t.id WHERE t.project_id=@projectId AND t.id=@id`)
+      .get({ projectId, id }) as ThreadRow | undefined;
     return row ? mapThread(row) : null;
   }
   listReplies(projectId: string, threadId: string, limit: number, offset: number): KnowledgePage<KnowledgeReply> {

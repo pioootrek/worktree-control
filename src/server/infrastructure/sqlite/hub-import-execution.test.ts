@@ -10,6 +10,8 @@ import { IdentityService } from "@/server/modules/identity";
 import { AuthenticationService } from "@/server/modules/authentication";
 import { calculateHubImportPlanHash, executeHubImport, exportKnowledgeProject, importKnowledgeProject, KnowledgeService, type HubImportMapping, type HubImportPlan } from "@/server/modules/knowledge";
 import { SqliteStateStore } from "./sqlite-state-store";
+import { KnowledgeQueries } from "./knowledge-queries";
+import { verifiedThreadSourceSql } from "./knowledge-thread-presentation";
 
 const roots:string[]=[];
 afterEach(()=>roots.splice(0).forEach(root=>rmSync(root,{recursive:true,force:true})));
@@ -23,6 +25,75 @@ function fixture(){const root=mkdtempSync(join(tmpdir(),"hub-import-execution-")
 const execute=(store:SqliteStateStore,identity:IdentityService,owner:ReturnType<IdentityService["authenticateBearer"]>,input:Parameters<typeof executeHubImport>[3])=>executeHubImport(store,identity,owner,input,()=>NOW,plan=>plan);
 
 describe("K6b Hub import execution",()=>{
+  it("presents a verified historical topic without changing raw records, and searches it before paging",()=>{
+    const f=fixture(),sourcePath="docs/backlog/feature/A.json";
+    const task=mapping(sourcePath,"task","task",{id:"A",title:"ŁÓDŹ storage decision",problem:["Compare SQLite and PostgreSQL for the controller."]});
+    const comment=mapping(`${sourcePath}#notes/0`,"task_note","historical_comment",{id:"A:note:0",text:"Use one SQLite owner."});comment.legacyId="A:note:0";
+    execute(f.store,f.identity,f.owner,{plan:plan([task,comment]),targetProjectId:"topics",targetProjectName:"Topics"});
+    const imported=f.store.listThreads("topics",25,0).items[0]!;
+    expect(imported).toMatchObject({title:"Imported discussion: A",body:`Historical comments imported from ${sourcePath}`,
+      presentation:{displayTitle:"ŁÓDŹ storage decision",preview:"Compare SQLite and PostgreSQL for the controller.",imported:true,replyCount:1}});
+    expect(f.store.getThread("topics",imported.id)?.presentation).toEqual(imported.presentation);
+    const original=f.store.exportKnowledgeProject("topics")!;
+    expect(original.threads[0]).toMatchObject({title:"Imported discussion: A",body:`Historical comments imported from ${sourcePath}`});
+    expect(original.threads[0]).not.toHaveProperty("presentation");
+    const db=new Database(join(f.root,"state.sqlite3"));
+    new KnowledgeQueries(db);
+    const queryPlan=db.prepare(`EXPLAIN QUERY PLAN WITH verified AS (${verifiedThreadSourceSql(true)}) SELECT * FROM verified`)
+      .all({projectId:"topics",id:imported.id}) as Array<{detail:string}>;
+    expect(queryPlan.some(step=>step.detail.includes("sqlite_autoindex_knowledge_threads_1") && step.detail.includes("id=?"))).toBe(true);
+    expect(queryPlan.some(step=>step.detail.includes("knowledge_import_sources_project") && step.detail.includes("source_path=?"))).toBe(true);
+    expect(queryPlan.some(step=>step.detail.includes("knowledge_import_sources_project") && step.detail.includes("source_path>?") && step.detail.includes("source_path<?"))).toBe(true);
+    const native={id:"native-lookalike",projectId:"topics",title:"Imported discussion: A",body:`Historical comments imported from ${sourcePath}`,
+      revision:1,createdBy:"installation",createdAt:NOW,updatedAt:NOW};
+    f.store.createThread(native,{actor:f.owner,projectId:"topics",idempotencyKey:"native",requestHash:"a".repeat(64)});
+    expect(f.store.getThread("topics",native.id)?.presentation).toMatchObject({displayTitle:native.title,preview:native.body,imported:false,replyCount:0});
+    for(let index=0;index<30;index++) db.prepare("INSERT INTO knowledge_threads VALUES (?,?,?,?,1,?,?,?)")
+      .run(`extra-${index}`,"topics",`Other ${index}`,"Body","installation",NOW,"2026-09-16T10:00:00.000Z");
+    expect(f.store.listThreads("topics",25,0).items.map(thread=>thread.id)).not.toContain(imported.id);
+    const matching=(query:string)=>f.store.listThreads("topics",1,0,{query}).items.map(thread=>thread.id);
+    expect(matching("ło\u0301dz\u0301 STORAGE")).toEqual([imported.id]);
+    expect(matching(imported.id)).toEqual([imported.id]);
+    expect(f.store.listThreads("topics",25,0,{query:"Imported discussion: A"}).items.map(thread=>thread.id)).toContain(imported.id);
+    expect(matching("%_missing")).toEqual([]);
+    expect(f.store.listThreads("topics",25,0,{query:"controller"}).items).toEqual([]);
+    for(let index=1;index<=26;index++) db.prepare("INSERT INTO knowledge_replies VALUES (?,?,?,?,1,?,?,?)")
+      .run(`native-reply-${index}`,"topics",imported.id,`Reply ${index}`,"installation",NOW,NOW);
+    expect(f.store.getThread("topics",imported.id)?.presentation?.replyCount).toBe(27);
+    expect(f.store.listReplies("topics",imported.id,25,0).items).toHaveLength(25);
+    expect(f.store.getThread("other-project",imported.id)).toBeNull();
+    expect(f.store.listThreads("other-project",25,0,{query:"storage"}).items).toEqual([]);
+    db.close();f.store.close();
+  });
+
+  it("falls back when historical topic evidence is missing, stale, conflicting or edited",()=>{
+    const f=fixture(),sourcePath="docs/backlog/feature/A.json";
+    const task=mapping(sourcePath,"task","task",{id:"A",title:"Original decision",problem:["Compare storage choices."]});
+    const comment=mapping(`${sourcePath}#notes/0`,"task_note","historical_comment",{id:"A:note:0",text:"Historical context"});comment.legacyId="A:note:0";
+    execute(f.store,f.identity,f.owner,{plan:plan([task,comment]),targetProjectId:"fallback",targetProjectName:"Fallback"});
+    const thread=f.store.listThreads("fallback",25,0).items[0]!;
+    const db=new Database(join(f.root,"state.sqlite3"));
+    const expectRaw=()=>{const actual=f.store.getThread("fallback",thread.id)!;expect(actual.presentation).toMatchObject({displayTitle:actual.title,imported:false});};
+    const source=db.prepare("SELECT id FROM knowledge_import_sources WHERE project_id='fallback' AND target_kind='task'").get() as {id:string};
+    db.prepare("UPDATE knowledge_import_sources SET target_revision=NULL WHERE id=?").run(source.id);expectRaw();
+    db.prepare("UPDATE knowledge_import_sources SET target_revision=1 WHERE id=?").run(source.id);
+    db.prepare("UPDATE knowledge_import_sources SET original_payload_json='{' WHERE id=?").run(source.id);expectRaw();
+    db.prepare("UPDATE knowledge_import_sources SET original_payload_json=? WHERE id=?").run(JSON.stringify(task.originalPayload),source.id);
+    db.prepare("UPDATE knowledge_tasks SET revision=2,status='in_progress',description='Work has started' WHERE project_id='fallback'").run();
+    expect(f.store.getThread("fallback",thread.id)?.presentation).toMatchObject({displayTitle:"Original decision",imported:true});
+    db.prepare("UPDATE knowledge_tasks SET title='Changed decision',revision=3 WHERE project_id='fallback'").run();expectRaw();
+    db.prepare("UPDATE knowledge_tasks SET title='Original decision' WHERE project_id='fallback'").run();
+    db.prepare("UPDATE knowledge_import_sources SET source_commit=? WHERE project_id='fallback' AND target_kind='historical_comment'").run("e".repeat(40));expectRaw();
+    db.prepare("UPDATE knowledge_import_sources SET source_commit=? WHERE project_id='fallback' AND target_kind='historical_comment'").run("d".repeat(40));
+    db.prepare("UPDATE knowledge_import_sources SET source_path=? WHERE project_id='fallback' AND target_kind='historical_comment'").run(`${sourcePath}#notes/1`);expectRaw();
+    db.prepare("UPDATE knowledge_import_sources SET source_path=? WHERE project_id='fallback' AND target_kind='historical_comment'").run(`${sourcePath}#notes/0`);
+    db.prepare("UPDATE knowledge_relations SET type='relates_to' WHERE project_id='fallback'").run();expectRaw();
+    db.prepare("UPDATE knowledge_relations SET type='derived_from' WHERE project_id='fallback'").run();
+    db.prepare("UPDATE knowledge_threads SET title='Edited discussion' WHERE id=?").run(thread.id);expectRaw();
+    db.prepare("UPDATE knowledge_threads SET title=? ,body='Edited body' WHERE id=?").run(thread.title,thread.id);expectRaw();
+    db.close();f.store.close();
+  });
+
   it("preserves archived aliases, ordered completion summaries, follow-ups, and historical comment attribution",()=>{
     const f=fixture();
     const historical=mapping("docs/backlog/feature/A.json#notes/0","task_note","historical_comment",{id:"A:note:0",text:"Historical context",author:"Ada",date:"2026-09-13"});historical.legacyId="A:note:0";
