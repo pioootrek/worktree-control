@@ -729,7 +729,8 @@ for (const width of [390, 1440]) {
     const screen = page.locator("[data-tests-dashboard]");
     const entry = width < 1280 ? screen.locator("[data-test-result]") : screen.getByRole("tabpanel").locator("tbody tr");
     await expect(entry.getByText("At execution: Source matched at observation points", { exact: true })).toBeVisible();
-    await expect(entry.getByText("Now: Local changes", { exact: true })).toBeVisible();
+    await expect(entry).toContainText("Now: Local changes");
+    await expect(entry).toContainText("Local changes at last read");
     await expect(screen.getByRole("button", { name: /Possibly outdated/ })).toContainText("1");
     await screen.getByRole("button", { name: "Result: test · main" }).click();
     const drawer = page.getByRole("dialog");
