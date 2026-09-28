@@ -5,7 +5,8 @@
   "links": {
     "prs": [
       58,
-      59
+      59,
+      60
     ],
     "related_ids": [
       "NOTE-20260928-knowledge-reading-audit",
@@ -62,6 +63,16 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "Reader return follow-up delegated to Sol high on fix/knowledge-reader-return from b1ac6cb. Both Knowledge and Memory currently place the layout toggle inside scrolling content. Move controls outside the scroll region, preserve reading/list state, and cover long-content expand/restore and responsive transitions. Logout wording remains a separate observed issue."
+    },
+    {
+      "author": "human:pioootrek",
+      "date": "2026-09-28",
+      "text": "Also fix Sign out of knowledge: it misleadingly signs out of the entire Switcher with the installation token. Remove the duplicate content-toolbar action; make the real session scope clear."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-28",
+      "text": "Reader return fix PR #60 merged as 26ecb21. Managed check/build and 105 UI tests passed on 975e45b; GitHub Verify 36452700075 green. Real pilot before/after screenshots confirm visible clickable Show list while scrolled; mobile Back works without horizontal overflow. Kimi/Codex n8n reviews found no actionable issues; Claude hit session limit. See reader-return-followup.md. Separate scoped session action fix c803c50 is now in verification following explicit owner request."
     }
   ],
   "priority": "now",

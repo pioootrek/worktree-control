@@ -11,6 +11,7 @@
     "layout_owner_direction": "Owner authorized whole-layout rework and standards on 2026-09-28; implementation delegated to Sol on worktrees.",
     "owner_feedback": "owner-feedback.md",
     "owner_feedback_status": "Four owner-annotated screenshots identify unused memory space, dense discussion list, weak content hierarchy, marked project/tab navigation and misaligned backlog filters. Concrete layout solutions remain agent proposals.",
+    "reader_return_followup": "reader-return-followup.md",
     "reading_progress": "reading-progress.md",
     "reading_stage_plan": "reading-stage-plan.md",
     "related_ids": [
@@ -102,7 +103,11 @@
     "reading-screenshots/final-document-desktop-en-light.png",
     "reading-screenshots/final-document-short-en-light.png",
     "reading-screenshots/final-document-200pct-en-light.png",
-    "reading-progress.md"
+    "reading-progress.md",
+    "reader-return-followup.md",
+    "reader-return-screenshots/before.png",
+    "reader-return-screenshots/after-expanded.png",
+    "reader-return-screenshots/after-restored.png"
   ],
   "id": "NOTE-20260928-knowledge-reading-audit",
   "last_reviewed": "2026-09-28",

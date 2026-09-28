@@ -25,7 +25,11 @@ The frame has one navigation sidebar, one context header and a main work area.
 Show the current project scope and section once where they remain easy to find.
 Keep navigation labels visible in expanded mode. Preferences and administration
 belong in named menus; important errors, unsafe authentication mode and stale
-or unavailable data stay visible outside those menus. A green status must
+or unavailable data stay visible outside those menus. Session actions describe
+their actual scope: one global sign-out for a shared installation session; an
+independent Knowledge credential has a distinct disconnect action in Preferences,
+which preserves the runtime session. Keep these actions out of content toolbars.
+A green status must
 represent known state, not merely absence of a rendered error.
 
 Use three content patterns:
