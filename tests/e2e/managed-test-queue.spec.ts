@@ -1,14 +1,14 @@
 import { expect, test } from "@playwright/test";
 
 import { startControllerFixture } from "../support/controller-fixture";
-import { selectDashboardProject } from "../support/dashboard-actions";
+import { openDashboardSystemDialog, selectDashboardProject } from "../support/dashboard-actions";
 
 test("the real dashboard configures, queues, cancels, and retains managed test results", async ({ page }) => {
   const fixture = await startControllerFixture(2);
   try {
     const [a] = fixture.projects;
     await page.goto(fixture.accessUrl);
-    await page.getByRole("button", { name: "Open test queue settings" }).click();
+    await openDashboardSystemDialog(page, "Open test queue settings");
     const settings = page.getByRole("dialog");
     await settings.getByLabel("Maximum parallel tests").fill("1");
     await settings.getByRole("button", { name: "Save", exact: true }).click();
@@ -28,12 +28,16 @@ test("the real dashboard configures, queues, cancels, and retains managed test r
     await page.getByRole("navigation").getByRole("button", { name: "Tests", exact: true }).click();
     await launch("test:hold");
     await expect(screen.locator("tbody tr").filter({ hasText: "test:hold" }).first()).toContainText("Running");
-    await expect(page.getByRole("button", { name: "Open test queue settings" })).toContainText("1/1");
+    await page.getByRole("button", { name: "System", exact: true }).click();
+    await expect(page.getByRole("menuitem").filter({ hasText: "Open test queue settings" })).toContainText("1/1");
+    await page.keyboard.press("Escape");
 
     await selectDashboardProject(page, "project-b");
     await launch("test:hold");
     await expect(screen.getByText("Queue position: 1", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Open test queue settings" })).toContainText("+1");
+    await page.getByRole("button", { name: "System", exact: true }).click();
+    await expect(page.getByRole("menuitem").filter({ hasText: "Open test queue settings" })).toContainText("+1");
+    await page.keyboard.press("Escape");
     await screen.getByRole("button", { name: "Cancel test", exact: true }).click();
     await expect(screen.getByRole("button", { name: "Cancel test", exact: true })).toHaveCount(0);
     await screen.getByRole("tab", { name: "History", exact: true }).click();
@@ -48,7 +52,9 @@ test("the real dashboard configures, queues, cancels, and retains managed test r
     await expect(details.locator("pre").first()).toContainText("verification project-a:main hold");
     await expect(details).toContainText("Source matched at observation points");
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("button", { name: "Open test queue settings" })).toContainText("0/1");
+    await page.getByRole("button", { name: "System", exact: true }).click();
+    await expect(page.getByRole("menuitem").filter({ hasText: "Open test queue settings" })).toContainText("0/1");
+    await page.keyboard.press("Escape");
 
     await launch("test:fail");
     const failed = screen.getByRole("tabpanel").locator("tbody tr").filter({ hasText: "test:fail" });
