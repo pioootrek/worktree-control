@@ -15,6 +15,7 @@ const memories = [
 async function mountReading(page: Page) {
   await page.addInitScript(() => sessionStorage.setItem("worktree-switcher-knowledge-token", "reading-fixture"));
   const data = dashboardFixture(); data.projects = [];
+  const fixture = await mountDashboard(page, data);
   await page.route("**/api/identity", route => route.fulfill({ json: { principal: { id: "owner", kind: "owner" }, credential: { kind: "owner_session" } } }));
   await page.route("**/api/knowledge", route => {
     const { operation, input } = route.request().postDataJSON();
@@ -29,7 +30,6 @@ async function mountReading(page: Page) {
     if (operation === "attachments" || operation === "history") return route.fulfill({ json: empty });
     return route.fulfill({ status: 400, json: { code: "invalid_input", error: `Unexpected ${operation}` } });
   });
-  const fixture = await mountDashboard(page, data);
   const navigation = page.getByRole("button", { name: "Knowledge", exact: true });
   if (!await navigation.isVisible()) await page.getByRole("button", { name: "Toggle navigation" }).click();
   await navigation.click();
