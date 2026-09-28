@@ -1,6 +1,7 @@
 import { expect, test, type Route } from "@playwright/test";
 import { translate } from "../../src/i18n/messages";
 import { dashboardFixture, mountDashboard, testRunFixture } from "./dashboard-fixture";
+import { openSystemDialog, selectLanguage } from "./shell-actions";
 
 test("overview metrics lead to combined filters and persistent size sorting", async ({ page }) => {
   const data = dashboardFixture();
@@ -12,6 +13,7 @@ test("overview metrics lead to combined filters and persistent size sorting", as
   const { requests, errors } = await mountDashboard(page, data);
   const overview = page.locator("[data-worktree-overview]");
   await expect(overview.getByText("No server is running", { exact: true })).toBeVisible();
+  await overview.locator("details").last().locator("summary").click();
   await expect(overview.getByText("Measured 2 of 3 worktrees", { exact: true })).toBeVisible();
   await overview.getByRole("button", { name: /Disk usage/ }).click();
   await expect(page.locator("tbody tr").first()).toContainText("done");
@@ -143,7 +145,7 @@ for (const locale of ["en", "pl"] as const) {
     const { requests, errors } = await mountDashboard(page);
     const t = (key: Parameters<typeof translate>[1]) => translate(locale, key);
     await expect(page.locator('[data-project-id="web"]').getByText("Fixture Web", { exact: true })).toBeVisible();
-    if (locale === "pl") await page.getByRole("button", { name: translate("en", "language.label") }).click();
+    if (locale === "pl") await selectLanguage(page);
     await expect(page.locator("html")).toHaveAttribute("lang", locale);
     await expect.poll(() => page.evaluate(() => (window as unknown as { fixtureEvents: { active: number } }).fixtureEvents.active)).toBe(1);
     await expect.poll(() => page.evaluate(() => {
@@ -163,7 +165,7 @@ for (const locale of ["en", "pl"] as const) {
     await expect(notice).toContainText(translate(locale, "metadata.refreshed", { name: "Fixture Web" }));
     await expect(page.getByRole("button", { name: t("row.start"), exact: true })).toBeVisible();
 
-    await page.getByRole("button", { name: t("capacity.openSettings") }).click();
+    await openSystemDialog(page, "capacity.openSettings", locale);
     let dialog = page.getByRole("dialog");
     await dialog.getByRole("switch", { name: t("capacity.enabled"), exact: true }).click();
     await dialog.getByLabel(t("capacity.limit"), { exact: true }).fill("3");
@@ -171,12 +173,13 @@ for (const locale of ["en", "pl"] as const) {
     await expect(dialog).toBeHidden();
     expect(requests.at(-1)).toEqual({ path: "/api/settings/capacity", method: "POST", body: { enabled: true, limit: 3 } });
 
-    await page.getByRole("button", { name: t("tests.openSettings") }).click();
+    await openSystemDialog(page, "tests.openSettings", locale);
     await dialog.getByLabel(t("tests.limit"), { exact: true }).fill("2");
     await dialog.getByRole("button", { name: t("common.save"), exact: true }).click();
     await expect(dialog).toBeHidden();
     expect(requests.at(-1)).toEqual({ path: "/api/settings/test-queue", method: "POST", body: { limit: 2 } });
 
+    await page.getByText(t("worktreeLayout.projectSettings"), { exact: true }).click();
     await page.getByRole("button", { name: t("environment.settings"), exact: true }).click();
     await dialog.getByLabel(t("environment.variables"), { exact: true }).fill("APP_FEATURE=enabled");
     await dialog.getByRole("button", { name: t("common.save"), exact: true }).click();
@@ -197,7 +200,7 @@ for (const locale of ["en", "pl"] as const) {
     await expect(dialog.getByRole("button", { name: t("common.save"), exact: true })).toBeDisabled();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("button", { name: t("tls.settings"), exact: true })).toBeFocused();
-    await page.getByRole("button", { name: translate(locale, "row.more", { branch: "main" }), exact: true }).click();
+    await page.getByRole("button", { name: translate(locale, "worktreeLayout.moreForProject", { branch: "main", project: "Fixture Web" }), exact: true }).click();
     await page.getByRole("menuitem", { name: t("row.stop"), exact: true }).click();
     await expect(page.getByRole("button", { name: t("row.start"), exact: true })).toBeVisible();
 
@@ -213,14 +216,14 @@ for (const locale of ["en", "pl"] as const) {
     expect(requests.at(-1)).toEqual({ path: "/api/test-runs/run-1/cancel", method: "POST", body: {} });
     await page.keyboard.press("Escape");
 
-    await page.getByRole("button", { name: t("mcp.openStatus") }).click();
+    await openSystemDialog(page, "mcp.openStatus", locale);
     await expect(dialog.getByRole("heading", { name: t("mcp.title") })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
     await page.getByRole("navigation").getByRole("button", { name: t("dashboard.navWorktrees"), exact: true }).click();
     await page.screenshot({ path: test.info().outputPath("dashboard-desktop.png"), fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(page.getByRole("button", { name: t("add.trigger"), exact: true })).toBeVisible();
+    await page.getByRole("combobox", { name: t("projectSwitcher.label") }).click();
     await page.getByRole("button", { name: t("add.trigger"), exact: true }).click();
     dialog = page.getByRole("dialog");
     await expect(dialog.getByLabel(t("add.name"), { exact: true })).toBeVisible();
@@ -229,6 +232,7 @@ for (const locale of ["en", "pl"] as const) {
     await expect.poll(() => page.evaluate(() => (window as unknown as { fixtureEvents: { active: number } }).fixtureEvents.active)).toBe(1);
     await page.screenshot({ path: test.info().outputPath("dashboard-mobile.png"), fullPage: true });
 
+    await page.getByText(t("worktreeLayout.projectSettings"), { exact: true }).click();
     await page.getByRole("button", { name: t("project.remove"), exact: true }).click();
     dialog = page.getByRole("alertdialog");
     await expect(dialog.getByRole("heading", { name: translate(locale, "project.removeTitle", { name: "Fixture Web" }) })).toBeVisible();
@@ -279,6 +283,7 @@ test("a failed refresh after project removal does not leave the stale card disab
     failDashboardRefreshAfterProjectRemoval: true,
   });
 
+  await page.getByText(translate("en", "worktreeLayout.projectSettings"), { exact: true }).click();
   await page.getByRole("button", { name: translate("en", "project.remove"), exact: true }).click();
   await page.getByRole("alertdialog").getByRole("button", {
     name: translate("en", "project.confirmRemove"),
@@ -337,8 +342,9 @@ test("row actions target the clicked worktree and confirm switching the running 
   data.projects[0].worktrees.push({ ...initial, path: "/fixture/alternate", branch: "feature/alternate" });
   const { requests, errors } = await mountDashboard(page, data);
   const alternate = page.locator("tbody tr").filter({ hasText: "feature/alternate" });
-  const main = page.locator("tbody tr").filter({ has: page.getByText("main", { exact: true }) });
+  const main = page.locator("[data-worktree-row]").filter({ has: page.getByRole("button", { name: "Actions for main in Fixture Web", exact: true }) });
   await expect(page.locator("[data-operation-target]")).toHaveCount(0);
+  await expect(alternate.getByRole("button", { name: "Start", exact: true })).toHaveAccessibleDescription("Project Fixture Web, worktree feature/alternate");
   await alternate.getByRole("button", { name: "Start", exact: true }).click();
   expect(requests.at(-1)?.body).toEqual({ operation: "start", worktreePath: "/fixture/alternate" });
   await expect(alternate.getByRole("button", { name: "Open", exact: true })).toBeVisible();
@@ -350,21 +356,25 @@ test("row actions target the clicked worktree and confirm switching the running 
   await expect(dialog).toContainText("feature/alternate");
   await expect(dialog).toContainText("main");
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(main.getByRole("button", { name: "Switch here", exact: true })).toBeFocused();
   expect(requests).toHaveLength(1);
   await main.getByRole("button", { name: "Switch here", exact: true }).click();
   await dialog.getByRole("button", { name: "Switch here", exact: true }).click();
   expect(requests.at(-1)?.body).toEqual({ operation: "switch", worktreePath: "/fixture/web" });
-  await main.getByRole("button", { name: "Actions for main", exact: true }).click();
+  await expect(main.locator(":focus")).toHaveCount(1);
+  await main.getByRole("button", { name: "Actions for main in Fixture Web", exact: true }).click();
   await page.getByRole("menuitem", { name: "Restart", exact: true }).click();
   expect(requests.at(-1)?.body).toEqual({ operation: "restart", worktreePath: "/fixture/web" });
-  await main.getByRole("button", { name: "Actions for main", exact: true }).click();
+  await main.getByRole("button", { name: "Actions for main in Fixture Web", exact: true }).click();
   await page.getByRole("menuitem", { name: "Stop", exact: true }).click();
   expect(requests.at(-1)?.body).toEqual({ operation: "stop", worktreePath: "/fixture/web" });
   await expect(main.getByRole("button", { name: "Start", exact: true })).toBeEnabled();
-  await alternate.getByRole("button", { name: "Actions for feature/alternate", exact: true }).click();
+  const alternateMenu = alternate.getByRole("button", { name: "Actions for feature/alternate in Fixture Web", exact: true });
+  await alternateMenu.click();
   await page.getByRole("menuitem", { name: "Details", exact: true }).click();
   await expect(page.getByRole("dialog")).toContainText("/fixture/alternate");
   await page.keyboard.press("Escape");
+  await expect(alternateMenu).toBeFocused();
   expect(errors).toEqual([]);
 });
 
@@ -378,11 +388,19 @@ for (const state of ["reserved", "starting", "prunable"] as const) {
     const { requests, errors } = await mountDashboard(page, data);
     const row = page.locator("tbody tr");
     await expect(row.getByRole("button", { name: state === "starting" ? "In progress" : "Start", exact: true })).toBeDisabled();
-    await row.getByRole("button", { name: "Actions for main", exact: true }).click();
+    const rowMenu = row.getByRole("button", { name: "Actions for main in Fixture Web", exact: true });
+    await rowMenu.click();
     await expect(page.getByRole("menuitem", { name: "Restart", exact: true })).toHaveCount(0);
     await page.getByRole("menuitem", { name: "Details", exact: true }).click();
     await expect(page.getByRole("dialog")).toContainText("/fixture/web");
     await page.keyboard.press("Escape");
+    await expect(rowMenu).toBeFocused();
+    if (state === "reserved") {
+      await rowMenu.click();
+      await page.getByRole("menuitem", { name: "Force release", exact: true }).click();
+      await page.getByRole("alertdialog").getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(rowMenu).toBeFocused();
+    }
     expect(requests).toEqual([]);
     expect(errors).toEqual([]);
   });
@@ -472,10 +490,14 @@ for (const kind of ["bootstrap", "live"] as const) {
         "changed", { epoch: "fixture", revision, kinds: [kind === "bootstrap" ? "topology" : "controller"], projectIds: [], allProjects: true },
       );
     }, { kind, revision: ++revision });
-    const capacity = page.getByRole("button", { name: "Open server capacity" });
+    const expectCapacity = async (usage: string) => {
+      await page.getByRole("button", { name: "System", exact: true }).click();
+      await expect(page.getByRole("menuitem").filter({ hasText: "Open server capacity" })).toContainText(usage);
+      await page.keyboard.press("Escape");
+    };
     await refresh();
     // The capacity change confirms that React applied the refresh response.
-    await expect(capacity).toContainText("0/3");
+    await expectCapacity("0/3");
     await expect(operationError).toBeVisible();
 
     status = 503;
@@ -484,7 +506,7 @@ for (const kind of ["bootstrap", "live"] as const) {
     await expect(refreshError).toBeVisible();
     status = 200; limit = 4;
     await refresh();
-    await expect(capacity).toContainText("0/4");
+    await expectCapacity("0/4");
     await expect(refreshError).toBeHidden();
     await expect(operationError).toBeVisible();
 
@@ -527,10 +549,12 @@ for (const width of [390, 768, 1440]) {
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toBeHidden();
     await expect(menu).toBeFocused();
-    const path = page.locator('[data-slot="card-description"]');
+    await page.getByText("Project settings", { exact: true }).click();
+    const path = page.getByText("Project directory: /home/example/development/a-very-long-repository-directory-name", { exact: true });
+    await expect(path).toBeVisible();
     const pathBox = await path.boundingBox();
     expect(pathBox!.x + pathBox!.width).toBeLessThanOrEqual(width - 16);
-    await page.getByRole("button", { name: translate("en", "language.label") }).click();
+    await selectLanguage(page);
     await expect(page.locator("html")).toHaveAttribute("lang", "pl");
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     await page.screenshot({ path: `test-results/dashboard-${width}.png`, fullPage: true });
@@ -603,7 +627,7 @@ for (const width of [390, 1440]) {
     await expect(overview.getByRole("button", { name: /^Servers/ })).toContainText("1");
     await expect(overview.locator("tbody tr")).toHaveCount(2);
     const apiRow = overview.locator("tbody tr").filter({ hasText: "Fixture API" });
-    await apiRow.getByRole("button", { name: "Actions for main", exact: true }).click();
+    await apiRow.getByRole("button", { name: "Actions for main in Fixture API", exact: true }).click();
     await page.getByRole("menuitem", { name: "Restart", exact: true }).click();
     expect(apiRequests).toEqual([{ operation: "restart", worktreePath: "/fixture/web" }]);
     expect(requests).toEqual([]);
@@ -622,6 +646,7 @@ for (const width of [390, 1440]) {
     if (width < 768) await page.getByRole("button", { name: "Toggle navigation", exact: true }).click();
     await page.getByRole("navigation").getByRole("button", { name: "Tests", exact: true }).click();
     await expect(page.locator("[data-tests-dashboard]")).toBeVisible();
+    if (width < 768) await page.locator("[data-tests-dashboard]").getByRole("button", { name: "Filters", exact: true }).click();
     await expect(page.locator("[data-tests-dashboard]").getByRole("combobox", { name: "Project", exact: true })).toBeVisible();
     await picker.click();
     await page.getByRole("option", { name: /Fixture API/ }).click();
@@ -663,12 +688,15 @@ for (const width of [390, 1440]) {
     const drawer = page.getByRole("dialog");
     await expect(drawer).toContainText("Passed");
     await expect(drawer).toContainText("Source unverified");
+    await expect(drawer).toContainText("At execution:");
+    await expect(drawer).toContainText("Now: Unknown");
     await expect(drawer).toContainText("fixture result output");
     await page.screenshot({ path: test.info().outputPath("test-details.png"), animations: "disabled" });
     await page.keyboard.press("Escape");
     await expect(drawer).toBeHidden();
     await expect(details).toBeFocused();
     await screen.getByRole("searchbox", { name: "Search runs", exact: true }).fill("");
+    if (width < 768) await screen.getByRole("button", { name: /^Filters/ }).click();
     await screen.getByRole("combobox", { name: "Command result", exact: true }).click();
     await page.getByRole("option", { name: "Failed", exact: true }).click();
     await expect(panel).toContainText("No runs match these filters.");
@@ -676,6 +704,38 @@ for (const width of [390, 1440]) {
     await page.getByRole("option", { name: "All", exact: true }).click();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     await page.screenshot({ path: test.info().outputPath("tests-dashboard.png"), fullPage: true, animations: "disabled" });
+    expect(requests).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+}
+
+for (const width of [390, 1440]) {
+  test(`tests dashboard names known current local changes without treating a run as current at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    const data = dashboardFixture();
+    const snapshot = data.projects[0];
+    const run = testRunFixture();
+    const cleanObservation = {
+      observedAt: run.finishedAt!, head: snapshot.worktrees[0].head, branch: "main", dirty: false,
+      statusDigest: "clean", statusEntries: 0, complete: true, errorCode: null,
+    };
+    run.source = { ...run.source, enqueue: cleanObservation, preflight: cleanObservation, finish: cleanObservation,
+      queueComparison: "match", executionComparison: "match", attribution: "observed_match", reasonCodes: [] };
+    snapshot.worktrees[0].dirty = true;
+    snapshot.testRuns = [run];
+    const { requests, errors } = await mountDashboard(page, data);
+    if (width < 768) await page.getByRole("button", { name: "Toggle navigation", exact: true }).click();
+    await page.getByRole("navigation").getByRole("button", { name: "Tests", exact: true }).click();
+    const screen = page.locator("[data-tests-dashboard]");
+    const entry = width < 1280 ? screen.locator("[data-test-result]") : screen.getByRole("tabpanel").locator("tbody tr");
+    await expect(entry.getByText("At execution: Source matched at observation points", { exact: true })).toBeVisible();
+    await expect(entry.getByText("Now: Local changes", { exact: true })).toBeVisible();
+    await expect(screen.getByRole("button", { name: /Possibly outdated/ })).toContainText("1");
+    await screen.getByRole("button", { name: "Result: test · main" }).click();
+    const drawer = page.getByRole("dialog");
+    await expect(drawer).toContainText("Now: Local changes");
+    await expect(drawer).toContainText("The latest Git read found local changes in this worktree. The test result is not confirmed current.");
+    await expect(drawer).not.toContainText("Now: Matches current commit");
     expect(requests).toEqual([]);
     expect(errors).toEqual([]);
   });

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { dashboardFixture, mountDashboard } from "./dashboard-fixture";
+import { selectLanguage } from "./shell-actions";
 
 function fixture() {
   const data = dashboardFixture();
@@ -31,6 +32,11 @@ for (const width of [390, 1440]) {
     const panel = screen.getByRole("tabpanel");
     await expect(panel.locator("tbody tr")).toHaveCount(10);
     await expect(panel.locator("tbody tr").first()).toContainText("Fixture API");
+    if (width === 390) {
+      await expect(panel.locator("[data-resource-row]").first()).toContainText("Fixture API");
+      await expect(panel.locator("[data-resource-row]").first().getByRole("button", { name: /Resources:/ })).toBeVisible();
+      await expect(screen.getByRole("button", { name: "Filters", exact: true })).toBeVisible();
+    }
     const pagination = screen.getByRole("navigation", { name: "Resource pages" });
     await pagination.getByRole("button", { name: "Next", exact: true }).click();
     await expect(panel.locator("tbody tr")).toHaveCount(3);
@@ -48,7 +54,7 @@ for (const width of [390, 1440]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     await page.screenshot({ path: test.info().outputPath("resources.png"), fullPage: true, animations: "disabled" });
     if (width === 390) {
-      await page.getByRole("button", { name: "Switch language to Polish", exact: true }).click();
+      await selectLanguage(page);
       await expect(screen.getByRole("tab", { name: /^Dysk/ })).toBeVisible();
       await expect(screen.getByRole("searchbox", { name: "Szukaj zasobów" })).toBeVisible();
     }
@@ -97,4 +103,17 @@ test("resource details keep cleanup on the chosen project and block active workt
   await expect(drawer).toBeHidden();
   await expect(target).toBeFocused();
   expect(errors).toEqual([]);
+});
+
+test("a single storage sample shows its values and a visible chart point", async ({ page }) => {
+  const data = fixture();
+  data.projects[0].storage[0].history = [{ measuredAt: "2026-09-13T12:00:00Z", totalBytes: 1024 ** 3, nextBytes: 256 * 1024 ** 2, nextCacheBytes: 0, nodeModulesBytes: 0 }];
+  await mountDashboard(page, data);
+  await page.getByRole("navigation").getByRole("button", { name: "Resources" }).click();
+  await page.getByRole("searchbox", { name: "Search resources" }).fill("worktree-0");
+  await page.getByRole("button", { name: "Resources: Fixture Web · feature-0" }).click();
+  const drawer = page.getByRole("dialog");
+  await expect(drawer).toContainText("First measurement; the trend will appear after another sample.");
+  await expect(drawer.locator("svg[role=img] circle")).toHaveCount(2);
+  await expect(drawer.locator(".sr-only li")).toContainText("Total 1.0 GiB, .next 256 MiB");
 });

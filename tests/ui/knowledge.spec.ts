@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { dashboardFixture, mountDashboard } from "./dashboard-fixture";
+import { selectLanguage } from "./shell-actions";
 
 async function mountKnowledge(page: Page) {
   await page.addInitScript(() => sessionStorage.setItem("worktree-switcher-knowledge-token", "knowledge-fixture"));
@@ -53,7 +54,9 @@ async function mountKnowledge(page: Page) {
     if (loseResponse) { loseResponse = false; return route.abort("failed"); }
     return route.fulfill({ json: { value, replayed: false } });
   });
-  await page.getByRole("button", { name: "Knowledge", exact: true }).click();
+  const knowledgeNavigation = page.getByRole("button", { name: "Knowledge", exact: true });
+  if (!await knowledgeNavigation.isVisible()) await page.getByRole("button", { name: "Toggle navigation" }).click();
+  await knowledgeNavigation.click();
   await expect(page.getByLabel("Knowledge project", { exact: true })).toHaveValue(project.id);
   return { ...fixture, records, replies, calls, setFailure: (value: boolean) => { failSave = value; }, loseNextResponse: () => { loseResponse = true; } };
 }
@@ -62,7 +65,115 @@ test("historical imported replies distinguish source attribution from the import
   const f=await mountKnowledge(page);f.records.push({id:"historical-thread",projectId:"knowledge-only",title:"Imported discussion",body:"Context",revision:1,createdBy:"owner"});f.replies.push({id:"historical-reply",threadId:"historical-thread",body:"Historical comment",revision:1,createdBy:"import-owner",historicalImport:{sourceAuthor:"Ada",sourceDate:"2026-09-13",sourceDateStatus:"valid"}});
   await page.getByRole("tab",{name:"Discussions",exact:true}).click();await page.getByRole("button",{name:"Refresh",exact:true}).click();await page.getByRole("link",{name:"Imported discussion",exact:true}).click();
   await expect(page.getByText("Author: import-owner · revision 1",{exact:true})).toBeVisible();await expect(page.getByText("Historical import source — author: Ada · date: 2026-09-13",{exact:true})).toBeVisible();
-  await page.getByRole("button",{name:"Switch language to Polish"}).click();await expect(page.getByText("Źródło historyczne importu — autor: Ada · data: 2026-09-13",{exact:true})).toBeVisible();
+  await selectLanguage(page);await expect(page.getByText("Źródło historyczne importu — autor: Ada · data: 2026-09-13",{exact:true})).toBeVisible();
+});
+
+test("knowledge uses the available list width, then gives discussions a readable, expandable reader", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const f = await mountKnowledge(page);
+  f.records.push({ id: "discussion-layout", projectId: "knowledge-only", title: "Storage tradeoffs", body: "Initial context", revision: 1, createdBy: "owner" });
+  f.replies.push({ id: "reply-layout", threadId: "discussion-layout", body: "Use a single SQLite owner", revision: 1, createdBy: "reviewer" });
+  await page.getByRole("tab", { name: "Discussions", exact: true }).click();
+  const layout = page.locator("[data-knowledge-layout]");
+  const list = page.locator("[data-knowledge-list]");
+  await expect(page.locator("[data-knowledge-detail]")).toBeHidden();
+  expect((await list.boundingBox())!.width).toBeGreaterThan((await layout.boundingBox())!.width * 0.9);
+  await page.getByRole("link", { name: "Storage tradeoffs", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Storage tradeoffs" })).toBeVisible();
+  const reader = page.locator("[data-knowledge-detail]");
+  expect((await reader.boundingBox())!.width).toBeGreaterThan((await list.boundingBox())!.width);
+  const order = await reader.locator("article h3, article [aria-label='Replies'], article details").evaluateAll(nodes => nodes.map(node => node.tagName.toLowerCase()));
+  expect(order.slice(0, 3)).toEqual(["h3", "section", "details"]);
+  await expect(reader.getByText("Use a single SQLite owner", { exact: true })).toBeVisible();
+  await reader.getByRole("button", { name: "Expand reader" }).click();
+  await expect(list).toBeHidden();
+  expect((await reader.boundingBox())!.width).toBeGreaterThan((await layout.boundingBox())!.width * 0.9);
+  await reader.getByRole("button", { name: "Show list" }).click();
+  await expect(list).toBeVisible();
+  expect(f.errors).toEqual([]);
+});
+
+test("mobile reader hides list controls and returns focus to the selected discussion", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const f = await mountKnowledge(page);
+  f.records.push({ id: "mobile-thread", projectId: "knowledge-only", title: "Mobile decision", body: "Readable context", revision: 1, createdBy: "owner" });
+  await page.getByRole("tab", { name: "Discussions", exact: true }).click();
+  await page.getByRole("link", { name: "Mobile decision", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Mobile decision" })).toBeFocused();
+  await expect(page.getByLabel("Search titles", { exact: true })).toBeHidden();
+  await page.getByRole("button", { name: "Back to list" }).click();
+  await expect(page.getByRole("link", { name: "Mobile decision", exact: true })).toBeFocused();
+  await expect(page.getByLabel("Search titles", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Mobile decision", exact: true }).click();
+  await page.goBack();
+  await expect(page.getByRole("link", { name: "Mobile decision", exact: true })).toBeFocused();
+  expect(f.errors).toEqual([]);
+});
+
+test("changing Knowledge tabs or projects does not return focus to an old mobile record", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const f = await mountKnowledge(page);
+  f.records.push({ id: "old-task", projectId: "knowledge-only", title: "Old task", description: "Context", status: "open", priority: "next", revision: 1, createdBy: "owner" });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("link", { name: "Old task", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Old task", exact: true })).toBeFocused();
+  await page.getByRole("tab", { name: "Discussions", exact: true }).click();
+  const backlogTab = page.getByRole("tab", { name: "Backlog", exact: true });
+  await backlogTab.click();
+  await expect(page.getByRole("link", { name: "Old task", exact: true })).toBeVisible();
+  await expect(backlogTab).toBeFocused();
+
+  const otherProject = { id: "knowledge-other", name: "Other knowledge", status: "active", writable: true, revision: 1, createdAt: "2026-01-01", updatedAt: "2026-01-01" };
+  await page.route("**/api/knowledge", route => {
+    const { operation, input } = route.request().postDataJSON();
+    if (operation === "projects") return route.fulfill({ json: { items: [{ ...otherProject, id: "knowledge-only", name: "Knowledge without server" }, otherProject], nextOffset: null } });
+    if (operation === "project" && input.projectId === otherProject.id) return route.fulfill({ json: otherProject });
+    return route.fallback();
+  });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("link", { name: "Old task", exact: true }).click();
+  const projectSelect = page.getByLabel("Knowledge project", { exact: true });
+  await projectSelect.selectOption(otherProject.id);
+  await projectSelect.focus();
+  await expect(projectSelect).toBeFocused();
+  await projectSelect.selectOption("knowledge-only");
+  await expect(page.getByRole("link", { name: "Old task", exact: true })).toBeVisible();
+  await expect(projectSelect).toBeFocused();
+  expect(f.errors).toEqual([]);
+});
+
+test("a failed selected-record read reports failure and can be retried", async ({ page }) => {
+  const f = await mountKnowledge(page);
+  f.records.push({ id: "unavailable-task", projectId: "knowledge-only", title: "Unavailable task", description: "Recovered body", status: "open", priority: "next", revision: 1, createdBy: "owner" });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  let failRead = true;
+  await page.route("**/api/knowledge", route => {
+    if (route.request().postDataJSON().operation === "task" && failRead) return route.fulfill({ status: 503, json: { code: "unavailable", error: "Unavailable" } });
+    return route.fallback();
+  });
+  await page.getByRole("link", { name: "Unavailable task", exact: true }).click();
+  const reader = page.locator("[data-knowledge-detail]");
+  await expect(reader.getByRole("alert")).toContainText("Could not read knowledge.");
+  await expect(reader.getByText("Loading knowledge…")).toHaveCount(0);
+  failRead = false;
+  await reader.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(reader.getByText("Recovered body", { exact: true })).toBeVisible();
+  expect(f.errors).toEqual([]);
+});
+
+test("reading a project without write access keeps mutation controls disabled", async ({ page }) => {
+  const f = await mountKnowledge(page);
+  f.records.push({ id: "shared-task", projectId: "knowledge-only", title: "Shared task", description: "Readable evidence", status: "open", priority: "next", revision: 1, createdBy: "owner" });
+  await page.route("**/api/knowledge", route => {
+    if (route.request().postDataJSON().operation === "project") return route.fulfill({ json: { id: "knowledge-only", name: "Knowledge without server", status: "active", writable: false, revision: 1, createdAt: "2026-01-01", updatedAt: "2026-01-01" } });
+    return route.fallback();
+  });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("link", { name: "Shared task", exact: true }).click();
+  await expect(page.getByText("Readable evidence", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add task", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Edit task", exact: true })).toBeDisabled();
+  expect(f.errors).toEqual([]);
 });
 
 test("knowledge without runtime: discussion, reply, task, filters and static deep link", async ({ page }) => {
@@ -122,7 +233,7 @@ test("conflict and failed save keep drafts after reload; knowledge events avoid 
 test("Polish and mobile knowledge navigation has labeled fields and no overflow", async ({ page }) => {
   await mountKnowledge(page);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "Switch language to Polish" }).click();
+  await selectLanguage(page);
   await expect(page.getByLabel("Projekt wiedzy", { exact: true })).toBeVisible();
   expect((await page.getByLabel("Projekt wiedzy", { exact: true }).boundingBox())!.width).toBeGreaterThan(280);
   expect((await page.getByLabel("Szukaj w tytułach", { exact: true }).boundingBox())!.width).toBeGreaterThan(280);
@@ -352,6 +463,65 @@ async function addMemory(page: Page, title: string, category = "decision") {
   await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible();
 }
 
+test("memory list fills the workspace and mobile detail returns to its entry", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const f = await mountMemory(page);
+  const layout = page.locator("[data-memory-layout]");
+  const list = page.locator("[data-memory-list]");
+  expect((await list.boundingBox())!.width).toBeGreaterThan((await layout.boundingBox())!.width * 0.9);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await addMemory(page, "Navigation note");
+  await expect(page.getByRole("heading", { name: "Navigation note" })).toBeFocused();
+  await expect(list).toBeHidden();
+  await expect(page.getByLabel("Search titles, content and memory", { exact: true })).toBeHidden();
+  await page.getByRole("button", { name: "Back to list", exact: true }).click();
+  await expect(page.getByRole("link", { name: "Navigation note", exact: true })).toBeFocused();
+  await expect(page.getByLabel("Search titles, content and memory", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Navigation note", exact: true }).click();
+  await page.goBack();
+  await expect(page.getByRole("link", { name: "Navigation note", exact: true })).toBeFocused();
+  expect(f.errors).toEqual([]);
+});
+
+test("memory stays readable when history fails and history can retry", async ({ page }) => {
+  const f = await mountMemory(page);
+  await addMemory(page, "History-safe memory");
+  await page.goBack();
+  let failHistory = true;
+  await page.route("**/api/knowledge", route => {
+    if (route.request().postDataJSON().operation === "history" && failHistory) return route.fulfill({ status: 503, json: { code: "unavailable", error: "Unavailable" } });
+    return route.fallback();
+  });
+  await page.getByRole("link", { name: "History-safe memory", exact: true }).click();
+  await expect(page.locator("[data-memory-detail]").getByText("Use one SQLite owner", { exact: true })).toBeVisible();
+  const history = page.locator("details").filter({ has: page.locator("summary").filter({ hasText: "Revision history" }) });
+  await expect(history.locator("summary")).toContainText("Could not read knowledge.");
+  await history.locator("summary").click();
+  failHistory = false;
+  await page.getByRole("button", { name: "Refresh", exact: true }).last().click();
+  await expect(history.locator("summary")).not.toContainText("Could not read knowledge.");
+  expect(f.errors).toEqual([]);
+});
+
+test("a failed memory read shows a retry instead of a permanent loading state", async ({ page }) => {
+  const f = await mountMemory(page);
+  await addMemory(page, "Recoverable memory");
+  await page.goBack();
+  let failRead = true;
+  await page.route("**/api/knowledge", route => {
+    if (route.request().postDataJSON().operation === "memory" && failRead) return route.fulfill({ status: 503, json: { code: "unavailable", error: "Unavailable" } });
+    return route.fallback();
+  });
+  await page.getByRole("link", { name: "Recoverable memory", exact: true }).click();
+  const reader = page.locator("[data-memory-detail]");
+  await expect(reader.getByRole("alert")).toContainText("Could not read knowledge.");
+  await expect(reader.getByText("Loading knowledge…")).toHaveCount(0);
+  failRead = false;
+  await reader.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(reader.getByText("Use one SQLite owner", { exact: true })).toBeVisible();
+  expect(f.errors).toEqual([]);
+});
+
 test("memory approval, edit invalidation, archive, supersession and context export", async ({ page }) => {
   const f = await mountMemory(page);
   await addMemory(page, "Storage decision");
@@ -387,10 +557,13 @@ test("memory approval, edit invalidation, archive, supersession and context expo
   await page.getByRole("button", { name: "Supersede with this record", exact: true }).click();
   await expect(page.getByText("Superseded · Previously approved", { exact: true })).toBeVisible();
   await expect(page.getByText("Approved by owner, revision 6", { exact: true })).toBeVisible();
+  await page.getByText("More details", { exact: true }).click();
   await expect(page.getByRole("link", { name: "Replacement: memory-2 · r1", exact: true })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "Switch language to Polish" }).click();
+  await selectLanguage(page);
   await expect(page.getByRole("button", { name: "Zatwierdź tę rewizję", exact: true })).toBeDisabled();
+  await expect(page.getByLabel("Szukaj w tytułach, treści i pamięci", { exact: true })).toBeHidden();
+  await page.getByRole("button", { name: "Wróć do listy", exact: true }).click();
   await expect(page.getByLabel("Szukaj w tytułach, treści i pamięci", { exact: true })).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("k4-memory-mobile-pl.png"), fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -450,10 +623,10 @@ test("dashboard Refresh retries failed memory reads and clears their error", asy
     if (operation === "search" && failed) return route.fulfill({ status: 503, json: { code: "unavailable", error: "Retry" } });
     return route.fallback();
   });
-  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
   await expect(page.getByText("Could not read knowledge.", { exact: false })).toBeVisible();
   failed = false;
-  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
   await expect(page.getByText("Could not read knowledge.", { exact: false })).toHaveCount(0);
   expect(f.errors).toEqual([]);
 });
@@ -496,6 +669,7 @@ test("memory selection and browser Back preserve filters and a later results pag
     return route.fulfill({ json: { items, nextOffset: input.offset === 0 ? 25 : null } });
   });
   await page.getByLabel("Search titles, content and memory", { exact: true }).fill("Private");
+  await page.getByRole("button", { name: "More filters" }).click();
   await page.getByLabel("Tag", { exact: true }).fill("scope");
   await page.getByLabel("Legacy ID", { exact: true }).fill("OLD-1");
   await page.getByLabel("Status", { exact: true }).selectOption("archived");
@@ -516,9 +690,56 @@ test("memory selection and browser Back preserve filters and a later results pag
   await expect(page.getByLabel("Search titles, content and memory", { exact: true })).toHaveValue("Private");
   await expect(page.getByLabel("Tag", { exact: true })).toHaveValue("scope");
   await expect(page.getByLabel("Status", { exact: true })).toHaveValue("archived");
-  await expect(page.getByRole("button", { name: "Next page", exact: true }).first()).toBeDisabled();
+  await expect(page.locator("[data-memory-list]").getByRole("button", { name: "Next page", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "Edit memory", exact: true }).click();
   await expect(page.getByLabel("Title", { exact: true })).toHaveValue("Private A");
+  expect(f.errors).toEqual([]);
+});
+
+test("Memory resets list scroll for a new search or page and restores it after reading", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const f = await mountMemory(page);
+  await addMemory(page, "Seed");
+  await page.goBack();
+  const seed = f.memories[0];
+  for (const group of ["Alpha", "Beta"]) for (let index = 0; index < 60; index++) {
+    f.memories.push({ ...seed, id: `${group}-${index}`, title: `${group} ${index}`, body: `${group} content ${index}` });
+  }
+  await page.route("**/api/knowledge", route => {
+    const { operation, input } = route.request().postDataJSON();
+    if (operation !== "search") return route.fallback();
+    const query = String(input.query ?? "");
+    const offset = Number(input.offset ?? 0);
+    const matching = f.memories.filter(item => item.title.includes(query));
+    return route.fulfill({ json: { items: matching.slice(offset, offset + 25).map(item => ({ ...item, kind: "memory", excerpt: item.body, threadId: null })), nextOffset: matching.length > offset + 25 ? offset + 25 : null } });
+  });
+  const list = page.locator("[data-memory-list]");
+  const scroll = list.getByRole("region", { name: "Results list" });
+  const query = page.getByLabel("Search titles, content and memory", { exact: true });
+  await query.fill("Alpha");
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  await expect(list.getByRole("link", { name: "Alpha 0", exact: true })).toBeVisible();
+  await scroll.evaluate(node => { node.scrollTop = 250; });
+  await expect.poll(() => scroll.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+  await expect.poll(() => scroll.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
+
+  await query.fill("Beta");
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  await expect(list.getByRole("link", { name: "Beta 0", exact: true })).toBeVisible();
+  await expect.poll(() => scroll.evaluate(node => node.scrollTop)).toBe(0);
+  await scroll.evaluate(node => { node.scrollTop = 250; });
+  await list.getByRole("button", { name: "Next page", exact: true }).click();
+  await expect(list.getByRole("link", { name: "Beta 25", exact: true })).toBeVisible();
+  await expect.poll(() => scroll.evaluate(node => node.scrollTop)).toBe(0);
+
+  await list.getByRole("link", { name: "Beta 40", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Beta 40", exact: true })).toBeVisible();
+  await expect.poll(() => scroll.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
+  const readingOffset = await scroll.evaluate(node => node.scrollTop);
+  await page.goBack();
+  await expect.poll(async () => Math.abs(await scroll.evaluate(node => node.scrollTop) - readingOffset)).toBeLessThan(3);
+  await expect(query).toHaveValue("Beta");
   expect(f.errors).toEqual([]);
 });
 
@@ -641,7 +862,7 @@ for (const mode of ["edit", "reply", "from_thread"] as const) {
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.getByLabel("Knowledge credential", { exact: true })).toHaveCount(0);
     fail = false;
-    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.locator("[data-knowledge-detail]").getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(page.getByRole("dialog")).toBeVisible();
     await expect(page.getByLabel("Body", { exact: true })).toHaveValue("Unsaved record draft");
     await expect(page.getByRole("alert").filter({ hasText: "Could not read knowledge." })).toHaveCount(0);

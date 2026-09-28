@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { dashboardFixture, mountDashboard } from "./dashboard-fixture";
+import { selectLanguage } from "./shell-actions";
 
 for (const width of [390, 1440]) {
   test(`log console scopes sources, searches literal text and exports clean logs at ${width}px`, async ({ page }) => {
@@ -53,9 +54,13 @@ for (const width of [390, 1440]) {
     await expect(console.getByRole("button", { name: "Wrap lines", exact: true })).toHaveAttribute("aria-pressed", "false");
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     await expect(otherConsole).toContainText("Last run logs");
+    await expect(otherConsole).toContainText("Matches: 0");
+    await expect(otherConsole.getByRole("button", { name: "Expand logs: Fixture API" })).toHaveAttribute("aria-expanded", "false");
+    await expect(otherConsole.locator("[data-log-lines]")).toHaveCount(0);
+    await search.fill("");
+    await otherConsole.getByRole("button", { name: "Expand logs: Fixture API" }).click();
     await expect(otherConsole.locator("[data-log-lines]")).toContainText("older-api-output");
     await expect(otherConsole.locator("[data-log-lines]")).not.toContainText("ERROR one");
-    await search.fill("");
     await otherConsole.getByRole("button", { name: "Collapse logs: Fixture API" }).click();
     await expect(otherConsole.locator("[data-log-lines]")).toHaveCount(0);
     await otherConsole.getByRole("button", { name: "Expand logs: Fixture API" }).focus();
@@ -68,7 +73,7 @@ for (const width of [390, 1440]) {
     await expect(console.getByRole("button", { name: /Collapse logs|Expand logs/ })).toHaveCount(0);
     await expect(text).toContainText("ERROR one");
     await expect(console.getByRole("button", { name: "Start", exact: true })).toHaveCount(0);
-    await page.getByRole("button", { name: "Switch language to Polish", exact: true }).click();
+    await selectLanguage(page);
     await expect(screen.getByRole("searchbox", { name: "Szukaj w logach" })).toBeVisible();
     expect(requests).toEqual([]); expect(errors).toEqual([]);
   });
@@ -101,5 +106,101 @@ test("log reading pauses a rolling buffer and resumes at new output without addi
   await expect(console.getByRole("button", { name: "Next match" })).toBeDisabled();
   await expect(console.locator("[data-log-lines]")).toContainText("original-line-399");
   await expect.poll(() => page.evaluate(() => (window as unknown as { fixtureEvents: { active: number } }).fixtureEvents.active)).toBe(1);
+  expect(errors).toEqual([]);
+});
+
+test("aggregate log search leaves empty and zero-match consoles compact", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const data = dashboardFixture();
+  data.projects[0].runtime.logs = [];
+  const quiet = structuredClone(data.projects[0]);
+  quiet.project.id = "quiet"; quiet.project.name = "Quiet API"; quiet.runtime.logs = ["service ready"];
+  const failing = structuredClone(data.projects[0]);
+  failing.project.id = "failing"; failing.project.name = "Failing worker"; failing.runtime.logs = ["ERROR from worker"];
+  data.projects.push(quiet, failing);
+  const { errors } = await mountDashboard(page, data);
+  await page.getByRole("combobox", { name: /Choose project/ }).click();
+  await page.getByRole("option", { name: /All projects/ }).click();
+  await page.getByRole("button", { name: "Toggle navigation" }).click();
+  await page.getByRole("navigation").getByRole("button", { name: "Logs" }).click();
+  await page.getByRole("searchbox", { name: "Search logs across all projects" }).fill("ERROR");
+  const consoles = page.locator("[data-log-console]");
+  await expect(consoles).toHaveCount(3);
+  await expect(consoles.nth(0)).toContainText("Matches: 0");
+  await expect(consoles.nth(1)).toContainText("Matches: 0");
+  await expect(consoles.nth(0).locator("[data-log-lines]")).toHaveCount(0);
+  await expect(consoles.nth(1).locator("[data-log-lines]")).toHaveCount(0);
+  await expect(consoles.nth(2)).toContainText("Matches: 1");
+  await expect(consoles.nth(2).locator("mark")).toHaveText("ERROR");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  expect(errors).toEqual([]);
+});
+
+test("narrowing a matching log search to zero hits follows later output", async ({ page }) => {
+  const data = dashboardFixture();
+  const snapshot = data.projects[0];
+  snapshot.runtime.phase = "running";
+  snapshot.runtime.startedAt = "2026-09-13T12:00:00Z";
+  snapshot.runtime.logs = ["alpha one", "alpha two"];
+  const { errors } = await mountDashboard(page, data);
+  await page.getByRole("combobox", { name: /Choose project/ }).click();
+  await page.getByRole("option", { name: /All projects/ }).click();
+  await page.getByRole("navigation").getByRole("button", { name: "Logs", exact: true }).click();
+  const console = page.locator('[data-log-console][data-project-id="web"]');
+  const search = page.getByRole("searchbox", { name: "Search logs across all projects" });
+  await search.fill("alpha");
+  await expect(console.locator("mark")).toHaveCount(2);
+  await console.getByRole("button", { name: "Next match" }).click();
+  await expect(console.locator('[data-current-hit="true"]')).toHaveText("alpha");
+  await search.fill("beta");
+  await expect(console).toContainText("Matches: 0");
+  await expect(console.getByRole("button", { name: "Expand logs: Fixture Web" })).toHaveAttribute("aria-expanded", "false");
+  snapshot.runtime.logs.push("beta from live output");
+  await page.evaluate(() => (window as unknown as { fixtureEvents: { emit: (type: string, data: unknown) => void } }).fixtureEvents.emit("changed", { kinds: ["runtime"], projectIds: ["web"] }));
+  await expect(console).toContainText("Matches: 1");
+  await expect(console.getByRole("button", { name: "Collapse logs: Fixture Web" })).toHaveAttribute("aria-expanded", "true");
+  await expect(console.locator("mark")).toHaveText("beta");
+  await search.fill("");
+  await expect(console.locator("[data-log-lines]")).toContainText("beta from live output");
+  await expect(console.getByRole("button", { name: "Collapse logs: Fixture Web" })).toHaveAttribute("aria-expanded", "true");
+  await console.getByRole("button", { name: "Pause view" }).click();
+  await search.fill("gamma");
+  await expect(console.getByRole("button", { name: "Follow output" })).toBeVisible();
+  snapshot.runtime.logs.push("gamma while paused");
+  await page.evaluate(() => (window as unknown as { fixtureEvents: { emit: (type: string, data: unknown) => void } }).fixtureEvents.emit("changed", { kinds: ["runtime"], projectIds: ["web"] }));
+  await expect(console).toContainText("Matches: 0");
+  await expect(console.locator("[data-log-lines]")).not.toContainText("gamma while paused");
+  await console.getByRole("button", { name: "Follow output" }).click();
+  await expect(console.locator("[data-log-lines]")).toContainText("gamma while paused");
+  expect(errors).toEqual([]);
+});
+
+test("a zero-hit search follows live logs after its console remounts", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const data = dashboardFixture();
+  const snapshot = data.projects[0];
+  snapshot.runtime.phase = "running";
+  snapshot.runtime.startedAt = "2026-09-13T12:00:00Z";
+  snapshot.runtime.logs = ["booting"];
+  const { errors } = await mountDashboard(page, data);
+  await page.getByRole("combobox", { name: /Choose project/ }).click();
+  await page.getByRole("option", { name: /All projects/ }).click();
+  await page.getByRole("button", { name: "Toggle navigation" }).click();
+  await page.getByRole("navigation").getByRole("button", { name: "Logs", exact: true }).click();
+  const console = page.locator('[data-log-console][data-project-id="web"]');
+  await page.getByRole("searchbox", { name: "Search logs across all projects" }).fill("READY");
+  await expect(console.getByRole("button", { name: "Expand logs: Fixture Web" })).toHaveAttribute("aria-expanded", "false");
+  const previousConsole = await console.elementHandle();
+  if (!previousConsole) throw new Error("Expected the first log console to be mounted");
+  snapshot.runtime.startedAt = "2026-09-13T12:05:00Z";
+  snapshot.runtime.logs = ["restarted"];
+  await page.evaluate(() => (window as unknown as { fixtureEvents: { emit: (type: string, data: unknown) => void } }).fixtureEvents.emit("changed", { kinds: ["runtime"], projectIds: ["web"] }));
+  await expect.poll(() => previousConsole.evaluate((element) => element.isConnected)).toBe(false);
+  await expect(console).toContainText("Matches: 0");
+  snapshot.runtime.logs.push("READY after restart");
+  await page.evaluate(() => (window as unknown as { fixtureEvents: { emit: (type: string, data: unknown) => void } }).fixtureEvents.emit("changed", { kinds: ["runtime"], projectIds: ["web"] }));
+  await expect(console).toContainText("Matches: 1");
+  await expect(console.getByRole("button", { name: "Collapse logs: Fixture Web" })).toHaveAttribute("aria-expanded", "true");
+  await expect(console.locator("mark")).toHaveText("READY");
   expect(errors).toEqual([]);
 });

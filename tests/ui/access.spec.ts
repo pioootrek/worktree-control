@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { dashboardFixture, mountDashboard } from "./dashboard-fixture";
+import { openPreferences } from "./shell-actions";
 
 const INSTALLATION_TOKEN = `wsi_11111111-1111-4111-8111-111111111111_${"a".repeat(64)}`;
 
@@ -34,7 +35,8 @@ test("signs in with the installation token once for the dashboard and knowledge"
   await expect(page.getByRole("button", { name: "Sign in to knowledge", exact: true })).toHaveCount(0);
   expect(identityHeaders.every(header => header === `Bearer ${INSTALLATION_TOKEN}`)).toBe(true);
 
-  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await openPreferences(page);
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Sign in to Worktree Switcher" })).toBeVisible();
   expect(await page.evaluate(() => [sessionStorage.getItem("worktree-switcher-token"), sessionStorage.getItem("worktree-switcher-knowledge-token")])).toEqual([null, null]);
   expect(f.errors).toEqual([]);
@@ -55,7 +57,9 @@ test("open mode needs no sign-in and shows that authentication is off", async ({
 
   await expect(page.getByText("Open mode — no authentication (0.0.0.0:47831)")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Sign in to Worktree Switcher" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Sign out", exact: true })).toHaveCount(0);
+  await openPreferences(page);
+  await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Knowledge", exact: true }).click();
   await expect(page.getByLabel("Knowledge project", { exact: true })).toHaveValue("shared");
   expect(await page.evaluate(() => sessionStorage.getItem("worktree-switcher-token"))).toBeNull();

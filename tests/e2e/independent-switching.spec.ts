@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { endpointIdentity, startControllerFixture } from "../support/controller-fixture";
-import { selectDashboardProject } from "../support/dashboard-actions";
+import { dashboardWorktreeRow, selectDashboardProject } from "../support/dashboard-actions";
 
 test("the real dashboard switches one project while two others remain live", async ({ page }) => {
   const fixture = await startControllerFixture(3);
@@ -13,8 +13,8 @@ test("the real dashboard switches one project while two others remain live", asy
     await page.goto(fixture.accessUrl);
     await expect(page.locator(`[data-project-id="${fixture.projects[0]!.id}"]`)).toBeVisible();
 
-    const card = await selectDashboardProject(page, "project-a");
-    const alternate = card.locator("tbody tr").filter({ has: page.getByText("alternate", { exact: true }) });
+    await selectDashboardProject(page, "project-a");
+    const alternate = dashboardWorktreeRow(page, "project-a", "alternate");
     await alternate.getByRole("button", { name: "Switch here", exact: true }).click();
     await page.getByRole("alertdialog").getByRole("button", { name: "Switch here", exact: true }).click();
 
