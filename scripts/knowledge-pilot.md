@@ -50,7 +50,7 @@ checkout must be a clean checkout of the importer's pinned revision. The script:
 3. compares counts, original payloads, source hashes and attachment bytes with
    the plan; checks every item's title/status/priority, the exact set of
    imported `related_ids`/`followup_ids` relations and attachment hashes;
-4. records who imported the batch (see the limitation below);
+4. records the importing principal and authentication method;
 5. repeats the import and requires an identical snapshot;
 6. compares complete knowledge snapshots after logical export/restore and after
    controller backup/restore.
@@ -64,14 +64,15 @@ import attribution. `pilot.json` marks the copy and records the implementation
 commit and dirty state. A failed run keeps `failure.json` and its partial
 directory; use a fresh destination for the next attempt.
 
-### Import attribution limitation
+### Import attribution
 
-`knowledge_import_batches` stores `actor_principal_id` but no authentication
-method, and imported records get `created_by` without history rows. The report
-therefore states `batchAuthenticationMethod: "not recorded"`. Records written
-after import (GUI, MCP, CLI) carry an authentication method in their history.
-Never infer a method for past batches; historical Hub authors and dates remain
-available separately from import provenance.
+`knowledge_import_batches` stores the principal and authentication method at
+batch creation. The report expects `installation` and `installation_token`.
+Existing batches created before the field was added read as `legacy_unknown`;
+their methods cannot be inferred. Imported records get `created_by` without
+history rows. Records written after import (GUI, MCP, CLI) carry an
+authentication method in their history. Historical Hub authors and dates
+remain available separately from import provenance.
 
 ## Managed GUI, CLI and two MCP clients
 

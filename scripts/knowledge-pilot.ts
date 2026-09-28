@@ -142,14 +142,13 @@ try {
   const attachmentHashes = plan.mappings.filter(mapping => mapping.targetKind === "attachment").map(mapping => mapping.sourceSha256).sort();
   assert.deepEqual(snapshot.attachments.map(row => String(row.sha256)).sort(), attachmentHashes);
   checks.push("every imported item keeps title/status/priority; resolved related_ids and followup_ids become exactly the imported task relations; attachment hashes equal the committed note files");
-  // Known limitation: the batch keeps the importing principal but not how it authenticated.
   const publishedBatch = store.getHubImport(batch.id)!;
   assert.equal(publishedBatch.actorPrincipalId, "installation");
-  assert.equal("authenticationMethod" in publishedBatch, false);
+  assert.equal(publishedBatch.authenticationMethod, "installation_token");
   const importedRecords = [...snapshot.tasks, ...snapshot.memories, ...snapshot.replies, ...snapshot.threads];
   assert.ok(importedRecords.every(row => row.created_by === "installation"));
-  const importAttribution = { batchActorPrincipalId: publishedBatch.actorPrincipalId, batchAuthenticationMethod: "not recorded", importedRecordCreator: "installation", importedHistoryRows: snapshot.history.length };
-  checks.push("import batch and imported records name the installation principal; the batch has no authentication-method field");
+  const importAttribution = { batchActorPrincipalId: publishedBatch.actorPrincipalId, batchAuthenticationMethod: publishedBatch.authenticationMethod, importedRecordCreator: "installation", importedHistoryRows: snapshot.history.length };
+  checks.push("import batch records the installation principal and token method; imported records name the installation principal");
   const { identity, actor } = installationActor(store);
   executeHubImport(store, identity, actor, input);
   assert.deepEqual(store.exportKnowledgeProject(projectId), snapshot);
@@ -167,8 +166,11 @@ try {
   await createControllerBackup(store, join(root, "controller-backup"), { applicationVersion: implementation, attachmentDirectory: attachments });
   restoreControllerBackup(join(root, "controller-backup"), join(root, "physical-restore.sqlite3"), join(root, "physical-attachments"));
   const physical = new SqliteStateStore(join(root, "physical-restore.sqlite3"));
-  try { assert.deepEqual(physical.exportKnowledgeProject(projectId), snapshot); } finally { physical.close(); }
-  checks.push("controller backup/restore matches the full knowledge snapshot");
+  try {
+    assert.deepEqual(physical.exportKnowledgeProject(projectId), snapshot);
+    assert.deepEqual(physical.getHubImport(batch.id), publishedBatch);
+  } finally { physical.close(); }
+  checks.push("controller backup/restore matches the full knowledge snapshot and import batch attribution");
   const knownArchived = new Set(plan.mappings.filter(m => m.sourceKind === "done").map(m => (m.originalPayload as Record<string, unknown>)?.item_id));
   const report = { implementation, sourceDirty, sourceCommit: commit, planId: plan.planId, mappingVersion:plan.mappingVersion, schemaVersion:store.schemaVersion(), checks, authenticationMode: new AuthenticationService(store).status().mode, importAttribution, taskRelations: expectedRelations.size, counts: Object.fromEntries(Object.entries(snapshot).filter(([, value]) => Array.isArray(value)).map(([key, value]) => [key, (value as unknown[]).length])), unresolvedRelations: plan.unresolvedRelations, unresolvedWithArchivedTarget: plan.unresolvedRelations.filter(r => knownArchived.has(r.targetLegacyId)).length, cutoverApproved: false };
   save("report.json", report);

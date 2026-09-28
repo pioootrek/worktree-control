@@ -55,7 +55,7 @@ describe("SqliteStateStore", () => {
     const project = initial.addProject(projectInput("Legacy", "/code/legacy", 3218));
     initial.close();
     const legacy = new Database(path);
-    legacy.exec("DELETE FROM schema_migrations WHERE version > 12; ALTER TABLE projects DROP COLUMN launch_preset;");
+    legacy.exec("ALTER TABLE knowledge_import_batches DROP COLUMN authentication_method; ALTER TABLE projects DROP COLUMN launch_preset; DELETE FROM schema_migrations WHERE version > 12;");
     legacy.close();
     const repaired = new SqliteStateStore(path);
     expect(repaired.getProject(project.id)?.launchPreset).toBe("auto");

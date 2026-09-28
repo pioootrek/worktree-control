@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 
-import type { AuthenticatedPrincipal, IdentityService } from "@/server/modules/identity";
+import type { AuthenticatedPrincipal, AuthenticationMethod, IdentityService } from "@/server/modules/identity";
 import { calculateHubImportPlanHash, planHubImport, type HubImportMapping, type HubImportPlan } from "./hub-import-plan";
 import { KnowledgeError } from "./knowledge-error";
 
 export type HubImportBatchStatus = "staging" | "published" | "failed";
+/** Existing batches predate method attribution; their method cannot be inferred from the principal. */
+export type HubImportAuthenticationMethod = AuthenticationMethod | "legacy_unknown";
 
 export interface HubImportBatch {
   id: string;
@@ -18,6 +20,7 @@ export interface HubImportBatch {
   targetProjectName: string;
   expectedTargetRevision: number | null;
   actorPrincipalId: string;
+  authenticationMethod: HubImportAuthenticationMethod;
   status: HubImportBatchStatus;
   cursor: number;
   totalItems: number;
@@ -27,8 +30,12 @@ export interface HubImportBatch {
   error: string | null;
 }
 
+type NewHubImportBatch = Omit<HubImportBatch, "status" | "cursor" | "createdAt" | "updatedAt" | "publishedAt" | "error" | "authenticationMethod"> & {
+  authenticationMethod: AuthenticationMethod;
+};
+
 export interface HubImportExecutionStore {
-  beginHubImport(input: Omit<HubImportBatch, "status" | "cursor" | "createdAt" | "updatedAt" | "publishedAt" | "error">, now: string): HubImportBatch;
+  beginHubImport(input: NewHubImportBatch, now: string): HubImportBatch;
   getHubImport(batchId: string): HubImportBatch | null;
   resetHubImport(batchId: string, expectedTargetRevision: number | null, now: string): HubImportBatch;
   stageHubImportChunk(batchId: string, expectedCursor: number, mappings: HubImportMapping[], now: string): HubImportBatch;
@@ -99,8 +106,10 @@ export function executeHubImport(
     targetProjectName: input.targetProjectName.trim(),
     expectedTargetRevision: input.expectedTargetRevision ?? null,
     actorPrincipalId: actor.principalId,
+    authenticationMethod: actor.authenticationMethod,
     totalItems: input.plan.mappings.length,
   }, now);
+  // A retry can use a different current credential; the batch keeps its creation method.
   if (batch.planId !== input.plan.planId || batch.planHash !== input.plan.planHash || batch.sourceId !== input.plan.source.sourceId || batch.sourceRepository !== input.plan.source.repository || batch.sourceCommit !== input.plan.source.commit
     || batch.targetProjectId !== targetProjectId || batch.targetProjectName !== input.targetProjectName.trim() || batch.actorPrincipalId !== actor.principalId || batch.totalItems !== input.plan.mappings.length) {
     throw new KnowledgeError("revision_conflict", "Stored import batch does not match the supplied plan.");

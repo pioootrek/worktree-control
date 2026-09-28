@@ -18,6 +18,7 @@ import type {
   RemoteWorkerRegistration,
 } from "@/server/modules/remote-verification";
 import type {
+  AuthenticationMethod,
   CredentialAuthenticationRecord,
   IdentityStore,
   KnowledgeProject,
@@ -75,13 +76,14 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       id: String(row.id), planId: String(row.plan_id), planHash: String(row.plan_hash), sourceId: String(row.source_id), sourceRepository: String(row.source_repository),
       sourceCommit: String(row.source_commit), targetProjectId: String(row.target_project_id), targetProjectName: String(row.target_project_name),
       expectedTargetRevision: row.expected_target_revision === null ? null : Number(row.expected_target_revision),
-      actorPrincipalId: String(row.actor_principal_id), status: row.status as HubImportBatch["status"], cursor: Number(row.cursor),
+      actorPrincipalId: String(row.actor_principal_id), authenticationMethod: row.authentication_method as HubImportBatch["authenticationMethod"],
+      status: row.status as HubImportBatch["status"], cursor: Number(row.cursor),
       totalItems: Number(row.total_items), createdAt: String(row.created_at), updatedAt: String(row.updated_at),
       publishedAt: row.published_at === null ? null : String(row.published_at), error: row.error === null ? null : String(row.error),
     };
   }
 
-  beginHubImport(input: Omit<HubImportBatch, "status" | "cursor" | "createdAt" | "updatedAt" | "publishedAt" | "error">, now: string): HubImportBatch {
+  beginHubImport(input: Omit<HubImportBatch, "status" | "cursor" | "createdAt" | "updatedAt" | "publishedAt" | "error" | "authenticationMethod"> & {authenticationMethod: AuthenticationMethod}, now: string): HubImportBatch {
     return this.database.transaction(() => {
       const existing = this.database.prepare("SELECT * FROM knowledge_import_batches WHERE id = ? OR (source_id = ? AND source_commit = ? AND plan_hash = ? AND target_project_id = ?)")
         .get(input.id, input.sourceId, input.sourceCommit, input.planHash, input.targetProjectId) as Record<string, unknown> | undefined;
@@ -89,8 +91,8 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       const target=this.database.prepare("SELECT name,revision FROM knowledge_projects WHERE id = ?").get(input.targetProjectId) as {name:string;revision:number}|undefined;
       if(input.expectedTargetRevision===null ? Boolean(target) : !target||target.revision!==input.expectedTargetRevision||target.name!==input.targetProjectName) throw new KnowledgeError("revision_conflict", "Import target revision or identity changed.");
       this.database.prepare(`INSERT INTO knowledge_import_batches
-        (id,plan_id,plan_hash,source_id,source_repository,source_commit,target_project_id,target_project_name,expected_target_revision,actor_principal_id,status,cursor,total_items,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?, 'staging',0,?,?,?)`).run(input.id,input.planId,input.planHash,input.sourceId,input.sourceRepository,input.sourceCommit,input.targetProjectId,input.targetProjectName,input.expectedTargetRevision,input.actorPrincipalId,input.totalItems,now,now);
+        (id,plan_id,plan_hash,source_id,source_repository,source_commit,target_project_id,target_project_name,expected_target_revision,actor_principal_id,authentication_method,status,cursor,total_items,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?, 'staging',0,?,?,?)`).run(input.id,input.planId,input.planHash,input.sourceId,input.sourceRepository,input.sourceCommit,input.targetProjectId,input.targetProjectName,input.expectedTargetRevision,input.actorPrincipalId,input.authenticationMethod,input.totalItems,now,now);
       return this.getHubImport(input.id)!;
     }).immediate();
   }
