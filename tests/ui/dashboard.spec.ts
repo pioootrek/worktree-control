@@ -342,7 +342,7 @@ test("row actions target the clicked worktree and confirm switching the running 
   data.projects[0].worktrees.push({ ...initial, path: "/fixture/alternate", branch: "feature/alternate" });
   const { requests, errors } = await mountDashboard(page, data);
   const alternate = page.locator("tbody tr").filter({ hasText: "feature/alternate" });
-  const main = page.locator("tbody tr").filter({ has: page.getByText("main", { exact: true }) });
+  const main = page.locator("[data-worktree-row]").filter({ has: page.getByRole("button", { name: "Actions for main in Fixture Web", exact: true }) });
   await expect(page.locator("[data-operation-target]")).toHaveCount(0);
   await expect(alternate.getByRole("button", { name: "Start", exact: true })).toHaveAccessibleDescription("Project Fixture Web, worktree feature/alternate");
   await alternate.getByRole("button", { name: "Start", exact: true }).click();
@@ -545,7 +545,9 @@ for (const width of [390, 768, 1440]) {
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toBeHidden();
     await expect(menu).toBeFocused();
-    const path = page.locator('[data-slot="card-description"]');
+    await page.getByText("Project settings", { exact: true }).click();
+    const path = page.getByText("Project directory: /home/example/development/a-very-long-repository-directory-name", { exact: true });
+    await expect(path).toBeVisible();
     const pathBox = await path.boundingBox();
     expect(pathBox!.x + pathBox!.width).toBeLessThanOrEqual(width - 16);
     await selectLanguage(page);
