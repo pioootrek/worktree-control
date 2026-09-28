@@ -1,4 +1,4 @@
-import type { ProjectSnapshot, TestRun } from "@/shared/contracts";
+import type { ProjectSnapshot, TestRun, TestSourceAttribution } from "@/shared/contracts";
 
 export type FreshnessReason = "not_started" | "source_changed" | "source_uncertain" | "legacy_source" | "source_pending"
   | "missing_observation" | "incomplete_observation" | "observed_dirty" | "missing_worktree" | "status_error"
@@ -40,8 +40,10 @@ export function testResults(snapshots: ProjectSnapshot[]) {
       add(snapshot.metadata?.status === "refreshing", "metadata_refreshing");
       add(snapshot.metadata?.status === "unavailable", "metadata_unavailable");
     }
+    const sourceAtRun: TestSourceAttribution | "not_started" | "unfinished" = !active && run.source.attribution === "pending"
+      ? run.startedAt ? "unfinished" : "not_started" : run.source.attribution;
     return { snapshot, run, result, active, freshness, reasons, observed, worktree,
-      sourceAtRun: !active && run.source.attribution === "pending" ? run.startedAt ? "unfinished" : "not_started" : run.source.attribution,
+      sourceAtRun,
       preflightHead: run.source.preflight?.head ?? null,
       failed: ["failed", "timed_out", "interrupted"].includes(result) };
   })).sort((a, b) => Date.parse(b.run.queuedAt) - Date.parse(a.run.queuedAt) || b.run.id.localeCompare(a.run.id));
