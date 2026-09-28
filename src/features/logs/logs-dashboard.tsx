@@ -28,29 +28,42 @@ export function LogsDashboard({ snapshots, aggregate }: { snapshots: ProjectSnap
 function LogConsole({ snapshot, aggregate, query, clearQuery }: { snapshot: ProjectSnapshot; aggregate: boolean; query: string; clearQuery: () => void }) {
   const { t, locale } = useI18n();
   const raw = snapshot.runtime.logs;
-  const [paused, setPaused] = useState<string[] | null>(query ? [...raw] : null);
+  const [paused, setPaused] = useState<{ lines: string[]; reason: "reading" | "search" } | null>(() =>
+    query && logMatches(raw.map(cleanLogText), query).matches.length ? { lines: [...raw], reason: "search" } : null);
   const [previousQuery, setPreviousQuery] = useState(query);
-  const [expanded, setExpanded] = useState(() => snapshot.runtime.phase !== "stopped" || Boolean(query && logMatches(raw.map(cleanLogText), query).matches.length));
+  const [expanded, setExpanded] = useState(() => query ? Boolean(logMatches(raw.map(cleanLogText), query).matches.length) : snapshot.runtime.phase !== "stopped");
   const [hit, setHit] = useState(0);
   const [wrap, setWrap] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const viewport = useRef<HTMLDivElement>(null);
-  const lines = useMemo(() => (paused ?? raw).map(cleanLogText), [paused, raw]);
+  const lines = useMemo(() => (paused?.lines ?? raw).map(cleanLogText), [paused, raw]);
   const content = lines.join("\n");
   const { matches, truncated } = useMemo(() => logMatches(lines, query), [lines, query]);
   if (previousQuery !== query) {
     setPreviousQuery(query);
     setHit(0);
-    if (query) {
-      setExpanded(matches.length > 0);
-      if (matches.length > 0 && paused === null) setPaused([...raw]);
+    if (!query) {
+      if (paused?.reason === "search") setPaused(null);
+      if (snapshot.runtime.phase !== "stopped") setExpanded(true);
+    } else if (paused?.reason === "reading") {
+      setExpanded(true);
+    } else if (matches.length) {
+      setExpanded(true);
+      if (paused === null) setPaused({ lines: [...raw], reason: "search" });
+    } else {
+      setPaused(null);
+      setExpanded(false);
     }
+  } else if (query && paused === null && matches.length) {
+    // A zero-hit search follows live output until its first match arrives.
+    setPaused({ lines: [...raw], reason: "search" });
+    setExpanded(true);
   }
   const currentHit = matches.length ? hit % matches.length : 0;
   const byLine = new Map<number, Array<{ start: number; end: number; index: number }>>();
   matches.forEach((match, index) => byLine.set(match.line, [...(byLine.get(match.line) ?? []), { ...match, index }]));
-  const hasNew = paused !== null && (paused.length !== raw.length || raw.some((line, index) => paused[index] !== line));
+  const hasNew = paused !== null && (paused.lines.length !== raw.length || raw.some((line, index) => paused.lines[index] !== line));
   const active = ["running", "starting", "stopping"].includes(snapshot.runtime.phase);
   const worktree = snapshot.worktrees.find((w) => w.path === snapshot.runtime.worktreePath);
 
@@ -93,7 +106,7 @@ function LogConsole({ snapshot, aggregate, query, clearQuery }: { snapshot: Proj
       <Button variant="outline" size="icon-sm" disabled={!matches.length} aria-label={t("logsView.previous")} title={t("logsView.previous")} onClick={() => move(-1)}><ChevronUp aria-hidden /></Button>
       <Button variant="outline" size="icon-sm" disabled={!matches.length} aria-label={t("logsView.next")} title={t("logsView.next")} onClick={() => move(1)}><ChevronDown aria-hidden /></Button>
       <Button variant="outline" size="sm" aria-pressed={wrap} onClick={() => setWrap(!wrap)}><WrapText aria-hidden />{t("logsView.wrap")}</Button>
-      <Button variant="outline" size="sm" aria-pressed={paused === null} onClick={() => paused === null ? setPaused([...raw]) : resume()}>{paused === null ? <Pause aria-hidden /> : <Play aria-hidden />}{t(paused === null ? "logsView.pause" : "logsView.follow")}</Button>
+      <Button variant="outline" size="sm" aria-pressed={paused === null} onClick={() => paused === null ? setPaused({ lines: [...raw], reason: "reading" }) : resume()}>{paused === null ? <Pause aria-hidden /> : <Play aria-hidden />}{t(paused === null ? "logsView.pause" : "logsView.follow")}</Button>
       <Button variant="outline" size="icon-sm" disabled={!content} aria-label={t("logsView.copy")} title={t("logsView.copy")} onClick={() => void copy()}><Copy aria-hidden /></Button>
       <Button variant="outline" size="icon-sm" disabled={!content} aria-label={t("logsView.download")} title={t("logsView.download")} onClick={download}><Download aria-hidden /></Button>
     </div>
@@ -103,7 +116,7 @@ function LogConsole({ snapshot, aggregate, query, clearQuery }: { snapshot: Proj
       const element = viewport.current;
       if (!element) return;
       const atBottom = element.scrollHeight - element.clientHeight - element.scrollTop < 24;
-      if (paused === null && !atBottom) setPaused([...raw]);
+      if (paused === null && !atBottom) setPaused({ lines: [...raw], reason: "reading" });
       else if (paused !== null && atBottom && !query) setPaused(null);
     } }}>
       <pre className={`min-w-0 p-4 font-mono text-xs leading-5 ${wrap ? "whitespace-pre-wrap break-all" : "w-max min-w-full whitespace-pre"}`} data-log-lines>{lines.length ? lines.map((line, index) => {
