@@ -34,7 +34,7 @@ export function TestQueueDialog({ status, mutate, setError, open: controlledOpen
     {controlledOpen === undefined && <DialogTrigger asChild>
       <Button variant="outline" size="sm" className="gap-2" aria-label={t("tests.openSettings")}><TestTube2 aria-hidden />{status.running}/{status.limit}{status.queued > 0 && <Badge variant="secondary">+{status.queued}</Badge>}</Button>
     </DialogTrigger>}
-    <DialogContent className="sm:max-w-lg" onCloseAutoFocus={returnFocus ? (event) => { event.preventDefault(); returnFocus(); } : undefined}>
+    <DialogContent closeLabel={t("common.close")} className="sm:max-w-lg" onCloseAutoFocus={returnFocus ? (event) => { event.preventDefault(); returnFocus(); } : undefined}>
       <DialogHeader><DialogTitle>{t("tests.queueTitle")}</DialogTitle><DialogDescription>{t("tests.queueDescription")}</DialogDescription></DialogHeader>
       <TestQueueForm key={isOpen ? "open" : "closed"} status={status} mutate={mutate} setError={setError} close={() => changeOpen(false)} />
     </DialogContent>

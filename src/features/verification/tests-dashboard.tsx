@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useRef, useState } from "react";
-import { Activity, AlertTriangle, Clock3, ListFilter, ShieldQuestion, Square } from "lucide-react";
+import { Activity, AlertTriangle, Clock3, ListFilter, RefreshCw, ShieldQuestion, Square } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -21,8 +21,9 @@ import { latestTestResults, testDuration, testResults, type TestResult } from ".
 const ALL = "__all__";
 function currentCodeState(row: TestResult) {
   if (row.freshness !== "unknown") return row.freshness;
-  const worktree = row.snapshot.worktrees.find((item) => item.path === row.run.worktreePath);
-  return worktree?.dirty && !worktree.statusError && row.snapshot.metadata?.status === "fresh" ? "local" : "unknown";
+  return row.worktree?.dirty && !row.worktree.statusError
+    ? row.snapshot.metadata?.status === "fresh" ? "local" : "localLastRead"
+    : "unknown";
 }
 
 export function TestsDashboard({ snapshots, aggregate, mutate, setError, now }: {
@@ -41,12 +42,16 @@ export function TestsDashboard({ snapshots, aggregate, mutate, setError, now }: 
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const returnFocus = useRef<HTMLButtonElement | null>(null);
+  const outputRef = useRef<HTMLPreElement | null>(null);
   const rows = testResults(snapshots);
   const latest = latestTestResults(rows);
   const active = rows.filter((row) => row.active).sort((a, b) => Number(b.result === "running") - Number(a.result === "running") || (a.run.queuePosition ?? 0) - (b.run.queuePosition ?? 0));
   const selected = rows.find((row) => row.run.id === selectedId);
   const selectedCodeState = selected ? currentCodeState(selected) : "unknown";
+  const selectedNeedsRefresh = selected?.reasons.some((reason) => ["metadata_missing", "metadata_stale", "metadata_unavailable", "status_error"].includes(reason));
   const normalized = query.trim().toLowerCase();
   const days = period === "24h" ? 1 : period === "7d" ? 7 : period === "30d" ? 30 : null;
   const filtered = (view === "latest" ? latest : rows).filter((row) =>
@@ -70,6 +75,16 @@ export function TestsDashboard({ snapshots, aggregate, mutate, setError, now }: 
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setCancelling(null); }
   };
+  const refresh = async (id: string, name: string) => {
+    setRefreshing(id);
+    setRefreshError(null);
+    try { await mutate(`/api/projects/${id}/metadata/refresh`, {}, t("metadata.refreshed", { name })); }
+    catch (cause) { setRefreshError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setRefreshing(null); }
+  };
+  const atRun = (row: TestResult) => t(row.sourceAtRun === "not_started" ? "testView.notStarted" : row.sourceAtRun === "unfinished" ? "testView.sourceUnfinished" : `testSource.${row.sourceAtRun}`);
+  const relevance = (row: TestResult) => t(`testView.source.${currentCodeState(row)}`);
+  const reason = (row: TestResult) => row.reasons[0] ? t(`testView.reason.${row.reasons[0]}`) : null;
   const metrics = [
     { label: t("testView.running"), count: active.filter((r) => r.result === "running").length, icon: Activity, selected: view === "history" && result === "running", action: () => metric("history", "running") },
     { label: t("testView.queued"), count: active.filter((r) => r.result === "queued").length, icon: Clock3, selected: view === "history" && result === "queued", action: () => metric("history", "queued") },
@@ -79,8 +94,8 @@ export function TestsDashboard({ snapshots, aggregate, mutate, setError, now }: 
   const table = (entries: TestResult[]) => <><div className="space-y-2 xl:hidden">
     {entries.length ? entries.map((row) => <article key={row.run.id} data-test-result className="rounded-lg border p-3">
       <div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="break-words font-medium">{row.run.presetName}</p><p className="break-all text-xs text-muted-foreground">{aggregate ? `${row.snapshot.project.name} · ` : ""}{row.run.worktreeBranch ?? row.run.worktreePath}</p></div><Badge variant="outline" className={row.failed ? "shrink-0 text-destructive" : "shrink-0"}>{t(`testPhase.${row.result}`)}</Badge></div>
-      <p className="mt-2 text-xs text-muted-foreground">{t("testView.atRun")}: {t(`testSource.${row.run.source.attribution}`)}</p><p className="text-xs text-muted-foreground">{t("testView.currentCode")}: {t(`testView.source.${currentCodeState(row)}`)}</p>
-      <div className="mt-2 flex items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{new Date(row.run.queuedAt).toLocaleString(locale)}</span><div className="flex gap-1"><Button variant="outline" size="sm" aria-label={t("testView.detailsFor", { name: row.run.presetName, branch: row.run.worktreeBranch ?? "detached" })} onClick={(event) => { returnFocus.current = event.currentTarget; setSelectedId(row.run.id); }}>{t("row.details")}</Button>{row.active && <Button variant="ghost" size="icon-sm" aria-label={t("tests.cancel")} disabled={cancelling !== null} onClick={() => void cancel(row.run.id)}><Square aria-hidden /></Button>}</div></div>
+      <p className="mt-2 text-xs text-muted-foreground">{t("testView.atRun")}: {atRun(row)}</p><p className="text-xs text-muted-foreground">{t("testView.currentCode")}: {relevance(row)}{reason(row) ? ` · ${reason(row)}` : ""}</p>
+      <div className="mt-2 flex items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{new Date(row.run.queuedAt).toLocaleString(locale)}</span><div className="flex gap-1"><Button variant="outline" size="sm" aria-label={t("testView.detailsFor", { name: row.run.presetName, branch: row.run.worktreeBranch ?? "detached" })} onClick={(event) => { returnFocus.current = event.currentTarget; setRefreshError(null); setSelectedId(row.run.id); }}>{t("row.details")}</Button>{row.active && <Button variant="ghost" size="icon-sm" aria-label={t("tests.cancel")} disabled={cancelling !== null} onClick={() => void cancel(row.run.id)}><Square aria-hidden /></Button>}</div></div>
     </article>) : <p className="rounded-lg border p-4 text-sm text-muted-foreground">{t("testView.noResults")}</p>}
   </div><div className="hidden min-w-0 overflow-hidden rounded-lg border xl:block">
     <Table className="min-w-[960px]">
@@ -88,12 +103,12 @@ export function TestsDashboard({ snapshots, aggregate, mutate, setError, now }: 
       <TableBody>{entries.map((row) => <TableRow key={row.run.id}>
         {aggregate ? <TableCell className="max-w-36 truncate" title={row.snapshot.project.name}>{row.snapshot.project.name}</TableCell> : null}
         <TableCell className="max-w-52 truncate font-medium" title={row.run.presetName}>{row.run.presetName}</TableCell>
-        <TableCell className="max-w-56"><p className="truncate font-mono text-xs" title={row.run.worktreePath}>{row.run.worktreeBranch ?? "detached"}</p><p className="text-xs text-muted-foreground">{row.run.worktreeHead.slice(0, 8)}</p></TableCell>
+        <TableCell className="max-w-56"><p className="truncate font-mono text-xs" title={row.run.worktreePath}>{row.run.worktreeBranch ?? "detached"}</p><p className="text-xs text-muted-foreground">{t("testView.queuedRevision")}: {row.run.worktreeHead.slice(0, 8)}</p></TableCell>
         <TableCell><Badge variant="outline" className={row.result === "passed" ? "text-success-foreground" : row.failed ? "text-destructive" : "text-muted-foreground"}>{t(`testPhase.${row.result}`)}</Badge>{row.run.queuePosition ? <p className="mt-1 text-xs text-muted-foreground">{t("tests.position", { position: row.run.queuePosition })}</p> : null}</TableCell>
-        <TableCell><p className="text-xs text-muted-foreground">{t("testView.atRun")}: {t(`testSource.${row.run.source.attribution}`)}</p><Badge variant="secondary" className={row.freshness === "current" ? "text-success-foreground" : "text-muted-foreground"}>{t("testView.currentCode")}: {t(`testView.source.${currentCodeState(row)}`)}</Badge></TableCell>
+        <TableCell><p className="text-xs text-muted-foreground">{t("testView.atRun")}: {atRun(row)}</p><Badge variant="secondary" className={row.freshness === "current" ? "text-success-foreground" : "text-muted-foreground"}>{t("testView.currentCode")}: {relevance(row)}</Badge>{reason(row) ? <p className="mt-1 text-xs text-muted-foreground">{reason(row)}</p> : null}</TableCell>
         <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{new Date(row.run.queuedAt).toLocaleString(locale === "pl" ? "pl-PL" : "en-GB", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</TableCell>
         <TableCell className="whitespace-nowrap font-mono text-xs">{testDuration(row.run, now)}</TableCell>
-        <TableCell><div className="flex justify-end gap-1"><Button variant="ghost" size="sm" aria-label={t("testView.detailsFor", { name: row.run.presetName, branch: row.run.worktreeBranch ?? "detached" })} onClick={(event) => { returnFocus.current = event.currentTarget; setSelectedId(row.run.id); }}>{t("row.details")}</Button>{row.active ? <Button variant="ghost" size="icon-sm" aria-label={t("tests.cancel")} disabled={cancelling !== null} onClick={() => void cancel(row.run.id)}><Square aria-hidden /></Button> : null}</div></TableCell>
+        <TableCell><div className="flex justify-end gap-1"><Button variant="ghost" size="sm" aria-label={t("testView.detailsFor", { name: row.run.presetName, branch: row.run.worktreeBranch ?? "detached" })} onClick={(event) => { returnFocus.current = event.currentTarget; setRefreshError(null); setSelectedId(row.run.id); }}>{t("row.details")}</Button>{row.active ? <Button variant="ghost" size="icon-sm" aria-label={t("tests.cancel")} disabled={cancelling !== null} onClick={() => void cancel(row.run.id)}><Square aria-hidden /></Button> : null}</div></TableCell>
       </TableRow>)}{!entries.length ? <TableRow><TableCell colSpan={aggregate ? 8 : 7} className="h-24 text-center text-muted-foreground">{t("testView.noResults")}</TableCell></TableRow> : null}</TableBody>
     </Table>
   </div></>;
@@ -126,11 +141,12 @@ export function TestsDashboard({ snapshots, aggregate, mutate, setError, now }: 
       <SheetContent closeLabel={t("common.close")} className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl" onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus.current?.focus(); }}>
         {selected ? <><SheetHeader className="pr-12"><SheetTitle className="break-all">{selected.run.presetName}</SheetTitle><SheetDescription>{t("testView.detailsDescription")}</SheetDescription></SheetHeader><div className="space-y-5 px-4 pb-6">
           <p className="break-all text-sm">{selected.snapshot.project.name} · {selected.run.worktreeBranch ?? "detached"}</p>
-          <div className="space-y-2"><p>{t("testView.result")}: <Badge variant="outline" className={selected.failed ? "text-destructive" : selected.result === "passed" ? "text-success-foreground" : ""}>{t(`testPhase.${selected.result}`)}</Badge></p><p>{t("testView.atRun")}: {t(`testSource.${selected.run.source.attribution}`)}</p><p>{t("testView.currentCode")}: {t(`testView.source.${selectedCodeState}`)}</p>{selectedCodeState === "local" && <p className="text-xs text-muted-foreground">{t("testView.localContext")}</p>}{selectedCodeState === "unknown" && <p className="text-xs text-muted-foreground">{t("testView.unknownContext")}</p>}<p className="text-xs text-muted-foreground">{t("testView.freshnessNote")}</p></div>
-          <div className="space-y-1 break-all font-mono text-xs"><p>{selected.run.worktreePath}</p><p>{selected.run.worktreeHead}</p><p>{t("testView.date")}: {new Date(selected.run.queuedAt).toLocaleString(locale)}</p><p>{t("testView.duration")}: {testDuration(selected.run, now)}</p>{selected.run.exitCode !== null ? <p>{t("tests.exitCode", { code: selected.run.exitCode })}</p> : null}</div>
+          <div className="space-y-2"><p>{t("testView.result")}: <Badge variant="outline" className={selected.failed ? "text-destructive" : selected.result === "passed" ? "text-success-foreground" : ""}>{t(`testPhase.${selected.result}`)}</Badge>{selected.run.exitCode !== null ? <span className="ml-2 text-sm text-muted-foreground">{t("tests.exitCode", { code: selected.run.exitCode })}</span> : null}</p>{selected.run.logs.length ? <Button variant="outline" size="sm" onClick={() => { outputRef.current?.scrollIntoView({ block: "start" }); outputRef.current?.focus(); }}>{t("testView.jumpToOutput")}</Button> : null}<p>{t("testView.atRun")}: {atRun(selected)}</p><p>{t("testView.currentCode")}: <Badge variant="secondary" className={selected.freshness === "current" ? "text-success-foreground" : ""}>{t(`testView.source.${selectedCodeState}`)}</Badge></p>{selected.reasons.length ? <div className="space-y-1 text-sm text-muted-foreground"><p className="font-medium text-foreground">{t("testView.why")}</p><ul className="list-disc space-y-1 pl-5">{selected.reasons.map((item) => <li key={item}>{t(`testView.reasonDetail.${item}`)}</li>)}</ul></div> : null}<p className="text-xs text-muted-foreground">{t("testView.freshnessNote")}</p></div>
+          <div className="space-y-1 break-all text-xs"><p>{selected.run.worktreePath}</p><p>{t("testView.queuedRevision")}: <span className="font-mono">{selected.run.worktreeHead}</span></p>{selected.preflightHead ? <p>{t("testView.preflightRevision")}: <span className="font-mono">{selected.preflightHead}</span></p> : selected.run.startedAt ? <p>{t("testView.preflightRevisionUnknown")}</p> : null}{selected.run.source.finish?.head && selected.run.source.finish.head !== selected.preflightHead ? <p>{t("testView.finishRevision")}: <span className="font-mono">{selected.run.source.finish.head}</span></p> : null}{selected.worktree?.head ? <p>{t("testView.currentRevision")}: <span className="font-mono">{selected.worktree.head}</span></p> : null}<p>{t("testView.date")}: {new Date(selected.run.queuedAt).toLocaleString(locale)}</p><p>{t("testView.duration")}: {testDuration(selected.run, now)}</p></div>
+          {selectedNeedsRefresh ? <div className="space-y-2"><Button variant="outline" size="sm" disabled={refreshing !== null} onClick={() => void refresh(selected.snapshot.project.id, selected.snapshot.project.name)}><RefreshCw aria-hidden />{t("metadata.refresh")}</Button>{refreshError ? <p role="alert" className="text-sm text-destructive">{refreshError}</p> : null}</div> : null}
           {selected.run.error ? <p className={selected.failed ? "text-sm text-destructive" : "text-sm text-muted-foreground"}>{selected.run.error}</p> : null}
           {selected.active ? <Button variant="outline" disabled={cancelling !== null} onClick={() => void cancel(selected.run.id)}><Square aria-hidden />{t("tests.cancel")}</Button> : null}
-          <div><h4 className="mb-2 text-sm font-medium">{t("tests.output")}</h4><pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted p-3 font-mono text-xs">{selected.run.logs.join("\n") || "—"}</pre></div>
+          <div><h4 className="mb-2 text-sm font-medium">{t("tests.output")}</h4><pre ref={outputRef} tabIndex={0} role="region" aria-label={t("tests.output")} className="max-h-96 scroll-mt-4 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted p-3 font-mono text-xs focus-visible:outline-2 focus-visible:outline-primary">{selected.run.logs.join("\n") || "—"}</pre></div>
           <details className="space-y-3"><summary className="cursor-pointer text-sm">{t("project.technicalDetails")}</summary><p>{t("testView.rawPhase")}: {t(`testPhase.${selected.run.phase}`)}</p><p className="break-all font-mono text-xs">{selected.run.executable} {selected.run.args.join(" ")}</p><p className="break-all text-xs">{t("testView.environment")}: {selected.run.environmentProfile} · {selected.run.environmentVariableNames.join(", ")}</p><pre className="overflow-auto whitespace-pre-wrap break-all text-xs">{JSON.stringify(selected.run.source, null, 2)}</pre></details>
         </div></> : null}
       </SheetContent>

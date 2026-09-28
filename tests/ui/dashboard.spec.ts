@@ -734,12 +734,70 @@ for (const width of [390, 1440]) {
     await screen.getByRole("button", { name: "Result: test · main" }).click();
     const drawer = page.getByRole("dialog");
     await expect(drawer).toContainText("Now: Local changes");
-    await expect(drawer).toContainText("The latest Git read found local changes in this worktree. The test result is not confirmed current.");
+    await expect(drawer).toContainText("The last read found local changes. The result does not confirm their contents");
     await expect(drawer).not.toContainText("Now: Matches current commit");
     expect(requests).toEqual([]);
     expect(errors).toEqual([]);
   });
 }
+
+for (const [width, locale] of [[320, "en"], [1440, "pl"]] as const) {
+  test(`stale Git metadata explains an observed source match and refreshes in ${locale} at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: width === 320 ? 600 : 900 });
+    const data = dashboardFixture();
+    const snapshot = data.projects[0];
+    const run = testRunFixture();
+    const observation = { observedAt: run.finishedAt!, head: snapshot.worktrees[0].head, branch: "main", dirty: false,
+      statusDigest: "clean", statusEntries: 0, complete: true, errorCode: null };
+    run.source = { ...run.source, enqueue: observation, preflight: observation, finish: observation,
+      queueComparison: "match", executionComparison: "match", attribution: "observed_match", reasonCodes: [] };
+    snapshot.testRuns = [run];
+    snapshot.metadata!.status = "stale";
+    const { requests, errors } = await mountDashboard(page, data, { metadataRefreshFailures: 1 });
+    if (locale === "pl") await selectLanguage(page, "en");
+    if (width < 768) await page.getByRole("button", { name: translate(locale, "dashboard.toggleNavigation") }).click();
+    await page.getByRole("navigation").getByRole("button", { name: translate(locale, "dashboard.navTests"), exact: true }).click();
+    const screen = page.locator("[data-tests-dashboard]");
+    const entry = width < 1280 ? screen.locator("[data-test-result]") : screen.getByRole("tabpanel").locator("tbody tr");
+    await expect(entry).toContainText(translate(locale, "testSource.observed_match"));
+    await expect(entry).toContainText(translate(locale, "testView.reason.metadata_stale"));
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await screen.getByRole("button", { name: translate(locale, "testView.detailsFor", { name: "test", branch: "main" }) }).click();
+    const drawer = page.getByRole("dialog");
+    await expect(drawer).toContainText(translate(locale, "testView.reasonDetail.metadata_stale"));
+    await expect(drawer).toContainText(`${translate(locale, "testView.queuedRevision")}: ${run.worktreeHead}`);
+    await expect(drawer).toContainText(`${translate(locale, "testView.preflightRevision")}: ${observation.head}`);
+    await drawer.getByRole("button", { name: translate(locale, "testView.jumpToOutput") }).click();
+    await expect(drawer.getByRole("region", { name: translate(locale, "tests.output") })).toBeFocused();
+    await drawer.getByRole("button", { name: translate(locale, "metadata.refresh") }).click();
+    await expect(drawer.getByRole("alert")).toContainText("Fixture Git refresh failed");
+    await drawer.getByRole("button", { name: translate(locale, "metadata.refresh") }).click();
+    await expect(drawer.getByRole("alert")).toHaveCount(0);
+    await expect(drawer).toContainText(translate(locale, "testView.source.current"));
+    await page.keyboard.press("Escape");
+    await expect(screen.getByRole("button", { name: translate(locale, "testView.detailsFor", { name: "test", branch: "main" }) })).toBeFocused();
+    expect(requests.filter((request) => request.path === "/api/projects/web/metadata/refresh")).toHaveLength(2);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("a cancelled queued run says the command never started, with a localized close control", async ({ page }) => {
+  const data = dashboardFixture();
+  const run = testRunFixture({ phase: "cancelled", startedAt: null, exitCode: null });
+  run.source = { ...run.source, attribution: "pending", processOutcome: "cancelled" };
+  data.projects[0].testRuns = [run];
+  await mountDashboard(page, data);
+  await selectLanguage(page, "en");
+  await page.getByRole("navigation").getByRole("button", { name: "Testy", exact: true }).click();
+  await page.getByRole("tab", { name: "Historia", exact: true }).click();
+  await page.locator("[data-tests-dashboard]").getByRole("button", { name: "Wynik: test · main" }).click();
+  const drawer = page.getByRole("dialog");
+  await expect(drawer).toContainText("Nie uruchomiono polecenia");
+  await expect(drawer).not.toContainText("Oczekuje na sprawdzenie źródła");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Uruchom test", exact: true }).click();
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Zamknij", exact: true })).toBeVisible();
+});
 
 test("test launch dialog follows the chosen worktree and resets its preset", async ({ page }) => {
   const data = dashboardFixture();

@@ -18,7 +18,7 @@ export function TestRunDialog({ snapshots, mutate, setError }: {
   const [open, setOpen] = useState(false);
   return <Dialog open={open} onOpenChange={setOpen}>
     <DialogTrigger asChild><Button disabled={!snapshots.length}><Play aria-hidden />{t("tests.run")}</Button></DialogTrigger>
-    <DialogContent className="sm:max-w-lg">
+    <DialogContent closeLabel={t("common.close")} className="sm:max-w-lg">
       <DialogHeader><DialogTitle>{t("tests.run")}</DialogTitle><DialogDescription>{t("testView.runDescription")}</DialogDescription></DialogHeader>
       {open ? <RunForm snapshots={snapshots} mutate={mutate} setError={setError} onQueued={() => setOpen(false)} /> : null}
     </DialogContent>
