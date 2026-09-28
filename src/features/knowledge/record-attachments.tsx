@@ -116,6 +116,7 @@ function Documents(props: Props) {
   const [downloadError, setDownloadError] = useState(false);
   const { busy, download } = useDownload(props, setDownloadError);
   const triggerRef = useRef<HTMLAnchorElement | null>(null);
+  const listRef = useRef<HTMLUListElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const wasSelected = useRef(selectedId);
   const noteHashRef = useRef<string | null>(null);
@@ -147,7 +148,14 @@ function Documents(props: Props) {
   }, [token, projectId, recordId, recordKind, changeVersion, retry]);
   useEffect(() => {
     if (selectedId && selectedId !== wasSelected.current) headingRef.current?.focus();
-    if (!selectedId && wasSelected.current) requestAnimationFrame(() => (triggerRef.current?.isConnected ? triggerRef.current : document.querySelector<HTMLElement>("[data-memory-detail] h3"))?.focus());
+    if (!selectedId && wasSelected.current) {
+      const previousId = wasSelected.current;
+      requestAnimationFrame(() => {
+        const matchingLink = Array.from(listRef.current?.querySelectorAll<HTMLAnchorElement>("a[data-document-id]") ?? [])
+          .find(link => link.dataset.documentId === previousId);
+        (matchingLink ?? (triggerRef.current?.isConnected ? triggerRef.current : null) ?? document.querySelector<HTMLElement>("[data-memory-detail] h3"))?.focus();
+      });
+    }
     wasSelected.current = selectedId;
   }, [selectedId]);
   const navigate = (id: string | null, hash?: string) => {
@@ -164,9 +172,9 @@ function Documents(props: Props) {
     {listingError && <div role="alert" className="space-y-2 text-sm"><p>{t("knowledge.attachmentsFailed")}</p><Button variant="outline" size="sm" onClick={() => { setFiles(null); setListingError(false); setRetry(value => value + 1); }}>{t("knowledge.retry")}</Button></div>}
     {!currentFiles && !listingError && <p role="status" className="text-sm">{t("knowledge.loading")}</p>}
     {currentFiles?.length === 0 && <p className="text-sm text-muted-foreground">{t("knowledge.noAttachments")}</p>}
-    {currentFiles && <ul hidden={Boolean(selectedId)} className="space-y-2">{currentFiles.map(file => <li key={file.id} className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border p-3">
+    {currentFiles && <ul ref={listRef} hidden={Boolean(selectedId)} className="space-y-2">{currentFiles.map(file => <li key={file.id} className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border p-3">
       <FileText aria-hidden className="size-4 shrink-0" /><span className="min-w-0 flex-1 break-words text-sm">{file.filename}<span className="block text-xs text-muted-foreground">{file.mediaType} · {Math.ceil(file.size / 1024)} KB</span></span>
-      <a href={documentUrl(file.id)} className="inline-flex min-h-8 items-center rounded-md px-2 text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring" aria-current={selectedId === file.id ? "page" : undefined} aria-label={`${t("knowledge.openDocument")}: ${file.filename}`} onClick={event => { if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); triggerRef.current = event.currentTarget; navigate(file.id); }}>{t("knowledge.openDocument")}</a>
+      <a data-document-id={file.id} href={documentUrl(file.id)} className="inline-flex min-h-8 items-center rounded-md px-2 text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring" aria-current={selectedId === file.id ? "page" : undefined} aria-label={`${t("knowledge.openDocument")}: ${file.filename}`} onClick={event => { if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); triggerRef.current = event.currentTarget; navigate(file.id); }}>{t("knowledge.openDocument")}</a>
       <Button variant="outline" size="sm" disabled={busy} aria-label={`${t("knowledge.downloadAttachment")}: ${file.filename}`} onClick={() => void download(file)}><Download aria-hidden className="size-4" />{t("knowledge.downloadAttachment")}</Button>
     </li>)}</ul>}
     {downloadError && <p role="alert" className="text-sm">{t("knowledge.attachmentsFailed")}</p>}
