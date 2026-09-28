@@ -54,9 +54,13 @@ for (const width of [390, 1440]) {
     await expect(console.getByRole("button", { name: "Wrap lines", exact: true })).toHaveAttribute("aria-pressed", "false");
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     await expect(otherConsole).toContainText("Last run logs");
+    await expect(otherConsole).toContainText("Matches: 0");
+    await expect(otherConsole.getByRole("button", { name: "Expand logs: Fixture API" })).toHaveAttribute("aria-expanded", "false");
+    await expect(otherConsole.locator("[data-log-lines]")).toHaveCount(0);
+    await search.fill("");
+    await otherConsole.getByRole("button", { name: "Expand logs: Fixture API" }).click();
     await expect(otherConsole.locator("[data-log-lines]")).toContainText("older-api-output");
     await expect(otherConsole.locator("[data-log-lines]")).not.toContainText("ERROR one");
-    await search.fill("");
     await otherConsole.getByRole("button", { name: "Collapse logs: Fixture API" }).click();
     await expect(otherConsole.locator("[data-log-lines]")).toHaveCount(0);
     await otherConsole.getByRole("button", { name: "Expand logs: Fixture API" }).focus();
