@@ -1,0 +1,213 @@
+{
+  "date": "2026-09-28",
+  "application_commit": "e4a3a2f3d0b37ba5ea1a0e36d0838c0ea850811d",
+  "source_snapshot_commit": "81069845634a3fed6365589ae32a5c3430a57478",
+  "browser": "Chromium 149.0.7827.55 via Playwright 1.61.1",
+  "data_mode": "SQLite backup and copied attachments from isolated K7a pilot; no audit knowledge mutations",
+  "viewports": [
+    [
+      1440,
+      1000
+    ],
+    [
+      1440,
+      900
+    ],
+    [
+      390,
+      844
+    ],
+    [
+      720,
+      450
+    ]
+  ],
+  "locales": [
+    "pl",
+    "en"
+  ],
+  "themes": [
+    "dark",
+    "light"
+  ],
+  "build": {
+    "preset": "node:build",
+    "run_id": "265a034b-8f08-4e4e-83a7-85132477a7ea",
+    "phase": "passed",
+    "exit_code": 0,
+    "source_attribution": "observed_match"
+  },
+  "measurements": {
+    "memory_search_width_pl_1440": 59,
+    "memory_search_width_en_1440": 109,
+    "mobile_document_scroll_width": 390,
+    "short_viewport_document_scroll_width": 720,
+    "mobile_note_article_top_after_open": 760,
+    "mobile_note_article_height": 1197,
+    "light_selected_link_rgb": [
+      122,
+      171,
+      0
+    ],
+    "light_background_rgb": [
+      255,
+      255,
+      255
+    ],
+    "light_selected_link_font_px": 16,
+    "light_selected_link_contrast": 2.744137051000779,
+    "reply_target_top_after_search_navigation": 2090.5,
+    "reply_target_viewport_height": 1000,
+    "reply_container_scroll_top": 0
+  },
+  "interactions": {
+    "markdown_download": "implementation-plan.md downloaded; URL unchanged; no reader",
+    "document_only_query": "Cel i granice pierwszego wydania",
+    "document_only_query_kind": "all",
+    "document_only_query_result": "no matching entries",
+    "reply_query": "dual-engine",
+    "reply_result_title": "Reply",
+    "reply_excerpt_contains_query": false,
+    "reply_target_scrolled_or_highlighted": false,
+    "memory_query_after_tab_return": "",
+    "memory_query_after_same_tab_back": "K7a",
+    "decision_source_link_opens_task": true,
+    "mobile_task_focus_after_enter": "BODY",
+    "mobile_task_focus_after_next_tab": "Back to list"
+  },
+  "historical_reply_dates_in_render_order": [
+    "2026-09-05",
+    "2026-09-05",
+    "2026-09-13",
+    "2026-09-13",
+    "2026-09-27",
+    "2026-09-13",
+    "2026-09-05",
+    "2026-09-13",
+    "2026-09-27",
+    "2026-09-13",
+    "2026-09-05",
+    "2026-09-13",
+    "2026-09-13",
+    "2026-09-05"
+  ],
+  "cleanup": {
+    "browser": "closed",
+    "managed_server": "stopped",
+    "port": 3001,
+    "environment_profile": "default restored; temporary profile deleted",
+    "claim": "released"
+  },
+  "limits": [
+    "No real mobile device, screen reader or actual browser zoom verification",
+    "No network fault injection, oversized attachment or >25 replies fixture",
+    "Raw Markdown behavior grounded in code, not a synthetic edited record",
+    "Pilot snapshot is older than application; not production dataset acceptance"
+  ],
+  "screenshots": [
+    {
+      "file": "screenshots/01-knowledge.png",
+      "sha256": "e98314dc4451ac7585db5bed44d30eb25c8aeedf8f137d84ffaf14e7729a4acf",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/02-task.png",
+      "sha256": "e1dfde8152c3b2980c3f25d2896ce5e27d5a5ca6eb118474386e475d06375d4e",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/03-relations.png",
+      "sha256": "24122baff9e99d52f6911f2b189edaa0c2142ae3b2bbf2601b33c0ecefed91a2",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/04-discussion.png",
+      "sha256": "04645697c9f740bd4c91f39ceb442bf45c8db8e8bcffc93acc51e61597b56398",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/05-chronology.png",
+      "sha256": "268a1be03d78fdc7333a56ab96c7478524ca1452b905bcdfe6e4e3cd1910bfc1",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/06-memory-list.png",
+      "sha256": "2a0d96945d79be808caee5ae2e1674e686991b2252ff0da0859ed19546f1dbbb",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/07-note-json.png",
+      "sha256": "aacc53c528a118361b57ea564fd2b093e6d6d7a0de1c026e1c1e384bf891933c",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/08-documents.png",
+      "sha256": "dd360c247b7fa047896aa1c01eabb38bfcfb7b2f1d577f0603d2ae6fc7dffe43",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/09-document-search.png",
+      "sha256": "7ecd8eca51983141aec22e047cd5c8c0e9e3c2c99bc249f835693c49b1daea5c",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/10-mobile-memory-list.png",
+      "sha256": "a7ed5916662639dd8b30fdb59a3ba054161f5de5bb8bcb93709bbac558bee741",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/11-mobile-note.png",
+      "sha256": "0495d45189c00b7e0fc1deb35bd6cdea867a4634021b3b5cc3b47292d71ce572",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/12-mobile-note-reading.png",
+      "sha256": "8670be7145b0c73db259cbbb7031884eb7caefc126bbcf56c51fb5e39ee68273",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/13-mobile-task.png",
+      "sha256": "8e3d7ff52a972b2ed0cda1077e402d3adc9549868c0e449a94e71b083ea6d7c1",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/14-decision.png",
+      "sha256": "2aab76f09a090cd4a2dff8510e51d802482e23674297e63b7adfe3d1e111607e",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/15-history.png",
+      "sha256": "bd1761b02c1092eccd3e1a6d9313a9c66fe0a3f3c0b69f075ece16ff30f375ba",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/16-light-english.png",
+      "sha256": "bfa8429e506f95cedc1abad2023880bb38e89fee21bc998a7297a4ece0edfa8b",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/17-short-viewport.png",
+      "sha256": "75c1145a01c1b01378a14662cc9b31403b4ab41909bd9802f1db0f36c707867b",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/18-reply-search.png",
+      "sha256": "73b21f1b076812bed23f6283c9ae35b98cdd80a204d494c5c91f7b16e13fa236",
+      "inspected": true
+    },
+    {
+      "file": "screenshots/19-reply-destination.png",
+      "sha256": "29712cc46386ea1b7bd38eba9b791a909c30585031aaa8f35bb7421a58adf77b",
+      "inspected": true
+    }
+  ],
+  "owner_preview_after_capture": {
+    "requested": true,
+    "managed_server": "running",
+    "port": 3001,
+    "profile": "knowledge-reading-audit",
+    "claim": "held for owner preview at handoff",
+    "binding": "loopback; remote browser needs SSH forwarding",
+    "same_isolated_copy": true
+  }
+}

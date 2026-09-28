@@ -1,6 +1,6 @@
 # Czytanie backlogu, notatek i pamięci: analiza źródłowa
 
-Stan: część źródłowa ukończona, audyt wizualny i interakcyjny oczekuje na dostęp do sprawnego narzędzia przechwytywania. Data: 2026-09-28. Kod: `e4a3a2f`, Worktree Switcher. Osobny worktree: gałąź `audit/knowledge-reading`. Zakres nie obejmuje LLM Ops Hub.
+Stan: analiza źródłowa ukończona; późniejszy [audyt wizualny i interakcyjny](visual-audit.md) zawiera 19 aktualnych zrzutów oraz potwierdzenia i ograniczenia tych ustaleń. Data: 2026-09-28. Kod: `e4a3a2f`, Worktree Switcher. Osobny worktree: gałąź `audit/knowledge-reading`. Zakres nie obejmuje LLM Ops Hub.
 
 ## Cel i granice dowodów
 
@@ -8,13 +8,15 @@ Człowiek powinien móc znaleźć zadanie, przeczytać jego uzasadnienie i kryte
 
 Poniższe ustalenia wynikają z bieżącego kodu i kontraktów. Nie zastępują oględzin zalogowanego interfejsu. Istniejące testy zostały przeczytane, ale nie uruchomiono ich ponownie w ramach analizy. Dawne zrzuty i raporty nie stanowią dowodów tego audytu. Wbudowana przeglądarka otworzyła aktualny adres usługi; odczyt DOM pokazał brak tokena, a dwie próby snapshotu zakończyły się `PreviewAutomationExecutionError`. Nie uzyskano zaakceptowanego zrzutu. Nie ustalono rewizji eksportu GUI uruchomionej usługi.
 
+Część powyżej opisuje ograniczenie pierwszej fazy. Po zgodzie właściciela przeprowadzono lokalny audyt Playwright na osobnej kopii pilota. KR-07 potwierdzono na rzeczywistych 14 komentarzach; KR-13 nadal wymaga odtworzenia błędów sieci, a KR-15 sprawdzono częściowo. Nowe pomiary KR-16 (pole zapytania 59 px) i KR-17 (kontrast 2,74:1) opisano w raporcie wizualnym.
+
 ## Najważniejszy wniosek
 
 Problem zaczyna się przed CSS. Interfejs pokazuje techniczny model zapisanych rekordów, a właściwe materiały do czytania pozostawia w załącznikach. Poprawienie kolorów lub samo sformatowanie JSON nie rozwiąże dojścia do dokumentów, wyszukiwania, znaczenia relacji i kolejności historii.
 
 Importer zachowuje oryginalne dane i pliki. To dobra podstawa: należy poprawić ich odczyt i prezentację, bez przepisywania źródeł ani udawania, że brakujące metadane zostały ustalone.
 
-## Ścieżka czytelnika do sprawdzenia w przeglądarce
+## Pierwotna ścieżka do weryfikacji (wykonanie opisane w raporcie wizualnym)
 
 1. Wejście do Wiedzy i wybór projektu. Ocena wizualna: oczekuje. Sprawdzić zgodność kontekstu z pickerem projektu runtime w bocznej nawigacji.
 2. Lista backlogu, widoki i wyszukiwanie. W kodzie są liczniki, statusy, priorytety i paginacja; brak pełnego przeszukiwania treści w tej zakładce.
@@ -177,7 +179,7 @@ Odbiór: otwarcie i powrót klawiaturą; widoczny fokus; brak pułapki przewijan
 
 ## Proponowana kolejność prac
 
-To propozycja do dopracowania po oględzinach, nie zatwierdzenie implementacji.
+Poniżej pierwotna propozycja źródłowa. Po oględzinach zaktualizowano kolejność i kryteria w [planie poprawek](implementation-plan.md); implementacji jeszcze nie wykonano.
 
 1. **Model czytania i dokumenty.** Ustalić reprezentatywny import oraz kontrakt rozróżniający notatkę, dokument i techniczną proweniencję. Bezpieczny czytnik Markdown/tekstu/obrazu, oryginał dostępny osobno. Obejmuje KR-01, KR-02 i KR-06.
 2. **Zadanie z kontekstem.** Przywrócić czytelne sekcje, tytuły i znaczenie relacji, autorstwo i kolejność dyskusji. Obejmuje KR-04, KR-05, KR-07 i część KR-09.
@@ -186,7 +188,7 @@ To propozycja do dopracowania po oględzinach, nie zatwierdzenie implementacji.
 
 Kierunek wizualny pozostaje dotychczasowy: neutralny grafit, czytelny tekst, oszczędny akcent lime, shadcn. Długie dokumenty potrzebują przede wszystkim hierarchii, szerokości wiersza i miejsca do czytania. Konkretny układ należy ocenić na aktualnych ekranach przed projektowaniem wariantów.
 
-## Matryca audytu wizualnego do uzupełnienia
+## Pierwotna matryca audytu wizualnego
 
 - Lista backlogu i długie zadanie: desktop PL, widok niski 1366×768.
 - Relacje i importowana dyskusja z wieloma komentarzami: tytuły, daty, kolejność, powrót.
@@ -197,4 +199,4 @@ Kierunek wizualny pozostaje dotychczasowy: neutralny grafit, czytelny tekst, osz
 - Mobilne lista/szczegół/powrót; pola filtrów i widoczna ilość treści.
 - Klawiatura, zoom, focus, jasny/ciemny motyw, błędy sieci.
 
-Każdy ekran musi dostać nowy zrzut, odczyt DOM, rzeczywiste wymiary, opis akcji i przypisanie do ustaleń. Bez tego nie należy uznawać części wizualnej za ukończoną.
+Wynik wykonanych prób, zrzuty i pomiary znajdują się w [raporcie wizualnym](visual-audit.md). Nie cała pierwotna matryca została wykonana; raport jawnie wymienia nieprzetestowane stany, w tym awarie sieci i rzeczywisty zoom.

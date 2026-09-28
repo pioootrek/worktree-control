@@ -127,7 +127,29 @@
       "author": "agent:codex",
       "created": "2026-09-28",
       "files": [
-        "source-analysis.md"
+        "evidence.json",
+        "implementation-plan.md",
+        "screenshots/01-knowledge.png",
+        "screenshots/02-task.png",
+        "screenshots/03-relations.png",
+        "screenshots/04-discussion.png",
+        "screenshots/05-chronology.png",
+        "screenshots/06-memory-list.png",
+        "screenshots/07-note-json.png",
+        "screenshots/08-documents.png",
+        "screenshots/09-document-search.png",
+        "screenshots/10-mobile-memory-list.png",
+        "screenshots/11-mobile-note.png",
+        "screenshots/12-mobile-note-reading.png",
+        "screenshots/13-mobile-task.png",
+        "screenshots/14-decision.png",
+        "screenshots/15-history.png",
+        "screenshots/16-light-english.png",
+        "screenshots/17-short-viewport.png",
+        "screenshots/18-reply-search.png",
+        "screenshots/19-reply-destination.png",
+        "source-analysis.md",
+        "visual-audit.md"
       ],
       "id": "NOTE-20260928-knowledge-reading-audit",
       "path": "notes/NOTE-20260928-knowledge-reading-audit",
@@ -140,7 +162,7 @@
         "accessibility",
         "plan"
       ],
-      "title": "Czytanie backlogu, notatek i pamięci: analiza źródłowa i plan audytu GUI"
+      "title": "Czytanie backlogu, notatek i pamięci: audyt GUI, zrzuty i plan poprawek"
     },
     {
       "author": "agent:claude",

@@ -104,6 +104,11 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "Owner requested a deep GUI analysis specifically of reading backlog, notes and memory in Worktree Switcher, excluding LLM Ops Hub. Source analysis at e4a3a2f is recorded in NOTE-20260928-knowledge-reading-audit/source-analysis.md: 15 findings covering document access, JSON bodies, search scope, flattened task sections, opaque relations, reply ordering, navigation and reading states, with a four-stage correction proposal. Visual audit remains incomplete: built-in screenshot capture failed and the opened service page was unauthenticated; permission for local Chromium/Playwright on an isolated pilot copy is pending. No current screenshots accepted, application code changed, or runtime started. This is analysis, not approval of the proposed redesign."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-28",
+      "text": "Completed the owner-authorized Playwright GUI reading audit on an isolated K7a copy, application e4a3a2f. NOTE-20260928-knowledge-reading-audit now includes 19 inspected screenshots, measurements and four proposed implementation slices. Confirmed download-only documents, JSON note bodies, collapsed search field, mobile filter dominance, unordered imported replies and search results that do not reach the matched reply. Audit only; no application redesign, real-data migration or parent-feature closure."
     }
   ],
   "priority": "next",

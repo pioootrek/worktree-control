@@ -1,20 +1,46 @@
 {
   "author": "agent:codex",
   "body": {
+    "additional_visual_findings": 2,
     "audited_commit": "e4a3a2f",
-    "implementation_status": "Analysis only; no application code, service configuration or real knowledge data changed.",
+    "evidence": "evidence.json",
+    "implementation_plan": "implementation-plan.md",
+    "implementation_status": "Audit and documentation only; no application code or real knowledge records changed. Audit server was cleaned up after capture, then restarted on the same isolated copy at the owner’s request for manual review.",
     "related_ids": [
       "FEAT-20260905-shared-project-memory",
       "NOTE-20260911-approved-gui-direction"
     ],
-    "report": "source-analysis.md",
+    "report": "visual-audit.md",
     "scope": "Worktree Switcher only: backlog, notes, memory, discussions and reading attached documents. LLM Ops Hub excluded by owner.",
     "source_findings": 15,
-    "visual_status": "Incomplete. Built-in browser navigation and DOM read worked, but the page was unauthenticated and two snapshot requests failed with PreviewAutomationExecutionError. No current screenshot was accepted. Permission to use local Chromium/Playwright with an isolated pilot copy is pending."
+    "source_report": "source-analysis.md",
+    "visual_status": "Completed scoped Playwright audit on an owner-authorized isolated pilot copy; 19 current screenshots inspected. Desktop/mobile, PL/EN, dark/light, document download/search, reply navigation, partial keyboard and contrast checks. Limits documented in report."
   },
   "created": "2026-09-28",
   "files": [
-    "source-analysis.md"
+    "source-analysis.md",
+    "visual-audit.md",
+    "implementation-plan.md",
+    "evidence.json",
+    "screenshots/01-knowledge.png",
+    "screenshots/02-task.png",
+    "screenshots/03-relations.png",
+    "screenshots/04-discussion.png",
+    "screenshots/05-chronology.png",
+    "screenshots/06-memory-list.png",
+    "screenshots/07-note-json.png",
+    "screenshots/08-documents.png",
+    "screenshots/09-document-search.png",
+    "screenshots/10-mobile-memory-list.png",
+    "screenshots/11-mobile-note.png",
+    "screenshots/12-mobile-note-reading.png",
+    "screenshots/13-mobile-task.png",
+    "screenshots/14-decision.png",
+    "screenshots/15-history.png",
+    "screenshots/16-light-english.png",
+    "screenshots/17-short-viewport.png",
+    "screenshots/18-reply-search.png",
+    "screenshots/19-reply-destination.png"
   ],
   "id": "NOTE-20260928-knowledge-reading-audit",
   "last_reviewed": "2026-09-28",
@@ -28,5 +54,5 @@
     "accessibility",
     "plan"
   ],
-  "title": "Czytanie backlogu, notatek i pamięci: analiza źródłowa i plan audytu GUI"
+  "title": "Czytanie backlogu, notatek i pamięci: audyt GUI, zrzuty i plan poprawek"
 }
