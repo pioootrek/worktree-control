@@ -159,7 +159,10 @@ export function WorktreeStoragePanel({
               <svg className="h-24 w-full" viewBox="0 0 100 36" preserveAspectRatio="none" role="img" aria-label={t("storage.historyDescription")}>
                 <polyline points={totalPoints} fill="none" className="stroke-primary" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
                 <polyline points={nextPoints} fill="none" className="stroke-chart-2" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+                {selected.history.length === 1 && <><circle cx="50" cy={32 - selected.history[0].totalBytes / maximum * 28} r="2.5" className="fill-primary" /><circle cx="50" cy={32 - selected.history[0].nextBytes / maximum * 28} r="2.5" className="fill-chart-2" /></>}
               </svg>
+              {selected.history.length === 1 && <p className="mt-1 text-xs text-muted-foreground">{t("storage.firstMeasurement")}</p>}
+              <ul className="sr-only">{selected.history.map((point) => <li key={point.measuredAt}>{new Date(point.measuredAt).toLocaleString(locale)}: {t("storage.total")} {formatBytes(point.totalBytes)}, .next {formatBytes(point.nextBytes)}</li>)}</ul>
               <div className="mt-2 flex gap-4 text-xs text-muted-foreground">
                 <span><span className="mr-1 inline-block size-2 rounded-full bg-primary" />{t("storage.total")}</span>
                 <span><span className="mr-1 inline-block size-2 rounded-full bg-chart-2" />.next</span>

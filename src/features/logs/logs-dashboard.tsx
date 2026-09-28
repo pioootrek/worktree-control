@@ -30,20 +30,23 @@ function LogConsole({ snapshot, aggregate, query, clearQuery }: { snapshot: Proj
   const raw = snapshot.runtime.logs;
   const [paused, setPaused] = useState<string[] | null>(query ? [...raw] : null);
   const [previousQuery, setPreviousQuery] = useState(query);
-  const [expanded, setExpanded] = useState(Boolean(query) || snapshot.runtime.phase !== "stopped");
+  const [expanded, setExpanded] = useState(() => snapshot.runtime.phase !== "stopped" || Boolean(query && logMatches(raw.map(cleanLogText), query).matches.length));
   const [hit, setHit] = useState(0);
   const [wrap, setWrap] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const viewport = useRef<HTMLDivElement>(null);
-  if (previousQuery !== query) {
-    setPreviousQuery(query);
-    setHit(0);
-    if (query) { setExpanded(true); if (paused === null) setPaused([...raw]); }
-  }
   const lines = useMemo(() => (paused ?? raw).map(cleanLogText), [paused, raw]);
   const content = lines.join("\n");
   const { matches, truncated } = useMemo(() => logMatches(lines, query), [lines, query]);
+  if (previousQuery !== query) {
+    setPreviousQuery(query);
+    setHit(0);
+    if (query) {
+      setExpanded(matches.length > 0);
+      if (matches.length > 0 && paused === null) setPaused([...raw]);
+    }
+  }
   const currentHit = matches.length ? hit % matches.length : 0;
   const byLine = new Map<number, Array<{ start: number; end: number; index: number }>>();
   matches.forEach((match, index) => byLine.set(match.line, [...(byLine.get(match.line) ?? []), { ...match, index }]));
@@ -80,9 +83,9 @@ function LogConsole({ snapshot, aggregate, query, clearQuery }: { snapshot: Proj
 
   return <Collapsible open={!aggregate || expanded} onOpenChange={setExpanded} asChild><Card className="min-w-0 gap-0 overflow-hidden py-0 shadow-none" data-log-console data-project-id={snapshot.project.id}>
     <div className="space-y-2 border-b px-4 py-3">
-      <div className="flex flex-wrap items-center gap-2">{aggregate ? <CollapsibleTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={t(expanded ? "logsView.collapse" : "logsView.expand", { project: snapshot.project.name })}>{expanded ? <ChevronUp aria-hidden /> : <ChevronDown aria-hidden />}</Button></CollapsibleTrigger> : null}<h3 className="font-semibold">{snapshot.project.name}</h3><RuntimeBadge phase={snapshot.runtime.phase} /><Badge variant="secondary">{t(active ? "logsView.currentRun" : snapshot.runtime.startedAt ? "logsView.lastRun" : "logsView.noRun")}</Badge></div>
-      <p className="break-all font-mono text-xs text-muted-foreground">{worktree?.branch ?? snapshot.runtime.worktreePath ?? t("logsView.noRun")} · {t("project.port")} {snapshot.project.port}</p>
-      {snapshot.runtime.startedAt ? <p className="text-xs text-muted-foreground">{t("logsView.started", { time: new Date(snapshot.runtime.startedAt).toLocaleString(locale) })}</p> : null}
+      <div className="flex flex-wrap items-center gap-2">{aggregate ? <CollapsibleTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={t(expanded ? "logsView.collapse" : "logsView.expand", { project: snapshot.project.name })}>{expanded ? <ChevronUp aria-hidden /> : <ChevronDown aria-hidden />}</Button></CollapsibleTrigger> : null}<h3 className="font-semibold">{snapshot.project.name}</h3><RuntimeBadge phase={snapshot.runtime.phase} /><Badge variant="secondary">{t(active ? "logsView.currentRun" : snapshot.runtime.startedAt ? "logsView.lastRun" : "logsView.noRun")}</Badge>{query && <Badge variant={matches.length ? "default" : "outline"} className="ml-auto">{t("logsView.matches", { count: matches.length })}{truncated ? "+" : ""}</Badge>}</div>
+      {(!aggregate || expanded) && <><p className="break-all font-mono text-xs text-muted-foreground">{worktree?.branch ?? snapshot.runtime.worktreePath ?? t("logsView.noRun")} · {t("project.port")} {snapshot.project.port}</p>
+      {snapshot.runtime.startedAt ? <p className="text-xs text-muted-foreground">{t("logsView.started", { time: new Date(snapshot.runtime.startedAt).toLocaleString(locale) })}</p> : null}</>}
     </div>
     <CollapsibleContent>
     <div className="flex flex-wrap items-end gap-2 border-b p-3">

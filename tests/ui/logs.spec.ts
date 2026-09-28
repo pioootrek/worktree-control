@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { dashboardFixture, mountDashboard } from "./dashboard-fixture";
+import { selectLanguage } from "./shell-actions";
 
 for (const width of [390, 1440]) {
   test(`log console scopes sources, searches literal text and exports clean logs at ${width}px`, async ({ page }) => {
@@ -68,7 +69,7 @@ for (const width of [390, 1440]) {
     await expect(console.getByRole("button", { name: /Collapse logs|Expand logs/ })).toHaveCount(0);
     await expect(text).toContainText("ERROR one");
     await expect(console.getByRole("button", { name: "Start", exact: true })).toHaveCount(0);
-    await page.getByRole("button", { name: "Switch language to Polish", exact: true }).click();
+    await selectLanguage(page);
     await expect(screen.getByRole("searchbox", { name: "Szukaj w logach" })).toBeVisible();
     expect(requests).toEqual([]); expect(errors).toEqual([]);
   });
@@ -101,5 +102,32 @@ test("log reading pauses a rolling buffer and resumes at new output without addi
   await expect(console.getByRole("button", { name: "Next match" })).toBeDisabled();
   await expect(console.locator("[data-log-lines]")).toContainText("original-line-399");
   await expect.poll(() => page.evaluate(() => (window as unknown as { fixtureEvents: { active: number } }).fixtureEvents.active)).toBe(1);
+  expect(errors).toEqual([]);
+});
+
+test("aggregate log search leaves empty and zero-match consoles compact", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const data = dashboardFixture();
+  data.projects[0].runtime.logs = [];
+  const quiet = structuredClone(data.projects[0]);
+  quiet.project.id = "quiet"; quiet.project.name = "Quiet API"; quiet.runtime.logs = ["service ready"];
+  const failing = structuredClone(data.projects[0]);
+  failing.project.id = "failing"; failing.project.name = "Failing worker"; failing.runtime.logs = ["ERROR from worker"];
+  data.projects.push(quiet, failing);
+  const { errors } = await mountDashboard(page, data);
+  await page.getByRole("combobox", { name: /Choose project/ }).click();
+  await page.getByRole("option", { name: /All projects/ }).click();
+  await page.getByRole("button", { name: "Toggle navigation" }).click();
+  await page.getByRole("navigation").getByRole("button", { name: "Logs" }).click();
+  await page.getByRole("searchbox", { name: "Search logs across all projects" }).fill("ERROR");
+  const consoles = page.locator("[data-log-console]");
+  await expect(consoles).toHaveCount(3);
+  await expect(consoles.nth(0)).toContainText("Matches: 0");
+  await expect(consoles.nth(1)).toContainText("Matches: 0");
+  await expect(consoles.nth(0).locator("[data-log-lines]")).toHaveCount(0);
+  await expect(consoles.nth(1).locator("[data-log-lines]")).toHaveCount(0);
+  await expect(consoles.nth(2)).toContainText("Matches: 1");
+  await expect(consoles.nth(2).locator("mark")).toHaveText("ERROR");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   expect(errors).toEqual([]);
 });

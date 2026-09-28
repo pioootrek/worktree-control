@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { dashboardFixture, mountDashboard } from "./dashboard-fixture";
+import { translate } from "../../src/i18n/messages";
 import { openPreferences, openSystemDialog, selectLanguage } from "./shell-actions";
 
 test("system settings and project creation return focus to their visible menu triggers", async ({ page }) => {
@@ -29,6 +30,35 @@ test("system settings and project creation return focus to their visible menu tr
   await page.keyboard.press("Escape");
   await expect(project).toBeFocused();
   expect(errors).toEqual([]);
+});
+
+test("system settings discard cancelled drafts and reopen from the latest snapshot", async ({ page }) => {
+  const data = dashboardFixture();
+  const t = (key: Parameters<typeof translate>[1]) => translate("en", key);
+  await mountDashboard(page, data);
+  await openSystemDialog(page, "capacity.openSettings");
+  let dialog = page.getByRole("dialog");
+  await dialog.getByRole("switch", { name: t("capacity.enabled") }).click();
+  await dialog.getByLabel(t("capacity.limit")).fill("9");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  data.capacity.enabled = true;
+  data.capacity.limit = 4;
+  data.testQueue.limit = 3;
+  await page.evaluate(() => (window as unknown as { fixtureEvents: { emit(type: string, data: unknown): void } }).fixtureEvents.emit("changed", { kinds: ["controller"], projectIds: [], allProjects: true }));
+  await page.getByRole("button", { name: "System", exact: true }).click();
+  const capacityAction = page.getByRole("menuitem").filter({ hasText: t("capacity.openSettings") });
+  await expect(capacityAction).toContainText("0/4");
+  await capacityAction.click();
+  dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("switch", { name: t("capacity.enabled") })).toBeChecked();
+  await expect(dialog.getByLabel(t("capacity.limit"))).toHaveValue("4");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await openSystemDialog(page, "tests.openSettings");
+  await expect(page.getByRole("dialog").getByLabel(t("tests.limit"))).toHaveValue("3");
+  await page.getByRole("dialog").getByLabel(t("tests.limit")).fill("8");
+  await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
+  await openSystemDialog(page, "tests.openSettings");
+  await expect(page.getByRole("dialog").getByLabel(t("tests.limit"))).toHaveValue("3");
 });
 
 test("preferences change locale and theme without changing runtime or knowledge scope", async ({ page }) => {

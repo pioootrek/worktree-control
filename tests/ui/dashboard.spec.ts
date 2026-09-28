@@ -627,6 +627,7 @@ for (const width of [390, 1440]) {
     if (width < 768) await page.getByRole("button", { name: "Toggle navigation", exact: true }).click();
     await page.getByRole("navigation").getByRole("button", { name: "Tests", exact: true }).click();
     await expect(page.locator("[data-tests-dashboard]")).toBeVisible();
+    if (width < 768) await page.locator("[data-tests-dashboard]").getByRole("button", { name: "Filters", exact: true }).click();
     await expect(page.locator("[data-tests-dashboard]").getByRole("combobox", { name: "Project", exact: true })).toBeVisible();
     await picker.click();
     await page.getByRole("option", { name: /Fixture API/ }).click();
@@ -668,12 +669,15 @@ for (const width of [390, 1440]) {
     const drawer = page.getByRole("dialog");
     await expect(drawer).toContainText("Passed");
     await expect(drawer).toContainText("Source unverified");
+    await expect(drawer).toContainText("At execution:");
+    await expect(drawer).toContainText("Now: Unknown");
     await expect(drawer).toContainText("fixture result output");
     await page.screenshot({ path: test.info().outputPath("test-details.png"), animations: "disabled" });
     await page.keyboard.press("Escape");
     await expect(drawer).toBeHidden();
     await expect(details).toBeFocused();
     await screen.getByRole("searchbox", { name: "Search runs", exact: true }).fill("");
+    if (width < 768) await screen.getByRole("button", { name: /^Filters/ }).click();
     await screen.getByRole("combobox", { name: "Command result", exact: true }).click();
     await page.getByRole("option", { name: "Failed", exact: true }).click();
     await expect(panel).toContainText("No runs match these filters.");

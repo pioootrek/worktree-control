@@ -106,8 +106,8 @@ export function ProjectSwitcher({ projects, selectedProjectId, onSelect, onAddPr
                     {project.id === ALL_PROJECTS ? <Layers className="size-4" aria-hidden /> : <FolderGit2 className="size-4" aria-hidden />}
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium">{project.name}</span>
-                    <span className="block truncate font-mono text-[11px] text-muted-foreground">{project.repositoryPath}</span>
+                    <span className="block break-words text-sm font-medium">{project.name}</span>
+                    <span className="block break-all font-mono text-[11px] text-muted-foreground">{project.repositoryPath}</span>
                   </span>
                   <Check className={active ? "size-4 text-primary" : "size-4 opacity-0"} aria-hidden />
                 </button>
