@@ -767,11 +767,45 @@ for (const [metadataState, width] of [["stale", 390], ["missing", 1440]] as cons
     await screen.getByRole("button", { name: "Result: test · main" }).click();
     const drawer = page.getByRole("dialog");
     await expect(drawer.getByText(/^Now: Local changes at last read$/)).toBeVisible();
+    await expect(drawer).toContainText(metadataState === "stale"
+      ? "Project Git metadata is stale. Refresh it to compare this result with the current worktree."
+      : "Current project Git metadata is missing. Refresh it to reassess this result.");
     await expect(drawer).not.toContainText("Now: Matches current commit");
     expect(requests).toEqual([]);
     expect(errors).toEqual([]);
   });
 }
+
+test("refreshing a dirty worktree keeps relevance unknown until Git reports it clean", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const data = dashboardFixture();
+  const snapshot = data.projects[0];
+  const run = testRunFixture();
+  const observation = { observedAt: run.finishedAt!, head: snapshot.worktrees[0].head, branch: "main", dirty: false,
+    statusDigest: "clean", statusEntries: 0, complete: true, errorCode: null };
+  run.source = { ...run.source, enqueue: { ...observation }, preflight: { ...observation }, finish: { ...observation },
+    queueComparison: "match", executionComparison: "match", attribution: "observed_match", reasonCodes: [] };
+  snapshot.testRuns = [run];
+  snapshot.worktrees[0].dirty = true;
+  const { requests, errors } = await mountDashboard(page, data);
+  await page.getByRole("button", { name: "Toggle navigation", exact: true }).click();
+  await page.getByRole("navigation").getByRole("button", { name: "Tests", exact: true }).click();
+  const screen = page.locator("[data-tests-dashboard]");
+  await screen.getByRole("button", { name: "Result: test · main" }).click();
+  const drawer = page.getByRole("dialog");
+  const refresh = drawer.getByRole("button", { name: "Refresh worktree metadata" });
+  await expect(refresh).toBeVisible();
+  await refresh.click();
+  await expect(drawer).toContainText("Now: Local changes");
+  await expect(drawer).not.toContainText("Now: Matches current commit");
+  await expect(refresh).toBeEnabled();
+  snapshot.worktrees[0].dirty = false;
+  await refresh.click();
+  await expect(drawer).toContainText("Now: Matches current commit");
+  await expect(refresh).toHaveCount(0);
+  expect(requests.filter((request) => request.path === "/api/projects/web/metadata/refresh")).toHaveLength(2);
+  expect(errors).toEqual([]);
+});
 
 for (const [width, locale] of [[320, "en"], [1440, "pl"]] as const) {
   test(`stale Git metadata explains an observed source match and refreshes in ${locale} at ${width}px`, async ({ page }) => {

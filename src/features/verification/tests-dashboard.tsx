@@ -51,7 +51,7 @@ export function TestsDashboard({ snapshots, aggregate, mutate, setError, now }: 
   const active = rows.filter((row) => row.active).sort((a, b) => Number(b.result === "running") - Number(a.result === "running") || (a.run.queuePosition ?? 0) - (b.run.queuePosition ?? 0));
   const selected = rows.find((row) => row.run.id === selectedId);
   const selectedCodeState = selected ? currentCodeState(selected) : "unknown";
-  const selectedNeedsRefresh = selected?.reasons.some((reason) => ["metadata_missing", "metadata_stale", "metadata_unavailable", "status_error"].includes(reason));
+  const selectedNeedsRefresh = selected?.reasons.some((reason) => ["metadata_missing", "metadata_stale", "metadata_unavailable", "status_error", "current_dirty"].includes(reason));
   const normalized = query.trim().toLowerCase();
   const days = period === "24h" ? 1 : period === "7d" ? 7 : period === "30d" ? 30 : null;
   const filtered = (view === "latest" ? latest : rows).filter((row) =>
@@ -84,7 +84,7 @@ export function TestsDashboard({ snapshots, aggregate, mutate, setError, now }: 
   };
   const atRun = (row: TestResult) => t(row.sourceAtRun === "not_started" ? "testView.notStarted" : row.sourceAtRun === "unfinished" ? "testView.sourceUnfinished" : `testSource.${row.sourceAtRun}`);
   const relevance = (row: TestResult) => t(`testView.source.${currentCodeState(row)}`);
-  const reason = (row: TestResult) => row.reasons[0] ? t(`testView.reason.${row.reasons[0]}`) : null;
+  const reason = (row: TestResult) => row.reasons.map((item) => t(`testView.reason.${item}`)).find((label) => label !== relevance(row)) ?? null;
   const metrics = [
     { label: t("testView.running"), count: active.filter((r) => r.result === "running").length, icon: Activity, selected: view === "history" && result === "running", action: () => metric("history", "running") },
     { label: t("testView.queued"), count: active.filter((r) => r.result === "queued").length, icon: Clock3, selected: view === "history" && result === "queued", action: () => metric("history", "queued") },
