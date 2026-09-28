@@ -67,7 +67,12 @@ export function KnowledgeDashboard({ token, setToken, change }: { token: string;
       focusedMobileRecordRef.current = { id: selection.recordId, projectId: selection.projectId, tab: selection.tab };
     } else if (!selection.recordId) {
       const previous = focusedMobileRecordRef.current;
-      const targetId = returnFocusIdRef.current || (previous.projectId === selection.projectId && previous.tab === selection.tab ? previous.id : "");
+      if (previous.id && (previous.projectId !== selection.projectId || previous.tab !== selection.tab)) {
+        returnFocusIdRef.current = "";
+        focusedMobileRecordRef.current = { id: "", projectId: "", tab: "" };
+        return;
+      }
+      const targetId = returnFocusIdRef.current || previous.id;
       if (!targetId) return;
       const link = Array.from(workspaceRef.current?.querySelectorAll<HTMLAnchorElement>("[data-knowledge-list] a") ?? []).find(node => node.dataset.recordId === targetId);
       if (link || !model.loading) {

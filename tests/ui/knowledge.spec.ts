@@ -110,6 +110,36 @@ test("mobile reader hides list controls and returns focus to the selected discus
   expect(f.errors).toEqual([]);
 });
 
+test("changing Knowledge tabs or projects does not return focus to an old mobile record", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const f = await mountKnowledge(page);
+  f.records.push({ id: "old-task", projectId: "knowledge-only", title: "Old task", description: "Context", status: "open", priority: "next", revision: 1, createdBy: "owner" });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("link", { name: "Old task", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Old task", exact: true })).toBeFocused();
+  await page.getByRole("tab", { name: "Discussions", exact: true }).click();
+  const backlogTab = page.getByRole("tab", { name: "Backlog", exact: true });
+  await backlogTab.click();
+  await expect(page.getByRole("link", { name: "Old task", exact: true })).toBeVisible();
+  await expect(backlogTab).toBeFocused();
+
+  const otherProject = { id: "knowledge-other", name: "Other knowledge", status: "active", writable: true, revision: 1, createdAt: "2026-01-01", updatedAt: "2026-01-01" };
+  await page.route("**/api/knowledge", route => {
+    const { operation, input } = route.request().postDataJSON();
+    if (operation === "projects") return route.fulfill({ json: { items: [{ ...otherProject, id: "knowledge-only", name: "Knowledge without server" }, otherProject], nextOffset: null } });
+    if (operation === "project" && input.projectId === otherProject.id) return route.fulfill({ json: otherProject });
+    return route.fallback();
+  });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("link", { name: "Old task", exact: true }).click();
+  const projectSelect = page.getByLabel("Knowledge project", { exact: true });
+  await projectSelect.selectOption(otherProject.id);
+  await projectSelect.selectOption("knowledge-only");
+  await expect(page.getByRole("link", { name: "Old task", exact: true })).toBeVisible();
+  await expect(projectSelect).toBeFocused();
+  expect(f.errors).toEqual([]);
+});
+
 test("a failed selected-record read reports failure and can be retried", async ({ page }) => {
   const f = await mountKnowledge(page);
   f.records.push({ id: "unavailable-task", projectId: "knowledge-only", title: "Unavailable task", description: "Recovered body", status: "open", priority: "next", revision: 1, createdBy: "owner" });
