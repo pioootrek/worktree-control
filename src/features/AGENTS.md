@@ -12,3 +12,5 @@ open/close boundaries that initialize draft settings from the current snapshot.
 The static-export browser tests exercise real components with a fixture API and
 no listening server. See [module development](../../docs/module-development.md)
 for setup and their integration limits.
+
+For layout, controls, readers or dialogs, follow the [UI standards](../../docs/ui-standards.md).

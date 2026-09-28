@@ -1,0 +1,54 @@
+{
+  "area": "product",
+  "created": "2026-09-28",
+  "id": "RWK-20260928-gui-usability",
+  "links": {
+    "prs": [],
+    "related_ids": [
+      "NOTE-20260928-knowledge-reading-audit",
+      "FEAT-20260905-shared-project-memory"
+    ]
+  },
+  "notes": [
+    {
+      "author": "human:pioootrek",
+      "date": "2026-09-28",
+      "text": "startuj z rework. twóż przy tym standardy. pamiętaj o regułach delegowani kodowania do agentów"
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-28",
+      "text": "First coherent slice delegated to three Sol high agents on independent shell/worktrees/knowledge worktrees from 03cefe5, integrated on rework/gui-foundation. Heavy verification is serialized centrally. Remaining audit slices stay open."
+    }
+  ],
+  "priority": "now",
+  "problem": [
+    "Dashboard controls and metrics displace working content; Worktrees hides primary actions, Knowledge wastes unselected space and exposes weak reading hierarchy.",
+    "Knowledge document rendering, source semantics and search destinations need subsequent bounded changes from the recorded audit."
+  ],
+  "risk": {
+    "dimensions": [
+      "ui-only"
+    ],
+    "level": "medium",
+    "rollback": "Revert the focused UI change; no schema or live-data migration."
+  },
+  "schema_version": 1,
+  "scope": [
+    "Foundation: shared frame, compact navigation and settings, visible operational actions and mobile Worktrees, Knowledge list/reader hierarchy.",
+    "Create durable UI standards and link them from feature guidance. Preserve shadcn preset, i18n, accessibility, real ownership and authorization semantics.",
+    "Follow-on slices from whole-gui-plan.md: inline documents, semantic states and history, search destinations, adopting compact layout in Tests/Resources/Logs. Close only when each accepted scope is delivered or explicitly reconciled."
+  ],
+  "source": "Owner authorized rework on 2026-09-28 after complete GUI audit; coding delegated to Sol on worktrees, n8n PR review and merge when green.",
+  "status": "in-progress",
+  "title": "Rework dashboard layout and reading flows around shared UI standards",
+  "type": "rework",
+  "validation": [
+    "Managed pnpm check, build and static-export browser tests on final revision; real pilot browser acceptance on isolated data.",
+    "PL/EN dark/light desktop and mobile, short viewport, focus/return and zoom; preserve reservation blocks, read-only identities and explicit action targets.",
+    "n8n external review, all feedback dispositions, green required checks before merging code."
+  ],
+  "value": [
+    "Readable operating and document workflows with consistent standards for future UI work."
+  ]
+}

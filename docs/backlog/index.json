@@ -2,6 +2,16 @@
   "generated_by": "hub.py fmt",
   "items": [
     {
+      "area": "product",
+      "id": "RWK-20260928-gui-usability",
+      "path": "rework/RWK-20260928-gui-usability.json",
+      "priority": "now",
+      "risk_level": "medium",
+      "status": "in-progress",
+      "title": "Rework dashboard layout and reading flows around shared UI standards",
+      "type": "rework"
+    },
+    {
       "area": "process-manager",
       "id": "FEAT-20260829-launch-environment-profiles",
       "path": "feature/FEAT-20260829-launch-environment-profiles.json",
