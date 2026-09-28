@@ -709,6 +709,38 @@ for (const width of [390, 1440]) {
   });
 }
 
+for (const width of [390, 1440]) {
+  test(`tests dashboard names known current local changes without treating a run as current at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    const data = dashboardFixture();
+    const snapshot = data.projects[0];
+    const run = testRunFixture();
+    const cleanObservation = {
+      observedAt: run.finishedAt!, head: snapshot.worktrees[0].head, branch: "main", dirty: false,
+      statusDigest: "clean", statusEntries: 0, complete: true, errorCode: null,
+    };
+    run.source = { ...run.source, enqueue: cleanObservation, preflight: cleanObservation, finish: cleanObservation,
+      queueComparison: "match", executionComparison: "match", attribution: "observed_match", reasonCodes: [] };
+    snapshot.worktrees[0].dirty = true;
+    snapshot.testRuns = [run];
+    const { requests, errors } = await mountDashboard(page, data);
+    if (width < 768) await page.getByRole("button", { name: "Toggle navigation", exact: true }).click();
+    await page.getByRole("navigation").getByRole("button", { name: "Tests", exact: true }).click();
+    const screen = page.locator("[data-tests-dashboard]");
+    const entry = width < 1280 ? screen.locator("[data-test-result]") : screen.getByRole("tabpanel").locator("tbody tr");
+    await expect(entry.getByText("At execution: Source matched at observation points", { exact: true })).toBeVisible();
+    await expect(entry.getByText("Now: Local changes", { exact: true })).toBeVisible();
+    await expect(screen.getByRole("button", { name: /Possibly outdated/ })).toContainText("1");
+    await screen.getByRole("button", { name: "Result: test · main" }).click();
+    const drawer = page.getByRole("dialog");
+    await expect(drawer).toContainText("Now: Local changes");
+    await expect(drawer).toContainText("The latest Git read found local changes in this worktree. The test result is not confirmed current.");
+    await expect(drawer).not.toContainText("Now: Matches current commit");
+    expect(requests).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+}
+
 test("test launch dialog follows the chosen worktree and resets its preset", async ({ page }) => {
   const data = dashboardFixture();
   const snapshot = data.projects[0];
