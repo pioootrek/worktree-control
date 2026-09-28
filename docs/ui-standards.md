@@ -149,6 +149,14 @@ source material. Keep original content accessible in secondary details.
 Headings, lists, tables and code have distinct readable treatments; wide tables
 and code may scroll locally without making the entire page scroll sideways.
 
+List titles identify the topic; repeated transport or import prefixes belong in
+secondary provenance. Derive alternate titles only from verified relationships
+and retain the original content in details. Native or edited text takes
+precedence over historical presentation hints. Use the same title in the list
+and reader, and make that visible title searchable before server pagination.
+A reply count describes the whole thread, not the loaded page. Do not present
+import timestamps as conversation activity or invent a last-reply summary.
+
 ## Verification and exceptions
 
 Review actual content, including long names, empty/error states, foreign

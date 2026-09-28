@@ -147,6 +147,9 @@
       "author": "agent:codex",
       "created": "2026-09-28",
       "files": [
+        "discussion-plan.md",
+        "discussion-screenshots/before-list.png",
+        "discussion-screenshots/before-reader.png",
         "evidence.json",
         "foundation-progress.md",
         "implementation-plan.md",

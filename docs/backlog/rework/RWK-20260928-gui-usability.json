@@ -95,6 +95,16 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "Test-result clarity PR #62 merged as 0e84aef after green Verify 36479300247 on f7b6f1d. Managed check passed 498 unit + 7 resource tests; build passed; final UI 115/115 passed. Pilot confirms separate outcome/source/relevance, scoped Git recovery without falsely certifying dirty code, exact failure-log navigation, focus return, mobile and actual 200% zoom. Three n8n review threads fixed and resolved; Claude publication denied by its session, duplicate finding independently validated. Standards updated and report/screenshots in test-clarity-progress.md. Preview remains on test-result-clarity worktree, claim released. Broader GUI rework remains in-progress for remaining accepted audit scope."
+    },
+    {
+      "author": "human:pioootrek",
+      "date": "2026-09-28",
+      "text": "Accepted Tests/result clarity stage after pilot check, then accepted starting discussion-list readability: human titles instead of dominant import IDs, less repetition and useful context. Existing Sol/worktree/n8n/green-merge rules remain in force."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-28",
+      "text": "Discussion clarity delegated to Sol high on rework/discussion-clarity from 114ccbd. Optional provenance-backed thread presentation and complete counts, displayed-title search before pagination, native/raw preservation and compact list/reader hierarchy. Contract and baseline evidence in discussion-plan.md; chronology/global search remain later scope."
     }
   ],
   "priority": "now",
