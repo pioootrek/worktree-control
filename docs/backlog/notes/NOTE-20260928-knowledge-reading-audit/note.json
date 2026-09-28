@@ -6,7 +6,7 @@
     "evidence": "evidence.json",
     "foundation_progress": "foundation-progress.md",
     "implementation_plan": "implementation-plan.md",
-    "implementation_status": "Foundation PR #58 and Knowledge reading PR #59 merged after green CI. PR #59 merged as 3ac66f9; managed UI passed 102 tests, final CI passed on 68f30b7, all three review threads resolved. See foundation-progress.md and reading-progress.md. Broader rework remains open; next owner discussion concerns Markdown origin and intended format.",
+    "implementation_status": "Foundation PR #58 and Knowledge reading PR #59 merged after green CI. Follow-up PR #60 restores visible reader return controls; PR #61 makes session actions match their actual scope, merged as cb295e4 after 107 managed UI tests and green full CI. Reports and pilot evidence are in foundation-progress.md, reading-progress.md, reader-return-followup.md and session-actions-followup.md. Broader rework remains open; next owner discussion concerns Markdown origin and intended format.",
     "layout_direction": "layout-direction.md",
     "layout_owner_direction": "Owner authorized whole-layout rework and standards on 2026-09-28; implementation delegated to Sol on worktrees.",
     "owner_feedback": "owner-feedback.md",
@@ -23,6 +23,7 @@
     "runtime_report": "runtime-audit.md",
     "runtime_visual_status": "Completed 21 inspected screenshots: three synthetic projects, six worktrees, five terminal test runs, desktop/mobile and EN/light spot check. Limits in runtime-audit.md.",
     "scope": "Worktree Switcher: original Knowledge reading audit, extended by owner to Worktrees, Tests, Resources and Logs. LLM Ops Hub excluded.",
+    "session_actions_followup": "session-actions-followup.md",
     "source_findings": 15,
     "source_report": "source-analysis.md",
     "visual_status": "Completed scoped Playwright audit on an owner-authorized isolated pilot copy; 19 current screenshots inspected. Desktop/mobile, PL/EN, dark/light, document download/search, reply navigation, partial keyboard and contrast checks. Limits documented in report.",
@@ -107,7 +108,9 @@
     "reader-return-followup.md",
     "reader-return-screenshots/before.png",
     "reader-return-screenshots/after-expanded.png",
-    "reader-return-screenshots/after-restored.png"
+    "reader-return-screenshots/after-restored.png",
+    "session-actions-followup.md",
+    "session-actions-screenshots/preferences-pl.png"
   ],
   "id": "NOTE-20260928-knowledge-reading-audit",
   "last_reviewed": "2026-09-28",

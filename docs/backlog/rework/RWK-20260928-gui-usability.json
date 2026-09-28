@@ -6,7 +6,8 @@
     "prs": [
       58,
       59,
-      60
+      60,
+      61
     ],
     "related_ids": [
       "NOTE-20260928-knowledge-reading-audit",
@@ -73,6 +74,11 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "Reader return fix PR #60 merged as 26ecb21. Managed check/build and 105 UI tests passed on 975e45b; GitHub Verify 36452700075 green. Real pilot before/after screenshots confirm visible clickable Show list while scrolled; mobile Back works without horizontal overflow. Kimi/Codex n8n reviews found no actionable issues; Claude hit session limit. See reader-return-followup.md. Separate scoped session action fix c803c50 is now in verification following explicit owner request."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-28",
+      "text": "Session scope fix PR #61 merged as cb295e4 after green Verify 36455440278 on c579e36. Managed check passed 495 unit +7 resource checks, build passed, final UI passed 107/107. Pilot confirms only the global Preferences Sign out for shared installation access, cleared visible content/credentials and successful re-login; scoped disconnect preserves runtime access. Kimi/Codex n8n reviews found no actionable issues; Claude hit session limit. See session-actions-followup.md and screenshot. Preview contains both PR #60 and #61 on session-actions worktree, claim released. Broader rework stays open; Markdown origin/intended-format discussion remains deferred for the owner."
     }
   ],
   "priority": "now",
