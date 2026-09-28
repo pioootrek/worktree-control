@@ -112,7 +112,9 @@ and panels must fit a short viewport and be scrollable when necessary.
 Give a document a stable address within its authorized project and parent
 record. Opening, returning and browser Back/Forward preserve the surrounding
 reading context. Put supported documents in the main reading path; keep
-downloading the unchanged original as a separate action.
+downloading the unchanged original as a separate action. Background refreshes
+retain an unchanged open document, scroll position and focus while revalidating.
+Clear visible content when its authorization or parent scope is lost.
 
 Treat document contents as data. Do not execute embedded HTML or scripts,
 resolve local filesystem paths, or automatically fetch external images.
