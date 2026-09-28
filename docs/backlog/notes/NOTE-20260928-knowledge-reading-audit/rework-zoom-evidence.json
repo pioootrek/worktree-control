@@ -1,0 +1,52 @@
+{
+  "method": "Chrome extension chrome.tabs.setZoom(2)",
+  "metrics": {
+    "layoutViewport": {
+      "pageX": 0,
+      "pageY": 0,
+      "clientWidth": 1440,
+      "clientHeight": 1000
+    },
+    "visualViewport": {
+      "offsetX": 0,
+      "offsetY": 0,
+      "pageX": 0,
+      "pageY": 0,
+      "clientWidth": 1440,
+      "clientHeight": 1000,
+      "scale": 1,
+      "zoom": 2
+    },
+    "contentSize": {
+      "x": 0,
+      "y": 0,
+      "width": 1440,
+      "height": 1654
+    },
+    "cssLayoutViewport": {
+      "pageX": 0,
+      "pageY": 0,
+      "clientWidth": 720,
+      "clientHeight": 500
+    },
+    "cssVisualViewport": {
+      "offsetX": 0,
+      "offsetY": 0,
+      "pageX": 0,
+      "pageY": 0,
+      "clientWidth": 720,
+      "clientHeight": 500,
+      "scale": 1,
+      "zoom": 2
+    },
+    "cssContentSize": {
+      "x": 0,
+      "y": 0,
+      "width": 720,
+      "height": 827
+    }
+  },
+  "screenshot": "knowledge-real-200percent-cdp.png",
+  "source": "ce44a32",
+  "overflow": false
+}
