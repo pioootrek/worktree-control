@@ -742,8 +742,9 @@ function applyMigrations(database: Database.Database, fresh: boolean): void {
 
   if (!hasMigration(database, 26)) {
     database.transaction(() => {
+      const columns = new Set((database.prepare("PRAGMA table_info(knowledge_import_batches)").all() as Array<{ name: string }>).map(({ name }) => name));
       // The default labels populated pre-migration batches; it is not a live actor method.
-      database.exec("ALTER TABLE knowledge_import_batches ADD COLUMN authentication_method TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK(authentication_method IN ('owner_session', 'agent_token', 'worker_token', 'installation_token', 'none', 'legacy_unknown'))");
+      if (!columns.has("authentication_method")) database.exec("ALTER TABLE knowledge_import_batches ADD COLUMN authentication_method TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK(authentication_method IN ('owner_session', 'agent_token', 'worker_token', 'installation_token', 'none', 'legacy_unknown'))");
       recordMigration(database, 26);
     })();
   }

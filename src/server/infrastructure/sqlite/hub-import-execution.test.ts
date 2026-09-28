@@ -115,6 +115,27 @@ describe("K6b Hub import execution",()=>{
     store.close();
   });
 
+  it("repairs a missing migration record without replacing stored batch methods",()=>{
+    const f=fixture(),path=join(f.root,"state.sqlite3"),source=plan([mapping("docs/backlog/feature/one.json","task","task",{id:"one",title:"One"})]);
+    const current=execute(f.store,f.identity,f.owner,{plan:source,targetProjectId:"current",targetProjectName:"Current",batchId:"current-batch"});
+    execute(f.store,f.identity,f.owner,{plan:source,targetProjectId:"legacy",targetProjectName:"Legacy",batchId:"legacy-batch"});
+    expect(current.authenticationMethod).toBe("owner_session");
+    f.store.close();
+    const damaged=new Database(path);
+    damaged.exec("UPDATE knowledge_import_batches SET authentication_method = 'legacy_unknown' WHERE id = 'legacy-batch'; DELETE FROM schema_migrations WHERE version = 26");
+    damaged.close();
+
+    const repaired=new SqliteStateStore(path);
+    expect(repaired.schemaVersion()).toBe(26);
+    expect(repaired.getHubImport("current-batch")).toEqual(current);
+    expect(repaired.getHubImport("legacy-batch")).toMatchObject({actorPrincipalId:f.owner.principalId,authenticationMethod:"legacy_unknown"});
+    repaired.close();
+    const reopened=new SqliteStateStore(path);
+    expect(reopened.getHubImport("current-batch")).toEqual(current);
+    expect(reopened.getHubImport("legacy-batch")?.authenticationMethod).toBe("legacy_unknown");
+    reopened.close();
+  });
+
   it("rolls the entire publication back if a staged mapping cannot be linked",()=>{
     const f=fixture(),item=mapping("docs/backlog/feature/missing.json#notes/0","task_note","historical_comment",{id:"missing:note:0",text:"Orphan"});item.legacyId="missing:note:0";const source=plan([item]),input={plan:source,targetProjectId:"failed-import",targetProjectName:"Failed"};
     expect(()=>execute(f.store,f.identity,f.owner,input)).toThrow();
