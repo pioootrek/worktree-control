@@ -110,6 +110,7 @@ test("a single storage sample shows its values and a visible chart point", async
   data.projects[0].storage[0].history = [{ measuredAt: "2026-09-13T12:00:00Z", totalBytes: 1024 ** 3, nextBytes: 256 * 1024 ** 2, nextCacheBytes: 0, nodeModulesBytes: 0 }];
   await mountDashboard(page, data);
   await page.getByRole("navigation").getByRole("button", { name: "Resources" }).click();
+  await page.getByRole("searchbox", { name: "Search resources" }).fill("worktree-0");
   await page.getByRole("button", { name: "Resources: Fixture Web · feature-0" }).click();
   const drawer = page.getByRole("dialog");
   await expect(drawer).toContainText("First measurement; the trend will appear after another sample.");
