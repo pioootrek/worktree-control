@@ -157,6 +157,12 @@ and reader, and make that visible title searchable before server pagination.
 A reply count describes the whole thread, not the loaded page. Do not present
 import timestamps as conversation activity or invent a last-reply summary.
 
+Keep historical presentation stable across unrelated status or description
+changes. Recheck the fields and provenance that actually determine its meaning.
+Use indexed provenance lookups; a single-record read must not verify every
+record in the project. Search visible topics before pagination. Short previews
+must preserve Unicode characters at their truncation boundary.
+
 ## Verification and exceptions
 
 Review actual content, including long names, empty/error states, foreign

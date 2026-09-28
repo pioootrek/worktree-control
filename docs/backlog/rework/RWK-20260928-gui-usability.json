@@ -8,7 +8,8 @@
       59,
       60,
       61,
-      62
+      62,
+      63
     ],
     "related_ids": [
       "NOTE-20260928-knowledge-reading-audit",
@@ -105,6 +106,11 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "Discussion clarity delegated to Sol high on rework/discussion-clarity from 114ccbd. Optional provenance-backed thread presentation and complete counts, displayed-title search before pagination, native/raw preservation and compact list/reader hierarchy. Contract and baseline evidence in discussion-plan.md; chronology/global search remain later scope."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-28",
+      "text": "Discussion clarity PR #63 merged as 20fb1d1 after green Verify 36486390377 on 6122e4a. Sol implemented verified topics/previews, complete counts and displayed-title search before pagination; raw/native content preserved. Managed final check 501 unit + 7 resource and build passed; managed UI 117/117 plus final GitHub UI/E2E passed. All 12 imported pilot threads retained raw records/replies and received readable topics; native create/reply, mobile, expand/return and actual 200% zoom verified. Three n8n concerns fixed; one published thread resolved, two Claude concerns recovered because reviewer publication was denied. Standards now cover indexed reads, unrelated edit stability and Unicode previews. See discussion-progress.md. Keep broader rework open for chronology/global search/history scope."
     }
   ],
   "priority": "now",

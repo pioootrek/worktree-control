@@ -16,7 +16,7 @@ Add an optional bounded presentation projection on existing authorized thread li
 
 Use source topic only when the same-project provenance proves the generated thread identity, relation and historical replies; exact generated title/body must still match. Missing, ambiguous, conflicting or edited evidence falls back to raw content. The historical source title/context must not be presented as an edited current task. Native descriptions remain plain text. Counts come from the full thread, not the loaded reply page. Do not label import timestamps as conversation activity.
 
-Discussion search matches the visible display title and retains original title/ID search. Apply consistent case/accent folding and literal substring matching before pagination. No client-only filtering of a loaded page, unbounded browser payload or per-row browser fetch.
+Discussion search matches the visible display title and retains original title/ID search. Apply consistent NFC normalization and case folding and literal substring matching before pagination. No client-only filtering of a loaded page, unbounded browser payload or per-row browser fetch.
 
 ## Composition and standard
 

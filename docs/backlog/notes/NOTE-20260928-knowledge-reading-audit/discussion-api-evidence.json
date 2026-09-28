@@ -1,0 +1,110 @@
+[
+  {
+    "id": "317d1044ef1bcf78f8514ad716b2d2e5",
+    "rawUnchanged": true,
+    "repliesUnchanged": true,
+    "displayTitle": "Finish package upgrade/recovery trial and release handoff",
+    "preview": "MIT/public source, exact-artifact packing, checkout-free installation smoke and packaged Linux service lifecycle are implemented and pass main CI. Remaining work is populated pack…",
+    "imported": true,
+    "replyCount": 10
+  },
+  {
+    "id": "4aa80e3623977202ad6fa9a39dfbb170",
+    "rawUnchanged": true,
+    "repliesUnchanged": true,
+    "displayTitle": "Run verification of pushed commits on customer-owned remote workers",
+    "preview": "Remote request authorization/persistence, attempt transitions and exact-SHA workspace preparation exist, but there is no end-to-end connected-worker execution workflow. Enrollment…",
+    "imported": true,
+    "replyCount": 8
+  },
+  {
+    "id": "52c1506a9a033d5c606b258870ab908f",
+    "rawUnchanged": true,
+    "repliesUnchanged": true,
+    "displayTitle": "Finish knowledge pilot and cutover, then deliver playbook and instruction workflows",
+    "preview": "The core knowledge workflow and Hub import are implemented, but the umbrella still lacks a current stage-by-stage acceptance record and a confirmed real-project cutover with resto…",
+    "imported": true,
+    "replyCount": 14
+  },
+  {
+    "id": "5e537f6a79299c4276b41ee6893cb471",
+    "rawUnchanged": true,
+    "repliesUnchanged": true,
+    "displayTitle": "Extract remaining transport, bootstrap and facade responsibilities when needed",
+    "preview": "The initial service/UI/SQLite decomposition is implemented. HTTP/MCP routing, CLI bootstrap and remaining facade project/claim/maintenance operations still mix responsibilities; f…",
+    "imported": true,
+    "replyCount": 2
+  },
+  {
+    "id": "9ab40a4855ee5cb6083a3a26ba1e6123",
+    "rawUnchanged": true,
+    "repliesUnchanged": true,
+    "displayTitle": "Coordinate agent assignments, messages, handoffs, and owner oversight",
+    "preview": "Shared memory alone does not tell cooperating agents who owns a task, whether a question was received, or which revision a review verified. Interrupted sessions, overlapping scope…",
+    "imported": true,
+    "replyCount": 4
+  },
+  {
+    "id": "a384df8cac18988d202523d0734b3b7f",
+    "rawUnchanged": true,
+    "repliesUnchanged": true,
+    "displayTitle": "Extend existing profiles only for concrete reusable launch needs",
+    "preview": "Validated literal profiles and MCP profile operations exist. Remaining gaps include monorepo working directories, referenced secrets/environment files, required directories, and C…",
+    "imported": true,
+    "replyCount": 7
+  },
+  {
+    "id": "c4b316347b527c8fccfab668c095108b",
+    "rawUnchanged": true,
+    "repliesUnchanged": true,
+    "displayTitle": "Finish packaged service lifecycle validation on supported platforms",
+    "preview": "Service installation and Linux lifecycle behavior are implemented and historically exercised. Packaged upgrade coverage and real macOS LaunchAgent validation remain outstanding.",
+    "imported": true,
+    "replyCount": 7
+  },
+  {
+    "id": "c4bdab8b4a318d35a5728051b591f507",
+    "rawUnchanged": true,
+    "repliesUnchanged": true,
+    "displayTitle": "Finish owner-workflow acceptance of independent project switching",
+    "preview": "Independent switching, capacity, reservations, process cleanup, refresh coordination and real-controller suites are implemented. Remaining work is a concise criterion-to-evidence…",
+    "imported": true,
+    "replyCount": 21
+  },
+  {
+    "id": "d1062d3b2a802346592d701d29028b51",
+    "rawUnchanged": true,
+    "repliesUnchanged": true,
+    "displayTitle": "Add optional Better Auth plugin for username and password login",
+    "preview": "After global CLI-selected authentication modes are available, the better-auth placeholder needs a working account provider without adding a persistent Next.js server or requiring…",
+    "imported": true,
+    "replyCount": 7
+  },
+  {
+    "id": "d954eaa444395c2bb2a0c246ff64bf48",
+    "rawUnchanged": true,
+    "repliesUnchanged": true,
+    "displayTitle": "Build and serve managed Next.js projects in production mode",
+    "preview": "Some defects and performance characteristics appear only in a Next.js production build. Worktree Switcher currently manages only the dev script, so users must leave the control pl…",
+    "imported": true,
+    "replyCount": 3
+  },
+  {
+    "id": "def7c4922eecb2d4cea65620aa14b39e",
+    "rawUnchanged": true,
+    "repliesUnchanged": true,
+    "displayTitle": "Extend existing cache reset with explicit CLI or before-start use",
+    "preview": "Dashboard cache reset and lifecycle serialization are implemented. Optional CLI access and one-shot reset-before-start remain unimplemented convenience features.",
+    "imported": true,
+    "replyCount": 4
+  },
+  {
+    "id": "f275259b8925cf41e7ac52521aba8e0c",
+    "rawUnchanged": true,
+    "repliesUnchanged": true,
+    "displayTitle": "Extend scoped agent credentials to runtime projects, claims and configuration",
+    "preview": "Scoped knowledge credentials and the full-access installation token exist. Runtime-scoped capabilities, project-filtered runtime discovery and binding runtime reservations/audit t…",
+    "imported": true,
+    "replyCount": 5
+  }
+]
