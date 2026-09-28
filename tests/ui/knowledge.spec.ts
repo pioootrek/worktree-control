@@ -98,6 +98,57 @@ test("knowledge uses the available list width, then gives discussions a readable
   expect(f.errors).toEqual([]);
 });
 
+for (const tab of ["Backlog", "Discussions"] as const) {
+  test(`${tab} restores the list from a deeply scrolled expanded reader`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 720 });
+    const f = await mountKnowledge(page);
+    const body = Array.from({ length: 160 }, (_, index) => `Reading line ${index + 1}`).join("\n");
+    for (let index = 0; index < 20; index++) f.records.push({
+      id: `${tab}-${index}`, projectId: "knowledge-only", title: `Reader ${index}`,
+      ...(tab === "Backlog" ? { description: body, status: "open", priority: "next" } : { body }),
+      revision: 1, createdBy: "owner",
+    });
+    await page.getByRole("tab", { name: tab, exact: true }).click();
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.getByLabel("Search titles", { exact: true }).fill("Reader");
+    await page.getByRole("button", { name: "Filter", exact: true }).click();
+    await page.getByRole("link", { name: "Reader 5", exact: true }).click();
+    const list = page.locator("[data-knowledge-list]");
+    const listScroll = page.locator("[data-knowledge-list-scroll]");
+    await listScroll.evaluate(element => { element.scrollTop = 240; });
+    const previousListScroll = await listScroll.evaluate(element => element.scrollTop);
+    expect(previousListScroll).toBeGreaterThan(0);
+    const reader = page.locator("[data-knowledge-detail]");
+    const readerScroll = page.locator("[data-knowledge-detail-scroll]");
+    await reader.getByRole("button", { name: "Expand reader" }).click();
+    await expect(list).toBeHidden();
+    await readerScroll.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await expect.poll(() => readerScroll.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    const restore = reader.getByRole("button", { name: "Show list" });
+    await expect(restore).toBeInViewport();
+    await restore.click();
+    await expect(list).toBeVisible();
+    await expect(reader.getByRole("heading", { name: "Reader 5" })).toBeVisible();
+    await expect(reader.getByRole("button", { name: "Expand reader" })).toBeFocused();
+    await expect.poll(async () => Math.abs(await listScroll.evaluate(element => element.scrollTop) - previousListScroll)).toBeLessThan(3);
+    expect(await readerScroll.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    await reader.getByRole("button", { name: "Expand reader" }).click();
+    await page.setViewportSize({ width: 800, height: 720 });
+    await expect(reader.getByRole("button", { name: "Back to list" })).toBeVisible();
+    const lastDetail = reader.locator("article details").last();
+    await lastDetail.scrollIntoViewIfNeeded();
+    await expect(lastDetail).toBeInViewport();
+    await page.setViewportSize({ width: 1440, height: 720 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await expect(restore).toBeInViewport();
+    await restore.click();
+    await expect(list).toBeVisible();
+    await expect(page.getByLabel("Search titles", { exact: true })).toHaveValue("Reader");
+    await expect(page).toHaveURL(new RegExp(`record=${tab}-5`));
+    expect(f.errors).toEqual([]);
+  });
+}
+
 test("mobile reader hides list controls and returns focus to the selected discussion", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const f = await mountKnowledge(page);
@@ -502,6 +553,50 @@ test("memory list fills the workspace and mobile detail returns to its entry", a
   await page.getByRole("link", { name: "Navigation note", exact: true }).click();
   await page.goBack();
   await expect(page.getByRole("link", { name: "Navigation note", exact: true })).toBeFocused();
+  expect(f.errors).toEqual([]);
+});
+
+test("Memory restores its list without losing the long reader or list position", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 720 });
+  const f = await mountMemory(page);
+  await addMemory(page, "Long memory");
+  const body = Array.from({ length: 160 }, (_, index) => `Memory line ${index + 1}`).join("\n");
+  f.memories[0].body = body;
+  for (let index = 0; index < 16; index++) f.memories.push({ ...f.memories[0], id: `memory-list-${index}`, title: `Other memory ${index}`, body: "Short context" });
+  await page.goBack();
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+  await page.getByRole("link", { name: "Long memory", exact: true }).click();
+  const list = page.locator("[data-memory-list]");
+  const listScroll = list.getByRole("region", { name: "Results list" });
+  await listScroll.evaluate(element => { element.scrollTop = 240; });
+  const previousListScroll = await listScroll.evaluate(element => element.scrollTop);
+  expect(previousListScroll).toBeGreaterThan(0);
+  const reader = page.locator("[data-memory-detail]");
+  const readerScroll = page.locator("[data-memory-detail-scroll]");
+  await reader.getByRole("button", { name: "Expand reader" }).click();
+  await expect(list).toBeHidden();
+  await readerScroll.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect.poll(() => readerScroll.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  const restore = reader.getByRole("button", { name: "Show list" });
+  await expect(restore).toBeInViewport();
+  await restore.click();
+  await expect(list).toBeVisible();
+  await expect(reader.getByRole("heading", { name: "Long memory" })).toBeVisible();
+  await expect(reader.getByRole("button", { name: "Expand reader" })).toBeFocused();
+  await expect.poll(async () => Math.abs(await listScroll.evaluate(element => element.scrollTop) - previousListScroll)).toBeLessThan(3);
+  expect(await readerScroll.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  await reader.getByRole("button", { name: "Expand reader" }).click();
+  await page.setViewportSize({ width: 800, height: 720 });
+  await expect(reader.getByRole("button", { name: "Back to list" })).toBeVisible();
+  const lastDetail = reader.locator("details").last();
+  await lastDetail.scrollIntoViewIfNeeded();
+  await expect(lastDetail).toBeInViewport();
+  await page.setViewportSize({ width: 1440, height: 720 });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await expect(restore).toBeInViewport();
+  await restore.click();
+  await expect(list).toBeVisible();
+  await expect(page).toHaveURL(/record=memory-0/);
   expect(f.errors).toEqual([]);
 });
 
