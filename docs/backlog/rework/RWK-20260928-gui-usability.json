@@ -41,6 +41,11 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "Owner started reading stage 2. Three Sol high agents implement provenance-backed Memory presentation, authorized addressable document reading and Memory composition from84cdd44. Root integrates on rework/knowledge-reading. Contract, limits and acceptance in reading-stage-plan.md. Discussion title normalization/history/search indexing remain subsequent scope."
+    },
+    {
+      "author": "owner",
+      "date": "2026-09-28",
+      "text": "Discuss after the current reading slice where Markdown in Knowledge came from and whether it should be the intended content format. Owner explicitly deferred this discussion until after the slice; do not change the data model in PR #59."
     }
   ],
   "priority": "now",
