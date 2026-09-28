@@ -78,25 +78,42 @@ export class KnowledgeQueries implements KnowledgeStore {
       const batch = attachments.slice(start, start + 100).filter(item => item.recordKind === "memory");
       if (!batch.length) continue;
       const placeholders = batch.map(() => "?").join(",");
-      const rows = this.database.prepare(`SELECT a.id attachment_id, s.id source_id, s.source_sha256, s.source_path,
-        p.id parent_id, p.source_path parent_path
-        FROM knowledge_attachments a
-        LEFT JOIN knowledge_import_sources s ON s.project_id=a.project_id AND s.target_kind='attachment' AND s.target_id=a.id
-        LEFT JOIN knowledge_import_sources p ON p.project_id=a.project_id AND p.target_kind='memory' AND p.target_id=a.record_id
-          AND p.source_id=s.source_id AND p.source_repository=s.source_repository AND p.source_commit=s.source_commit
-        WHERE a.project_id=? AND a.id IN (${placeholders})`).all(projectId, ...batch.map(item => item.id)) as Array<{
-          attachment_id: string; source_id: string | null; source_sha256: string | null; source_path: string | null;
-          parent_id: string | null; parent_path: string | null;
+      const sources = this.database.prepare(`SELECT target_id, count(*) provenance_count, max(source_id) source_id,
+        max(source_repository) source_repository, max(source_commit) source_commit,
+        max(source_sha256) source_sha256, max(source_path) source_path
+        FROM knowledge_import_sources WHERE project_id=? AND target_kind='attachment' AND target_id IN (${placeholders})
+        GROUP BY target_id`).all(projectId, ...batch.map(item => item.id)) as Array<{
+          target_id: string; provenance_count: number; source_id: string; source_repository: string; source_commit: string;
+          source_sha256: string; source_path: string;
         }>;
-      const grouped = new Map<string, typeof rows>();
-      for (const row of rows) grouped.set(row.attachment_id, [...(grouped.get(row.attachment_id) ?? []), row]);
-      for (const attachment of batch) {
-        const matches = grouped.get(attachment.id);
-        if (matches?.length !== 1) continue;
-        const source = matches[0]!;
-        if (!source.source_id || !source.parent_id || source.source_sha256 !== attachment.sha256 ||
-            !source.source_path || !source.parent_path?.endsWith("/note.json")) continue;
-        const prefix = source.parent_path.slice(0, -"note.json".length);
+      const byAttachment = new Map(sources.map(source => [source.target_id, source]));
+      const eligible = batch.filter(item => {
+        const source = byAttachment.get(item.id);
+        return source?.provenance_count === 1 && source.source_sha256 === item.sha256;
+      });
+      if (!eligible.length) continue;
+      const parentIds = [...new Set(eligible.map(item => item.recordId))];
+      const parents = this.database.prepare(`SELECT target_id, source_id, source_repository, source_commit,
+        count(*) provenance_count, max(source_path) source_path
+        FROM knowledge_import_sources WHERE project_id=? AND target_kind='memory'
+          AND target_id IN (${parentIds.map(() => "?").join(",")})
+        GROUP BY target_id, source_id, source_repository, source_commit`).all(projectId, ...parentIds) as Array<{
+          target_id: string; source_id: string; source_repository: string; source_commit: string;
+          provenance_count: number; source_path: string;
+        }>;
+      const parentKey = (targetId: string, sourceId: string, repository: string, commit: string) =>
+        JSON.stringify([targetId, sourceId, repository, commit]);
+      const byParent = new Map(parents.map(parent => [
+        parentKey(parent.target_id, parent.source_id, parent.source_repository, parent.source_commit), parent,
+      ]));
+      for (const attachment of eligible) {
+        const source = byAttachment.get(attachment.id);
+        if (!source) continue;
+        const parent = byParent.get(parentKey(attachment.recordId, source.source_id, source.source_repository, source.source_commit));
+        if (parent?.provenance_count !== 1) continue;
+        const parentPath = parent.source_path;
+        if (!parentPath.endsWith("/note.json")) continue;
+        const prefix = parentPath.slice(0, -"note.json".length);
         if (!source.source_path.startsWith(prefix)) continue;
         const relativePath = source.source_path.slice(prefix.length);
         if (relativePath.split("/").some(part => !part || part === "." || part === ".." || /[\\\u0000-\u001f]/.test(part)) ||
@@ -147,23 +164,31 @@ export class KnowledgeQueries implements KnowledgeStore {
     for (let start = 0; start < items.length; start += 100) {
       const batch = items.slice(start, start + 100);
       if (!batch.length) continue;
-      const rows = this.database.prepare(`SELECT m.id, m.body, s.id source_id,
-        CASE WHEN length(s.original_payload_json) <= 131072 THEN s.original_payload_json END original_payload_json
-        FROM knowledge_memories m LEFT JOIN knowledge_import_sources s
-          ON s.project_id=m.project_id AND s.target_kind='memory' AND s.target_id=m.id
-        WHERE m.project_id=? AND m.id IN (${batch.map(() => "?").join(",")})`).all(projectId, ...batch.map(item => item.id)) as Array<{
-          id: string; body: string; source_id: string | null; original_payload_json: string | null;
+      const placeholders = batch.map(() => "?").join(",");
+      const rows = this.database.prepare(`SELECT target_id, count(*) provenance_count,
+        CASE WHEN count(*)=1 AND max(length(original_payload_json)) <= 131072 THEN max(original_payload_json) END original_payload_json
+        FROM knowledge_import_sources WHERE project_id=? AND target_kind='memory' AND target_id IN (${placeholders})
+        GROUP BY target_id`).all(projectId, ...batch.map(item => item.id)) as Array<{
+          target_id: string; provenance_count: number; original_payload_json: string | null;
         }>;
-      const seen = new Set<string>();
-      const ambiguous = new Set<string>();
-      for (const row of rows) {
-        if (!row.source_id) continue;
-        if (seen.has(row.id)) { ambiguous.add(row.id); readings.delete(row.id); continue; }
-        seen.add(row.id);
-        const reading = readingFromImport(row.original_payload_json, row.body);
-        if (reading) readings.set(row.id, reading);
+      const eligible = rows.filter(row => row.provenance_count === 1 && row.original_payload_json !== null);
+      if (!eligible.length) continue;
+      const bodies = new Map<string, string>();
+      for (const item of batch) {
+        if ("body" in item && typeof item.body === "string") bodies.set(item.id, item.body);
       }
-      for (const id of ambiguous) readings.delete(id);
+      const missing = eligible.map(row => row.target_id).filter(id => !bodies.has(id));
+      if (missing.length) {
+        const found = this.database.prepare(`SELECT id, body FROM knowledge_memories WHERE project_id=? AND id IN (${missing.map(() => "?").join(",")})`)
+          .all(projectId, ...missing) as Array<{ id: string; body: string }>;
+        for (const row of found) bodies.set(row.id, row.body);
+      }
+      for (const row of eligible) {
+        const body = bodies.get(row.target_id);
+        if (body === undefined) continue;
+        const reading = readingFromImport(row.original_payload_json, body);
+        if (reading) readings.set(row.target_id, reading);
+      }
     }
     return items.map(item => readings.has(item.id) ? { ...item, reading: readings.get(item.id)! } : item);
   }
