@@ -36,6 +36,11 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "Foundation PR #58 merged as 0a71eb2 after green CI run 36436173373 on 04bd359 (check/build/HTTPS/integration/UI/E2E/package Node 22+24/systemd lifecycle). Managed UI 94/94 passed; four verified n8n review findings fixed, both published inline threads resolved. Claude publication was denied in reviewer session; root recorded its recovered findings and fixes. UI standards now cover scope focus, scroll intent, known local changes and live collapsed logs. Isolated pilot remains available on integration worktree with claim released. Keep this rework open for structured document/Memory rendering, imported title normalization and search destinations; see foundation-progress.md."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-28",
+      "text": "Owner started reading stage 2. Three Sol high agents implement provenance-backed Memory presentation, authorized addressable document reading and Memory composition from84cdd44. Root integrates on rework/knowledge-reading. Contract, limits and acceptance in reading-stage-plan.md. Discussion title normalization/history/search indexing remain subsequent scope."
     }
   ],
   "priority": "now",
