@@ -154,7 +154,7 @@ export function ProjectCard({
               {project.repositoryPath}
             </CardDescription> : null}
           </div>
-          {section === "worktrees" ? <details className="w-full text-xs text-muted-foreground sm:w-auto sm:shrink-0">
+          {section === "worktrees" ? <details className="min-w-0 w-full max-w-full text-xs text-muted-foreground sm:w-auto">
             <summary className="w-fit cursor-pointer">{t("worktreeLayout.projectSettings")}</summary>
             <p className="mt-2 break-all font-mono">{t("worktreeLayout.projectPath")}: {project.repositoryPath}</p>
             <div className="mt-2 flex items-center gap-2">{projectHeaderActions}</div>
