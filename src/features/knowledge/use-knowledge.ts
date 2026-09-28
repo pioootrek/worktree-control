@@ -62,8 +62,15 @@ export function useKnowledge(token: string, change: { version: number; projectId
   }, [change, reload]);
 
   const select = (next: KnowledgeSelection) => {
+    const previous = selectionRef.current;
     changeSelection(next);
     const url = new URL(window.location.href);
+    if (next.projectId !== previous.projectId || next.tab !== previous.tab || next.recordId !== previous.recordId) {
+      if (url.searchParams.has("document")) {
+        url.searchParams.delete("document");
+        url.hash = "";
+      }
+    }
     url.searchParams.set("view", "knowledge");
     url.searchParams.set("knowledgeProject", next.projectId);
     url.searchParams.set("knowledgeTab", next.tab);

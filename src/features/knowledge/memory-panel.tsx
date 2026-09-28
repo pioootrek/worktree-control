@@ -48,7 +48,7 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
   filtersOpen: boolean; setFiltersOpen: (value: boolean) => void; readerExpanded: boolean; setReaderExpanded: (value: boolean) => void;
   listScrollRef: React.RefObject<number>; returnFocusIdRef: React.RefObject<string>;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { query, tag, legacyId, kind, status, inactive, offset } = search;
   const [page, setPage] = useState<KnowledgePage<KnowledgeSearchHit>>({ items: [], nextOffset: null });
   const [pageLoaded, setPageLoaded] = useState(false);
@@ -57,6 +57,7 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
   const [history, setHistory] = useState<KnowledgePage<KnowledgeHistoryEntry>>({ items: [], nextOffset: null });
   const [historyError, setHistoryError] = useState(false);
   const [historyOffset, setHistoryOffset] = useState(0);
+  const [documentOpen, setDocumentOpen] = useState(false);
   const [editor, setEditor] = useState<"new" | "edit" | null>(null);
   const [version, setVersion] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -74,7 +75,8 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
   };
   useEffect(() => { if (pageLoaded && listRef.current) listRef.current.scrollTop = listScrollRef.current; }, [pageLoaded, listScrollRef]);
   useEffect(() => {
-    if (recordId && record && focusedMobileRecordId.current !== recordId && window.matchMedia("(max-width: 1023px)").matches) {
+    if (documentOpen) focusedMobileRecordId.current = "";
+    if (recordId && record && !documentOpen && !new URLSearchParams(window.location.search).has("document") && focusedMobileRecordId.current !== recordId && window.matchMedia("(max-width: 1023px)").matches) {
       readerRef.current?.querySelector<HTMLElement>("h3")?.focus();
       focusedMobileRecordId.current = recordId;
     }
@@ -83,7 +85,7 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
       (link ?? document.getElementById("memory-query"))?.focus({ preventScroll: true });
       returnFocusIdRef.current = "";
     }
-  }, [recordId, record, page.items, pageLoaded, returnFocusIdRef]);
+  }, [recordId, record, documentOpen, page.items, pageLoaded, returnFocusIdRef]);
   useEffect(() => {
     const abort = new AbortController();
     void Promise.allSettled([
@@ -151,7 +153,7 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
         if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
         listScrollRef.current = listRef.current?.scrollTop ?? listScrollRef.current;
         event.preventDefault(); setEditor(null); onSelect(row.kind === "memory" ? "memory" : row.kind === "task" ? "backlog" : "discussions", row.threadId ?? row.id);
-      }}>{row.title || t("knowledge.source.reply")}</a><p className="mt-1 text-xs text-muted-foreground">{t(`knowledge.source.${row.kind}`)}</p><p className="mt-2 line-clamp-2 break-words text-sm text-muted-foreground">{row.excerpt}</p></li>)}</ul>
+      }}>{row.title || t("knowledge.source.reply")}</a><p className="mt-1 text-xs text-muted-foreground">{t(`knowledge.source.${row.kind}`)}{row.kind === "memory" && row.reading?.kind === "imported-note" && <span> · {t("knowledge.importedNote")}</span>}</p><p className="mt-2 line-clamp-2 break-words text-sm text-muted-foreground">{!query && row.kind === "memory" && row.reading?.kind === "imported-note" && row.reading.bodyFormat !== "text" ? row.reading.summary || t("knowledge.importedSummaryFallback") : row.excerpt}</p></li>)}</ul>
         {pageError && <div className="space-y-2 p-4"><p role="alert" className="text-sm text-destructive">{t("knowledge.loadFailed")}</p><Button variant="outline" onClick={() => setVersion(value => value + 1)}>{t("knowledge.refresh")}</Button></div>}
         {!pageError && pageLoaded && !page.items.length && <p className="p-4 text-sm text-muted-foreground">{t("knowledge.empty")}</p>}
         {(offset > 0 || page.nextOffset !== null) && <div className="flex justify-between gap-2 border-t border-border p-3"><Button variant="outline" disabled={!offset} onClick={() => changeSearch({ ...search, offset: Math.max(0, offset - 25) })}>{t("knowledge.previous")}</Button><Button variant="outline" disabled={page.nextOffset === null} onClick={() => changeSearch({ ...search, offset: page.nextOffset! })}>{t("knowledge.nextPage")}</Button></div>}
@@ -160,19 +162,29 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
         <div className="flex justify-between"><Button variant="ghost" className="lg:hidden" onClick={() => { returnFocusIdRef.current = recordId; onSelect("memory", ""); }}><ArrowLeft aria-hidden className="size-4" />{t("knowledge.backToList")}</Button><Button variant="ghost" className="ml-auto hidden lg:inline-flex" aria-pressed={readerExpanded} onClick={() => setReaderExpanded(!readerExpanded)}>{readerExpanded ? <Shrink aria-hidden className="size-4" /> : <Expand aria-hidden className="size-4" />}{t(readerExpanded ? "knowledgeLayout.showList" : "knowledgeLayout.expandReader")}</Button></div>
         {record ? <div className="mx-auto max-w-4xl space-y-5">
         <h3 tabIndex={-1} className="break-words text-2xl font-semibold leading-tight">{record.title}</h3>
-        <p className="text-sm text-muted-foreground">{t("knowledge.attribution", { author: record.createdBy, revision: record.revision })}</p>
-        <p>{t(`knowledge.${record.status}`)} · {t(record.approval?.revision === record.revision ? "knowledge.approved" : record.approval && record.status === "superseded" ? "knowledge.previouslyApproved" : "knowledge.proposed")}</p>
-        {record.approval && <p className="break-all text-xs">{t("knowledge.approvedBy", { author: record.approval.principalId, revision: record.approval.revision })}</p>}
-        <p className="max-w-[75ch] whitespace-pre-wrap break-words text-base leading-7">{record.body}</p>
-        <RecordAttachments key={record.id} token={token} projectId={projectId} recordId={record.id} recordKind="memory" changeVersion={changeVersion} />
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+          <span className="font-medium text-foreground">{t(`knowledge.${record.status}`)} · {t(record.approval?.revision === record.revision ? "knowledge.approved" : record.approval && record.status === "superseded" ? "knowledge.previouslyApproved" : "knowledge.proposed")}</span>
+          <span aria-hidden>·</span><span>{t(`knowledge.${record.category}`)}</span>
+          {record.reading?.kind === "imported-note" && <><span aria-hidden>·</span><span>{t("knowledge.importedNote")}</span></>}
+          <span aria-hidden>·</span><span>{t("knowledge.recordMetadata", { revision: record.revision })}</span>
+          <span aria-hidden>·</span><span>{t("knowledge.updatedAt", { date: new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(new Date(record.updatedAt)) })}</span>
+        </div>
+        {!documentOpen && record.approval && <p className="break-words text-sm">{t("knowledge.approvedBy", { author: record.approval.principalId, revision: record.approval.revision })}</p>}
+        {!documentOpen && (record.reading?.kind === "imported-note" && record.reading.bodyFormat !== "text"
+          ? <p className="max-w-[75ch] whitespace-pre-wrap break-words text-base leading-7">{record.reading.summary || t("knowledge.importedSummaryFallback")}</p>
+          : <p className="max-w-[75ch] whitespace-pre-wrap break-words text-base leading-7">{record.body}</p>)}
+        <RecordAttachments key={record.id} token={token} projectId={projectId} recordId={record.id} recordKind="memory" changeVersion={changeVersion} presentation="documents" onDocumentChange={setDocumentOpen} />
+        {!documentOpen && <>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" disabled={!writable || record.status !== "active" || busy || Boolean(pending)} onClick={event => { editorTriggerRef.current = event.currentTarget; setEditor("edit"); }}>{t("knowledge.editMemory")}</Button>
           <Button disabled={!approvable || record.status !== "active" || Boolean(record.approval) || busy || Boolean(pending)} onClick={() => void mutate("approve_memory")}>{t("knowledge.approve")}</Button>
           <Button variant="outline" disabled={!writable || record.status === "superseded" || busy || Boolean(pending)} onClick={() => void mutate(record.status === "archived" ? "restore_memory" : "archive_memory")}>{t(record.status === "archived" ? "knowledge.restoreMemory" : "knowledge.archiveMemory")}</Button>
         </div>
         {record.status === "active" && <div className="space-y-2"><Label htmlFor="memory-replacement">{t("knowledge.replacementId")}</Label><Input id="memory-replacement" value={replacement} onChange={e => setReplacement(e.target.value)} /><Button variant="outline" disabled={!writable || !replacement.trim() || busy || Boolean(pending)} onClick={() => void mutate("supersede_memory")}>{t("knowledge.supersede")}</Button></div>}
-        <details className="border-t border-border pt-4"><summary className="cursor-pointer font-medium">{t("knowledgeLayout.moreDetails")}</summary><div className="space-y-3 pt-3"><p className="break-all text-xs text-muted-foreground">{record.id}</p><p className="break-words text-sm">{record.tags.join(", ")}{record.legacyId ? ` · ${record.legacyId}` : ""}</p><h4 className="font-medium">{t("knowledge.sources")}</h4><ul className="space-y-2">{record.sources.map((source, index) => <li className="break-all text-sm" key={index}>{source.kind === "repository" ? `${source.sourceId} · ${source.repository} · ${source.commit}:${source.path}` : source.kind === "reply" ? `${source.id} · r${source.revision}` : <a className="underline" href={sourceHref(projectId, source)}>{source.kind === "external" ? source.label : `${source.id} · r${source.revision}`}</a>}</li>)}</ul>{record.supersededBy && <a className="block break-all underline" href={sourceHref(projectId, { kind: "memory", ...record.supersededBy })}>{t("knowledge.replacement")}: {record.supersededBy.id} · r{record.supersededBy.revision}</a>}</div></details>
+        <details className="border-t border-border pt-4"><summary className="cursor-pointer font-medium">{t("knowledgeLayout.moreDetails")}</summary><div className="space-y-3 pt-3"><p className="text-sm text-muted-foreground">{t("knowledge.attribution", { author: record.createdBy, revision: record.revision })}</p><p className="break-all text-xs text-muted-foreground">{record.id}</p><p className="break-words text-sm">{record.tags.join(", ")}{record.legacyId ? ` · ${record.legacyId}` : ""}</p><h4 className="font-medium">{t("knowledge.sources")}</h4><ul className="space-y-2">{record.sources.map((source, index) => <li className="break-all text-sm" key={index}>{source.kind === "repository" ? `${source.sourceId} · ${source.repository} · ${source.commit}:${source.path}` : source.kind === "reply" ? `${source.id} · r${source.revision}` : <a className="underline" href={sourceHref(projectId, source)}>{source.kind === "external" ? source.label : `${source.id} · r${source.revision}`}</a>}</li>)}</ul>{record.supersededBy && <a className="block break-all underline" href={sourceHref(projectId, { kind: "memory", ...record.supersededBy })}>{t("knowledge.replacement")}: {record.supersededBy.id} · r{record.supersededBy.revision}</a>}</div></details>
+        {record.reading?.kind === "imported-note" && record.reading.bodyFormat !== "text" && <details className="border-t border-border pt-4"><summary className="cursor-pointer font-medium">{t("knowledge.originalPayload")}</summary><pre className="mt-3 max-h-80 max-w-full overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-3 text-xs">{record.body}</pre></details>}
         <details><summary>{t("knowledge.history")}{historyError && <span className="ml-2 text-sm text-destructive">{t("knowledge.loadFailed")}</span>}</summary>{historyError && <div className="space-y-2"><p role="alert" className="text-sm text-destructive">{t("knowledge.loadFailed")}</p><Button variant="outline" onClick={() => setVersion(value => value + 1)}>{t("knowledge.refresh")}</Button></div>}<ul className="space-y-2">{history.items.map(entry => <li className="break-all text-xs" key={entry.id}>{entry.operation} · r{entry.revision} · {entry.principalId}<pre className="max-h-40 overflow-auto whitespace-pre-wrap">{entry.previousJson}</pre></li>)}</ul>{(historyOffset > 0 || history.nextOffset !== null) && <div className="flex gap-2"><Button variant="outline" disabled={!historyOffset} onClick={() => setHistoryOffset(Math.max(0, historyOffset - 25))}>{t("knowledge.previous")}</Button><Button variant="outline" disabled={history.nextOffset === null} onClick={() => setHistoryOffset(history.nextOffset!)}>{t("knowledge.nextPage")}</Button></div>}</details>
+        </>}
         </div> : error === "knowledge.loadFailed" ? <div className="space-y-3"><p role="alert" className="text-sm text-destructive">{t("knowledge.loadFailed")}</p><Button variant="outline" onClick={() => setVersion(value => value + 1)}>{t("knowledge.refresh")}</Button></div> : <p role="status" className="text-sm text-muted-foreground">{t("knowledge.loading")}</p>}
       </article>}
     </div>
