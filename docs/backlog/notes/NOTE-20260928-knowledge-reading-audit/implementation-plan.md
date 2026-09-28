@@ -2,6 +2,8 @@
 
 Stan: propozycja na podstawie audytu z 2026-09-28; nie jest akceptacją nowego wyglądu ani zmianą modelu danych. [Raport i 19 zrzutów](visual-audit.md) opisują dowody, a [analiza źródłowa](source-analysis.md) wskazuje przyczyny. Nie zaczynać ponownie implementacji całego modułu wiedzy.
 
+Po rozszerzeniu audytu o pozostałe panele kolejność prac koordynuje [wspólny plan całego GUI](whole-gui-plan.md). Poniższy dokument pozostaje szczegółową specyfikacją propozycji dla Wiedzy.
+
 ## Docelowy przepływ
 
 Użytkownik wybiera projekt, znajduje wpis po tytule lub treści, otwiera go i czyta. Tytuł, status, zwięzła informacja o pochodzeniu i właściwa treść są widoczne przed operacjami administracyjnymi. Notatka zawierająca plan prowadzi bezpośrednio do planu. Czytelnik wraca do poprzedniej listy z tym samym zapytaniem i pozycją.

@@ -5,7 +5,7 @@
     "audited_commit": "e4a3a2f",
     "evidence": "evidence.json",
     "implementation_plan": "implementation-plan.md",
-    "implementation_status": "Audit and documentation only; no application code or real knowledge records changed. Audit server was cleaned up after capture, then restarted on the same isolated copy at the owner’s request for manual review.",
+    "implementation_status": "Audit and documentation only. No application code changed. Synthetic servers stopped and claims released after capture; pilot dashboard remains running for owner review.",
     "owner_feedback": "owner-feedback.md",
     "owner_feedback_status": "Four owner-annotated screenshots identify unused memory space, dense discussion list, weak content hierarchy, marked project/tab navigation and misaligned backlog filters. Concrete layout solutions remain agent proposals.",
     "related_ids": [
@@ -13,10 +13,14 @@
       "NOTE-20260911-approved-gui-direction"
     ],
     "report": "visual-audit.md",
-    "scope": "Worktree Switcher only: backlog, notes, memory, discussions and reading attached documents. LLM Ops Hub excluded by owner.",
+    "runtime_evidence": "runtime-evidence.json",
+    "runtime_report": "runtime-audit.md",
+    "runtime_visual_status": "Completed 21 inspected screenshots: three synthetic projects, six worktrees, five terminal test runs, desktop/mobile and EN/light spot check. Limits in runtime-audit.md.",
+    "scope": "Worktree Switcher: original Knowledge reading audit, extended by owner to Worktrees, Tests, Resources and Logs. LLM Ops Hub excluded.",
     "source_findings": 15,
     "source_report": "source-analysis.md",
-    "visual_status": "Completed scoped Playwright audit on an owner-authorized isolated pilot copy; 19 current screenshots inspected. Desktop/mobile, PL/EN, dark/light, document download/search, reply navigation, partial keyboard and contrast checks. Limits documented in report."
+    "visual_status": "Completed scoped Playwright audit on an owner-authorized isolated pilot copy; 19 current screenshots inspected. Desktop/mobile, PL/EN, dark/light, document download/search, reply navigation, partial keyboard and contrast checks. Limits documented in report.",
+    "whole_gui_plan": "whole-gui-plan.md"
   },
   "created": "2026-09-28",
   "files": [
@@ -47,7 +51,31 @@
     "owner-feedback/01-memory-empty.png",
     "owner-feedback/02-discussion-hierarchy.png",
     "owner-feedback/03-project-navigation.png",
-    "owner-feedback/04-filter-alignment.png"
+    "owner-feedback/04-filter-alignment.png",
+    "runtime-audit.md",
+    "whole-gui-plan.md",
+    "runtime-evidence.json",
+    "runtime-screenshots/01-worktrees-overview.png",
+    "runtime-screenshots/02-running-claimed.png",
+    "runtime-screenshots/03-server-detail.png",
+    "runtime-screenshots/04-all-projects.png",
+    "runtime-screenshots/05-tests.png",
+    "runtime-screenshots/06-test-failure.png",
+    "runtime-screenshots/07-test-launch.png",
+    "runtime-screenshots/08-test-queue.png",
+    "runtime-screenshots/09-resources-disk.png",
+    "runtime-screenshots/10-resources-detail.png",
+    "runtime-screenshots/11-resources-servers.png",
+    "runtime-screenshots/12-resources-live-detail.png",
+    "runtime-screenshots/13-logs.png",
+    "runtime-screenshots/14-logs-search.png",
+    "runtime-screenshots/15-logs-match.png",
+    "runtime-screenshots/16-mobile-logs.png",
+    "runtime-screenshots/17-mobile-tests.png",
+    "runtime-screenshots/18-mobile-resources.png",
+    "runtime-screenshots/19-mobile-worktrees.png",
+    "runtime-screenshots/20-mobile-worktree-table.png",
+    "runtime-screenshots/21-light-english-worktrees.png"
   ],
   "id": "NOTE-20260928-knowledge-reading-audit",
   "last_reviewed": "2026-09-28",
@@ -61,5 +89,5 @@
     "accessibility",
     "plan"
   ],
-  "title": "Czytanie backlogu, notatek i pamięci: audyt GUI, zrzuty i plan poprawek"
+  "title": "Całe GUI Switchera: audyt czytania wiedzy i paneli runtime, zrzuty i plan poprawek"
 }

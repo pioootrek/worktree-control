@@ -1,0 +1,230 @@
+{
+  "audited_commit": "e4a3a2f3d0b37ba5ea1a0e36d0838c0ea850811d",
+  "date": "2026-09-28",
+  "scope": [
+    "Worktrees",
+    "Tests",
+    "Resources",
+    "Logs"
+  ],
+  "fixtures": {
+    "projects": 3,
+    "worktrees": 6,
+    "cache_bytes": 2097152,
+    "startup_failure_exit": 7
+  },
+  "viewports": [
+    [
+      1440,
+      1000
+    ],
+    [
+      390,
+      844
+    ]
+  ],
+  "mobile_tables": {
+    "tests": {
+      "top": 1528,
+      "width": 973
+    },
+    "resources": {
+      "top": 1294,
+      "width": 885
+    },
+    "worktrees": {
+      "top": 1198,
+      "width": 1322
+    }
+  },
+  "logs": {
+    "query": "ERROR",
+    "matches": 2,
+    "first_match_y": 1561,
+    "keyboard_result": "2/2",
+    "download_bytes": 307
+  },
+  "terminal_runs": [
+    {
+      "id": "7b664762-c6e4-4590-a246-6f1a630bda04",
+      "phase": "passed",
+      "startedAt": "2026-09-28T12:45:01.299Z",
+      "exitCode": 0
+    },
+    {
+      "id": "a521fe05-0867-44f6-bfc3-8d1c52902792",
+      "phase": "failed",
+      "startedAt": "2026-09-28T12:45:01.594Z",
+      "exitCode": 9
+    },
+    {
+      "id": "204423e9-10c5-4afb-94e0-1e6d252a78f4",
+      "phase": "passed",
+      "startedAt": "2026-09-28T12:45:01.893Z",
+      "exitCode": 0
+    },
+    {
+      "id": "dcd9c469-8730-417e-b7f9-6285ced476d2",
+      "phase": "passed",
+      "startedAt": "2026-09-28T12:47:44.522Z",
+      "exitCode": 0
+    },
+    {
+      "id": "b8d903ad-3a66-4e88-a4f0-bd8b169f02ec",
+      "phase": "cancelled",
+      "startedAt": null,
+      "exitCode": null
+    }
+  ],
+  "cleanup": [
+    {
+      "name": "AUDYT · Portal klienta",
+      "phase": "stopped",
+      "claim": null,
+      "queue": {
+        "limit": 1,
+        "running": 0,
+        "queued": 0,
+        "projectRunning": 0,
+        "projectQueued": 0
+      }
+    },
+    {
+      "name": "AUDYT · API zamówień",
+      "phase": "stopped",
+      "claim": null,
+      "queue": {
+        "limit": 1,
+        "running": 0,
+        "queued": 0,
+        "projectRunning": 0,
+        "projectQueued": 0
+      }
+    },
+    {
+      "name": "AUDYT · Worker — błąd startu",
+      "phase": "failed",
+      "claim": null,
+      "queue": {
+        "limit": 1,
+        "running": 0,
+        "queued": 0,
+        "projectRunning": 0,
+        "projectQueued": 0
+      }
+    }
+  ],
+  "screenshots": [
+    {
+      "file": "runtime-screenshots/01-worktrees-overview.png",
+      "sha256": "47d0f1480bf10cadcc32a2cdab67d8587006ce359dff6692181ba3428fad13be",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/02-running-claimed.png",
+      "sha256": "5f30ed5ad65aff84feb93b092e5d9bd7aeadb6476d925faaba4749625c33ef78",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/03-server-detail.png",
+      "sha256": "97e7c7c104567c637751075818bc65b3a8ffae3ef2b356b027d48f253346118d",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/04-all-projects.png",
+      "sha256": "f8f5c65dc6050a8bbd4f14dc3f333a9e376dce0659d04205472bff601e6864a9",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/05-tests.png",
+      "sha256": "4715ed5482197652c549aabb3f99b269db0aa00e370a56953a069f040695bfae",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/06-test-failure.png",
+      "sha256": "8ddafce99e01833a113676cc632672da6ac8c5a55523e20f73bc4fcfb4e7bb8e",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/07-test-launch.png",
+      "sha256": "90556781c98c5b498a9639127638f9bb669b3c4fefdb285969cda35d4d355ca6",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/08-test-queue.png",
+      "sha256": "efdcd349d37ff0d102b0cde0eeb251794085170c526adb30c39e41f38e454526",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/09-resources-disk.png",
+      "sha256": "a7b0ced377db5cbe8d4cd0c89e3e00b578227393aa4a9e19b623b5fe7f21a0a5",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/10-resources-detail.png",
+      "sha256": "7de7c8cf20b8ed579585b6c1128bb23524a5382746fbc05d2220793ff6c9f7e7",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/11-resources-servers.png",
+      "sha256": "5e3a500ef6ee0c54480f67e882539812684a55b23b1d90c06c6ce102f8c41329",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/12-resources-live-detail.png",
+      "sha256": "50ae6d0cc2d01817db92a7a6a277d8e0a507443e67ce86d213f682fe94f322e3",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/13-logs.png",
+      "sha256": "c621a460f9f7aa8d50d5d2b48d2b08ef6a9acb3e704a76f72222c04af3f135ab",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/14-logs-search.png",
+      "sha256": "b0f676a87c600f10f3f311670ce5eaf2cd757779cd19e62ec9de4766991bf261",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/15-logs-match.png",
+      "sha256": "3ec7ca288bee4dd102c1306f6a3993c632ee3adb57afeb393427466639696742",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/16-mobile-logs.png",
+      "sha256": "e434585e887f400756a17f05f8c20b0670d80066a3b3757c42d2a5a33468d4d9",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/17-mobile-tests.png",
+      "sha256": "fffb84c7a4a9465abae1516ea3fa3c342f7433f22fd63918eb2ff31402b51fac",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/18-mobile-resources.png",
+      "sha256": "e2bca8a67b5efe4242739e7292b0aebb0f4acd30991c1f639a332d2f278c0b9d",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/19-mobile-worktrees.png",
+      "sha256": "c4514691ecd838c6dbeb08581c34b736f6a8031321129a191e377c33a9bc2c47",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/20-mobile-worktree-table.png",
+      "sha256": "af0789652415920efb69c2b356f99cc63ba67c9b3a597e598317ed26099a0a06",
+      "inspected": true
+    },
+    {
+      "file": "runtime-screenshots/21-light-english-worktrees.png",
+      "sha256": "b030161af3a09a204333f68e3fd82b9a55e603aaa847f2e5fe7d149ff447d7ab",
+      "inspected": true
+    }
+  ],
+  "pilot_after_audit": {
+    "port": 3001,
+    "phase": "running",
+    "claim": null,
+    "purpose": "owner manual review"
+  }
+}
