@@ -85,7 +85,7 @@ test("native JSON stays plain text, imported fallback is translated, and mobile 
   await expect(reader.getByText("Original imported payload")).toHaveCount(0);
   await reader.getByRole("button", { name: "Edit memory" }).click();
   await expect(page.getByLabel("Body", { exact: true })).toHaveValue(nativeBody);
-  await page.getByRole("dialog").getByRole("button", { name: "Close draft" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Close and keep draft", exact: true }).click();
   await reader.getByRole("button", { name: "Back to list" }).click();
   await expect(page.getByRole("link", { name: "Native JSON note", exact: true })).toBeFocused();
   await page.getByRole("link", { name: "Text import", exact: true }).click();
