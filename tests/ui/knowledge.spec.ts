@@ -7,9 +7,10 @@ async function disconnectKnowledge(page: Page) {
   await page.getByRole("menuitem", { name: "Disconnect Knowledge access", exact: true }).click();
 }
 
-async function mountKnowledge(page: Page) {
+async function mountKnowledge(page: Page, { withRuntimeProject = false }: { withRuntimeProject?: boolean } = {}) {
   await page.addInitScript(() => sessionStorage.setItem("worktree-switcher-knowledge-token", "knowledge-fixture"));
-  const data = dashboardFixture(); data.projects = [];
+  const data = dashboardFixture();
+  if (!withRuntimeProject) data.projects = [];
   const fixture = await mountDashboard(page, data);
   const project = { id: "knowledge-only", name: "Knowledge without server", status: "active", writable: true, revision: 1, createdAt: "2026-01-01", updatedAt: "2026-01-01" };
   const records: Array<{ id: string; projectId: string; title: string; body?: string; description?: string; priority?: string; status?: string; revision: number; createdBy: string }> = [];
@@ -391,7 +392,7 @@ for (const status of [401, 403]) {
 test("knowledge sign-in changes only the shared stream credential, not runtime bootstrap", async ({ page }) => {
   let dashboardReads = 0;
   page.on("request", request => { if (new URL(request.url()).pathname.startsWith("/api/dashboard")) dashboardReads++; });
-  await mountKnowledge(page);
+  await mountKnowledge(page, { withRuntimeProject: true });
   const events = () => page.evaluate(() => {
     const value = (window as unknown as { fixtureEvents: { active: number; opened: number; lastKnowledgeToken: string } }).fixtureEvents;
     return { active: value.active, opened: value.opened, token: value.lastKnowledgeToken };
@@ -403,7 +404,7 @@ test("knowledge sign-in changes only the shared stream credential, not runtime b
   expect(dashboardReads).toBe(1);
   expect(await page.evaluate(() => sessionStorage.getItem("worktree-switcher-token"))).toBe("ui-fixture-token");
   await page.getByRole("button", { name: "Worktrees", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Worktrees", exact: true })).toBeVisible();
+  await expect(page.getByText("Fixture Web").first()).toBeVisible();
   await page.getByRole("button", { name: "Knowledge", exact: true }).click();
   await page.getByLabel("Knowledge credential", { exact: true }).fill("second-credential");
   await page.getByRole("button", { name: "Sign in to knowledge", exact: true }).click();
