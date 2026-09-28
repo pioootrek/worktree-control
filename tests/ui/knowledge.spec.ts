@@ -805,7 +805,7 @@ test("an entry exposes authorized attachments and downloads their bytes", async 
   const requests: string[] = [];
   await page.route("**/api/knowledge", route => {
     const { operation } = route.request().postDataJSON();
-    const attachment = { id: "file-1", filename: "evidence.txt", size: 8 };
+    const attachment = { id: "file-1", projectId: "knowledge-only", recordKind: "task", recordId: "attached", filename: "evidence.txt", mediaType: "text/plain", size: 8, sha256: "fixture", createdBy: "owner", createdAt: "2026-01-01" };
     if (operation === "attachments") return route.fulfill({ json: { items: [attachment], nextOffset: null } });
     if (operation === "attachment") { requests.push(operation); return route.fulfill({ json: { attachment, dataBase64: "ZXZpZGVuY2U=" } }); }
     return route.fallback();

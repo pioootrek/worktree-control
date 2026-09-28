@@ -1,5 +1,5 @@
 import type { KnowledgeTaskPage } from "@/shared/contracts/knowledge";
-import type { KnowledgeMemory, KnowledgeSearchHit, KnowledgeSearchOptions } from "@/shared/contracts/knowledge-memory";
+import type { KnowledgeMemory, KnowledgeMemoryReading, KnowledgeSearchHit, KnowledgeSearchOptions } from "@/shared/contracts/knowledge-memory";
 import type { KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
 import Database from "better-sqlite3";
 
@@ -18,6 +18,7 @@ import {
 } from "@/server/modules/knowledge";
 import type { KnowledgeProject, KnowledgeProjectRuntimeLink } from "@/server/modules/identity";
 import type { KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
+import { readingFromImport } from "./knowledge-memory-reading";
 
 type ThreadRow = { id: string; project_id: string; title: string; body: string; revision: number; created_by: string; created_at: string; updated_at: string };
 type ReplyRow = { id: string; project_id: string; thread_id: string; body: string; revision: number; created_by: string; created_at: string; updated_at: string; import_source_id?: string | null; source_author?: unknown; source_date?: unknown };
@@ -53,20 +54,74 @@ export class KnowledgeQueries implements KnowledgeStore {
   }
 
   saveAttachment(value: KnowledgeAttachment, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeAttachment> {
+    const { relativePath: _relativePath, ...stored } = value;
+    void _relativePath;
     return this.mutate("attachment.create", context, () => { this.database.prepare(`INSERT INTO knowledge_attachments
       (id, project_id, record_kind, record_id, filename, media_type, size, sha256, created_by, created_at)
-      VALUES (@id,@projectId,@recordKind,@recordId,@filename,@mediaType,@size,@sha256,@createdBy,@createdAt)`).run(value); return value; });
+      VALUES (@id,@projectId,@recordKind,@recordId,@filename,@mediaType,@size,@sha256,@createdBy,@createdAt)`).run(stored); return stored; });
   }
   getAttachment(projectId: string, id: string): KnowledgeAttachment | null {
     const row = this.database.prepare(`SELECT id, project_id projectId, record_kind recordKind, record_id recordId,
       filename, media_type mediaType, size, sha256, created_by createdBy, created_at createdAt FROM knowledge_attachments WHERE project_id = ? AND id = ?`).get(projectId, id) as KnowledgeAttachment | undefined;
-    return row ?? null;
+    if (!row) return null;
+    return this.withAttachmentPaths(projectId, [row])[0]!;
   }
   listAttachments(projectId: string, recordKind: KnowledgeAttachment["recordKind"], recordId: string, limit: number, offset: number): KnowledgePage<KnowledgeAttachment> {
     const rows=this.database.prepare(`SELECT id, project_id projectId, record_kind recordKind, record_id recordId,
       filename, media_type mediaType, size, sha256, created_by createdBy, created_at createdAt FROM knowledge_attachments
       WHERE project_id = ? AND record_kind = ? AND record_id = ? ORDER BY created_at, id LIMIT ? OFFSET ?`).all(projectId, recordKind, recordId, limit+1, offset) as KnowledgeAttachment[];
-    return this.page(rows,limit,offset);
+    return this.page(this.withAttachmentPaths(projectId, rows),limit,offset);
+  }
+  private withAttachmentPaths(projectId: string, attachments: KnowledgeAttachment[]): KnowledgeAttachment[] {
+    const paths = new Map<string, string>();
+    for (let start = 0; start < attachments.length; start += 100) {
+      const batch = attachments.slice(start, start + 100).filter(item => item.recordKind === "memory");
+      if (!batch.length) continue;
+      const placeholders = batch.map(() => "?").join(",");
+      const sources = this.database.prepare(`SELECT target_id, count(*) provenance_count, max(source_id) source_id,
+        max(source_repository) source_repository, max(source_commit) source_commit,
+        max(source_sha256) source_sha256, max(source_path) source_path
+        FROM knowledge_import_sources WHERE project_id=? AND target_kind='attachment' AND target_id IN (${placeholders})
+        GROUP BY target_id`).all(projectId, ...batch.map(item => item.id)) as Array<{
+          target_id: string; provenance_count: number; source_id: string; source_repository: string; source_commit: string;
+          source_sha256: string; source_path: string;
+        }>;
+      const byAttachment = new Map(sources.map(source => [source.target_id, source]));
+      const eligible = batch.filter(item => {
+        const source = byAttachment.get(item.id);
+        return source?.provenance_count === 1 && source.source_sha256 === item.sha256;
+      });
+      if (!eligible.length) continue;
+      const parentIds = [...new Set(eligible.map(item => item.recordId))];
+      const parents = this.database.prepare(`SELECT target_id, source_id, source_repository, source_commit,
+        count(*) provenance_count, max(source_path) source_path
+        FROM knowledge_import_sources WHERE project_id=? AND target_kind='memory'
+          AND target_id IN (${parentIds.map(() => "?").join(",")})
+        GROUP BY target_id, source_id, source_repository, source_commit`).all(projectId, ...parentIds) as Array<{
+          target_id: string; source_id: string; source_repository: string; source_commit: string;
+          provenance_count: number; source_path: string;
+        }>;
+      const parentKey = (targetId: string, sourceId: string, repository: string, commit: string) =>
+        JSON.stringify([targetId, sourceId, repository, commit]);
+      const byParent = new Map(parents.map(parent => [
+        parentKey(parent.target_id, parent.source_id, parent.source_repository, parent.source_commit), parent,
+      ]));
+      for (const attachment of eligible) {
+        const source = byAttachment.get(attachment.id);
+        if (!source) continue;
+        const parent = byParent.get(parentKey(attachment.recordId, source.source_id, source.source_repository, source.source_commit));
+        if (parent?.provenance_count !== 1) continue;
+        const parentPath = parent.source_path;
+        if (!parentPath.endsWith("/note.json")) continue;
+        const prefix = parentPath.slice(0, -"note.json".length);
+        if (!source.source_path.startsWith(prefix)) continue;
+        const relativePath = source.source_path.slice(prefix.length);
+        if (relativePath.split("/").some(part => !part || part === "." || part === ".." || /[\\\u0000-\u001f]/.test(part)) ||
+            relativePath.split("/").at(-1) !== attachment.filename) continue;
+        paths.set(attachment.id, relativePath);
+      }
+    }
+    return attachments.map(item => paths.has(item.id) ? { ...item, relativePath: paths.get(item.id)! } : item);
   }
   attachmentBytesForProject(projectId: string): number {
     return (this.database.prepare("SELECT coalesce(sum(size),0) total FROM knowledge_attachments WHERE project_id = ?").get(projectId) as { total: number }).total;
@@ -80,7 +135,9 @@ export class KnowledgeQueries implements KnowledgeStore {
 
   getMemory(projectId: string, id: string): KnowledgeMemory | null {
     const row = this.database.prepare("SELECT * FROM knowledge_memories WHERE project_id = ? AND id = ?").get(projectId, id) as MemoryRow | undefined;
-    return row ? mapMemory(row) : null;
+    if (!row) return null;
+    const memory = mapMemory(row);
+    return this.withMemoryReadings(projectId, [memory])[0]!;
   }
 
   getReply(projectId: string, id: string): KnowledgeReply | null {
@@ -99,16 +156,53 @@ export class KnowledgeQueries implements KnowledgeStore {
       AND instr(knowledge_fold(title || char(10) || body || char(10) || coalesce((SELECT group_concat(value, char(10)) FROM json_each(tags_json)), '') || char(10) || coalesce(legacy_id, '')), knowledge_fold(@query)) > 0
       AND (@taskId IS NULL OR EXISTS(SELECT 1 FROM json_each(sources_json) s WHERE json_extract(s.value, '$.kind') = 'task' AND json_extract(s.value, '$.id') = @taskId))
       ORDER BY updated_at DESC, id LIMIT @limit OFFSET @offset`).all({ projectId, limit: limit + 1, offset, query, inactive: Number(includeInactive), taskId: taskId ?? null }) as MemoryRow[];
-    return this.page(rows.map(mapMemory), limit, offset);
+    return this.page(this.withMemoryReadings(projectId, rows.map(mapMemory)), limit, offset);
+  }
+
+  private withMemoryReadings<T extends { id: string }>(projectId: string, items: T[]): Array<T & { reading?: KnowledgeMemoryReading }> {
+    const readings = new Map<string, KnowledgeMemoryReading>();
+    for (let start = 0; start < items.length; start += 100) {
+      const batch = items.slice(start, start + 100);
+      if (!batch.length) continue;
+      const placeholders = batch.map(() => "?").join(",");
+      const rows = this.database.prepare(`SELECT target_id, count(*) provenance_count,
+        CASE WHEN count(*)=1 AND max(length(original_payload_json)) <= 131072 THEN max(original_payload_json) END original_payload_json
+        FROM knowledge_import_sources WHERE project_id=? AND target_kind='memory' AND target_id IN (${placeholders})
+        GROUP BY target_id`).all(projectId, ...batch.map(item => item.id)) as Array<{
+          target_id: string; provenance_count: number; original_payload_json: string | null;
+        }>;
+      const eligible = rows.filter(row => row.provenance_count === 1 && row.original_payload_json !== null);
+      if (!eligible.length) continue;
+      const bodies = new Map<string, string>();
+      for (const item of batch) {
+        if ("body" in item && typeof item.body === "string") bodies.set(item.id, item.body);
+      }
+      const missing = eligible.map(row => row.target_id).filter(id => !bodies.has(id));
+      if (missing.length) {
+        const found = this.database.prepare(`SELECT id, body FROM knowledge_memories WHERE project_id=? AND id IN (${missing.map(() => "?").join(",")})`)
+          .all(projectId, ...missing) as Array<{ id: string; body: string }>;
+        for (const row of found) bodies.set(row.id, row.body);
+      }
+      for (const row of eligible) {
+        const body = bodies.get(row.target_id);
+        if (body === undefined) continue;
+        const reading = readingFromImport(row.original_payload_json, body);
+        if (reading) readings.set(row.target_id, reading);
+      }
+    }
+    return items.map(item => readings.has(item.id) ? { ...item, reading: readings.get(item.id)! } : item);
   }
 
   saveMemory(memory: KnowledgeMemory, expectedRevision: number | null, operation: string, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeMemory> {
     return this.mutate(operation, context, () => {
-      const previous = this.getMemory(memory.projectId, memory.id);
-      const values = { id: memory.id, projectId: memory.projectId, title: memory.title, body: memory.body, category: memory.category,
-        tags: JSON.stringify(memory.tags), legacyId: memory.legacyId, sources: JSON.stringify(memory.sources), status: memory.status,
-        supersededBy: memory.supersededBy ? JSON.stringify(memory.supersededBy) : null, approval: memory.approval ? JSON.stringify(memory.approval) : null,
-        revision: memory.revision, createdBy: memory.createdBy, createdAt: memory.createdAt, updatedAt: memory.updatedAt };
+      const { reading: _reading, ...storedMemory } = memory;
+      void _reading;
+      const previousRow = this.database.prepare("SELECT * FROM knowledge_memories WHERE project_id=? AND id=?").get(memory.projectId, memory.id) as MemoryRow | undefined;
+      const previous = previousRow ? mapMemory(previousRow) : null;
+      const values = { id: storedMemory.id, projectId: storedMemory.projectId, title: storedMemory.title, body: storedMemory.body, category: storedMemory.category,
+        tags: JSON.stringify(storedMemory.tags), legacyId: storedMemory.legacyId, sources: JSON.stringify(storedMemory.sources), status: storedMemory.status,
+        supersededBy: storedMemory.supersededBy ? JSON.stringify(storedMemory.supersededBy) : null, approval: storedMemory.approval ? JSON.stringify(storedMemory.approval) : null,
+        revision: storedMemory.revision, createdBy: storedMemory.createdBy, createdAt: storedMemory.createdAt, updatedAt: storedMemory.updatedAt };
       if (expectedRevision === null) {
         this.database.prepare(`INSERT INTO knowledge_memories VALUES (@id, @projectId, @title, @body, @category, @tags, @legacyId, @sources, @status, @supersededBy, @approval, @revision, @createdBy, @createdAt, @updatedAt)`).run(values);
       } else {
@@ -120,7 +214,7 @@ export class KnowledgeQueries implements KnowledgeStore {
       const historyOperation = operation === "create_memory" ? "created" : operation === "approve_memory" ? "approved"
         : operation === "supersede_memory" ? "superseded" : operation === "archive_memory" ? "archived" : "updated";
       this.history(memory.projectId, "memory", memory.id, historyOperation, previous ? JSON.stringify(previous) : null, memory.revision, context, memory.updatedAt);
-      return memory;
+      return storedMemory;
     });
   }
 
@@ -140,7 +234,9 @@ export class KnowledgeQueries implements KnowledgeStore {
       ORDER BY updatedAt DESC, kind, id LIMIT @limit OFFSET @offset`).all({ projectId, limit: limit + 1, offset,
         query: options.query ?? '', kind: options.kind ?? null, status: options.status ?? null, legacyId: options.legacyId ?? null,
         tag: options.tag ?? null, inactive: Number(options.includeInactive ?? false) }) as KnowledgeSearchHit[];
-    return this.page(rows, limit, offset);
+    const memoryHits = rows.filter(item => item.kind === "memory");
+    const projected = new Map(this.withMemoryReadings(projectId, memoryHits).map(item => [item.id, item.reading]));
+    return this.page(rows.map(item => item.kind === "memory" && projected.get(item.id) ? { ...item, reading: projected.get(item.id)! } : item), limit, offset);
   }
 
   /** A null principal is the installation authority: every project, always writable. */

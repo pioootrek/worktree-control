@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { IdentityService } from "@/server/modules/identity";
 import { AuthenticationService } from "@/server/modules/authentication";
-import { calculateHubImportPlanHash, executeHubImport, exportKnowledgeProject, importKnowledgeProject, type HubImportMapping, type HubImportPlan } from "@/server/modules/knowledge";
+import { calculateHubImportPlanHash, executeHubImport, exportKnowledgeProject, importKnowledgeProject, KnowledgeService, type HubImportMapping, type HubImportPlan } from "@/server/modules/knowledge";
 import { SqliteStateStore } from "./sqlite-state-store";
 
 const roots:string[]=[];
@@ -19,7 +19,7 @@ function mapping(path:string,kind:HubImportMapping["sourceKind"],target:HubImpor
 }
 function plan(mappings:HubImportMapping[]):HubImportPlan{const value:HubImportPlan={formatVersion:1,mappingVersion:2,planId:"",planHash:"",source:{sourceId:"fixture",repository:"/source",commit:"d".repeat(40),backlogPath:"docs/backlog"},validator:{repository:"/validator",commit:"e".repeat(40),command:["validate"],valid:true,diagnostics:[]},counts:{files:mappings.length,bytes:20,tasks:1,embeddedNotes:0,done:0,notes:1,attachments:0,documents:0,configurations:0,schemas:0,derived:0,unclassified:0,mapped:mappings.length,sourceOnly:0,skipped:0,missing:0,conflicts:0,unresolvedRelations:0},mappings,missing:[],conflicts:[],unresolvedRelations:[],guarantees:{dataWritten:false,sourceReadFromCommit:true,importedRepositoryScriptsExecuted:false}};value.planHash=calculateHubImportPlanHash(value);value.planId=`hub:fixture:${"d".repeat(40)}:${value.planHash.slice(0,16)}`;return value;}
 function atCommit(value:HubImportPlan,commit:string):HubImportPlan{const result={...value,source:{...value.source,commit},planId:"",planHash:""};result.planHash=calculateHubImportPlanHash(result);result.planId=`hub:fixture:${commit}:${result.planHash.slice(0,16)}`;return result;}
-function fixture(){const root=mkdtempSync(join(tmpdir(),"hub-import-execution-"));roots.push(root);let n=0;const ids=["00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000002"];const store=new SqliteStateStore(join(root,"state.sqlite3")),identity=new IdentityService(store,()=>NOW,()=>ids[n++]!,()=>"a".repeat(64)),owner=identity.authenticateBearer(identity.bootstrapOwnerSession().token);return {root,store,identity,owner};}
+function fixture(){const root=mkdtempSync(join(tmpdir(),"hub-import-execution-"));roots.push(root);let n=0;const ids=["00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000003"];const store=new SqliteStateStore(join(root,"state.sqlite3")),identity=new IdentityService(store,()=>NOW,()=>ids[n++]!,()=>"a".repeat(64)),owner=identity.authenticateBearer(identity.bootstrapOwnerSession().token);return {root,store,identity,owner};}
 const execute=(store:SqliteStateStore,identity:IdentityService,owner:ReturnType<IdentityService["authenticateBearer"]>,input:Parameters<typeof executeHubImport>[3])=>executeHubImport(store,identity,owner,input,()=>NOW,plan=>plan);
 
 describe("K6b Hub import execution",()=>{
@@ -179,6 +179,64 @@ describe("K6b Hub import execution",()=>{
     const thread=target.store.listThreads("portable",25,0).items[0]!;expect(target.store.listReplies("portable",thread.id,25,0).items[0]?.historicalImport).toEqual({sourceAuthor:"Ada",sourceDate:"2026-09-13",sourceDateStatus:"valid"}); target.store.close();
   });
 
+  it("projects only proven current imported note bodies across detail, list and search",()=>{
+    const f=fixture(),report=plan([
+      mapping("docs/backlog/notes/NOTE-text/note.json","note","memory",{id:"NOTE-text",title:"Text",body:"  Plain note  "}),
+      mapping("docs/backlog/notes/NOTE-metadata/note.json","note","memory",{id:"NOTE-metadata",title:"Metadata",body:{summary:"Actual summary",description:"Other text",flag:true}}),
+      mapping("docs/backlog/notes/NOTE-manifest/note.json","note","memory",{id:"NOTE-manifest",title:"Manifest",description:"Manifest summary"}),
+    ]);
+    execute(f.store,f.identity,f.owner,{plan:report,targetProjectId:"reading",targetProjectName:"Reading"});
+    const listed=f.store.listMemories("reading",2,0,"",true);
+    expect(listed.items).toHaveLength(2);expect(listed.nextOffset).toBe(2);
+    const memories=f.store.listMemories("reading",10,0,"",true).items;
+    const text=memories.find(item=>item.title==="Text")!,metadata=memories.find(item=>item.title==="Metadata")!,manifest=memories.find(item=>item.title==="Manifest")!;
+    expect(text).toMatchObject({body:"Plain note",reading:{kind:"imported-note",bodyFormat:"text",summary:null}});
+    expect(metadata).toMatchObject({body:'{"summary":"Actual summary","description":"Other text","flag":true}',reading:{kind:"imported-note",bodyFormat:"metadata",summary:"Actual summary"}});
+    expect(manifest.reading).toEqual({kind:"imported-note",bodyFormat:"manifest",summary:"Manifest summary"});
+    expect(f.store.getMemory("reading",metadata.id)?.reading).toEqual(metadata.reading);
+    const hits=f.store.searchKnowledge("reading",2,0,{kind:"memory"});
+    expect(hits.items).toHaveLength(2);expect(hits.nextOffset).toBe(2);
+    expect(hits.items.every(item=>item.reading?.kind==="imported-note")).toBe(true);
+    expect(f.store.searchKnowledge("reading",10,0,{query:"Actual summary"}).items[0]).toMatchObject({id:metadata.id,reading:metadata.reading});
+    const service=new KnowledgeService(f.store,f.identity,()=>NOW,()=>"native-json");
+    const native=service.execute({operation:"create_memory",input:{projectId:"reading",title:"Native",body:'{"summary":"Native JSON"}',category:"note",tags:[],legacyId:"NOTE-native",sources:metadata.sources,idempotencyKey:"native"}},f.owner) as {value:{id:string}};
+    expect(f.store.getMemory("reading",native.value.id)?.reading).toBeUndefined();
+    const changed=service.execute({operation:"update_memory",input:{projectId:"reading",memoryId:metadata.id,expectedRevision:metadata.revision,title:metadata.title,body:"Locally revised",category:metadata.category,tags:metadata.tags,legacyId:metadata.legacyId,sources:metadata.sources,idempotencyKey:"changed"}},f.owner) as {value:{reading?:unknown}};
+    expect(changed.value.reading).toBeUndefined();
+    expect(f.store.getMemory("reading",metadata.id)?.reading).toBeUndefined();
+    expect(JSON.parse(f.store.listHistory("reading","memory",metadata.id,10,0).items[0]!.previousJson!)).not.toHaveProperty("reading");
+    const approved=service.execute({operation:"approve_memory",input:{projectId:"reading",memoryId:text.id,expectedRevision:text.revision,idempotencyKey:"approved"}},f.owner) as {value:{reading?:unknown}};
+    expect(approved.value.reading).toBeUndefined();
+    expect(f.store.getMemory("reading",text.id)?.reading?.bodyFormat).toBe("text");
+    const snapshot=f.store.exportKnowledgeProject("reading")!;
+    expect(snapshot.memories.every(row=>!Object.hasOwn(row,"reading"))).toBe(true);
+    expect(snapshot.memories.find(row=>row.id===text.id)?.body).toBe("Plain note");
+    f.store.close();
+  });
+
+  it("fails closed for malformed, ambiguous and foreign-project provenance",()=>{
+    const f=fixture(),report=plan([mapping("docs/backlog/notes/NOTE-one/note.json","note","memory",{id:"NOTE-one",title:"One",body:{description:"Proven"}})]);
+    execute(f.store,f.identity,f.owner,{plan:report,targetProjectId:"source",targetProjectName:"Source"});
+    const memory=f.store.listMemories("source",10,0,"",true).items[0]!;
+    const db=new Database(join(f.root,"state.sqlite3"));
+    db.prepare("UPDATE knowledge_import_sources SET original_payload_json=? WHERE project_id=? AND target_id=?").run("{bad", "source",memory.id);
+    expect(f.store.getMemory("source",memory.id)?.reading).toBeUndefined();
+    db.prepare("UPDATE knowledge_import_sources SET original_payload_json=? WHERE project_id=? AND target_id=?").run(JSON.stringify({body:{description:"Proven"}}),"source",memory.id);
+    expect(f.store.getMemory("source",memory.id)?.reading?.bodyFormat).toBe("metadata");
+    const source=db.prepare("SELECT * FROM knowledge_import_sources WHERE project_id='source' AND target_id=?").get(memory.id) as {
+      source_id:string;source_repository:string;source_commit:string;source_sha256:string;mapping_version:number;
+      original_payload_json:string;created_at:string;target_revision:number|null;
+    };
+    db.prepare(`INSERT INTO knowledge_import_sources (id,project_id,source_id,source_repository,source_commit,source_path,legacy_id,source_sha256,mapping_version,target_kind,target_id,original_payload_json,created_at,target_revision)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run("duplicate","source",source.source_id,source.source_repository,source.source_commit,"docs/backlog/notes/NOTE-other/note.json","NOTE-other",source.source_sha256,source.mapping_version,"memory",memory.id,source.original_payload_json,source.created_at,source.target_revision);
+    expect(f.store.getMemory("source",memory.id)?.reading).toBeUndefined();
+    db.prepare("DELETE FROM knowledge_import_sources WHERE id='duplicate'").run();
+    const foreign=f.identity.createKnowledgeProject({name:"Foreign"},f.owner);
+    db.prepare("UPDATE knowledge_import_sources SET project_id=? WHERE project_id='source' AND target_id=?").run(foreign.id,memory.id);
+    expect(f.store.getMemory("source",memory.id)?.reading).toBeUndefined();
+    db.close();f.store.close();
+  });
+
   it.each([["attachment","attachment"]] as const)("blocks unsupported %s mappings",(sourceKind,targetKind)=>{
     const f=fixture(),source=plan([mapping(`docs/backlog/${sourceKind}.json`,sourceKind,targetKind,{id:sourceKind,title:sourceKind})]);
     expect(()=>execute(f.store,f.identity,f.owner,{plan:source,targetProjectId:"target",targetProjectName:"Target"})).toThrowError(expect.objectContaining({code:"invalid_request"}));
@@ -318,6 +376,36 @@ describe("K6b Hub import execution",()=>{
     const unsafe=fixture(),unsafeDirectory=join(unsafe.root,"unsafe-attachments"),outside=join(unsafe.root,"outside");mkdirSync(unsafeDirectory);mkdirSync(outside);symlinkSync(outside,join(unsafeDirectory,hash.slice(0,2)));
     expect(()=>executeHubImport(unsafe.store,unsafe.identity,unsafe.owner,{plan:report,targetProjectId:"unsafe",targetProjectName:"Unsafe",attachmentDirectory:unsafeDirectory,batchId:"unsafe-batch"},()=>NOW,value=>value,()=>bytes)).toThrowError(expect.objectContaining({code:"invalid_request"}));
     expect(existsSync(join(outside,hash))).toBe(false);expect(unsafe.store.getHubImport("unsafe-batch")).toMatchObject({status:"failed"});unsafe.store.close();
+  });
+
+  it("derives attachment paths only from matching note and byte provenance",()=>{
+    const f=fixture(),notes=["NOTE-one","NOTE-two"].map(id=>mapping(`docs/backlog/notes/${id}/note.json`,"note","memory",{id,title:id,body:"Note"}));
+    const files=["NOTE-one/assets/proof.txt","NOTE-one/evidence/proof.txt","NOTE-one/Assets/Plan_V1.md","NOTE-two/assets/proof.txt"];
+    const contents=new Map(files.map((path,index)=>[`docs/backlog/notes/${path}`,Buffer.from(`proof-${index}`)]));
+    const attachments:HubImportMapping[]=Array.from(contents,([sourcePath,bytes])=>({sourcePath,sourceKind:"attachment",targetKind:"attachment",legacyId:null,disposition:"mapped",sourceSha256:createHash("sha256").update(bytes).digest("hex"),size:bytes.byteLength,mappedFields:[],sourceOnlyFields:[]}));
+    executeHubImport(f.store,f.identity,f.owner,{plan:plan([...notes,...attachments]),targetProjectId:"paths",targetProjectName:"Paths",attachmentDirectory:join(f.root,"path-attachments")},()=>NOW,value=>value,(_plan,path)=>contents.get(path)!);
+    const memories=f.store.listMemories("paths",10,0,"",true).items;
+    const one=memories.find(item=>item.title==="NOTE-one")!,two=memories.find(item=>item.title==="NOTE-two")!;
+    const oneFiles=f.store.listAttachments("paths","memory",one.id,10,0).items,twoFiles=f.store.listAttachments("paths","memory",two.id,10,0).items;
+    expect(oneFiles.map(item=>item.relativePath).sort()).toEqual(["Assets/Plan_V1.md","assets/proof.txt","evidence/proof.txt"]);
+    const planFile=oneFiles.find(item=>item.relativePath==="Assets/Plan_V1.md")!;
+    expect(f.store.getAttachment("paths",planFile.id)?.relativePath).toBe("Assets/Plan_V1.md");
+    expect(twoFiles.map(item=>item.relativePath)).toEqual(["assets/proof.txt"]);
+    expect(f.store.getAttachment("paths",oneFiles[0]!.id)?.relativePath).toBe(oneFiles[0]!.relativePath);
+    const db=new Database(join(f.root,"state.sqlite3"));
+    db.prepare("UPDATE knowledge_import_sources SET source_commit=? WHERE project_id=? AND target_kind='attachment' AND target_id=?").run("f".repeat(40),"paths",oneFiles[0]!.id);
+    expect(f.store.getAttachment("paths",oneFiles[0]!.id)?.relativePath).toBeUndefined();
+    db.prepare("UPDATE knowledge_import_sources SET source_sha256=? WHERE project_id=? AND target_kind='attachment' AND target_id=?").run("b".repeat(64),"paths",oneFiles[1]!.id);
+    expect(f.store.getAttachment("paths",oneFiles[1]!.id)?.relativePath).toBeUndefined();
+    db.prepare("UPDATE knowledge_import_sources SET source_path=? WHERE project_id=? AND target_kind='attachment' AND target_id=?")
+      .run("docs/backlog/notes/NOTE-two/assets/../proof.txt","paths",twoFiles[0]!.id);
+    expect(f.store.getAttachment("paths",twoFiles[0]!.id)?.relativePath).toBeUndefined();
+    const native={...twoFiles[0]!,id:"native-attachment"};delete native.relativePath;
+    f.store.saveAttachment(native,{actor:f.owner,projectId:"paths",idempotencyKey:"native-attachment",requestHash:"c".repeat(64)});
+    expect(f.store.getAttachment("paths",native.id)?.relativePath).toBeUndefined();
+    expect(f.store.listAttachments("paths","memory",two.id,1,0).items).toHaveLength(1);
+    expect(f.store.exportKnowledgeProject("paths")!.attachments.every(row=>!Object.hasOwn(row,"relativePath"))).toBe(true);
+    db.close();f.store.close();
   });
 
   it("resets and resumes a failed publication after its external cause is removed",()=>{
