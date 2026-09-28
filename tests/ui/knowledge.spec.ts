@@ -694,6 +694,53 @@ test("memory selection and browser Back preserve filters and a later results pag
   expect(f.errors).toEqual([]);
 });
 
+test("Memory resets list scroll for a new search or page and restores it after reading", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const f = await mountMemory(page);
+  await addMemory(page, "Seed");
+  await page.goBack();
+  const seed = f.memories[0];
+  for (const group of ["Alpha", "Beta"]) for (let index = 0; index < 60; index++) {
+    f.memories.push({ ...seed, id: `${group}-${index}`, title: `${group} ${index}`, body: `${group} content ${index}` });
+  }
+  await page.route("**/api/knowledge", route => {
+    const { operation, input } = route.request().postDataJSON();
+    if (operation !== "search") return route.fallback();
+    const query = String(input.query ?? "");
+    const offset = Number(input.offset ?? 0);
+    const matching = f.memories.filter(item => item.title.includes(query));
+    return route.fulfill({ json: { items: matching.slice(offset, offset + 25).map(item => ({ ...item, kind: "memory", excerpt: item.body, threadId: null })), nextOffset: matching.length > offset + 25 ? offset + 25 : null } });
+  });
+  const list = page.locator("[data-memory-list]");
+  const scroll = list.getByRole("region", { name: "Results list" });
+  const query = page.getByLabel("Search titles, content and memory", { exact: true });
+  await query.fill("Alpha");
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  await expect(list.getByRole("link", { name: "Alpha 0", exact: true })).toBeVisible();
+  await scroll.evaluate(node => { node.scrollTop = 250; });
+  await expect.poll(() => scroll.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+  await expect.poll(() => scroll.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
+
+  await query.fill("Beta");
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  await expect(list.getByRole("link", { name: "Beta 0", exact: true })).toBeVisible();
+  await expect.poll(() => scroll.evaluate(node => node.scrollTop)).toBe(0);
+  await scroll.evaluate(node => { node.scrollTop = 250; });
+  await list.getByRole("button", { name: "Next page", exact: true }).click();
+  await expect(list.getByRole("link", { name: "Beta 25", exact: true })).toBeVisible();
+  await expect.poll(() => scroll.evaluate(node => node.scrollTop)).toBe(0);
+
+  await list.getByRole("link", { name: "Beta 40", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Beta 40", exact: true })).toBeVisible();
+  const readingOffset = await scroll.evaluate(node => node.scrollTop);
+  expect(readingOffset).toBeGreaterThan(0);
+  await page.goBack();
+  await expect.poll(() => scroll.evaluate(node => Math.abs(node.scrollTop - readingOffset) < 3)).toBe(true);
+  await expect(query).toHaveValue("Beta");
+  expect(f.errors).toEqual([]);
+});
+
 test("task views count the whole search, preserve pagination on selection and use a mobile detail screen", async ({ page }) => {
   const f = await mountKnowledge(page);
   for (let i = 0; i < 32; i++) f.records.push({ id: `active-${i}`, projectId: "knowledge-only", title: `Active task ${i}`, description: `Context ${i}`, status: "open", priority: "next", revision: 1, createdBy: "owner" });

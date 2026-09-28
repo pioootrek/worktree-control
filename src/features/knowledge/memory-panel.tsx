@@ -67,7 +67,12 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
   const listRef = useRef<HTMLUListElement>(null);
   const readerRef = useRef<HTMLElement>(null);
   const focusedMobileRecordId = useRef("");
-  useEffect(() => { if (pageLoaded && listRef.current) listRef.current.scrollTop = listScrollRef.current; }, [page.items, pageLoaded, listScrollRef]);
+  const changeSearch = (next: MemorySearchState) => {
+    listScrollRef.current = 0;
+    listRef.current?.scrollTo({ top: 0 });
+    setSearch(next);
+  };
+  useEffect(() => { if (pageLoaded && listRef.current) listRef.current.scrollTop = listScrollRef.current; }, [pageLoaded, listScrollRef]);
   useEffect(() => {
     if (recordId && record && focusedMobileRecordId.current !== recordId && window.matchMedia("(max-width: 1023px)").matches) {
       readerRef.current?.querySelector<HTMLElement>("h3")?.focus();
@@ -121,7 +126,7 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
   const editorTriggerRef = useRef<HTMLButtonElement | null>(null);
   const activeFilterCount = Number(Boolean(kind)) + Number(Boolean(tag)) + Number(Boolean(legacyId)) + Number(Boolean(status)) + Number(inactive);
   return <div className="flex min-h-0 flex-1 flex-col gap-3">
-    <form className={`space-y-3 ${recordId ? "hidden lg:block" : ""}`} onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); setSearch({ query: String(data.get("query") ?? ""), tag: String(data.get("tag") ?? ""), legacyId: String(data.get("legacy") ?? ""), kind: String(data.get("kind")) as typeof kind, status: String(data.get("status") ?? "") as typeof status, inactive: data.has("inactive"), offset: 0 }); setError(""); setVersion(v => v + 1); }}>
+    <form className={`space-y-3 ${recordId ? "hidden lg:block" : ""}`} onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); changeSearch({ query: String(data.get("query") ?? ""), tag: String(data.get("tag") ?? ""), legacyId: String(data.get("legacy") ?? ""), kind: String(data.get("kind")) as typeof kind, status: String(data.get("status") ?? "") as typeof status, inactive: data.has("inactive"), offset: 0 }); setError(""); setVersion(v => v + 1); }}>
       <div className="flex flex-wrap items-end gap-3"><div className="min-w-[min(100%,16rem)] flex-1 space-y-1.5"><Label htmlFor="memory-query">{t("knowledge.searchContent")}</Label><div className="relative"><Search aria-hidden className="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground" /><Input className="h-9 pl-9" id="memory-query" name="query" defaultValue={query} maxLength={200} /></div></div>
       <Button className="h-9" type="button" variant="outline" aria-expanded={filtersOpen} aria-controls="memory-extra-filters" onClick={() => setFiltersOpen(!filtersOpen)}><SlidersHorizontal aria-hidden className="size-4" />{t("knowledgeLayout.moreFilters")}{activeFilterCount > 0 && <span className="rounded-full bg-primary/15 px-1.5 text-xs tabular-nums">{activeFilterCount}</span>}</Button>
       <Button className="h-9" type="submit" variant="outline">{t("knowledge.filter")}</Button>
@@ -148,7 +153,7 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
       }}>{row.title || t("knowledge.source.reply")}</a><p className="mt-1 text-xs text-muted-foreground">{t(`knowledge.source.${row.kind}`)}</p><p className="mt-2 line-clamp-2 break-words text-sm text-muted-foreground">{row.excerpt}</p></li>)}</ul>
         {pageError && <div className="space-y-2 p-4"><p role="alert" className="text-sm text-destructive">{t("knowledge.loadFailed")}</p><Button variant="outline" onClick={() => setVersion(value => value + 1)}>{t("knowledge.refresh")}</Button></div>}
         {!pageError && pageLoaded && !page.items.length && <p className="p-4 text-sm text-muted-foreground">{t("knowledge.empty")}</p>}
-        {(offset > 0 || page.nextOffset !== null) && <div className="flex justify-between gap-2 border-t border-border p-3"><Button variant="outline" disabled={!offset} onClick={() => setSearch({ ...search, offset: Math.max(0, offset - 25) })}>{t("knowledge.previous")}</Button><Button variant="outline" disabled={page.nextOffset === null} onClick={() => setSearch({ ...search, offset: page.nextOffset! })}>{t("knowledge.nextPage")}</Button></div>}
+        {(offset > 0 || page.nextOffset !== null) && <div className="flex justify-between gap-2 border-t border-border p-3"><Button variant="outline" disabled={!offset} onClick={() => changeSearch({ ...search, offset: Math.max(0, offset - 25) })}>{t("knowledge.previous")}</Button><Button variant="outline" disabled={page.nextOffset === null} onClick={() => changeSearch({ ...search, offset: page.nextOffset! })}>{t("knowledge.nextPage")}</Button></div>}
       </div>
       {recordId && <article ref={readerRef} tabIndex={-1} className="min-h-0 min-w-0 space-y-4 overflow-y-auto overscroll-contain p-5 sm:p-7" role="region" aria-label={t("knowledgeLayout.reader")} data-memory-detail>
         <div className="flex justify-between"><Button variant="ghost" className="lg:hidden" onClick={() => { returnFocusIdRef.current = recordId; onSelect("memory", ""); }}><ArrowLeft aria-hidden className="size-4" />{t("knowledge.backToList")}</Button><Button variant="ghost" className="ml-auto hidden lg:inline-flex" aria-pressed={readerExpanded} onClick={() => setReaderExpanded(!readerExpanded)}>{readerExpanded ? <Shrink aria-hidden className="size-4" /> : <Expand aria-hidden className="size-4" />}{t(readerExpanded ? "knowledgeLayout.showList" : "knowledgeLayout.expandReader")}</Button></div>
