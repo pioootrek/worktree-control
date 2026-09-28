@@ -59,9 +59,10 @@ export function KnowledgeDashboard({ token, setToken, change }: { token: string;
     measure(); window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
   }, [identity]);
-  useEffect(() => { detailRef.current?.scrollTo({ top: 0 }); }, [selection.recordId]);
+  useEffect(() => { detailRef.current?.scrollTo({ top: 0 }); }, [selection.recordId, selection.projectId, selection.tab]);
   useEffect(() => {
-    if (selection.recordId && detail && focusedMobileRecordRef.current.id !== selection.recordId && window.matchMedia("(max-width: 1023px)").matches) {
+    const focused = focusedMobileRecordRef.current;
+    if (selection.recordId && detail && (focused.id !== selection.recordId || focused.projectId !== selection.projectId || focused.tab !== selection.tab) && window.matchMedia("(max-width: 1023px)").matches) {
       detailRef.current?.querySelector<HTMLElement>("h3")?.focus();
       focusedMobileRecordRef.current = { id: selection.recordId, projectId: selection.projectId, tab: selection.tab };
     } else if (!selection.recordId) {
@@ -75,7 +76,7 @@ export function KnowledgeDashboard({ token, setToken, change }: { token: string;
         focusedMobileRecordRef.current = { id: "", projectId: "", tab: "" };
       }
     }
-  }, [selection.recordId, detail, model.rows.items, model.loading]);
+  }, [selection.recordId, selection.projectId, selection.tab, detail, model.rows.items, model.loading]);
   const project = model.project?.id === selection.projectId ? model.project : undefined;
   const writable = project?.writable && project.status === "active";
   const close = () => setMode(null);
