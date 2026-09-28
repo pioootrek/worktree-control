@@ -1,6 +1,6 @@
 "use client";
 
-import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "@/components/ui/sidebar";
+import { Sidebar, SidebarContent, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "@/components/ui/sidebar";
 import { useI18n } from "@/i18n/provider";
 import { BookOpen, FlaskConical, GitBranch, HardDrive, ScrollText } from "lucide-react";
 
@@ -23,9 +23,9 @@ export function ProjectNavigation({ section, onSelect, projectName }: {
   const { setOpenMobile } = useSidebar();
 
   return (
-    <Sidebar collapsible="icon" mobileTitle={t("dashboard.navigation")} mobileDescription={projectName ?? t("projectSwitcher.none")} closeLabel={t("common.close")}>
-      <SidebarHeader className="h-16 justify-center border-b border-sidebar-border px-4 group-data-[collapsible=icon]:px-2">
-        <div className="flex items-center gap-3 pr-6 text-primary">
+    <Sidebar collapsible="icon" mobileTitle={t("dashboard.navigation")} mobileDescription={section === "knowledge" ? t("knowledge.project") : projectName ?? t("projectSwitcher.none")} closeLabel={t("common.close")}>
+      <SidebarHeader className="h-14 justify-center border-b border-sidebar-border px-3 group-data-[collapsible=icon]:px-2">
+        <div className="flex items-center gap-2 pr-3 text-foreground">
           <GitBranch className="size-5 shrink-0" aria-hidden />
           <span className="truncate text-sm font-semibold group-data-[collapsible=icon]:hidden">Worktree Switcher</span>
         </div>
@@ -43,7 +43,7 @@ export function ProjectNavigation({ section, onSelect, projectName }: {
                     aria-label={t(label)}
                     tooltip={t(label)}
                     disabled={!projectName && id !== "knowledge"}
-                    className="h-11 data-active:bg-sidebar-accent data-active:text-primary"
+                    className="h-10 data-active:border-l-2 data-active:border-primary data-active:bg-sidebar-accent data-active:text-foreground"
                     onClick={() => { onSelect(id); setOpenMobile(false); }}
                   >
                     <Icon aria-hidden /><span>{t(label)}</span>
@@ -54,10 +54,6 @@ export function ProjectNavigation({ section, onSelect, projectName }: {
           </nav>
         </SidebarGroup>
       </SidebarContent>
-      <SidebarFooter className="border-t border-sidebar-border p-4 group-data-[collapsible=icon]:hidden">
-        <p className="text-xs text-muted-foreground">{t("projectSwitcher.current")}</p>
-        <p className="truncate text-sm" title={projectName}>{projectName ?? t("projectSwitcher.none")}</p>
-      </SidebarFooter>
     </Sidebar>
   );
 }

@@ -1,11 +1,11 @@
 "use client";
 
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { EmptyState } from "@/features/dashboard/empty-state";
-import { ThemeToggle } from "@/features/dashboard/theme-toggle";
+import { useTheme } from "@/features/dashboard/theme-toggle";
 import { McpStatusDialog } from "@/features/mcp/mcp-status-dialog";
 import { AddProjectDialog } from "@/features/projects/add-project-dialog";
 import { ProjectCard } from "@/features/projects/project-card";
@@ -16,8 +16,8 @@ import { TestsDashboard } from "@/features/verification/tests-dashboard";
 import { TestQueueDialog } from "@/features/verification/test-queue-dialog";
 import { dashboardSummary } from "@/i18n/messages";
 import { useI18n } from "@/i18n/provider";
-import { AlertTriangle, CheckCircle2, Languages, LoaderCircle, LogOut, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { AlertTriangle, CheckCircle2, Gauge, Languages, LoaderCircle, LogOut, Moon, Radio, Settings2, Sun, TestTube2, X } from "lucide-react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { ProjectNavigation, projectSections, type ProjectSection } from "./project-navigation";
 import { ProjectSwitcher } from "./project-switcher";
 import { AllProjectsWorktrees } from "@/features/projects/all-projects-worktrees";
@@ -40,6 +40,13 @@ export function Dashboard() {
     return () => { clearTimeout(timer); window.removeEventListener("popstate", sync); };
   }, []);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [systemDialog, setSystemDialog] = useState<"capacity" | "queue" | "mcp" | null>(null);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [systemOpen, setSystemOpen] = useState(false);
+  const systemTrigger = useRef<HTMLButtonElement>(null);
+  const projectTrigger = useRef<HTMLButtonElement>(null);
+  const emptyAddTrigger = useRef<HTMLButtonElement>(null);
+  const { dark, toggle: toggleTheme } = useTheme();
   const { selectedProjectId, selectProject } = useProjectSelection();
   const allProjects = selectedProjectId === ALL_PROJECTS;
   const selectedSnapshot = data.projects.find(({ project }) => project.id === selectedProjectId) ?? data.projects[0];
@@ -56,54 +63,49 @@ export function Dashboard() {
     window.scrollTo({ top: 0, behavior: "instant" });
   };
 
+  const sectionLabel = t(projectSections.find((item) => item.id === section)!.label);
+
   return (
-    <SidebarProvider>
+    <SidebarProvider style={{ "--sidebar-width": "13.5rem" } as CSSProperties}>
       <ProjectNavigation section={section} projectName={allProjects ? t("projectSwitcher.all") : selectedSnapshot?.project.name} onSelect={selectSection} />
       <main className="min-w-0 flex-1">
-        <header className="z-30 flex min-h-16 flex-wrap items-center justify-between gap-4 border-b border-border bg-background/92 px-4 py-3 backdrop-blur-xl sm:px-7 sticky top-0 lg:px-8">
-          <div className="flex min-w-0 items-center gap-3">
+        <header className="sticky top-0 z-30 flex min-h-14 min-w-0 flex-wrap items-center justify-between gap-x-1.5 border-b border-border bg-background/95 px-2 py-1 backdrop-blur-xl sm:gap-x-3 sm:px-5 lg:px-6">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-3">
             <SidebarTrigger aria-label={t("dashboard.toggleNavigation")} />
-            {data.projects.length > 0 ? (
-              <ProjectSwitcher projects={data.projects.map(({ project }) => project)} selectedProjectId={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id ?? null} onSelect={(id) => { selectProject(id); window.scrollTo({ top: 0, behavior: "instant" }); }} />
-            ) : <h1 className="truncate text-sm font-medium">Worktree Switcher</h1>}
+            {section !== "knowledge" && data.projects.length > 0 ? (
+              <ProjectSwitcher triggerRef={projectTrigger} projects={data.projects.map(({ project }) => project)} selectedProjectId={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id ?? null} onSelect={(id) => { selectProject(id); window.scrollTo({ top: 0, behavior: "instant" }); }} onAddProject={() => setDialogOpen(true)} />
+            ) : null}
+            <h1 className={section !== "knowledge" && data.projects.length > 0 ? "sr-only sm:not-sr-only sm:min-w-0 sm:truncate sm:border-l sm:border-border sm:pl-3 sm:text-lg sm:font-semibold" : "min-w-0 truncate text-base font-semibold sm:text-lg"}>{sectionLabel}</h1>
           </div>
-          <div className="flex max-w-full flex-wrap items-center gap-2">
-            <Badge variant="outline" className="h-9 gap-2 px-3 font-normal">
-              <span className="relative flex size-2">
-                <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-50 motion-reduce:animate-none" />
-                <span className="relative inline-flex size-2 rounded-full bg-emerald-400" />
-              </span>
-              {dashboardSummary(locale, runningCount, data.projects.length)}
-            </Badge>
-            <CapacityDialog status={data.capacity} mutate={mutate} setError={setError} />
-            <TestQueueDialog status={data.testQueue} mutate={mutate} setError={setError} />
-            <McpStatusDialog status={data.mcp} />
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setLocale(locale === "pl" ? "en" : "pl")}
-              aria-label={t("language.label")}
-              title={t("language.label")}
-            >
-              <Languages aria-hidden />{locale === "pl" ? "EN" : "PL"}
-            </Button>
-            <ThemeToggle />
-            {data.authentication?.mode === "open" && (
-              <Badge variant="destructive" className="h-9 px-3 font-normal">{t("access.openMode", { listen: data.authentication.listen })}</Badge>
-            )}
-            {token && token !== OPEN_ACCESS && <Button variant="outline" size="sm" onClick={signOut}><LogOut aria-hidden />{t("access.signOut")}</Button>}
-            <AddProjectDialog open={dialogOpen} onOpenChange={setDialogOpen} mutate={mutate} token={token} />
+          <div className="flex shrink-0 items-center gap-1 sm:gap-2">
+            <DropdownMenu open={systemOpen} onOpenChange={setSystemOpen}>
+              <DropdownMenuTrigger asChild><Button ref={systemTrigger} variant="ghost" size="sm" aria-label={t("layout.system")} className="px-2 sm:px-3"><Gauge aria-hidden /><span className="hidden sm:inline">{t("layout.system")}</span>{(error || (!loading && !accessRequired && (data.mcp.phase === "stopped" || data.mcp.phase === "unknown"))) && <span className="size-2 rounded-full bg-destructive" aria-hidden />}</Button></DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64" onCloseAutoFocus={(event) => { if (systemDialog) event.preventDefault(); }}>
+                {!loading && !accessRequired && <DropdownMenuLabel>{dashboardSummary(locale, runningCount, data.projects.length)}</DropdownMenuLabel>}
+                <DropdownMenuItem onSelect={() => setSystemDialog("capacity")}><Gauge aria-hidden />{t("capacity.openSettings")}<span className="ml-auto tabular-nums text-muted-foreground">{data.capacity.enabled ? `${data.capacity.used}/${data.capacity.limit}` : data.capacity.used}</span></DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setSystemDialog("queue")}><TestTube2 aria-hidden />{t("tests.openSettings")}<span className="ml-auto tabular-nums text-muted-foreground">{data.testQueue.running}/{data.testQueue.limit}{data.testQueue.queued ? ` +${data.testQueue.queued}` : ""}</span></DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setSystemDialog("mcp")}><Radio aria-hidden />{t("mcp.openStatus")}<span className="ml-auto text-muted-foreground">{t(`mcp.phase.${data.mcp.phase}`)}</span></DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <DropdownMenu open={preferencesOpen} onOpenChange={setPreferencesOpen}>
+              <DropdownMenuTrigger asChild><Button variant="ghost" size="sm" aria-label={t("layout.preferences")} className="px-2 sm:px-3"><Settings2 aria-hidden /><span className="hidden sm:inline">{t("layout.preferences")}</span></Button></DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                <DropdownMenuItem onSelect={() => setLocale(locale === "pl" ? "en" : "pl")}><Languages aria-hidden />{t("language.label")}</DropdownMenuItem>
+                <DropdownMenuItem onSelect={toggleTheme}>{dark ? <Sun aria-hidden /> : <Moon aria-hidden />}{dark ? t("theme.light") : t("theme.dark")}</DropdownMenuItem>
+                {token && token !== OPEN_ACCESS && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={signOut}><LogOut aria-hidden />{t("access.signOut")}</DropdownMenuItem></>}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
+          {section !== "knowledge" && data.projects.length > 0 && <p className="w-full truncate px-2 pb-0.5 text-xs font-medium text-muted-foreground sm:hidden">{sectionLabel}</p>}
         </header>
+        <CapacityDialog status={data.capacity} mutate={mutate} setError={setError} open={systemDialog === "capacity"} onOpenChange={(next) => setSystemDialog(next ? "capacity" : null)} returnFocus={() => systemTrigger.current?.focus()} />
+        <TestQueueDialog status={data.testQueue} mutate={mutate} setError={setError} open={systemDialog === "queue"} onOpenChange={(next) => setSystemDialog(next ? "queue" : null)} returnFocus={() => systemTrigger.current?.focus()} />
+        <McpStatusDialog status={data.mcp} open={systemDialog === "mcp"} onOpenChange={(next) => setSystemDialog(next ? "mcp" : null)} returnFocus={() => systemTrigger.current?.focus()} />
+        <AddProjectDialog open={dialogOpen} onOpenChange={setDialogOpen} mutate={mutate} token={token} showTrigger={false} returnFocus={() => (projectTrigger.current ?? emptyAddTrigger.current ?? systemTrigger.current)?.focus()} />
+        {data.authentication?.mode === "open" && <p className="border-b border-destructive/30 bg-destructive/10 px-4 py-1.5 text-xs font-medium text-destructive sm:px-5">{t("access.openMode", { listen: data.authentication.listen })}</p>}
+        {!loading && !accessRequired && (data.mcp.phase === "stopped" || data.mcp.phase === "unknown") && <p className="border-b border-destructive/30 bg-destructive/10 px-4 py-1.5 text-xs font-medium text-destructive sm:px-5">{t("layout.mcpUnavailable", { state: t(`mcp.phase.${data.mcp.phase}`) })}</p>}
 
-        <div className="mx-auto max-w-[1460px] px-4 py-7 sm:px-7 lg:px-8 lg:py-9">
-          <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
-            <div>
-
-              <h2 className="text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">{t(projectSections.find((item) => item.id === section)!.label)}</h2>
-            </div>
-
-          </div>
+        <div className="mx-auto max-w-[1460px] px-3 py-4 sm:px-5 sm:py-5 lg:px-6">
 
         <div role="status" aria-live="polite" aria-atomic="true" className="fixed right-4 bottom-4 z-40 w-[calc(100%-2rem)] max-w-sm">
           {!error && notice && (
@@ -136,7 +138,7 @@ export function Dashboard() {
         ) : section === "knowledge" ? (
           <KnowledgeDashboard key={knowledgeSessionVersion} token={knowledgeToken} setToken={changeKnowledgeToken} change={knowledgeChange} />
         ) : data.projects.length === 0 ? (
-          <EmptyState onAdd={() => setDialogOpen(true)} />
+          <EmptyState buttonRef={emptyAddTrigger} onAdd={() => setDialogOpen(true)} />
         ) : (
           <section id="projects" className="grid gap-7" aria-label={t("dashboard.projects")}>
             {section === "logs" ? <LogsDashboard key={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id} snapshots={allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []} aggregate={allProjects} /> : section === "resources" ? <ResourcesDashboard key={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id} snapshots={allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []} aggregate={allProjects} mutate={mutate} setError={setError} /> : section === "tests" ? <TestsDashboard now={observedAt} key={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id} snapshots={allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []} aggregate={allProjects} mutate={mutate} setError={setError} /> : allProjects && section === "worktrees" ? <AllProjectsWorktrees snapshots={data.projects} mutate={mutate} setError={setError} /> : (allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []).map((snapshot) => <ProjectCard key={snapshot.project.id} snapshot={snapshot} section={section} mutate={mutate} setError={setError} token={token} />)}

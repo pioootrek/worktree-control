@@ -1,6 +1,7 @@
 import { expect, test, type Route } from "@playwright/test";
 import { translate } from "../../src/i18n/messages";
 import { dashboardFixture, mountDashboard, testRunFixture } from "./dashboard-fixture";
+import { openSystemDialog, selectLanguage } from "./shell-actions";
 
 test("overview metrics lead to combined filters and persistent size sorting", async ({ page }) => {
   const data = dashboardFixture();
@@ -143,7 +144,7 @@ for (const locale of ["en", "pl"] as const) {
     const { requests, errors } = await mountDashboard(page);
     const t = (key: Parameters<typeof translate>[1]) => translate(locale, key);
     await expect(page.locator('[data-project-id="web"]').getByText("Fixture Web", { exact: true })).toBeVisible();
-    if (locale === "pl") await page.getByRole("button", { name: translate("en", "language.label") }).click();
+    if (locale === "pl") await selectLanguage(page);
     await expect(page.locator("html")).toHaveAttribute("lang", locale);
     await expect.poll(() => page.evaluate(() => (window as unknown as { fixtureEvents: { active: number } }).fixtureEvents.active)).toBe(1);
     await expect.poll(() => page.evaluate(() => {
@@ -163,7 +164,7 @@ for (const locale of ["en", "pl"] as const) {
     await expect(notice).toContainText(translate(locale, "metadata.refreshed", { name: "Fixture Web" }));
     await expect(page.getByRole("button", { name: t("row.start"), exact: true })).toBeVisible();
 
-    await page.getByRole("button", { name: t("capacity.openSettings") }).click();
+    await openSystemDialog(page, "capacity.openSettings", locale);
     let dialog = page.getByRole("dialog");
     await dialog.getByRole("switch", { name: t("capacity.enabled"), exact: true }).click();
     await dialog.getByLabel(t("capacity.limit"), { exact: true }).fill("3");
@@ -171,7 +172,7 @@ for (const locale of ["en", "pl"] as const) {
     await expect(dialog).toBeHidden();
     expect(requests.at(-1)).toEqual({ path: "/api/settings/capacity", method: "POST", body: { enabled: true, limit: 3 } });
 
-    await page.getByRole("button", { name: t("tests.openSettings") }).click();
+    await openSystemDialog(page, "tests.openSettings", locale);
     await dialog.getByLabel(t("tests.limit"), { exact: true }).fill("2");
     await dialog.getByRole("button", { name: t("common.save"), exact: true }).click();
     await expect(dialog).toBeHidden();
@@ -213,14 +214,14 @@ for (const locale of ["en", "pl"] as const) {
     expect(requests.at(-1)).toEqual({ path: "/api/test-runs/run-1/cancel", method: "POST", body: {} });
     await page.keyboard.press("Escape");
 
-    await page.getByRole("button", { name: t("mcp.openStatus") }).click();
+    await openSystemDialog(page, "mcp.openStatus", locale);
     await expect(dialog.getByRole("heading", { name: t("mcp.title") })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
     await page.getByRole("navigation").getByRole("button", { name: t("dashboard.navWorktrees"), exact: true }).click();
     await page.screenshot({ path: test.info().outputPath("dashboard-desktop.png"), fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(page.getByRole("button", { name: t("add.trigger"), exact: true })).toBeVisible();
+    await page.getByRole("combobox", { name: t("projectSwitcher.label") }).click();
     await page.getByRole("button", { name: t("add.trigger"), exact: true }).click();
     dialog = page.getByRole("dialog");
     await expect(dialog.getByLabel(t("add.name"), { exact: true })).toBeVisible();
@@ -530,7 +531,7 @@ for (const width of [390, 768, 1440]) {
     const path = page.locator('[data-slot="card-description"]');
     const pathBox = await path.boundingBox();
     expect(pathBox!.x + pathBox!.width).toBeLessThanOrEqual(width - 16);
-    await page.getByRole("button", { name: translate("en", "language.label") }).click();
+    await selectLanguage(page);
     await expect(page.locator("html")).toHaveAttribute("lang", "pl");
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     await page.screenshot({ path: `test-results/dashboard-${width}.png`, fullPage: true });

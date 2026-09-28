@@ -16,13 +16,20 @@ export function CapacityDialog({
   status,
   mutate,
   setError,
+  open: controlledOpen,
+  onOpenChange,
+  returnFocus,
 }: {
   status: ServerCapacityStatus;
   mutate: Mutate;
   setError: (message: string | null) => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  returnFocus?: () => void;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const isOpen = controlledOpen ?? open;
   const [enabled, setEnabled] = useState(status.enabled);
   const [limit, setLimit] = useState(String(status.limit));
   const [pending, setPending] = useState(false);
@@ -32,7 +39,8 @@ export function CapacityDialog({
       setEnabled(status.enabled);
       setLimit(String(status.limit));
     }
-    setOpen(next);
+    if (onOpenChange) onOpenChange(next);
+    else setOpen(next);
   };
 
   const save = async (event: FormEvent<HTMLFormElement>) => {
@@ -44,7 +52,7 @@ export function CapacityDialog({
         { enabled, limit: Number(limit) },
         t("capacity.saved"),
       );
-      setOpen(false);
+      changeOpen(false);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -53,14 +61,14 @@ export function CapacityDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={changeOpen}>
-      <DialogTrigger asChild>
+    <Dialog open={isOpen} onOpenChange={changeOpen}>
+      {controlledOpen === undefined && <DialogTrigger asChild>
         <Button variant="outline" size="sm" className="gap-2" aria-label={t("capacity.openSettings")}>
           <Gauge aria-hidden />
           {status.enabled ? `${status.used}/${status.limit}` : status.used}
         </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-lg">
+      </DialogTrigger>}
+      <DialogContent className="sm:max-w-lg" onCloseAutoFocus={returnFocus ? (event) => { event.preventDefault(); returnFocus(); } : undefined}>
         <DialogHeader>
           <DialogTitle>{t("capacity.title")}</DialogTitle>
           <DialogDescription>{t("capacity.description")}</DialogDescription>

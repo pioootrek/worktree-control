@@ -10,7 +10,7 @@ import { AlertTriangle, Radio, ShieldCheck } from "lucide-react";
 
 import { Metric } from "@/components/metric";
 
-export function McpStatusDialog({ status }: { status: McpStatus }) {
+export function McpStatusDialog({ status, open, onOpenChange, returnFocus }: { status: McpStatus; open?: boolean; onOpenChange?: (open: boolean) => void; returnFocus?: () => void }) {
   const { t } = useI18n();
   const running = status.phase === "running";
   const description = status.phase === "running"
@@ -22,8 +22,8 @@ export function McpStatusDialog({ status }: { status: McpStatus }) {
         : t("mcp.stoppedDescription");
 
   return (
-    <Dialog>
-      <DialogTrigger asChild>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      {open === undefined && <DialogTrigger asChild>
         <Button variant="outline" size="sm" className="gap-2" aria-label={t("mcp.openStatus")}>
           <Radio aria-hidden />
           MCP
@@ -32,8 +32,8 @@ export function McpStatusDialog({ status }: { status: McpStatus }) {
             aria-hidden
           />
         </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-lg">
+      </DialogTrigger>}
+      <DialogContent className="sm:max-w-lg" onCloseAutoFocus={returnFocus ? (event) => { event.preventDefault(); returnFocus(); } : undefined}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Radio className="size-5 text-indigo-300" aria-hidden />

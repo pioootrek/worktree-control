@@ -13,11 +13,13 @@ import { FormEvent, useState } from "react";
 
 import type { Mutate } from "@/features/control-client";
 
-export function AddProjectDialog({ open, onOpenChange, mutate, token }: {
+export function AddProjectDialog({ open, onOpenChange, mutate, token, showTrigger = true, returnFocus }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   mutate: Mutate;
   token: string;
+  showTrigger?: boolean;
+  returnFocus?: () => void;
 }) {
   const { t } = useI18n();
   const [pending, setPending] = useState(false);
@@ -48,8 +50,8 @@ export function AddProjectDialog({ open, onOpenChange, mutate, token }: {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogTrigger asChild><Button><Plus aria-hidden />{t("add.trigger")}</Button></DialogTrigger>
-      <DialogContent className="grid-rows-[auto_minmax(0,1fr)] overflow-hidden sm:max-w-xl">
+      {showTrigger && <DialogTrigger asChild><Button><Plus aria-hidden />{t("add.trigger")}</Button></DialogTrigger>}
+      <DialogContent className="grid-rows-[auto_minmax(0,1fr)] overflow-hidden sm:max-w-xl" onCloseAutoFocus={returnFocus ? (event) => { event.preventDefault(); returnFocus(); } : undefined}>
         <DialogHeader>
           <DialogTitle>{t("add.title")}</DialogTitle>
           <DialogDescription>{t("add.description")}</DialogDescription>

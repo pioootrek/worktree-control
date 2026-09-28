@@ -16,13 +16,20 @@ export function TestQueueDialog({
   status,
   mutate,
   setError,
+  open: controlledOpen,
+  onOpenChange,
+  returnFocus,
 }: {
   status: TestQueueStatus;
   mutate: Mutate;
   setError: (message: string | null) => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  returnFocus?: () => void;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const isOpen = controlledOpen ?? open;
   const [limit, setLimit] = useState(String(status.limit));
   const [pending, setPending] = useState(false);
 
@@ -31,7 +38,8 @@ export function TestQueueDialog({
     setPending(true);
     try {
       await mutate("/api/settings/test-queue", { limit: Number(limit) }, t("tests.queueSaved"));
-      setOpen(false);
+      if (onOpenChange) onOpenChange(false);
+      else setOpen(false);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -40,17 +48,18 @@ export function TestQueueDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={(next) => {
+    <Dialog open={isOpen} onOpenChange={(next) => {
       if (next) setLimit(String(status.limit));
-      setOpen(next);
+      if (onOpenChange) onOpenChange(next);
+      else setOpen(next);
     }}>
-      <DialogTrigger asChild>
+      {controlledOpen === undefined && <DialogTrigger asChild>
         <Button variant="outline" size="sm" className="gap-2" aria-label={t("tests.openSettings")}>
           <TestTube2 aria-hidden />{status.running}/{status.limit}
           {status.queued > 0 ? <Badge variant="secondary">+{status.queued}</Badge> : null}
         </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-lg">
+      </DialogTrigger>}
+      <DialogContent className="sm:max-w-lg" onCloseAutoFocus={returnFocus ? (event) => { event.preventDefault(); returnFocus(); } : undefined}>
         <DialogHeader>
           <DialogTitle>{t("tests.queueTitle")}</DialogTitle>
           <DialogDescription>{t("tests.queueDescription")}</DialogDescription>
@@ -62,7 +71,7 @@ export function TestQueueDialog({
           </div>
           <p className="rounded-lg border bg-muted/50 p-3 text-sm">{t("tests.queueUsage", { running: status.running, queued: status.queued })}</p>
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>{t("common.cancel")}</Button>
+            <Button type="button" variant="ghost" onClick={() => onOpenChange ? onOpenChange(false) : setOpen(false)}>{t("common.cancel")}</Button>
             <Button type="submit" disabled={pending}>{pending ? <LoaderCircle className="animate-spin" aria-hidden /> : null}{t("common.save")}</Button>
           </div>
         </form>

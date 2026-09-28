@@ -5,9 +5,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useI18n } from "@/i18n/provider";
 import type { ProjectView } from "@/shared/contracts";
-import { Check, ChevronsUpDown, FolderGit2, Layers, Search } from "lucide-react";
+import { Check, ChevronsUpDown, FolderGit2, Layers, Plus, Search } from "lucide-react";
 import { Popover as PopoverPrimitive } from "radix-ui";
-import { useId, useState } from "react";
+import { type Ref, useId, useRef, useState } from "react";
 
 const PROJECT_LIST_ID = "global-project-switcher-list";
 
@@ -15,12 +15,15 @@ interface ProjectSwitcherProps {
   projects: ProjectView[];
   selectedProjectId: string | null;
   onSelect: (projectId: string) => void;
+  onAddProject?: () => void;
+  triggerRef?: Ref<HTMLButtonElement>;
 }
 
-export function ProjectSwitcher({ projects, selectedProjectId, onSelect }: ProjectSwitcherProps) {
+export function ProjectSwitcher({ projects, selectedProjectId, onSelect, onAddProject, triggerRef }: ProjectSwitcherProps) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const openingProjectDialog = useRef(false);
   const labelId = useId();
   const valueId = useId();
   const options = [{ id: ALL_PROJECTS, name: t("projectSwitcher.all"), repositoryPath: t("aggregate.projectCount", { count: projects.length }) }, ...projects];
@@ -32,6 +35,7 @@ export function ProjectSwitcher({ projects, selectedProjectId, onSelect }: Proje
     <PopoverPrimitive.Root open={open} onOpenChange={(next) => { setOpen(next); if (!next) setQuery(""); }}>
       <PopoverPrimitive.Trigger asChild>
         <Button
+          ref={triggerRef}
           variant="ghost"
           role="combobox"
           aria-expanded={open}
@@ -39,7 +43,7 @@ export function ProjectSwitcher({ projects, selectedProjectId, onSelect }: Proje
           aria-labelledby={`${labelId} ${valueId}`}
           className="h-10 min-w-0 max-w-[min(24rem,calc(100vw-9rem))] justify-start gap-2 rounded-md px-2 text-left hover:bg-accent/70 sm:px-3"
         >
-          <span className="grid size-7 shrink-0 place-items-center rounded-md border border-primary/20 bg-primary/10 text-primary">
+          <span className="grid size-7 shrink-0 place-items-center rounded-md border border-primary/20 bg-primary/10 text-foreground">
             {selected?.id === ALL_PROJECTS ? <Layers className="size-4" aria-hidden /> : <FolderGit2 className="size-4" aria-hidden />}
           </span>
           <span className="min-w-0 flex-1">
@@ -55,6 +59,7 @@ export function ProjectSwitcher({ projects, selectedProjectId, onSelect }: Proje
           sideOffset={8}
           className="z-50 w-[min(24rem,calc(100vw-2rem))] rounded-lg border border-border bg-popover p-2 text-popover-foreground shadow-xl outline-none"
           onOpenAutoFocus={(event) => event.preventDefault()}
+          onCloseAutoFocus={(event) => { if (openingProjectDialog.current) { event.preventDefault(); openingProjectDialog.current = false; } }}
         >
           <div className="relative mb-2">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
@@ -109,6 +114,7 @@ export function ProjectSwitcher({ projects, selectedProjectId, onSelect }: Proje
               );
             })}
           </div>
+          {onAddProject && <button type="button" onClick={() => { openingProjectDialog.current = true; setOpen(false); onAddProject(); }} className="mt-2 flex h-10 w-full items-center gap-2 rounded-md border-t px-3 text-left text-sm font-medium text-foreground outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"><Plus className="size-4" aria-hidden />{t("add.trigger")}</button>}
         </PopoverPrimitive.Content>
       </PopoverPrimitive.Portal>
     </PopoverPrimitive.Root>
