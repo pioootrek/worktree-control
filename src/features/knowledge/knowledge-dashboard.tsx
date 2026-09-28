@@ -18,7 +18,7 @@ import { MemoryPanel } from "./memory-panel";
 import { TaskContext } from "./task-context";
 import { useKnowledge, type KnowledgeTab } from "./use-knowledge";
 
-export function KnowledgeDashboard({ token, setToken, change }: { token: string; setToken: (value: string) => void; change: { version: number; projectIds: string[] } }) {
+export function KnowledgeDashboard({ token, setToken, access, change }: { token: string; setToken: (value: string) => void; access: "installation" | "open" | "scoped"; change: { version: number; projectIds: string[] } }) {
   const { t } = useI18n();
   const [credential, setCredential] = useState("");
   const [loginError, setLoginError] = useState<"auth" | "load" | null>(null);
@@ -91,6 +91,11 @@ export function KnowledgeDashboard({ token, setToken, change }: { token: string;
   const applyFilters = (filters: KnowledgeFilters) => { navigate(selection.tab); model.setFilters(filters); };
   const activeFilterCount = Number(Boolean(model.filters.status)) + Number(Boolean(model.filters.priority));
 
+  if (access !== "scoped" && model.sessionError) return <div className="max-w-xl space-y-4">
+    <Alert variant="destructive"><AlertDescription>{t(access === "installation" ? "knowledge.installationAccessRejected" : "knowledge.openAccessRejected")}</AlertDescription></Alert>
+    <Button variant="outline" onClick={model.reload}><RefreshCw aria-hidden className="size-4" />{t("knowledge.refresh")}</Button>
+  </div>;
+
   if (!token || model.sessionError) return <form className="max-w-xl space-y-4 rounded-xl border border-border p-5" onSubmit={event => {
     event.preventDefault(); setBusy(true); setLoginError(null);
     void knowledgeIdentity(credential).then(() => { setToken(credential); setCredential(""); }).catch(error => setLoginError(isKnowledgeAccessError(error) ? "auth" : "load")).finally(() => setBusy(false));
@@ -105,7 +110,6 @@ export function KnowledgeDashboard({ token, setToken, change }: { token: string;
   if (!identity) return model.error ? <div className="space-y-3">
     <Alert variant="destructive"><AlertDescription>{t("knowledge.loadFailed")}</AlertDescription></Alert>
     <Button variant="outline" onClick={model.reload}><RefreshCw aria-hidden className="size-4" />{t("knowledge.refresh")}</Button>
-    <Button variant="ghost" onClick={() => setToken("")}>{t("knowledge.signOut")}</Button>
   </div> : <p role="status">{t("knowledge.loading")}</p>;
   return <div ref={workspaceRef} className="flex min-w-0 flex-col gap-4 lg:h-[calc(100dvh-var(--knowledge-top,220px)-1.5rem)] lg:min-h-96" data-knowledge-workspace>
     <div className="flex shrink-0 flex-wrap items-end gap-3 border-b border-border pb-3">
@@ -114,8 +118,7 @@ export function KnowledgeDashboard({ token, setToken, change }: { token: string;
         {selection.projectId && !projects.items.some(item => item.id === selection.projectId) && <option value={selection.projectId}>{project?.name ?? t("knowledge.linkedProject")}</option>}
         {projects.items.map(item => <option value={item.id} key={item.id}>{item.name}{item.status === "archived" ? ` · ${t("knowledge.archived")}` : ""}</option>)}
       </select></div>
-      <div className="flex flex-wrap gap-2"><Button className="h-9" variant="outline" onClick={model.reload}><RefreshCw aria-hidden className="size-4" />{t("knowledge.refresh")}</Button>
-      <Button className="h-9" variant="ghost" onClick={() => { close(); setToken(""); }}>{t("knowledge.signOut")}</Button></div>
+      <Button className="h-9" variant="outline" onClick={model.reload}><RefreshCw aria-hidden className="size-4" />{t("knowledge.refresh")}</Button>
     </div>
     {(model.projectOffset > 0 || projects.nextOffset !== null) && <div className="flex gap-2"><Button variant="outline" disabled={model.projectOffset === 0} onClick={() => model.setProjectOffset(Math.max(0, model.projectOffset - 25))}>{t("knowledge.previousProjects")}</Button><Button variant="outline" disabled={projects.nextOffset === null} onClick={() => model.setProjectOffset(projects.nextOffset!)}>{t("knowledge.nextProjects")}</Button></div>}
     {!projects.items.length && !selection.projectId && <p>{t("knowledge.noProjectsHelp")}</p>}

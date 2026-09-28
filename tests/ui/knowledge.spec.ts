@@ -1,10 +1,16 @@
 import { expect, test, type Page } from "@playwright/test";
 import { dashboardFixture, mountDashboard } from "./dashboard-fixture";
-import { selectLanguage } from "./shell-actions";
+import { openPreferences, selectLanguage } from "./shell-actions";
 
-async function mountKnowledge(page: Page) {
+async function disconnectKnowledge(page: Page) {
+  await openPreferences(page);
+  await page.getByRole("menuitem", { name: "Disconnect Knowledge access", exact: true }).click();
+}
+
+async function mountKnowledge(page: Page, { withRuntimeProject = false }: { withRuntimeProject?: boolean } = {}) {
   await page.addInitScript(() => sessionStorage.setItem("worktree-switcher-knowledge-token", "knowledge-fixture"));
-  const data = dashboardFixture(); data.projects = [];
+  const data = dashboardFixture();
+  if (!withRuntimeProject) data.projects = [];
   const fixture = await mountDashboard(page, data);
   const project = { id: "knowledge-only", name: "Knowledge without server", status: "active", writable: true, revision: 1, createdAt: "2026-01-01", updatedAt: "2026-01-01" };
   const records: Array<{ id: string; projectId: string; title: string; body?: string; description?: string; priority?: string; status?: string; revision: number; createdBy: string }> = [];
@@ -302,7 +308,7 @@ test("changing credentials clears the previous principal's visible knowledge bef
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.getByRole("link", { name: "Private task", exact: true }).click();
   await expect(page.getByText("Private content", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Sign out of knowledge" }).click();
+  await disconnectKnowledge(page);
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   let requested = false;
@@ -386,16 +392,20 @@ for (const status of [401, 403]) {
 test("knowledge sign-in changes only the shared stream credential, not runtime bootstrap", async ({ page }) => {
   let dashboardReads = 0;
   page.on("request", request => { if (new URL(request.url()).pathname.startsWith("/api/dashboard")) dashboardReads++; });
-  await mountKnowledge(page);
+  await mountKnowledge(page, { withRuntimeProject: true });
   const events = () => page.evaluate(() => {
     const value = (window as unknown as { fixtureEvents: { active: number; opened: number; lastKnowledgeToken: string } }).fixtureEvents;
     return { active: value.active, opened: value.opened, token: value.lastKnowledgeToken };
   });
   await expect.poll(events).toEqual({ active: 1, opened: 1, token: "Bearer knowledge-fixture" });
   expect(dashboardReads).toBe(1);
-  await page.getByRole("button", { name: "Sign out of knowledge" }).click();
+  await disconnectKnowledge(page);
   await expect.poll(events).toEqual({ active: 1, opened: 2, token: "" });
   expect(dashboardReads).toBe(1);
+  expect(await page.evaluate(() => sessionStorage.getItem("worktree-switcher-token"))).toBe("ui-fixture-token");
+  await page.getByRole("button", { name: "Worktrees", exact: true }).click();
+  await expect(page.getByText("Fixture Web").first()).toBeVisible();
+  await page.getByRole("button", { name: "Knowledge", exact: true }).click();
   await page.getByLabel("Knowledge credential", { exact: true }).fill("second-credential");
   await page.getByRole("button", { name: "Sign in to knowledge", exact: true }).click();
   await expect(page.getByLabel("Knowledge project", { exact: true })).toBeVisible();
@@ -403,9 +413,22 @@ test("knowledge sign-in changes only the shared stream credential, not runtime b
   expect(dashboardReads).toBe(1);
   // A runtime revision missed during credential replacement still requires reconciliation.
   await page.evaluate(() => { (window as unknown as { fixtureEvents: { version: { revision: number } } }).fixtureEvents.version.revision++; });
-  await page.getByRole("button", { name: "Sign out of knowledge" }).click();
+  await disconnectKnowledge(page);
   await expect.poll(() => dashboardReads).toBe(2);
   await expect.poll(events).toEqual({ active: 1, opened: 4, token: "" });
+});
+
+test("Knowledge disconnect is named separately from global sign out in both languages", async ({ page }) => {
+  const f = await mountKnowledge(page);
+  await openPreferences(page);
+  await expect(page.getByRole("menuitem", { name: "Disconnect Knowledge access", exact: true })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await selectLanguage(page);
+  await openPreferences(page, "pl");
+  await expect(page.getByRole("menuitem", { name: "Odłącz dostęp do wiedzy", exact: true })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Wyloguj", exact: true })).toBeVisible();
+  expect(f.errors).toEqual([]);
 });
 
 test("Back and Forward never initialize an editor from the previous record", async ({ page }) => {

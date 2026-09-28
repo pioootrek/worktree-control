@@ -46,6 +46,7 @@ export function useDashboard() {
   const [token, setToken] = useState("");
   const [accessRequired, setAccessRequired] = useState<"missing" | "invalid" | null>(null);
   const [scopedKnowledgeToken, setKnowledgeToken] = useState("");
+  const knowledgeAccess: "open" | "installation" | "scoped" = token === OPEN_ACCESS ? "open" : isInstallationToken(token) ? "installation" : "scoped";
   const knowledgeToken = isInstallationToken(token) ? token : scopedKnowledgeToken;
   const [knowledgeSessionVersion, setKnowledgeSessionVersion] = useState(0);
   const [knowledgeChange, setKnowledgeChange] = useState({ version: 0, projectIds: [] as string[] });
@@ -350,7 +351,6 @@ export function useDashboard() {
     };
   }, [monitoredProjectIds, t, token]);
 
-  return { data, observedAt, token, accessRequired, signIn, signOut, knowledgeToken, knowledgeSessionVersion,
-    // An installation token also signs in to knowledge, so leaving knowledge leaves the dashboard.
-    changeKnowledgeToken: isInstallationToken(token) ? (value: string) => { if (!value) signOut(); } : changeKnowledgeToken, knowledgeChange, loading, error: connectionError ?? error, notice, dismissNotice: () => setNotice(null), mutate, setError, runningCount };
+  return { data, observedAt, token, accessRequired, signIn, signOut, knowledgeToken, knowledgeAccess, knowledgeSessionVersion,
+    changeKnowledgeToken, knowledgeChange, loading, error: connectionError ?? error, notice, dismissNotice: () => setNotice(null), mutate, setError, runningCount };
 }
