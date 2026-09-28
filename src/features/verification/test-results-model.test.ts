@@ -24,7 +24,11 @@ describe("test result presentation", () => {
     const snapshot = dashboardFixture().projects[0];
     const run = testRunFixture();
     run.source.attribution = "observed_match";
-    run.source.finish = { head: snapshot.worktrees[0].head, branch: "main", dirty: false, observedAt: run.finishedAt!, statusDigest: "clean", statusEntries: 0, complete: true, errorCode: null };
+    const observation = { head: snapshot.worktrees[0].head, branch: "main", dirty: false, observedAt: run.finishedAt!,
+      statusDigest: "clean", statusEntries: 0, complete: true, errorCode: null };
+    run.source.enqueue = { ...observation };
+    run.source.preflight = { ...observation };
+    run.source.finish = { ...observation };
     snapshot.testRuns = [run];
     expect(testResults([snapshot])[0].freshness).toBe("current");
     snapshot.worktrees[0].dirty = true;
@@ -64,8 +68,11 @@ describe("test result presentation", () => {
     const snapshot = dashboardFixture().projects[0];
     const run = testRunFixture();
     run.source.attribution = "observed_match";
-    run.source.finish = { observedAt: run.finishedAt!, head: snapshot.worktrees[0].head, branch: "main", dirty: false,
+    const observation = { observedAt: run.finishedAt!, head: snapshot.worktrees[0].head, branch: "main", dirty: false,
       statusDigest: "clean", statusEntries: 0, complete: true, errorCode: null };
+    run.source.enqueue = { ...observation };
+    run.source.preflight = { ...observation };
+    run.source.finish = { ...observation };
     snapshot.worktrees[0].dirty = true;
     delete snapshot.metadata;
     snapshot.testRuns = [run];
