@@ -41,8 +41,9 @@ describe("K6b Hub import execution",()=>{
     new KnowledgeQueries(db);
     const queryPlan=db.prepare(`EXPLAIN QUERY PLAN WITH verified AS (${verifiedThreadSourceSql(true)}) SELECT * FROM verified`)
       .all({projectId:"topics",id:imported.id}) as Array<{detail:string}>;
-    expect(queryPlan.some(step=>step.detail.includes("sqlite_autoindex_knowledge_threads_1"))).toBe(true);
-    expect(queryPlan.some(step=>step.detail.includes("knowledge_import_sources_project"))).toBe(true);
+    expect(queryPlan.some(step=>step.detail.includes("sqlite_autoindex_knowledge_threads_1") && step.detail.includes("id=?"))).toBe(true);
+    expect(queryPlan.some(step=>step.detail.includes("knowledge_import_sources_project") && step.detail.includes("source_path=?"))).toBe(true);
+    expect(queryPlan.some(step=>step.detail.includes("knowledge_import_sources_project") && step.detail.includes("source_path>?") && step.detail.includes("source_path<?"))).toBe(true);
     const native={id:"native-lookalike",projectId:"topics",title:"Imported discussion: A",body:`Historical comments imported from ${sourcePath}`,
       revision:1,createdBy:"installation",createdAt:NOW,updatedAt:NOW};
     f.store.createThread(native,{actor:f.owner,projectId:"topics",idempotencyKey:"native",requestHash:"a".repeat(64)});
