@@ -46,7 +46,7 @@ export function useDashboard() {
   const [token, setToken] = useState("");
   const [accessRequired, setAccessRequired] = useState<"missing" | "invalid" | null>(null);
   const [scopedKnowledgeToken, setKnowledgeToken] = useState("");
-  const knowledgeAccess = token === OPEN_ACCESS ? "open" : isInstallationToken(token) ? "installation" : "scoped";
+  const knowledgeAccess: "open" | "installation" | "scoped" = token === OPEN_ACCESS ? "open" : isInstallationToken(token) ? "installation" : "scoped";
   const knowledgeToken = isInstallationToken(token) ? token : scopedKnowledgeToken;
   const [knowledgeSessionVersion, setKnowledgeSessionVersion] = useState(0);
   const [knowledgeChange, setKnowledgeChange] = useState({ version: 0, projectIds: [] as string[] });
