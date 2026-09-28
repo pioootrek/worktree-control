@@ -134,6 +134,8 @@ test("changing Knowledge tabs or projects does not return focus to an old mobile
   await page.getByRole("link", { name: "Old task", exact: true }).click();
   const projectSelect = page.getByLabel("Knowledge project", { exact: true });
   await projectSelect.selectOption(otherProject.id);
+  await projectSelect.focus();
+  await expect(projectSelect).toBeFocused();
   await projectSelect.selectOption("knowledge-only");
   await expect(page.getByRole("link", { name: "Old task", exact: true })).toBeVisible();
   await expect(projectSelect).toBeFocused();
