@@ -46,7 +46,7 @@ export function TestsDashboard({ snapshots, aggregate, mutate, setError, now }: 
   const latest = latestTestResults(rows);
   const active = rows.filter((row) => row.active).sort((a, b) => Number(b.result === "running") - Number(a.result === "running") || (a.run.queuePosition ?? 0) - (b.run.queuePosition ?? 0));
   const selected = rows.find((row) => row.run.id === selectedId);
-  const selectedCodeState = selected ? currentCodeState(selected) : null;
+  const selectedCodeState = selected ? currentCodeState(selected) : "unknown";
   const normalized = query.trim().toLowerCase();
   const days = period === "24h" ? 1 : period === "7d" ? 7 : period === "30d" ? 30 : null;
   const filtered = (view === "latest" ? latest : rows).filter((row) =>
