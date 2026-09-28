@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element -- previews use short-lived, authorized blob URLs */
 
-import { isValidElement, useEffect, useRef, useState, type ReactNode } from "react";
+import { isValidElement, memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Download, FileText, Paperclip } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -178,13 +178,13 @@ function Documents(props: Props) {
     }
     wasSelected.current = selectedId;
   }, [selectedId]);
-  const navigate = (id: string | null, hash?: string) => {
+  const navigate = useCallback((id: string | null, hash?: string) => {
     if (id && !selectedId) noteHashRef.current = window.location.hash;
     const nextHash = id ? hash : noteHashRef.current ?? "";
     window.history.pushState(null, "", documentUrl(id, nextHash));
     if (!id) noteHashRef.current = null;
     setSelectedId(id ?? "");
-  };
+  }, [selectedId]);
   const currentFiles = files;
   const selected = currentFiles?.find(file => file.id === selectedId);
   return <section className="min-w-0 space-y-3 border-t border-border pt-4" aria-label={t("knowledge.documents")}>
@@ -228,7 +228,8 @@ function SiblingImage({ file, alt, props }: { file: KnowledgeAttachment; alt: st
   return <img src={url} alt={alt || file.filename} className="max-h-[70vh] max-w-full object-contain" onError={() => setFailed(true)} />;
 }
 
-function PreviewDocument({ file, files, props, navigate }: { file: KnowledgeAttachment; files: KnowledgeAttachment[]; props: Props; navigate: (id: string | null, hash?: string) => void }) {
+type PreviewDocumentProps = { file: KnowledgeAttachment; files: KnowledgeAttachment[]; props: Props; navigate: (id: string | null, hash?: string) => void };
+const PreviewDocument = memo(function PreviewDocument({ file, files, props, navigate }: PreviewDocumentProps) {
   const { t } = useI18n();
   const { token, projectId, recordId, recordKind } = props;
   const [preview, setPreview] = useState<Preview | null>(null);
@@ -296,4 +297,6 @@ function PreviewDocument({ file, files, props, navigate }: { file: KnowledgeAtta
       },
     }}>{preview.text}</ReactMarkdown>
   </div>;
-}
+}, (previous, next) => previous.file === next.file && previous.files === next.files && previous.navigate === next.navigate
+  && previous.props.token === next.props.token && previous.props.projectId === next.props.projectId
+  && previous.props.recordId === next.props.recordId && previous.props.recordKind === next.props.recordKind);

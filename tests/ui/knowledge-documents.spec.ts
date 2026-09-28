@@ -68,8 +68,8 @@ async function mountDocuments(page: Page) {
     holdNextListing: () => { let release!: () => void; nextListingGate = new Promise<void>(resolve => { release = resolve; }); return release; } };
 }
 
-async function refreshKnowledge(page: Page) {
-  await page.evaluate(() => (window as unknown as { fixtureEvents: { emit: (event: string, value: unknown) => void } }).fixtureEvents.emit("knowledge-changed", { projectIds: ["knowledge-only"] }));
+async function refreshKnowledge(page: Page, projectIds = ["knowledge-only"]) {
+  await page.evaluate(ids => (window as unknown as { fixtureEvents: { emit: (event: string, value: unknown) => void } }).fixtureEvents.emit("knowledge-changed", { projectIds: ids }), projectIds);
 }
 
 test("Markdown document opens by URL, links only to an authorized sibling, and Back restores the note", async ({ page }) => {
@@ -168,6 +168,11 @@ test("routine refresh preserves an open document, while changed or denied listin
   expect(previousScroll).toBeGreaterThan(0);
   const previewReads = fixture.requests.filter(call => call.operation === "attachment").length;
   const initialListings = fixture.completedListings();
+  await refreshKnowledge(page, ["unrelated-project"]);
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(fixture.requests.filter(call => call.operation === "attachments")).toHaveLength(initialListings);
+  await expect(code).toBeFocused();
+  expect(await reader.evaluate(element => element.scrollTop)).toBe(previousScroll);
   const release = fixture.holdNextListing();
   await refreshKnowledge(page);
   await expect.poll(() => fixture.requests.filter(call => call.operation === "attachments").length).toBe(initialListings + 1);
