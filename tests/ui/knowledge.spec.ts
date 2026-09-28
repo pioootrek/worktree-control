@@ -54,7 +54,9 @@ async function mountKnowledge(page: Page) {
     if (loseResponse) { loseResponse = false; return route.abort("failed"); }
     return route.fulfill({ json: { value, replayed: false } });
   });
-  await page.getByRole("button", { name: "Knowledge", exact: true }).click();
+  const knowledgeNavigation = page.getByRole("button", { name: "Knowledge", exact: true });
+  if (!await knowledgeNavigation.isVisible()) await page.getByRole("button", { name: "Toggle navigation" }).click();
+  await knowledgeNavigation.click();
   await expect(page.getByLabel("Knowledge project", { exact: true })).toHaveValue(project.id);
   return { ...fixture, records, replies, calls, setFailure: (value: boolean) => { failSave = value; }, loseNextResponse: () => { loseResponse = true; } };
 }
@@ -459,7 +461,7 @@ test("memory stays readable when history fails and history can retry", async ({ 
     return route.fallback();
   });
   await page.getByRole("link", { name: "History-safe memory", exact: true }).click();
-  await expect(page.getByText("Use one SQLite owner", { exact: true })).toBeVisible();
+  await expect(page.locator("[data-memory-detail]").getByText("Use one SQLite owner", { exact: true })).toBeVisible();
   const history = page.locator("details").filter({ has: page.locator("summary").filter({ hasText: "Revision history" }) });
   await expect(history.locator("summary")).toContainText("Could not read knowledge.");
   await history.locator("summary").click();
@@ -589,10 +591,10 @@ test("dashboard Refresh retries failed memory reads and clears their error", asy
     if (operation === "search" && failed) return route.fulfill({ status: 503, json: { code: "unavailable", error: "Retry" } });
     return route.fallback();
   });
-  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
   await expect(page.getByText("Could not read knowledge.", { exact: false })).toBeVisible();
   failed = false;
-  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
   await expect(page.getByText("Could not read knowledge.", { exact: false })).toHaveCount(0);
   expect(f.errors).toEqual([]);
 });
@@ -656,7 +658,7 @@ test("memory selection and browser Back preserve filters and a later results pag
   await expect(page.getByLabel("Search titles, content and memory", { exact: true })).toHaveValue("Private");
   await expect(page.getByLabel("Tag", { exact: true })).toHaveValue("scope");
   await expect(page.getByLabel("Status", { exact: true })).toHaveValue("archived");
-  await expect(page.getByRole("button", { name: "Next page", exact: true }).first()).toHaveCount(0);
+  await expect(page.locator("[data-memory-list]").getByRole("button", { name: "Next page", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "Edit memory", exact: true }).click();
   await expect(page.getByLabel("Title", { exact: true })).toHaveValue("Private A");
   expect(f.errors).toEqual([]);
@@ -781,7 +783,7 @@ for (const mode of ["edit", "reply", "from_thread"] as const) {
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.getByLabel("Knowledge credential", { exact: true })).toHaveCount(0);
     fail = false;
-    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.locator("[data-knowledge-detail]").getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(page.getByRole("dialog")).toBeVisible();
     await expect(page.getByLabel("Body", { exact: true })).toHaveValue("Unsaved record draft");
     await expect(page.getByRole("alert").filter({ hasText: "Could not read knowledge." })).toHaveCount(0);
