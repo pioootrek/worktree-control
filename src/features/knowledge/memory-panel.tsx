@@ -32,23 +32,30 @@ export function MemoryPanel(props: MemoryPanelProps) {
   const [search, setSearch] = useState<MemorySearchState>({ query: "", tag: "", legacyId: "", kind: "memory", status: "", inactive: false, offset: 0 });
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [readerExpanded, setReaderExpanded] = useState(false);
-  const listScroll = useRef(0);
-  const returnFocusId = useRef("");
+  const listScrollRef = useRef(0);
+  const returnFocusIdRef = useRef("");
+  const previousRecordIdRef = useRef(props.recordId);
+  useEffect(() => {
+    if (previousRecordIdRef.current && !props.recordId) returnFocusIdRef.current = previousRecordIdRef.current;
+    previousRecordIdRef.current = props.recordId;
+  }, [props.recordId]);
   // Search survives selection; pending writes and drafts belong to one record.
-  return <MemoryPanelContent key={props.recordId} {...props} onSelect={(tab, id) => { setReaderExpanded(false); props.onSelect(tab, id); }} search={search} setSearch={setSearch} filtersOpen={filtersOpen} setFiltersOpen={setFiltersOpen} readerExpanded={readerExpanded} setReaderExpanded={setReaderExpanded} listScroll={listScroll} returnFocusId={returnFocusId} />;
+  return <MemoryPanelContent key={props.recordId} {...props} onSelect={(tab, id) => { setReaderExpanded(false); props.onSelect(tab, id); }} search={search} setSearch={setSearch} filtersOpen={filtersOpen} setFiltersOpen={setFiltersOpen} readerExpanded={readerExpanded} setReaderExpanded={setReaderExpanded} listScrollRef={listScrollRef} returnFocusIdRef={returnFocusIdRef} />;
 }
 
-function MemoryPanelContent({ token, principalId, projectId, recordId, writable, approvable, changeVersion, onSelect, search, setSearch, filtersOpen, setFiltersOpen, readerExpanded, setReaderExpanded, listScroll, returnFocusId }: MemoryPanelProps & {
+function MemoryPanelContent({ token, principalId, projectId, recordId, writable, approvable, changeVersion, onSelect, search, setSearch, filtersOpen, setFiltersOpen, readerExpanded, setReaderExpanded, listScrollRef, returnFocusIdRef }: MemoryPanelProps & {
   search: MemorySearchState; setSearch: (value: MemorySearchState) => void;
   filtersOpen: boolean; setFiltersOpen: (value: boolean) => void; readerExpanded: boolean; setReaderExpanded: (value: boolean) => void;
-  listScroll: React.RefObject<number>; returnFocusId: React.RefObject<string>;
+  listScrollRef: React.RefObject<number>; returnFocusIdRef: React.RefObject<string>;
 }) {
   const { t } = useI18n();
   const { query, tag, legacyId, kind, status, inactive, offset } = search;
   const [page, setPage] = useState<KnowledgePage<KnowledgeSearchHit>>({ items: [], nextOffset: null });
   const [pageLoaded, setPageLoaded] = useState(false);
+  const [pageError, setPageError] = useState(false);
   const [record, setRecord] = useState<KnowledgeMemory | null>(null);
   const [history, setHistory] = useState<KnowledgePage<KnowledgeHistoryEntry>>({ items: [], nextOffset: null });
+  const [historyError, setHistoryError] = useState(false);
   const [historyOffset, setHistoryOffset] = useState(0);
   const [editor, setEditor] = useState<"new" | "edit" | null>(null);
   const [version, setVersion] = useState(0);
@@ -56,29 +63,36 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
   const [error, setError] = useState("");
   const [replacement, setReplacement] = useState("");
   const [pending, setPending] = useState<{ operation: KnowledgeOperation; input: KnowledgeInput<KnowledgeOperation> } | null>(null);
+  const focusReaderAfterSaveRef = useRef(false);
   const listRef = useRef<HTMLUListElement>(null);
   const readerRef = useRef<HTMLElement>(null);
   const focusedMobileRecordId = useRef("");
-  useEffect(() => { if (pageLoaded && listRef.current) listRef.current.scrollTop = listScroll.current; }, [page.items, pageLoaded, listScroll]);
+  useEffect(() => { if (pageLoaded && listRef.current) listRef.current.scrollTop = listScrollRef.current; }, [page.items, pageLoaded, listScrollRef]);
   useEffect(() => {
     if (recordId && record && focusedMobileRecordId.current !== recordId && window.matchMedia("(max-width: 1023px)").matches) {
       readerRef.current?.querySelector<HTMLElement>("h3")?.focus();
       focusedMobileRecordId.current = recordId;
     }
-    if (!recordId && returnFocusId.current && pageLoaded) {
-      const link = Array.from(listRef.current?.querySelectorAll<HTMLAnchorElement>("a[data-record-id]") ?? []).find(node => node.dataset.recordId === returnFocusId.current);
+    if (!recordId && returnFocusIdRef.current && pageLoaded) {
+      const link = Array.from(listRef.current?.querySelectorAll<HTMLAnchorElement>("a[data-record-id]") ?? []).find(node => node.dataset.recordId === returnFocusIdRef.current);
       (link ?? document.getElementById("memory-query"))?.focus({ preventScroll: true });
-      returnFocusId.current = "";
+      returnFocusIdRef.current = "";
     }
-  }, [recordId, record, page.items, pageLoaded, returnFocusId]);
+  }, [recordId, record, page.items, pageLoaded, returnFocusIdRef]);
   useEffect(() => {
     const abort = new AbortController();
-    void Promise.all([
+    void Promise.allSettled([
       knowledgeRequest<KnowledgePage<KnowledgeSearchHit>>(token, "search", { projectId, query, offset, includeInactive: inactive, ...(tag ? { tag } : {}), ...(legacyId ? { legacyId } : {}), ...(kind ? { kind } : {}), ...(status ? { status } : {}) }, abort.signal),
       recordId ? knowledgeRequest<KnowledgeMemory>(token, "memory", { projectId, memoryId: recordId }, abort.signal) : Promise.resolve(null),
       recordId ? knowledgeRequest<KnowledgePage<KnowledgeHistoryEntry>>(token, "history", { projectId, recordKind: "memory", recordId, offset: historyOffset }, abort.signal) : Promise.resolve({ items: [], nextOffset: null }),
-    ]).then(([rows, memory, entries]) => { if (!abort.signal.aborted) { setPage(rows); setPageLoaded(true); setRecord(memory); setHistory(entries); setError(current => current === "knowledge.loadFailed" ? "" : current); } }).catch(() => {
-      if (!abort.signal.aborted) { setPage({ items: [], nextOffset: null }); setPageLoaded(true); setRecord(null); setHistory({ items: [], nextOffset: null }); setError("knowledge.loadFailed"); }
+    ]).then(([rows, memory, entries]) => {
+      if (abort.signal.aborted) return;
+      setPage(rows.status === "fulfilled" ? rows.value : { items: [], nextOffset: null });
+      setPageLoaded(true); setPageError(rows.status === "rejected");
+      setRecord(memory.status === "fulfilled" ? memory.value : null);
+      setError(current => memory.status === "rejected" ? "knowledge.loadFailed" : current === "knowledge.loadFailed" ? "" : current);
+      setHistory(entries.status === "fulfilled" ? entries.value : { items: [], nextOffset: null });
+      setHistoryError(entries.status === "rejected");
     });
     return () => abort.abort();
   }, [token, projectId, recordId, query, tag, legacyId, kind, status, inactive, offset, historyOffset, version, changeVersion]);
@@ -119,24 +133,25 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
       <div className="min-w-36 flex-1 space-y-1.5"><Label htmlFor="memory-status">{t("knowledge.status")}</Label><select id="memory-status" name="status" defaultValue={status} className={`${fieldClass} h-9 !py-0`}><option value="">{t("knowledge.all")}</option>{(["active", "archived", "superseded", "open", "in_progress", "blocked", "done"] as const).map(value => <option key={value} value={value}>{t(`knowledge.${value}`)}</option>)}</select></div>
       <label className="flex min-h-9 items-center gap-2 text-sm"><input type="checkbox" name="inactive" defaultChecked={inactive} />{t("knowledge.includeInactive")}</label></div>
     </form>
-    {error && <p role="alert">{t(error as "knowledge.saveFailed")}</p>}
+    {error && !(recordId && !record && error === "knowledge.loadFailed") && <p role="alert">{t(error as "knowledge.saveFailed")}</p>}
     {pending && !busy && <Button variant="outline" onClick={() => void mutate(pending!.operation as "approve_memory")}>{t("knowledge.retryOperation")}</Button>}
     <Dialog open={Boolean(editor)} onOpenChange={open => { if (!open) setEditor(null); }}>
-      {editor && (editor === "new" || record) && <DialogContent className="sm:max-w-2xl" aria-describedby={undefined} onCloseAutoFocus={event => { event.preventDefault(); editorTriggerRef.current?.focus(); }}>
+      {editor && (editor === "new" || record) && <DialogContent className="sm:max-w-2xl" aria-describedby={undefined} onCloseAutoFocus={event => { event.preventDefault(); if (focusReaderAfterSaveRef.current) { focusReaderAfterSaveRef.current = false; requestAnimationFrame(() => (document.querySelector<HTMLElement>("[data-memory-detail] h3") ?? document.querySelector<HTMLElement>("[data-memory-detail]"))?.focus()); return; } const trigger = editorTriggerRef.current; (trigger?.isConnected && trigger.getClientRects().length ? trigger : readerRef.current?.querySelector<HTMLElement>("h3") ?? document.getElementById("memory-query"))?.focus(); }}>
         <DialogTitle className="sr-only">{t(editor === "new" ? "knowledge.addMemory" : "knowledge.editMemory")}</DialogTitle>
-        <MemoryEditor key={`${projectId}:${editor === "new" ? "new" : recordId}`} token={token} principalId={principalId} projectId={projectId} record={editor === "edit" ? record! : undefined} onClose={() => setEditor(null)} onConflict={() => setVersion(v => v + 1)} onSaved={id => { setEditor(null); setVersion(v => v + 1); onSelect("memory", id); }} />
+        <MemoryEditor key={`${projectId}:${editor === "new" ? "new" : recordId}`} token={token} principalId={principalId} projectId={projectId} record={editor === "edit" ? record! : undefined} onClose={() => setEditor(null)} onConflict={() => setVersion(v => v + 1)} onSaved={id => { focusReaderAfterSaveRef.current = true; setEditor(null); setVersion(v => v + 1); onSelect("memory", id); }} />
       </DialogContent>}
     </Dialog>
     <div className={`grid min-h-0 min-w-0 flex-1 grid-cols-1 overflow-hidden rounded-xl border border-border bg-card/30 ${recordId && !readerExpanded ? "lg:grid-cols-[minmax(320px,360px)_minmax(0,1fr)]" : ""}`} data-memory-layout>
-      <div className={`min-h-0 min-w-0 flex-col ${recordId ? readerExpanded ? "hidden" : "hidden lg:flex lg:border-r lg:border-border" : "flex"}`} data-memory-list><ul ref={listRef} onScroll={event => { listScroll.current = event.currentTarget.scrollTop; }} className="min-h-0 flex-1 divide-y divide-border overflow-y-auto overscroll-contain" tabIndex={0} role="region" aria-label={t("knowledge.results")}>{page.items.map(row => <li className={`p-4 ${row.id === recordId ? "border-l-2 border-l-primary bg-primary/10" : "border-l-2 border-l-transparent"}`} key={`${row.kind}:${row.id}`}><a data-record-id={row.threadId ?? row.id} aria-current={row.id === recordId ? "true" : undefined} className={`block break-words text-base font-medium leading-snug hover:underline ${row.id === recordId ? "text-foreground" : ""}`} href={sourceHref(projectId, { kind: row.kind === "reply" ? "thread" : row.kind, id: row.threadId ?? row.id, revision: row.revision })} onClick={event => {
+      <div className={`min-h-0 min-w-0 flex-col ${recordId ? readerExpanded ? "hidden" : "hidden lg:flex lg:border-r lg:border-border" : "flex"}`} data-memory-list><ul ref={listRef} onScroll={event => { listScrollRef.current = event.currentTarget.scrollTop; }} className="min-h-0 flex-1 divide-y divide-border overflow-y-auto overscroll-contain" tabIndex={0} role="region" aria-label={t("knowledge.results")}>{page.items.map(row => <li className={`p-4 ${row.id === recordId ? "border-l-2 border-l-primary bg-primary/10" : "border-l-2 border-l-transparent"}`} key={`${row.kind}:${row.id}`}><a data-record-id={row.threadId ?? row.id} aria-current={row.id === recordId ? "true" : undefined} className={`block break-words text-base font-medium leading-snug hover:underline ${row.id === recordId ? "text-foreground" : ""}`} href={sourceHref(projectId, { kind: row.kind === "reply" ? "thread" : row.kind, id: row.threadId ?? row.id, revision: row.revision })} onClick={event => {
         if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
         event.preventDefault(); setEditor(null); onSelect(row.kind === "memory" ? "memory" : row.kind === "task" ? "backlog" : "discussions", row.threadId ?? row.id);
       }}>{row.title || t("knowledge.source.reply")}</a><p className="mt-1 text-xs text-muted-foreground">{t(`knowledge.source.${row.kind}`)}</p><p className="mt-2 line-clamp-2 break-words text-sm text-muted-foreground">{row.excerpt}</p></li>)}</ul>
-        {!page.items.length && <p className="p-4 text-sm text-muted-foreground">{t("knowledge.empty")}</p>}
+        {pageError && <div className="space-y-2 p-4"><p role="alert" className="text-sm text-destructive">{t("knowledge.loadFailed")}</p><Button variant="outline" onClick={() => setVersion(value => value + 1)}>{t("knowledge.refresh")}</Button></div>}
+        {!pageError && pageLoaded && !page.items.length && <p className="p-4 text-sm text-muted-foreground">{t("knowledge.empty")}</p>}
         {(offset > 0 || page.nextOffset !== null) && <div className="flex justify-between gap-2 border-t border-border p-3"><Button variant="outline" disabled={!offset} onClick={() => setSearch({ ...search, offset: Math.max(0, offset - 25) })}>{t("knowledge.previous")}</Button><Button variant="outline" disabled={page.nextOffset === null} onClick={() => setSearch({ ...search, offset: page.nextOffset! })}>{t("knowledge.nextPage")}</Button></div>}
       </div>
-      {recordId && <article ref={readerRef} className="min-h-0 min-w-0 space-y-4 overflow-y-auto overscroll-contain p-5 sm:p-7" role="region" aria-label={t("knowledgeLayout.reader")} data-memory-detail>
-        <div className="flex justify-between"><Button variant="ghost" className="lg:hidden" onClick={() => { returnFocusId.current = recordId; onSelect("memory", ""); }}><ArrowLeft aria-hidden className="size-4" />{t("knowledge.backToList")}</Button><Button variant="ghost" className="ml-auto hidden lg:inline-flex" aria-pressed={readerExpanded} onClick={() => setReaderExpanded(!readerExpanded)}>{readerExpanded ? <Shrink aria-hidden className="size-4" /> : <Expand aria-hidden className="size-4" />}{t(readerExpanded ? "knowledgeLayout.showList" : "knowledgeLayout.expandReader")}</Button></div>
+      {recordId && <article ref={readerRef} tabIndex={-1} className="min-h-0 min-w-0 space-y-4 overflow-y-auto overscroll-contain p-5 sm:p-7" role="region" aria-label={t("knowledgeLayout.reader")} data-memory-detail>
+        <div className="flex justify-between"><Button variant="ghost" className="lg:hidden" onClick={() => { returnFocusIdRef.current = recordId; onSelect("memory", ""); }}><ArrowLeft aria-hidden className="size-4" />{t("knowledge.backToList")}</Button><Button variant="ghost" className="ml-auto hidden lg:inline-flex" aria-pressed={readerExpanded} onClick={() => setReaderExpanded(!readerExpanded)}>{readerExpanded ? <Shrink aria-hidden className="size-4" /> : <Expand aria-hidden className="size-4" />}{t(readerExpanded ? "knowledgeLayout.showList" : "knowledgeLayout.expandReader")}</Button></div>
         {record ? <div className="mx-auto max-w-4xl space-y-5">
         <h3 tabIndex={-1} className="break-words text-2xl font-semibold leading-tight">{record.title}</h3>
         <p className="text-sm text-muted-foreground">{t("knowledge.attribution", { author: record.createdBy, revision: record.revision })}</p>
@@ -151,8 +166,8 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
         </div>
         {record.status === "active" && <div className="space-y-2"><Label htmlFor="memory-replacement">{t("knowledge.replacementId")}</Label><Input id="memory-replacement" value={replacement} onChange={e => setReplacement(e.target.value)} /><Button variant="outline" disabled={!writable || !replacement.trim() || busy || Boolean(pending)} onClick={() => void mutate("supersede_memory")}>{t("knowledge.supersede")}</Button></div>}
         <details className="border-t border-border pt-4"><summary className="cursor-pointer font-medium">{t("knowledgeLayout.moreDetails")}</summary><div className="space-y-3 pt-3"><p className="break-all text-xs text-muted-foreground">{record.id}</p><p className="break-words text-sm">{record.tags.join(", ")}{record.legacyId ? ` · ${record.legacyId}` : ""}</p><h4 className="font-medium">{t("knowledge.sources")}</h4><ul className="space-y-2">{record.sources.map((source, index) => <li className="break-all text-sm" key={index}>{source.kind === "repository" ? `${source.sourceId} · ${source.repository} · ${source.commit}:${source.path}` : source.kind === "reply" ? `${source.id} · r${source.revision}` : <a className="underline" href={sourceHref(projectId, source)}>{source.kind === "external" ? source.label : `${source.id} · r${source.revision}`}</a>}</li>)}</ul>{record.supersededBy && <a className="block break-all underline" href={sourceHref(projectId, { kind: "memory", ...record.supersededBy })}>{t("knowledge.replacement")}: {record.supersededBy.id} · r{record.supersededBy.revision}</a>}</div></details>
-        <details><summary>{t("knowledge.history")}</summary><ul className="space-y-2">{history.items.map(entry => <li className="break-all text-xs" key={entry.id}>{entry.operation} · r{entry.revision} · {entry.principalId}<pre className="max-h-40 overflow-auto whitespace-pre-wrap">{entry.previousJson}</pre></li>)}</ul>{(historyOffset > 0 || history.nextOffset !== null) && <div className="flex gap-2"><Button variant="outline" disabled={!historyOffset} onClick={() => setHistoryOffset(Math.max(0, historyOffset - 25))}>{t("knowledge.previous")}</Button><Button variant="outline" disabled={history.nextOffset === null} onClick={() => setHistoryOffset(history.nextOffset!)}>{t("knowledge.nextPage")}</Button></div>}</details>
-        </div> : <p role="status" className="text-sm text-muted-foreground">{t("knowledge.loading")}</p>}
+        <details><summary>{t("knowledge.history")}{historyError && <span className="ml-2 text-sm text-destructive">{t("knowledge.loadFailed")}</span>}</summary>{historyError && <div className="space-y-2"><p role="alert" className="text-sm text-destructive">{t("knowledge.loadFailed")}</p><Button variant="outline" onClick={() => setVersion(value => value + 1)}>{t("knowledge.refresh")}</Button></div>}<ul className="space-y-2">{history.items.map(entry => <li className="break-all text-xs" key={entry.id}>{entry.operation} · r{entry.revision} · {entry.principalId}<pre className="max-h-40 overflow-auto whitespace-pre-wrap">{entry.previousJson}</pre></li>)}</ul>{(historyOffset > 0 || history.nextOffset !== null) && <div className="flex gap-2"><Button variant="outline" disabled={!historyOffset} onClick={() => setHistoryOffset(Math.max(0, historyOffset - 25))}>{t("knowledge.previous")}</Button><Button variant="outline" disabled={history.nextOffset === null} onClick={() => setHistoryOffset(history.nextOffset!)}>{t("knowledge.nextPage")}</Button></div>}</details>
+        </div> : error === "knowledge.loadFailed" ? <div className="space-y-3"><p role="alert" className="text-sm text-destructive">{t("knowledge.loadFailed")}</p><Button variant="outline" onClick={() => setVersion(value => value + 1)}>{t("knowledge.refresh")}</Button></div> : <p role="status" className="text-sm text-muted-foreground">{t("knowledge.loading")}</p>}
       </article>}
     </div>
   </div>;

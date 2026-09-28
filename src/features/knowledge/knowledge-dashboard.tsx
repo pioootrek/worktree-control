@@ -41,8 +41,9 @@ export function KnowledgeDashboard({ token, setToken, change }: { token: string;
   const [notice, setNotice] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [readerExpanded, setReaderExpanded] = useState(false);
-  const returnFocusId = useRef("");
-  const focusedMobileRecordId = useRef("");
+  const returnFocusIdRef = useRef("");
+  const focusedMobileRecordRef = useRef({ id: "", projectId: "", tab: "" });
+  const focusReaderAfterSaveRef = useRef(false);
   const actionRef = useRef<HTMLButtonElement>(null);
   const editorTriggerRef = useRef<HTMLButtonElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -60,15 +61,18 @@ export function KnowledgeDashboard({ token, setToken, change }: { token: string;
   }, [identity]);
   useEffect(() => { detailRef.current?.scrollTo({ top: 0 }); }, [selection.recordId]);
   useEffect(() => {
-    if (selection.recordId && detail && focusedMobileRecordId.current !== selection.recordId && window.matchMedia("(max-width: 1023px)").matches) {
+    if (selection.recordId && detail && focusedMobileRecordRef.current.id !== selection.recordId && window.matchMedia("(max-width: 1023px)").matches) {
       detailRef.current?.querySelector<HTMLElement>("h3")?.focus();
-      focusedMobileRecordId.current = selection.recordId;
-    } else if (!selection.recordId && returnFocusId.current) {
-      const link = Array.from(workspaceRef.current?.querySelectorAll<HTMLAnchorElement>("[data-knowledge-list] a") ?? []).find(node => node.dataset.recordId === returnFocusId.current);
+      focusedMobileRecordRef.current = { id: selection.recordId, projectId: selection.projectId, tab: selection.tab };
+    } else if (!selection.recordId) {
+      const previous = focusedMobileRecordRef.current;
+      const targetId = returnFocusIdRef.current || (previous.projectId === selection.projectId && previous.tab === selection.tab ? previous.id : "");
+      if (!targetId) return;
+      const link = Array.from(workspaceRef.current?.querySelectorAll<HTMLAnchorElement>("[data-knowledge-list] a") ?? []).find(node => node.dataset.recordId === targetId);
       if (link || !model.loading) {
         (link ?? document.getElementById("knowledge-query"))?.focus({ preventScroll: true });
-        returnFocusId.current = "";
-        focusedMobileRecordId.current = "";
+        returnFocusIdRef.current = "";
+        focusedMobileRecordRef.current = { id: "", projectId: "", tab: "" };
       }
     }
   }, [selection.recordId, detail, model.rows.items, model.loading]);
@@ -139,14 +143,14 @@ export function KnowledgeDashboard({ token, setToken, change }: { token: string;
           </div>}
         </form>
       </div>
-      {model.error && !editorReady && <Alert variant="destructive"><AlertDescription>{t("knowledge.loadFailed")}</AlertDescription></Alert>}
+      {model.error && !editorReady && (!selection.recordId || detail) && <Alert variant="destructive"><AlertDescription>{t("knowledge.loadFailed")}</AlertDescription></Alert>}
       {model.loading && <p role="status">{t("knowledge.loading")}</p>}
       <Dialog open={editorReady} onOpenChange={open => { if (!open) close(); }}>
-        {mode && editorReady && <DialogContent className="sm:max-w-2xl" aria-describedby={undefined} onCloseAutoFocus={event => { event.preventDefault(); (editorTriggerRef.current?.isConnected ? editorTriggerRef.current : actionRef.current)?.focus(); }}>
+        {mode && editorReady && <DialogContent className="sm:max-w-2xl" aria-describedby={undefined} onCloseAutoFocus={event => { event.preventDefault(); if (focusReaderAfterSaveRef.current) { focusReaderAfterSaveRef.current = false; detailRef.current?.focus(); return; } const trigger = editorTriggerRef.current?.isConnected && editorTriggerRef.current.getClientRects().length ? editorTriggerRef.current : actionRef.current; trigger?.focus(); }}>
           <DialogTitle className="sr-only">{t(mode === "edit" ? "knowledge.edit" : mode === "reply" ? "knowledge.reply" : mode === "thread" ? "knowledge.addDiscussion" : "knowledge.addTask")}</DialogTitle>
           {model.error && <Alert variant="destructive"><AlertDescription>{t("knowledge.loadFailed")}</AlertDescription></Alert>}
           <Button variant="ghost" className="mr-8 w-fit" onClick={model.reload}><RefreshCw aria-hidden className="size-4" />{t("knowledge.refresh")}</Button>
-          <KnowledgeEditor key={`${identity.principal.id}:${selection.projectId}:${mode}:${mode === "task" || mode === "thread" ? "new" : selection.recordId}`} token={token} principalId={identity.principal.id} projectId={selection.projectId} mode={mode} record={mode === "thread" || mode === "task" ? undefined : detail ?? undefined} onCancel={close} onConflict={model.reload} onSaved={(recordId, tab) => { close(); setNotice(true); model.select({ ...selection, tab: tab ?? selection.tab, recordId: recordId ?? selection.recordId }); model.reload(); }} />
+          <KnowledgeEditor key={`${identity.principal.id}:${selection.projectId}:${mode}:${mode === "task" || mode === "thread" ? "new" : selection.recordId}`} token={token} principalId={identity.principal.id} projectId={selection.projectId} mode={mode} record={mode === "thread" || mode === "task" ? undefined : detail ?? undefined} onCancel={close} onConflict={model.reload} onSaved={(recordId, tab) => { focusReaderAfterSaveRef.current = true; close(); setNotice(true); model.select({ ...selection, tab: tab ?? selection.tab, recordId: recordId ?? selection.recordId }); model.reload(); }} />
         </DialogContent>}
       </Dialog>
       <div className={`grid min-h-0 min-w-0 flex-1 grid-cols-1 overflow-hidden rounded-xl border border-border bg-card/30 ${selection.recordId && !readerExpanded ? "lg:grid-cols-[minmax(320px,360px)_minmax(0,1fr)]" : ""}`} data-knowledge-layout>
@@ -161,7 +165,7 @@ export function KnowledgeDashboard({ token, setToken, change }: { token: string;
           {(model.offset > 0 || model.rows.nextOffset !== null) && <div className="flex shrink-0 items-center justify-between gap-2 border-t border-border p-3"><Button size="sm" variant="ghost" disabled={model.offset === 0 || model.loading} onClick={() => model.setOffset(Math.max(0, model.offset - 25))}>{t("knowledge.previous")}</Button><span className="text-xs tabular-nums text-muted-foreground">{t("knowledge.pageNumber", { page: Math.floor(model.offset / 25) + 1 })}</span><Button size="sm" variant="ghost" disabled={model.rows.nextOffset === null || model.loading} onClick={() => model.setOffset(model.rows.nextOffset!)}>{t("knowledge.nextPage")}</Button></div>}
         </div>
         <div ref={detailRef} tabIndex={-1} role="region" aria-label={t("knowledgeLayout.reader")} className={`min-h-0 min-w-0 overflow-y-auto overscroll-contain ${selection.recordId ? "block" : "hidden"}`} data-knowledge-detail>
-          {selection.recordId && <div className="flex justify-between border-b border-border px-3 py-2"><Button variant="ghost" className="lg:hidden" onClick={() => { returnFocusId.current = selection.recordId; navigate(selection.tab); }}><ArrowLeft aria-hidden className="size-4" />{t("knowledge.backToList")}</Button><Button variant="ghost" className="ml-auto hidden lg:inline-flex" aria-pressed={readerExpanded} onClick={() => setReaderExpanded(value => !value)}>{readerExpanded ? <Shrink aria-hidden className="size-4" /> : <Expand aria-hidden className="size-4" />}{t(readerExpanded ? "knowledgeLayout.showList" : "knowledgeLayout.expandReader")}</Button></div>}
+          {selection.recordId && <div className="flex justify-between border-b border-border px-3 py-2"><Button variant="ghost" className="lg:hidden" onClick={() => { returnFocusIdRef.current = selection.recordId; navigate(selection.tab); }}><ArrowLeft aria-hidden className="size-4" />{t("knowledge.backToList")}</Button><Button variant="ghost" className="ml-auto hidden lg:inline-flex" aria-pressed={readerExpanded} onClick={() => setReaderExpanded(value => !value)}>{readerExpanded ? <Shrink aria-hidden className="size-4" /> : <Expand aria-hidden className="size-4" />}{t(readerExpanded ? "knowledgeLayout.showList" : "knowledgeLayout.expandReader")}</Button></div>}
           {detail ? <article className="mx-auto max-w-4xl space-y-5 p-5 sm:p-7">
             <div className="space-y-3">{"description" in detail && <TaskStatus status={detail.status} priority={detail.priority} />}<h3 tabIndex={-1} className="break-words text-2xl font-semibold leading-tight tracking-tight">{detail.title}</h3></div>
             <p className="text-sm text-muted-foreground">{t("knowledge.attribution", { author: detail.createdBy, revision: detail.revision })}</p>
@@ -179,7 +183,7 @@ export function KnowledgeDashboard({ token, setToken, change }: { token: string;
               const tab = targetKind === "task" ? "backlog" : "discussions";
               return <li key={relation.id}><a className="flex items-center gap-2 rounded-lg border border-border p-3 text-sm hover:bg-muted" href={`?view=knowledge&knowledgeProject=${encodeURIComponent(selection.projectId)}&knowledgeTab=${tab}&record=${encodeURIComponent(targetId)}`} onClick={event => { if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(tab, targetId); }}><MessageSquare aria-hidden className="size-4 shrink-0" /><span className="min-w-0"><span className="block">{t(targetKind === "task" ? "knowledge.relatedTask" : "knowledge.relatedThread")}</span><span className="block truncate font-mono text-xs text-muted-foreground">{targetId}</span></span><ArrowUpRight aria-hidden className="ml-auto size-4 shrink-0" /></a></li>;
             })}</ul>{(model.relationOffset > 0 || model.relations.nextOffset !== null) && <div className="flex gap-2"><Button variant="outline" disabled={model.relationOffset === 0} onClick={() => model.setRelationOffset(Math.max(0, model.relationOffset - 25))}>{t("knowledge.previous")}</Button><Button variant="outline" disabled={model.relations.nextOffset === null} onClick={() => model.setRelationOffset(model.relations.nextOffset!)}>{t("knowledge.nextPage")}</Button></div>}</section>}</div></details>
-          </article> : selection.recordId ? <p role="status" className="p-6 text-sm text-muted-foreground">{t(model.loading ? "knowledge.loading" : "knowledge.selectRecord")}</p> : null}
+          </article> : selection.recordId ? <div className="space-y-3 p-6">{model.error ? <><p role="alert" className="text-sm text-destructive">{t("knowledge.loadFailed")}</p><Button variant="outline" onClick={model.reload}><RefreshCw aria-hidden className="size-4" />{t("knowledge.refresh")}</Button></> : <p role="status" className="text-sm text-muted-foreground">{t("knowledge.loading")}</p>}</div> : null}
         </div>
       </div>
     </>}

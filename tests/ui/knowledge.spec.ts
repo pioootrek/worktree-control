@@ -102,6 +102,28 @@ test("mobile reader hides list controls and returns focus to the selected discus
   await page.getByRole("button", { name: "Back to list" }).click();
   await expect(page.getByRole("link", { name: "Mobile decision", exact: true })).toBeFocused();
   await expect(page.getByLabel("Search titles", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Mobile decision", exact: true }).click();
+  await page.goBack();
+  await expect(page.getByRole("link", { name: "Mobile decision", exact: true })).toBeFocused();
+  expect(f.errors).toEqual([]);
+});
+
+test("a failed selected-record read reports failure and can be retried", async ({ page }) => {
+  const f = await mountKnowledge(page);
+  f.records.push({ id: "unavailable-task", projectId: "knowledge-only", title: "Unavailable task", description: "Recovered body", status: "open", priority: "next", revision: 1, createdBy: "owner" });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  let failRead = true;
+  await page.route("**/api/knowledge", route => {
+    if (route.request().postDataJSON().operation === "task" && failRead) return route.fulfill({ status: 503, json: { code: "unavailable", error: "Unavailable" } });
+    return route.fallback();
+  });
+  await page.getByRole("link", { name: "Unavailable task", exact: true }).click();
+  const reader = page.locator("[data-knowledge-detail]");
+  await expect(reader.getByRole("alert")).toContainText("Could not read knowledge.");
+  await expect(reader.getByText("Loading knowledge…")).toHaveCount(0);
+  failRead = false;
+  await reader.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(reader.getByText("Recovered body", { exact: true })).toBeVisible();
   expect(f.errors).toEqual([]);
 });
 
@@ -421,6 +443,48 @@ test("memory list fills the workspace and mobile detail returns to its entry", a
   await page.getByRole("button", { name: "Back to list", exact: true }).click();
   await expect(page.getByRole("link", { name: "Navigation note", exact: true })).toBeFocused();
   await expect(page.getByLabel("Search titles, content and memory", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Navigation note", exact: true }).click();
+  await page.goBack();
+  await expect(page.getByRole("link", { name: "Navigation note", exact: true })).toBeFocused();
+  expect(f.errors).toEqual([]);
+});
+
+test("memory stays readable when history fails and history can retry", async ({ page }) => {
+  const f = await mountMemory(page);
+  await addMemory(page, "History-safe memory");
+  await page.goBack();
+  let failHistory = true;
+  await page.route("**/api/knowledge", route => {
+    if (route.request().postDataJSON().operation === "history" && failHistory) return route.fulfill({ status: 503, json: { code: "unavailable", error: "Unavailable" } });
+    return route.fallback();
+  });
+  await page.getByRole("link", { name: "History-safe memory", exact: true }).click();
+  await expect(page.getByText("Use one SQLite owner", { exact: true })).toBeVisible();
+  const history = page.locator("details").filter({ has: page.locator("summary").filter({ hasText: "Revision history" }) });
+  await expect(history.locator("summary")).toContainText("Could not read knowledge.");
+  await history.locator("summary").click();
+  failHistory = false;
+  await page.getByRole("button", { name: "Refresh", exact: true }).last().click();
+  await expect(history.locator("summary")).not.toContainText("Could not read knowledge.");
+  expect(f.errors).toEqual([]);
+});
+
+test("a failed memory read shows a retry instead of a permanent loading state", async ({ page }) => {
+  const f = await mountMemory(page);
+  await addMemory(page, "Recoverable memory");
+  await page.goBack();
+  let failRead = true;
+  await page.route("**/api/knowledge", route => {
+    if (route.request().postDataJSON().operation === "memory" && failRead) return route.fulfill({ status: 503, json: { code: "unavailable", error: "Unavailable" } });
+    return route.fallback();
+  });
+  await page.getByRole("link", { name: "Recoverable memory", exact: true }).click();
+  const reader = page.locator("[data-memory-detail]");
+  await expect(reader.getByRole("alert")).toContainText("Could not read knowledge.");
+  await expect(reader.getByText("Loading knowledge…")).toHaveCount(0);
+  failRead = false;
+  await reader.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(reader.getByText("Use one SQLite owner", { exact: true })).toBeVisible();
   expect(f.errors).toEqual([]);
 });
 
