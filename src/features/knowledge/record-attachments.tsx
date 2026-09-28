@@ -23,6 +23,13 @@ function imageMime(file: KnowledgeAttachment): string {
   const extension = file.filename.toLowerCase().split(".").pop();
   return extension === "jpg" ? "image/jpeg" : `image/${extension}`;
 }
+function displayPath(file: KnowledgeAttachment): string {
+  return "relativePath" in file && typeof file.relativePath === "string" ? file.relativePath : file.filename;
+}
+function formatLabel(file: KnowledgeAttachment): string {
+  const extension = file.filename.match(/\.([^.]+)$/)?.[1];
+  return extension && extension.length <= 8 ? extension.toUpperCase() : "FILE";
+}
 function imageHasSignature(bytes: Uint8Array, mime: string): boolean {
   if (mime === "image/png") return bytes.length >= 8 && [137,80,78,71,13,10,26,10].every((n, i) => bytes[i] === n);
   if (mime === "image/jpeg") return bytes.length >= 4 && bytes[0] === 255 && bytes[1] === 216 && bytes[bytes.length - 2] === 255 && bytes[bytes.length - 1] === 217;
@@ -168,21 +175,21 @@ function Documents(props: Props) {
   const currentFiles = filesVersion === changeVersion ? files : null;
   const selected = currentFiles?.find(file => file.id === selectedId);
   return <section className="min-w-0 space-y-3 border-t border-border pt-4" aria-label={t("knowledge.documents")}>
-    <h4 className="flex items-center gap-2 font-medium"><Paperclip aria-hidden className="size-4" />{t("knowledge.documents")}</h4>
+    <h4 className={selectedId ? "sr-only" : "flex items-center gap-2 font-medium"}><Paperclip aria-hidden className="size-4" />{t("knowledge.documents")}</h4>
     {listingError && <div role="alert" className="space-y-2 text-sm"><p>{t("knowledge.attachmentsFailed")}</p><Button variant="outline" size="sm" onClick={() => { setFiles(null); setListingError(false); setRetry(value => value + 1); }}>{t("knowledge.retry")}</Button></div>}
     {!currentFiles && !listingError && <p role="status" className="text-sm">{t("knowledge.loading")}</p>}
     {currentFiles?.length === 0 && <p className="text-sm text-muted-foreground">{t("knowledge.noAttachments")}</p>}
     {currentFiles && <ul ref={listRef} hidden={Boolean(selectedId)} className="space-y-2">{currentFiles.map(file => <li key={file.id} className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border p-3">
-      <FileText aria-hidden className="size-4 shrink-0" /><span className="min-w-0 flex-1 break-words text-sm">{file.filename}<span className="block text-xs text-muted-foreground">{file.mediaType} · {Math.ceil(file.size / 1024)} KB</span></span>
+      <FileText aria-hidden className="size-4 shrink-0" /><span className="min-w-0 flex-1 break-words text-sm">{displayPath(file)}<span className="block text-xs text-muted-foreground">{formatLabel(file)} · {Math.ceil(file.size / 1024)} KB</span></span>
       <a data-document-id={file.id} href={documentUrl(file.id)} className="inline-flex min-h-8 items-center rounded-md px-2 text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring" aria-current={selectedId === file.id ? "page" : undefined} aria-label={`${t("knowledge.openDocument")}: ${file.filename}`} onClick={event => { if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); triggerRef.current = event.currentTarget; navigate(file.id); }}>{t("knowledge.openDocument")}</a>
       <Button variant="outline" size="sm" disabled={busy} aria-label={`${t("knowledge.downloadAttachment")}: ${file.filename}`} onClick={() => void download(file)}><Download aria-hidden className="size-4" />{t("knowledge.downloadAttachment")}</Button>
     </li>)}</ul>}
     {downloadError && <p role="alert" className="text-sm">{t("knowledge.attachmentsFailed")}</p>}
-    {selectedId && <article className="min-w-0 space-y-4 border-t border-border pt-4" aria-label={t("knowledge.documentPreview")}>
+    {selectedId && <article className="min-w-0 space-y-4" aria-label={t("knowledge.documentPreview")}>
       <div className="flex flex-wrap items-center justify-between gap-2"><Button variant="ghost" size="sm" onClick={() => navigate(null)}><ArrowLeft aria-hidden className="size-4" />{t("knowledge.backToNote")}</Button>
         {selected && <Button variant="outline" size="sm" disabled={busy} aria-label={`${t("knowledge.downloadAttachment")}: ${selected.filename}`} onClick={() => void download(selected)}><Download aria-hidden className="size-4" />{t("knowledge.downloadAttachment")}</Button>}
       </div>
-      <h4 ref={headingRef} tabIndex={-1} className="break-words text-xl font-semibold outline-none">{selected?.filename ?? t("knowledge.documentUnavailable")}</h4>
+      <h4 ref={headingRef} tabIndex={-1} className="break-words text-base font-medium outline-none">{selected ? displayPath(selected) : t("knowledge.documentUnavailable")}</h4>
       {currentFiles && !selected && <p role="alert">{t("knowledge.documentUnavailable")}</p>}
       {selected && <PreviewDocument key={`${selected.id}:${selected.sha256}:${selected.mediaType}:${selected.size}`} file={selected} files={currentFiles!} props={props} navigate={navigate} />}
     </article>}
