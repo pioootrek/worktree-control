@@ -31,6 +31,11 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "Candidate c55aafb passes managed check (486 unit +7 resource), build, and 88/88 UI tests. Corrected actual 768px expanded-path overflow; source-scope focus warning fixed. n8n review target all accepted once. Pilot running on integration checkout, claim released. Await GitHub CI and review dispositions before merge."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-28",
+      "text": "Foundation PR #58 merged as 0a71eb2 after green CI run 36436173373 on 04bd359 (check/build/HTTPS/integration/UI/E2E/package Node 22+24/systemd lifecycle). Managed UI 94/94 passed; four verified n8n review findings fixed, both published inline threads resolved. Claude publication was denied in reviewer session; root recorded its recovered findings and fixes. UI standards now cover scope focus, scroll intent, known local changes and live collapsed logs. Isolated pilot remains available on integration worktree with claim released. Keep this rework open for structured document/Memory rendering, imported title normalization and search destinations; see foundation-progress.md."
     }
   ],
   "priority": "now",

@@ -4,7 +4,8 @@ Owner authorized implementation on 2026-09-28. Code was delegated to three Sol
 agents on separate worktrees; root integrated and ran serialized verification.
 UI standards are now in `docs/ui-standards.md`.
 
-PR: https://github.com/pioootrek/worktree-switcher/pull/58 (not merged).
+PR: https://github.com/pioootrek/worktree-switcher/pull/58, merged on
+2026-09-28 at 14:37 UTC as `0a71eb2` after all checks passed.
 The isolated pilot is running the foundation build; its agent claim is released.
 
 Application source captured visually: `ce44a32`. Candidate `04bd359` also fixes
@@ -19,14 +20,17 @@ Managed verification with observed source match:
 - `pnpm build` on `af30c87`: run `dfa2bba7-e050-4460-86dc-779322c3d1cf`.
 - `pnpm test:e2e` on `d217d82`: 3/3 passed, run
   `2e8f37fa-f363-4bef-8fc8-1f336c1277af`. Final GitHub CI also runs this suite.
-- Final `pnpm test:ui` on `04bd359`: pending, run
+- Final `pnpm test:ui` on `04bd359`: 94/94 passed, run
   `513c84dc-2748-4582-9cd2-0a34c52084bf`.
 
 The first complete candidate passed 88 UI tests. Review expanded the suite to
 94. Subsequent failed runs exposed a Memory reader-remount scroll loss and two
 mistakes in the added tests (native select focus setup and browser/test-process
 variable scope); they are recorded as failures, not successful acceptance.
-Final GitHub CI acceptance remains pending.
+Final GitHub CI passed on `04bd359`: `check-build` (including check, build,
+HTTPS, integration, UI and end-to-end suites), package smoke on Node 22.23.2
+and 24.21.0, and packaged systemd lifecycle.
+[Accepted CI run](https://github.com/pioootrek/worktree-switcher/actions/runs/36436173373).
 
 ## External review and fixes
 
@@ -45,6 +49,9 @@ Claude's reviewer session denied its GitHub publication call. Its findings were
 recovered from the local review log; it did not publish a review. Kimi and Codex
 published reviews. Reviewers did not rerun tests. Root handles the final
 verification and disposition replies through the `review-follow-up` workflow.
+Both published inline threads are resolved with regression evidence; two
+unpublished Claude findings are documented in the coordinating agent’s PR
+comment. No unresolved review threads remained after the final re-fetch.
 
 ## Implemented scope
 
