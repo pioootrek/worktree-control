@@ -800,7 +800,7 @@ test("a cancelled queued run says the command never started, with a localized cl
 });
 
 for (const aggregate of [false, true]) {
-  test(`failed start logs open the exact project and worktree from ${aggregate ? "all projects" : "one project"}`, async ({ page }) => {
+  test(`server failure logs open the exact project and worktree from ${aggregate ? "all projects" : "one project"}`, async ({ page }) => {
     const width = aggregate ? 390 : 1440;
     await page.setViewportSize({ width, height: 844 });
     const data = dashboardFixture();
@@ -809,8 +809,12 @@ for (const aggregate of [false, true]) {
     api.project.name = "Fixture API";
     api.worktrees = [{ ...api.worktrees[0], path: "/fixture/api", branch: "failed-main" },
       { ...api.worktrees[0], path: "/fixture/api-other", branch: "healthy-other" }];
-    api.runtime = { ...api.runtime, phase: "failed", worktreePath: "/fixture/api", startedAt: null,
-      error: "Failed start", logs: ["api startup exit 7"] };
+    const failureLog = aggregate ? "api served requests, then exited with code 7" : "api startup exit 7";
+    api.runtime = { ...api.runtime, phase: "failed", worktreePath: "/fixture/api",
+      startedAt: aggregate ? "2026-01-01T12:00:00.000Z" : null,
+      failure: aggregate ? { code: "process_exit", title: "Process exited", message: "Server exited after serving requests",
+        suggestion: "Inspect logs", technicalDetails: "exit_code=7" } : null,
+      error: "Server failed", logs: [failureLog] };
     data.projects.push(api);
     const { requests, errors } = await mountDashboard(page, data);
     const picker = page.locator('header [role="combobox"]');
@@ -819,17 +823,17 @@ for (const aggregate of [false, true]) {
     const overview = page.locator("[data-worktree-overview]");
     const failedRow = overview.locator("tbody tr").filter({ hasText: "failed-main" });
     const otherRow = overview.locator("tbody tr").filter({ hasText: "healthy-other" });
-    await expect(failedRow.getByRole("button", { name: "Failed start logs: Fixture API · failed-main" })).toBeVisible();
-    await expect(otherRow.getByRole("button", { name: /Failed start logs/ })).toHaveCount(0);
-    if (aggregate) await expect(overview.locator("tbody tr").filter({ hasText: "Fixture Web" }).getByRole("button", { name: /Failed start logs/ })).toHaveCount(0);
+    await expect(failedRow.getByRole("button", { name: "Server failure logs: Fixture API · failed-main" })).toBeVisible();
+    await expect(otherRow.getByRole("button", { name: /Server failure logs/ })).toHaveCount(0);
+    if (aggregate) await expect(overview.locator("tbody tr").filter({ hasText: "Fixture Web" }).getByRole("button", { name: /Server failure logs/ })).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
-    await failedRow.getByRole("button", { name: "Failed start logs: Fixture API · failed-main" }).click();
+    await failedRow.getByRole("button", { name: "Server failure logs: Fixture API · failed-main" }).click();
     await expect(picker).toContainText("Fixture API");
     await expect(page).toHaveURL(/view=logs/);
     const console = page.locator('[data-log-console][data-project-id="api"]');
     await expect(console.getByRole("heading", { name: "Fixture API" })).toBeFocused();
-    await expect(console).toContainText("Failed start logs");
-    await expect(console).toContainText("api startup exit 7");
+    await expect(console).toContainText("Server failure logs");
+    await expect(console).toContainText(failureLog);
     await expect(page.locator('[data-log-console][data-project-id="web"]')).toHaveCount(0);
     if (aggregate) await page.getByRole("button", { name: "Toggle navigation" }).click();
     await expect(page.getByRole("navigation").getByRole("button", { name: "Logs", exact: true })).toHaveAttribute("aria-current", "page");

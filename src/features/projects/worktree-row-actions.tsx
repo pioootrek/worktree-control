@@ -66,7 +66,7 @@ export function WorktreeRowActions({ snapshot, worktree, busy, pendingPath, onOp
             : <><Play aria-hidden />{t("row.start")}</>}
     </Button>
     <span id={targetDescriptionId} className="sr-only">{t("worktreeLayout.actionTarget", { project: project.name, branch })}</span>
-    {located && runtime.phase === "failed" ? <Button size="sm" variant="outline" aria-label={t("worktreeLayout.failedLogsFor", { project: project.name, branch })} onClick={onOpenLogs}><ScrollText aria-hidden />{t("worktreeLayout.failedLogs")}</Button> : null}
+    {located && runtime.phase === "failed" ? <Button size="sm" variant="outline" aria-label={t("worktreeLayout.serverFailureLogsFor", { project: project.name, branch })} onClick={onOpenLogs}><ScrollText aria-hidden />{t("worktreeLayout.serverFailureLogs")}</Button> : null}
     {reservation && !(running && located) ? <span className="text-xs text-muted-foreground">{t("row.reserved")}</span> : null}
     <DropdownMenu>
       <DropdownMenuTrigger asChild><Button ref={menuTrigger} variant="ghost" size="icon-sm" aria-label={t("worktreeLayout.moreForProject", { branch, project: project.name })}><MoreHorizontal aria-hidden /></Button></DropdownMenuTrigger>
