@@ -4,7 +4,8 @@
   "id": "RWK-20260928-gui-usability",
   "links": {
     "prs": [
-      58
+      58,
+      59
     ],
     "related_ids": [
       "NOTE-20260928-knowledge-reading-audit",
@@ -46,6 +47,11 @@
       "author": "owner",
       "date": "2026-09-28",
       "text": "Discuss after the current reading slice where Markdown in Knowledge came from and whether it should be the intended content format. Owner explicitly deferred this discussion until after the slice; do not change the data model in PR #59."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-28",
+      "text": "Knowledge reading PR #59 merged as 3ac66f9 after green Verify run 36449727795 on 68f30b7 (check/build/HTTPS/integration/UI/E2E/package Node 22+24/systemd lifecycle). Managed check passed 495 unit +7 resource tests, build passed, final UI passed 102/102. Six pilot screenshots, original download hash and limitations are in reading-progress.md. Two n8n review findings fixed, one path-regex false positive disproved; all three threads resolved. Claude hit its session limit and did not review; Kimi/Codex completed. Preview remains on reading integration worktree with claim released. Keep broader rework open; discuss Markdown origin/intended format with owner before choosing subsequent scope."
     }
   ],
   "priority": "now",

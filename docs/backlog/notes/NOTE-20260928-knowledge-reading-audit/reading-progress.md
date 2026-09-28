@@ -2,6 +2,8 @@
 
 PR: https://github.com/pioootrek/worktree-switcher/pull/59
 
+Merged on 2026-09-28 as `3ac66f9` after green verification on `68f30b7`.
+
 ## Delivered behavior
 
 Imported notes show provenance-backed summaries, their documents, and a secondary
@@ -19,7 +21,8 @@ and size instead of generic octet-stream MIME. The existing shadcn preset remain
 
 The owner-authorized isolated pilot ran through the managed server on the reading
 integration worktree. Source/layout revision for these screenshots: `656718c`.
-Later focus and refresh corrections require regression verification below.
+Later focus and refresh corrections passed the regression verification below;
+the screenshot layout is unchanged.
 
 - Desktop PL/dark note and document: 1440 CSS pixels wide.
 - Mobile PL/dark document: 390 by 844, no page-wide horizontal overflow.
@@ -44,10 +47,36 @@ Later focus and refresh corrections require regression verification below.
 
 ## Verification and review
 
-In progress. Final revision, managed runs, CI and review dispositions will be
-recorded before closing this slice. Initial failed checks and interrupted runs
-are not passing evidence. Existing native editing, ownership and authentication
-flows remain part of the regression suite.
+Final application source `c2c0e58`: managed check
+`344d2fad-c4bb-4b2d-83cd-2b6fb1956a80` passed (495 unit tests and 7 resource
+checks), and build `d13965da-1c5e-4a3a-8f3c-6ef6becb57f1` passed. The final
+commit `68f30b7` changes only the refresh regression fixture. Managed UI run
+`82e15cdb-04e5-4906-8836-501310bde8cb` passed all 102 tests on that revision.
+Completed managed runs reported matching clean source observations at enqueue,
+preflight and finish. Initial failed checks and interrupted runs are not passing
+evidence.
+
+n8n review was dispatched once for all reviewers. Claude stopped at its session
+limit and did not review. Kimi and Codex published their findings. Two valid
+concerns were fixed and verified: mobile return focus and same-scope refresh
+tearing down an open document. The path-regex concern was rejected with a direct
+source-pattern reproduction and a passing real-import regression for
+`Assets/Plan_V1.md`. All three published threads have replies and are resolved.
+The new browser regression checks an unrelated-project event and concurrent
+same-project revalidation, unchanged bytes/focus/scroll, changed content, removal
+and denied access.
+
+The first CI attempt on `c2c0e58` failed in the unchanged multi-project switching
+integration test: the switch operation reported an occupied port. One rerun
+passed integration, then exposed the same incorrect one-listing-per-event
+assumption as local UI. The test-only correction waits for all pending metadata
+requests without weakening the byte-fetch, focus or scroll assertions. Final CI
+on `68f30b7` passed: [Verify run 36449727795](https://github.com/pioootrek/worktree-switcher/actions/runs/36449727795),
+including check/build, HTTPS, integration, UI, E2E, package smoke on Node 22.23.2
+and 24.21.0, and packaged systemd service lifecycle.
+
+The managed preview remains on the reading integration worktree, port 3001;
+the claim was released without stopping it. Last HTTP check returned 200.
 
 ## Owner follow-up
 

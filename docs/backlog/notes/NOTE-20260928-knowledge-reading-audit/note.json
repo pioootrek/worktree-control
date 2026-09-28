@@ -6,7 +6,7 @@
     "evidence": "evidence.json",
     "foundation_progress": "foundation-progress.md",
     "implementation_plan": "implementation-plan.md",
-    "implementation_status": "Foundation PR #58 merged after green CI and 94 UI tests; reading stage 2 started from 84cdd44 with Sol agents on isolated worktrees. See foundation-progress.md and reading-stage-plan.md.",
+    "implementation_status": "Foundation PR #58 and Knowledge reading PR #59 merged after green CI. PR #59 merged as 3ac66f9; managed UI passed 102 tests, final CI passed on 68f30b7, all three review threads resolved. See foundation-progress.md and reading-progress.md. Broader rework remains open; next owner discussion concerns Markdown origin and intended format.",
     "layout_direction": "layout-direction.md",
     "layout_owner_direction": "Owner authorized whole-layout rework and standards on 2026-09-28; implementation delegated to Sol on worktrees.",
     "owner_feedback": "owner-feedback.md",
