@@ -4,11 +4,17 @@ import { knowledgeSourceSchema } from "./knowledge-memory-schemas";
 export type { MemoryRequest } from "./knowledge-memory-schemas";
 export type KnowledgeSource = z.infer<typeof knowledgeSourceSchema>;
 export type KnowledgeMemoryStatus = "active" | "archived" | "superseded";
+export interface KnowledgeMemoryReading {
+  kind: "imported-note";
+  bodyFormat: "text" | "metadata" | "manifest";
+  summary: string | null;
+}
 export interface KnowledgeMemory {
   id: string;
   projectId: string;
   title: string;
   body: string;
+  reading?: KnowledgeMemoryReading;
   category: "decision" | "question" | "note";
   tags: string[];
   legacyId: string | null;
@@ -24,6 +30,7 @@ export interface KnowledgeMemory {
 export type KnowledgeMemorySummary = Omit<KnowledgeMemory, "body" | "sources">;
 export interface KnowledgeSearchHit {
   id: string; projectId: string; kind: KnowledgeRecordKind; title: string; excerpt: string;
+  reading?: KnowledgeMemoryReading;
   revision: number; status: string; updatedAt: string; threadId: string | null;
 }
 export interface KnowledgeSourceState { href: string; source: KnowledgeSource; currentRevision: number | null; stale: boolean; inactive: boolean }

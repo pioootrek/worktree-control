@@ -39,7 +39,7 @@ export class KnowledgeMemoryService {
       case "memory": return this.memory(projectId, request.input.memoryId);
       case "memories": {
         const page = this.store.listMemories(projectId, limit, offset, request.input.query ?? "", request.input.includeInactive ?? false);
-        return { ...page, items: page.items.map(value => this.summary(value)) };
+        return { ...page, items: page.items.map(value => this.summary(value, true)) };
       }
       case "search": return this.store.searchKnowledge(projectId, limit, offset, request.input);
       case "check_context_export": {
@@ -96,7 +96,9 @@ export class KnowledgeMemoryService {
       expectedRevision = request.input.expectedRevision;
       if (previous.revision !== expectedRevision) throw new KnowledgeError("revision_conflict", "Memory revision changed.", previous.revision);
       if (previous.status === "superseded") throw new KnowledgeError("invalid_request", "Superseded memory is immutable; open its replacement.");
-      memory = { ...previous, revision: previous.revision + 1, updatedAt: now, approval: null };
+      const { reading: _reading, ...stored } = previous;
+      void _reading;
+      memory = { ...stored, revision: previous.revision + 1, updatedAt: now, approval: null };
       if (request.operation !== "restore_memory" && previous.status !== "active") throw new KnowledgeError("invalid_request", "Restore archived memory first.");
       switch (request.operation) {
         case "update_memory": {
@@ -129,9 +131,10 @@ export class KnowledgeMemoryService {
     return result;
   }
 
-  private summary(memory: KnowledgeMemory) {
-    const { body: _body, sources: _sources, ...summary } = memory;
+  private summary(memory: KnowledgeMemory, includeReading = false) {
+    const { body: _body, sources: _sources, reading, ...stored } = memory;
     void _body; void _sources;
+    const summary = includeReading && reading ? { ...stored, reading } : stored;
     return summary;
   }
 

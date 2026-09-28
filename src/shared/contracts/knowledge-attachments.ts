@@ -6,6 +6,8 @@ export interface KnowledgeAttachment {
   recordKind: KnowledgeAttachmentRecordKind;
   recordId: string;
   filename: string;
+  /** Recorded path relative to the imported note, when provenance proves it. */
+  relativePath?: string;
   mediaType: string;
   size: number;
   sha256: string;
