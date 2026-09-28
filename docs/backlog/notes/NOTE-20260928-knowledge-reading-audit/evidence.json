@@ -209,5 +209,31 @@
     "claim": "held for owner preview at handoff",
     "binding": "loopback; remote browser needs SSH forwarding",
     "same_isolated_copy": true
-  }
+  },
+  "owner_supplied_screenshots": [
+    {
+      "file": "owner-feedback/01-memory-empty.png",
+      "sha256": "b9aa55490eb6a0795ced2f46720b81bffc45e1380e65f6f271c81cedcf047d3f",
+      "source": "Owner-provided annotated screenshot, 2026-09-28",
+      "inspected": true
+    },
+    {
+      "file": "owner-feedback/02-discussion-hierarchy.png",
+      "sha256": "68f047c7b8b8d38fb2fa2ad9d25517a36cfea9696d0b6afc8859e9e107b9585d",
+      "source": "Owner-provided annotated screenshot, 2026-09-28",
+      "inspected": true
+    },
+    {
+      "file": "owner-feedback/03-project-navigation.png",
+      "sha256": "e02f99962251e8adb1cab3e8042cd3d862e61c515dbc88e19886f83f1a5e1d0d",
+      "source": "Owner-provided annotated screenshot, 2026-09-28",
+      "inspected": true
+    },
+    {
+      "file": "owner-feedback/04-filter-alignment.png",
+      "sha256": "d12bdef9ff4b2718fcef7cf6a62d82382543c458c63190adfbfde91b84b0650d",
+      "source": "Owner-provided annotated screenshot, 2026-09-28",
+      "inspected": true
+    }
+  ]
 }

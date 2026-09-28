@@ -4,6 +4,8 @@ Audyt: 2026-09-28. Worktree Switcher, kod `e4a3a2f`. Zakres uzgodniony z właśc
 
 Interfejs pozwala dotrzeć do rekordów, ale źle obsługuje ich czytanie. Największe przeszkody to JSON zamiast notatki, dokument dostępny tylko do pobrania, zbyt dużo kontrolek przed treścią i relacje opisane identyfikatorami. Dochodzą dwa problemy z wiarygodnością odczytu: pomieszana chronologia wypowiedzi i wynik wyszukiwania, który nie prowadzi do trafionego fragmentu. To wymaga zmiany sposobu prezentowania wiedzy, nie samej palety kolorów.
 
+Po własnej próbie właściciel przekazał [cztery opisane zrzuty](owner-feedback.md). Wskazuje pustą przestrzeń pamięci, zbyt gęstą listę, niewłaściwą hierarchię szczegółu obszar wyboru projektu i zakładek oraz niespójne wyrównanie filtrów backlogu. Ten feedback uzupełnia poniższe próby i zwiększa zakres porządkowania pierwszego widoku.
+
 ## Warunki próby
 
 Uruchomiono statyczny eksport z osobnego worktree `audit/knowledge-reading`. Build w kolejce Switchera zakończył się poprawnie na niezmienionym `e4a3a2f`. Serwer uruchomił i zatrzymał Switcher na porcie 3001, pod własną rezerwacją audytu. Po części pomiarowej przywrócono profil `default`, usunięto profil tymczasowy i zwolniono rezerwację. Następnie właściciel poprosił o możliwość własnego oglądania: tę samą kopię ponownie uruchomiono przez Switcher na porcie 3001, z profilem audytowym i nową rezerwacją. Pozostawiono ją działającą do jego prób. Adresy dostępu i token pozostają poza raportem.

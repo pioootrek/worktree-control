@@ -6,7 +6,7 @@ Stan: propozycja na podstawie audytu z 2026-09-28; nie jest akceptacją nowego w
 
 Użytkownik wybiera projekt, znajduje wpis po tytule lub treści, otwiera go i czyta. Tytuł, status, zwięzła informacja o pochodzeniu i właściwa treść są widoczne przed operacjami administracyjnymi. Notatka zawierająca plan prowadzi bezpośrednio do planu. Czytelnik wraca do poprzedniej listy z tym samym zapytaniem i pozycją.
 
-Na desktopie: lista i czytnik; długość wiersza dokumentu ograniczona do około 65–80 znaków jako punkt startowy do oceny. Szerokości dopasować do realnej treści, nie do identyfikatorów. Na małym ekranie: lista albo czytnik z powrotem, a nie filtr i szczegół naraz. Przy braku wyboru czytelna zachęta do otwarcia wpisu.
+Na desktopie: lista i czytnik; długość wiersza dokumentu ograniczona do około 65–80 znaków jako punkt startowy do oceny. Szerokości dopasować do realnej treści, nie do identyfikatorów. Na małym ekranie: lista albo czytnik z powrotem, a nie filtr i szczegół naraz. Przed wyborem użyteczna lista zajmująca dostępny obszar; sam komunikat w pustej prawej kolumnie nie rozwiązuje uwagi właściciela. Po otwarciu rekordu lista i czytnik, z możliwością rozszerzenia czytnika. To propozycja do oceny na reprezentatywnej treści.
 
 Jedno główne pole wyszukiwania z podanym zakresem. Drugorzędne filtry w rozwijanym panelu z licznikiem aktywnych filtrów. „Dodaj” pozostaje dostępne, ale nie wypełnia całej szerokości czytnika. Edycja, archiwizacja, zastąpienie i oryginalny payload trafiają do jawnych akcji rekordu lub rozwijanych szczegółów. Zatwierdzenie nadal wyraźnie odnosi się do konkretnej rewizji; nie można schować znaczenia statusu.
 
@@ -14,8 +14,13 @@ Zachować zatwierdzony kierunek grafit/lime i obecne komponenty shadcn. Akcent t
 
 ## 1. Miejsce na czytanie i spójna nawigacja
 
-Zakres: KR-10–12, KR-15 częściowo, KR-16 i KR-17. Pierwszy mały PR powinien usunąć najbardziej widoczną barierę: formularz wypierający treść. Nie czekać z tym na indeksowanie załączników.
+Zakres: KR-10–12, KR-15 częściowo, KR-16 i KR-17. Po [uwagach właściciela](owner-feedback.md) pierwszy etap ma objąć użyteczny widok bez wyboru, mniejszą gęstość list i hierarchię rozmowy oraz formularz wypierający treść. Podzielić ten etap na mniejsze PR-y, jeśli zakres przestanie być łatwy do oceny. Nie czekać z tym na indeksowanie załączników.
 
+- Przed wyborem wykorzystać miejsce na listę; po otwarciu zachować orientację, przewinięcie i fokus. Nie zastępować dużej pustej powierzchni samą dekoracją lub przypadkowo otwartym rekordem.
+- W dyskusji pokazać właściwą rozmowę bezpośrednio pod tytułem i zwięzłym kontekstem. Pochodzenie importu, dodatkowe relacje i akcje przenieść do drugorzędnej prezentacji. Nie chować głównego dokumentu notatki razem z dodatkowymi załącznikami.
+- Listę oprzeć na czytelnych tytułach i krótkich podglądach. Usunąć wizualną dominację powtarzanego prefiksu importu i ID, zachowując pochodzenie w metadanych. Gdy brak tytułu w kontrakcie, zaplanować ograniczoną projekcję z etapu 3, zamiast zgadywać nazwę.
+- Uporządkować nagłówek projektu wiedzy i trzy zakładki jako jeden kontekst nawigacyjny. Dokładne rozwiązanie jest propozycją agenta, bo strzałki właściciela nie precyzują oczekiwanej zmiany.
+- Ujednolicić wysokość pól tekstowych, selectów i przycisków filtrów, linię etykiet i odstępy; sprawdzić wspólne krawędzie także po zawinięciu. Nie stosować lokalnych przesunięć pod jeden screenshot.
 - Nadać zapytaniu sensowną minimalną szerokość i przenosić pozostałe filtry do następnego wiersza/panelu, zanim pole zostanie ściśnięte. Nie skracać etykiety kosztem jej znaczenia.
 - Ukrywać filtry w szczególe mobilnej pamięci tak jak w backlogu. Ograniczyć wysokość wspólnej belki w widoku czytania; operacje runtime nie powinny wypierać tekstu notatki.
 - Ujednolicić wybór, pusty szczegół, liczniki i linki wierszy. Zachować prawdziwe href i możliwość otwarcia osobno.
@@ -25,7 +30,7 @@ Zakres: KR-10–12, KR-15 częściowo, KR-16 i KR-17. Pierwszy mały PR powinien
 
 Odbiór: PL i EN, dark/light, 1440×1000, 1366×768, 390×844, 320 px szerokości, niski viewport oraz rzeczywisty zoom 200%. Pole nie zwęża się do 59 px; przy 390×844 po otwarciu natywnej krótkiej notatki widać tytuł i początek treści bez przechodzenia przez pełny formularz. Filtry wracają po zmianie zakładki i Back/Forward, a zmiana projektu nie przenosi cudzego wyboru. Test opóźnienia i błędu historii odróżnia loading od pustych wyników. Tab/Enter/Back nie tracą logicznej pozycji.
 
-Miejsca pracy: `memory-panel.tsx`, `knowledge-dashboard.tsx`, `use-knowledge.ts`, selekcja w dashboardzie i tokeny motywu. Dla Sol: medium przy tym konkretnym zakresie; zwiększyć do high, jeśli zachowanie URL wymaga szerszych zmian współdzielonego stanu. Nie łączyć PR z backendem dokumentów.
+Miejsca pracy: `memory-panel.tsx`, `knowledge-dashboard.tsx`, `use-knowledge.ts`, selekcja w dashboardzie i tokeny motywu. Dla Sol: high dla całego etapu po uwagach właściciela; medium dopiero dla precyzyjnie wydzielonego PR dotyczącego samej prezentacji. Nie łączyć PR z backendem dokumentów.
 
 ## 2. Czytelna notatka i dokumenty
 

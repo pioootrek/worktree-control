@@ -109,6 +109,16 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "Completed the owner-authorized Playwright GUI reading audit on an isolated K7a copy, application e4a3a2f. NOTE-20260928-knowledge-reading-audit now includes 19 inspected screenshots, measurements and four proposed implementation slices. Confirmed download-only documents, JSON note bodies, collapsed search field, mobile filter dominance, unordered imported replies and search results that do not reach the matched reply. Audit only; no application redesign, real-data migration or parent-feature closure."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-28",
+      "text": "Owner supplied three annotated screenshots after personally opening the isolated audit copy: empty memory detail area; discussion list described as “Haos, za dużo, za gęsto”; weak prioritization in the detail; project selector and tabs marked without a textual diagnosis. Preserved originals and exact distinction between owner feedback and proposed layout in NOTE-20260928-knowledge-reading-audit/owner-feedback.md. First proposed slice now prioritizes useful initial layout, readable list titles and conversation-first detail hierarchy, not only filter sizing. No implementation or design variant approval inferred."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-28",
+      "text": "Owner added a fourth annotated screenshot identifying alignment of backlog search, status, priority and Filter controls. Preserved in the same audit feedback record; add shared control heights, label alignment and responsive wrapping to the first proposed presentation slice. No exact pixel measurement inferred from the supplied image."
     }
   ],
   "priority": "next",

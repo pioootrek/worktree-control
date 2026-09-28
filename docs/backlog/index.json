@@ -129,6 +129,11 @@
       "files": [
         "evidence.json",
         "implementation-plan.md",
+        "owner-feedback.md",
+        "owner-feedback/01-memory-empty.png",
+        "owner-feedback/02-discussion-hierarchy.png",
+        "owner-feedback/03-project-navigation.png",
+        "owner-feedback/04-filter-alignment.png",
         "screenshots/01-knowledge.png",
         "screenshots/02-task.png",
         "screenshots/03-relations.png",

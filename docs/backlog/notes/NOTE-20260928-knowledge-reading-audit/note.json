@@ -6,6 +6,8 @@
     "evidence": "evidence.json",
     "implementation_plan": "implementation-plan.md",
     "implementation_status": "Audit and documentation only; no application code or real knowledge records changed. Audit server was cleaned up after capture, then restarted on the same isolated copy at the owner’s request for manual review.",
+    "owner_feedback": "owner-feedback.md",
+    "owner_feedback_status": "Four owner-annotated screenshots identify unused memory space, dense discussion list, weak content hierarchy, marked project/tab navigation and misaligned backlog filters. Concrete layout solutions remain agent proposals.",
     "related_ids": [
       "FEAT-20260905-shared-project-memory",
       "NOTE-20260911-approved-gui-direction"
@@ -40,7 +42,12 @@
     "screenshots/16-light-english.png",
     "screenshots/17-short-viewport.png",
     "screenshots/18-reply-search.png",
-    "screenshots/19-reply-destination.png"
+    "screenshots/19-reply-destination.png",
+    "owner-feedback.md",
+    "owner-feedback/01-memory-empty.png",
+    "owner-feedback/02-discussion-hierarchy.png",
+    "owner-feedback/03-project-navigation.png",
+    "owner-feedback/04-filter-alignment.png"
   ],
   "id": "NOTE-20260928-knowledge-reading-audit",
   "last_reviewed": "2026-09-28",
