@@ -3,7 +3,9 @@
   "created": "2026-09-28",
   "id": "RWK-20260928-gui-usability",
   "links": {
-    "prs": [],
+    "prs": [
+      58
+    ],
     "related_ids": [
       "NOTE-20260928-knowledge-reading-audit",
       "FEAT-20260905-shared-project-memory"
@@ -19,6 +21,11 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "First coherent slice delegated to three Sol high agents on independent shell/worktrees/knowledge worktrees from 03cefe5, integrated on rework/gui-foundation. Heavy verification is serialized centrally. Remaining audit slices stay open."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-28",
+      "text": "PR #58 implements foundation plus compact Tests/Resources/Logs adoption. Managed check/build passed ce44a32; isolated pilot visual acceptance recorded in foundation-progress.md. Candidate19dd38d fixes UI test selectors; second suite, n8n review and CI pending. Remaining Knowledge document/title/search work keeps this record open."
     }
   ],
   "priority": "now",
