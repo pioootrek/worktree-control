@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { dashboardFixture, mountDashboard } from "./dashboard-fixture";
+import { openPreferences } from "./shell-actions";
 
 const project = { id: "knowledge-only", name: "Knowledge", status: "active", writable: true, revision: 1, createdAt: "2026-01-01", updatedAt: "2026-01-01" };
 const note = { id: "memory-1", projectId: project.id, title: "Storage decision", body: "Read the plan attached to this note.", category: "decision", tags: [], legacyId: null, sources: [], status: "active", supersededBy: null, approval: null, revision: 1, createdBy: "owner", createdAt: "2026-01-01", updatedAt: "2026-01-01" };
@@ -150,7 +151,8 @@ test("signing out clears an open document before a different credential can read
   const fixture = await mountDocuments(page);
   await page.getByRole("link", { name: "Open: implementation-plan.md" }).click();
   await expect(page.getByRole("heading", { name: "Storage plan" })).toBeVisible();
-  await page.getByRole("button", { name: "Sign out of knowledge" }).click();
+  await openPreferences(page);
+  await page.getByRole("menuitem", { name: "Disconnect Knowledge access", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Storage plan" })).toHaveCount(0);
   fixture.deny(true);
   await page.getByLabel("Knowledge credential", { exact: true }).fill("second-credential");

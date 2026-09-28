@@ -28,7 +28,7 @@ import { OPEN_ACCESS, useDashboard } from "./use-dashboard";
 
 export function Dashboard() {
   const { locale, setLocale, t } = useI18n();
-  const { data, observedAt, token, accessRequired, signIn, signOut, loading, error, notice, dismissNotice, mutate, setError, runningCount, knowledgeToken, knowledgeSessionVersion, changeKnowledgeToken, knowledgeChange } = useDashboard();
+  const { data, observedAt, token, accessRequired, signIn, signOut, loading, error, notice, dismissNotice, mutate, setError, runningCount, knowledgeToken, knowledgeAccess, knowledgeSessionVersion, changeKnowledgeToken, knowledgeChange } = useDashboard();
   const [section, setSection] = useState<ProjectSection>("worktrees");
   useEffect(() => {
     const sync = () => {
@@ -92,6 +92,7 @@ export function Dashboard() {
               <DropdownMenuContent align="end" className="w-52">
                 <DropdownMenuItem onSelect={() => setLocale(locale === "pl" ? "en" : "pl")}><Languages aria-hidden />{t("language.label")}</DropdownMenuItem>
                 <DropdownMenuItem onSelect={toggleTheme}>{dark ? <Sun aria-hidden /> : <Moon aria-hidden />}{dark ? t("theme.light") : t("theme.dark")}</DropdownMenuItem>
+                {knowledgeAccess === "scoped" && knowledgeToken && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => changeKnowledgeToken("")}><LogOut aria-hidden />{t("knowledge.disconnect")}</DropdownMenuItem></>}
                 {token && token !== OPEN_ACCESS && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={signOut}><LogOut aria-hidden />{t("access.signOut")}</DropdownMenuItem></>}
               </DropdownMenuContent>
             </DropdownMenu>
@@ -136,7 +137,7 @@ export function Dashboard() {
             {t("dashboard.connecting")}
           </div>
         ) : section === "knowledge" ? (
-          <KnowledgeDashboard key={knowledgeSessionVersion} token={knowledgeToken} setToken={changeKnowledgeToken} change={knowledgeChange} />
+          <KnowledgeDashboard key={knowledgeSessionVersion} token={knowledgeToken} setToken={changeKnowledgeToken} access={knowledgeAccess} change={knowledgeChange} />
         ) : data.projects.length === 0 ? (
           <EmptyState buttonRef={emptyAddTrigger} onAdd={() => setDialogOpen(true)} />
         ) : (
