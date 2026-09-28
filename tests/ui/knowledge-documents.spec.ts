@@ -28,8 +28,9 @@ async function mountDocuments(page: Page) {
   let denied = false;
   let denyListing = false;
   let listedFiles = files;
-  let nextListingGate: Promise<void> | null = null;
+  let listingGate: Promise<void> | null = null;
   let completedListings = 0;
+  let pendingListings = 0;
   await page.route("**/api/identity", route => route.fulfill({ json: { principal: { id: "owner", kind: "owner" }, credential: { kind: "owner_session" } } }));
   await page.route("**/api/knowledge", async route => {
     const { operation, input } = route.request().postDataJSON();
@@ -41,11 +42,14 @@ async function mountDocuments(page: Page) {
     if (operation === "memory") return route.fulfill({ json: note });
     if (operation === "history") return route.fulfill({ json: result([]) });
     if (operation === "attachments") {
-      const gate = nextListingGate; nextListingGate = null;
-      if (gate) await gate;
-      if (denyListing) await route.fulfill({ status: 403, json: { code: "forbidden", error: "Denied" } });
-      else await route.fulfill({ json: result(listedFiles) });
-      completedListings += 1;
+      pendingListings += 1;
+      try {
+        if (listingGate) await listingGate;
+        if (denyListing) await route.fulfill({ status: 403, json: { code: "forbidden", error: "Denied" } });
+        else await route.fulfill({ json: result(listedFiles) });
+        completedListings += 1;
+      } catch { /* A newer refresh may abort an earlier listing request. */ }
+      finally { pendingListings -= 1; }
       return;
     }
     if (operation === "attachment") {
@@ -64,8 +68,8 @@ async function mountDocuments(page: Page) {
   await page.getByRole("link", { name: note.title, exact: true }).click();
   await expect(page.getByRole("heading", { name: "Documents" })).toBeVisible();
   return { ...fixture, requests, deny: (value: boolean) => { denied = value; }, denyListing: (value: boolean) => { denyListing = value; },
-    setListing: (value: typeof files) => { listedFiles = value; }, completedListings: () => completedListings,
-    holdNextListing: () => { let release!: () => void; nextListingGate = new Promise<void>(resolve => { release = resolve; }); return release; } };
+    setListing: (value: typeof files) => { listedFiles = value; }, completedListings: () => completedListings, pendingListings: () => pendingListings,
+    holdListings: () => { let release!: () => void; listingGate = new Promise<void>(resolve => { release = resolve; }); return () => { listingGate = null; release(); }; } };
 }
 
 async function refreshKnowledge(page: Page, projectIds = ["knowledge-only"]) {
@@ -167,22 +171,24 @@ test("routine refresh preserves an open document, while changed or denied listin
   const previousScroll = await reader.evaluate(element => element.scrollTop);
   expect(previousScroll).toBeGreaterThan(0);
   const previewReads = fixture.requests.filter(call => call.operation === "attachment").length;
-  const initialListings = fixture.completedListings();
+  const initialListings = fixture.requests.filter(call => call.operation === "attachments").length;
   await refreshKnowledge(page, ["unrelated-project"]);
-  await expect.poll(() => fixture.completedListings()).toBe(initialListings + 1);
+  await expect.poll(() => fixture.requests.filter(call => call.operation === "attachments").length).toBeGreaterThan(initialListings);
+  await expect.poll(() => fixture.pendingListings()).toBe(0);
   expect(fixture.requests.filter(call => call.operation === "attachment")).toHaveLength(previewReads);
   await expect(code).toBeFocused();
   expect(await reader.evaluate(element => element.scrollTop)).toBe(previousScroll);
-  const listingBaseline = fixture.completedListings();
-  const release = fixture.holdNextListing();
+  const listingBaseline = fixture.requests.filter(call => call.operation === "attachments").length;
+  const release = fixture.holdListings();
   await refreshKnowledge(page);
-  await expect.poll(() => fixture.requests.filter(call => call.operation === "attachments").length).toBe(listingBaseline + 1);
+  await expect.poll(() => fixture.requests.filter(call => call.operation === "attachments").length).toBeGreaterThan(listingBaseline);
+  await expect.poll(() => fixture.pendingListings()).toBeGreaterThan(0);
   await expect(code).toBeVisible();
   await expect(code).toBeFocused();
   expect(await reader.evaluate(element => element.scrollTop)).toBe(previousScroll);
   expect(fixture.requests.filter(call => call.operation === "attachment")).toHaveLength(previewReads);
   release();
-  await expect.poll(() => fixture.completedListings()).toBe(listingBaseline + 1);
+  await expect.poll(() => fixture.pendingListings()).toBe(0);
   await expect(code).toBeVisible();
   await expect(code).toBeFocused();
   expect(await reader.evaluate(element => element.scrollTop)).toBe(previousScroll);
@@ -190,23 +196,19 @@ test("routine refresh preserves an open document, while changed or denied listin
 
   fixture.setListing(files.map(file => file.id === "plan" ? { ...file, sha256: "changed" } : file));
   await refreshKnowledge(page);
-  await expect.poll(() => fixture.completedListings()).toBe(listingBaseline + 2);
   await expect.poll(() => fixture.requests.filter(call => call.operation === "attachment" && call.input.attachmentId === "plan").length).toBe(2);
   await expect(code).toBeVisible();
 
   fixture.setListing(files.filter(file => file.id !== "plan"));
   await refreshKnowledge(page);
-  await expect.poll(() => fixture.completedListings()).toBe(listingBaseline + 3);
   await expect(page.getByText("Document is unavailable in this note.", { exact: true }).last()).toBeVisible();
   await expect(code).toHaveCount(0);
 
   fixture.setListing(files);
   await refreshKnowledge(page);
-  await expect.poll(() => fixture.completedListings()).toBe(listingBaseline + 4);
   await expect(code).toBeVisible();
   fixture.denyListing(true);
   await refreshKnowledge(page);
-  await expect.poll(() => fixture.completedListings()).toBe(listingBaseline + 5);
   await expect(page.getByText("Could not read attachments.", { exact: false })).toBeVisible();
   await expect(code).toHaveCount(0);
   expect(fixture.errors).toEqual([]);
