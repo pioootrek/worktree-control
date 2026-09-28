@@ -2,6 +2,8 @@
 
 Propozycja po audycie Wiedzy i czterech paneli runtime, 2026-09-28. Rozszerzenie audytu jest dyspozycją właściciela; poniższe szczegółowe rozwiązania są propozycjami agenta. Nie oznacza to zatwierdzenia nowej makiety. Zachować [obowiązujący kierunek](../NOTE-20260911-approved-gui-direction/direction.md), shadcn, obecne kontrakty własności serwera i kolejki. Źródła: [Wiedza](visual-audit.md), [uwagi właściciela](owner-feedback.md), [Worktrees/Testy/Zasoby/Logi](runtime-audit.md).
 
+Szczegółową kompozycję wspólnej ramy, trzech układów pracy i zastosowania shadcn opisuje [propozycja całego layoutu](layout-direction.md), dodana po kolejnym pytaniu właściciela.
+
 ## Kolejność
 
 | Etap | Wynik dla użytkownika | Zakres | Agent i myślenie |

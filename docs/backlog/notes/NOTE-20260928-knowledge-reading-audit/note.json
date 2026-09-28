@@ -6,6 +6,8 @@
     "evidence": "evidence.json",
     "implementation_plan": "implementation-plan.md",
     "implementation_status": "Audit and documentation only. No application code changed. Synthetic servers stopped and claims released after capture; pilot dashboard remains running for owner review.",
+    "layout_direction": "layout-direction.md",
+    "layout_owner_direction": "Owner asks to reconsider the whole layout for clarity and convenience, keep it attractive, use shadcn and research its patterns. Concrete composition remains proposed.",
     "owner_feedback": "owner-feedback.md",
     "owner_feedback_status": "Four owner-annotated screenshots identify unused memory space, dense discussion list, weak content hierarchy, marked project/tab navigation and misaligned backlog filters. Concrete layout solutions remain agent proposals.",
     "related_ids": [
@@ -75,7 +77,8 @@
     "runtime-screenshots/18-mobile-resources.png",
     "runtime-screenshots/19-mobile-worktrees.png",
     "runtime-screenshots/20-mobile-worktree-table.png",
-    "runtime-screenshots/21-light-english-worktrees.png"
+    "runtime-screenshots/21-light-english-worktrees.png",
+    "layout-direction.md"
   ],
   "id": "NOTE-20260928-knowledge-reading-audit",
   "last_reviewed": "2026-09-28",
