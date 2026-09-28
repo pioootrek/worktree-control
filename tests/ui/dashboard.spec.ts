@@ -13,6 +13,7 @@ test("overview metrics lead to combined filters and persistent size sorting", as
   const { requests, errors } = await mountDashboard(page, data);
   const overview = page.locator("[data-worktree-overview]");
   await expect(overview.getByText("No server is running", { exact: true })).toBeVisible();
+  await overview.locator("details").last().locator("summary").click();
   await expect(overview.getByText("Measured 2 of 3 worktrees", { exact: true })).toBeVisible();
   await overview.getByRole("button", { name: /Disk usage/ }).click();
   await expect(page.locator("tbody tr").first()).toContainText("done");

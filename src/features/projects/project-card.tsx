@@ -123,10 +123,10 @@ export function ProjectCard({
 
   return (
     <Card data-project-id={project.id} className="min-w-0 overflow-hidden rounded-lg border-border bg-card/70 py-0 shadow-none backdrop-blur-sm">
-      <CardHeader className="border-b border-border px-5 py-5 sm:px-6">
+      <CardHeader className={`border-b border-border px-5 sm:px-6 ${section === "worktrees" ? "py-3" : "py-5"}`}>
         <div className="flex min-w-0 flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 max-w-full">
-            <CardTitle className="flex items-center gap-2 break-all text-xl font-semibold tracking-tight sm:text-2xl">
+            <CardTitle className={`flex items-center gap-2 break-all font-semibold tracking-tight ${section === "worktrees" ? "text-lg" : "text-xl sm:text-2xl"}`}>
               <Server className="size-5 shrink-0 text-primary" aria-hidden />
               {project.name}
             </CardTitle>
@@ -204,20 +204,23 @@ export function ProjectCard({
           <Metric label={t("project.protocol")} value={project.tlsMode === "off" ? "HTTP" : "HTTPS"} />
         </div>}
 
-        <div className="px-5 py-5 sm:px-6">
+        <div className={`px-5 sm:px-6 ${section === "worktrees" ? "py-3" : "py-5"}`}>
         {reservation && (
-          <Alert variant="warning" className="mb-4">
+          <Alert variant="warning" className="mb-4 py-2">
             <LockKeyhole aria-hidden />
-            <AlertTitle>{t("project.lockedBy", { owner: reservation.owner })}</AlertTitle>
-            <AlertDescription className="space-y-1">
-              <p className="truncate">{t("project.pinnedTo", { path: reservation.worktreePath })}</p>
-              <p>
-                {reservation.kind === "agent" ? t("project.agentLease") : t("project.humanLock")}
-                {reservation.expiresAt
-                  ? ` · ${t("project.expires", { time: new Date(reservation.expiresAt).toLocaleTimeString(locale === "pl" ? "pl-PL" : "en-US") })}`
-                  : ""}
-              </p>
-              {reservation.reason && <p>{t("project.reason", { reason: reservation.reason })}</p>}
+            <AlertTitle>{t("worktreeLayout.reservationBlocked")}</AlertTitle>
+            <AlertDescription>
+              <p className="break-words">{t("worktreeLayout.reservedBranch", { branch: worktrees.find((w) => w.path === reservation.worktreePath)?.branch ?? t("overview.unknown") })}</p>
+              <details className="mt-1">
+                <summary className="cursor-pointer">{t("worktreeLayout.reservationDetails")}</summary>
+                <div className="mt-1 space-y-1 break-all text-xs">
+                  <p>{t("project.lockedBy", { owner: reservation.owner })}</p>
+                  <p>{t("project.pinnedTo", { path: reservation.worktreePath })}</p>
+                  <p>{reservation.kind === "agent" ? t("project.agentLease") : t("project.humanLock")}
+                    {reservation.expiresAt ? ` · ${t("project.expires", { time: new Date(reservation.expiresAt).toLocaleTimeString(locale === "pl" ? "pl-PL" : "en-US") })}` : ""}</p>
+                  {reservation.reason && <p>{t("project.reason", { reason: reservation.reason })}</p>}
+                </div>
+              </details>
             </AlertDescription>
           </Alert>
         )}
