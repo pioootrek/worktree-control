@@ -71,7 +71,7 @@ test("Markdown document opens by URL, links only to an authorized sibling, and B
   await expect(page.getByRole("link", { name: "Portability" })).toHaveAttribute("href", /document=portability/);
   await expect(page.locator("a[href^='javascript:']")).toHaveCount(0);
   await expect(page.locator("img[src='x']")).toHaveCount(0);
-  await expect(page.getByText(note.body)).toBeHidden();
+  await expect(page.locator("[data-memory-detail]").getByText(note.body)).toBeHidden();
   await expect(page.getByText("Remote — Linked document is unavailable in this note.")).toBeVisible();
   await expect(page.locator("img[src^='https://tracker.example']")).toHaveCount(0);
   expect([...new Set(fixture.requests.filter(call => call.operation === "attachment").map(call => call.input.attachmentId))].sort()).toEqual(["diagram", "plan"]);
@@ -83,7 +83,7 @@ test("Markdown document opens by URL, links only to an authorized sibling, and B
   await expect(page.getByRole("heading", { name: "Storage plan" })).toBeVisible();
   await page.getByRole("button", { name: "Back to note" }).click();
   await expect(page).not.toHaveURL(/document=/);
-  await expect(page.getByText(note.body)).toBeVisible();
+  await expect(page.locator("[data-memory-detail]").getByText(note.body)).toBeVisible();
   await expect(page.getByRole("link", { name: "Open: implementation-plan.md" })).toBeFocused();
   expect(fixture.errors).toEqual([]);
 });
