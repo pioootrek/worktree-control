@@ -490,10 +490,14 @@ for (const kind of ["bootstrap", "live"] as const) {
         "changed", { epoch: "fixture", revision, kinds: [kind === "bootstrap" ? "topology" : "controller"], projectIds: [], allProjects: true },
       );
     }, { kind, revision: ++revision });
-    const capacity = page.getByRole("button", { name: "Open server capacity" });
+    const expectCapacity = async (usage: string) => {
+      await page.getByRole("button", { name: "System", exact: true }).click();
+      await expect(page.getByRole("menuitem").filter({ hasText: "Open server capacity" })).toContainText(usage);
+      await page.keyboard.press("Escape");
+    };
     await refresh();
     // The capacity change confirms that React applied the refresh response.
-    await expect(capacity).toContainText("0/3");
+    await expectCapacity("0/3");
     await expect(operationError).toBeVisible();
 
     status = 503;
@@ -502,7 +506,7 @@ for (const kind of ["bootstrap", "live"] as const) {
     await expect(refreshError).toBeVisible();
     status = 200; limit = 4;
     await refresh();
-    await expect(capacity).toContainText("0/4");
+    await expectCapacity("0/4");
     await expect(refreshError).toBeHidden();
     await expect(operationError).toBeVisible();
 
