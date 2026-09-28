@@ -16,7 +16,7 @@ type Props = { token: string; projectId: string; recordId: string; recordKind: K
 type DownloadResponse = { attachment: KnowledgeAttachment; dataBase64: string };
 type Preview = { id: string; kind: "markdown" | "text" | "image"; text?: string; url?: string };
 
-function bytesFromBase64(value: string): Uint8Array { return Uint8Array.from(atob(value), char => char.charCodeAt(0)); }
+function bytesFromBase64(value: string): Uint8Array<ArrayBuffer> { return Uint8Array.from(atob(value), char => char.charCodeAt(0)); }
 function imageMime(file: KnowledgeAttachment): string {
   const type = file.mediaType.toLowerCase().split(";")[0].trim();
   if (/^image\/(png|jpeg|gif|webp)$/.test(type)) return type;
@@ -38,7 +38,7 @@ function headingText(node: ReactNode): string {
 }
 
 type AttachmentScope = Pick<Props, "token" | "projectId" | "recordId" | "recordKind">;
-async function fetchChecked(file: KnowledgeAttachment, props: AttachmentScope, signal: AbortSignal): Promise<Uint8Array> {
+async function fetchChecked(file: KnowledgeAttachment, props: AttachmentScope, signal: AbortSignal): Promise<Uint8Array<ArrayBuffer>> {
   const result = await knowledgeRequest<DownloadResponse>(props.token, "attachment", { projectId: props.projectId, attachmentId: file.id }, signal);
   if (!attachmentMatchesScope(result.attachment, props.projectId, props.recordKind, props.recordId) || result.attachment.id !== file.id || result.attachment.size !== file.size || result.attachment.sha256 !== file.sha256) throw new Error("scope");
   return bytesFromBase64(result.dataBase64);
@@ -268,10 +268,11 @@ function PreviewDocument({ file, files, props, navigate }: { file: KnowledgeAtta
         return <span title={t("knowledge.documentLinkUnavailable")} className="text-muted-foreground underline decoration-dotted">{children} ({t("knowledge.documentLinkUnavailable")})</span>;
       },
       img: ({ src, alt }) => {
-        const target = resolveDocumentLink(src ?? "", file, files);
+        const source = typeof src === "string" ? src : "";
+        const target = resolveDocumentLink(source, file, files);
         return target.kind === "attachment" && previewKind(target.file) === "image"
           ? <SiblingImage key={`${target.file.id}:${target.file.sha256}:${target.file.mediaType}:${target.file.size}`} file={target.file} alt={alt ?? ""} props={props} />
-          : <span>{alt || src} — {t("knowledge.documentLinkUnavailable")}</span>;
+          : <span>{alt || source} — {t("knowledge.documentLinkUnavailable")}</span>;
       },
     }}>{preview.text}</ReactMarkdown>
   </div>;
