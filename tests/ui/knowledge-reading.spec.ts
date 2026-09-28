@@ -51,7 +51,7 @@ test("imported manifests show a summary and documents while preserving the origi
   await expect(reader.getByText("Note", { exact: true })).toBeVisible();
   await expect(reader.getByText("Updated Sep 28, 2026")).toBeVisible();
   await expect(reader.getByRole("heading", { name: "Documents", exact: true })).toBeVisible();
-  await expect(reader.getByText("manifest-only")).toHaveCount(0);
+  await expect(reader.getByText(importedBody, { exact: true })).toBeHidden();
   await reader.getByText("Original imported payload", { exact: true }).click();
   await expect(reader.getByText(importedBody, { exact: true })).toBeVisible();
 
