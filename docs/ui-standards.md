@@ -87,6 +87,17 @@ admission, authorization, revision checks or source-attribution rules.
 Known local changes remain visible even when a test's freshness is unknown;
 they do not prove that the test covered the current working tree.
 
+Explain an unknown test relevance with the evidence that prevents confirmation,
+such as stale Git metadata, a missing worktree, incomplete observations or local
+changes. Preserve known command outcomes and at-run observations alongside that
+reason. Show an applicable recovery action; refreshing current Git metadata can
+reassess relevance but cannot repair missing historical execution evidence.
+Distinguish the revision recorded at enqueue from observations immediately before
+and after execution. None of these observations proves every intermediate state.
+A test's output action targets that exact run. Runtime-failure navigation targets
+the matching project and known attempted worktree; never infer the failed branch
+from the currently selected worktree.
+
 ## Focus, scrolling and small screens
 
 Use native links/buttons and named landmarks. Every icon-only action has an
