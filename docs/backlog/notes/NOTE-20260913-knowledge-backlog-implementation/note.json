@@ -4,9 +4,10 @@
     "baseline_commit": "72452b5c842b21e918c56cfe9910dc39746a2a98",
     "hub_baseline_commit": "22afb656c74b2fde84cb92f1aefcf8b427697cc6",
     "related_ids": [
-      "FEAT-20260905-shared-project-memory"
+      "FEAT-20260905-shared-project-memory",
+      "RWK-20260928-sqlite-data-safety"
     ],
-    "summary": "K0 closed in DONE-20260927-knowledge-k0-contracts; K1 closed in DONE-20260926-knowledge-k1-identity. K2–K6 implementations and K7a tooling are on main. The token-mode K7a pilot passed on an isolated copy at 6423734 (k7a-token-pilot-20260927.md); cutover, K2–K6 acceptance reconciliation and K8/K9 remain in the parent. SQLite remains current; PostgreSQL is deferred. Read the dated status at the top of implementation-plan.md before its historical sequence."
+    "summary": "K0 closed in DONE-20260927-knowledge-k0-contracts; K1 closed in DONE-20260926-knowledge-k1-identity. K2–K6 implementations and K7a tooling are on main. The token-mode K7a pilot passed on an isolated copy at 6423734 (k7a-token-pilot-20260927.md); cutover, K2–K6 acceptance reconciliation and K8/K9 remain in the parent. SQLite remains current; PostgreSQL is deferred. Read the dated status at the top of implementation-plan.md before its historical sequence. Storage safety assessment and S0–S6 completion plan added on 2026-09-28; RWK-20260928-sqlite-data-safety tracks technical prerequisites before real-project cutover."
   },
   "created": "2026-09-13",
   "files": [
@@ -15,7 +16,9 @@
     "k0-contract.md",
     "k0-hub-inventory.json",
     "database-portability.md",
-    "k7a-token-pilot-20260927.md"
+    "k7a-token-pilot-20260927.md",
+    "storage-safety-assessment-20260928.md",
+    "storage-safety-implementation-plan.md"
   ],
   "id": "NOTE-20260913-knowledge-backlog-implementation",
   "last_reviewed": "2026-09-27",

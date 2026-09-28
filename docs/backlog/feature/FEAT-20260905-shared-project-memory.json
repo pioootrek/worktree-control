@@ -11,7 +11,8 @@
       "RWK-20260905-service-ui-boundaries",
       "FEAT-20260905-agent-fleet-coordination",
       "FEAT-20260905-remote-commit-verification",
-      "NOTE-20260913-knowledge-backlog-implementation"
+      "NOTE-20260913-knowledge-backlog-implementation",
+      "RWK-20260928-sqlite-data-safety"
     ]
   },
   "notes": [
@@ -119,6 +120,11 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "Owner added a fourth annotated screenshot identifying alignment of backlog search, status, priority and Filter controls. Preserved in the same audit feedback record; add shared control heights, label alignment and responsive wrapping to the first proposed presentation slice. No exact pixel measurement inferred from the supplied image."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-28",
+      "text": "Owner requested a saved plan to finish SQLite data safety. RWK-20260928-sqlite-data-safety and NOTE-20260913-knowledge-backlog-implementation/storage-safety-implementation-plan.md define S0–S5 for ownership, durable writes, backup-before-migration, schema guards, crash-safe attachment/restore operations, backup policy and verification. S6 describes one-project cutover after those gates and K7 functional acceptance. Planning only; source files stay authoritative, no runtime or real data changed."
     }
   ],
   "priority": "next",

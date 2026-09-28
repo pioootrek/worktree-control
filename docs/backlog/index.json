@@ -73,6 +73,16 @@
     },
     {
       "area": "core",
+      "id": "RWK-20260928-sqlite-data-safety",
+      "path": "rework/RWK-20260928-sqlite-data-safety.json",
+      "priority": "next",
+      "risk_level": "high",
+      "status": "open",
+      "title": "Secure SQLite migrations, durable storage and recovery before knowledge cutover",
+      "type": "rework"
+    },
+    {
+      "area": "core",
       "id": "FEAT-20260829-local-web-accounts",
       "path": "feature/FEAT-20260829-local-web-accounts.json",
       "priority": "later",
@@ -260,7 +270,9 @@
         "k0-baseline.json",
         "k0-contract.md",
         "k0-hub-inventory.json",
-        "k7a-token-pilot-20260927.md"
+        "k7a-token-pilot-20260927.md",
+        "storage-safety-assessment-20260928.md",
+        "storage-safety-implementation-plan.md"
       ],
       "id": "NOTE-20260913-knowledge-backlog-implementation",
       "path": "notes/NOTE-20260913-knowledge-backlog-implementation",
