@@ -64,7 +64,8 @@ describe("knowledge service SQLite flow", () => {
     store.close();
 
     const reopened = new SqliteStateStore(path);
-    expect(reopened.listThreads("project-1", 25, 0).items).toEqual([thread]);
+    expect(reopened.listThreads("project-1", 25, 0).items).toMatchObject([thread]);
+    expect(reopened.getThread("project-1",thread.id)?.presentation).toMatchObject({displayTitle:"Finding",preview:"Evidence",imported:false,replyCount:1});
     expect(reopened.listReplies("project-1", thread.id, 25, 0).items).toHaveLength(1);
     expect(reopened.listTasks("project-1", 25, 0).items[0]).toMatchObject({ id: "task-1", revision: 1 });
     reopened.close();

@@ -24,6 +24,12 @@ export interface KnowledgeThread {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  presentation?: {
+    displayTitle: string;
+    preview: string;
+    imported: boolean;
+    replyCount: number;
+  };
 }
 
 export interface KnowledgeReply {

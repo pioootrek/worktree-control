@@ -43,7 +43,8 @@ function canonicalHash(value: unknown): string {
 
 function recordSummary(record: KnowledgeTask | KnowledgeThread) {
   const { id, projectId, title, revision, createdBy, createdAt, updatedAt } = record;
-  return { id, projectId, title, revision, createdBy, createdAt, updatedAt };
+  return { id, projectId, title, revision, createdBy, createdAt, updatedAt,
+    ...("presentation" in record && record.presentation ? { presentation: record.presentation } : {}) };
 }
 
 export class KnowledgeService {

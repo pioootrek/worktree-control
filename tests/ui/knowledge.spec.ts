@@ -13,7 +13,7 @@ async function mountKnowledge(page: Page, { withRuntimeProject = false }: { with
   if (!withRuntimeProject) data.projects = [];
   const fixture = await mountDashboard(page, data);
   const project = { id: "knowledge-only", name: "Knowledge without server", status: "active", writable: true, revision: 1, createdAt: "2026-01-01", updatedAt: "2026-01-01" };
-  const records: Array<{ id: string; projectId: string; title: string; body?: string; description?: string; priority?: string; status?: string; revision: number; createdBy: string }> = [];
+  const records: Array<{ id: string; projectId: string; title: string; body?: string; description?: string; priority?: string; status?: string; revision: number; createdBy: string; presentation?: { displayTitle: string; preview: string; imported: boolean; replyCount: number } }> = [];
   const replies: Array<{ id: string; threadId: string; body: string; revision: number; createdBy: string; historicalImport?: { sourceAuthor: string | null; sourceDate: string | null; sourceDateStatus: "valid" | "missing" | "invalid" } }> = [];
   const calls: Array<{ operation: string; input: Record<string, unknown> }> = [];
   const saved = new Map<string, unknown>();
@@ -28,7 +28,7 @@ async function mountKnowledge(page: Page, { withRuntimeProject = false }: { with
     if (operation === "projects") return route.fulfill({ json: pageResult([project]) });
     if (operation === "project") return route.fulfill({ json: project });
     if (operation === "tasks" || operation === "threads") {
-      const matching = records.filter(record => (operation === "tasks" ? "description" in record : "body" in record) && (!input.query || record.title.toLowerCase().includes(input.query.toLowerCase())));
+      const matching = records.filter(record => (operation === "tasks" ? "description" in record : "body" in record) && (!input.query || [record.presentation?.displayTitle,record.title,record.id].some(value=>value?.toLowerCase().includes(input.query.toLowerCase()))));
       const active = matching.filter(record => record.status !== "done" && record.status !== "archived");
       const filtered = matching.filter(record => (!input.activeOnly || (record.status !== "done" && record.status !== "archived")) && (!input.status || record.status === input.status) && (!input.priority || record.priority === input.priority));
       const offset = input.offset ?? 0, limit = input.limit ?? 25;
@@ -72,6 +72,37 @@ test("historical imported replies distinguish source attribution from the import
   await page.getByRole("tab",{name:"Discussions",exact:true}).click();await page.getByRole("button",{name:"Refresh",exact:true}).click();await page.getByRole("link",{name:"Imported discussion",exact:true}).click();
   await expect(page.getByText("Author: import-owner · revision 1",{exact:true})).toBeVisible();await expect(page.getByText("Historical import source — author: Ada · date: 2026-09-13",{exact:true})).toBeVisible();
   await selectLanguage(page);await expect(page.getByText("Źródło historyczne importu — autor: Ada · data: 2026-09-13",{exact:true})).toBeVisible();
+});
+
+for (const width of [390,320]) test(`discussion topics and originals remain usable at ${width}px`,async({page})=>{
+  await page.setViewportSize({width,height:844});
+  const f=await mountKnowledge(page);
+  f.records.push({id:"imported-thread",projectId:"knowledge-only",title:"Imported discussion: FEAT-42",body:"Historical comments imported from docs/backlog/feature/FEAT-42.json",revision:1,createdBy:"import-owner",presentation:{displayTitle:"Decide the storage owner",preview:"Keep one controller for SQLite writes.",imported:true,replyCount:31}});
+  f.records.push({id:"native-thread",projectId:"knowledge-only",title:"Release readiness",body:"Check package verification before publishing.",revision:1,createdBy:"owner",presentation:{displayTitle:"Release readiness",preview:"Check package verification before publishing.",imported:false,replyCount:0}});
+  await page.getByRole("tab",{name:"Discussions",exact:true}).click();
+  await expect(page.getByPlaceholder("Find a discussion by topic or ID…")).toBeVisible();
+  const imported=page.getByRole("link",{name:"Decide the storage owner",exact:true});
+  await expect(imported.getByText("Keep one controller for SQLite writes.")).toBeVisible();
+  await expect(imported.getByText("Replies: 31")).toBeVisible();
+  await expect(imported.getByText("Imported discussion",{exact:true})).toBeVisible();
+  await expect(page.getByRole("link",{name:"Release readiness",exact:true}).getByText("Check package verification before publishing.")).toBeVisible();
+  await imported.click();
+  await expect(page.getByRole("heading",{name:"Decide the storage owner"})).toBeVisible();
+  await expect(page.locator("[data-knowledge-detail]").getByText("Keep one controller for SQLite writes.")).toBeVisible();
+  await expect(page.locator("[data-knowledge-detail]").getByText("Historical comments imported from docs/backlog/feature/FEAT-42.json")).toBeHidden();
+  await page.getByText("More details",{exact:true}).click();
+  await expect(page.getByText("Original title: Imported discussion: FEAT-42")).toBeVisible();
+  await expect(page.getByText("Original body: Historical comments imported from docs/backlog/feature/FEAT-42.json")).toBeVisible();
+  await page.getByRole("button",{name:"Back to list"}).click();
+  await expect(imported).toBeFocused();
+  await selectLanguage(page);
+  await expect(page.getByPlaceholder("Znajdź dyskusję po temacie lub ID…")).toBeVisible();
+  await expect(imported.getByText("Odpowiedzi: 31")).toBeVisible();
+  await expect(imported.getByText("Dyskusja importowana")).toBeVisible();
+  await page.getByLabel("Szukaj dyskusji").fill("storage owner");
+  await page.getByRole("button",{name:"Filtruj"}).click();
+  await expect(imported).toBeVisible();
+  await expect(page.getByRole("link",{name:"Release readiness"})).toHaveCount(0);
 });
 
 test("knowledge uses the available list width, then gives discussions a readable, expandable reader", async ({ page }) => {
