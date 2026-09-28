@@ -179,6 +179,7 @@ for (const locale of ["en", "pl"] as const) {
     await expect(dialog).toBeHidden();
     expect(requests.at(-1)).toEqual({ path: "/api/settings/test-queue", method: "POST", body: { limit: 2 } });
 
+    await page.getByText(t("worktreeLayout.projectSettings"), { exact: true }).click();
     await page.getByRole("button", { name: t("environment.settings"), exact: true }).click();
     await dialog.getByLabel(t("environment.variables"), { exact: true }).fill("APP_FEATURE=enabled");
     await dialog.getByRole("button", { name: t("common.save"), exact: true }).click();
@@ -231,6 +232,7 @@ for (const locale of ["en", "pl"] as const) {
     await expect.poll(() => page.evaluate(() => (window as unknown as { fixtureEvents: { active: number } }).fixtureEvents.active)).toBe(1);
     await page.screenshot({ path: test.info().outputPath("dashboard-mobile.png"), fullPage: true });
 
+    await page.getByText(t("worktreeLayout.projectSettings"), { exact: true }).click();
     await page.getByRole("button", { name: t("project.remove"), exact: true }).click();
     dialog = page.getByRole("alertdialog");
     await expect(dialog.getByRole("heading", { name: translate(locale, "project.removeTitle", { name: "Fixture Web" }) })).toBeVisible();
@@ -281,6 +283,7 @@ test("a failed refresh after project removal does not leave the stale card disab
     failDashboardRefreshAfterProjectRemoval: true,
   });
 
+  await page.getByText(translate("en", "worktreeLayout.projectSettings"), { exact: true }).click();
   await page.getByRole("button", { name: translate("en", "project.remove"), exact: true }).click();
   await page.getByRole("alertdialog").getByRole("button", {
     name: translate("en", "project.confirmRemove"),

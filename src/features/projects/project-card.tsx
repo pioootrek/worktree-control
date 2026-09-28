@@ -121,6 +121,26 @@ export function ProjectCard({
     }
   };
 
+  const projectHeaderActions = <>
+    <EnvironmentSettingsDialog project={project} phase={runtime.phase} mutate={mutate} setError={setError} />
+    {project.launchPreset !== "django" && <TlsSettingsDialog project={project} phase={runtime.phase} token={token} mutate={mutate} setError={setError} />}
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="icon" disabled={isBusy} aria-label={t("project.remove")}><Trash2 aria-hidden /></Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t("project.removeTitle", { name: project.name })}</AlertDialogTitle>
+          <AlertDialogDescription>{t("project.removeDescription")}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" onClick={() => void removeProject()}>{t("project.confirmRemove")}</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  </>;
+
   return (
     <Card data-project-id={project.id} className="min-w-0 overflow-hidden rounded-lg border-border bg-card/70 py-0 shadow-none backdrop-blur-sm">
       <CardHeader className={`border-b border-border px-5 sm:px-6 ${section === "worktrees" ? "py-3" : "py-5"}`}>
@@ -130,46 +150,15 @@ export function ProjectCard({
               <Server className="size-5 shrink-0 text-primary" aria-hidden />
               {project.name}
             </CardTitle>
-            <CardDescription className="mt-1 truncate font-mono text-xs" title={project.repositoryPath}>
+            {section !== "worktrees" ? <CardDescription className="mt-1 truncate font-mono text-xs" title={project.repositoryPath}>
               {project.repositoryPath}
-            </CardDescription>
+            </CardDescription> : null}
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <EnvironmentSettingsDialog
-              project={project}
-              phase={runtime.phase}
-              mutate={mutate}
-              setError={setError}
-            />
-            {project.launchPreset !== "django" && (
-              <TlsSettingsDialog
-                project={project}
-                phase={runtime.phase}
-                token={token}
-                mutate={mutate}
-                setError={setError}
-              />
-            )}
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="ghost" size="icon" disabled={isBusy} aria-label={t("project.remove")}>
-                  <Trash2 aria-hidden />
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>{t("project.removeTitle", { name: project.name })}</AlertDialogTitle>
-                  <AlertDialogDescription>{t("project.removeDescription")}</AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-                  <AlertDialogAction variant="destructive" onClick={() => void removeProject()}>
-                    {t("project.confirmRemove")}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          </div>
+          {section === "worktrees" ? <details className="w-full text-xs text-muted-foreground sm:w-auto sm:shrink-0">
+            <summary className="w-fit cursor-pointer">{t("worktreeLayout.projectSettings")}</summary>
+            <p className="mt-2 break-all font-mono">{t("worktreeLayout.projectPath")}: {project.repositoryPath}</p>
+            <div className="mt-2 flex items-center gap-2">{projectHeaderActions}</div>
+          </details> : <div className="flex shrink-0 items-center gap-2">{projectHeaderActions}</div>}
         </div>
       </CardHeader>
       <CardContent className="px-0">
