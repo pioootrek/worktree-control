@@ -29,3 +29,7 @@ Preserve real hrefs, modified clicks, pagination, scope isolation, reader expand
 Backend coverage: valid import; native lookalike; missing/ambiguous/stale/edited provenance; project isolation; unchanged raw/export fields; displayed-title search beyond the first page; raw ID and literal queries; complete reply counts exceeding one page.
 
 Browser coverage: meaningful imported/native rows, consistent reader topic and secondary originals, search, selection/return, reply count, PL/EN and mobile. Root runs managed check, build and UI with one heavy job at a time, then inspects the isolated pilot at desktop1440/1366, mobile390/320, short viewport and actual200% zoom. Record screenshots and limits. Dispatch n8n once, resolve all concerns with evidence and merge only the checked final head. Broader GUI rework stays open.
+
+## Implementation availability
+
+The Sol agent accepted the contract but its turn stopped at the account usage limit before writing application or test code. The implementation worktree remains clean on 114ccbd. Root requested an owner decision whether another available model may perform the delegated implementation; the prior Sol preference is still binding until answered. Baseline browser session is closed, its claim released, and the accepted previous preview continues running. No PR or n8n dispatch exists for this stage yet.

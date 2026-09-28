@@ -7,7 +7,7 @@
     "evidence": "evidence.json",
     "foundation_progress": "foundation-progress.md",
     "implementation_plan": "implementation-plan.md",
-    "implementation_status": "PRs #58–62 merged and test-result stage accepted by owner. Discussion list clarity now delegated to Sol high; see discussion-plan.md. Broader GUI rework remains open.",
+    "implementation_status": "PRs #58–62 merged and Tests accepted. Discussion clarity contract/baseline ready; Sol stopped at account usage limit before code changes. Await owner model choice, preserving worktree/review rules; see discussion-plan.md.",
     "layout_direction": "layout-direction.md",
     "layout_owner_direction": "Owner authorized whole-layout rework and standards on 2026-09-28; implementation delegated to Sol on worktrees.",
     "markdown_decision": "Owner accepted imported Markdown as optional document attachments; no changes to description format or Knowledge data model. This discussion is resolved.",
