@@ -73,10 +73,15 @@ Preserve list query, filter, page and logical position when opening/closing a
 reader or detail. Scope state by project and identity so it cannot select a
 record from a previous authorization context. Loading, no results, no data,
 stale data and failure are separate states with appropriate next actions.
+Start a new result set at the top after an explicit search, filter or page
+change. Passive refreshes and returning from a reader preserve the user's
+position instead.
 
 Keep test command outcome, source observations and current freshness distinct.
 Display unknown information honestly. Presentation must not relax backend
 admission, authorization, revision checks or source-attribution rules.
+Known local changes remain visible even when a test's freshness is unknown;
+they do not prove that the test covered the current working tree.
 
 ## Focus, scrolling and small screens
 
@@ -85,10 +90,16 @@ accessible name; both PL and EN translations are required. Opening a modal
 moves focus inside; closing returns it to a visible stable trigger. Opening a
 mobile reader focuses its heading, and Back returns to the originating item
 or a meaningful surviving list target.
+Returning focus belongs to closing a reader or navigating Back. Changing
+project or section clears the old return target and preserves focus on the
+control the user just operated.
 
 Operating lists normally scroll the page. A desktop reader may deliberately
 have separate list/content scroll areas; consoles may own their scroll. Name
 those regions and prevent sticky UI from covering focused elements or hits.
+An automatically collapsed log section must not silently retain a frozen
+buffer. Its hit count must follow live output, or its paused state and resume
+action must remain visible while collapsed.
 
 At small widths show list or reader, not compressed parallel columns. Core
 row identity, state and primary action must be available without horizontal
