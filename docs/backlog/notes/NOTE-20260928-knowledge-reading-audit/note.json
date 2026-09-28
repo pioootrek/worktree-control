@@ -1,0 +1,32 @@
+{
+  "author": "agent:codex",
+  "body": {
+    "audited_commit": "e4a3a2f",
+    "implementation_status": "Analysis only; no application code, service configuration or real knowledge data changed.",
+    "related_ids": [
+      "FEAT-20260905-shared-project-memory",
+      "NOTE-20260911-approved-gui-direction"
+    ],
+    "report": "source-analysis.md",
+    "scope": "Worktree Switcher only: backlog, notes, memory, discussions and reading attached documents. LLM Ops Hub excluded by owner.",
+    "source_findings": 15,
+    "visual_status": "Incomplete. Built-in browser navigation and DOM read worked, but the page was unauthenticated and two snapshot requests failed with PreviewAutomationExecutionError. No current screenshot was accepted. Permission to use local Chromium/Playwright with an isolated pilot copy is pending."
+  },
+  "created": "2026-09-28",
+  "files": [
+    "source-analysis.md"
+  ],
+  "id": "NOTE-20260928-knowledge-reading-audit",
+  "last_reviewed": "2026-09-28",
+  "schema_version": 1,
+  "status": "active",
+  "tags": [
+    "gui",
+    "knowledge",
+    "backlog",
+    "audit",
+    "accessibility",
+    "plan"
+  ],
+  "title": "Czytanie backlogu, notatek i pamięci: analiza źródłowa i plan audytu GUI"
+}
