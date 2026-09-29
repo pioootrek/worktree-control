@@ -7,8 +7,9 @@
     "discussion_progress": "discussion-progress.md",
     "evidence": "evidence.json",
     "foundation_progress": "foundation-progress.md",
+    "history_plan": "history-plan.md",
     "implementation_plan": "implementation-plan.md",
-    "implementation_status": "PRs #58–65 merged. PR #65 relations/search navigation verified on f423587: check 509+7, build, UI 123/123, final GitHub CI and isolated-pilot QA passed. Two review concerns fixed; screenshots and limits in navigation-progress.md. Broader GUI/history work remains open.",
+    "implementation_status": "PRs #58–65 merged. Owner accepted readable Memory history next; Sol high implementing on rework/knowledge-history. See history-plan.md; broader GUI work remains open.",
     "layout_direction": "layout-direction.md",
     "layout_owner_direction": "Owner authorized whole-layout rework and standards on 2026-09-28; implementation delegated to Sol on worktrees.",
     "markdown_decision": "Owner accepted imported Markdown as optional document attachments; no changes to description format or Knowledge data model. This discussion is resolved.",
@@ -175,7 +176,9 @@
     "navigation-screenshots/after-page-focus-mobile.png",
     "navigation-screenshots/after-en-short.png",
     "navigation-screenshots/after-zoom.png",
-    "navigation-screenshots/after-zoom-results.png"
+    "navigation-screenshots/after-zoom-results.png",
+    "history-plan.md",
+    "history-screenshots/before.png"
   ],
   "id": "NOTE-20260928-knowledge-reading-audit",
   "last_reviewed": "2026-09-29",

@@ -133,6 +133,11 @@
       "author": "agent:codex",
       "date": "2026-09-29",
       "text": "Relations/search navigation PR #65 merged as cad32a2 after green Verify 36537074101 on f423587. Sol delivered titled/directional relations, bounded literal-match excerpts, exact reply-page destinations and scoped return-to-results with focus. Managed check 509 application + 7 resource tests, build and final UI 123/123 passed. Pilot preserved 13 existing thread summaries/94 replies and raw relations; native reply 30, mobile, short EN/light and actual 200% zoom verified. Two n8n findings fixed (reader state reset and measured unrelated provenance work); Claude publication denied, finding recovered from log; zero unresolved published threads. Standards, nine final screenshots and evidence in navigation-progress.md. Pilot remains running on navigation worktree with claim released. Broader GUI/history work stays open."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-29",
+      "text": "Owner accepted readable Memory history stage after PR65. Sol high on isolated rework/knowledge-history from1639776; dated actor/operation/revision list, verified adjacent-revision comparison and independent lazy history loading. Contract and limits in history-plan.md. Root handles standards, pilot, managed tests, n8n and green merge."
     }
   ],
   "priority": "now",
