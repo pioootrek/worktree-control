@@ -1,0 +1,47 @@
+{
+  "applicationBuild": "269e103",
+  "focusResults": [
+    {
+      "view": "Tests",
+      "from": 390,
+      "to": 1440,
+      "label": "Wynik: test:fail · main",
+      "visible": true
+    },
+    {
+      "view": "Tests",
+      "from": 1440,
+      "to": 390,
+      "label": "Wynik: test:fail · main",
+      "visible": true
+    },
+    {
+      "view": "Resources",
+      "from": 390,
+      "to": 1440,
+      "label": "Zasoby: AUDYT · Portal klienta · main",
+      "visible": true
+    },
+    {
+      "view": "Resources",
+      "from": 1440,
+      "to": 390,
+      "label": "Zasoby: AUDYT · Portal klienta · main",
+      "visible": true
+    }
+  ],
+  "zoom": {
+    "finalAttempt": "timeouts during heavy host I/O, including retry; not counted as success",
+    "baselineVerifiedIn": "acceptance-evidence.json"
+  },
+  "pageErrors": [],
+  "finalTestCommit": "1e83f52f48bbe40f8252f2ab7c07b1fb2ce1bf6a",
+  "mergeCommit": "186253af0f2134bd0a9a42bfcc9c42126d1edbee",
+  "ui": {
+    "runId": "5a6b9333-ca5e-4d28-b5e8-ba5cc24d2076",
+    "passed": 134,
+    "total": 134,
+    "attribution": "observed_match"
+  },
+  "githubVerify": 36559079381
+}

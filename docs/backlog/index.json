@@ -148,6 +148,7 @@
       "created": "2026-09-28",
       "files": [
         "acceptance-evidence.json",
+        "acceptance-final-evidence.json",
         "acceptance-report.md",
         "acceptance-screenshots/01-worktrees-desktop.png",
         "acceptance-screenshots/02-tests-desktop.png",
@@ -174,6 +175,10 @@
         "acceptance-screenshots/23-memory-light-history.png",
         "acceptance-screenshots/24-history-error-isolation.png",
         "acceptance-screenshots/25-resources-light-short.png",
+        "acceptance-screenshots/26-tests-1366-fixed.png",
+        "acceptance-screenshots/27-tests-mobile-focus-restored.png",
+        "acceptance-screenshots/28-resources-mobile-focus-restored.png",
+        "acceptance-screenshots/29-tests-1366-light-fixed.png",
         "discussion-api-evidence.json",
         "discussion-plan.md",
         "discussion-progress.md",

@@ -1,6 +1,6 @@
 # Odbiór przekrojowy GUI — 2026-09-29
 
-Status: audyt zakończony, dwie potwierdzone poprawki w realizacji. Nie jest to zamknięcie całego backloga GUI ani akceptacja migracji produkcyjnej.
+Status: audyt zakończony; GA-01/02 poprawione i scalone w PR67 (`186253a`) po zielonych testach i rozliczeniu review. Nie jest to zamknięcie całego backloga GUI ani akceptacja migracji produkcyjnej.
 
 ## Zakres i dowody
 
@@ -8,7 +8,7 @@ Main `4b318df`, podgląd z kompilacji `c04eac2` w worktree historii. Porównanie
 
 Nie zmieniano treści istniejących rekordów. Przez MCP pilota ponowiono wyłącznie celowo nieudany start syntetycznego Workera (exit 7), żeby mieć świeży błąd i logi; rezerwację zwolniono. Nie uruchamiano serwera poza Switcherem. Awarię odczytu historii 503 zasymulowano tylko w przeglądarce; przechwytywanie usunięto po sprawdzeniu ponowienia. Brak błędów JavaScript strony.
 
-## Przejście przez interfejs
+## Przejście przez interfejs — stan bazowy przed PR67
 
 1. **Worktrees — działa.** Gałąź, stan, zmiany lokalne i akcja są widoczne na desktopie i telefonie. Celowo nieudany start oznacza właściwą gałąź `fix/brak-konfiguracji`; ma akcję przejścia do logów. Duży alert zabiera miejsce tylko w stanie błędu.
 
@@ -75,9 +75,9 @@ Kod zlecono Sol high w `fix/gui-detail-focus`, osobny worktree od `4b318df`. Roo
 | KR-09/10: metadane i kontrolki | Znacznie poprawione; ręczne ID zastąpienia i stałe akcje pamięci nadal do uproszczenia. |
 | KR-11/12: wspólny czytnik i kontekst powrotu | Główne ścieżki czytania oraz wynik→odpowiedź→powrót działają; nie deklarujemy trwałego zachowania każdego filtra po dowolnej zmianie sekcji. |
 | KR-13/14: błędy/loading i historia | Historia niezależna, jawna, ponowienie działa. Testy PR66 chronią również opóźnienia i zmianę zakresu. |
-| KR-15/16/17: fokus, rozmiary, kontrast | Podstawowe przepływy działają; GA-01/02 wymagają poprawki. Poprzedni lime-tekst wybranego tytułu usunięty. To nie pełny audyt kontrastu. |
+| KR-15/16/17: fokus, rozmiary, kontrast | Podstawowe przepływy działają; GA-01/02 poprawione w PR67; dowody po zmianie poniżej. Poprzedni lime-tekst wybranego tytułu usunięty. To nie pełny audyt kontrastu. |
 | RT-01/02/03: akcje Worktrees, claim i błąd | Akcje i powiązany błąd potwierdzone. Obcego claimu nie odtwarzano ponownie w tym przebiegu. |
-| RT-04/05: znaczenie i gęstość Testów | Poprawione, z pozostałym GA-02 na granicy szerokości. |
+| RT-04/05: znaczenie i gęstość Testów | Poprawione; GA-02 na granicy szerokości domknięty w PR67. |
 | RT-06: etykieta Close w PL | Panel testu i uruchomienie mają obecnie nazwę Zamknij. |
 | RT-07: pierwszy pomiar | Marker i opis są w kodzie; obecna kopia ma już trzy pomiary. Tekstowa alternatywa sprawdzona. |
 | RT-08/09: logi i mobile | Puste sekcje zwarte, trafienia widoczne, wiersze mobilne czytelne. |
@@ -89,4 +89,20 @@ To odbiór reprezentatywnych przepływów, nie kompletna zgodność WCAG ani pe�
 
 ## Wynik implementacji i sprawdzeń
 
-Oczekuje na finalny commit, kolejkę testów, ponowny podgląd i n8n. Ta sekcja zostanie uzupełniona rzeczywistymi wynikami.
+Kod aplikacji `269e103`, końcowy commit testów `1e83f52`; porównanie Git potwierdza identyczność kodu aplikacji. [PR67](https://github.com/pioootrek/worktree-switcher/pull/67).
+
+- Managed check `669f0a75-9228-40ab-a851-5d7a70aa9af3`: **PASS**, 515 testów aplikacji + 7 zasobów; znane wcześniejsze ostrzeżenie lint dotyczące zależności efektu w Knowledge, zero błędów.
+- Managed build `7e990748-f9b9-49ff-ace7-ec62a02bb257`: **PASS**. Oba przebiegi na czystym `269e103`, `observed_match`.
+- UI `3e0b9566-5555-48ce-889a-315e1ebec930`: **FAIL**, 132/134. Dwie nowe regresje miały błędy testu: Escape wysłany przed przejęciem fokusu przez Sheet oraz wyszukiwanie przycisku tła przez drzewo dostępności, z którego otwarty modal je ukrywa. Trace potwierdził przyczyny. `1e83f52` czeka na rzeczywisty fokus wewnątrz panelu i mierzy element tła przez DOM; bez arbitralnych opóźnień i bez zmian aplikacji.
+- Końcowy UI `5a6b9333-ca5e-4d28-b5e8-ba5cc24d2076`: **PASS, 134/134** na czystym `1e83f52`, `observed_match`. Wcześniejszy UI na `6254153` został anulowany dla poprawki po review; nie jest zaliczony jako sukces.
+- Pilot: oba kierunki 390↔1440 dla Testów i Zasobów przywracają właściwy przycisk, widoczny na ekranie. Testy 1366×650 mają pełną akcję w kartach, PL/dark i EN/light. Cztery końcowe zrzuty otwarto i sprawdzono. [Pomiary po poprawce](acceptance-final-evidence.json).
+- Końcowe dodatkowe próby 200% zoomu przekroczyły timeout w czasie silnej presji I/O hosta (odczyt `/proc/pressure/io`: full avg10 ok. 81%). Nie zaliczono ich jako sukcesu; wcześniejszy sprawdzony zoom 200% dotyczy bazowego odbioru powyżej. Brak `pageerror` w sesji. Zamknięto Chromium, rezerwację zwolniono; podgląd pozostał uruchomiony na worktree `fix/gui-detail-focus`, port 3001.
+
+![Testy po zmianie progu](acceptance-screenshots/26-tests-1366-fixed.png)
+![Powrót do Testów na telefonie](acceptance-screenshots/27-tests-mobile-focus-restored.png)
+![Powrót do Zasobów na telefonie](acceptance-screenshots/28-resources-mobile-focus-restored.png)
+![Pełne akcje na laptopie, jasny motyw](acceptance-screenshots/29-tests-1366-light-fixed.png)
+
+Review n8n: Claude wskazał możliwość przywrócenia fokusu poza ekranem po zmianie układu; poprawka ujawnia cel i ma regresję na niskim ekranie z wieloma wynikami. Publikacja review Claude została zablokowana uprawnieniami jego sesji, więc uwagę odczytano z logu. Kimi wskazał drugi przypadek: aktywny test występuje w sekcji Aktywne oraz w Historii; tożsamość celu musi zachować także grupę pochodzenia. Latest wyklucza aktywne uruchomienia. Codex nie znalazł dodatkowych uwag.
+
+GitHub [Verify 36559079381](https://github.com/pioootrek/worktree-switcher/actions/runs/36559079381) na `1e83f52`: wszystkie cztery joby PASS (check/build/HTTPS/integration/UI/E2E oraz package smoke Node22/24 i service lifecycle). PR67 scalony jako `186253af0f2134bd0a9a42bfcc9c42126d1edbee`. Kimi: 1 fix, oryginalny wątek z odpowiedzią i rozwiązany; Claude: 1 fix odzyskany z logu, publikacja nadal niedostępna; Codex: brak dodatkowych uwag. Ponowny odczyt GitHub: zero nierozwiązanych wątków. Zasady widocznego celu i zachowania grupy pochodzenia dopisano do `docs/ui-standards.md`.

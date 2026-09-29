@@ -112,10 +112,14 @@ Returning focus belongs to closing a reader or navigating Back. Changing
 project or section clears the old return target and preserves focus on the
 control the user just operated.
 When responsive layouts have separate controls for the same record, restore
-focus to its currently visible control. If a refresh removes the record, use
-a meaningful fallback in the same mounted section; never focus a hidden or
-detached trigger or reach into another project. Check table actions at the
-breakpoint with the sidebar expanded, including intermediate laptop widths.
+focus to its currently visible control in the originating list or group; a
+duplicate of the record elsewhere on the page is a different return target.
+If a refresh removes the record, use a meaningful fallback in the same
+mounted section; never focus a hidden or detached trigger or reach into
+another project. A restored control must also be on screen: preserve scroll
+for a visible target, but reveal one displaced by a layout change. Check
+table actions at the breakpoint with the sidebar expanded, including
+intermediate laptop widths.
 
 Operating lists normally scroll the page. A desktop reader may deliberately
 have separate list/content scroll areas; consoles may own their scroll. Name

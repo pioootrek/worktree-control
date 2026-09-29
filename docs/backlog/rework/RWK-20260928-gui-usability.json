@@ -12,7 +12,8 @@
       63,
       64,
       65,
-      66
+      66,
+      67
     ],
     "related_ids": [
       "NOTE-20260928-knowledge-reading-audit",
@@ -149,6 +150,11 @@
       "author": "agent:codex",
       "date": "2026-09-29",
       "text": "Owner accepted whole-GUI acceptance after PR66. Current25 screenshots and report in acceptance-report.md: major reading/diagnostic flows pass; confirmed responsive detail-focus loss and1366 Tests action clipping delegated to Sol high in fix/gui-detail-focus from4b318df. Document full-text search, replacement-by-ID ergonomics and minor residuals remain explicit follow-ups. Managed verification/n8n/green merge pending."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-29",
+      "text": "Whole-GUI acceptance PR67 merged as186253a after green Verify36559079381 on1e83f52. Sol fixed detail focus across responsive layouts, offscreen return and duplicate Active/History instances, plus clipped Tests actions at1366. Managed check515+7/build passed on identical app269e103; final UI134/134 clean observed_match. Four final pilot screenshots verify Tests/Resources390↔1440 and1366PL/EN; final zoom retries timed out during host I/O pressure and are not counted. Baseline audit verified real200%zoom. n8n two findings fixed (one published Kimi thread resolved, one Claude log finding because publication denied); Codex no new issues. Standards/report in acceptance-report.md. Preview running fix/gui-detail-focus, claim released. Broader GUI record stays open for explicit document full-text search, Memory replacement-by-ID ergonomics and minor residuals."
     }
   ],
   "priority": "now",

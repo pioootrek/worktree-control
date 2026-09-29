@@ -2,7 +2,7 @@
   "author": "agent:codex",
   "body": {
     "acceptance_report": "acceptance-report.md",
-    "acceptance_status": "Whole-GUI acceptance captured 25 current screenshots; focus across responsive variants and Tests action clipping at1366 assigned to Sol on fix/gui-detail-focus. Verification pending.",
+    "acceptance_status": "Whole-GUI acceptance complete: 25 baseline + 4 final inspected screenshots; GA01/02 fixed by Sol and merged PR67 (186253a). Managed check515+7/build passed on269e103; final UI134/134 on1e83f52; final GitHub four jobs green. Both responsive focus directions verified in pilot. Final zoom retries timed out under host I/O pressure; earlier baseline zoom passed. n8n findings fixed, zero unresolved published threads; Claude publication denied. Broader backlog remains open.",
     "additional_visual_findings": 2,
     "audited_commit": "e4a3a2f",
     "discussion_plan": "discussion-plan.md",
@@ -12,7 +12,7 @@
     "history_plan": "history-plan.md",
     "history_progress": "history-progress.md",
     "implementation_plan": "implementation-plan.md",
-    "implementation_status": "PRs #58–66 merged. Memory history PR66 verified: check515+7, build, UI125/125, final CI and pilot API/browser QA passed. Verified comparisons are opt-in; raw data unchanged. See history-progress.md; broader GUI rework remains open.",
+    "implementation_status": "PRs #58–67 merged. Cross-GUI acceptance and final focus/laptop fixes documented in acceptance-report.md; remaining document search and Memory replacement ergonomics are explicit follow-ups.",
     "layout_direction": "layout-direction.md",
     "layout_owner_direction": "Owner authorized whole-layout rework and standards on 2026-09-28; implementation delegated to Sol on worktrees.",
     "markdown_decision": "Owner accepted imported Markdown as optional document attachments; no changes to description format or Knowledge data model. This discussion is resolved.",
@@ -219,7 +219,12 @@
     "acceptance-screenshots/22-detail-zoom-output.png",
     "acceptance-screenshots/23-memory-light-history.png",
     "acceptance-screenshots/24-history-error-isolation.png",
-    "acceptance-screenshots/25-resources-light-short.png"
+    "acceptance-screenshots/25-resources-light-short.png",
+    "acceptance-final-evidence.json",
+    "acceptance-screenshots/26-tests-1366-fixed.png",
+    "acceptance-screenshots/27-tests-mobile-focus-restored.png",
+    "acceptance-screenshots/28-resources-mobile-focus-restored.png",
+    "acceptance-screenshots/29-tests-1366-light-fixed.png"
   ],
   "id": "NOTE-20260928-knowledge-reading-audit",
   "last_reviewed": "2026-09-29",
