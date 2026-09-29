@@ -48,8 +48,10 @@ describe("K4 memory and session context", () => {
     for (let revision = 6; revision <= 27; revision++) {
       memory = f.change("update_memory", memory, { ...f.input, idempotencyKey: `edit-${revision}`, body: `Revision ${revision}` });
     }
-    const first = f.service.history(f.project.id, "memory", memory.id, f.owner, { limit: 25 });
-    const second = f.service.history(f.project.id, "memory", memory.id, f.owner, { limit: 25, offset: first.nextOffset! });
+    const raw = f.service.history(f.project.id, "memory", memory.id, f.owner, { limit: 1 });
+    expect(raw.items[0]).not.toHaveProperty("comparison");
+    const first = f.service.history(f.project.id, "memory", memory.id, f.owner, { limit: 25, includeComparison: true });
+    const second = f.service.history(f.project.id, "memory", memory.id, f.owner, { limit: 25, offset: first.nextOffset!, includeComparison: true });
     expect(() => f.service.history(f.privateProject.id, "memory", memory.id, f.actor)).toThrowError(expect.objectContaining({ code: "knowledge_forbidden" }));
     expect(first.items).toHaveLength(25);
     expect(first.nextOffset).toBe(25);
@@ -64,7 +66,7 @@ describe("K4 memory and session context", () => {
     expect(JSON.parse(first.items[2]!.previousJson!)).toMatchObject({ revision: 2, approval: { revision: 2 } });
     const replacement = f.create({ title: "Replacement", idempotencyKey: "replacement" });
     const superseded = f.change("supersede_memory", memory, { replacementId: replacement.id, replacementRevision: replacement.revision });
-    expect(f.service.history(f.project.id, "memory", memory.id, f.owner, { limit: 25, offset: 25 }).items.at(-1)?.comparison?.after)
+    expect(f.service.history(f.project.id, "memory", memory.id, f.owner, { limit: 25, offset: 25, includeComparison: true }).items.at(-1)?.comparison?.after)
       .toMatchObject({ status: "superseded", supersededBy: { id: replacement.id, revision: replacement.revision } });
     expect(superseded.revision).toBe(28);
   });
@@ -77,7 +79,7 @@ describe("K4 memory and session context", () => {
     database.prepare("UPDATE knowledge_memories SET approval_json=? WHERE project_id=? AND id=?").run("{", f.project.id, memory.id);
     database.close();
     const reopened = new SqliteStateStore(f.path); cleanups.push(() => reopened.close());
-    const event = reopened.listHistory(f.project.id, "memory", memory.id, 25, 0).items[0];
+    const event = reopened.listHistory(f.project.id, "memory", memory.id, 25, 0, true).items[0];
     expect(event).toMatchObject({ operation: "created", previousJson: null, comparison: null });
   });
 
@@ -90,7 +92,7 @@ describe("K4 memory and session context", () => {
       VALUES (?,'memory',?,'updated',?,?,?,3,?)`).run(f.project.id, memory.id, JSON.stringify({ ...memory, revision: 2 }), f.owner.principalId, "owner_session", memory.createdAt);
     database.close();
     const reopened = new SqliteStateStore(f.path); cleanups.push(() => reopened.close());
-    const events = reopened.listHistory(f.project.id, "memory", memory.id, 25, 0).items;
+    const events = reopened.listHistory(f.project.id, "memory", memory.id, 25, 0, true).items;
     expect(events.map(event => event.comparison)).toEqual([null, null]);
     expect(events[1]?.previousJson).toBe(JSON.stringify({ ...memory, revision: 2 }));
   });

@@ -7,6 +7,7 @@ import type {
   KnowledgeMutationContext,
   KnowledgeMutationResult,
   KnowledgeHistoryEntry,
+  KnowledgeHistoryOptions,
   KnowledgePage,
   KnowledgePageOptions,
   KnowledgeRelation,
@@ -187,10 +188,10 @@ export class KnowledgeService {
     return { ...relations, items: relations.items.map((relation, index) => ({ ...relation, destination: destinations[index] ?? null })) };
   }
 
-  history(projectId: string, recordKind: KnowledgeHistoryEntry["recordKind"], recordId: string, actor: AuthenticatedPrincipal, options: KnowledgePageOptions = {}): KnowledgePage<KnowledgeHistoryEntry> {
+  history(projectId: string, recordKind: KnowledgeHistoryEntry["recordKind"], recordId: string, actor: AuthenticatedPrincipal, options: KnowledgeHistoryOptions = {}): KnowledgePage<KnowledgeHistoryEntry> {
     this.identity.authorizeKnowledge(actor, projectId, "knowledge:read");
     const page = this.page(options);
-    return this.store.listHistory(projectId, recordKind, recordId, page.limit, page.offset);
+    return this.store.listHistory(projectId, recordKind, recordId, page.limit, page.offset, options.includeComparison === true);
   }
 
   createThread(projectId: string, input: { title: string; body: string }, options: KnowledgeWriteOptions, actor: AuthenticatedPrincipal): KnowledgeMutationResult<KnowledgeThread> {

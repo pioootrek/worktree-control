@@ -4,7 +4,7 @@ import type { AuthenticatedPrincipal, KnowledgeProject, KnowledgeProjectRuntimeL
 
 import type { KnowledgeRecordKind, KnowledgeThread, KnowledgeReply, KnowledgeReplyPage, KnowledgeTask, KnowledgeRelation, KnowledgeRelationDestination, KnowledgeHistoryEntry, KnowledgeMutationResult, KnowledgePage, KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
 import type { KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
-export type { KnowledgeRecordKind, KnowledgeTaskStatus, KnowledgeTaskPriority, KnowledgeRelationType, KnowledgeThread, KnowledgeReply, KnowledgeTask, KnowledgeRelation, KnowledgeHistoryEntry, KnowledgeMutationResult, KnowledgePage, KnowledgePageOptions, KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
+export type { KnowledgeRecordKind, KnowledgeTaskStatus, KnowledgeTaskPriority, KnowledgeRelationType, KnowledgeThread, KnowledgeReply, KnowledgeTask, KnowledgeRelation, KnowledgeHistoryEntry, KnowledgeMutationResult, KnowledgePage, KnowledgePageOptions, KnowledgeHistoryOptions, KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
 
 export interface KnowledgeMutationContext {
   actor: AuthenticatedPrincipal;
@@ -66,7 +66,7 @@ export interface KnowledgeStore {
   relationDestinations(projectId: string, endpoints: Array<{kind: KnowledgeRecordKind; id: string}>): Array<KnowledgeRelationDestination | null>;
   getTask(projectId: string, id: string): KnowledgeTask | null;
   listTasks(projectId: string, limit: number, offset: number, filters?: KnowledgeFilters): KnowledgeTaskPage<KnowledgeTask>;
-  listHistory(projectId: string, recordKind: KnowledgeHistoryEntry["recordKind"], recordId: string, limit: number, offset: number): KnowledgePage<KnowledgeHistoryEntry>;
+  listHistory(projectId: string, recordKind: KnowledgeHistoryEntry["recordKind"], recordId: string, limit: number, offset: number, includeComparison?: boolean): KnowledgePage<KnowledgeHistoryEntry>;
   createThread(thread: KnowledgeThread, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeThread>;
   createReply(reply: KnowledgeReply, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeReply>;
   createTaskFromThread(task: KnowledgeTask, relation: KnowledgeRelation, context: KnowledgeMutationContext): KnowledgeMutationResult<{ task: KnowledgeTask; relation: KnowledgeRelation }>;

@@ -136,6 +136,10 @@ export interface KnowledgePageOptions {
   offset?: number;
 }
 
+export interface KnowledgeHistoryOptions extends KnowledgePageOptions {
+  includeComparison?: boolean;
+}
+
 
 export interface KnowledgeFilters {
   query?: string;
@@ -173,7 +177,7 @@ export const knowledgeSchemas = {
   tasks: z.strictObject({ ...project, ...page, query, activeOnly: z.boolean().optional(), status: knowledgeStatus.optional(), priority: knowledgePriority.optional() }),
   task: z.strictObject({ ...project, taskId: id }),
   relations: z.strictObject({ ...record, ...page }),
-  history: z.strictObject({ ...record, recordKind: z.enum(["thread", "reply", "task", "memory", "project", "relation"]), ...page }),
+  history: z.strictObject({ ...record, recordKind: z.enum(["thread", "reply", "task", "memory", "project", "relation"]), ...page, includeComparison: z.boolean().optional() }),
   create_thread: z.strictObject({ ...project, ...write, title, body }),
   create_reply: z.strictObject({ ...project, ...write, threadId: id, body }),
   create_task: z.strictObject({ ...project, ...write, title, description: body, priority: knowledgePriority.optional() }),

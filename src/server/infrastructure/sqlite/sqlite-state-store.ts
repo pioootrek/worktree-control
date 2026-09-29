@@ -764,8 +764,8 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     return this.knowledge.listTasks(projectId, limit, offset, filters);
   }
 
-  listHistory(projectId: string, recordKind: KnowledgeHistoryEntry["recordKind"], recordId: string, limit: number, offset: number): KnowledgePage<KnowledgeHistoryEntry> {
-    return this.knowledge.listHistory(projectId, recordKind, recordId, limit, offset);
+  listHistory(projectId: string, recordKind: KnowledgeHistoryEntry["recordKind"], recordId: string, limit: number, offset: number, includeComparison = false): KnowledgePage<KnowledgeHistoryEntry> {
+    return this.knowledge.listHistory(projectId, recordKind, recordId, limit, offset, includeComparison);
   }
 
   createThread(thread: KnowledgeThread, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeThread> {

@@ -30,7 +30,7 @@ export function MemoryHistory({ token, principalId, projectId, recordId, changeV
   useEffect(() => {
     if (!open || settledKey === requestKey) return;
     const abort = new AbortController();
-    void knowledgeRequest<KnowledgePage<KnowledgeHistoryEntry>>(token, "history", { projectId, recordKind: "memory", recordId, offset }, abort.signal)
+    void knowledgeRequest<KnowledgePage<KnowledgeHistoryEntry>>(token, "history", { projectId, recordKind: "memory", recordId, offset, includeComparison: true }, abort.signal)
       .then(result => { if (!abort.signal.aborted) { setPage(result); setLoaded(true); setError(false); setSettledKey(requestKey); } })
       .catch(() => { if (!abort.signal.aborted) { focusPageErrorRef.current = focusPageRef.current; focusPageRef.current = false; setError(true); setSettledKey(requestKey); } });
     return () => abort.abort();

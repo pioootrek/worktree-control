@@ -681,6 +681,7 @@ test("memory stays readable when history fails and history can retry", async ({ 
   await expect(history.locator("summary").first()).toBeFocused();
   await history.getByText("Show changes").click();
   await expect(history.getByText("Use one SQLite owner", { exact: true })).toBeVisible();
+  expect(f.calls.filter(call => call.operation === "history").every(call => call.input.includeComparison === true)).toBe(true);
   expect(f.errors).toEqual([]);
 });
 
@@ -713,6 +714,33 @@ test("delayed history keeps the Memory reader usable and pagination focuses the 
   await expect(history.locator("[data-history-entry]")).toHaveCount(1);
   await expect(history.locator("[data-history-entry]")).toBeFocused();
   await expect(history.getByText("Recorded by principal recording-owner")).toBeVisible();
+  expect(f.errors).toEqual([]);
+});
+
+test("a delayed Memory read cannot replace a newly selected record or mutation target", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const f = await mountMemory(page);
+  await addMemory(page, "First memory");
+  await page.getByRole("button", { name: "Back to list" }).click();
+  await addMemory(page, "Second memory");
+  await page.getByRole("button", { name: "Back to list" }).click();
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+  await page.route("**/api/knowledge", async route => {
+    const request = route.request().postDataJSON();
+    if (request.operation !== "memory" || request.input.memoryId !== "memory-0") return route.fallback();
+    await firstGate;
+    try { await route.fallback(); } catch { /* Selection aborted the old request. */ }
+  });
+  await page.getByRole("link", { name: "First memory", exact: true }).click();
+  await expect(page.locator("[data-memory-detail]").getByText("Loading knowledge…")).toBeVisible();
+  await page.getByRole("button", { name: "Back to list" }).click();
+  await page.getByRole("link", { name: "Second memory", exact: true }).click();
+  await expect(page.locator("[data-memory-detail]").getByRole("heading", { name: "Second memory" })).toBeVisible();
+  releaseFirst();
+  await page.getByRole("button", { name: "Approve this revision" }).click();
+  await expect(page.getByText("Approved by owner, revision 2", { exact: true })).toBeVisible();
+  expect(f.memories.map(memory => memory.revision)).toEqual([1, 2]);
   expect(f.errors).toEqual([]);
 });
 

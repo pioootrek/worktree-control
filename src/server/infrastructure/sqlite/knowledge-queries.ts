@@ -444,9 +444,9 @@ export class KnowledgeQueries implements KnowledgeStore {
     const rows = (this.database.prepare("SELECT * FROM knowledge_tasks WHERE project_id = ? AND instr(knowledge_fold(title), knowledge_fold(?)) > 0 AND (? = 0 OR status IN ('open','in_progress','blocked')) AND (? IS NULL OR status = ?) AND (? IS NULL OR priority = ?) ORDER BY updated_at DESC, id LIMIT ? OFFSET ?").all(projectId, filters.query ?? "", filters.activeOnly ? 1 : 0, filters.status ?? null, filters.status ?? null, filters.priority ?? null, filters.priority ?? null, limit + 1, offset) as TaskRow[]).map(mapTask);
     return { ...this.page(rows, limit, offset), counts, total };
   }
-  listHistory(projectId: string, recordKind: KnowledgeHistoryEntry["recordKind"], recordId: string, limit: number, offset: number): KnowledgePage<KnowledgeHistoryEntry> {
+  listHistory(projectId: string, recordKind: KnowledgeHistoryEntry["recordKind"], recordId: string, limit: number, offset: number, includeComparison = false): KnowledgePage<KnowledgeHistoryEntry> {
     const rows = (this.database.prepare("SELECT * FROM knowledge_history WHERE project_id = ? AND record_kind = ? AND record_id = ? ORDER BY id LIMIT ? OFFSET ?").all(projectId, recordKind, recordId, limit + 1, offset) as HistoryRow[]).map((row) => ({ id: row.id, projectId: row.project_id, recordKind: row.record_kind, recordId: row.record_id, operation: row.operation, previousJson: row.previous_json, principalId: row.principal_id, authenticationMethod: row.authentication_method, revision: row.revision, createdAt: row.created_at }));
-    if (recordKind !== "memory" || rows.length === 0) return this.page(rows, limit, offset);
+    if (!includeComparison || recordKind !== "memory" || rows.length === 0) return this.page(rows, limit, offset);
     // The indexed page includes one lookahead event. Its previous_json is the
     // only authoritative after-snapshot for the last visible page row.
     const prior = this.database.prepare("SELECT id, revision FROM knowledge_history WHERE project_id=? AND record_kind='memory' AND record_id=? AND id<? ORDER BY id DESC LIMIT 1")
