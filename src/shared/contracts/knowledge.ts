@@ -105,6 +105,20 @@ export interface KnowledgeHistoryEntry {
   authenticationMethod: "owner_session" | "agent_token" | "worker_token" | "installation_token" | "none";
   revision: number;
   createdAt: string;
+  /** Read-only, verified Memory snapshots. Null means the comparison cannot be established. */
+  comparison?: { before: KnowledgeMemoryHistorySnapshot | null; after: KnowledgeMemoryHistorySnapshot } | null;
+}
+
+export interface KnowledgeMemoryHistorySnapshot {
+  title: string;
+  body: string;
+  category: "decision" | "question" | "note";
+  status: "active" | "archived" | "superseded";
+  tags: string[];
+  legacyId: string | null;
+  sources: import("./knowledge-memory").KnowledgeSource[];
+  approval: { revision: number; principalId: string; approvedAt: string } | null;
+  supersededBy: { id: string; revision: number } | null;
 }
 
 export interface KnowledgeMutationResult<T> {
@@ -120,6 +134,10 @@ export interface KnowledgePage<T> {
 export interface KnowledgePageOptions {
   limit?: number;
   offset?: number;
+}
+
+export interface KnowledgeHistoryOptions extends KnowledgePageOptions {
+  includeComparison?: boolean;
 }
 
 
@@ -159,7 +177,7 @@ export const knowledgeSchemas = {
   tasks: z.strictObject({ ...project, ...page, query, activeOnly: z.boolean().optional(), status: knowledgeStatus.optional(), priority: knowledgePriority.optional() }),
   task: z.strictObject({ ...project, taskId: id }),
   relations: z.strictObject({ ...record, ...page }),
-  history: z.strictObject({ ...record, recordKind: z.enum(["thread", "reply", "task", "memory", "project", "relation"]), ...page }),
+  history: z.strictObject({ ...record, recordKind: z.enum(["thread", "reply", "task", "memory", "project", "relation"]), ...page, includeComparison: z.boolean().optional() }),
   create_thread: z.strictObject({ ...project, ...write, title, body }),
   create_reply: z.strictObject({ ...project, ...write, threadId: id, body }),
   create_task: z.strictObject({ ...project, ...write, title, description: body, priority: knowledgePriority.optional() }),

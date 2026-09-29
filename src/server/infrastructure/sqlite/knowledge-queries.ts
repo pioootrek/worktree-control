@@ -19,6 +19,7 @@ import {
 import type { KnowledgeProject, KnowledgeProjectRuntimeLink } from "@/server/modules/identity";
 import type { KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
 import { readingFromImport } from "./knowledge-memory-reading";
+import { memoryHistoryComparison } from "./knowledge-history-projection";
 import { searchExcerpt } from "./knowledge-search-snippet";
 import { compactPreview, importedRecordId, importedTaskPreview, importedTaskTopic, verifiedThreadSourceSql } from "./knowledge-thread-presentation";
 
@@ -30,6 +31,9 @@ type RelationRow = { id: string; project_id: string; type: KnowledgeRelation["ty
 
 type MemoryRow = { id: string; project_id: string; title: string; body: string; category: KnowledgeMemory["category"]; tags_json: string; legacy_id: string | null; sources_json: string; status: KnowledgeMemory["status"]; superseded_by_json: string | null; approval_json: string | null; revision: number; created_by: string; created_at: string; updated_at: string };
 const mapMemory = (row: MemoryRow): KnowledgeMemory => ({ id: row.id, projectId: row.project_id, title: row.title, body: row.body, category: row.category, tags: JSON.parse(row.tags_json), legacyId: row.legacy_id, sources: JSON.parse(row.sources_json), status: row.status, supersededBy: row.superseded_by_json ? JSON.parse(row.superseded_by_json) : null, approval: row.approval_json ? JSON.parse(row.approval_json) : null, revision: row.revision, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at });
+const safeJson = (value: string | null): unknown => { if (!value || value.length > 262144) return undefined; try { return JSON.parse(value); } catch { return undefined; } };
+const safeArray = (value: string): unknown => safeJson(value);
+const safeObject = (value: string | null): unknown => value === null ? null : (safeJson(value) ?? undefined);
 
 type IdempotencyRow = { request_hash: string; result_json: string };
 
@@ -440,9 +444,27 @@ export class KnowledgeQueries implements KnowledgeStore {
     const rows = (this.database.prepare("SELECT * FROM knowledge_tasks WHERE project_id = ? AND instr(knowledge_fold(title), knowledge_fold(?)) > 0 AND (? = 0 OR status IN ('open','in_progress','blocked')) AND (? IS NULL OR status = ?) AND (? IS NULL OR priority = ?) ORDER BY updated_at DESC, id LIMIT ? OFFSET ?").all(projectId, filters.query ?? "", filters.activeOnly ? 1 : 0, filters.status ?? null, filters.status ?? null, filters.priority ?? null, filters.priority ?? null, limit + 1, offset) as TaskRow[]).map(mapTask);
     return { ...this.page(rows, limit, offset), counts, total };
   }
-  listHistory(projectId: string, recordKind: KnowledgeHistoryEntry["recordKind"], recordId: string, limit: number, offset: number): KnowledgePage<KnowledgeHistoryEntry> {
+  listHistory(projectId: string, recordKind: KnowledgeHistoryEntry["recordKind"], recordId: string, limit: number, offset: number, includeComparison = false): KnowledgePage<KnowledgeHistoryEntry> {
     const rows = (this.database.prepare("SELECT * FROM knowledge_history WHERE project_id = ? AND record_kind = ? AND record_id = ? ORDER BY id LIMIT ? OFFSET ?").all(projectId, recordKind, recordId, limit + 1, offset) as HistoryRow[]).map((row) => ({ id: row.id, projectId: row.project_id, recordKind: row.record_kind, recordId: row.record_id, operation: row.operation, previousJson: row.previous_json, principalId: row.principal_id, authenticationMethod: row.authentication_method, revision: row.revision, createdAt: row.created_at }));
-    return this.page(rows, limit, offset);
+    if (!includeComparison || recordKind !== "memory" || rows.length === 0) return this.page(rows, limit, offset);
+    // The indexed page includes one lookahead event. Its previous_json is the
+    // only authoritative after-snapshot for the last visible page row.
+    const prior = this.database.prepare("SELECT id, revision FROM knowledge_history WHERE project_id=? AND record_kind='memory' AND record_id=? AND id<? ORDER BY id DESC LIMIT 1")
+      .get(projectId, recordId, rows[0]!.id) as { id: number; revision: number } | undefined;
+    const current = rows.length <= limit
+      ? this.database.prepare("SELECT * FROM knowledge_memories WHERE project_id=? AND id=?").get(projectId, recordId) as MemoryRow | undefined
+      : undefined;
+    const items = rows.slice(0, limit).map((entry, index) => {
+      const predecessor = index ? rows[index - 1] : prior;
+      const continuous = predecessor ? predecessor.revision === entry.revision - 1 : entry.revision === 1 && entry.operation === "created";
+      const comparison = continuous ? memoryHistoryComparison(entry, rows[index + 1], current && {
+        id: current.id, projectId: current.project_id, revision: current.revision, title: current.title, body: current.body,
+        category: current.category, status: current.status, tags: safeArray(current.tags_json), legacyId: current.legacy_id, sources: safeArray(current.sources_json),
+        approval: safeObject(current.approval_json), supersededBy: safeObject(current.superseded_by_json),
+      }) : null;
+      return { ...entry, comparison };
+    });
+    return { items, nextOffset: rows.length > limit ? offset + limit : null };
   }
 
   findIdempotentResult<T>(operation: string, context: KnowledgeMutationContext): KnowledgeMutationResult<T> | null {

@@ -530,7 +530,7 @@ async function mountMemory(page: Page) {
   const memories: import("../../src/shared/contracts/knowledge-memory").KnowledgeMemory[] = [];
   const saved = new Map<string, unknown>();
   const requestHashes = new Map<string, string>();
-  const entries: unknown[] = [];
+  const entries: import("../../src/shared/contracts/knowledge").KnowledgeHistoryEntry[] = [];
   let loseResponse = false;
   await page.route("**/api/knowledge", async route => {
     const { operation, input } = route.request().postDataJSON();
@@ -538,7 +538,7 @@ async function mountMemory(page: Page) {
     const pageResult = (items: unknown[]) => ({ items, nextOffset: null });
     if (operation === "search") return route.fulfill({ json: pageResult(memories.filter(item => (input.includeInactive || item.status === "active") && (!input.query || `${item.title} ${item.body}`.includes(input.query))).map(item => ({ ...item, kind: "memory", excerpt: item.body.slice(0, 300), threadId: null }))) });
     if (operation === "memory") return route.fulfill({ json: record });
-    if (operation === "history") return route.fulfill({ json: pageResult(entries) });
+    if (operation === "history") { const matching = entries.filter(entry => entry.recordId === input.recordId); const offset = input.offset ?? 0; return route.fulfill({ json: { items: matching.slice(offset, offset + 25), nextOffset: matching.length > offset + 25 ? offset + 25 : null } }); }
     if (operation === "task_context" || operation === "export_context") {
       const task = fixture.records.find(item => item.id === input.taskId)!;
       const items = memories.filter(item => item.status === "active").map(item => ({ ...item, excerpt: item.body, bodyTruncated: false, sourceStates: item.sources.map(source => ({ source, currentRevision: 1, stale: false, inactive: false })) }));
@@ -557,14 +557,21 @@ async function mountMemory(page: Page) {
       value = { ...input, id: `memory-${memories.length}`, revision: 1, status: "active", approval: null, supersededBy: null, createdBy: "owner", createdAt: "2026-09-14", updatedAt: "2026-09-14" };
       memories.push(value!);
     } else {
-      entries.push({ id: entries.length, operation, revision: record!.revision + 1, previousJson: JSON.stringify(record), principalId: "owner" });
+      const before = structuredClone(record!);
       Object.assign(record!, { revision: record!.revision + 1, approval: operation === "supersede_memory" ? record!.approval : null });
       if (operation === "update_memory") Object.assign(record!, { title: input.title, body: input.body, category: input.category, tags: input.tags, legacyId: input.legacyId, sources: input.sources });
       if (operation === "approve_memory") record!.approval = { revision: record!.revision, principalId: "owner", approvedAt: "2026-09-14" };
       if (operation === "archive_memory") record!.status = "archived";
       if (operation === "restore_memory") record!.status = "active";
       if (operation === "supersede_memory") { record!.status = "superseded"; record!.supersededBy = { id: input.replacementId, revision: input.replacementRevision }; }
+      entries.push({ id: entries.length + 1, projectId: record!.projectId, recordKind: "memory", recordId: record!.id,
+        operation: operation === "approve_memory" ? "approved" : operation === "archive_memory" ? "archived" : operation === "supersede_memory" ? "superseded" : "updated",
+        revision: record!.revision, previousJson: JSON.stringify(before), principalId: "owner", authenticationMethod: "owner_session", createdAt: "2026-09-14T12:00:00Z",
+        comparison: { before: before as import("../../src/shared/contracts/knowledge-memory").KnowledgeMemory, after: structuredClone(record!) } });
     }
+    if (operation === "create_memory") entries.push({ id: entries.length + 1, projectId: value!.projectId, recordKind: "memory", recordId: value!.id,
+      operation: "created", revision: 1, previousJson: null, principalId: "owner", authenticationMethod: "owner_session", createdAt: "2026-09-14T12:00:00Z",
+      comparison: { before: null, after: structuredClone(value!) } });
     saved.set(input.idempotencyKey, structuredClone(value));
     requestHashes.set(input.idempotencyKey, JSON.stringify(input));
     if (loseResponse) { loseResponse = false; return route.abort("failed"); }
@@ -665,11 +672,75 @@ test("memory stays readable when history fails and history can retry", async ({ 
   await page.getByRole("link", { name: "History-safe memory", exact: true }).click();
   await expect(page.locator("[data-memory-detail]").getByText("Use one SQLite owner", { exact: true })).toBeVisible();
   const history = page.locator("details").filter({ has: page.locator("summary").filter({ hasText: "Revision history" }) });
-  await expect(history.locator("summary")).toContainText("Could not read knowledge.");
+  expect(f.calls.filter(call => call.operation === "history")).toHaveLength(0);
   await history.locator("summary").click();
+  await expect(history.getByRole("alert")).toContainText("Could not load history.");
   failHistory = false;
-  await page.getByRole("button", { name: "Refresh", exact: true }).last().click();
-  await expect(history.locator("summary")).not.toContainText("Could not read knowledge.");
+  await history.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(history.getByText("Created", { exact: true })).toBeVisible();
+  await expect(history.locator("summary").first()).toBeFocused();
+  await history.getByText("Show changes").click();
+  await expect(history.getByText("Use one SQLite owner", { exact: true })).toBeVisible();
+  expect(f.calls.filter(call => call.operation === "history").every(call => call.input.includeComparison === true)).toBe(true);
+  expect(f.errors).toEqual([]);
+});
+
+test("delayed history keeps the Memory reader usable and pagination focuses the new entry", async ({ page }) => {
+  const f = await mountMemory(page);
+  await addMemory(page, "Readable history");
+  await page.goBack();
+  const events = Array.from({ length: 26 }, (_, index) => ({ id: index + 1, projectId: "knowledge-only", recordKind: "memory", recordId: "memory-0",
+    operation: index === 0 ? "created" : "updated", previousJson: null, principalId: "recording-owner", authenticationMethod: "owner_session",
+    revision: index + 1, createdAt: "2026-09-29T12:00:00Z", comparison: null }));
+  let releaseHistory!: () => void;
+  const historyGate = new Promise<void>(resolve => { releaseHistory = resolve; });
+  await page.route("**/api/knowledge", async route => {
+    const request = route.request().postDataJSON();
+    if (request.operation !== "history") return route.fallback();
+    await historyGate;
+    const offset = request.input.offset ?? 0;
+    return route.fulfill({ json: { items: events.slice(offset, offset + 25), nextOffset: offset === 0 ? 25 : null } });
+  });
+  await page.getByRole("link", { name: "Readable history", exact: true }).click();
+  const reader = page.locator("[data-memory-detail]");
+  const history = reader.locator("details").filter({ has: page.locator("summary").filter({ hasText: "Revision history" }) });
+  await history.locator("summary").first().click();
+  await expect(history.getByRole("status")).toContainText("Loading history…");
+  await expect(reader.getByText("Use one SQLite owner", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Readable history", exact: true })).toBeVisible();
+  releaseHistory();
+  await expect(history.locator("[data-history-entry]")).toHaveCount(25);
+  await history.getByRole("button", { name: "Next page" }).click();
+  await expect(history.locator("[data-history-entry]")).toHaveCount(1);
+  await expect(history.locator("[data-history-entry]")).toBeFocused();
+  await expect(history.getByText("Recorded by principal recording-owner")).toBeVisible();
+  expect(f.errors).toEqual([]);
+});
+
+test("a delayed Memory read cannot replace a newly selected record or mutation target", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const f = await mountMemory(page);
+  await addMemory(page, "First memory");
+  await page.getByRole("button", { name: "Back to list" }).click();
+  await addMemory(page, "Second memory");
+  await page.getByRole("button", { name: "Back to list" }).click();
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+  await page.route("**/api/knowledge", async route => {
+    const request = route.request().postDataJSON();
+    if (request.operation !== "memory" || request.input.memoryId !== "memory-0") return route.fallback();
+    await firstGate;
+    try { await route.fallback(); } catch { /* Selection aborted the old request. */ }
+  });
+  await page.getByRole("link", { name: "First memory", exact: true }).click();
+  await expect(page.locator("[data-memory-detail]").getByText("Loading knowledge…")).toBeVisible();
+  await page.getByRole("button", { name: "Back to list" }).click();
+  await page.getByRole("link", { name: "Second memory", exact: true }).click();
+  await expect(page.locator("[data-memory-detail]").getByRole("heading", { name: "Second memory" })).toBeVisible();
+  releaseFirst();
+  await page.getByRole("button", { name: "Approve this revision" }).click();
+  await expect(page.getByText("Approved by owner, revision 2", { exact: true })).toBeVisible();
+  expect(f.memories.map(memory => memory.revision)).toEqual([1, 2]);
   expect(f.errors).toEqual([]);
 });
 

@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { DashboardQueryService } from "./modules/dashboard";
 import { EnvironmentService, redactProject } from "./modules/environments";
 import type { AuthenticatedPrincipal } from "./modules/identity";
-import { KnowledgeService, type KnowledgeHistoryEntry, type KnowledgePageOptions, type KnowledgeRecordKind, type KnowledgeTaskPriority, type KnowledgeTaskStatus, type KnowledgeWriteOptions } from "./modules/knowledge";
+import { KnowledgeService, type KnowledgeHistoryEntry, type KnowledgeHistoryOptions, type KnowledgePageOptions, type KnowledgeRecordKind, type KnowledgeTaskPriority, type KnowledgeTaskStatus, type KnowledgeWriteOptions } from "./modules/knowledge";
 import { leaseTokenHash, type OperationActor, ProjectLifecycle } from "./modules/lifecycle";
 import { RuntimeService } from "./modules/runtime";
 import { StatusService, type CompactProjectStatus, type CompactTestStatus, type CompactEnvelope } from "./modules/status";
@@ -124,7 +124,7 @@ export class ControlService {
     return this.requireKnowledge().relations(projectId, recordKind, recordId, actor, options);
   }
 
-  knowledgeHistory(projectId: string, recordKind: KnowledgeHistoryEntry["recordKind"], recordId: string, actor: AuthenticatedPrincipal, options?: KnowledgePageOptions) {
+  knowledgeHistory(projectId: string, recordKind: KnowledgeHistoryEntry["recordKind"], recordId: string, actor: AuthenticatedPrincipal, options?: KnowledgeHistoryOptions) {
     return this.requireKnowledge().history(projectId, recordKind, recordId, actor, options);
   }
 
