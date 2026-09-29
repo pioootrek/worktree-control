@@ -564,12 +564,12 @@ async function mountMemory(page: Page) {
       if (operation === "archive_memory") record!.status = "archived";
       if (operation === "restore_memory") record!.status = "active";
       if (operation === "supersede_memory") { record!.status = "superseded"; record!.supersededBy = { id: input.replacementId, revision: input.replacementRevision }; }
-      entries.push({ id: entries.length + 1, projectId: project.id, recordKind: "memory", recordId: record!.id,
+      entries.push({ id: entries.length + 1, projectId: record!.projectId, recordKind: "memory", recordId: record!.id,
         operation: operation === "approve_memory" ? "approved" : operation === "archive_memory" ? "archived" : operation === "supersede_memory" ? "superseded" : "updated",
         revision: record!.revision, previousJson: JSON.stringify(before), principalId: "owner", authenticationMethod: "owner_session", createdAt: "2026-09-14T12:00:00Z",
         comparison: { before: before as import("../../src/shared/contracts/knowledge-memory").KnowledgeMemory, after: structuredClone(record!) } });
     }
-    if (operation === "create_memory") entries.push({ id: entries.length + 1, projectId: project.id, recordKind: "memory", recordId: value!.id,
+    if (operation === "create_memory") entries.push({ id: entries.length + 1, projectId: value!.projectId, recordKind: "memory", recordId: value!.id,
       operation: "created", revision: 1, previousJson: null, principalId: "owner", authenticationMethod: "owner_session", createdAt: "2026-09-14T12:00:00Z",
       comparison: { before: null, after: structuredClone(value!) } });
     saved.set(input.idempotencyKey, structuredClone(value));
