@@ -23,6 +23,7 @@ for (const width of [390, 1440]) {
     }
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
+    if (width === 390) await expect(drawer.getByRole("button", { name: "Jump to log" })).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(drawer).toBeHidden();
     await expect(details).toBeFocused();
@@ -126,14 +127,16 @@ test("focus reveals the same test result when its desktop button moves offscreen
   await page.keyboard.press("Enter");
   const drawer = page.getByRole("dialog");
   await expect(drawer).toBeVisible();
+  await expect(drawer.getByRole("button", { name: "Jump to log" })).toBeFocused();
   await page.setViewportSize({ width: 1440, height: 320 });
   await page.evaluate(() => window.scrollTo(0, 0));
-  const desktopDetails = screen.getByRole("button", { name: "Result: target · main", exact: true });
-  const before = await desktopDetails.boundingBox();
+  const backgroundDetails = screen.locator("tbody tr").filter({ hasText: "target" }).locator("button[data-detail-identity]");
+  const before = await backgroundDetails.boundingBox();
   expect(before).not.toBeNull();
   expect(before!.y).toBeGreaterThan(320);
   await drawer.getByRole("button", { name: "Close", exact: true }).click();
   await expect(drawer).toBeHidden();
+  const desktopDetails = screen.getByRole("button", { name: "Result: target · main", exact: true });
   await expect(desktopDetails).toBeFocused();
   const after = await desktopDetails.boundingBox();
   expect(after).not.toBeNull();
@@ -156,6 +159,7 @@ test("active run opened from History returns focus to History after a breakpoint
   await page.keyboard.press("Enter");
   const drawer = page.getByRole("dialog");
   await expect(drawer).toBeVisible();
+  await expect(drawer.getByRole("button", { name: "Jump to log" })).toBeFocused();
   await page.setViewportSize({ width: 1440, height: 900 });
   await drawer.getByRole("button", { name: "Close", exact: true }).click();
   await expect(drawer).toBeHidden();
