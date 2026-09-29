@@ -1,6 +1,6 @@
 ---
 audience: "contributors designing and implementing dashboard interfaces"
-last_reviewed: "2026-09-28"
+last_reviewed: "2026-09-29"
 source_of_truth: "UI composition and interaction standards for new dashboard work"
 status: "active"
 ---
@@ -111,6 +111,11 @@ or a meaningful surviving list target.
 Returning focus belongs to closing a reader or navigating Back. Changing
 project or section clears the old return target and preserves focus on the
 control the user just operated.
+When responsive layouts have separate controls for the same record, restore
+focus to its currently visible control. If a refresh removes the record, use
+a meaningful fallback in the same mounted section; never focus a hidden or
+detached trigger or reach into another project. Check table actions at the
+breakpoint with the sidebar expanded, including intermediate laptop widths.
 
 Operating lists normally scroll the page. A desktop reader may deliberately
 have separate list/content scroll areas; consoles may own their scroll. Name

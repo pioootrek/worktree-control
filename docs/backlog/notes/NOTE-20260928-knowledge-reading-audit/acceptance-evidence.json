@@ -1,0 +1,61 @@
+{
+  "baselineMain": "4b318df02994c8abacdbb34548c1a808ad7220a7",
+  "applicationBuild": "c04eac239e370638dac96079d7920da787550ea9",
+  "date": "2026-09-29",
+  "viewports": [
+    [
+      1440,
+      913
+    ],
+    [
+      1440,
+      1000
+    ],
+    [
+      1366,
+      650
+    ],
+    [
+      390,
+      844
+    ],
+    [
+      320,
+      844
+    ]
+  ],
+  "zoom": {
+    "factor": 2,
+    "cssWidth": 683,
+    "cssHeight": 325,
+    "overflow": false,
+    "outputFocused": "Show output"
+  },
+  "search": {
+    "query": "dual-engine",
+    "replyId": "bb9ba1c395fefaf24fda0bfd0d916b67",
+    "backPreservesQueryAndFocus": true
+  },
+  "logs": {
+    "isolatedFailureExit": 7,
+    "matches": 2,
+    "keyboardNext": "2/2"
+  },
+  "history": {
+    "injected503Isolated": true,
+    "retrySucceeded": true
+  },
+  "issues": {
+    "focusOnBreakpoint": "BODY",
+    "fastEscape": "intermittent; normal delayed close passes",
+    "testTable1366": {
+      "width": 1125.55,
+      "container": 1100
+    },
+    "resourceTable1366": {
+      "width": 1100,
+      "container": 1100
+    }
+  },
+  "pageErrors": []
+}
