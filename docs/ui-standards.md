@@ -196,6 +196,28 @@ Resolve a bounded result page through authorized shared operations. Do not fetch
 all reply pages in the browser to find one target, or issue one HTTP request per
 relation row. Preserve raw content and export independently of display labels.
 
+## Revision history
+
+Show the recorded event date, actor, readable operation and revision before
+technical details. Distinguish recording/import identity from source authorship.
+Explain approval, its invalidation and supersession using the actual revision
+and verified transition; never infer an event solely from today's status.
+
+Compare the two states belonging to that event. A stored previous snapshot is
+not the current record, and a later edit cannot stand in for a historical after
+state. Validate project, record identity and consecutive revision boundaries;
+missing, invalid, oversized or discontinuous history has an explicit unavailable
+comparison. Keep raw original snapshots available as secondary details without
+rewriting stored history or exports for presentation.
+
+Use concise event rows with on-demand, named before/after fields. Stack the
+comparison on narrow screens, preserve whitespace and render content as text.
+Bound snapshot parsing and rendered output. Loading, paging or retrying history
+must not hold up or discard the record being read. Scope and cancel history
+requests independently; clear old content when identity/project/record changes.
+Passive refresh retains reading position and focus. Intentional paging has a
+stable focus destination after loading, canceled on navigation or error.
+
 ## Verification and exceptions
 
 Review actual content, including long names, empty/error states, foreign

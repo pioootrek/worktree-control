@@ -25,3 +25,7 @@ Use existing shadcn/Radix primitives and semantic tokens. Inspiration: [shadcn C
 Native lifecycle tests verify actual revision snapshots, approval invalidation, archive/restore/supersede, page-boundary successor, gaps/malformed snapshots/current mismatch, authorization and raw export preservation. Browser tests verify delayed/failed history still permits reading, scoped retry, switching/cancellation, pagination focus, safe literal content and before/after disclosures.
 
 Root captures baseline and final isolated-pilot screenshots, validates existing history unchanged and native fixture transitions through supported APIs. Desktop/mobile, PL/EN, dark/light, short viewport and actual 200% zoom are scoped visual acceptance. Managed check/build/UI run serially on final source; n8n all once, feedback classified/fixed and final-head green CI before merge. Broader GUI rework remains open.
+
+## Pilot baseline
+
+Before changes, supported API reads captured 21 existing Memory records and their four audit events privately for raw comparison. Imported notes without events remain explicit empty histories. [Before screenshot](history-screenshots/before.png) shows a native decision creation/approval as operation codes and raw previous JSON. A clearly marked isolated-pilot fixture has 28 native revisions (create, approve, edit/invalidate, archive, restore, further edits and supersede), plus a replacement Memory. It was created only through supported API operations and retains per-revision snapshots outside Git for later exact comparison.
