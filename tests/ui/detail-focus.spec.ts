@@ -15,7 +15,12 @@ for (const width of [390, 1440]) {
     await openSection(page, "Tests", width);
     const screen = page.locator("[data-tests-dashboard]");
     const details = screen.getByRole("button", { name: "Result: test · main", exact: true });
-    await details.click();
+    if (width === 390) {
+      await details.focus();
+      await page.keyboard.press("Enter");
+    } else {
+      await details.click();
+    }
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
     await page.keyboard.press("Escape");
@@ -104,4 +109,34 @@ test("test result actions remain visible with the expanded sidebar at 1366px", a
   expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(panelBounds!.x + panelBounds!.width);
   await details.click();
   await expect(page.getByRole("dialog")).toBeVisible();
+});
+
+test("focus reveals the same test result when its desktop button moves offscreen", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 320 });
+  const data = dashboardFixture();
+  data.projects[0].testRuns = Array.from({ length: 8 }, (_, index) => testRunFixture({
+    id: `result-${index}`, presetId: `node:test-${index}`, presetName: index === 7 ? "target" : `test-${index}`,
+    queuedAt: new Date(Date.parse("2026-01-01T12:00:00.000Z") - index * 60_000).toISOString(),
+  }));
+  await mountDashboard(page, data);
+  await openSection(page, "Tests", 390);
+  const screen = page.locator("[data-tests-dashboard]");
+  const mobileDetails = screen.getByRole("button", { name: "Result: target · main", exact: true });
+  await mobileDetails.focus();
+  await page.keyboard.press("Enter");
+  const drawer = page.getByRole("dialog");
+  await expect(drawer).toBeVisible();
+  await page.setViewportSize({ width: 1440, height: 320 });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const desktopDetails = screen.getByRole("button", { name: "Result: target · main", exact: true });
+  const before = await desktopDetails.boundingBox();
+  expect(before).not.toBeNull();
+  expect(before!.y).toBeGreaterThan(320);
+  await drawer.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(drawer).toBeHidden();
+  await expect(desktopDetails).toBeFocused();
+  const after = await desktopDetails.boundingBox();
+  expect(after).not.toBeNull();
+  expect(after!.y).toBeGreaterThanOrEqual(0);
+  expect(after!.y + after!.height).toBeLessThanOrEqual(320);
 });

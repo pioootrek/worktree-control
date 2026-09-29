@@ -14,5 +14,11 @@ export function restoreDetailFocus(scope: HTMLElement | null, target: DetailRetu
   const button = visibleButton(target.button, scope) ? target.button
     : Array.from(scope.querySelectorAll<HTMLButtonElement>("button[data-detail-identity]"))
       .find((candidate) => candidate.dataset.detailIdentity === target.identity && visibleButton(candidate, scope));
-  (button ?? scope.querySelector<HTMLInputElement>('input[type="search"]'))?.focus({ preventScroll: !!button });
+  if (!button) {
+    scope.querySelector<HTMLInputElement>('input[type="search"]')?.focus();
+    return;
+  }
+  const rect = button.getBoundingClientRect();
+  const onScreen = rect.top >= 0 && rect.left >= 0 && rect.bottom <= window.innerHeight && rect.right <= window.innerWidth;
+  button.focus({ preventScroll: onScreen });
 }
