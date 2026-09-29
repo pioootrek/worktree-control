@@ -105,6 +105,20 @@ export interface KnowledgeHistoryEntry {
   authenticationMethod: "owner_session" | "agent_token" | "worker_token" | "installation_token" | "none";
   revision: number;
   createdAt: string;
+  /** Read-only, verified Memory snapshots. Null means the comparison cannot be established. */
+  comparison?: { before: KnowledgeMemoryHistorySnapshot | null; after: KnowledgeMemoryHistorySnapshot } | null;
+}
+
+export interface KnowledgeMemoryHistorySnapshot {
+  title: string;
+  body: string;
+  category: "decision" | "question" | "note";
+  status: "active" | "archived" | "superseded";
+  tags: string[];
+  legacyId: string | null;
+  sources: import("./knowledge-memory").KnowledgeSource[];
+  approval: { revision: number; principalId: string; approvedAt: string } | null;
+  supersededBy: { id: string; revision: number } | null;
 }
 
 export interface KnowledgeMutationResult<T> {

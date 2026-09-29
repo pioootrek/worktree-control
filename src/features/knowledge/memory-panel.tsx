@@ -10,12 +10,13 @@ import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n/provider";
 import { knowledgeSourceHref as sourceHref } from "@/shared/contracts/knowledge-links";
 import type { KnowledgeMemory, KnowledgeSearchHit } from "@/shared/contracts/knowledge-memory";
-import type { KnowledgeHistoryEntry, KnowledgePage, KnowledgeInput, KnowledgeOperation } from "@/shared/contracts/knowledge";
+import type { KnowledgePage, KnowledgeInput, KnowledgeOperation } from "@/shared/contracts/knowledge";
 import { knowledgeRequest, KnowledgeClientError } from "./knowledge-client";
 import { MemoryEditor, knowledgeRetryKey } from "./memory-editor";
 import { fieldClass } from "./knowledge-editor";
 import type { KnowledgeTab } from "./use-knowledge";
 import { clearMemorySearch, defaultMemorySearch, memoryResultHref, memoryResultKey, memorySearchScope, readMemorySearch, writeMemorySearch, type MemorySearchState } from "./memory-navigation";
+import { MemoryHistory } from "./memory-history";
 
 export { knowledgeSourceHref as sourceHref } from "@/shared/contracts/knowledge-links";
 
@@ -66,9 +67,6 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
   const [pageLoaded, setPageLoaded] = useState(false);
   const [pageError, setPageError] = useState(false);
   const [record, setRecord] = useState<KnowledgeMemory | null>(null);
-  const [history, setHistory] = useState<KnowledgePage<KnowledgeHistoryEntry>>({ items: [], nextOffset: null });
-  const [historyError, setHistoryError] = useState(false);
-  const [historyOffset, setHistoryOffset] = useState(0);
   const [documentOpen, setDocumentOpen] = useState(false);
   const [editor, setEditor] = useState<"new" | "edit" | null>(null);
   const [version, setVersion] = useState(0);
@@ -105,21 +103,19 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
   }, [recordId, record, documentOpen, page.items, pageLoaded, returnFocusIdRef]);
   useEffect(() => {
     const abort = new AbortController();
-    void Promise.allSettled([
-      knowledgeRequest<KnowledgePage<KnowledgeSearchHit>>(token, "search", { projectId, query, offset, includeInactive: inactive, ...(tag ? { tag } : {}), ...(legacyId ? { legacyId } : {}), ...(kind ? { kind } : {}), ...(status ? { status } : {}) }, abort.signal),
-      recordId ? knowledgeRequest<KnowledgeMemory>(token, "memory", { projectId, memoryId: recordId }, abort.signal) : Promise.resolve(null),
-      recordId ? knowledgeRequest<KnowledgePage<KnowledgeHistoryEntry>>(token, "history", { projectId, recordKind: "memory", recordId, offset: historyOffset }, abort.signal) : Promise.resolve({ items: [], nextOffset: null }),
-    ]).then(([rows, memory, entries]) => {
-      if (abort.signal.aborted) return;
-      setPage(rows.status === "fulfilled" ? rows.value : { items: [], nextOffset: null });
-      setPageLoaded(true); setPageError(rows.status === "rejected");
-      setRecord(memory.status === "fulfilled" ? memory.value : null);
-      setError(current => memory.status === "rejected" ? "knowledge.loadFailed" : current === "knowledge.loadFailed" ? "" : current);
-      setHistory(entries.status === "fulfilled" ? entries.value : { items: [], nextOffset: null });
-      setHistoryError(entries.status === "rejected");
-    });
+    void knowledgeRequest<KnowledgePage<KnowledgeSearchHit>>(token, "search", { projectId, query, offset, includeInactive: inactive, ...(tag ? { tag } : {}), ...(legacyId ? { legacyId } : {}), ...(kind ? { kind } : {}), ...(status ? { status } : {}) }, abort.signal)
+      .then(rows => { if (!abort.signal.aborted) { setPage(rows); setPageLoaded(true); setPageError(false); } })
+      .catch(() => { if (!abort.signal.aborted) { setPage({ items: [], nextOffset: null }); setPageLoaded(true); setPageError(true); } });
     return () => abort.abort();
-  }, [token, projectId, recordId, query, tag, legacyId, kind, status, inactive, offset, historyOffset, version, changeVersion]);
+  }, [token, projectId, query, tag, legacyId, kind, status, inactive, offset, version, changeVersion]);
+  useEffect(() => {
+    if (!recordId) return;
+    const abort = new AbortController();
+    void knowledgeRequest<KnowledgeMemory>(token, "memory", { projectId, memoryId: recordId }, abort.signal)
+      .then(memory => { if (!abort.signal.aborted) { setRecord(memory); setError(current => current === "knowledge.loadFailed" ? "" : current); } })
+      .catch(() => { if (!abort.signal.aborted) { setRecord(null); setError("knowledge.loadFailed"); } });
+    return () => abort.abort();
+  }, [token, projectId, recordId, version, changeVersion]);
 
   const mutate = async (operation: "approve_memory" | "archive_memory" | "restore_memory" | "supersede_memory") => {
     if (!record) return;
@@ -208,7 +204,7 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
         {record.status === "active" && <div className="space-y-2"><Label htmlFor="memory-replacement">{t("knowledge.replacementId")}</Label><Input id="memory-replacement" value={replacement} onChange={e => setReplacement(e.target.value)} /><Button variant="outline" disabled={!writable || !replacement.trim() || busy || Boolean(pending)} onClick={() => void mutate("supersede_memory")}>{t("knowledge.supersede")}</Button></div>}
         <details className="border-t border-border pt-4"><summary className="cursor-pointer font-medium">{t("knowledgeLayout.moreDetails")}</summary><div className="space-y-3 pt-3"><p className="text-sm text-muted-foreground">{t("knowledge.attribution", { author: record.createdBy, revision: record.revision })}</p><p className="break-all text-xs text-muted-foreground">{record.id}</p><p className="break-words text-sm">{record.tags.join(", ")}{record.legacyId ? ` · ${record.legacyId}` : ""}</p><h4 className="font-medium">{t("knowledge.sources")}</h4><ul className="space-y-2">{record.sources.map((source, index) => <li className="break-all text-sm" key={index}>{source.kind === "repository" ? `${source.sourceId} · ${source.repository} · ${source.commit}:${source.path}` : source.kind === "reply" ? `${source.id} · r${source.revision}` : <a className="underline" href={sourceHref(projectId, source)}>{source.kind === "external" ? source.label : `${source.id} · r${source.revision}`}</a>}</li>)}</ul>{record.supersededBy && <a className="block break-all underline" href={sourceHref(projectId, { kind: "memory", ...record.supersededBy })}>{t("knowledge.replacement")}: {record.supersededBy.id} · r{record.supersededBy.revision}</a>}</div></details>
         {record.reading?.kind === "imported-note" && record.reading.bodyFormat !== "text" && <details className="border-t border-border pt-4"><summary className="cursor-pointer font-medium">{t("knowledge.originalPayload")}</summary><pre className="mt-3 max-h-80 max-w-full overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-3 text-xs">{record.body}</pre></details>}
-        <details><summary>{t("knowledge.history")}{historyError && <span className="ml-2 text-sm text-destructive">{t("knowledge.loadFailed")}</span>}</summary>{historyError && <div className="space-y-2"><p role="alert" className="text-sm text-destructive">{t("knowledge.loadFailed")}</p><Button variant="outline" onClick={() => setVersion(value => value + 1)}>{t("knowledge.refresh")}</Button></div>}<ul className="space-y-2">{history.items.map(entry => <li className="break-all text-xs" key={entry.id}>{entry.operation} · r{entry.revision} · {entry.principalId}<pre className="max-h-40 overflow-auto whitespace-pre-wrap">{entry.previousJson}</pre></li>)}</ul>{(historyOffset > 0 || history.nextOffset !== null) && <div className="flex gap-2"><Button variant="outline" disabled={!historyOffset} onClick={() => setHistoryOffset(Math.max(0, historyOffset - 25))}>{t("knowledge.previous")}</Button><Button variant="outline" disabled={history.nextOffset === null} onClick={() => setHistoryOffset(history.nextOffset!)}>{t("knowledge.nextPage")}</Button></div>}</details>
+        <MemoryHistory key={`${principalId}:${projectId}:${recordId}`} token={token} principalId={principalId} projectId={projectId} recordId={recordId} changeVersion={changeVersion + version} />
         </>}
         </div> : error === "knowledge.loadFailed" ? <div className="space-y-3"><p role="alert" className="text-sm text-destructive">{t("knowledge.loadFailed")}</p><Button variant="outline" onClick={() => setVersion(value => value + 1)}>{t("knowledge.refresh")}</Button></div> : <p role="status" className="text-sm text-muted-foreground">{t("knowledge.loading")}</p>}
         </div>
