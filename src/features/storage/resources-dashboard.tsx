@@ -16,6 +16,7 @@ import { ResourceMonitor } from "@/features/runtime/resource-monitor";
 import { RuntimeBadge } from "@/features/runtime/runtime-badge";
 import { useI18n } from "@/i18n/provider";
 import type { ProjectSnapshot } from "@/shared/contracts";
+import { restoreDetailFocus, type DetailReturnTarget } from "@/features/detail-return-focus";
 import { bytes, cacheBlock, currentMetrics, runtimeActive, storageRows, sumKnown, type StorageRow } from "./resource-summary";
 import { WorktreeStoragePanel } from "./worktree-storage-panel";
 
@@ -34,7 +35,8 @@ export function ResourcesDashboard({ snapshots, aggregate, mutate, setError }: {
   const [page, setPage] = useState(0);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selection, setSelection] = useState<{ kind: string; key: string } | null>(null);
-  const focusReturn = useRef<HTMLButtonElement | null>(null);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const focusReturn = useRef<DetailReturnTarget | null>(null);
   const rows = storageRows(snapshots);
   const active = snapshots.filter(runtimeActive);
   const measured = snapshots.filter(currentMetrics);
@@ -70,10 +72,10 @@ export function ResourcesDashboard({ snapshots, aggregate, mutate, setError }: {
   };
   const block = selectedRow ? cacheBlock(selectedRow) : null;
   const blockText = block === "active" ? t("storage.stopBeforeDelete") : block === "reserved" ? t("storage.releaseBeforeDelete") : block === "scanning" ? t("storage.waitBeforeDelete") : block === "tests" ? t("resourceView.testsBlock") : block === "missing" ? t("resourceView.missingBlock") : null;
-  const details = (kind: string, key: string, name: string) => <Button size="sm" variant="ghost" aria-label={t("resourceView.detailsFor", { name })} onClick={(event) => { focusReturn.current = event.currentTarget; setSelection({ kind, key }); }}>{t("row.details")}</Button>;
+  const details = (kind: string, key: string, name: string) => <Button size="sm" variant="ghost" data-detail-identity={JSON.stringify([kind, key])} aria-label={t("resourceView.detailsFor", { name })} onClick={(event) => { focusReturn.current = { button: event.currentTarget, identity: event.currentTarget.dataset.detailIdentity! }; setSelection({ kind, key }); }}>{t("row.details")}</Button>;
   const range = (items: typeof diskRows) => items.slice(currentPage * 10, currentPage * 10 + 10);
 
-  return <section data-resources-dashboard className="min-w-0 space-y-5" aria-label={t("dashboard.navResources")}>
+  return <section ref={sectionRef} data-resources-dashboard className="min-w-0 space-y-5" aria-label={t("dashboard.navResources")}>
     <p className="text-sm text-muted-foreground">{t("resourceView.lead")}</p>
     <div className="grid grid-cols-2 gap-2 lg:grid-cols-4" data-resource-metrics>{metrics.map(({ label, icon: Icon, value, hint, action, selected }) => <Button key={label} variant="outline" aria-pressed={selected} className={`h-auto min-h-20 w-full flex-col items-start justify-start gap-1 whitespace-normal px-3 py-2 text-left ${selected ? "border-primary/60 bg-primary/10" : ""}`} onClick={action}><span className="flex items-center gap-1.5 text-xs text-muted-foreground"><Icon className="size-4 shrink-0" aria-hidden />{label}</span><span className="text-base font-semibold tabular-nums sm:text-lg">{value}</span><span className="text-xs font-normal leading-snug text-muted-foreground">{hint}</span></Button>)}</div>
     <p className="text-sm text-muted-foreground">{active.length ? t("resourceView.activeServers", { count: active.length }) : t("resourceView.noServers")}</p>
@@ -106,7 +108,7 @@ export function ResourcesDashboard({ snapshots, aggregate, mutate, setError }: {
       </TabsContent>
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-muted-foreground" aria-live="polite">{t("testView.results", { from: count ? currentPage * 10 + 1 : 0, to: Math.min(count, currentPage * 10 + 10), count })}</p><nav aria-label={t("resourceView.pages")} className="flex items-center gap-2"><Button size="sm" variant="outline" disabled={!currentPage} onClick={() => setPage(currentPage - 1)}>{t("project.previousPage")}</Button><span className="text-xs">{currentPage + 1} / {pages}</span><Button size="sm" variant="outline" disabled={currentPage + 1 >= pages} onClick={() => setPage(currentPage + 1)}>{t("project.nextPage")}</Button></nav></div>
     </Tabs>
-    <Sheet open={!!selectedSnapshot} onOpenChange={(open) => { if (!open) setSelection(null); }}><SheetContent closeLabel={t("common.close")} className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl" onCloseAutoFocus={(event) => { event.preventDefault(); focusReturn.current?.focus(); }}>
+    <Sheet open={!!selectedSnapshot} onOpenChange={(open) => { if (!open) setSelection(null); }}><SheetContent closeLabel={t("common.close")} className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl" onCloseAutoFocus={(event) => { event.preventDefault(); restoreDetailFocus(sectionRef.current, focusReturn.current); focusReturn.current = null; }}>
       {selectedSnapshot ? <><SheetHeader className="pr-12"><SheetTitle className="break-all">{selectedSnapshot.project.name}{selectedRow ? ` · ${selectedRow.worktree.branch ?? "detached"}` : ""}</SheetTitle><SheetDescription className="break-all">{selectedRow?.worktree.path ?? selectedServer?.runtime.worktreePath ?? t("resourceView.noServers")}</SheetDescription></SheetHeader><div className="space-y-4 px-4 pb-6">
         {selectedRow ? <WorktreeStoragePanel key={selectedRow.key} selected={selectedRow.storage} blockedReason={blockText} readOnly={selectedRow.worktree.prunable} refresh={(path) => request(selectedRow, path)} deleteCache={(path) => request(selectedRow, path, true)} /> : <ResourceMonitor resources={selectedServer?.runtime.resources ?? EMPTY_RESOURCES} />}
       </div></> : null}

@@ -15,6 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { Mutate } from "@/features/control-client";
 import { useI18n } from "@/i18n/provider";
 import type { ProjectSnapshot } from "@/shared/contracts";
+import { restoreDetailFocus, type DetailReturnTarget } from "@/features/detail-return-focus";
 import { TestRunDialog } from "./test-run-dialog";
 import { latestTestResults, testDuration, testResults, type TestResult } from "./test-results-model";
 
@@ -44,7 +45,8 @@ export function TestsDashboard({ snapshots, aggregate, mutate, setError, now }: 
   const [cancelling, setCancelling] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
-  const returnFocus = useRef<HTMLButtonElement | null>(null);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const returnFocus = useRef<DetailReturnTarget | null>(null);
   const outputRef = useRef<HTMLPreElement | null>(null);
   const rows = testResults(snapshots);
   const latest = latestTestResults(rows);
@@ -91,13 +93,13 @@ export function TestsDashboard({ snapshots, aggregate, mutate, setError, now }: 
     { label: t("testView.failed"), count: latest.filter((r) => r.failed).length, icon: AlertTriangle, selected: view === "latest" && result === "failures", action: () => metric("latest", "failures") },
     { label: t("testView.unverified"), hint: t("testView.outdatedHint"), count: latest.filter((r) => r.freshness !== "current").length, icon: ShieldQuestion, selected: view === "latest" && source === "unverified", action: () => metric("latest", ALL, "unverified") },
   ];
-  const table = (entries: TestResult[]) => <><div className="space-y-2 xl:hidden">
+  const table = (entries: TestResult[]) => <><div className="space-y-2 min-[1440px]:hidden">
     {entries.length ? entries.map((row) => <article key={row.run.id} data-test-result className="rounded-lg border p-3">
       <div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="break-words font-medium">{row.run.presetName}</p><p className="break-all text-xs text-muted-foreground">{aggregate ? `${row.snapshot.project.name} · ` : ""}{row.run.worktreeBranch ?? row.run.worktreePath}</p></div><Badge variant="outline" className={row.failed ? "shrink-0 text-destructive" : "shrink-0"}>{t(`testPhase.${row.result}`)}</Badge></div>
       <p className="mt-2 text-xs text-muted-foreground">{t("testView.atRun")}: {atRun(row)}</p><p className="text-xs text-muted-foreground">{t("testView.currentCode")}: {relevance(row)}{reason(row) ? ` · ${reason(row)}` : ""}</p>
-      <div className="mt-2 flex items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{new Date(row.run.queuedAt).toLocaleString(locale)}</span><div className="flex gap-1"><Button variant="outline" size="sm" aria-label={t("testView.detailsFor", { name: row.run.presetName, branch: row.run.worktreeBranch ?? "detached" })} onClick={(event) => { returnFocus.current = event.currentTarget; setRefreshError(null); setSelectedId(row.run.id); }}>{t("row.details")}</Button>{row.active && <Button variant="ghost" size="icon-sm" aria-label={t("tests.cancel")} disabled={cancelling !== null} onClick={() => void cancel(row.run.id)}><Square aria-hidden /></Button>}</div></div>
+      <div className="mt-2 flex items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{new Date(row.run.queuedAt).toLocaleString(locale)}</span><div className="flex gap-1"><Button variant="outline" size="sm" data-detail-identity={JSON.stringify([row.snapshot.project.id, row.run.id])} aria-label={t("testView.detailsFor", { name: row.run.presetName, branch: row.run.worktreeBranch ?? "detached" })} onClick={(event) => { returnFocus.current = { button: event.currentTarget, identity: event.currentTarget.dataset.detailIdentity! }; setRefreshError(null); setSelectedId(row.run.id); }}>{t("row.details")}</Button>{row.active && <Button variant="ghost" size="icon-sm" aria-label={t("tests.cancel")} disabled={cancelling !== null} onClick={() => void cancel(row.run.id)}><Square aria-hidden /></Button>}</div></div>
     </article>) : <p className="rounded-lg border p-4 text-sm text-muted-foreground">{t("testView.noResults")}</p>}
-  </div><div className="hidden min-w-0 overflow-hidden rounded-lg border xl:block">
+  </div><div className="hidden min-w-0 overflow-hidden rounded-lg border min-[1440px]:block">
     <Table className="min-w-[960px]">
       <TableHeader><TableRow>{aggregate ? <TableHead>{t("aggregate.project")}</TableHead> : null}<TableHead>{t("tests.preset")}</TableHead><TableHead>{t("testView.worktree")}</TableHead><TableHead>{t("testView.result")}</TableHead><TableHead>{t("testView.source")}</TableHead><TableHead>{t("testView.date")}</TableHead><TableHead>{t("testView.duration")}</TableHead><TableHead className="text-right">{t("row.actions")}</TableHead></TableRow></TableHeader>
       <TableBody>{entries.map((row) => <TableRow key={row.run.id}>
@@ -108,11 +110,11 @@ export function TestsDashboard({ snapshots, aggregate, mutate, setError, now }: 
         <TableCell><p className="text-xs text-muted-foreground">{t("testView.atRun")}: {atRun(row)}</p><Badge variant="secondary" className={row.freshness === "current" ? "text-success-foreground" : "text-muted-foreground"}>{t("testView.currentCode")}: {relevance(row)}</Badge>{reason(row) ? <p className="mt-1 text-xs text-muted-foreground">{reason(row)}</p> : null}</TableCell>
         <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{new Date(row.run.queuedAt).toLocaleString(locale === "pl" ? "pl-PL" : "en-GB", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</TableCell>
         <TableCell className="whitespace-nowrap font-mono text-xs">{testDuration(row.run, now)}</TableCell>
-        <TableCell><div className="flex justify-end gap-1"><Button variant="ghost" size="sm" aria-label={t("testView.detailsFor", { name: row.run.presetName, branch: row.run.worktreeBranch ?? "detached" })} onClick={(event) => { returnFocus.current = event.currentTarget; setRefreshError(null); setSelectedId(row.run.id); }}>{t("row.details")}</Button>{row.active ? <Button variant="ghost" size="icon-sm" aria-label={t("tests.cancel")} disabled={cancelling !== null} onClick={() => void cancel(row.run.id)}><Square aria-hidden /></Button> : null}</div></TableCell>
+        <TableCell><div className="flex justify-end gap-1"><Button variant="ghost" size="sm" data-detail-identity={JSON.stringify([row.snapshot.project.id, row.run.id])} aria-label={t("testView.detailsFor", { name: row.run.presetName, branch: row.run.worktreeBranch ?? "detached" })} onClick={(event) => { returnFocus.current = { button: event.currentTarget, identity: event.currentTarget.dataset.detailIdentity! }; setRefreshError(null); setSelectedId(row.run.id); }}>{t("row.details")}</Button>{row.active ? <Button variant="ghost" size="icon-sm" aria-label={t("tests.cancel")} disabled={cancelling !== null} onClick={() => void cancel(row.run.id)}><Square aria-hidden /></Button> : null}</div></TableCell>
       </TableRow>)}{!entries.length ? <TableRow><TableCell colSpan={aggregate ? 8 : 7} className="h-24 text-center text-muted-foreground">{t("testView.noResults")}</TableCell></TableRow> : null}</TableBody>
     </Table>
   </div></>;
-  return <section data-tests-dashboard className="min-w-0 space-y-5" aria-label={t("tests.tab")}>
+  return <section ref={sectionRef} data-tests-dashboard className="min-w-0 space-y-5" aria-label={t("tests.tab")}>
     <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-muted-foreground">{t("testView.lead")}</p><TestRunDialog snapshots={snapshots} mutate={mutate} setError={setError} /></div>
     <div className="grid grid-cols-2 gap-2 lg:grid-cols-4" data-test-metrics>{metrics.map(({ label, count, icon: Icon, action, hint, selected }) => {
       const button = <Button variant="outline" aria-pressed={selected} className={`h-auto min-h-14 w-full justify-between gap-2 whitespace-normal px-3 py-2 text-left ${selected ? "border-primary/60 bg-primary/10" : ""}`} onClick={action}><span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"><Icon className="size-4 shrink-0" aria-hidden />{label}</span><span className="font-semibold tabular-nums">{count}</span></Button>;
@@ -138,7 +140,7 @@ export function TestsDashboard({ snapshots, aggregate, mutate, setError, now }: 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-muted-foreground" aria-live="polite">{t("testView.results", { from: filtered.length ? currentPage * 10 + 1 : 0, to: Math.min(filtered.length, currentPage * 10 + 10), count: filtered.length })}</p><nav aria-label={t("testView.resultPages")} className="flex items-center gap-2"><Button size="sm" variant="outline" disabled={!currentPage} onClick={() => setPage(currentPage - 1)}>{t("project.previousPage")}</Button><span className="text-xs">{currentPage + 1} / {pages}</span><Button size="sm" variant="outline" disabled={currentPage + 1 >= pages} onClick={() => setPage(currentPage + 1)}>{t("project.nextPage")}</Button></nav></div>
     </Tabs>
     <Sheet open={!!selected} onOpenChange={(open) => { if (!open) setSelectedId(null); }}>
-      <SheetContent closeLabel={t("common.close")} className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl" onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus.current?.focus(); }}>
+      <SheetContent closeLabel={t("common.close")} className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl" onCloseAutoFocus={(event) => { event.preventDefault(); restoreDetailFocus(sectionRef.current, returnFocus.current); returnFocus.current = null; }}>
         {selected ? <><SheetHeader className="pr-12"><SheetTitle className="break-all">{selected.run.presetName}</SheetTitle><SheetDescription>{t("testView.detailsDescription")}</SheetDescription></SheetHeader><div className="space-y-5 px-4 pb-6">
           <p className="break-all text-sm">{selected.snapshot.project.name} · {selected.run.worktreeBranch ?? "detached"}</p>
           <div className="space-y-2"><p>{t("testView.result")}: <Badge variant="outline" className={selected.failed ? "text-destructive" : selected.result === "passed" ? "text-success-foreground" : ""}>{t(`testPhase.${selected.result}`)}</Badge>{selected.run.exitCode !== null ? <span className="ml-2 text-sm text-muted-foreground">{t("tests.exitCode", { code: selected.run.exitCode })}</span> : null}</p>{selected.run.logs.length ? <Button variant="outline" size="sm" onClick={() => { outputRef.current?.scrollIntoView({ block: "start" }); outputRef.current?.focus(); }}>{t("testView.jumpToOutput")}</Button> : null}<p>{t("testView.atRun")}: {atRun(selected)}</p><p>{t("testView.currentCode")}: <Badge variant="secondary" className={selected.freshness === "current" ? "text-success-foreground" : ""}>{t(`testView.source.${selectedCodeState}`)}</Badge></p>{selected.reasons.length ? <div className="space-y-1 text-sm text-muted-foreground"><p className="font-medium text-foreground">{t("testView.why")}</p><ul className="list-disc space-y-1 pl-5">{selected.reasons.map((item) => <li key={item}>{t(`testView.reasonDetail.${item}`)}</li>)}</ul></div> : null}<p className="text-xs text-muted-foreground">{t("testView.freshnessNote")}</p></div>
