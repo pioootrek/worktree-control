@@ -1,0 +1,52 @@
+{
+  "head": "f4235878ffd63ad6945cf655a61def1ade2b90ab",
+  "api": {
+    "passed": true,
+    "unchangedThreads": 13,
+    "unchangedReplies": 94,
+    "targetOffset": 25,
+    "targetPageLength": 6,
+    "targetFound": true,
+    "missingTargetFound": false,
+    "wrongThreadTargetFound": false,
+    "sourceLink": "?view=knowledge&knowledgeProject=k7a-worktree-switcher&knowledgeTab=discussions&record=e85d9ed3-3e11-4a11-a7be-121f19f4bd36&reply=0a77aaec-b76d-4771-be62-759e8ad39840",
+    "relationDestination": {
+      "kind": "task",
+      "id": "1273e8fa-3416-4e5e-8e3e-d5a0e736beab",
+      "title": "QA nawigacji: sprawdź powrót do wyników",
+      "status": "open"
+    }
+  },
+  "browser": {
+    "head": "f4235878ffd63ad6945cf655a61def1ade2b90ab",
+    "mobileSearch": {
+      "text": "…ence ports do not block K1 acceptance. Owner-session recovery and usable agent/token/grant management remain required; PostgreSQL, dual-engine tests and an ORM change are deferred.",
+      "client": 100,
+      "scroll": 100,
+      "clamp": "none",
+      "overflow": false
+    },
+    "returnFocus": "reply:bb9ba1c395fefaf24fda0bfd0d916b67",
+    "previousFocus": "5f2c0eab-3e6e-4ea3-a1c4-e4b50f9bae65",
+    "nextFocus": "01d67222-e215-49d6-8f58-91d2e8965c42",
+    "zoom": {
+      "metrics": {
+        "offsetX": 0,
+        "offsetY": 0,
+        "pageX": 0,
+        "pageY": 0,
+        "clientWidth": 683,
+        "clientHeight": 325,
+        "scale": 1,
+        "zoom": 2
+      },
+      "overflow": false
+    },
+    "zoomReturn": {
+      "url": "/?view=knowledge&knowledgeProject=k7a-worktree-switcher&knowledgeTab=memory&memoryPrincipal=installation&memoryProject=k7a-worktree-switcher&memoryQuery=qa-nawigacja-late-hit&memoryKind=reply&memoryResult=reply%3A0a77aaec-b76d-4771-be62-759e8ad39840",
+      "focus": "reply:0a77aaec-b76d-4771-be62-759e8ad39840",
+      "overflow": false
+    },
+    "pageErrors": []
+  }
+}

@@ -1,25 +1,49 @@
-# Knowledge navigation progress
+# Knowledge navigation delivery
 
-Stage authorized on 2026-09-29; Sol high implements application/tests in isolated `rework/knowledge-navigation`. [PR #65](https://github.com/pioootrek/worktree-switcher/pull/65) is open. Root owns managed verification, isolated-pilot QA, review triage and delivery. This report is in progress; no merge is claimed.
+[PR #65](https://github.com/pioootrek/worktree-switcher/pull/65) merged on 2026-09-29 at 07:42 UTC as `cad32a2cea5b155ad20da8f2b570902ef3d3aa71`. Sol high implemented application/tests on isolated `rework/knowledge-navigation`; root performed managed verification, isolated-pilot QA, review triage and delivery. The final tested head was `f4235878ffd63ad6945cf655a61def1ade2b90ab`.
 
-## Verified checkpoint
+## Result and standards
 
-`c50ca3e02dec1afc3ef2bcf79a68fbdd0c2d750a`: managed check passed (509 application tests, 7 resource tests, lint and types; run `c53a3635-2561-48ea-a036-96ec85908282`), build passed (`eacae04d-1958-486e-9da5-89e048a26e32`), UI passed 122/122 (`3e0a2a31-9af8-48a6-b638-91980c3467f5`). All three runs had clean matching source observations. Earlier draft check failures were lint/type issues; the first UI run had 120 pass/1 fail because an alert selector also matched Next.js's route announcer, corrected before this checkpoint.
+Relations show the destination title, kind, direction and available status after the reading content. Unavailable destinations are explicit. Reply search shows its discussion title and a bounded excerpt containing the literal match, then opens the exact reply's page with focus and highlighting. Native links retain reply identity and scoped search state; Back to results restores query, filters, page and result focus. Manual reply pagination preserves the reader and relation page and focuses the first newly loaded reply. Passive refresh does not steal focus.
 
-## Pilot evidence and pending fixes
+The standards in `docs/ui-standards.md` now cover titled links, source identity, bounded match excerpts, narrow-screen visibility, navigation intent and cancellation. Existing shadcn primitives remain in use, informed by the [official Item composition](https://ui.shadcn.com/docs/components/radix/item). No new UI package or preset is introduced.
 
-The existing 13 thread summaries and 94 replies, their raw fields/order and stored relation fields matched the pre-change API snapshot. Search for `dual-engine` identifies its imported discussion; a clearly marked QA thread with 31 native replies verifies server location of reply 30 at offset 25. Its linked task and memory preserve source revisions, with the reply source URL retaining reply identity. Fixtures were created through supported operations only in the authorized isolated pilot copy; no production data changed.
+## Final verification
 
-Live Chromium at 1440x1000 and 320x740 confirmed exact reply focus, readable relations in both directions, reload, new-tab return to query/result focus and Expand/Show list. No page errors or horizontal overflow observed. Two live-QA findings remain in implementation: the two-line search excerpt clamp hides the match at 320px, and paging to a boundary disables the clicked pager and leaves focus on BODY. Active searches will show the full bounded excerpt; intentional pagination will focus the new page's first reply, with cancellation on navigation/error and no passive refresh focus theft.
+All managed runs below observed clean source matching the final head:
 
-## Review
+| Check | Result | Run |
+| --- | --- | --- |
+| Check | Lint/types, 509 application tests and 7 resource tests passed | `ed966fc3-a92c-46cc-bb02-29f16e9661c1` |
+| Build | Passed | `5dd9a657-0afb-448b-8fa0-62ee1ddffea0` |
+| Browser suite | 123/123 passed | `7ad1229e-617f-41ca-b42f-460732f8d3cf` |
 
-n8n `all` dispatched once. Claude found that clearing a reply target via full selection reset unmounted the reader and reset relation pagination; fixed in `c50ca3e`, together with root's SPA Back focus correction. Claude's permission mode denied GitHub publication; its completed finding was read from the log, not reposted under the reviewer's name.
+[GitHub Verify 36537074101](https://github.com/pioootrek/worktree-switcher/actions/runs/36537074101) passed all four jobs on the final head: check-build, package smoke on Node 22/24 and package service lifecycle. All published review threads were resolved before merge.
 
-Kimi published one performance concern about imported-topic verification on task/memory-only searches. Thread `PRRT_kwDOUINt8M6m_472` remains open pending measured verification and an appropriate outcome. Codex published no additional actionable findings. Current review count: one recovered Claude fix, one published Kimi concern under investigation; no deferred items.
+The final supported-API comparison preserved all raw fields/order for 13 existing thread summaries and 94 replies, plus stored relation fields. A clearly marked native QA thread with 31 replies verified target reply 30 at offset 25, missing/wrong-thread targets, named relations and a reply source link preserving reply identity/revision. Fixtures were created only in the authorized isolated pilot through supported operations. No production data was changed.
 
-## Boundaries
+Final live Chromium checks covered desktop 1440x1000, mobile 320x740, EN/light 1366x650 and actual browser zoom 200% (CSS viewport 683x325). Search/return focus, page-two targets, Expand/Show list and manual pagination focus passed. No page errors or horizontal overflow were observed. Reload/new-tab return was also checked during the preceding candidate and is covered by the final automated suite. [Compact API/browser evidence](navigation-evidence.json) records the final observations.
 
-Current SQLite relation endpoints remain task/thread/reply; memory relation rendering is presentation coverage, not a new persistence capability. Memory sources and search destinations remain supported. No schema or content-format migration is introduced. Broader GUI rework and audit-history presentation remain open.
+## Screenshots
 
-Preview currently serves the tested checkpoint from the navigation worktree with isolated pilot data; browser closed and claim released. Further source edits do not imply an updated preview until managed rebuild/restart.
+The three `before-*` screenshots in `navigation-screenshots/` are the pre-change baseline. Nine final screenshots were inspected:
+
+- [Search desktop](navigation-screenshots/after-search-desktop.png) and [search mobile](navigation-screenshots/after-search-mobile.png): late match remains visible within the bounded excerpt.
+- [Reader mobile](navigation-screenshots/after-reader-mobile.png), [page two](navigation-screenshots/after-page-two.png) and [pagination focus](navigation-screenshots/after-page-focus-mobile.png).
+- [Named relations](navigation-screenshots/after-relations.png).
+- [English/light short viewport](navigation-screenshots/after-en-short.png).
+- [200% zoom reader](navigation-screenshots/after-zoom.png) and [return to results](navigation-screenshots/after-zoom-results.png).
+
+## Review and fixes
+
+n8n `all` dispatched once using the dispatch-code-review workflow. Claude completed analysis but its permission mode denied GitHub publication; its finding was recovered from the log without impersonating the reviewer. Clearing a target reply had reset the entire reader and relation page. Sol fixed this and root's associated SPA Back focus issue.
+
+Kimi published one concern about unrelated imported-topic verification during task/memory-only searches. A controlled SQLite fixture with correctly registered UDF counters and a positive control measured two topic and four hash calls for the old task-only query; specialized final task/memory reads perform zero such calls. This is fixture evidence, not a production latency benchmark. Sol fixed the query composition, root replied with evidence, and the thread was resolved. Codex published no additional actionable findings. Outcome: two review concerns fixed, none deferred or classified as false positives, zero unresolved published threads.
+
+Live QA also caught a two-line excerpt clamp hiding the match at 320px and focus falling to BODY when the clicked pager became disabled. Both were fixed before final verification. Active searches expose the full bounded excerpt; intentional paging moves focus after loading and cancels pending intent on selection/error.
+
+## Boundaries and preview
+
+Current SQLite relation endpoints remain task/thread/reply. Memory relation rendering is presentation coverage, not a new persistence capability; memory sources and search destinations remain supported. Stored records, import payloads, export revisions and database schema are unchanged. This was scoped Chromium QA, not a full accessibility audit, cross-browser certification or production-scale performance benchmark. Broader GUI work, including history presentation, remains open in `RWK-20260928-gui-usability`.
+
+The pilot preview was rebuilt and explicitly restarted on final `f423587`, then the browser was closed and the project claim released. The managed server remains running on the navigation worktree with isolated data. Access credentials are kept outside the repository.
