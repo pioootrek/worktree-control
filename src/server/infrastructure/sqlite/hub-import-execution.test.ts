@@ -11,7 +11,7 @@ import { AuthenticationService } from "@/server/modules/authentication";
 import { calculateHubImportPlanHash, executeHubImport, exportKnowledgeProject, importKnowledgeProject, KnowledgeService, type HubImportMapping, type HubImportPlan } from "@/server/modules/knowledge";
 import { SqliteStateStore } from "./sqlite-state-store";
 import { KnowledgeQueries, replyReadSql } from "./knowledge-queries";
-import { importedTaskTopic, verifiedThreadSourceSql } from "./knowledge-thread-presentation";
+import { importedRecordId, importedTaskTopic, verifiedThreadSourceSql } from "./knowledge-thread-presentation";
 
 const roots:string[]=[];
 afterEach(()=>roots.splice(0).forEach(root=>rmSync(root,{recursive:true,force:true})));
@@ -48,10 +48,17 @@ describe("K6b Hub import execution",()=>{
     expect(original.threads[0]).not.toHaveProperty("presentation");
     const db=new Database(join(f.root,"state.sqlite3"));
     const queries=new KnowledgeQueries(db);
-    let topicCalls=0;
-    db.function("knowledge_import_topic",{deterministic:true},(...args:unknown[])=>{
-      topicCalls+=1;return importedTaskTopic(args[0],args[1],args[2]);
+    let topicCalls=0, hashCalls=0;
+    db.function("knowledge_import_topic",{deterministic:true},(value:unknown,legacyId:unknown,sourcePath:unknown)=>{
+      topicCalls+=1;return importedTaskTopic(value,legacyId,sourcePath);
     });
+    db.function("knowledge_import_record_id",{deterministic:true},(projectId:unknown,sourceId:unknown,sourcePath:unknown,kind:unknown)=>{
+      hashCalls+=1;return importedRecordId(projectId,sourceId,sourcePath,kind);
+    });
+    expect(queries.searchKnowledge("topics",25,0,{kind:"thread",query:"storage"}).items.map(item=>item.id)).toContain(imported.id);
+    expect(topicCalls).toBeGreaterThan(0);
+    expect(hashCalls).toBeGreaterThan(0);
+    topicCalls=0;hashCalls=0;
     // Temporary diagnostic: keep this SQL byte-for-byte equivalent to the
     // pre-branch search when comparing SQLite's actual UDF invocations.
     const legacyTaskSearch=`WITH verified AS (${verifiedThreadSourceSql(false)}), records AS (
@@ -70,12 +77,14 @@ describe("K6b Hub import execution",()=>{
       AND instr(knowledge_fold(title || char(10) || raw_title || char(10) || body || char(10) || coalesce((SELECT group_concat(value, char(10)) FROM json_each(tags_json)), '') || char(10) || coalesce(legacy_id, '')), knowledge_fold(@query)) > 0
       ORDER BY updatedAt DESC, kind, id LIMIT @limit OFFSET @offset`;
     db.prepare(legacyTaskSearch).all({projectId:"topics",limit:26,offset:0,kind:"task",query:"storage",status:null,legacyId:null,tag:null,inactive:0});
-    const oldTopicCalls=topicCalls;topicCalls=0;
+    const oldTopicCalls=topicCalls,oldHashCalls=hashCalls;topicCalls=0;hashCalls=0;
     expect(queries.searchKnowledge("topics",25,0,{kind:"task",query:"storage"}).items).toHaveLength(1);
     expect(topicCalls).toBe(0);
+    expect(hashCalls).toBe(0);
     expect(queries.searchKnowledge("topics",25,0,{kind:"memory",query:"storage"}).items).toHaveLength(0);
     expect(topicCalls).toBe(0);
-    process.stdout.write(`knowledge search topic UDF calls, legacy task=${oldTopicCalls}, scoped task/memory=${topicCalls}\n`);
+    expect(hashCalls).toBe(0);
+    process.stdout.write(`knowledge search UDF calls, legacy task topic=${oldTopicCalls} hash=${oldHashCalls}, scoped task/memory topic=${topicCalls} hash=${hashCalls}\n`);
     const queryPlan=db.prepare(`EXPLAIN QUERY PLAN WITH verified AS (${verifiedThreadSourceSql(true)}) SELECT * FROM verified`)
       .all({projectId:"topics",id:imported.id}) as Array<{detail:string}>;
     expect(queryPlan.some(step=>step.detail.includes("sqlite_autoindex_knowledge_threads_1") && step.detail.includes("id=?"))).toBe(true);
