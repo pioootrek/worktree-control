@@ -156,7 +156,7 @@ describe("K6b Hub import execution",()=>{
     expect(second.items.at(-1)?.historicalImport).toBeUndefined();
     expect(f.store.getReply("timeline",first.items[10]!.id)?.historicalImport).toEqual(first.items[10]?.historicalImport);
     expect(f.store.exportKnowledgeProject("timeline")).toEqual(before);
-    execute(f.store,f.identity,f.owner,{plan:atCommit(report,"f".repeat(40)),targetProjectId:"timeline",targetProjectName:"Timeline"});
+    execute(f.store,f.identity,f.owner,{plan:atCommit(report,"f".repeat(40)),targetProjectId:"timeline",targetProjectName:"Timeline",expectedTargetRevision:f.store.getKnowledgeProject("timeline")!.revision});
     const afterRepeat=f.store.listReplies("timeline",thread.id,40,0).items;
     expect(afterRepeat.map(reply=>reply.body)).toEqual([...Array.from({length:31},(_,index)=>`Source ${index}`),"New answer"]);
     expect(afterRepeat[10]).toMatchObject({id:first.items[10]!.id,revision:2,createdAt:first.items[10]!.createdAt});
