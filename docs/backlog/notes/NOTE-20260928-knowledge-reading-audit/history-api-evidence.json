@@ -1,0 +1,67 @@
+{
+  "passed": true,
+  "unchangedMemories": 21,
+  "unchangedHistory": 4,
+  "fixtureRevisions": 28,
+  "pages": [
+    {
+      "count": 25,
+      "nextOffset": 25
+    },
+    {
+      "count": 3,
+      "nextOffset": null
+    }
+  ],
+  "operations": [
+    {
+      "revision": 1,
+      "operation": "created",
+      "beforeStatus": null,
+      "afterStatus": "active",
+      "approvalBefore": null,
+      "approvalAfter": null
+    },
+    {
+      "revision": 2,
+      "operation": "approved",
+      "beforeStatus": "active",
+      "afterStatus": "active",
+      "approvalBefore": null,
+      "approvalAfter": 2
+    },
+    {
+      "revision": 3,
+      "operation": "updated",
+      "beforeStatus": "active",
+      "afterStatus": "active",
+      "approvalBefore": 2,
+      "approvalAfter": null
+    },
+    {
+      "revision": 4,
+      "operation": "archived",
+      "beforeStatus": "active",
+      "afterStatus": "archived",
+      "approvalBefore": null,
+      "approvalAfter": null
+    },
+    {
+      "revision": 5,
+      "operation": "updated",
+      "beforeStatus": "archived",
+      "afterStatus": "active",
+      "approvalBefore": null,
+      "approvalAfter": null
+    },
+    {
+      "revision": 28,
+      "operation": "superseded",
+      "beforeStatus": "active",
+      "afterStatus": "superseded",
+      "approvalBefore": null,
+      "approvalAfter": null
+    }
+  ],
+  "allSnapshotsMatched": true
+}

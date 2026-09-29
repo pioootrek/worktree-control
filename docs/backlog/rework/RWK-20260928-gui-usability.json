@@ -11,7 +11,8 @@
       62,
       63,
       64,
-      65
+      65,
+      66
     ],
     "related_ids": [
       "NOTE-20260928-knowledge-reading-audit",
@@ -138,6 +139,11 @@
       "author": "agent:codex",
       "date": "2026-09-29",
       "text": "Owner accepted readable Memory history stage after PR65. Sol high on isolated rework/knowledge-history from1639776; dated actor/operation/revision list, verified adjacent-revision comparison and independent lazy history loading. Contract and limits in history-plan.md. Root handles standards, pilot, managed tests, n8n and green merge."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-29",
+      "text": "Memory history PR #66 merged as d2982d0 after green Verify36550926195 on cc070fb. Sol delivered readable dated events, validated adjacent-revision comparison, secondary raw JSON and independent lazy history loading. Comparison opt-in preserves ordinary agent/API shape and work. Managed check515 application+7 resource tests/build passed on identical app code c04eac2; final UI125/125 passed on cc070fb. Pilot preserved21 existing memories/four raw events and matched all28 native fixture revision snapshots; eight final screenshots include320px, EN/light short and actual200%zoom. Kimi/Codex no findings; Claude publication denied, two log findings classified1fix(opt-in payload) and1false positive(keyed selection plus regression); zero unresolved published threads. Standards/report/evidence in history-progress.md. Preview remains running on history worktree with claim released. Broader GUI scope stays open."
     }
   ],
   "priority": "now",
