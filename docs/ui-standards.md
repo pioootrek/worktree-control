@@ -212,7 +212,10 @@ rewriting stored history or exports for presentation.
 
 Use concise event rows with on-demand, named before/after fields. Stack the
 comparison on narrow screens, preserve whitespace and render content as text.
-Bound snapshot parsing and rendered output. Loading, paging or retrying history
+Bound snapshot parsing and rendered output. Expensive display projections are
+opt-in: ordinary agent/API history reads retain raw response shape and avoid
+copying whole before/after bodies unless explicitly requested.
+Loading, paging or retrying history
 must not hold up or discard the record being read. Scope and cancel history
 requests independently; clear old content when identity/project/record changes.
 Passive refresh retains reading position and focus. Intentional paging has a
