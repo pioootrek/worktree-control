@@ -8,11 +8,12 @@
     "evidence": "evidence.json",
     "foundation_progress": "foundation-progress.md",
     "implementation_plan": "implementation-plan.md",
-    "implementation_status": "PRs #58–64 merged. Owner accepted relations/search destinations on 2026-09-29; Sol high designing and implementing on isolated rework/knowledge-navigation from 125b644. See navigation-plan.md. Broader GUI rework remains open.",
+    "implementation_status": "PRs #58–64 merged. PR #65 relations/search navigation in review; c50ca3e check/build/122 UI passed, live pilot found two follow-ups and Kimi performance concern remains under verification. See navigation-progress.md. Broader GUI rework remains open.",
     "layout_direction": "layout-direction.md",
     "layout_owner_direction": "Owner authorized whole-layout rework and standards on 2026-09-28; implementation delegated to Sol on worktrees.",
     "markdown_decision": "Owner accepted imported Markdown as optional document attachments; no changes to description format or Knowledge data model. This discussion is resolved.",
     "navigation_plan": "navigation-plan.md",
+    "navigation_progress": "navigation-progress.md",
     "owner_feedback": "owner-feedback.md",
     "owner_feedback_status": "Four owner-annotated screenshots identify unused memory space, dense discussion list, weak content hierarchy, marked project/tab navigation and misaligned backlog filters. Concrete layout solutions remain agent proposals.",
     "reader_return_followup": "reader-return-followup.md",
@@ -163,7 +164,8 @@
     "navigation-plan.md",
     "navigation-screenshots/before-search.png",
     "navigation-screenshots/before-destination.png",
-    "navigation-screenshots/before-relations.png"
+    "navigation-screenshots/before-relations.png",
+    "navigation-progress.md"
   ],
   "id": "NOTE-20260928-knowledge-reading-audit",
   "last_reviewed": "2026-09-29",

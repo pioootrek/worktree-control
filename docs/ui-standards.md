@@ -181,12 +181,16 @@ an explicit unavailable state instead of a guessed route or stale title.
 Useful relationships belong after the main content, outside technical metadata.
 
 A reply search result identifies its discussion and shows bounded context around
-the matched text when the body matched. Opening it reaches the exact reply,
+the matched text when the body matched. Do not visually clamp an active search
+excerpt in a way that hides its match on narrow screens. Opening it reaches the exact reply,
 including the correct page, with visible selection and one-time focus/scroll.
 Links, modified clicks, reload and browser history retain that destination.
 Passive refresh must not repeatedly move the reader. Keep return-to-results
 query, filters, page and originating focus scoped to the identity and project;
 clear obsolete reply/document targets on unrelated navigation.
+User-requested reply pagination moves focus to the new page's first reply after
+loading, without resetting the record or unrelated relation pagination. Cancel
+that pending focus when navigation changes or the request fails.
 
 Resolve a bounded result page through authorized shared operations. Do not fetch
 all reply pages in the browser to find one target, or issue one HTTP request per
