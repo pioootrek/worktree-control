@@ -703,7 +703,7 @@ test("delayed history keeps the Memory reader usable and pagination focuses the 
   });
   await page.getByRole("link", { name: "Readable history", exact: true }).click();
   const reader = page.locator("[data-memory-detail]");
-  const history = reader.locator("details").filter({ has: reader.locator("summary").filter({ hasText: "Revision history" }) });
+  const history = reader.locator("details").filter({ has: page.locator("summary").filter({ hasText: "Revision history" }) });
   await history.locator("summary").first().click();
   await expect(history.getByRole("status")).toContainText("Loading history…");
   await expect(reader.getByText("Use one SQLite owner", { exact: true })).toBeVisible();
