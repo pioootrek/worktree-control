@@ -15,10 +15,12 @@ export function MemoryHistory({ token, principalId, projectId, recordId, changeV
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState<KnowledgePage<KnowledgeHistoryEntry>>({ items: [], nextOffset: null });
   const [offset, setOffset] = useState(0);
-  const [loading, setLoading] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const requestKey = JSON.stringify([token, principalId, projectId, recordId, offset, changeVersion, retry]);
+  const [settledKey, setSettledKey] = useState("");
+  const loading = open && settledKey !== requestKey;
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
-  const [retry, setRetry] = useState(0);
   const listRef = useRef<HTMLOListElement>(null);
   const summaryRef = useRef<HTMLElement>(null);
   const retryRef = useRef<HTMLDivElement>(null);
@@ -26,14 +28,13 @@ export function MemoryHistory({ token, principalId, projectId, recordId, changeV
   const focusRetryRef = useRef(false);
   const focusPageErrorRef = useRef(false);
   useEffect(() => {
-    if (!open) return;
+    if (!open || settledKey === requestKey) return;
     const abort = new AbortController();
-    setLoading(true);
     void knowledgeRequest<KnowledgePage<KnowledgeHistoryEntry>>(token, "history", { projectId, recordKind: "memory", recordId, offset }, abort.signal)
-      .then(result => { if (!abort.signal.aborted) { setPage(result); setLoaded(true); setError(false); setLoading(false); } })
-      .catch(() => { if (!abort.signal.aborted) { focusPageErrorRef.current = focusPageRef.current; focusPageRef.current = false; setError(true); setLoading(false); } });
+      .then(result => { if (!abort.signal.aborted) { setPage(result); setLoaded(true); setError(false); setSettledKey(requestKey); } })
+      .catch(() => { if (!abort.signal.aborted) { focusPageErrorRef.current = focusPageRef.current; focusPageRef.current = false; setError(true); setSettledKey(requestKey); } });
     return () => abort.abort();
-  }, [open, token, principalId, projectId, recordId, offset, changeVersion, retry]);
+  }, [open, settledKey, requestKey, token, projectId, recordId, offset]);
   useEffect(() => {
     if (open && error && !loading && (focusPageErrorRef.current || focusRetryRef.current)) { focusPageErrorRef.current = false; focusRetryRef.current = false; retryRef.current?.querySelector<HTMLElement>("button")?.focus(); }
     if (!open || loading || !loaded || error) return;
