@@ -144,6 +144,11 @@
       "author": "agent:codex",
       "date": "2026-09-29",
       "text": "Memory history PR #66 merged as d2982d0 after green Verify36550926195 on cc070fb. Sol delivered readable dated events, validated adjacent-revision comparison, secondary raw JSON and independent lazy history loading. Comparison opt-in preserves ordinary agent/API shape and work. Managed check515 application+7 resource tests/build passed on identical app code c04eac2; final UI125/125 passed on cc070fb. Pilot preserved21 existing memories/four raw events and matched all28 native fixture revision snapshots; eight final screenshots include320px, EN/light short and actual200%zoom. Kimi/Codex no findings; Claude publication denied, two log findings classified1fix(opt-in payload) and1false positive(keyed selection plus regression); zero unresolved published threads. Standards/report/evidence in history-progress.md. Preview remains running on history worktree with claim released. Broader GUI scope stays open."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-29",
+      "text": "Owner accepted whole-GUI acceptance after PR66. Current25 screenshots and report in acceptance-report.md: major reading/diagnostic flows pass; confirmed responsive detail-focus loss and1366 Tests action clipping delegated to Sol high in fix/gui-detail-focus from4b318df. Document full-text search, replacement-by-ID ergonomics and minor residuals remain explicit follow-ups. Managed verification/n8n/green merge pending."
     }
   ],
   "priority": "now",
