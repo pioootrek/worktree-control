@@ -749,6 +749,14 @@ function applyMigrations(database: Database.Database, fresh: boolean): void {
     })();
   }
 
+  if (!hasMigration(database, 27)) {
+    database.transaction(() => {
+      database.exec(`CREATE INDEX IF NOT EXISTS knowledge_import_sources_target
+        ON knowledge_import_sources(project_id, target_kind, target_id)`);
+      recordMigration(database, 27);
+    })();
+  }
+
 }
 
 /** Frozen copy of the installation principal ID so migration 25 never follows later code changes. */

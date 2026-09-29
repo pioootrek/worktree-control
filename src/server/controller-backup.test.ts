@@ -13,7 +13,7 @@ describe("controller backup", () => {
     const directory=root(), databasePath=join(directory,"state.sqlite3"), backupPath=join(directory,"backup");
     const store=new SqliteStateStore(databasePath); store.addProject({name:"Before",repositoryPath:join(directory,"repo"),port:3456,executable:"pnpm",args:["dev"]});
     const manifest=await createControllerBackup(store, backupPath, { applicationVersion:"test-version", attachmentDirectory:join(directory,"attachments") });
-    expect(manifest).toMatchObject({formatVersion:1,applicationVersion:"test-version",database:{file:"state.sqlite3",schemaVersion:26}});
+    expect(manifest).toMatchObject({formatVersion:1,applicationVersion:"test-version",database:{file:"state.sqlite3",schemaVersion:27}});
     expect(existsSync(join(backupPath,"state.sqlite3"))).toBe(true); store.close();
     const changed=new SqliteStateStore(databasePath); changed.addProject({name:"After",repositoryPath:join(directory,"repo-2"),port:3457,executable:"pnpm",args:["dev"]}); changed.close();
     restoreControllerBackup(backupPath,databasePath);

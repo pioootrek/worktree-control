@@ -45,6 +45,7 @@ export interface KnowledgeReply {
     sourceAuthor: string | null;
     sourceDate: string | null;
     sourceDateStatus: "valid" | "missing" | "invalid";
+    sourceOrder: "verified" | "unverified";
   };
 }
 
