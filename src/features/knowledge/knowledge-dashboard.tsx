@@ -1,7 +1,7 @@
 "use client";
 
 import { RecordAttachments } from "./record-attachments";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -24,6 +24,9 @@ function replyTime(value: string, locale: string, fallback: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? fallback : new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
+const subscribeLocation = (listener: () => void) => { window.addEventListener("popstate", listener); return () => window.removeEventListener("popstate", listener); };
+const locationSnapshot = () => window.location.search;
+const serverLocationSnapshot = () => "";
 
 export function KnowledgeDashboard({ token, setToken, access, change }: { token: string; setToken: (value: string) => void; access: "installation" | "open" | "scoped"; change: { version: number; projectIds: string[] } }) {
   const { t, locale } = useI18n();
@@ -48,7 +51,6 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
   const [notice, setNotice] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [readerExpanded, setReaderExpanded] = useState(false);
-  const [returnSearchHref, setReturnSearchHref] = useState("");
   const returnFocusIdRef = useRef("");
   const focusedMobileRecordRef = useRef({ id: "", projectId: "", tab: "" });
   const focusReaderAfterSaveRef = useRef(false);
@@ -59,10 +61,9 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
   const detailRef = useRef<HTMLDivElement>(null);
   const model = useKnowledge(token, change);
   const { selection, identity, projects } = model;
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    setReturnSearchHref(identity && selection.tab !== "memory" ? memoryReturnHref(params, identity.principal.id, selection.projectId) : "");
-  }, [identity, selection]);
+  const locationSearch = useSyncExternalStore(subscribeLocation, locationSnapshot, serverLocationSnapshot);
+  const returnSearchHref = identity && selection.tab !== "memory"
+    ? memoryReturnHref(new URLSearchParams(locationSearch), identity.principal.id, selection.projectId) : "";
   const detail = model.detail?.id === selection.recordId && model.detail.projectId === selection.projectId
     && ((selection.tab === "backlog" && "description" in model.detail) || (selection.tab === "discussions" && "body" in model.detail)) ? model.detail : null;
   useEffect(() => {
