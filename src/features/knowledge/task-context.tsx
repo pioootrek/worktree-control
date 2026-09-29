@@ -69,7 +69,9 @@ export function TaskContext({ token, projectId, taskId, changeVersion }: { token
           <p className="whitespace-pre-wrap break-words text-sm">{item.excerpt}</p>
           {item.bodyTruncated && <p className="text-sm">{t("knowledge.truncated")}</p>}
           <ul>{item.sourceStates.map((state, index) => <li className="break-all text-xs" key={index}>
-            {state.source.kind === "repository" ? `${state.source.sourceId} · ${state.source.commit}:${state.source.path}` : <a className="underline" href={state.href}>{state.source.kind === "external" ? state.source.label : `${state.source.id} · r${state.source.revision}`}</a>}
+            {state.source.kind === "repository" ? `${state.source.sourceId} · ${state.source.commit}:${state.source.path}` : state.href
+              ? <a className="underline" href={state.href}>{state.source.kind === "external" ? state.source.label : `${state.source.id} · r${state.source.revision}`}</a>
+              : <span>{t("knowledge.sourceUnavailable")}{"id" in state.source ? `: ${state.source.id}` : ""}</span>}
             {(state.stale || state.inactive) && ` · ${t("knowledge.sourceStale")}`}
           </li>)}</ul>
         </div>)}
