@@ -22,7 +22,7 @@ import { readingFromImport } from "./knowledge-memory-reading";
 import { compactPreview, importedRecordId, importedTaskPreview, importedTaskTopic, verifiedThreadSourceSql } from "./knowledge-thread-presentation";
 
 type ThreadRow = { id: string; project_id: string; title: string; body: string; revision: number; created_by: string; created_at: string; updated_at: string; display_title?: string | null; source_preview?: string | null; reply_count?: number };
-type ReplyRow = { id: string; project_id: string; thread_id: string; body: string; revision: number; created_by: string; created_at: string; updated_at: string; source_count: number; source_ordinal: number | null; source_author: unknown; source_date: unknown };
+type ReplyRow = { id: string; project_id: string; thread_id: string; body: string; revision: number; created_by: string; created_at: string; updated_at: string; source_count: number; source_ordinal: number | null; source_attribution_verified: number; source_author: unknown; source_date: unknown };
 type TaskRow = { id: string; project_id: string; title: string; description: string; status: KnowledgeTask["status"]; priority: KnowledgeTask["priority"]; revision: number; created_by: string; created_at: string; updated_at: string };
 type HistoryRow = { id: number; project_id: string; record_kind: KnowledgeHistoryEntry["recordKind"]; record_id: string; operation: KnowledgeHistoryEntry["operation"]; previous_json: string | null; principal_id: string; authentication_method: KnowledgeHistoryEntry["authenticationMethod"]; revision: number; created_at: string };
 type RelationRow = { id: string; project_id: string; type: KnowledgeRelation["type"]; source_kind: KnowledgeRelation["sourceKind"]; source_id: string; target_kind: KnowledgeRelation["targetKind"]; target_id: string; revision: number; created_by: string; created_at: string };
@@ -47,7 +47,12 @@ function historicalDate(value: unknown): Pick<NonNullable<KnowledgeReply["histor
   return { sourceDate, sourceDateStatus: Number.isNaN(Date.parse(sourceDate)) ? "invalid" : "valid" };
 }
 const mapReply = (row: ReplyRow): KnowledgeReply => ({ id: row.id, projectId: row.project_id, threadId: row.thread_id, body: row.body, revision: row.revision, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at,
-  ...(row.source_count ? { historicalImport: { sourceAuthor: typeof row.source_author === "string" && row.source_author.trim() ? row.source_author : null, ...historicalDate(row.source_date), sourceOrder: row.source_ordinal === null ? "unverified" as const : "verified" as const } } : {}) });
+  ...(row.source_count ? { historicalImport: {
+    sourceAttribution: row.source_attribution_verified ? "verified" as const : "unverified" as const,
+    sourceAuthor: row.source_attribution_verified && typeof row.source_author === "string" && row.source_author.trim() ? row.source_author : null,
+    ...(row.source_attribution_verified ? historicalDate(row.source_date) : {sourceDate:null,sourceDateStatus:"unverified" as const}),
+    sourceOrder: row.source_ordinal === null ? "unverified" as const : "verified" as const,
+  } } : {}) });
 
 // One scoped query serves list and direct reads. The target index makes every
 // provenance lookup exact, including extra rows with unrelated source paths.
@@ -104,6 +109,7 @@ export const replyReadSql = (byId: boolean): string => `WITH reply_rows AS MATER
   SELECT id,project_id,thread_id,body,revision,created_by,created_at,updated_at,
     count(provenance_id) source_count,
     CASE WHEN count(provenance_id)=1 AND count(verified_ordinal)=1 THEN max(verified_ordinal) END source_ordinal,
+    CASE WHEN count(provenance_id)=1 AND max(verified_attribution)=1 THEN 1 ELSE 0 END source_attribution_verified,
     CASE WHEN count(provenance_id)=1 AND max(verified_attribution)=1
       THEN max(CASE WHEN json_valid(original_payload_json)
         THEN CASE WHEN json_type(original_payload_json,'$.author')='text'

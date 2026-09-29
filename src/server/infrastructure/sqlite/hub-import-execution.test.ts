@@ -119,7 +119,7 @@ describe("K6b Hub import execution",()=>{
     expect(f.store.listRelations("fidelity","task",active.id,25,0).items).toEqual(expect.arrayContaining([expect.objectContaining({type:"relates_to",sourceId:active.id,targetId:completed.id})]));
     expect(f.store.listRelations("fidelity","task",followup.id,25,0).items).toEqual(expect.arrayContaining([expect.objectContaining({type:"derived_from",sourceId:followup.id,targetId:completed.id})]));
     const thread=f.store.listThreads("fidelity",25,0).items[0]!,reply=f.store.listReplies("fidelity",thread.id,25,0).items[0]!;
-    expect(reply.historicalImport).toEqual({sourceAuthor:"Ada",sourceDate:"2026-09-13",sourceDateStatus:"valid",sourceOrder:"verified"});
+    expect(reply.historicalImport).toEqual({sourceAttribution:"verified",sourceAuthor:"Ada",sourceDate:"2026-09-13",sourceDateStatus:"valid",sourceOrder:"verified"});
     expect(f.store.getReply("foreign-project",reply.id)).toBeNull();
     const snapshot=f.store.exportKnowledgeProject("fidelity")!;expect(snapshot.importSources.every(row=>row.mapping_version===2)).toBe(true);
     f.store.close();
@@ -130,8 +130,8 @@ describe("K6b Hub import execution",()=>{
     execute(f.store,f.identity,f.owner,{plan:plan([task,invalid,missing]),targetProjectId:"dates",targetProjectName:"Dates"});
     const thread=f.store.listThreads("dates",25,0).items[0]!,replies=f.store.listReplies("dates",thread.id,25,0).items;
     expect(replies.map(reply=>reply.historicalImport)).toEqual(expect.arrayContaining([
-      {sourceAuthor:"Ada",sourceDate:"2026-02-31",sourceDateStatus:"invalid",sourceOrder:"verified"},
-      {sourceAuthor:null,sourceDate:null,sourceDateStatus:"missing",sourceOrder:"verified"},
+      {sourceAttribution:"verified",sourceAuthor:"Ada",sourceDate:"2026-02-31",sourceDateStatus:"invalid",sourceOrder:"verified"},
+      {sourceAttribution:"verified",sourceAuthor:null,sourceDate:null,sourceDateStatus:"missing",sourceOrder:"verified"},
     ]));f.store.close();
   });
 
@@ -151,8 +151,8 @@ describe("K6b Hub import execution",()=>{
     const first=f.store.listReplies("timeline",thread.id,25,0),second=f.store.listReplies("timeline",thread.id,25,first.nextOffset!);
     expect(first.nextOffset).toBe(25);expect(second.nextOffset).toBeNull();
     expect([...first.items,...second.items].map(reply=>reply.body)).toEqual([...Array.from({length:31},(_,index)=>`Source ${index}`),"New answer"]);
-    expect(first.items[2]?.historicalImport).toMatchObject({sourceAuthor:"Author 2",sourceDate:"2026-02-31",sourceDateStatus:"invalid",sourceOrder:"verified"});
-    expect(first.items[10]?.historicalImport).toMatchObject({sourceDate:null,sourceDateStatus:"missing",sourceOrder:"verified"});
+    expect(first.items[2]?.historicalImport).toMatchObject({sourceAttribution:"verified",sourceAuthor:"Author 2",sourceDate:"2026-02-31",sourceDateStatus:"invalid",sourceOrder:"verified"});
+    expect(first.items[10]?.historicalImport).toMatchObject({sourceAttribution:"verified",sourceDate:null,sourceDateStatus:"missing",sourceOrder:"verified"});
     expect(second.items.at(-1)?.historicalImport).toBeUndefined();
     expect(f.store.getReply("timeline",first.items[10]!.id)?.historicalImport).toEqual(first.items[10]?.historicalImport);
     expect(f.store.exportKnowledgeProject("timeline")).toEqual(before);
@@ -187,13 +187,13 @@ describe("K6b Hub import execution",()=>{
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run("extra-provenance","uncertain","other","/source","d".repeat(40),"unrelated/path#notes/3","other:note:3","a".repeat(64),2,"historical_comment",original[3]!.id,"{}",NOW,1);
     const rows=f.store.listReplies("uncertain",thread.id,25,0).items;
     expect(rows).toHaveLength(4);expect(new Set(rows.map(row=>row.id)).size).toBe(4);
-    expect(rows.find(row=>row.id===original[0]!.id)?.historicalImport).toMatchObject({sourceOrder:"verified",sourceAuthor:"Author 0"});
-    expect(rows.find(row=>row.id===original[1]!.id)?.historicalImport).toMatchObject({sourceOrder:"unverified",sourceAuthor:null});
-    expect(rows.find(row=>row.id===original[2]!.id)?.historicalImport).toMatchObject({sourceOrder:"verified",sourceDateStatus:"missing",sourceAuthor:null});
-    expect(rows.find(row=>row.id===original[3]!.id)?.historicalImport).toMatchObject({sourceOrder:"unverified",sourceAuthor:null});
+    expect(rows.find(row=>row.id===original[0]!.id)?.historicalImport).toMatchObject({sourceAttribution:"verified",sourceOrder:"verified",sourceAuthor:"Author 0"});
+    expect(rows.find(row=>row.id===original[1]!.id)?.historicalImport).toMatchObject({sourceAttribution:"unverified",sourceOrder:"unverified",sourceAuthor:null,sourceDateStatus:"unverified"});
+    expect(rows.find(row=>row.id===original[2]!.id)?.historicalImport).toMatchObject({sourceAttribution:"unverified",sourceOrder:"verified",sourceDateStatus:"unverified",sourceAuthor:null});
+    expect(rows.find(row=>row.id===original[3]!.id)?.historicalImport).toMatchObject({sourceAttribution:"unverified",sourceOrder:"unverified",sourceAuthor:null,sourceDateStatus:"unverified"});
     expect(f.store.getReply("uncertain",original[3]!.id)?.historicalImport?.sourceOrder).toBe("unverified");
     db.prepare("UPDATE knowledge_replies SET body='Edited after import',revision=revision+1 WHERE id=?").run(original[0]!.id);
-    expect(f.store.getReply("uncertain",original[0]!.id)?.historicalImport).toMatchObject({sourceOrder:"verified",sourceAuthor:null,sourceDateStatus:"missing"});
+    expect(f.store.getReply("uncertain",original[0]!.id)?.historicalImport).toMatchObject({sourceAttribution:"unverified",sourceOrder:"verified",sourceAuthor:null,sourceDateStatus:"unverified"});
     db.prepare("UPDATE knowledge_import_sources SET mapping_version=99 WHERE project_id='uncertain' AND target_kind='task'").run();
     expect(f.store.listReplies("uncertain",thread.id,25,0).items.every(row=>row.historicalImport?.sourceOrder==="unverified")).toBe(true);
     expect(f.store.getReply("other-project",original[0]!.id)).toBeNull();
@@ -321,7 +321,7 @@ describe("K6b Hub import execution",()=>{
     const target=fixture(); importKnowledgeProject(target.store,target.identity,directory,join(target.root,"attachments"),target.owner);
     expect(target.store.exportKnowledgeProject("portable")?.importSources).toEqual(before.importSources);
     expect(target.store.listMemories("portable",25,0,"",true).items[0]).toMatchObject({status:"archived",sources:[{kind:"repository",sourceId:"fixture",repository:"/source",commit:"d".repeat(40),path:"docs/backlog/notes/NOTE-one/note.json"}]});
-    const thread=target.store.listThreads("portable",25,0).items[0]!;expect(target.store.listReplies("portable",thread.id,25,0).items[0]?.historicalImport).toEqual({sourceAuthor:"Ada",sourceDate:"2026-09-13",sourceDateStatus:"valid",sourceOrder:"verified"}); target.store.close();
+    const thread=target.store.listThreads("portable",25,0).items[0]!;expect(target.store.listReplies("portable",thread.id,25,0).items[0]?.historicalImport).toEqual({sourceAttribution:"verified",sourceAuthor:"Ada",sourceDate:"2026-09-13",sourceDateStatus:"valid",sourceOrder:"verified"}); target.store.close();
   });
 
   it("projects only proven current imported note bodies across detail, list and search",()=>{

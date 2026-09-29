@@ -121,7 +121,7 @@ try {
   assert.ok(discussionRelation);
   const historicalReplies = await mcp(first, "replies", { threadId: discussionRelation.targetId, limit: 100 });
   const historicalReply = historicalReplies.items.find(reply => reply.body === historical.originalPayload.text);
-  assert.deepEqual(historicalReply.historicalImport, { sourceAuthor: historical.originalPayload.author, sourceDate: historical.originalPayload.date, sourceDateStatus: "valid", sourceOrder: "verified" });
+  assert.deepEqual(historicalReply.historicalImport, { sourceAttribution: "verified", sourceAuthor: historical.originalPayload.author, sourceDate: historical.originalPayload.date, sourceDateStatus: "valid", sourceOrder: "verified" });
   checks.push("summary content is searchable and imported comment provenance is exposed over real MCP");
 
   // The human signs in with the installation token through the real access form.

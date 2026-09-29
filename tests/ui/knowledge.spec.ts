@@ -14,7 +14,7 @@ async function mountKnowledge(page: Page, { withRuntimeProject = false }: { with
   const fixture = await mountDashboard(page, data);
   const project = { id: "knowledge-only", name: "Knowledge without server", status: "active", writable: true, revision: 1, createdAt: "2026-01-01", updatedAt: "2026-01-01" };
   const records: Array<{ id: string; projectId: string; title: string; body?: string; description?: string; priority?: string; status?: string; revision: number; createdBy: string; presentation?: { displayTitle: string; preview: string; imported: boolean; replyCount: number } }> = [];
-  const replies: Array<{ id: string; threadId: string; body: string; revision: number; createdBy: string; createdAt?: string; historicalImport?: { sourceAuthor: string | null; sourceDate: string | null; sourceDateStatus: "valid" | "missing" | "invalid"; sourceOrder: "verified" | "unverified" } }> = [];
+  const replies: Array<{ id: string; threadId: string; body: string; revision: number; createdBy: string; createdAt?: string; historicalImport?: { sourceAttribution: "verified" | "unverified"; sourceAuthor: string | null; sourceDate: string | null; sourceDateStatus: "valid" | "missing" | "invalid" | "unverified"; sourceOrder: "verified" | "unverified" } }> = [];
   const calls: Array<{ operation: string; input: Record<string, unknown> }> = [];
   const saved = new Map<string, unknown>();
   const savedInputs = new Map<string, string>();
@@ -68,7 +68,7 @@ async function mountKnowledge(page: Page, { withRuntimeProject = false }: { with
 }
 
 test("historical imported replies distinguish source attribution from the recording principal in EN and PL",async({page})=>{
-  const f=await mountKnowledge(page);f.records.push({id:"historical-thread",projectId:"knowledge-only",title:"Imported discussion",body:"Context",revision:1,createdBy:"owner"});f.replies.push({id:"historical-reply",threadId:"historical-thread",body:"Historical comment",revision:1,createdBy:"import-owner",createdAt:"2026-09-29T10:00:00.000Z",historicalImport:{sourceAuthor:"Ada",sourceDate:"2026-09-13",sourceDateStatus:"valid",sourceOrder:"verified"}});
+  const f=await mountKnowledge(page);f.records.push({id:"historical-thread",projectId:"knowledge-only",title:"Imported discussion",body:"Context",revision:1,createdBy:"owner"});f.replies.push({id:"historical-reply",threadId:"historical-thread",body:"Historical comment",revision:1,createdBy:"import-owner",createdAt:"2026-09-29T10:00:00.000Z",historicalImport:{sourceAttribution:"verified",sourceAuthor:"Ada",sourceDate:"2026-09-13",sourceDateStatus:"valid",sourceOrder:"verified"}});
   await page.getByRole("tab",{name:"Discussions",exact:true}).click();await page.getByRole("button",{name:"Refresh",exact:true}).click();await page.getByRole("link",{name:"Imported discussion",exact:true}).click();
   await expect(page.getByText("Historical import source — author: Ada · date: 2026-09-13",{exact:true})).toBeVisible();
   await expect(page.getByText("Recorded by: import-owner",{exact:false})).toBeHidden();
@@ -80,14 +80,18 @@ test("historical imported replies distinguish source attribution from the record
 test("native and uncertain replies keep honest metadata on a narrow reader",async({page})=>{
   await page.setViewportSize({width:390,height:844});
   const f=await mountKnowledge(page);f.records.push({id:"mixed-thread",projectId:"knowledge-only",title:"Discussion",body:"Context",revision:1,createdBy:"owner"});
-  f.replies.push({id:"uncertain",threadId:"mixed-thread",body:"Old note",revision:1,createdBy:"import-owner",createdAt:"2026-09-29T10:00:00.000Z",historicalImport:{sourceAuthor:null,sourceDate:"2026-02-31",sourceDateStatus:"invalid",sourceOrder:"unverified"}});
+  f.replies.push({id:"uncertain",threadId:"mixed-thread",body:"Old note",revision:1,createdBy:"import-owner",createdAt:"2026-09-29T10:00:00.000Z",historicalImport:{sourceAttribution:"verified",sourceAuthor:null,sourceDate:"2026-02-31",sourceDateStatus:"invalid",sourceOrder:"unverified"}});
+  f.replies.push({id:"withheld",threadId:"mixed-thread",body:"Edited note",revision:2,createdBy:"import-owner",createdAt:"2026-09-29T10:00:00.000Z",historicalImport:{sourceAttribution:"unverified",sourceAuthor:null,sourceDate:null,sourceDateStatus:"unverified",sourceOrder:"verified"}});
+  f.replies.push({id:"missing",threadId:"mixed-thread",body:"Undated note",revision:1,createdBy:"import-owner",createdAt:"2026-09-29T10:00:00.000Z",historicalImport:{sourceAttribution:"verified",sourceAuthor:null,sourceDate:null,sourceDateStatus:"missing",sourceOrder:"verified"}});
   f.replies.push({id:"native",threadId:"mixed-thread",body:"New note",revision:1,createdBy:"writer",createdAt:"2026-09-29T12:00:00.000Z"});
   await page.getByRole("tab",{name:"Discussions",exact:true}).click();await page.getByRole("button",{name:"Refresh",exact:true}).click();await page.getByRole("link",{name:"Discussion",exact:true}).click();
   await expect(page.getByText("Source order unverified")).toBeVisible();await expect(page.getByText("invalid source date",{exact:false})).toBeVisible();
+  await expect(page.getByText("Source author and date unverified")).toBeVisible();
+  await expect(page.getByText("Historical import source — author: not provided · date: not provided")).toBeVisible();
   await expect(page.getByText("Author: writer",{exact:false})).toBeVisible();
   await page.getByRole("button",{name:"Back to list"}).click();await expect(page.getByRole("link",{name:"Discussion",exact:true})).toBeFocused();
   await selectLanguage(page);await page.getByRole("link",{name:"Discussion",exact:true}).click();
-  await expect(page.getByText("Kolejność źródłowa niepotwierdzona")).toBeVisible();await expect(page.getByText("Autor: writer",{exact:false})).toBeVisible();
+  await expect(page.getByText("Kolejność źródłowa niepotwierdzona")).toBeVisible();await expect(page.getByText("Autor i data źródłowa niepotwierdzone")).toBeVisible();await expect(page.getByText("Źródło historyczne importu — autor: brak danych · data: brak danych")).toBeVisible();await expect(page.getByText("Autor: writer",{exact:false})).toBeVisible();
 });
 
 for (const width of [390,320]) test(`discussion topics and originals remain usable at ${width}px`,async({page})=>{
