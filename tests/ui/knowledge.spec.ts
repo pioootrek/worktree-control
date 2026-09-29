@@ -74,6 +74,7 @@ test("historical imported replies distinguish source attribution from the record
   await expect(page.getByText("Recorded by: import-owner",{exact:false})).toBeHidden();
   await page.getByRole("region",{name:"Record reader"}).getByRole("region",{name:"Replies"}).getByText("Record details").click();await expect(page.getByText("Recorded by: import-owner",{exact:false})).toBeVisible();
   await selectLanguage(page);await expect(page.getByText("Źródło historyczne importu — autor: Ada · data: 2026-09-13",{exact:true})).toBeVisible();
+  await page.getByRole("region",{name:"Czytnik wpisu"}).getByRole("region",{name:"Odpowiedzi"}).getByText("Szczegóły zapisu").click();
   await expect(page.getByText("Zapis: import-owner",{exact:false})).toBeVisible();
 });
 
