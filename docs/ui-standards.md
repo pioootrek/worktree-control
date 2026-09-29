@@ -172,6 +172,26 @@ dates must not shift across timezones, and missing/invalid dates stay explicit.
 Treat unverified attribution separately from genuinely absent source fields.
 Withholding an author or date must not claim that the source omitted it.
 
+## Linked records and search destinations
+
+A record link identifies its destination by readable title and kind; an ID is
+secondary context. Explain relationship type and direction relative to the
+current record. Resolve by project, kind and ID together. A missing target has
+an explicit unavailable state instead of a guessed route or stale title.
+Useful relationships belong after the main content, outside technical metadata.
+
+A reply search result identifies its discussion and shows bounded context around
+the matched text when the body matched. Opening it reaches the exact reply,
+including the correct page, with visible selection and one-time focus/scroll.
+Links, modified clicks, reload and browser history retain that destination.
+Passive refresh must not repeatedly move the reader. Keep return-to-results
+query, filters, page and originating focus scoped to the identity and project;
+clear obsolete reply/document targets on unrelated navigation.
+
+Resolve a bounded result page through authorized shared operations. Do not fetch
+all reply pages in the browser to find one target, or issue one HTTP request per
+relation row. Preserve raw content and export independently of display labels.
+
 ## Verification and exceptions
 
 Review actual content, including long names, empty/error states, foreign
