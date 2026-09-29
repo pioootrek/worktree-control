@@ -140,3 +140,26 @@ test("focus reveals the same test result when its desktop button moves offscreen
   expect(after!.y).toBeGreaterThanOrEqual(0);
   expect(after!.y + after!.height).toBeLessThanOrEqual(320);
 });
+
+test("active run opened from History returns focus to History after a breakpoint change", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 });
+  const data = dashboardFixture();
+  data.projects[0].testRuns = [testRunFixture({ phase: "running", presetName: "hold", finishedAt: null, queuePosition: 1 })];
+  await mountDashboard(page, data);
+  await openSection(page, "Tests", 390);
+  const screen = page.locator("[data-tests-dashboard]");
+  await screen.getByRole("tab", { name: "History", exact: true }).click();
+  const sameRun = screen.getByRole("button", { name: "Result: hold · main", exact: true });
+  const historyDetails = screen.getByRole("tabpanel").getByRole("button", { name: "Result: hold · main", exact: true });
+  await expect(sameRun).toHaveCount(2);
+  await historyDetails.focus();
+  await page.keyboard.press("Enter");
+  const drawer = page.getByRole("dialog");
+  await expect(drawer).toBeVisible();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await drawer.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(drawer).toBeHidden();
+  await expect(sameRun).toHaveCount(2);
+  await expect(historyDetails).toBeFocused();
+  await expect(sameRun.first()).not.toBeFocused();
+});
