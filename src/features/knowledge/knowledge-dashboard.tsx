@@ -54,7 +54,7 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
   const returnFocusIdRef = useRef("");
   const focusedMobileRecordRef = useRef({ id: "", projectId: "", tab: "" });
   const focusReaderAfterSaveRef = useRef(false);
-  const focusedReplyRef = useRef("");
+  const focusedReplyRef = useRef<{ key: string; node: HTMLElement } | null>(null);
   const actionRef = useRef<HTMLButtonElement>(null);
   const editorTriggerRef = useRef<HTMLButtonElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -77,14 +77,14 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
   useEffect(() => {
     if (!selection.replyId || !detail || model.replies.targetFound !== true || !model.replies.items.some(reply => reply.id === selection.replyId)) return;
     const key = `${identity?.principal.id ?? ""}\0${selection.projectId}\0${selection.recordId}\0${selection.replyId}`;
-    if (focusedReplyRef.current === key) return;
     const node = Array.from(detailRef.current?.querySelectorAll<HTMLElement>("[data-reply-id]") ?? []).find(item => item.dataset.replyId === selection.replyId);
-    if (!node) return;
-    focusedReplyRef.current = key;
+    if (!node || (focusedReplyRef.current?.key === key && focusedReplyRef.current.node === node)) return;
+    focusedReplyRef.current = { key, node };
+    focusedMobileRecordRef.current = { id: selection.recordId, projectId: selection.projectId, tab: selection.tab };
     node.scrollIntoView({ block: "start" });
     node.focus({ preventScroll: true });
   }, [detail, identity?.principal.id, model.replies, selection.projectId, selection.recordId, selection.replyId]);
-  useEffect(() => { if (!selection.replyId) focusedReplyRef.current = ""; }, [selection.replyId]);
+  useEffect(() => { if (!selection.replyId) focusedReplyRef.current = null; }, [selection.replyId]);
   useEffect(() => {
     const focused = focusedMobileRecordRef.current;
     if (selection.recordId && !selection.replyId && detail && (focused.id !== selection.recordId || focused.projectId !== selection.projectId || focused.tab !== selection.tab) && window.matchMedia("(max-width: 1023px)").matches) {

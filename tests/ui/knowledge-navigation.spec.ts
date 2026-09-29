@@ -25,6 +25,7 @@ const taskRelations = [
 const threadRelations = [
   taskRelations[0],
   relation("thread-reply", "relates_to", "thread", threadId, "reply", target.id, { kind: "reply", id: target.id, title: "Pilot topic", threadId }),
+  ...Array.from({length:24},(_,index)=>relation(`thread-extra-${index}`,"relates_to","thread",threadId,"task",taskId,{kind:"task",id:taskId,title:index===23?"Last relation page":"Route this work",status:"open"})),
 ];
 
 async function mountNavigation(page: Page) {
@@ -52,7 +53,11 @@ async function mountNavigation(page: Page) {
       return route.fulfill({ json: { items: all.slice(offset, offset + 25), nextOffset: all.length > offset + 25 ? offset + 25 : null, offset,
         ...(input.targetReplyId ? { targetFound: found >= 0 } : {}) } });
     }
-    if (operation === "relations") return route.fulfill({ json: { items: input.recordKind === "task" ? taskRelations : input.recordId === threadId ? threadRelations : [], nextOffset: null } });
+    if (operation === "relations") {
+      const all = input.recordKind === "task" ? taskRelations : input.recordId === threadId ? threadRelations : [];
+      const offset = Number(input.offset ?? 0);
+      return route.fulfill({ json: { items: all.slice(offset, offset + 25), nextOffset: all.length > offset + 25 ? offset + 25 : null } });
+    }
     if (operation === "search") {
       const kind = input.kind ?? "memory";
       const query = String(input.query ?? "").toLowerCase();
@@ -108,12 +113,12 @@ test("direct reply URL reloads, browser history returns to the hit, and bad targ
   await page.reload();
   await expect(page.locator('[data-reply-id="reply-30"]')).toBeFocused();
   await page.goto(`http://switcher.test/?view=knowledge&knowledgeProject=${projectId}&knowledgeTab=discussions&record=other-thread&reply=${target.id}`);
-  await expect(page.getByRole("alert")).toContainText("unavailable in the selected thread");
+  await expect(page.getByRole("region",{name:"Record reader"}).getByRole("region",{name:"Replies"}).getByRole("alert")).toContainText("unavailable in the selected thread");
   await expect(page.locator('[data-reply-id="reply-30"]')).toHaveCount(0);
   await page.goBack();
   await expect(page.locator('[data-reply-id="reply-30"]')).toBeFocused();
   await page.goForward();
-  await expect(page.getByRole("alert")).toContainText("unavailable in the selected thread");
+  await expect(page.getByRole("region",{name:"Record reader"}).getByRole("region",{name:"Replies"}).getByRole("alert")).toContainText("unavailable in the selected thread");
   expect(fixture.errors).toEqual([]);
 });
 
@@ -133,5 +138,44 @@ test("readable relation rows navigate to thread, memory, and an exact reply in E
   await expect(page.locator('[data-reply-id="reply-30"]')).toBeFocused();
   await selectLanguage(page);
   await expect(page.getByText("Wybrana odpowiedź")).toBeVisible();
+  expect(fixture.errors).toEqual([]);
+});
+
+test("reply paging keeps the reader and relation page, while SPA Back refocuses a remounted target", async ({page}) => {
+  await page.setViewportSize({width:390,height:844});
+  const fixture=await mountNavigation(page);
+  await page.goto(`http://switcher.test/?view=knowledge&knowledgeProject=${projectId}&knowledgeTab=discussions&record=${threadId}&reply=${target.id}`);
+  const reader=page.getByRole("region",{name:"Record reader"});
+  const selected=page.locator('[data-reply-id="reply-30"]');
+  await expect(selected).toBeFocused();
+  const relations=reader.getByRole("region",{name:"Relations"});
+  await relations.getByRole("button",{name:"Next page"}).click();
+  await expect(relations.getByText("Last relation page")).toBeVisible();
+  await reader.getByRole("button",{name:"Previous replies"}).click();
+  await expect(page).not.toHaveURL(/reply=/);
+  await expect(reader.getByRole("heading",{name:thread.title})).toBeVisible();
+  await expect(relations.getByText("Last relation page")).toBeVisible();
+  await expect(page.locator('[data-reply-id="reply-1"]')).toBeVisible();
+  await expect(reader.getByRole("heading",{name:thread.title})).not.toBeFocused();
+  await reader.getByRole("button",{name:"Next replies"}).click();
+  await expect(page.locator('[data-reply-id="reply-30"]')).toBeVisible();
+  await expect(page.locator('[data-reply-id="reply-30"]')).not.toContainText("Selected reply");
+  await page.evaluate(() => {
+    const url=new URL(location.href);url.searchParams.set("reply","reply-30");
+    history.pushState(null,"",url);dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await expect(selected).toBeFocused();
+  const replyCalls=fixture.calls.filter(call=>call.operation==="replies").length;
+  const refresh=page.getByRole("button",{name:"Refresh",exact:true});
+  await refresh.click();
+  await expect.poll(()=>fixture.calls.filter(call=>call.operation==="replies").length).toBeGreaterThan(replyCalls);
+  await expect(refresh).toBeFocused();
+  await page.evaluate(() => {
+    const url=new URL(location.href);url.searchParams.set("record","other-thread");
+    history.pushState(null,"",url);dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await expect(page.getByRole("region",{name:"Record reader"}).getByRole("region",{name:"Replies"}).getByRole("alert")).toBeVisible();
+  await page.goBack();
+  await expect(selected).toBeFocused();
   expect(fixture.errors).toEqual([]);
 });

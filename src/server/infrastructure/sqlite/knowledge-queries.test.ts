@@ -224,6 +224,7 @@ describe("knowledge service SQLite flow", () => {
     store.close();
     const db=new Database(path);
     db.pragma("foreign_keys = ON");
+    db.prepare("INSERT INTO knowledge_threads VALUES (?,?,?,?,?,?,?,?)").run(task.id,"project-1","Shared-ID discussion","Same ID, different kind",1,"agent-1",NOW,NOW);
     db.prepare("INSERT INTO knowledge_tasks VALUES (?,?,?,?,?,?,?,?,?,?)").run("foreign-task","project-2","Private title","Private body","open","later",1,"agent-1",NOW,NOW);
     const insert=db.prepare("INSERT INTO knowledge_relations VALUES (?,?,?,?,?,?,?,?,?,?)");
     for(const [id,type,sourceKind,sourceId,targetKind,targetId] of [
@@ -232,6 +233,7 @@ describe("knowledge service SQLite flow", () => {
       ["edge-reverse","supersedes","reply",reply.id,"task",task.id],
       ["edge-foreign","relates_to","task",task.id,"task","foreign-task"],
       ["edge-missing","relates_to","task",task.id,"thread","missing-thread"],
+      ["edge-same-id","supersedes","thread",task.id,"task",task.id],
     ]) insert.run(id,"project-1",type,sourceKind,sourceId,targetKind,targetId,1,"agent-1",NOW);
     db.close();
     const reopened=new SqliteStateStore(path);
@@ -243,6 +245,7 @@ describe("knowledge service SQLite flow", () => {
     expect(taskRelations.find(row=>row.id==="edge-reverse")?.destination).toMatchObject({kind:"reply",id:reply.id,title:"Discussion",threadId:thread.id});
     expect(taskRelations.find(row=>row.id==="edge-foreign")?.destination).toBeNull();
     expect(taskRelations.find(row=>row.id==="edge-missing")?.destination).toBeNull();
+    expect(taskRelations.find(row=>row.id==="edge-same-id")?.destination).toMatchObject({kind:"thread",id:task.id,title:"Shared-ID discussion"});
     expect(reader.relations("project-1","thread",thread.id,actor).items.find(row=>row.id==="edge-reply")?.destination).toMatchObject({kind:"reply",id:reply.id,threadId:thread.id});
     expect(reader.relations("project-1","reply",reply.id,actor).items.find(row=>row.id==="edge-reverse")?.destination).toMatchObject({kind:"task",id:task.id,title:"Task"});
     const first=reader.relations("project-1","task",task.id,actor,{limit:2});

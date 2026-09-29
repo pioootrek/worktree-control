@@ -63,6 +63,7 @@ export interface KnowledgeTask {
   updatedAt: string;
 }
 
+/** Current SQLite rows permit task, thread and reply endpoints. Memory is supported by the read projection when persistence permits it. */
 export interface KnowledgeRelation {
   id: string;
   projectId: string;

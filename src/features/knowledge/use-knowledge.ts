@@ -129,7 +129,9 @@ export function useKnowledge(token: string, change: { version: number; projectId
 
   const changeReplyPage = (nextOffset: number) => {
     if (selectionRef.current.replyId) {
-      changeSelection({ ...selectionRef.current, replyId: "" });
+      const next = { ...selectionRef.current, replyId: "" };
+      selectionRef.current = next;
+      setSelection(next);
       const url = new URL(window.location.href); url.searchParams.delete("reply"); window.history.replaceState(null, "", url);
     }
     setReplyOffset(nextOffset);
