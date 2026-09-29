@@ -163,6 +163,13 @@ Use indexed provenance lookups; a single-record read must not verify every
 record in the project. Search visible topics before pagination. Short previews
 must preserve Unicode characters at their truncation boundary.
 
+Historical replies follow a verified source sequence before pagination. A
+source date, import timestamp or hashed ID does not prove that sequence.
+Unverified source order needs an explicit state and stable fallback. Keep
+historical authorship/date distinct from the account/time that recorded the
+import. Native replies show their own author and creation time. Calendar-only
+dates must not shift across timezones, and missing/invalid dates stay explicit.
+
 ## Verification and exceptions
 
 Review actual content, including long names, empty/error states, foreign

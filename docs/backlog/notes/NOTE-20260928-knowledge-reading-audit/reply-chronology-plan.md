@@ -4,7 +4,7 @@ Owner accepted this next bounded GUI stage on 2026-09-29 after PR #63. Base `bbc
 
 ## Evidence
 
-Current `listReplies` joins import source rows then sorts by `created_at,id`. Imported replies share their publication timestamp, so hashed IDs scramble source order. The current 14-reply knowledge thread dates include 05,05,13,13,27,13,05 September. Source comments have preserved `:note:N` legacy IDs and `#notes/N` paths. The original pinned source commit is `81069845634a3fed6365589ae32a5c3430a57478`; root matched all 92 replies in 12 threads to their source ordinals and unchanged text. A native QA thread has one reply. Private before snapshots and expected IDs are retained outside Git; publish bounded comparison evidence with delivery.
+Current `listReplies` joins import source rows then sorts by `created_at,id`. Imported replies share their publication timestamp, so hashed IDs scramble source order. The current 14-reply knowledge thread dates include 05,05,13,13,27,13,05 September. Source comments have preserved `:note:N` legacy IDs and `#notes/N` paths. The original pinned source commit is `81069845634a3fed6365589ae32a5c3430a57478`; root matched all 92 replies in 12 threads to their source ordinals and unchanged text. A native QA thread has one reply. [Before screenshot](reply-chronology-screenshots/before.png) inspected at 1440x1000 PL/dark on `6122e4a`. Private before snapshots and expected IDs are retained outside Git; publish bounded comparison evidence with delivery.
 
 ## Contract
 
