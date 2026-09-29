@@ -1,0 +1,50 @@
+{
+  "metrics": {
+    "layoutViewport": {
+      "pageX": 0,
+      "pageY": 871,
+      "clientWidth": 1366,
+      "clientHeight": 650
+    },
+    "visualViewport": {
+      "offsetX": 0,
+      "offsetY": 0,
+      "pageX": 0,
+      "pageY": 435.5,
+      "clientWidth": 1366,
+      "clientHeight": 650,
+      "scale": 1,
+      "zoom": 2
+    },
+    "contentSize": {
+      "x": 0,
+      "y": 0,
+      "width": 1366,
+      "height": 8856
+    },
+    "cssLayoutViewport": {
+      "pageX": 0,
+      "pageY": 436,
+      "clientWidth": 683,
+      "clientHeight": 324
+    },
+    "cssVisualViewport": {
+      "offsetX": 0,
+      "offsetY": 0,
+      "pageX": 0,
+      "pageY": 435.5,
+      "clientWidth": 683,
+      "clientHeight": 325,
+      "scale": 1,
+      "zoom": 2
+    },
+    "cssContentSize": {
+      "x": 0,
+      "y": 0,
+      "width": 683,
+      "height": 4428
+    }
+  },
+  "overflow": false,
+  "focus": "Finish knowledge pilot and cutover, then deliver playbook and instruction workflowsThe core knowledge workflow and Hub import are implemented, but the umbrella still lacks a current stage-by-stage acceptance record and a confirmed real-project cutover with resto…Imported discussionReplies: 15"
+}

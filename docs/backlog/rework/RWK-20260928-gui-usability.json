@@ -116,6 +116,11 @@
       "author": "agent:codex",
       "date": "2026-09-29",
       "text": "Owner accepted next bounded stage: reply chronology and attribution. Sol high implementing on rework/reply-chronology from bbcdef9. Pinned-source baseline confirms 92 historical replies across 12 threads are currently shuffled by import timestamp/ID. Contract in reply-chronology-plan.md; preserve raw data and infer sequence only from verified provenance, with explicit uncertainty fallback. One additive target-lookup index justified for bounded exact ambiguity detection. Root owns serialized managed tests/pilot/n8n/green merge."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-29",
+      "text": "Reply chronology/attribution PR #64 merged as a2b7693 after green Verify 36527347454 on 48e8788. Sol implemented verified numeric source sequence before SQL pagination, explicit uncertain provenance, source author/date first and recording details secondary; migration 27 only adds indexed provenance lookup. Managed check 504 unit + 7 resource tests, build and final UI 118/118 passed. Pilot comparison preserved all raw fields for 93 existing replies and matched all 92 historical replies to source order; native continuation, mobile, PL/EN, reader return and actual 200% zoom verified. One recovered Claude finding fixed (unverified versus genuinely missing source attribution); Kimi/Codex no actionable findings, zero unresolved threads. Standards/report/screenshots in reply-chronology-progress.md. Preview left running on reply-chronology worktree with claim released. Broader GUI rework remains open for relations/global search/history scope."
     }
   ],
   "priority": "now",

@@ -169,6 +169,8 @@ Unverified source order needs an explicit state and stable fallback. Keep
 historical authorship/date distinct from the account/time that recorded the
 import. Native replies show their own author and creation time. Calendar-only
 dates must not shift across timezones, and missing/invalid dates stay explicit.
+Treat unverified attribution separately from genuinely absent source fields.
+Withholding an author or date must not claim that the source omitted it.
 
 ## Verification and exceptions
 
