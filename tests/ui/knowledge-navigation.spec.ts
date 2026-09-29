@@ -61,7 +61,7 @@ async function mountNavigation(page: Page) {
     if (operation === "search") {
       const kind = input.kind ?? "memory";
       const query = String(input.query ?? "").toLowerCase();
-      const rows = kind === "reply" ? replies.map(reply => ({ id: reply.id, projectId, kind: "reply", title: thread.title, excerpt: reply.id === target.id ? "…Needle [literal] %_ at the decision." : reply.body, matchSource: "body", revision: 1, status: "active", updatedAt: reply.updatedAt, threadId }))
+      const rows = kind === "reply" ? replies.map(reply => ({ id: reply.id, projectId, kind: "reply", title: thread.title, excerpt: reply.id === target.id ? `…${"earlier context ".repeat(6)}Needle [literal] %_ at the decision.` : reply.body, matchSource: "body", revision: 1, status: "active", updatedAt: reply.updatedAt, threadId }))
         : [{ ...memory, kind: "memory", excerpt: memory.body, threadId: null }];
       const matching = rows.filter(row => !query || `${row.title} ${row.excerpt}`.toLowerCase().includes(query));
       const offset = Number(input.offset ?? 0);
@@ -103,6 +103,31 @@ test("advanced result opens the exact reply on page two and Back restores the re
   await expect(page.getByLabel("Record type")).toHaveValue("reply");
   await expect(result).toBeFocused();
   expect(new URL(page.url()).searchParams.get("memoryOffset")).toBe("25");
+  expect(fixture.errors).toEqual([]);
+});
+
+test("a late search hit remains visibly readable at 320px", async ({page}) => {
+  await page.setViewportSize({width:320,height:740});
+  const fixture=await mountNavigation(page);
+  await page.getByRole("tab",{name:"Memory",exact:true}).click();
+  await page.getByRole("button",{name:"More filters"}).click();
+  await page.getByLabel("Record type").selectOption("reply");
+  await page.getByLabel("Search titles, content and memory").fill("Needle");
+  await page.getByRole("button",{name:"Filter",exact:true}).click();
+  await page.locator("[data-memory-list]").getByRole("button",{name:"Next page"}).click();
+  const snippet=page.locator('[data-result-key="reply:reply-30"] + p + [data-search-excerpt]');
+  await expect(snippet).toContainText("Needle [literal] %_");
+  const visible=await snippet.evaluate(element=>{
+    const text=element.firstChild;
+    if (!text || text.nodeType!==Node.TEXT_NODE) return false;
+    const value=text.textContent ?? "";
+    const start=value.indexOf("Needle [literal] %_");
+    if(start<0)return false;
+    const range=document.createRange();range.setStart(text,start);range.setEnd(text,start+"Needle [literal] %_".length);
+    const hit=range.getBoundingClientRect(),block=element.getBoundingClientRect();
+    return hit.height>0 && hit.bottom<=block.bottom+1 && hit.top>=block.top-1 && block.height>40;
+  });
+  expect(visible).toBe(true);
   expect(fixture.errors).toEqual([]);
 });
 
@@ -156,9 +181,11 @@ test("reply paging keeps the reader and relation page, while SPA Back refocuses 
   await expect(reader.getByRole("heading",{name:thread.title})).toBeVisible();
   await expect(relations.getByText("Last relation page")).toBeVisible();
   await expect(page.locator('[data-reply-id="reply-1"]')).toBeVisible();
+  await expect(page.locator('[data-reply-id="reply-1"]')).toBeFocused();
   await expect(reader.getByRole("heading",{name:thread.title})).not.toBeFocused();
   await reader.getByRole("button",{name:"Next replies"}).click();
   await expect(page.locator('[data-reply-id="reply-30"]')).toBeVisible();
+  await expect(page.locator('[data-reply-id="reply-26"]')).toBeFocused();
   await expect(page.locator('[data-reply-id="reply-30"]')).not.toContainText("Selected reply");
   await page.evaluate(() => {
     const url=new URL(location.href);url.searchParams.set("reply","reply-30");

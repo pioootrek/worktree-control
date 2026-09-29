@@ -11,7 +11,7 @@ import { AuthenticationService } from "@/server/modules/authentication";
 import { calculateHubImportPlanHash, executeHubImport, exportKnowledgeProject, importKnowledgeProject, KnowledgeService, type HubImportMapping, type HubImportPlan } from "@/server/modules/knowledge";
 import { SqliteStateStore } from "./sqlite-state-store";
 import { KnowledgeQueries, replyReadSql } from "./knowledge-queries";
-import { verifiedThreadSourceSql } from "./knowledge-thread-presentation";
+import { importedTaskTopic, verifiedThreadSourceSql } from "./knowledge-thread-presentation";
 
 const roots:string[]=[];
 afterEach(()=>roots.splice(0).forEach(root=>rmSync(root,{recursive:true,force:true})));
@@ -47,7 +47,35 @@ describe("K6b Hub import execution",()=>{
     expect(original.threads[0]).toMatchObject({title:"Imported discussion: A",body:`Historical comments imported from ${sourcePath}`});
     expect(original.threads[0]).not.toHaveProperty("presentation");
     const db=new Database(join(f.root,"state.sqlite3"));
-    new KnowledgeQueries(db);
+    const queries=new KnowledgeQueries(db);
+    let topicCalls=0;
+    db.function("knowledge_import_topic",{deterministic:true},(...args:unknown[])=>{
+      topicCalls+=1;return importedTaskTopic(args[0],args[1],args[2]);
+    });
+    // Temporary diagnostic: keep this SQL byte-for-byte equivalent to the
+    // pre-branch search when comparing SQLite's actual UDF invocations.
+    const legacyTaskSearch=`WITH verified AS (${verifiedThreadSourceSql(false)}), records AS (
+      SELECT t.id, t.project_id, 'thread' AS kind, coalesce(v.display_title,t.title) title, t.title raw_title, t.body, t.revision, 'active' AS status, t.updated_at, NULL AS thread_id, '[]' AS tags_json, NULL AS legacy_id
+        FROM knowledge_threads t LEFT JOIN verified v ON v.thread_id=t.id WHERE t.project_id=@projectId
+      UNION ALL SELECT r.id, r.project_id, 'reply', coalesce(v.display_title,t.title), t.title, r.body, r.revision, 'active', r.updated_at, r.thread_id, '[]', NULL
+        FROM knowledge_replies r JOIN knowledge_threads t ON t.project_id=r.project_id AND t.id=r.thread_id
+        LEFT JOIN verified v ON v.thread_id=t.id WHERE r.project_id=@projectId
+      UNION ALL SELECT id, project_id, 'task', title, title, description, revision, status, updated_at, NULL, '[]', NULL FROM knowledge_tasks WHERE project_id = @projectId
+      UNION ALL SELECT id, project_id, 'memory', title, title, body, revision, status, updated_at, NULL, tags_json, legacy_id FROM knowledge_memories WHERE project_id = @projectId
+    ) SELECT id, project_id AS projectId, kind, title, body, raw_title AS rawTitle, revision, status, updated_at AS updatedAt, thread_id AS threadId FROM records
+      WHERE (@inactive OR @status IN ('archived', 'superseded') OR status NOT IN ('archived', 'superseded'))
+      AND (@kind IS NULL OR kind = @kind) AND (@status IS NULL OR status = @status)
+      AND (@legacyId IS NULL OR legacy_id = @legacyId)
+      AND (@tag IS NULL OR EXISTS(SELECT 1 FROM json_each(tags_json) WHERE knowledge_fold(value) = knowledge_fold(@tag)))
+      AND instr(knowledge_fold(title || char(10) || raw_title || char(10) || body || char(10) || coalesce((SELECT group_concat(value, char(10)) FROM json_each(tags_json)), '') || char(10) || coalesce(legacy_id, '')), knowledge_fold(@query)) > 0
+      ORDER BY updatedAt DESC, kind, id LIMIT @limit OFFSET @offset`;
+    db.prepare(legacyTaskSearch).all({projectId:"topics",limit:26,offset:0,kind:"task",query:"storage",status:null,legacyId:null,tag:null,inactive:0});
+    const oldTopicCalls=topicCalls;topicCalls=0;
+    expect(queries.searchKnowledge("topics",25,0,{kind:"task",query:"storage"}).items).toHaveLength(1);
+    expect(topicCalls).toBe(0);
+    expect(queries.searchKnowledge("topics",25,0,{kind:"memory",query:"storage"}).items).toHaveLength(0);
+    expect(topicCalls).toBe(0);
+    process.stdout.write(`knowledge search topic UDF calls, legacy task=${oldTopicCalls}, scoped task/memory=${topicCalls}\n`);
     const queryPlan=db.prepare(`EXPLAIN QUERY PLAN WITH verified AS (${verifiedThreadSourceSql(true)}) SELECT * FROM verified`)
       .all({projectId:"topics",id:imported.id}) as Array<{detail:string}>;
     expect(queryPlan.some(step=>step.detail.includes("sqlite_autoindex_knowledge_threads_1") && step.detail.includes("id=?"))).toBe(true);

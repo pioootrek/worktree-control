@@ -55,6 +55,7 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
   const focusedMobileRecordRef = useRef({ id: "", projectId: "", tab: "" });
   const focusReaderAfterSaveRef = useRef(false);
   const focusedReplyRef = useRef<{ key: string; node: HTMLElement } | null>(null);
+  const pendingReplyPageRef = useRef<{ scope: string; offset: number } | null>(null);
   const actionRef = useRef<HTMLButtonElement>(null);
   const editorTriggerRef = useRef<HTMLButtonElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -86,6 +87,21 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
   }, [detail, identity?.principal.id, model.replies, selection.projectId, selection.recordId, selection.replyId]);
   useEffect(() => { if (!selection.replyId) focusedReplyRef.current = null; }, [selection.replyId]);
   useEffect(() => {
+    const pending = pendingReplyPageRef.current;
+    if (!pending) return;
+    const scope = `${identity?.principal.id ?? ""}\0${selection.projectId}\0${selection.recordId}`;
+    if (pending.scope !== scope || selection.tab !== "discussions" || selection.replyId || model.error) {
+      pendingReplyPageRef.current = null;
+      return;
+    }
+    if (model.loading || !detail || model.replies.offset !== pending.offset) return;
+    const node = detailRef.current?.querySelector<HTMLElement>("[data-reply-id]")
+      ?? detailRef.current?.querySelector<HTMLElement>("[data-replies-heading]");
+    pendingReplyPageRef.current = null;
+    node?.scrollIntoView({ block: "start" });
+    node?.focus({ preventScroll: true });
+  }, [detail, identity?.principal.id, model.error, model.loading, model.replies, selection.projectId, selection.recordId, selection.replyId, selection.tab]);
+  useEffect(() => {
     const focused = focusedMobileRecordRef.current;
     if (selection.recordId && !selection.replyId && detail && (focused.id !== selection.recordId || focused.projectId !== selection.projectId || focused.tab !== selection.tab) && window.matchMedia("(max-width: 1023px)").matches) {
       detailRef.current?.querySelector<HTMLElement>("h3")?.focus();
@@ -111,6 +127,7 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
   const writable = project?.writable && project.status === "active";
   const close = () => setMode(null);
   const navigate = (tab: KnowledgeTab, recordId = "", projectId = selection.projectId, replyId = "", fromSearch = false) => {
+    pendingReplyPageRef.current = null;
     close(); setNotice(false); setReaderExpanded(false); model.select({ tab, recordId, projectId, replyId });
     if (!fromSearch && (tab !== "memory" || projectId !== selection.projectId)) {
       const url = new URL(window.location.href); clearMemorySearch(url.searchParams); window.history.replaceState(null, "", url);
@@ -119,6 +136,10 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
 
   const editorReady = Boolean(mode && (mode === "task" || mode === "thread" || detail));
   const applyFilters = (filters: KnowledgeFilters) => { navigate(selection.tab); model.setFilters(filters); };
+  const changeReplyPage = (nextOffset: number) => {
+    pendingReplyPageRef.current = { scope: `${identity?.principal.id ?? ""}\0${selection.projectId}\0${selection.recordId}`, offset: nextOffset };
+    model.setReplyOffset(nextOffset);
+  };
   const activeFilterCount = Number(Boolean(model.filters.status)) + Number(Boolean(model.filters.priority));
 
   if (access !== "scoped" && model.sessionError) return <div className="max-w-xl space-y-4">
@@ -213,7 +234,7 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
             <div className="space-y-3">{"description" in detail && <TaskStatus status={detail.status} priority={detail.priority} />}<h3 tabIndex={-1} className="break-words text-2xl font-semibold leading-tight tracking-tight">{"body" in detail ? detail.presentation?.displayTitle ?? detail.title : detail.title}</h3>{"body" in detail && detail.presentation?.imported && <p className="text-xs text-muted-foreground">{t("knowledge.importedDiscussion")}</p>}</div>
             {!("body" in detail && detail.presentation?.imported) && <p className="text-sm text-muted-foreground">{t("knowledge.attribution", { author: detail.createdBy, revision: detail.revision })}</p>}
             {"description" in detail ? <p className="max-w-[75ch] whitespace-pre-wrap break-words text-base leading-7">{detail.description}</p> : detail.presentation?.imported ? detail.presentation.preview && <p className="max-w-[75ch] whitespace-pre-wrap break-words text-base leading-7">{detail.presentation.preview}</p> : <p className="max-w-[75ch] whitespace-pre-wrap break-words text-base leading-7">{detail.body}</p>}
-            {"body" in detail && <section className="max-w-[75ch] space-y-3" aria-label={t("knowledge.replies")}><h4 className="font-medium">{t("knowledge.replies")}</h4>{selection.replyId && model.replies.targetFound === false && <p role="alert" className="rounded-md border border-border bg-muted/40 p-3 text-sm">{t("knowledge.replyUnavailable")}</p>}{model.replies.items.some(reply => reply.historicalImport?.sourceOrder === "verified") && <p className="text-xs text-muted-foreground">{t("knowledge.sourceOrderExplanation")}</p>}{model.replies.items.map(reply => <div data-reply-id={reply.id} tabIndex={-1} className={`scroll-mt-24 border-t pt-4 outline-offset-2 ${reply.id === selection.replyId && model.replies.targetFound ? "rounded-md border-primary bg-primary/10 px-3 pb-3 focus-visible:outline-2 focus-visible:outline-ring" : "border-border"}`} key={reply.id}>
+            {"body" in detail && <section className="max-w-[75ch] space-y-3" aria-label={t("knowledge.replies")}><h4 data-replies-heading tabIndex={-1} className="scroll-mt-24 font-medium">{t("knowledge.replies")}</h4>{selection.replyId && model.replies.targetFound === false && <p role="alert" className="rounded-md border border-border bg-muted/40 p-3 text-sm">{t("knowledge.replyUnavailable")}</p>}{model.replies.items.some(reply => reply.historicalImport?.sourceOrder === "verified") && <p className="text-xs text-muted-foreground">{t("knowledge.sourceOrderExplanation")}</p>}{model.replies.items.map(reply => <div data-reply-id={reply.id} tabIndex={-1} className={`scroll-mt-24 border-t pt-4 outline-offset-2 ${reply.id === selection.replyId && model.replies.targetFound ? "rounded-md border-primary bg-primary/10 px-3 pb-3 focus-visible:outline-2 focus-visible:outline-ring" : "border-border"}`} key={reply.id}>
               <p className="break-words text-sm text-muted-foreground" data-historical-import={reply.historicalImport ? "" : undefined}>{reply.historicalImport
                 ? reply.historicalImport.sourceAttribution === "unverified" ? t("knowledge.sourceAttributionUnverified") : t("knowledge.historicalImport", { author: reply.historicalImport.sourceAuthor ?? t("knowledge.historicalAuthorMissing"), date: reply.historicalImport.sourceDateStatus === "missing" ? t("knowledge.historicalDateMissing") : reply.historicalImport.sourceDate ?? t("knowledge.historicalDateMissing") })
                 : t("knowledge.nativeReplyAttribution", { author: reply.createdBy, date: replyTime(reply.createdAt, locale, t("knowledge.historicalDateMissing")) })}
@@ -222,7 +243,7 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
               {reply.id === selection.replyId && model.replies.targetFound && <p className="mb-1 text-xs font-medium text-foreground">{t("knowledge.selectedReply")}</p>}
               <p className="mt-2 whitespace-pre-wrap break-words text-base leading-7">{reply.body}</p>
               {reply.historicalImport && <details className="mt-2 text-xs text-muted-foreground"><summary className="cursor-pointer">{t("knowledge.replyDetails")}</summary><p className="mt-1 break-words">{t("knowledge.replyRecordedBy", { author: reply.createdBy, date: replyTime(reply.createdAt, locale, t("knowledge.historicalDateMissing")), revision: reply.revision })}</p></details>}
-            </div>)}{(model.replyOffset > 0 || model.replies.nextOffset !== null) && <div className="flex gap-2"><Button variant="outline" disabled={model.replyOffset === 0} onClick={() => model.setReplyOffset(Math.max(0, model.replyOffset - 25))}>{t("knowledge.previousReplies")}</Button><Button variant="outline" disabled={model.replies.nextOffset === null} onClick={() => model.setReplyOffset(model.replies.nextOffset!)}>{t("knowledge.nextReplies")}</Button></div>}</section>}
+            </div>)}{(model.replyOffset > 0 || model.replies.nextOffset !== null) && <div className="flex gap-2"><Button variant="outline" disabled={model.replyOffset === 0} onClick={() => changeReplyPage(Math.max(0, model.replyOffset - 25))}>{t("knowledge.previousReplies")}</Button><Button variant="outline" disabled={model.replies.nextOffset === null} onClick={() => changeReplyPage(model.replies.nextOffset!)}>{t("knowledge.nextReplies")}</Button></div>}</section>}
             <div className="flex flex-wrap gap-2">{"description" in detail ? <Button variant="outline" disabled={!writable} onClick={event => { editorTriggerRef.current = event.currentTarget; setMode("edit"); }}>{t("knowledge.edit")}</Button> : <><Button variant="outline" disabled={!writable} onClick={event => { editorTriggerRef.current = event.currentTarget; setMode("reply"); }}>{t("knowledge.reply")}</Button><Button variant="outline" disabled={!writable} onClick={event => { editorTriggerRef.current = event.currentTarget; setMode("from_thread"); }}>{t("knowledge.fromThread")}</Button></>}</div>
             {"description" in detail && <TaskContext key={`${selection.projectId}:${detail.id}`} token={token} projectId={selection.projectId} taskId={detail.id} changeVersion={change.version + detail.revision + model.refreshVersion} />}
             {"description" in detail && <RecordAttachments key={`${selection.projectId}:${detail.id}`} token={token} projectId={selection.projectId} recordId={detail.id} recordKind="task" changeVersion={change.version + model.refreshVersion} />}

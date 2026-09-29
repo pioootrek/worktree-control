@@ -296,15 +296,22 @@ export class KnowledgeQueries implements KnowledgeStore {
 
   searchKnowledge(projectId: string, limit: number, offset: number, options: KnowledgeSearchOptions): KnowledgePage<KnowledgeSearchHit> {
     // Parameterized literal substring search matches Polish case folding and does not interpret SQL/FTS syntax.
-    const rows = this.database.prepare(`WITH verified AS (${verifiedThreadSourceSql(false)}), records AS (
-      SELECT t.id, t.project_id, 'thread' AS kind, coalesce(v.display_title,t.title) title, t.title raw_title, t.body, t.revision, 'active' AS status, t.updated_at, NULL AS thread_id, '[]' AS tags_json, NULL AS legacy_id
-        FROM knowledge_threads t LEFT JOIN verified v ON v.thread_id=t.id WHERE t.project_id=@projectId
-      UNION ALL SELECT r.id, r.project_id, 'reply', coalesce(v.display_title,t.title), t.title, r.body, r.revision, 'active', r.updated_at, r.thread_id, '[]', NULL
-        FROM knowledge_replies r JOIN knowledge_threads t ON t.project_id=r.project_id AND t.id=r.thread_id
-        LEFT JOIN verified v ON v.thread_id=t.id WHERE r.project_id=@projectId
-      UNION ALL SELECT id, project_id, 'task', title, title, description, revision, status, updated_at, NULL, '[]', NULL FROM knowledge_tasks WHERE project_id = @projectId
-      UNION ALL SELECT id, project_id, 'memory', title, title, body, revision, status, updated_at, NULL, tags_json, legacy_id FROM knowledge_memories WHERE project_id = @projectId
-    ) SELECT id, project_id AS projectId, kind, title, body, raw_title AS rawTitle, revision, status, updated_at AS updatedAt, thread_id AS threadId FROM records
+    // A selected kind uses only its table. Task/memory searches never run the
+    // verified imported-topic projection, which is needed only for discussions.
+    const kinds = options.kind ? [options.kind] : ["thread", "reply", "task", "memory"];
+    const needsTopic = kinds.includes("thread") || kinds.includes("reply");
+    const arms = [] as string[];
+    if (kinds.includes("thread")) arms.push(`SELECT t.id, t.project_id, 'thread' AS kind, coalesce(v.display_title,t.title) title, t.title raw_title, t.body, t.revision, 'active' AS status, t.updated_at, NULL AS thread_id, '[]' AS tags_json, NULL AS legacy_id
+      FROM knowledge_threads t LEFT JOIN verified v ON v.thread_id=t.id WHERE t.project_id=@projectId`);
+    if (kinds.includes("reply")) arms.push(`SELECT r.id, r.project_id, 'reply', coalesce(v.display_title,t.title), t.title, r.body, r.revision, 'active', r.updated_at, r.thread_id, '[]', NULL
+      FROM knowledge_replies r JOIN knowledge_threads t ON t.project_id=r.project_id AND t.id=r.thread_id
+      LEFT JOIN verified v ON v.thread_id=t.id WHERE r.project_id=@projectId`);
+    if (kinds.includes("task")) arms.push("SELECT id, project_id, 'task', title, title, description, revision, status, updated_at, NULL, '[]', NULL FROM knowledge_tasks WHERE project_id = @projectId");
+    if (kinds.includes("memory")) arms.push("SELECT id, project_id, 'memory', title, title, body, revision, status, updated_at, NULL, tags_json, legacy_id FROM knowledge_memories WHERE project_id = @projectId");
+    const rows = this.database.prepare(`WITH ${needsTopic ? `verified AS (${verifiedThreadSourceSql(false)}),` : ""}
+      records(id,project_id,kind,title,raw_title,body,revision,status,updated_at,thread_id,tags_json,legacy_id)
+      AS (${arms.join(" UNION ALL ")})
+      SELECT id, project_id AS projectId, kind, title, body, raw_title AS rawTitle, revision, status, updated_at AS updatedAt, thread_id AS threadId FROM records
       WHERE (@inactive OR @status IN ('archived', 'superseded') OR status NOT IN ('archived', 'superseded'))
       AND (@kind IS NULL OR kind = @kind) AND (@status IS NULL OR status = @status)
       AND (@legacyId IS NULL OR legacy_id = @legacyId)
