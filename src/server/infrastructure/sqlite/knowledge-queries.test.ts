@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { SqliteStateStore } from "./sqlite-state-store";
@@ -59,7 +60,7 @@ describe("knowledge service SQLite flow", () => {
     service.createReply("project-1", thread.id, { body: "Confirmed" }, { idempotencyKey: "reply-key" }, actor);
     const created = service.createTaskFromThread("project-1", thread.id, { title: "Act", description: "Do it", priority: "now" }, { idempotencyKey: "task-key" }, actor);
     expect(created.replayed).toBe(false);
-    expect(service.relations("project-1", "thread", thread.id, actor).items).toEqual([created.value.relation]);
+    expect(service.relations("project-1", "thread", thread.id, actor).items).toMatchObject([{ ...created.value.relation, destination: { kind: "task", id: "task-1", title: "Act", status: "open" } }]);
     expect(store.listHistory("project-1", "task", created.value.task.id, 25, 0).items).toHaveLength(1);
     store.close();
 
@@ -187,6 +188,12 @@ describe("knowledge service SQLite flow", () => {
     expect(second.items).toHaveLength(1);
     expect(new Set([...first.items, ...second.items].map(({ id }) => id)).size).toBe(101);
     expect(second.nextOffset).toBeNull();
+    const target=service.listReplies("project-1", "thread-1", actor, { limit: 25, targetReplyId: "reply-77" });
+    expect(target).toMatchObject({offset:75,targetFound:true});
+    expect(target.items.slice(0,2).map(reply=>reply.id)).toEqual(["reply-76","reply-77"]);
+    const other=service.createThread("project-1", {title:"Other",body:"Body"}, {idempotencyKey:"other-thread"}, actor).value;
+    expect(service.listReplies("project-1", other.id, actor, {targetReplyId:"reply-77"})).toMatchObject({targetFound:false,items:[]});
+    expect(() => service.listReplies("private", "thread-1", actor, {targetReplyId:"reply-77"})).toThrowError(expect.objectContaining({code:"knowledge_forbidden"}));
     store.close();
   });
 
@@ -205,6 +212,47 @@ describe("knowledge service SQLite flow", () => {
     expect(second.nextOffset).toBeNull();
     expect(first.items[0]?.id).not.toBe(second.items[0]?.id);
     store.close();
+  });
+
+  it("describes both relation directions, every stored endpoint kind, and unavailable destinations without rewriting records", () => {
+    const {path,store,service,actor}=setup(["thread-a","reply-a","task-a","base-edge","task-b"]);
+    const thread=service.createThread("project-1",{title:"Discussion",body:"Context"},{idempotencyKey:"thread"},actor).value;
+    const reply=service.createReply("project-1",thread.id,{body:"Answer"},{idempotencyKey:"reply"},actor).value;
+    const task=service.createTaskFromThread("project-1",thread.id,{title:"Task",description:"Do work"},{idempotencyKey:"task"},actor).value.task;
+    const second=service.createTask("project-1",{title:"Second",description:"More work"},{idempotencyKey:"second"},actor).value;
+    store.saveKnowledgeProject({id:"project-2",name:"Foreign",status:"active",revision:1,createdAt:NOW,updatedAt:NOW},"test");
+    store.close();
+    const db=new Database(path);
+    db.pragma("foreign_keys = ON");
+    db.prepare("INSERT INTO knowledge_threads VALUES (?,?,?,?,?,?,?,?)").run(task.id,"project-1","Shared-ID discussion","Same ID, different kind",1,"agent-1",NOW,NOW);
+    db.prepare("INSERT INTO knowledge_tasks VALUES (?,?,?,?,?,?,?,?,?,?)").run("foreign-task","project-2","Private title","Private body","open","later",1,"agent-1",NOW,NOW);
+    const insert=db.prepare("INSERT INTO knowledge_relations VALUES (?,?,?,?,?,?,?,?,?,?)");
+    for(const [id,type,sourceKind,sourceId,targetKind,targetId] of [
+      ["edge-reply","blocks","thread",thread.id,"reply",reply.id],
+      ["edge-task","relates_to","task",task.id,"task",second.id],
+      ["edge-reverse","supersedes","reply",reply.id,"task",task.id],
+      ["edge-foreign","relates_to","task",task.id,"task","foreign-task"],
+      ["edge-missing","relates_to","task",task.id,"thread","missing-thread"],
+      ["edge-same-id","supersedes","thread",task.id,"task",task.id],
+    ]) insert.run(id,"project-1",type,sourceKind,sourceId,targetKind,targetId,1,"agent-1",NOW);
+    db.close();
+    const reopened=new SqliteStateStore(path);
+    const reader=new KnowledgeService(reopened,new IdentityService(reopened,()=>NOW),()=>NOW);
+    const before=reopened.exportKnowledgeProject("project-1");
+    const taskRelations=reader.relations("project-1","task",task.id,actor,{limit:25}).items;
+    expect(taskRelations.find(row=>row.id==="base-edge")?.destination).toMatchObject({kind:"thread",id:thread.id,title:"Discussion"});
+    expect(taskRelations.find(row=>row.id==="edge-task")?.destination).toMatchObject({kind:"task",id:second.id,title:"Second",status:"open"});
+    expect(taskRelations.find(row=>row.id==="edge-reverse")?.destination).toMatchObject({kind:"reply",id:reply.id,title:"Discussion",threadId:thread.id});
+    expect(taskRelations.find(row=>row.id==="edge-foreign")?.destination).toBeNull();
+    expect(taskRelations.find(row=>row.id==="edge-missing")?.destination).toBeNull();
+    expect(taskRelations.find(row=>row.id==="edge-same-id")?.destination).toMatchObject({kind:"thread",id:task.id,title:"Shared-ID discussion"});
+    expect(reader.relations("project-1","thread",thread.id,actor).items.find(row=>row.id==="edge-reply")?.destination).toMatchObject({kind:"reply",id:reply.id,threadId:thread.id});
+    expect(reader.relations("project-1","reply",reply.id,actor).items.find(row=>row.id==="edge-reverse")?.destination).toMatchObject({kind:"task",id:task.id,title:"Task"});
+    const first=reader.relations("project-1","task",task.id,actor,{limit:2});
+    expect(first.items).toHaveLength(2);expect(first.nextOffset).toBe(2);
+    expect(reader.relations("project-1","task",task.id,actor,{limit:2,offset:2}).items).toHaveLength(2);
+    expect(reopened.exportKnowledgeProject("project-1")).toEqual(before);
+    reopened.close();
   });
 
   it("replays a successful write after the project is archived", () => {

@@ -41,7 +41,7 @@ export function importedRecordId(projectId: unknown, sourceId: unknown, sourcePa
 
 // The importer has no direct thread provenance. Every condition here must hold
 // before a historical task's topic may stand in for the generated thread title.
-export function verifiedThreadSourceSql(singleThread: boolean): string { return `
+export function verifiedThreadSourceSql(singleThread: boolean, candidateSql = ""): string { return `
   SELECT t.id thread_id, max(knowledge_import_topic(s.original_payload_json, s.legacy_id, s.source_path)) display_title,
     max(knowledge_import_preview(s.original_payload_json)) source_preview
   FROM knowledge_threads t
@@ -54,7 +54,7 @@ export function verifiedThreadSourceSql(singleThread: boolean): string { return 
   JOIN knowledge_tasks task ON task.project_id=t.project_id AND task.id=s.target_id
     AND s.target_revision IS NOT NULL AND task.revision>=s.target_revision
     AND task.title=knowledge_import_topic(s.original_payload_json,s.legacy_id,s.source_path)
-  WHERE t.project_id=@projectId ${singleThread ? "AND t.id=@id" : ""}
+  WHERE t.project_id=@projectId ${singleThread ? "AND t.id=@id" : ""} ${candidateSql}
     AND t.title='Imported discussion: ' || s.legacy_id
     AND t.body='Historical comments imported from ' || s.source_path
     AND (SELECT count(*) FROM knowledge_relations relation

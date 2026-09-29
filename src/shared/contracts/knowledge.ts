@@ -63,6 +63,7 @@ export interface KnowledgeTask {
   updatedAt: string;
 }
 
+/** Current SQLite rows permit task, thread and reply endpoints. Memory is supported by the read projection when persistence permits it. */
 export interface KnowledgeRelation {
   id: string;
   projectId: string;
@@ -74,6 +75,23 @@ export interface KnowledgeRelation {
   revision: number;
   createdBy: string;
   createdAt: string;
+}
+
+/** Read-only navigation data; never stored in a relation or project export. */
+export interface KnowledgeRelationDestination {
+  kind: KnowledgeRecordKind;
+  id: string;
+  title: string;
+  status?: KnowledgeTaskStatus | "active" | "superseded";
+  threadId?: string;
+}
+export interface KnowledgeRelationView extends KnowledgeRelation {
+  destination: KnowledgeRelationDestination | null;
+}
+
+export interface KnowledgeReplyPage extends KnowledgePage<KnowledgeReply> {
+  offset: number;
+  targetFound?: boolean;
 }
 
 export interface KnowledgeHistoryEntry {
@@ -137,7 +155,7 @@ export const knowledgeSchemas = {
   threads: z.strictObject({ ...project, ...page, query }),
   reply: z.strictObject({ ...project, replyId: id }),
   thread: z.strictObject({ ...project, threadId: id }),
-  replies: z.strictObject({ ...project, threadId: id, ...page }),
+  replies: z.strictObject({ ...project, threadId: id, ...page, targetReplyId: id.optional() }),
   tasks: z.strictObject({ ...project, ...page, query, activeOnly: z.boolean().optional(), status: knowledgeStatus.optional(), priority: knowledgePriority.optional() }),
   task: z.strictObject({ ...project, taskId: id }),
   relations: z.strictObject({ ...record, ...page }),

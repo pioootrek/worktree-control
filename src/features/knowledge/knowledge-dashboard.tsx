@@ -1,11 +1,11 @@
 "use client";
 
 import { RecordAttachments } from "./record-attachments";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Plus, Search, ArrowLeft, ArrowUpRight, MessageSquare, RefreshCw, Expand, Shrink, SlidersHorizontal } from "lucide-react";
+import { Plus, Search, ArrowLeft, RefreshCw, Expand, Shrink, SlidersHorizontal } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { TaskStatus } from "./task-status";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -15,6 +15,8 @@ import type { KnowledgeFilters } from "@/shared/contracts/knowledge";
 import { isKnowledgeAccessError, knowledgeIdentity } from "./knowledge-client";
 import { KnowledgeEditor, fieldClass, type EditorMode } from "./knowledge-editor";
 import { MemoryPanel } from "./memory-panel";
+import { KnowledgeRelations } from "./knowledge-relations";
+import { clearMemorySearch, memoryReturnHref } from "./memory-navigation";
 import { TaskContext } from "./task-context";
 import { useKnowledge, type KnowledgeTab } from "./use-knowledge";
 
@@ -22,6 +24,9 @@ function replyTime(value: string, locale: string, fallback: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? fallback : new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
+const subscribeLocation = (listener: () => void) => { window.addEventListener("popstate", listener); return () => window.removeEventListener("popstate", listener); };
+const locationSnapshot = () => window.location.search;
+const serverLocationSnapshot = () => "";
 
 export function KnowledgeDashboard({ token, setToken, access, change }: { token: string; setToken: (value: string) => void; access: "installation" | "open" | "scoped"; change: { version: number; projectIds: string[] } }) {
   const { t, locale } = useI18n();
@@ -49,12 +54,17 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
   const returnFocusIdRef = useRef("");
   const focusedMobileRecordRef = useRef({ id: "", projectId: "", tab: "" });
   const focusReaderAfterSaveRef = useRef(false);
+  const focusedReplyRef = useRef<{ key: string; node: HTMLElement } | null>(null);
+  const pendingReplyPageRef = useRef<{ scope: string; offset: number } | null>(null);
   const actionRef = useRef<HTMLButtonElement>(null);
   const editorTriggerRef = useRef<HTMLButtonElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const detailRef = useRef<HTMLDivElement>(null);
   const model = useKnowledge(token, change);
   const { selection, identity, projects } = model;
+  const locationSearch = useSyncExternalStore(subscribeLocation, locationSnapshot, serverLocationSnapshot);
+  const returnSearchHref = identity && selection.tab !== "memory"
+    ? memoryReturnHref(new URLSearchParams(locationSearch), identity.principal.id, selection.projectId) : "";
   const detail = model.detail?.id === selection.recordId && model.detail.projectId === selection.projectId
     && ((selection.tab === "backlog" && "description" in model.detail) || (selection.tab === "discussions" && "body" in model.detail)) ? model.detail : null;
   useEffect(() => {
@@ -66,8 +76,34 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
   }, [identity]);
   useEffect(() => { detailRef.current?.scrollTo({ top: 0 }); }, [selection.recordId, selection.projectId, selection.tab]);
   useEffect(() => {
+    if (!selection.replyId || !detail || model.replies.targetFound !== true || !model.replies.items.some(reply => reply.id === selection.replyId)) return;
+    const key = `${identity?.principal.id ?? ""}\0${selection.projectId}\0${selection.recordId}\0${selection.replyId}`;
+    const node = Array.from(detailRef.current?.querySelectorAll<HTMLElement>("[data-reply-id]") ?? []).find(item => item.dataset.replyId === selection.replyId);
+    if (!node || (focusedReplyRef.current?.key === key && focusedReplyRef.current.node === node)) return;
+    focusedReplyRef.current = { key, node };
+    focusedMobileRecordRef.current = { id: selection.recordId, projectId: selection.projectId, tab: selection.tab };
+    node.scrollIntoView({ block: "start" });
+    node.focus({ preventScroll: true });
+  }, [detail, identity?.principal.id, model.replies, selection.projectId, selection.recordId, selection.replyId]);
+  useEffect(() => { if (!selection.replyId) focusedReplyRef.current = null; }, [selection.replyId]);
+  useEffect(() => {
+    const pending = pendingReplyPageRef.current;
+    if (!pending) return;
+    const scope = `${identity?.principal.id ?? ""}\0${selection.projectId}\0${selection.recordId}`;
+    if (pending.scope !== scope || selection.tab !== "discussions" || selection.replyId || model.error) {
+      pendingReplyPageRef.current = null;
+      return;
+    }
+    if (model.loading || !detail || model.replies.offset !== pending.offset) return;
+    const node = detailRef.current?.querySelector<HTMLElement>("[data-reply-id]")
+      ?? detailRef.current?.querySelector<HTMLElement>("[data-replies-heading]");
+    pendingReplyPageRef.current = null;
+    node?.scrollIntoView({ block: "start" });
+    node?.focus({ preventScroll: true });
+  }, [detail, identity?.principal.id, model.error, model.loading, model.replies, selection.projectId, selection.recordId, selection.replyId, selection.tab]);
+  useEffect(() => {
     const focused = focusedMobileRecordRef.current;
-    if (selection.recordId && detail && (focused.id !== selection.recordId || focused.projectId !== selection.projectId || focused.tab !== selection.tab) && window.matchMedia("(max-width: 1023px)").matches) {
+    if (selection.recordId && !selection.replyId && detail && (focused.id !== selection.recordId || focused.projectId !== selection.projectId || focused.tab !== selection.tab) && window.matchMedia("(max-width: 1023px)").matches) {
       detailRef.current?.querySelector<HTMLElement>("h3")?.focus();
       focusedMobileRecordRef.current = { id: selection.recordId, projectId: selection.projectId, tab: selection.tab };
     } else if (!selection.recordId) {
@@ -86,14 +122,24 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
         focusedMobileRecordRef.current = { id: "", projectId: "", tab: "" };
       }
     }
-  }, [selection.recordId, selection.projectId, selection.tab, detail, model.rows.items, model.loading]);
+  }, [selection.recordId, selection.replyId, selection.projectId, selection.tab, detail, model.rows.items, model.loading]);
   const project = model.project?.id === selection.projectId ? model.project : undefined;
   const writable = project?.writable && project.status === "active";
   const close = () => setMode(null);
-  const navigate = (tab: KnowledgeTab, recordId = "", projectId = selection.projectId) => { close(); setNotice(false); setReaderExpanded(false); model.select({ tab, recordId, projectId }); };
+  const navigate = (tab: KnowledgeTab, recordId = "", projectId = selection.projectId, replyId = "", fromSearch = false) => {
+    pendingReplyPageRef.current = null;
+    close(); setNotice(false); setReaderExpanded(false); model.select({ tab, recordId, projectId, replyId });
+    if (!fromSearch && (tab !== "memory" || projectId !== selection.projectId)) {
+      const url = new URL(window.location.href); clearMemorySearch(url.searchParams); window.history.replaceState(null, "", url);
+    }
+  };
 
   const editorReady = Boolean(mode && (mode === "task" || mode === "thread" || detail));
   const applyFilters = (filters: KnowledgeFilters) => { navigate(selection.tab); model.setFilters(filters); };
+  const changeReplyPage = (nextOffset: number) => {
+    pendingReplyPageRef.current = { scope: `${identity?.principal.id ?? ""}\0${selection.projectId}\0${selection.recordId}`, offset: nextOffset };
+    model.setReplyOffset(nextOffset);
+  };
   const activeFilterCount = Number(Boolean(model.filters.status)) + Number(Boolean(model.filters.priority));
 
   if (access !== "scoped" && model.sessionError) return <div className="max-w-xl space-y-4">
@@ -129,7 +175,7 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
     {!projects.items.length && !selection.projectId && <p>{t("knowledge.noProjectsHelp")}</p>}
     <div className="flex shrink-0 flex-wrap items-center justify-between gap-3"><Tabs value={selection.tab} onValueChange={value => navigate(value as KnowledgeTab)}><TabsList aria-label={t("knowledge.title")} className="h-auto min-h-10 flex-wrap"><TabsTrigger className="min-h-9" value="backlog">{t("knowledge.backlog")}</TabsTrigger><TabsTrigger className="min-h-9" value="discussions">{t("knowledge.discussions")}</TabsTrigger><TabsTrigger className="min-h-9" value="memory">{t("knowledge.memory")}</TabsTrigger></TabsList></Tabs>{selection.tab !== "memory" && <Button ref={actionRef} disabled={!writable} onClick={event => { editorTriggerRef.current = event.currentTarget; setMode(selection.tab === "discussions" ? "thread" : "task"); setNotice(false); }}><Plus aria-hidden className="size-4" />{t(selection.tab === "backlog" ? "knowledge.addTask" : "knowledge.addDiscussion")}</Button>}</div>
     {notice && <p role="status" className="text-sm">{t("knowledge.saved")}</p>}
-    {selection.tab === "memory" ? (selection.projectId ? <MemoryPanel key={`${identity.principal.id}:${selection.projectId}`} token={token} principalId={identity.principal.id} projectId={selection.projectId} recordId={selection.recordId} writable={Boolean(writable)} approvable={(identity.installationAuthority === true || (identity.principal.kind === "owner" && identity.credential?.kind === "owner_session")) && project?.status === "active"} changeVersion={change.version + model.refreshVersion} onSelect={navigate} /> : <p>{t("knowledge.noProjectsHelp")}</p>) : selection.projectId && <>
+    {selection.tab === "memory" ? (selection.projectId ? <MemoryPanel key={`${identity.principal.id}:${selection.projectId}`} token={token} principalId={identity.principal.id} projectId={selection.projectId} recordId={selection.recordId} writable={Boolean(writable)} approvable={(identity.installationAuthority === true || (identity.principal.kind === "owner" && identity.credential?.kind === "owner_session")) && project?.status === "active"} changeVersion={change.version + model.refreshVersion} onSelect={(tab, id, replyId, fromSearch) => navigate(tab, id, selection.projectId, replyId, fromSearch)} /> : <p>{t("knowledge.noProjectsHelp")}</p>) : selection.projectId && <>
       <div className={`shrink-0 space-y-3 ${selection.recordId ? "hidden lg:block" : ""}`}>
         {!writable && <p className="text-sm text-muted-foreground">{t("knowledge.readOnly")}</p>}
         {selection.tab === "backlog" && <nav className="flex flex-wrap gap-1" aria-label={t("knowledge.taskViews")}>
@@ -182,33 +228,28 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
           {(model.offset > 0 || model.rows.nextOffset !== null) && <div className="flex shrink-0 items-center justify-between gap-2 border-t border-border p-3"><Button size="sm" variant="ghost" disabled={model.offset === 0 || model.loading} onClick={() => model.setOffset(Math.max(0, model.offset - 25))}>{t("knowledge.previous")}</Button><span className="text-xs tabular-nums text-muted-foreground">{t("knowledge.pageNumber", { page: Math.floor(model.offset / 25) + 1 })}</span><Button size="sm" variant="ghost" disabled={model.rows.nextOffset === null || model.loading} onClick={() => model.setOffset(model.rows.nextOffset!)}>{t("knowledge.nextPage")}</Button></div>}
         </div>
         <div className={`min-w-0 flex-col lg:min-h-0 ${selection.recordId ? "flex" : "hidden"}`} data-knowledge-detail>
-          {selection.recordId && <div className="flex shrink-0 justify-between border-b border-border px-3 py-2"><Button variant="ghost" className="lg:hidden" onClick={() => { returnFocusIdRef.current = selection.recordId; navigate(selection.tab); }}><ArrowLeft aria-hidden className="size-4" />{t("knowledge.backToList")}</Button><Button variant="ghost" className="ml-auto hidden lg:inline-flex" aria-pressed={readerExpanded} onClick={() => setReaderExpanded(value => !value)}>{readerExpanded ? <Shrink aria-hidden className="size-4" /> : <Expand aria-hidden className="size-4" />}{t(readerExpanded ? "knowledgeLayout.showList" : "knowledgeLayout.expandReader")}</Button></div>}
+          {selection.recordId && <div className="flex shrink-0 flex-wrap justify-between border-b border-border px-3 py-2">{returnSearchHref && <a className="inline-flex min-h-9 items-center gap-2 rounded-md px-3 text-sm hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring" href={returnSearchHref} onClick={event => { if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate("memory", "", selection.projectId, "", true); }}><ArrowLeft aria-hidden className="size-4" />{t("knowledge.backToSearch")}</a>}<Button variant="ghost" className={returnSearchHref ? "hidden" : "lg:hidden"} onClick={() => { returnFocusIdRef.current = selection.recordId; navigate(selection.tab); }}><ArrowLeft aria-hidden className="size-4" />{t("knowledge.backToList")}</Button><Button variant="ghost" className="ml-auto hidden lg:inline-flex" aria-pressed={readerExpanded} onClick={() => setReaderExpanded(value => !value)}>{readerExpanded ? <Shrink aria-hidden className="size-4" /> : <Expand aria-hidden className="size-4" />}{t(readerExpanded ? "knowledgeLayout.showList" : "knowledgeLayout.expandReader")}</Button></div>}
           <div ref={detailRef} tabIndex={0} role="region" aria-label={t("knowledgeLayout.reader")} className="min-w-0 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain" data-knowledge-detail-scroll>
           {detail ? <article className="mx-auto max-w-4xl space-y-5 p-5 sm:p-7">
             <div className="space-y-3">{"description" in detail && <TaskStatus status={detail.status} priority={detail.priority} />}<h3 tabIndex={-1} className="break-words text-2xl font-semibold leading-tight tracking-tight">{"body" in detail ? detail.presentation?.displayTitle ?? detail.title : detail.title}</h3>{"body" in detail && detail.presentation?.imported && <p className="text-xs text-muted-foreground">{t("knowledge.importedDiscussion")}</p>}</div>
             {!("body" in detail && detail.presentation?.imported) && <p className="text-sm text-muted-foreground">{t("knowledge.attribution", { author: detail.createdBy, revision: detail.revision })}</p>}
             {"description" in detail ? <p className="max-w-[75ch] whitespace-pre-wrap break-words text-base leading-7">{detail.description}</p> : detail.presentation?.imported ? detail.presentation.preview && <p className="max-w-[75ch] whitespace-pre-wrap break-words text-base leading-7">{detail.presentation.preview}</p> : <p className="max-w-[75ch] whitespace-pre-wrap break-words text-base leading-7">{detail.body}</p>}
-            {"body" in detail && <section className="max-w-[75ch] space-y-3" aria-label={t("knowledge.replies")}><h4 className="font-medium">{t("knowledge.replies")}</h4>{model.replies.items.some(reply => reply.historicalImport?.sourceOrder === "verified") && <p className="text-xs text-muted-foreground">{t("knowledge.sourceOrderExplanation")}</p>}{model.replies.items.map(reply => <div className="border-t border-border pt-4" key={reply.id}>
+            {"body" in detail && <section className="max-w-[75ch] space-y-3" aria-label={t("knowledge.replies")}><h4 data-replies-heading tabIndex={-1} className="scroll-mt-24 font-medium">{t("knowledge.replies")}</h4>{selection.replyId && model.replies.targetFound === false && <p role="alert" className="rounded-md border border-border bg-muted/40 p-3 text-sm">{t("knowledge.replyUnavailable")}</p>}{model.replies.items.some(reply => reply.historicalImport?.sourceOrder === "verified") && <p className="text-xs text-muted-foreground">{t("knowledge.sourceOrderExplanation")}</p>}{model.replies.items.map(reply => <div data-reply-id={reply.id} tabIndex={-1} className={`scroll-mt-24 border-t pt-4 outline-offset-2 ${reply.id === selection.replyId && model.replies.targetFound ? "rounded-md border-primary bg-primary/10 px-3 pb-3 focus-visible:outline-2 focus-visible:outline-ring" : "border-border"}`} key={reply.id}>
               <p className="break-words text-sm text-muted-foreground" data-historical-import={reply.historicalImport ? "" : undefined}>{reply.historicalImport
                 ? reply.historicalImport.sourceAttribution === "unverified" ? t("knowledge.sourceAttributionUnverified") : t("knowledge.historicalImport", { author: reply.historicalImport.sourceAuthor ?? t("knowledge.historicalAuthorMissing"), date: reply.historicalImport.sourceDateStatus === "missing" ? t("knowledge.historicalDateMissing") : reply.historicalImport.sourceDate ?? t("knowledge.historicalDateMissing") })
                 : t("knowledge.nativeReplyAttribution", { author: reply.createdBy, date: replyTime(reply.createdAt, locale, t("knowledge.historicalDateMissing")) })}
                 {reply.historicalImport?.sourceDateStatus === "invalid" ? ` · ${t("knowledge.historicalDateInvalid")}` : ""}</p>
               {reply.historicalImport?.sourceOrder === "unverified" && <p className="mt-1 text-xs text-muted-foreground">{t("knowledge.sourceOrderUnverified")}</p>}
+              {reply.id === selection.replyId && model.replies.targetFound && <p className="mb-1 text-xs font-medium text-foreground">{t("knowledge.selectedReply")}</p>}
               <p className="mt-2 whitespace-pre-wrap break-words text-base leading-7">{reply.body}</p>
               {reply.historicalImport && <details className="mt-2 text-xs text-muted-foreground"><summary className="cursor-pointer">{t("knowledge.replyDetails")}</summary><p className="mt-1 break-words">{t("knowledge.replyRecordedBy", { author: reply.createdBy, date: replyTime(reply.createdAt, locale, t("knowledge.historicalDateMissing")), revision: reply.revision })}</p></details>}
-            </div>)}{(model.replyOffset > 0 || model.replies.nextOffset !== null) && <div className="flex gap-2"><Button variant="outline" disabled={model.replyOffset === 0} onClick={() => model.setReplyOffset(Math.max(0, model.replyOffset - 25))}>{t("knowledge.previousReplies")}</Button><Button variant="outline" disabled={model.replies.nextOffset === null} onClick={() => model.setReplyOffset(model.replies.nextOffset!)}>{t("knowledge.nextReplies")}</Button></div>}</section>}
+            </div>)}{(model.replyOffset > 0 || model.replies.nextOffset !== null) && <div className="flex gap-2"><Button variant="outline" disabled={model.replyOffset === 0} onClick={() => changeReplyPage(Math.max(0, model.replyOffset - 25))}>{t("knowledge.previousReplies")}</Button><Button variant="outline" disabled={model.replies.nextOffset === null} onClick={() => changeReplyPage(model.replies.nextOffset!)}>{t("knowledge.nextReplies")}</Button></div>}</section>}
             <div className="flex flex-wrap gap-2">{"description" in detail ? <Button variant="outline" disabled={!writable} onClick={event => { editorTriggerRef.current = event.currentTarget; setMode("edit"); }}>{t("knowledge.edit")}</Button> : <><Button variant="outline" disabled={!writable} onClick={event => { editorTriggerRef.current = event.currentTarget; setMode("reply"); }}>{t("knowledge.reply")}</Button><Button variant="outline" disabled={!writable} onClick={event => { editorTriggerRef.current = event.currentTarget; setMode("from_thread"); }}>{t("knowledge.fromThread")}</Button></>}</div>
             {"description" in detail && <TaskContext key={`${selection.projectId}:${detail.id}`} token={token} projectId={selection.projectId} taskId={detail.id} changeVersion={change.version + detail.revision + model.refreshVersion} />}
             {"description" in detail && <RecordAttachments key={`${selection.projectId}:${detail.id}`} token={token} projectId={selection.projectId} recordId={detail.id} recordKind="task" changeVersion={change.version + model.refreshVersion} />}
+            <KnowledgeRelations projectId={selection.projectId} recordKind={selection.tab === "backlog" ? "task" : "thread"} recordId={detail.id} page={model.relations} offset={model.relationOffset} onPage={model.setRelationOffset} onNavigate={(tab, id, replyId) => navigate(tab, id, selection.projectId, replyId)} />
             <details className="border-t border-border pt-4 text-sm"><summary className="cursor-pointer font-medium">{t("knowledgeLayout.moreDetails")}</summary><div className="space-y-4 pt-3"><p className="break-all text-xs text-muted-foreground">{t("knowledge.recordMetadata", { revision: detail.revision })} · {detail.id}</p>{"body" in detail && detail.presentation?.imported && <div className="space-y-2 text-sm text-muted-foreground"><p>{t("knowledge.attribution", { author: detail.createdBy, revision: detail.revision })}</p><p>{t("knowledge.originalDiscussionTitle")}: {detail.title}</p><p className="break-all">{t("knowledge.originalDiscussionBody")}: {detail.body}</p></div>}{"body" in detail && <RecordAttachments key={`${selection.projectId}:${detail.id}`} token={token} projectId={selection.projectId} recordId={detail.id} recordKind="thread" changeVersion={change.version + model.refreshVersion} />}
-            {model.relations.items.length > 0 && <section className="space-y-3 border-t border-border pt-5" aria-label={t("knowledge.relations")}><h4 className="font-medium">{t("knowledge.relations")}</h4><ul className="space-y-2">{model.relations.items.map(relation => {
-              const source = relation.sourceId === detail.id;
-              const targetId = source ? relation.targetId : relation.sourceId;
-              const targetKind = source ? relation.targetKind : relation.sourceKind;
-              if (targetKind === "reply") return <li className="break-all text-sm" key={relation.id}>{targetId}</li>;
-              const tab = targetKind === "task" ? "backlog" : "discussions";
-              return <li key={relation.id}><a className="flex items-center gap-2 rounded-lg border border-border p-3 text-sm hover:bg-muted" href={`?view=knowledge&knowledgeProject=${encodeURIComponent(selection.projectId)}&knowledgeTab=${tab}&record=${encodeURIComponent(targetId)}`} onClick={event => { if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(tab, targetId); }}><MessageSquare aria-hidden className="size-4 shrink-0" /><span className="min-w-0"><span className="block">{t(targetKind === "task" ? "knowledge.relatedTask" : "knowledge.relatedThread")}</span><span className="block truncate font-mono text-xs text-muted-foreground">{targetId}</span></span><ArrowUpRight aria-hidden className="ml-auto size-4 shrink-0" /></a></li>;
-            })}</ul>{(model.relationOffset > 0 || model.relations.nextOffset !== null) && <div className="flex gap-2"><Button variant="outline" disabled={model.relationOffset === 0} onClick={() => model.setRelationOffset(Math.max(0, model.relationOffset - 25))}>{t("knowledge.previous")}</Button><Button variant="outline" disabled={model.relations.nextOffset === null} onClick={() => model.setRelationOffset(model.relations.nextOffset!)}>{t("knowledge.nextPage")}</Button></div>}</section>}</div></details>
+            </div></details>
           </article> : selection.recordId ? <div className="space-y-3 p-6">{model.error ? <><p role="alert" className="text-sm text-destructive">{t("knowledge.loadFailed")}</p><Button variant="outline" onClick={model.reload}><RefreshCw aria-hidden className="size-4" />{t("knowledge.refresh")}</Button></> : <p role="status" className="text-sm text-muted-foreground">{t("knowledge.loading")}</p>}</div> : null}
           </div>
         </div>

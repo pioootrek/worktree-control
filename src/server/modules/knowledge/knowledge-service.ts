@@ -1,5 +1,5 @@
 import type { KnowledgeTaskPage } from "@/shared/contracts/knowledge";
-import { knowledgeSchemas, type KnowledgeRequest, type KnowledgeFilters } from "@/shared/contracts/knowledge";
+import { knowledgeSchemas, type KnowledgeRequest, type KnowledgeFilters, type KnowledgeRelationView } from "@/shared/contracts/knowledge";
 import { createHash, randomUUID } from "node:crypto";
 
 import type { AuthenticatedPrincipal, IdentityService, KnowledgeProject } from "@/server/modules/identity";
@@ -157,11 +157,11 @@ export class KnowledgeService {
     return thread;
   }
 
-  listReplies(projectId: string, threadId: string, actor: AuthenticatedPrincipal, options: KnowledgePageOptions = {}): KnowledgePage<KnowledgeReply> {
+  listReplies(projectId: string, threadId: string, actor: AuthenticatedPrincipal, options: KnowledgePageOptions & { targetReplyId?: string } = {}) {
     this.identity.authorizeKnowledge(actor, projectId, "knowledge:read");
     if (!this.store.getThread(projectId, threadId)) throw new KnowledgeError("not_found", "Nie znaleziono wątku.");
     const page = this.page(options);
-    return this.store.listReplies(projectId, threadId, page.limit, page.offset);
+    return this.store.listReplies(projectId, threadId, page.limit, page.offset, options.targetReplyId);
   }
 
   listTasks(projectId: string, actor: AuthenticatedPrincipal, options: KnowledgePageOptions & KnowledgeFilters = {}): KnowledgeTaskPage<KnowledgeTask> {
@@ -177,10 +177,14 @@ export class KnowledgeService {
     return task;
   }
 
-  relations(projectId: string, recordKind: KnowledgeRecordKind, recordId: string, actor: AuthenticatedPrincipal, options: KnowledgePageOptions = {}): KnowledgePage<KnowledgeRelation> {
+  relations(projectId: string, recordKind: KnowledgeRecordKind, recordId: string, actor: AuthenticatedPrincipal, options: KnowledgePageOptions = {}): KnowledgePage<KnowledgeRelationView> {
     this.identity.authorizeKnowledge(actor, projectId, "knowledge:read");
     const page = this.page(options);
-    return this.store.listRelations(projectId, recordKind, recordId, page.limit, page.offset);
+    const relations = this.store.listRelations(projectId, recordKind, recordId, page.limit, page.offset);
+    const endpoints = relations.items.map(relation => relation.sourceKind === recordKind && relation.sourceId === recordId
+      ? { kind: relation.targetKind, id: relation.targetId } : { kind: relation.sourceKind, id: relation.sourceId });
+    const destinations = this.store.relationDestinations(projectId, endpoints);
+    return { ...relations, items: relations.items.map((relation, index) => ({ ...relation, destination: destinations[index] ?? null })) };
   }
 
   history(projectId: string, recordKind: KnowledgeHistoryEntry["recordKind"], recordId: string, actor: AuthenticatedPrincipal, options: KnowledgePageOptions = {}): KnowledgePage<KnowledgeHistoryEntry> {

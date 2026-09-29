@@ -15,32 +15,44 @@ import { knowledgeRequest, KnowledgeClientError } from "./knowledge-client";
 import { MemoryEditor, knowledgeRetryKey } from "./memory-editor";
 import { fieldClass } from "./knowledge-editor";
 import type { KnowledgeTab } from "./use-knowledge";
+import { clearMemorySearch, defaultMemorySearch, memoryResultHref, memoryResultKey, memorySearchScope, readMemorySearch, writeMemorySearch, type MemorySearchState } from "./memory-navigation";
 
 export { knowledgeSourceHref as sourceHref } from "@/shared/contracts/knowledge-links";
 
 type MemoryPanelProps = {
   token: string; principalId: string; projectId: string; recordId: string; writable: boolean; approvable: boolean; changeVersion: number;
-  onSelect: (tab: KnowledgeTab, id: string) => void;
-};
-type MemorySearchState = {
-  query: string; tag: string; legacyId: string; kind: KnowledgeSearchHit["kind"] | "";
-  status: "active" | "archived" | "superseded" | "open" | "in_progress" | "blocked" | "done" | "";
-  inactive: boolean; offset: number;
+  onSelect: (tab: KnowledgeTab, id: string, replyId?: string, fromSearch?: boolean) => void;
 };
 
 export function MemoryPanel(props: MemoryPanelProps) {
-  const [search, setSearch] = useState<MemorySearchState>({ query: "", tag: "", legacyId: "", kind: "memory", status: "", inactive: false, offset: 0 });
+  const { t } = useI18n();
+  const [search, setSearch] = useState<MemorySearchState>(defaultMemorySearch);
+  const [ready, setReady] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [readerExpanded, setReaderExpanded] = useState(false);
   const listScrollRef = useRef(0);
   const returnFocusIdRef = useRef("");
   const previousRecordIdRef = useRef(props.recordId);
   useEffect(() => {
-    if (previousRecordIdRef.current && !props.recordId) returnFocusIdRef.current = previousRecordIdRef.current;
+    if (previousRecordIdRef.current && !props.recordId) returnFocusIdRef.current = memoryResultKey("memory", previousRecordIdRef.current);
     previousRecordIdRef.current = props.recordId;
   }, [props.recordId]);
+  useEffect(() => {
+    const sync = () => {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has("memoryPrincipal") && !memorySearchScope(url.searchParams, props.principalId, props.projectId)) {
+        clearMemorySearch(url.searchParams); window.history.replaceState(null, "", url);
+      }
+      setSearch(readMemorySearch(url.searchParams, props.principalId, props.projectId));
+      returnFocusIdRef.current = url.searchParams.get("memoryResult") ?? "";
+      setReady(true);
+    };
+    sync(); window.addEventListener("popstate", sync);
+    return () => window.removeEventListener("popstate", sync);
+  }, [props.principalId, props.projectId]);
   // Search survives selection; pending writes and drafts belong to one record.
-  return <MemoryPanelContent key={props.recordId} {...props} onSelect={(tab, id) => { setReaderExpanded(false); props.onSelect(tab, id); }} search={search} setSearch={setSearch} filtersOpen={filtersOpen} setFiltersOpen={setFiltersOpen} readerExpanded={readerExpanded} setReaderExpanded={setReaderExpanded} listScrollRef={listScrollRef} returnFocusIdRef={returnFocusIdRef} />;
+  if (!ready) return <p role="status">{t("knowledge.loading")}</p>;
+  return <MemoryPanelContent key={props.recordId} {...props} onSelect={(tab, id, replyId, fromSearch) => { setReaderExpanded(false); props.onSelect(tab, id, replyId, fromSearch); }} search={search} setSearch={setSearch} filtersOpen={filtersOpen} setFiltersOpen={setFiltersOpen} readerExpanded={readerExpanded} setReaderExpanded={setReaderExpanded} listScrollRef={listScrollRef} returnFocusIdRef={returnFocusIdRef} />;
 }
 
 function MemoryPanelContent({ token, principalId, projectId, recordId, writable, approvable, changeVersion, onSelect, search, setSearch, filtersOpen, setFiltersOpen, readerExpanded, setReaderExpanded, listScrollRef, returnFocusIdRef }: MemoryPanelProps & {
@@ -71,6 +83,10 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
   const changeSearch = (next: MemorySearchState) => {
     listScrollRef.current = 0;
     listRef.current?.scrollTo({ top: 0 });
+    returnFocusIdRef.current = "";
+    const url = new URL(window.location.href);
+    writeMemorySearch(url.searchParams, next, principalId, projectId);
+    window.history.replaceState(null, "", url);
     setSearch(next);
   };
   useEffect(() => { if (pageLoaded && listRef.current) listRef.current.scrollTop = listScrollRef.current; }, [pageLoaded, listScrollRef]);
@@ -81,7 +97,8 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
       focusedMobileRecordId.current = recordId;
     }
     if (!recordId && returnFocusIdRef.current && pageLoaded) {
-      const link = Array.from(listRef.current?.querySelectorAll<HTMLAnchorElement>("a[data-record-id]") ?? []).find(node => node.dataset.recordId === returnFocusIdRef.current);
+      const link = Array.from(listRef.current?.querySelectorAll<HTMLAnchorElement>("a[data-result-key]") ?? []).find(node => node.dataset.resultKey === returnFocusIdRef.current);
+      link?.scrollIntoView({ block: "nearest" });
       (link ?? document.getElementById("memory-query"))?.focus({ preventScroll: true });
       returnFocusIdRef.current = "";
     }
@@ -128,7 +145,7 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
   const editorTriggerRef = useRef<HTMLButtonElement | null>(null);
   const activeFilterCount = Number(Boolean(kind)) + Number(Boolean(tag)) + Number(Boolean(legacyId)) + Number(Boolean(status)) + Number(inactive);
   return <div className="flex min-h-0 flex-1 flex-col gap-3">
-    <form className={`space-y-3 ${recordId ? "hidden lg:block" : ""}`} onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); changeSearch({ query: String(data.get("query") ?? ""), tag: String(data.get("tag") ?? ""), legacyId: String(data.get("legacy") ?? ""), kind: String(data.get("kind")) as typeof kind, status: String(data.get("status") ?? "") as typeof status, inactive: data.has("inactive"), offset: 0 }); setError(""); setVersion(v => v + 1); }}>
+    <form key={`${query}\0${tag}\0${legacyId}\0${kind}\0${status}\0${inactive}`} className={`space-y-3 ${recordId ? "hidden lg:block" : ""}`} onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); changeSearch({ query: String(data.get("query") ?? ""), tag: String(data.get("tag") ?? ""), legacyId: String(data.get("legacy") ?? ""), kind: String(data.get("kind")) as typeof kind, status: String(data.get("status") ?? "") as typeof status, inactive: data.has("inactive"), offset: 0 }); setError(""); setVersion(v => v + 1); }}>
       <div className="flex flex-wrap items-end gap-3"><div className="min-w-[min(100%,16rem)] flex-1 space-y-1.5"><Label htmlFor="memory-query">{t("knowledge.searchContent")}</Label><div className="relative"><Search aria-hidden className="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground" /><Input className="h-9 pl-9" id="memory-query" name="query" defaultValue={query} maxLength={200} /></div></div>
       <Button className="h-9" type="button" variant="outline" aria-expanded={filtersOpen} aria-controls="memory-extra-filters" onClick={() => setFiltersOpen(!filtersOpen)}><SlidersHorizontal aria-hidden className="size-4" />{t("knowledgeLayout.moreFilters")}{activeFilterCount > 0 && <span className="rounded-full bg-primary/15 px-1.5 text-xs tabular-nums">{activeFilterCount}</span>}</Button>
       <Button className="h-9" type="submit" variant="outline">{t("knowledge.filter")}</Button>
@@ -149,17 +166,24 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
       </DialogContent>}
     </Dialog>
     <div className={`grid min-w-0 flex-1 grid-cols-1 rounded-xl border border-border bg-card/30 lg:min-h-0 lg:overflow-hidden ${recordId && !readerExpanded ? "lg:grid-cols-[minmax(320px,360px)_minmax(0,1fr)]" : ""}`} data-memory-layout>
-      <div className={`min-h-0 min-w-0 flex-col ${recordId ? readerExpanded ? "hidden" : "hidden lg:flex lg:border-r lg:border-border" : "flex"}`} data-memory-list><ul ref={listRef} onScroll={event => { if (pageLoaded) listScrollRef.current = event.currentTarget.scrollTop; }} className="min-h-0 flex-1 divide-y divide-border overflow-y-auto overscroll-contain" tabIndex={0} role="region" aria-label={t("knowledge.results")}>{page.items.map(row => <li className={`p-4 ${row.id === recordId ? "border-l-2 border-l-primary bg-primary/10" : "border-l-2 border-l-transparent"}`} key={`${row.kind}:${row.id}`}><a data-record-id={row.threadId ?? row.id} aria-current={row.id === recordId ? "true" : undefined} className={`block break-words text-base font-medium leading-snug hover:underline ${row.id === recordId ? "text-foreground" : ""}`} href={sourceHref(projectId, { kind: row.kind === "reply" ? "thread" : row.kind, id: row.threadId ?? row.id, revision: row.revision })} onClick={event => {
-        if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      <div className={`min-h-0 min-w-0 flex-col ${recordId ? readerExpanded ? "hidden" : "hidden lg:flex lg:border-r lg:border-border" : "flex"}`} data-memory-list><ul ref={listRef} onScroll={event => { if (pageLoaded) listScrollRef.current = event.currentTarget.scrollTop; }} className="min-h-0 flex-1 divide-y divide-border overflow-y-auto overscroll-contain" tabIndex={0} role="region" aria-label={t("knowledge.results")}>{page.items.map(row => {
+        const href = sourceHref(projectId, { kind: row.kind, id: row.id, revision: row.revision }, row.threadId ?? undefined);
+        const title = row.kind === "reply" ? t("knowledge.replyInThread", { title: row.title }) : row.title;
+        return <li className={`p-4 ${row.id === recordId ? "border-l-2 border-l-primary bg-primary/10" : "border-l-2 border-l-transparent"}`} key={`${row.kind}:${row.id}`}>{href ? <a data-result-key={memoryResultKey(row.kind, row.id)} aria-current={row.id === recordId ? "true" : undefined} className={`block break-words text-base font-medium leading-snug hover:underline ${row.id === recordId ? "text-foreground" : ""}`} href={memoryResultHref(href, search, principalId, projectId, memoryResultKey(row.kind, row.id))} onClick={event => {
+        if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
         listScrollRef.current = listRef.current?.scrollTop ?? listScrollRef.current;
-        event.preventDefault(); setEditor(null); onSelect(row.kind === "memory" ? "memory" : row.kind === "task" ? "backlog" : "discussions", row.threadId ?? row.id);
-      }}>{row.title || t("knowledge.source.reply")}</a><p className="mt-1 text-xs text-muted-foreground">{t(`knowledge.source.${row.kind}`)}{row.kind === "memory" && row.reading?.kind === "imported-note" && <span> · {t("knowledge.importedNote")}</span>}</p><p className="mt-2 line-clamp-2 break-words text-sm text-muted-foreground">{!query && row.kind === "memory" && row.reading?.kind === "imported-note" && row.reading.bodyFormat !== "text" ? row.reading.summary || t("knowledge.importedSummaryFallback") : row.excerpt}</p></li>)}</ul>
+        const url = new URL(window.location.href);
+        writeMemorySearch(url.searchParams, search, principalId, projectId, memoryResultKey(row.kind, row.id));
+        window.history.replaceState(null, "", url);
+        event.preventDefault(); setEditor(null); onSelect(row.kind === "memory" ? "memory" : row.kind === "task" ? "backlog" : "discussions", row.threadId ?? row.id, row.kind === "reply" ? row.id : undefined, true);
+      }}>{title}</a> : <span className="block break-words text-base font-medium">{title} · {t("knowledge.relationUnavailable")}</span>}<p className="mt-1 text-xs text-muted-foreground">{t(`knowledge.source.${row.kind}`)}{row.kind === "memory" && row.reading?.kind === "imported-note" && <span> · {t("knowledge.importedNote")}</span>}{query && row.matchSource && row.matchSource !== "body" && <span> · {t(row.matchSource === "title" ? "knowledge.searchTitleMatch" : "knowledge.searchMetadataMatch")}</span>}</p><p data-search-excerpt className={`mt-2 break-words text-sm text-muted-foreground ${query ? "" : "line-clamp-2"}`}>{!query && row.kind === "memory" && row.reading?.kind === "imported-note" && row.reading.bodyFormat !== "text" ? row.reading.summary || t("knowledge.importedSummaryFallback") : row.excerpt}</p></li>;
+      })}</ul>
         {pageError && <div className="space-y-2 p-4"><p role="alert" className="text-sm text-destructive">{t("knowledge.loadFailed")}</p><Button variant="outline" onClick={() => setVersion(value => value + 1)}>{t("knowledge.refresh")}</Button></div>}
         {!pageError && pageLoaded && !page.items.length && <p className="p-4 text-sm text-muted-foreground">{t("knowledge.empty")}</p>}
         {(offset > 0 || page.nextOffset !== null) && <div className="flex justify-between gap-2 border-t border-border p-3"><Button variant="outline" disabled={!offset} onClick={() => changeSearch({ ...search, offset: Math.max(0, offset - 25) })}>{t("knowledge.previous")}</Button><Button variant="outline" disabled={page.nextOffset === null} onClick={() => changeSearch({ ...search, offset: page.nextOffset! })}>{t("knowledge.nextPage")}</Button></div>}
       </div>
       {recordId && <article ref={readerRef} tabIndex={-1} className="flex min-w-0 flex-col lg:min-h-0" data-memory-detail>
-        <div className="flex shrink-0 justify-between border-b border-border px-5 py-2 sm:px-7"><Button variant="ghost" className="lg:hidden" onClick={() => { returnFocusIdRef.current = recordId; onSelect("memory", ""); }}><ArrowLeft aria-hidden className="size-4" />{t("knowledge.backToList")}</Button><Button variant="ghost" className="ml-auto hidden lg:inline-flex" aria-pressed={readerExpanded} onClick={() => setReaderExpanded(!readerExpanded)}>{readerExpanded ? <Shrink aria-hidden className="size-4" /> : <Expand aria-hidden className="size-4" />}{t(readerExpanded ? "knowledgeLayout.showList" : "knowledgeLayout.expandReader")}</Button></div>
+        <div className="flex shrink-0 justify-between border-b border-border px-5 py-2 sm:px-7"><Button variant="ghost" className="lg:hidden" onClick={() => { returnFocusIdRef.current = memoryResultKey("memory", recordId); onSelect("memory", ""); }}><ArrowLeft aria-hidden className="size-4" />{t("knowledge.backToList")}</Button><Button variant="ghost" className="ml-auto hidden lg:inline-flex" aria-pressed={readerExpanded} onClick={() => setReaderExpanded(!readerExpanded)}>{readerExpanded ? <Shrink aria-hidden className="size-4" /> : <Expand aria-hidden className="size-4" />}{t(readerExpanded ? "knowledgeLayout.showList" : "knowledgeLayout.expandReader")}</Button></div>
         <div tabIndex={0} role="region" aria-label={t("knowledgeLayout.reader")} className="min-w-0 p-5 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain sm:p-7" data-memory-detail-scroll>
         {record ? <div className={`mx-auto max-w-4xl ${documentOpen ? "space-y-3" : "space-y-5"}`}>
         <h3 tabIndex={-1} className={`break-words font-semibold ${documentOpen ? "text-base leading-snug" : "text-2xl leading-tight"}`}>{record.title}</h3>

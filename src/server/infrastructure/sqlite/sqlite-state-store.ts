@@ -1,4 +1,4 @@
-import type { KnowledgeTaskPage } from "@/shared/contracts/knowledge";
+import type { KnowledgeTaskPage, KnowledgeReplyPage, KnowledgeRelationDestination } from "@/shared/contracts/knowledge";
 import type { KnowledgeMemory, KnowledgeSearchHit, KnowledgeSearchOptions } from "@/shared/contracts/knowledge-memory";
 import type { KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
 import type { KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
@@ -744,12 +744,16 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     return this.knowledge.getThread(projectId, id);
   }
 
-  listReplies(projectId: string, threadId: string, limit: number, offset: number): KnowledgePage<KnowledgeReply> {
-    return this.knowledge.listReplies(projectId, threadId, limit, offset);
+  listReplies(projectId: string, threadId: string, limit: number, offset: number, targetReplyId?: string): KnowledgeReplyPage {
+    return this.knowledge.listReplies(projectId, threadId, limit, offset, targetReplyId);
   }
 
   listRelations(projectId: string, recordKind: KnowledgeRelation["sourceKind"], recordId: string, limit: number, offset: number): KnowledgePage<KnowledgeRelation> {
     return this.knowledge.listRelations(projectId, recordKind, recordId, limit, offset);
+  }
+
+  relationDestinations(projectId: string, endpoints: Array<{kind: KnowledgeRelation["sourceKind"]; id: string}>): Array<KnowledgeRelationDestination | null> {
+    return this.knowledge.relationDestinations(projectId, endpoints);
   }
 
   getTask(projectId: string, id: string): KnowledgeTask | null {

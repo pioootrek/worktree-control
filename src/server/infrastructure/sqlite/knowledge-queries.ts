@@ -1,6 +1,6 @@
 import type { KnowledgeTaskPage } from "@/shared/contracts/knowledge";
 import type { KnowledgeMemory, KnowledgeMemoryReading, KnowledgeSearchHit, KnowledgeSearchOptions } from "@/shared/contracts/knowledge-memory";
-import type { KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
+import type { KnowledgeFilters, KnowledgeProjectSummary, KnowledgeRelationDestination, KnowledgeReplyPage } from "@/shared/contracts/knowledge";
 import Database from "better-sqlite3";
 
 import {
@@ -19,6 +19,7 @@ import {
 import type { KnowledgeProject, KnowledgeProjectRuntimeLink } from "@/server/modules/identity";
 import type { KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
 import { readingFromImport } from "./knowledge-memory-reading";
+import { searchExcerpt } from "./knowledge-search-snippet";
 import { compactPreview, importedRecordId, importedTaskPreview, importedTaskTopic, verifiedThreadSourceSql } from "./knowledge-thread-presentation";
 
 type ThreadRow = { id: string; project_id: string; title: string; body: string; revision: number; created_by: string; created_at: string; updated_at: string; display_title?: string | null; source_preview?: string | null; reply_count?: number };
@@ -58,7 +59,8 @@ const mapReply = (row: ReplyRow): KnowledgeReply => ({ id: row.id, projectId: ro
 // provenance lookup exact, including extra rows with unrelated source paths.
 // A source ordinal is trusted only with a unique source, its deterministic
 // imported identity, and the matching parent task/thread relation.
-export const replyReadSql = (byId: boolean): string => `WITH reply_rows AS MATERIALIZED (
+const replyOrderSql = "ORDER BY CASE WHEN source_ordinal IS NOT NULL THEN 0 WHEN source_count>0 THEN 1 ELSE 2 END, source_ordinal, created_at, id";
+export const replyReadSql = (byId: boolean, locateTarget = false): string => `WITH reply_rows AS MATERIALIZED (
   SELECT * FROM knowledge_replies r WHERE r.project_id=@projectId AND ${byId ? "r.id=@replyId" : "r.thread_id=@threadId"}
 ), candidates AS (
   SELECT r.*, s.id provenance_id, s.source_path, s.legacy_id, s.source_id,
@@ -118,8 +120,8 @@ export const replyReadSql = (byId: boolean): string => `WITH reply_rows AS MATER
       THEN max(CASE WHEN json_valid(original_payload_json) THEN json_extract(original_payload_json,'$.date') END) END source_date
   FROM scored GROUP BY id
 )
-SELECT * FROM collapsed
-${byId ? "" : "ORDER BY CASE WHEN source_ordinal IS NOT NULL THEN 0 WHEN source_count>0 THEN 1 ELSE 2 END, source_ordinal, created_at, id LIMIT @limit OFFSET @offset"}`;
+${locateTarget ? `SELECT ordinal - 1 AS offset FROM (SELECT id, row_number() OVER (${replyOrderSql}) AS ordinal FROM collapsed) WHERE id=@targetReplyId`
+  : `SELECT * FROM collapsed ${byId ? "" : `${replyOrderSql} LIMIT @limit OFFSET @offset`}`}`;
 const mapTask = (row: TaskRow): KnowledgeTask => ({ id: row.id, projectId: row.project_id, title: row.title, description: row.description, status: row.status, priority: row.priority, revision: row.revision, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at });
 
 /** Borrows the controller's singleton connection and owns no lifecycle. */
@@ -294,23 +296,39 @@ export class KnowledgeQueries implements KnowledgeStore {
 
   searchKnowledge(projectId: string, limit: number, offset: number, options: KnowledgeSearchOptions): KnowledgePage<KnowledgeSearchHit> {
     // Parameterized literal substring search matches Polish case folding and does not interpret SQL/FTS syntax.
-    const rows = this.database.prepare(`WITH records AS (
-      SELECT id, project_id, 'thread' AS kind, title, body, revision, 'active' AS status, updated_at, NULL AS thread_id, '[]' AS tags_json, NULL AS legacy_id FROM knowledge_threads WHERE project_id = @projectId
-      UNION ALL SELECT id, project_id, 'reply', '', body, revision, 'active', updated_at, thread_id, '[]', NULL FROM knowledge_replies WHERE project_id = @projectId
-      UNION ALL SELECT id, project_id, 'task', title, description, revision, status, updated_at, NULL, '[]', NULL FROM knowledge_tasks WHERE project_id = @projectId
-      UNION ALL SELECT id, project_id, 'memory', title, body, revision, status, updated_at, NULL, tags_json, legacy_id FROM knowledge_memories WHERE project_id = @projectId
-    ) SELECT id, project_id AS projectId, kind, title, substr(body, 1, 300) AS excerpt, revision, status, updated_at AS updatedAt, thread_id AS threadId FROM records
+    // A selected kind uses only its table. Task/memory searches never run the
+    // verified imported-topic projection, which is needed only for discussions.
+    const kinds = options.kind ? [options.kind] : ["thread", "reply", "task", "memory"];
+    const needsTopic = kinds.includes("thread") || kinds.includes("reply");
+    const arms = [] as string[];
+    if (kinds.includes("thread")) arms.push(`SELECT t.id, t.project_id, 'thread' AS kind, coalesce(v.display_title,t.title) title, t.title raw_title, t.body, t.revision, 'active' AS status, t.updated_at, NULL AS thread_id, '[]' AS tags_json, NULL AS legacy_id
+      FROM knowledge_threads t LEFT JOIN verified v ON v.thread_id=t.id WHERE t.project_id=@projectId`);
+    if (kinds.includes("reply")) arms.push(`SELECT r.id, r.project_id, 'reply', coalesce(v.display_title,t.title), t.title, r.body, r.revision, 'active', r.updated_at, r.thread_id, '[]', NULL
+      FROM knowledge_replies r JOIN knowledge_threads t ON t.project_id=r.project_id AND t.id=r.thread_id
+      LEFT JOIN verified v ON v.thread_id=t.id WHERE r.project_id=@projectId`);
+    if (kinds.includes("task")) arms.push("SELECT id, project_id, 'task', title, title, description, revision, status, updated_at, NULL, '[]', NULL FROM knowledge_tasks WHERE project_id = @projectId");
+    if (kinds.includes("memory")) arms.push("SELECT id, project_id, 'memory', title, title, body, revision, status, updated_at, NULL, tags_json, legacy_id FROM knowledge_memories WHERE project_id = @projectId");
+    const rows = this.database.prepare(`WITH ${needsTopic ? `verified AS (${verifiedThreadSourceSql(false)}),` : ""}
+      records(id,project_id,kind,title,raw_title,body,revision,status,updated_at,thread_id,tags_json,legacy_id)
+      AS (${arms.join(" UNION ALL ")})
+      SELECT id, project_id AS projectId, kind, title, body, raw_title AS rawTitle, revision, status, updated_at AS updatedAt, thread_id AS threadId FROM records
       WHERE (@inactive OR @status IN ('archived', 'superseded') OR status NOT IN ('archived', 'superseded'))
       AND (@kind IS NULL OR kind = @kind) AND (@status IS NULL OR status = @status)
       AND (@legacyId IS NULL OR legacy_id = @legacyId)
       AND (@tag IS NULL OR EXISTS(SELECT 1 FROM json_each(tags_json) WHERE knowledge_fold(value) = knowledge_fold(@tag)))
-      AND instr(knowledge_fold(title || char(10) || body || char(10) || coalesce((SELECT group_concat(value, char(10)) FROM json_each(tags_json)), '') || char(10) || coalesce(legacy_id, '')), knowledge_fold(@query)) > 0
+      AND instr(knowledge_fold(title || char(10) || raw_title || char(10) || body || char(10) || coalesce((SELECT group_concat(value, char(10)) FROM json_each(tags_json)), '') || char(10) || coalesce(legacy_id, '')), knowledge_fold(@query)) > 0
       ORDER BY updatedAt DESC, kind, id LIMIT @limit OFFSET @offset`).all({ projectId, limit: limit + 1, offset,
         query: options.query ?? '', kind: options.kind ?? null, status: options.status ?? null, legacyId: options.legacyId ?? null,
-        tag: options.tag ?? null, inactive: Number(options.includeInactive ?? false) }) as KnowledgeSearchHit[];
-    const memoryHits = rows.filter(item => item.kind === "memory");
+        tag: options.tag ?? null, inactive: Number(options.includeInactive ?? false) }) as Array<Omit<KnowledgeSearchHit,"excerpt"> & {body:string;rawTitle:string}>;
+    const hits = rows.map(({body,rawTitle,...item}) => {
+      const snippet = searchExcerpt(body, options.query ?? "");
+      const needle = (options.query ?? "").normalize("NFC").toLowerCase();
+      const titleMatches = Boolean(needle && [item.title,rawTitle].some(value => value.normalize("NFC").toLowerCase().includes(needle)));
+      return {...item,excerpt:snippet.excerpt,matchSource:snippet.matchedBody ? "body" as const : titleMatches ? "title" as const : "metadata" as const};
+    });
+    const memoryHits = hits.filter(item => item.kind === "memory");
     const projected = new Map(this.withMemoryReadings(projectId, memoryHits).map(item => [item.id, item.reading]));
-    return this.page(rows.map(item => item.kind === "memory" && projected.get(item.id) ? { ...item, reading: projected.get(item.id)! } : item), limit, offset);
+    return this.page(hits.map(item => item.kind === "memory" && projected.get(item.id) ? { ...item, reading: projected.get(item.id)! } : item), limit, offset);
   }
 
   /** A null principal is the installation authority: every project, always writable. */
@@ -367,12 +385,42 @@ export class KnowledgeQueries implements KnowledgeStore {
       .get({ projectId, id }) as ThreadRow | undefined;
     return row ? mapThread(row) : null;
   }
-  listReplies(projectId: string, threadId: string, limit: number, offset: number): KnowledgePage<KnowledgeReply> {
-    return this.page((this.database.prepare(replyReadSql(false)).all({projectId,threadId,limit:limit+1,offset}) as ReplyRow[]).map(mapReply), limit, offset);
+  listReplies(projectId: string, threadId: string, limit: number, offset: number, targetReplyId?: string): KnowledgeReplyPage {
+    const location = targetReplyId ? this.database.prepare(replyReadSql(false, true)).get({projectId,threadId,targetReplyId}) as {offset:number}|undefined : undefined;
+    const actualOffset = targetReplyId && location ? Math.floor(location.offset / limit) * limit : offset;
+    const page = this.page((this.database.prepare(replyReadSql(false)).all({projectId,threadId,limit:limit+1,offset:actualOffset}) as ReplyRow[]).map(mapReply), limit, actualOffset);
+    return {...page,offset:actualOffset,...(targetReplyId ? {targetFound:Boolean(location)} : {})};
   }
   listRelations(projectId: string, recordKind: KnowledgeRelation["sourceKind"], recordId: string, limit: number, offset: number): KnowledgePage<KnowledgeRelation> {
     const rows = (this.database.prepare(`SELECT * FROM knowledge_relations WHERE project_id = ? AND ((source_kind = ? AND source_id = ?) OR (target_kind = ? AND target_id = ?)) ORDER BY created_at, id LIMIT ? OFFSET ?`).all(projectId, recordKind, recordId, recordKind, recordId, limit + 1, offset) as RelationRow[]).map((row) => ({ id: row.id, projectId: row.project_id, type: row.type, sourceKind: row.source_kind, sourceId: row.source_id, targetKind: row.target_kind, targetId: row.target_id, revision: row.revision, createdBy: row.created_by, createdAt: row.created_at }));
     return this.page(rows, limit, offset);
+  }
+  relationDestinations(projectId: string, endpoints: Array<{kind: KnowledgeRelation["sourceKind"]; id: string}>): Array<KnowledgeRelationDestination | null> {
+    if (!endpoints.length) return [];
+    const rows = this.database.prepare(`WITH requested AS MATERIALIZED (
+      SELECT json_extract(value,'$.kind') kind, json_extract(value,'$.id') id FROM json_each(@endpoints)
+    ), thread_ids AS (
+      SELECT id FROM requested WHERE kind='thread'
+      UNION SELECT r.thread_id FROM knowledge_replies r JOIN requested q ON q.kind='reply' AND q.id=r.id WHERE r.project_id=@projectId
+    ), verified AS (${verifiedThreadSourceSql(false, "AND t.id IN (SELECT id FROM thread_ids)")})
+    SELECT q.kind, q.id,
+      CASE q.kind WHEN 'task' THEN task.title WHEN 'memory' THEN memory.title
+        WHEN 'thread' THEN coalesce(v.display_title,thread.title)
+        WHEN 'reply' THEN coalesce(parent_v.display_title,parent.title) END title,
+      CASE q.kind WHEN 'task' THEN task.status WHEN 'memory' THEN memory.status END status,
+      CASE q.kind WHEN 'reply' THEN reply.thread_id END threadId
+    FROM requested q
+    LEFT JOIN knowledge_tasks task ON q.kind='task' AND task.project_id=@projectId AND task.id=q.id
+    LEFT JOIN knowledge_memories memory ON q.kind='memory' AND memory.project_id=@projectId AND memory.id=q.id
+    LEFT JOIN knowledge_threads thread ON q.kind='thread' AND thread.project_id=@projectId AND thread.id=q.id
+    LEFT JOIN knowledge_replies reply ON q.kind='reply' AND reply.project_id=@projectId AND reply.id=q.id
+    LEFT JOIN knowledge_threads parent ON parent.project_id=@projectId AND parent.id=reply.thread_id
+    LEFT JOIN verified v ON v.thread_id=thread.id
+    LEFT JOIN verified parent_v ON parent_v.thread_id=parent.id`).all({projectId,endpoints:JSON.stringify(endpoints)}) as Array<{kind:KnowledgeRelationDestination["kind"];id:string;title:string|null;status:KnowledgeRelationDestination["status"]|null;threadId:string|null}>;
+    const found = new Map(rows.filter(row => row.title !== null && (row.kind !== "reply" || row.threadId)).map(row => [`${row.kind}\0${row.id}`,{
+      kind:row.kind,id:row.id,title:row.title!,...(row.status ? {status:row.status} : {}),...(row.threadId ? {threadId:row.threadId} : {})
+    }]));
+    return endpoints.map(({kind,id}) => found.get(`${kind}\0${id}`) ?? null);
   }
   getTask(projectId: string, id: string): KnowledgeTask | null {
     const row = this.database.prepare("SELECT * FROM knowledge_tasks WHERE project_id = ? AND id = ?").get(projectId, id) as TaskRow | undefined;

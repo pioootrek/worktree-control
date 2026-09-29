@@ -11,7 +11,7 @@ import { AuthenticationService } from "@/server/modules/authentication";
 import { calculateHubImportPlanHash, executeHubImport, exportKnowledgeProject, importKnowledgeProject, KnowledgeService, type HubImportMapping, type HubImportPlan } from "@/server/modules/knowledge";
 import { SqliteStateStore } from "./sqlite-state-store";
 import { KnowledgeQueries, replyReadSql } from "./knowledge-queries";
-import { verifiedThreadSourceSql } from "./knowledge-thread-presentation";
+import { importedRecordId, importedTaskTopic, verifiedThreadSourceSql } from "./knowledge-thread-presentation";
 
 const roots:string[]=[];
 afterEach(()=>roots.splice(0).forEach(root=>rmSync(root,{recursive:true,force:true})));
@@ -47,7 +47,25 @@ describe("K6b Hub import execution",()=>{
     expect(original.threads[0]).toMatchObject({title:"Imported discussion: A",body:`Historical comments imported from ${sourcePath}`});
     expect(original.threads[0]).not.toHaveProperty("presentation");
     const db=new Database(join(f.root,"state.sqlite3"));
-    new KnowledgeQueries(db);
+    const queries=new KnowledgeQueries(db);
+    let topicCalls=0, hashCalls=0;
+    db.function("knowledge_import_topic",{deterministic:true},(value:unknown,legacyId:unknown,sourcePath:unknown)=>{
+      topicCalls+=1;return importedTaskTopic(value,legacyId,sourcePath);
+    });
+    db.function("knowledge_import_record_id",{deterministic:true},(projectId:unknown,sourceId:unknown,sourcePath:unknown,kind:unknown)=>{
+      hashCalls+=1;return importedRecordId(projectId,sourceId,sourcePath,kind);
+    });
+    expect(queries.searchKnowledge("topics",25,0,{kind:"thread",query:"storage"}).items.map(item=>item.id)).toContain(imported.id);
+    expect(topicCalls).toBeGreaterThan(0);
+    expect(hashCalls).toBeGreaterThan(0);
+    topicCalls=0;hashCalls=0;
+    topicCalls=0;hashCalls=0;
+    expect(queries.searchKnowledge("topics",25,0,{kind:"task",query:"storage"}).items).toHaveLength(1);
+    expect(topicCalls).toBe(0);
+    expect(hashCalls).toBe(0);
+    expect(queries.searchKnowledge("topics",25,0,{kind:"memory",query:"storage"}).items).toHaveLength(0);
+    expect(topicCalls).toBe(0);
+    expect(hashCalls).toBe(0);
     const queryPlan=db.prepare(`EXPLAIN QUERY PLAN WITH verified AS (${verifiedThreadSourceSql(true)}) SELECT * FROM verified`)
       .all({projectId:"topics",id:imported.id}) as Array<{detail:string}>;
     expect(queryPlan.some(step=>step.detail.includes("sqlite_autoindex_knowledge_threads_1") && step.detail.includes("id=?"))).toBe(true);
@@ -66,9 +84,16 @@ describe("K6b Hub import execution",()=>{
     expect(f.store.listThreads("topics",25,0,{query:"Imported discussion: A"}).items.map(thread=>thread.id)).toContain(imported.id);
     expect(matching("%_missing")).toEqual([]);
     expect(f.store.listThreads("topics",25,0,{query:"controller"}).items).toEqual([]);
+    const searchThread=f.store.searchKnowledge("topics",1,0,{kind:"thread",query:"ło\u0301dz\u0301 STORAGE"});
+    expect(searchThread.items[0]).toMatchObject({id:imported.id,title:"ŁÓDŹ storage decision",matchSource:"title"});
+    const searchReply=f.store.searchKnowledge("topics",25,0,{kind:"reply",query:"łódź storage"});
+    expect(searchReply.items[0]).toMatchObject({kind:"reply",title:"ŁÓDŹ storage decision",threadId:imported.id,matchSource:"title"});
+    db.prepare("INSERT INTO knowledge_replies VALUES (?,?,?,?,1,?,?,?)").run("late-hit","topics",imported.id,`${"Start ".repeat(110)}A [literal] %_ near the end`,"installation",NOW,NOW);
+    const lateHit=f.store.searchKnowledge("topics",25,0,{kind:"reply",query:"[literal] %_"}).items[0]!;
+    expect(lateHit.excerpt).toContain("[literal] %_");expect(lateHit.excerpt.startsWith("…")).toBe(true);
     for(let index=1;index<=26;index++) db.prepare("INSERT INTO knowledge_replies VALUES (?,?,?,?,1,?,?,?)")
       .run(`native-reply-${index}`,"topics",imported.id,`Reply ${index}`,"installation",NOW,NOW);
-    expect(f.store.getThread("topics",imported.id)?.presentation?.replyCount).toBe(27);
+    expect(f.store.getThread("topics",imported.id)?.presentation?.replyCount).toBe(28);
     expect(f.store.listReplies("topics",imported.id,25,0).items).toHaveLength(25);
     expect(f.store.getThread("other-project",imported.id)).toBeNull();
     expect(f.store.listThreads("other-project",25,0,{query:"storage"}).items).toEqual([]);
@@ -151,6 +176,11 @@ describe("K6b Hub import execution",()=>{
     const first=f.store.listReplies("timeline",thread.id,25,0),second=f.store.listReplies("timeline",thread.id,25,first.nextOffset!);
     expect(first.nextOffset).toBe(25);expect(second.nextOffset).toBeNull();
     expect([...first.items,...second.items].map(reply=>reply.body)).toEqual([...Array.from({length:31},(_,index)=>`Source ${index}`),"New answer"]);
+    const targeted=f.store.listReplies("timeline",thread.id,25,0,second.items[4]!.id);
+    expect(targeted).toMatchObject({offset:25,targetFound:true});
+    expect(targeted.items[4]?.body).toBe("Source 29");
+    expect(f.store.listReplies("timeline",thread.id,25,0,native.id)).toMatchObject({offset:25,targetFound:true});
+    expect(f.store.listReplies("timeline",thread.id,25,0,"missing")).toMatchObject({offset:0,targetFound:false});
     expect(first.items[2]?.historicalImport).toMatchObject({sourceAttribution:"verified",sourceAuthor:"Author 2",sourceDate:"2026-02-31",sourceDateStatus:"invalid",sourceOrder:"verified"});
     expect(first.items[10]?.historicalImport).toMatchObject({sourceAttribution:"verified",sourceDate:null,sourceDateStatus:"missing",sourceOrder:"verified"});
     expect(second.items.at(-1)?.historicalImport).toBeUndefined();
@@ -165,6 +195,8 @@ describe("K6b Hub import execution",()=>{
     expect(queryPlan.some(step=>step.detail.includes("knowledge_replies_thread"))).toBe(true);
     expect(queryPlan.some(step=>step.detail.includes("knowledge_import_sources_target"))).toBe(true);
     expect(queryPlan.some(step=>step.detail.includes("knowledge_import_sources_project"))).toBe(true);
+    const targetPlan=db.prepare(`EXPLAIN QUERY PLAN ${replyReadSql(false,true)}`).all({projectId:"timeline",threadId:thread.id,targetReplyId:second.items[4]!.id}) as Array<{detail:string}>;
+    expect(targetPlan.some(step=>step.detail.includes("knowledge_replies_thread"))).toBe(true);
     db.prepare("UPDATE knowledge_tasks SET title='Edited topic' WHERE project_id='timeline'").run();
     db.prepare("UPDATE knowledge_threads SET title='Edited discussion',body='Edited context' WHERE id=?").run(thread.id);
     expect(f.store.listReplies("timeline",thread.id,40,0).items.map(reply=>reply.body)).toEqual([...Array.from({length:31},(_,index)=>`Source ${index}`),"New answer"]);

@@ -2,7 +2,7 @@ import type { KnowledgeTaskPage } from "@/shared/contracts/knowledge";
 import type { KnowledgeMemory, KnowledgeSearchHit, KnowledgeSearchOptions } from "@/shared/contracts/knowledge-memory";
 import type { AuthenticatedPrincipal, KnowledgeProject, KnowledgeProjectRuntimeLink } from "@/server/modules/identity";
 
-import type { KnowledgeRecordKind, KnowledgeThread, KnowledgeReply, KnowledgeTask, KnowledgeRelation, KnowledgeHistoryEntry, KnowledgeMutationResult, KnowledgePage, KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
+import type { KnowledgeRecordKind, KnowledgeThread, KnowledgeReply, KnowledgeReplyPage, KnowledgeTask, KnowledgeRelation, KnowledgeRelationDestination, KnowledgeHistoryEntry, KnowledgeMutationResult, KnowledgePage, KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
 import type { KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
 export type { KnowledgeRecordKind, KnowledgeTaskStatus, KnowledgeTaskPriority, KnowledgeRelationType, KnowledgeThread, KnowledgeReply, KnowledgeTask, KnowledgeRelation, KnowledgeHistoryEntry, KnowledgeMutationResult, KnowledgePage, KnowledgePageOptions, KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
 
@@ -61,8 +61,9 @@ export interface KnowledgeStore {
   findIdempotentResult<T>(operation: string, context: KnowledgeMutationContext): KnowledgeMutationResult<T> | null;
   listThreads(projectId: string, limit: number, offset: number, filters?: KnowledgeFilters): KnowledgePage<KnowledgeThread>;
   getThread(projectId: string, id: string): KnowledgeThread | null;
-  listReplies(projectId: string, threadId: string, limit: number, offset: number): KnowledgePage<KnowledgeReply>;
+  listReplies(projectId: string, threadId: string, limit: number, offset: number, targetReplyId?: string): KnowledgeReplyPage;
   listRelations(projectId: string, recordKind: KnowledgeRecordKind, recordId: string, limit: number, offset: number): KnowledgePage<KnowledgeRelation>;
+  relationDestinations(projectId: string, endpoints: Array<{kind: KnowledgeRecordKind; id: string}>): Array<KnowledgeRelationDestination | null>;
   getTask(projectId: string, id: string): KnowledgeTask | null;
   listTasks(projectId: string, limit: number, offset: number, filters?: KnowledgeFilters): KnowledgeTaskPage<KnowledgeTask>;
   listHistory(projectId: string, recordKind: KnowledgeHistoryEntry["recordKind"], recordId: string, limit: number, offset: number): KnowledgePage<KnowledgeHistoryEntry>;
