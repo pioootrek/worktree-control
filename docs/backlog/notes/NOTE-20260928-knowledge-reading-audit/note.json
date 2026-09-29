@@ -8,7 +8,7 @@
     "evidence": "evidence.json",
     "foundation_progress": "foundation-progress.md",
     "implementation_plan": "implementation-plan.md",
-    "implementation_status": "PRs #58–63 merged. Discussion clarity delivered at 20fb1d1 after green final CI; 12 imported pilot threads and native create/reply verified. Report/evidence in discussion-progress.md. Broader GUI rework remains open.",
+    "implementation_status": "PRs #58–63 merged. Owner accepted reply chronology/attribution stage on 2026-09-29; Sol high implementing on isolated worktree from bbcdef9. Plan in reply-chronology-plan.md. Broader GUI rework remains open.",
     "layout_direction": "layout-direction.md",
     "layout_owner_direction": "Owner authorized whole-layout rework and standards on 2026-09-28; implementation delegated to Sol on worktrees.",
     "markdown_decision": "Owner accepted imported Markdown as optional document attachments; no changes to description format or Knowledge data model. This discussion is resolved.",
@@ -21,6 +21,7 @@
       "FEAT-20260905-shared-project-memory",
       "NOTE-20260911-approved-gui-direction"
     ],
+    "reply_chronology_plan": "reply-chronology-plan.md",
     "report": "visual-audit.md",
     "runtime_evidence": "runtime-evidence.json",
     "runtime_report": "runtime-audit.md",
@@ -143,7 +144,8 @@
     "discussion-screenshots/en-light-short.png",
     "discussion-screenshots/original-details.png",
     "discussion-screenshots/zoom-list.png",
-    "discussion-screenshots/zoom-reader.png"
+    "discussion-screenshots/zoom-reader.png",
+    "reply-chronology-plan.md"
   ],
   "id": "NOTE-20260928-knowledge-reading-audit",
   "last_reviewed": "2026-09-28",

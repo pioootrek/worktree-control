@@ -111,6 +111,11 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "Discussion clarity PR #63 merged as 20fb1d1 after green Verify 36486390377 on 6122e4a. Sol implemented verified topics/previews, complete counts and displayed-title search before pagination; raw/native content preserved. Managed final check 501 unit + 7 resource and build passed; managed UI 117/117 plus final GitHub UI/E2E passed. All 12 imported pilot threads retained raw records/replies and received readable topics; native create/reply, mobile, expand/return and actual 200% zoom verified. Three n8n concerns fixed; one published thread resolved, two Claude concerns recovered because reviewer publication was denied. Standards now cover indexed reads, unrelated edit stability and Unicode previews. See discussion-progress.md. Keep broader rework open for chronology/global search/history scope."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-09-29",
+      "text": "Owner accepted next bounded stage: reply chronology and attribution. Sol high implementing on rework/reply-chronology from bbcdef9. Pinned-source baseline confirms 92 historical replies across 12 threads are currently shuffled by import timestamp/ID. Contract in reply-chronology-plan.md; preserve raw data and infer sequence only from verified provenance, with explicit uncertainty fallback. One additive target-lookup index justified for bounded exact ambiguity detection. Root owns serialized managed tests/pilot/n8n/green merge."
     }
   ],
   "priority": "now",
