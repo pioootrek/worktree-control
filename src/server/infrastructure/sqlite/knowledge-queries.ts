@@ -22,7 +22,7 @@ import { readingFromImport } from "./knowledge-memory-reading";
 import { compactPreview, importedRecordId, importedTaskPreview, importedTaskTopic, verifiedThreadSourceSql } from "./knowledge-thread-presentation";
 
 type ThreadRow = { id: string; project_id: string; title: string; body: string; revision: number; created_by: string; created_at: string; updated_at: string; display_title?: string | null; source_preview?: string | null; reply_count?: number };
-type ReplyRow = { id: string; project_id: string; thread_id: string; body: string; revision: number; created_by: string; created_at: string; updated_at: string; import_source_id?: string | null; source_author?: unknown; source_date?: unknown };
+type ReplyRow = { id: string; project_id: string; thread_id: string; body: string; revision: number; created_by: string; created_at: string; updated_at: string; source_count: number; source_ordinal: number | null; source_attribution_verified: number; source_author: unknown; source_date: unknown };
 type TaskRow = { id: string; project_id: string; title: string; description: string; status: KnowledgeTask["status"]; priority: KnowledgeTask["priority"]; revision: number; created_by: string; created_at: string; updated_at: string };
 type HistoryRow = { id: number; project_id: string; record_kind: KnowledgeHistoryEntry["recordKind"]; record_id: string; operation: KnowledgeHistoryEntry["operation"]; previous_json: string | null; principal_id: string; authentication_method: KnowledgeHistoryEntry["authenticationMethod"]; revision: number; created_at: string };
 type RelationRow = { id: string; project_id: string; type: KnowledgeRelation["type"]; source_kind: KnowledgeRelation["sourceKind"]; source_id: string; target_kind: KnowledgeRelation["targetKind"]; target_id: string; revision: number; created_by: string; created_at: string };
@@ -47,7 +47,79 @@ function historicalDate(value: unknown): Pick<NonNullable<KnowledgeReply["histor
   return { sourceDate, sourceDateStatus: Number.isNaN(Date.parse(sourceDate)) ? "invalid" : "valid" };
 }
 const mapReply = (row: ReplyRow): KnowledgeReply => ({ id: row.id, projectId: row.project_id, threadId: row.thread_id, body: row.body, revision: row.revision, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at,
-  ...(row.import_source_id ? { historicalImport: { sourceAuthor: typeof row.source_author === "string" && row.source_author.trim() ? row.source_author : null, ...historicalDate(row.source_date) } } : {}) });
+  ...(row.source_count ? { historicalImport: {
+    sourceAttribution: row.source_attribution_verified ? "verified" as const : "unverified" as const,
+    sourceAuthor: row.source_attribution_verified && typeof row.source_author === "string" && row.source_author.trim() ? row.source_author : null,
+    ...(row.source_attribution_verified ? historicalDate(row.source_date) : {sourceDate:null,sourceDateStatus:"unverified" as const}),
+    sourceOrder: row.source_ordinal === null ? "unverified" as const : "verified" as const,
+  } } : {}) });
+
+// One scoped query serves list and direct reads. The target index makes every
+// provenance lookup exact, including extra rows with unrelated source paths.
+// A source ordinal is trusted only with a unique source, its deterministic
+// imported identity, and the matching parent task/thread relation.
+export const replyReadSql = (byId: boolean): string => `WITH reply_rows AS MATERIALIZED (
+  SELECT * FROM knowledge_replies r WHERE r.project_id=@projectId AND ${byId ? "r.id=@replyId" : "r.thread_id=@threadId"}
+), candidates AS (
+  SELECT r.*, s.id provenance_id, s.source_path, s.legacy_id, s.source_id,
+    s.source_repository, s.source_commit, s.mapping_version, s.target_revision,
+    s.original_payload_json, p.id parent_id, p.legacy_id parent_legacy_id,
+    p.source_path parent_path, p.mapping_version parent_mapping_version, p.target_revision parent_revision,
+    task.revision task_revision, relation.id relation_id,
+    substr(s.legacy_id,length(p.legacy_id)+7) note_ordinal
+  FROM reply_rows r
+  LEFT JOIN knowledge_import_sources s INDEXED BY knowledge_import_sources_target
+    ON s.project_id=r.project_id AND s.target_kind='historical_comment' AND s.target_id=r.id
+  LEFT JOIN knowledge_import_sources p INDEXED BY knowledge_import_sources_project
+    ON p.project_id=r.project_id AND p.source_path=substr(s.source_path,1,instr(s.source_path,'#notes/')-1)
+      AND p.target_kind='task' AND p.source_id=s.source_id
+      AND p.source_repository=s.source_repository AND p.source_commit=s.source_commit
+  LEFT JOIN knowledge_tasks task ON task.project_id=r.project_id AND task.id=p.target_id
+    AND task.id=knowledge_import_record_id(r.project_id,p.source_id,p.source_path,'task')
+  LEFT JOIN knowledge_relations relation ON relation.id=knowledge_import_record_id(r.project_id,p.source_id,p.source_path,'task-thread')
+    AND relation.project_id=r.project_id AND relation.type='derived_from'
+    AND relation.source_kind='task' AND relation.source_id=task.id
+    AND relation.target_kind='thread' AND relation.target_id=r.thread_id
+), scored AS (
+  SELECT *, CASE WHEN provenance_id IS NOT NULL
+    AND id=knowledge_import_record_id(project_id,source_id,source_path,'reply')
+    AND mapping_version IN (1,2)
+    AND (target_revision IS NULL OR target_revision<=revision)
+    AND CASE WHEN json_valid(original_payload_json)
+      THEN json_type(original_payload_json,'$.text')='text'
+        AND knowledge_import_trim(json_extract(original_payload_json,'$.text'))=body
+      ELSE 0 END
+    THEN 1 ELSE 0 END verified_attribution,
+    CASE WHEN provenance_id IS NOT NULL AND parent_id IS NOT NULL
+    AND task_revision IS NOT NULL AND relation_id IS NOT NULL
+    AND id=knowledge_import_record_id(project_id,source_id,source_path,'reply')
+    AND thread_id=knowledge_import_record_id(project_id,source_id,parent_path,'thread')
+    AND parent_legacy_id IS NOT NULL AND parent_legacy_id<>''
+    AND legacy_id=parent_legacy_id || ':note:' || note_ordinal
+    AND source_path=parent_path || '#notes/' || note_ordinal
+    AND length(note_ordinal) BETWEEN 1 AND 15
+    AND note_ordinal NOT GLOB '*[^0-9]*'
+    AND CAST(CAST(note_ordinal AS INTEGER) AS TEXT)=note_ordinal
+    AND mapping_version IN (1,2) AND parent_mapping_version IN (1,2)
+    AND (target_revision IS NULL OR target_revision<=revision)
+    AND (parent_revision IS NULL OR parent_revision<=task_revision)
+    THEN CAST(note_ordinal AS INTEGER) END verified_ordinal
+  FROM candidates
+), collapsed AS (
+  SELECT id,project_id,thread_id,body,revision,created_by,created_at,updated_at,
+    count(provenance_id) source_count,
+    CASE WHEN count(provenance_id)=1 AND count(verified_ordinal)=1 THEN max(verified_ordinal) END source_ordinal,
+    CASE WHEN count(provenance_id)=1 AND max(verified_attribution)=1 THEN 1 ELSE 0 END source_attribution_verified,
+    CASE WHEN count(provenance_id)=1 AND max(verified_attribution)=1
+      THEN max(CASE WHEN json_valid(original_payload_json)
+        THEN CASE WHEN json_type(original_payload_json,'$.author')='text'
+          THEN json_extract(original_payload_json,'$.author') END END) END source_author,
+    CASE WHEN count(provenance_id)=1 AND max(verified_attribution)=1
+      THEN max(CASE WHEN json_valid(original_payload_json) THEN json_extract(original_payload_json,'$.date') END) END source_date
+  FROM scored GROUP BY id
+)
+SELECT * FROM collapsed
+${byId ? "" : "ORDER BY CASE WHEN source_ordinal IS NOT NULL THEN 0 WHEN source_count>0 THEN 1 ELSE 2 END, source_ordinal, created_at, id LIMIT @limit OFFSET @offset"}`;
 const mapTask = (row: TaskRow): KnowledgeTask => ({ id: row.id, projectId: row.project_id, title: row.title, description: row.description, status: row.status, priority: row.priority, revision: row.revision, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at });
 
 /** Borrows the controller's singleton connection and owns no lifecycle. */
@@ -57,6 +129,7 @@ export class KnowledgeQueries implements KnowledgeStore {
     database.function("knowledge_import_record_id", { deterministic: true }, importedRecordId);
     database.function("knowledge_import_topic", { deterministic: true }, importedTaskTopic);
     database.function("knowledge_import_preview", { deterministic: true }, importedTaskPreview);
+    database.function("knowledge_import_trim", { deterministic: true }, value => typeof value === "string" ? value.trim() : null);
   }
 
   saveAttachment(value: KnowledgeAttachment, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeAttachment> {
@@ -147,12 +220,7 @@ export class KnowledgeQueries implements KnowledgeStore {
   }
 
   getReply(projectId: string, id: string): KnowledgeReply | null {
-    const row = this.database.prepare(`SELECT r.*, s.id import_source_id,
-      json_extract(s.original_payload_json, '$.author') source_author,
-      json_extract(s.original_payload_json, '$.date') source_date
-      FROM knowledge_replies r LEFT JOIN knowledge_import_sources s
-        ON s.project_id=r.project_id AND s.target_kind='historical_comment' AND s.target_id=r.id
-      WHERE r.project_id = ? AND r.id = ?`).get(projectId, id) as ReplyRow | undefined;
+    const row = this.database.prepare(replyReadSql(true)).get({projectId,replyId:id}) as ReplyRow | undefined;
     return row ? mapReply(row) : null;
   }
 
@@ -300,12 +368,7 @@ export class KnowledgeQueries implements KnowledgeStore {
     return row ? mapThread(row) : null;
   }
   listReplies(projectId: string, threadId: string, limit: number, offset: number): KnowledgePage<KnowledgeReply> {
-    return this.page((this.database.prepare(`SELECT r.*, s.id import_source_id,
-      json_extract(s.original_payload_json, '$.author') source_author,
-      json_extract(s.original_payload_json, '$.date') source_date
-      FROM knowledge_replies r LEFT JOIN knowledge_import_sources s
-        ON s.project_id=r.project_id AND s.target_kind='historical_comment' AND s.target_id=r.id
-      WHERE r.project_id = ? AND r.thread_id = ? ORDER BY r.created_at, r.id LIMIT ? OFFSET ?`).all(projectId, threadId, limit + 1, offset) as ReplyRow[]).map(mapReply), limit, offset);
+    return this.page((this.database.prepare(replyReadSql(false)).all({projectId,threadId,limit:limit+1,offset}) as ReplyRow[]).map(mapReply), limit, offset);
   }
   listRelations(projectId: string, recordKind: KnowledgeRelation["sourceKind"], recordId: string, limit: number, offset: number): KnowledgePage<KnowledgeRelation> {
     const rows = (this.database.prepare(`SELECT * FROM knowledge_relations WHERE project_id = ? AND ((source_kind = ? AND source_id = ?) OR (target_kind = ? AND target_id = ?)) ORDER BY created_at, id LIMIT ? OFFSET ?`).all(projectId, recordKind, recordId, recordKind, recordId, limit + 1, offset) as RelationRow[]).map((row) => ({ id: row.id, projectId: row.project_id, type: row.type, sourceKind: row.source_kind, sourceId: row.source_id, targetKind: row.target_kind, targetId: row.target_id, revision: row.revision, createdBy: row.created_by, createdAt: row.created_at }));

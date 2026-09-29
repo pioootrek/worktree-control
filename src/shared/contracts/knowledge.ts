@@ -42,9 +42,11 @@ export interface KnowledgeReply {
   createdAt: string;
   updatedAt: string;
   historicalImport?: {
+    sourceAttribution: "verified" | "unverified";
     sourceAuthor: string | null;
     sourceDate: string | null;
-    sourceDateStatus: "valid" | "missing" | "invalid";
+    sourceDateStatus: "valid" | "missing" | "invalid" | "unverified";
+    sourceOrder: "verified" | "unverified";
   };
 }
 
