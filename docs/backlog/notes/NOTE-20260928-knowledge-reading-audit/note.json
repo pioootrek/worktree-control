@@ -160,7 +160,10 @@
     "reply-chronology-screenshots/native-continuation.png",
     "reply-chronology-screenshots/en-short.png",
     "reply-chronology-screenshots/zoom.png",
-    "navigation-plan.md"
+    "navigation-plan.md",
+    "navigation-screenshots/before-search.png",
+    "navigation-screenshots/before-destination.png",
+    "navigation-screenshots/before-relations.png"
   ],
   "id": "NOTE-20260928-knowledge-reading-audit",
   "last_reviewed": "2026-09-29",
