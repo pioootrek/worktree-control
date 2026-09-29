@@ -30,6 +30,7 @@ export interface KnowledgeMemory {
 export type KnowledgeMemorySummary = Omit<KnowledgeMemory, "body" | "sources">;
 export interface KnowledgeSearchHit {
   id: string; projectId: string; kind: KnowledgeRecordKind; title: string; excerpt: string;
+  matchSource?: "body" | "title" | "metadata";
   reading?: KnowledgeMemoryReading;
   revision: number; status: string; updatedAt: string; threadId: string | null;
 }

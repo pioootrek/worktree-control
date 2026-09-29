@@ -66,9 +66,16 @@ describe("K6b Hub import execution",()=>{
     expect(f.store.listThreads("topics",25,0,{query:"Imported discussion: A"}).items.map(thread=>thread.id)).toContain(imported.id);
     expect(matching("%_missing")).toEqual([]);
     expect(f.store.listThreads("topics",25,0,{query:"controller"}).items).toEqual([]);
+    const searchThread=f.store.searchKnowledge("topics",1,0,{kind:"thread",query:"ło\u0301dz\u0301 STORAGE"});
+    expect(searchThread.items[0]).toMatchObject({id:imported.id,title:"ŁÓDŹ storage decision",matchSource:"title"});
+    const searchReply=f.store.searchKnowledge("topics",25,0,{kind:"reply",query:"łódź storage"});
+    expect(searchReply.items[0]).toMatchObject({kind:"reply",title:"ŁÓDŹ storage decision",threadId:imported.id,matchSource:"title"});
+    db.prepare("INSERT INTO knowledge_replies VALUES (?,?,?,?,1,?,?,?)").run("late-hit","topics",imported.id,`${"Start ".repeat(110)}A [literal] %_ near the end`,"installation",NOW,NOW);
+    const lateHit=f.store.searchKnowledge("topics",25,0,{kind:"reply",query:"[literal] %_"}).items[0]!;
+    expect(lateHit.excerpt).toContain("[literal] %_");expect(lateHit.excerpt.startsWith("…")).toBe(true);
     for(let index=1;index<=26;index++) db.prepare("INSERT INTO knowledge_replies VALUES (?,?,?,?,1,?,?,?)")
       .run(`native-reply-${index}`,"topics",imported.id,`Reply ${index}`,"installation",NOW,NOW);
-    expect(f.store.getThread("topics",imported.id)?.presentation?.replyCount).toBe(27);
+    expect(f.store.getThread("topics",imported.id)?.presentation?.replyCount).toBe(28);
     expect(f.store.listReplies("topics",imported.id,25,0).items).toHaveLength(25);
     expect(f.store.getThread("other-project",imported.id)).toBeNull();
     expect(f.store.listThreads("other-project",25,0,{query:"storage"}).items).toEqual([]);
@@ -151,6 +158,11 @@ describe("K6b Hub import execution",()=>{
     const first=f.store.listReplies("timeline",thread.id,25,0),second=f.store.listReplies("timeline",thread.id,25,first.nextOffset!);
     expect(first.nextOffset).toBe(25);expect(second.nextOffset).toBeNull();
     expect([...first.items,...second.items].map(reply=>reply.body)).toEqual([...Array.from({length:31},(_,index)=>`Source ${index}`),"New answer"]);
+    const targeted=f.store.listReplies("timeline",thread.id,25,0,second.items[4]!.id);
+    expect(targeted).toMatchObject({offset:25,targetFound:true});
+    expect(targeted.items[4]?.body).toBe("Source 29");
+    expect(f.store.listReplies("timeline",thread.id,25,0,native.id)).toMatchObject({offset:25,targetFound:true});
+    expect(f.store.listReplies("timeline",thread.id,25,0,"missing")).toMatchObject({offset:0,targetFound:false});
     expect(first.items[2]?.historicalImport).toMatchObject({sourceAttribution:"verified",sourceAuthor:"Author 2",sourceDate:"2026-02-31",sourceDateStatus:"invalid",sourceOrder:"verified"});
     expect(first.items[10]?.historicalImport).toMatchObject({sourceAttribution:"verified",sourceDate:null,sourceDateStatus:"missing",sourceOrder:"verified"});
     expect(second.items.at(-1)?.historicalImport).toBeUndefined();
@@ -165,6 +177,8 @@ describe("K6b Hub import execution",()=>{
     expect(queryPlan.some(step=>step.detail.includes("knowledge_replies_thread"))).toBe(true);
     expect(queryPlan.some(step=>step.detail.includes("knowledge_import_sources_target"))).toBe(true);
     expect(queryPlan.some(step=>step.detail.includes("knowledge_import_sources_project"))).toBe(true);
+    const targetPlan=db.prepare(`EXPLAIN QUERY PLAN ${replyReadSql(false,true)}`).all({projectId:"timeline",threadId:thread.id,targetReplyId:second.items[4]!.id}) as Array<{detail:string}>;
+    expect(targetPlan.some(step=>step.detail.includes("knowledge_replies_thread"))).toBe(true);
     db.prepare("UPDATE knowledge_tasks SET title='Edited topic' WHERE project_id='timeline'").run();
     db.prepare("UPDATE knowledge_threads SET title='Edited discussion',body='Edited context' WHERE id=?").run(thread.id);
     expect(f.store.listReplies("timeline",thread.id,40,0).items.map(reply=>reply.body)).toEqual([...Array.from({length:31},(_,index)=>`Source ${index}`),"New answer"]);
