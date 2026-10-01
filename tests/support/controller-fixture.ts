@@ -98,7 +98,7 @@ async function createRepository(base: string, name: string, kind: FixtureProject
   return { main, alternate };
 }
 
-export async function startControllerFixture(projectCount = 3, projectKinds: FixtureProjectKind[] = []): Promise<ControllerFixture> {
+export async function startControllerFixture(projectCount = 3, projectKinds: FixtureProjectKind[] = [], options: { backups?: boolean } = {}): Promise<ControllerFixture> {
   const base = await mkdtemp(join(tmpdir(), "worktree-switcher-integration-"));
   const data = join(base, "data"), state = join(base, "state"); await Promise.all([mkdir(data, { mode: 0o700 }), mkdir(state, { mode: 0o700 })]);
   const kinds = Array.from({ length: projectCount }, (_, index) => projectKinds[index] ?? "node");
@@ -112,7 +112,7 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
   const token = (JSON.parse(generated.stdout) as { token: string }).token;
   const start = async () => {
     let output = "";
-    child = spawn(process.execPath, [join(repositoryRoot, "dist/cli/index.js"), "start", "--service-mode", "--host", "127.0.0.1", "--port", String(controllerPort), "--mcp-port", String(mcpPort), "--no-open", "--data-dir", data, "--state-dir", state, "--browse-root", base, "--web-root", join(repositoryRoot, "out")], { cwd: repositoryRoot, stdio: ["ignore", "pipe", "pipe"] });
+    child = spawn(process.execPath, [join(repositoryRoot, "dist/cli/index.js"), "start", "--service-mode", "--host", "127.0.0.1", "--port", String(controllerPort), "--mcp-port", String(mcpPort), "--no-open", "--data-dir", data, "--state-dir", state, "--browse-root", base, "--web-root", join(repositoryRoot, "out"), ...(options.backups ? ["--backup-dir", join(base, "backups"), "--backup-ui-actions", "create,restore"] : [])], { cwd: repositoryRoot, stdio: ["ignore", "pipe", "pipe"] });
     child.stdout?.on("data", (chunk) => { output += chunk.toString(); }); child.stderr?.on("data", (chunk) => { output += chunk.toString(); });
     const access = await waitFor(async () => { try { return JSON.parse(await readFile(join(state, "service-access.json"), "utf8")) as { accessUrl: string }; } catch { return null; } }, WAIT_MS, () => `Controller did not publish service access.\n${output}`);
     // Token mode publishes no secret; the browser receives the installation token in the fragment.

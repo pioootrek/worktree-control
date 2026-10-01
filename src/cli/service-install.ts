@@ -1,3 +1,6 @@
+import { backupPolicyArguments } from "./backup-policy-options";
+import { backupPolicySchema, type BackupPolicy } from "@/server/modules/backups";
+import { resolve } from "node:path";
 export interface ServiceStartArgumentsOptions {
   host: string;
   port: number;
@@ -11,10 +14,13 @@ export interface ServiceStartArgumentsOptions {
   publicOrigin?: string;
   backupBeforeMigration?: boolean;
   backupDirectory?: string;
+  backupPolicy?: BackupPolicy;
 }
 
 export function buildServiceStartArguments(options: ServiceStartArgumentsOptions): string[] {
   if (options.backupBeforeMigration && !options.backupDirectory) throw new Error("--backup-before-migration requires --backup-dir.");
+  const policy = options.backupPolicy ? backupPolicySchema.parse(options.backupPolicy) : undefined;
+  if (policy?.directory && (!options.backupDirectory || resolve(options.backupDirectory) !== resolve(policy.directory))) throw new Error("Service backup destination does not match its startup policy.");
   const arguments_ = [
     "--service-mode", "--no-open",
     "--host", options.host,
@@ -30,5 +36,6 @@ export function buildServiceStartArguments(options: ServiceStartArgumentsOptions
   if (options.publicOrigin) arguments_.push("--public-url", options.publicOrigin);
   if (options.backupDirectory) arguments_.push("--backup-dir", options.backupDirectory);
   if (options.backupBeforeMigration) arguments_.push("--backup-before-migration");
+  if (policy) arguments_.push(...backupPolicyArguments(policy));
   return arguments_;
 }

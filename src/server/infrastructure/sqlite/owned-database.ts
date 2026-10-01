@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3";
 import { acquireControllerLock, type ControllerLock } from "@/server/controller-lock";
 import { privateDirectory, privateFile, syncDirectory } from "../../private-storage";
-import { inspectSchema, type SchemaInspection } from "./schema-inspection";
+import { inspectSchema, snapshotAttachments, type SchemaInspection } from "./schema-inspection";
 import { recoverOwnedRestore } from "./restore-recovery";
 import { validateDatabase } from "./database-validation";
 
@@ -61,7 +61,11 @@ export class OwnedSqliteDatabase {
     }
   }
   get database(): Database.Database { return this.connection; }
-  backup(destination: string): Promise<void> { return this.connection.backup(destination).then(() => undefined); }
+  backupEstimateBytes(): number {
+    return Number(this.connection.pragma("page_count", { simple: true })) * Number(this.connection.pragma("page_size", { simple: true }))
+      + snapshotAttachments(this.connection).reduce((sum, entry) => sum + entry.size, 0);
+  }
+  backup(destination: string, options?: { progress: () => number }): Promise<void> { return this.connection.backup(destination, options).then(() => undefined); }
   schemaVersion(): number { return this.inspection.version; }
   enableWrites(): Database.Database {
     this.connection.close();

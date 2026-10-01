@@ -552,10 +552,9 @@ export class ControlService {
 
   async shutdown(): Promise<void> {
     const failures: unknown[] = [];
-    const drain = this.lifecycle.closeAndDrain();
+    await this.lifecycle.closeAndDrain();
     const cleanup = await Promise.allSettled([this.tests?.shutdown(), this.processes.stopAll()]);
     failures.push(...cleanup.filter((result) => result.status === "rejected").map((result) => result.reason));
-    await drain;
     try {
       await this.storage?.close();
     } catch (error) {

@@ -271,6 +271,75 @@ Data defaults to `~/.local/share/worktree-switcher`; runtime state and logs use
 `~/.local/state/worktree-switcher`. The controller respects `XDG_DATA_HOME` and
 `XDG_STATE_HOME`, and startup options can override these paths.
 
+## Optional installation backups
+
+Automatic backups and browser create/restore actions default to off. Only the
+installation operator selects policy, through `start` or `service install`
+arguments. A directory alone enables neither automation nor web actions.
+
+```sh
+worktree-switcher start --backup-dir /private/installation-copies \
+  --backup-interval-seconds 1800 --backup-retain-count 30 \
+  --backup-retain-days 30 --backup-max-bytes 17179869184 \
+  --backup-timeout-seconds 300 --backup-queue-limit 4 \
+  --backup-ui-actions create,restore
+```
+
+The same options are preserved by `service install --refresh`. The interval is
+60–2,592,000 seconds. Retention defaults to 30 copies and 30 days; the budget
+defaults to 16 GiB, the cooperative execution timeout to 300 seconds, and the
+pending/running request bound to four. These are application limits, independent
+of host process limits. A timed-out operation cannot publish a successful copy;
+synchronous filesystem work may take longer before reaching its next limit check.
+
+`--backup-before-migration --backup-dir <directory>` retains its independent,
+default-off migration gate. No user schedules, off-host transfer or attachment
+store garbage collection are included. Local copies require a surviving host
+and filesystem to be useful.
+
+```sh
+worktree-switcher backup now --idempotency-key operator-request-1
+worktree-switcher backup status --idempotency-key operator-request-1
+worktree-switcher backup list
+worktree-switcher backup create /private/manual-copy --idempotency-key manual-1
+worktree-switcher backup restore backup-<uuid> --idempotency-key restore-1
+worktree-switcher backup status backup-<uuid> --idempotency-key restore-1
+```
+
+Online CLI administration uses the existing owner-only Unix socket. A missing
+channel refuses the operation without opening another SQLite owner. Online
+restore selects an ID from the configured catalog. Offline `backup create` and
+`backup restore` still accept a directory under the singleton lock; restore
+requires explicit local administration. Keep the same idempotency key when
+retrying a request. Failed or interrupted backup keys return their original
+result; a new attempt requires a new key.
+
+The operator dashboard is under **System → Installation backups**. It requires
+the current installation token. Legacy pairing, project credentials and open
+mode cannot browse or operate installation backups. Policy is read-only;
+`--backup-ui-actions none|create|restore|create,restore` controls the two web
+mutations. The list reports verification at publication; restore preview and
+admission independently validate the complete artifact again.
+
+Restore explicitly replaces the entire installation and loses later changes.
+A durable receipt precedes maintenance. Maintenance stops owned managed processes
+and finite tests, closes SQLite, executes the recoverable replacement, and
+rebuilds the controller with the same startup arguments. Current installation
+authentication is fenced outside the restored database. Restored sessions and
+scoped credentials are revoked; issue fresh credentials after reconnecting.
+Use **Refresh status** after a disconnect, or retry the retained request with its
+original key. This never repeats an already completed restore.
+
+Retention runs only after a successful scheduled backup. Disabling the schedule
+preserves copies and runs no retention. Manual copies, pre-migration copies,
+unknown material, the latest recovery points and all admitted restore sources
+are protected. Retention refuses altered candidates. Operation records stay
+outside SQLite, capped at 1,024 per installation. Old service records without
+remaining copies are pruned beyond the last 50, with a durable deadline watermark
+preventing replay. Manual idempotency records remain; reaching the cap refuses new
+admission and requires operator review. Interrupted private staging and previous
+restore generations remain available for recovery and may consume disk.
+
 ## Roadmap
 
 Local server switching, verification and shared knowledge are available on

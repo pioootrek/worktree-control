@@ -1,10 +1,27 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, parse, resolve } from "node:path";
 
 function owned(uid: number): boolean { return !process.getuid || uid === process.getuid(); }
 function unsafe(): never {
   throw new Error("Unsafe data path or permissions. Use a private directory owned by the current user; inspect aliases and ownership before retrying.");
+}
+
+/** Validate a CLI destination before opening SQLite or changing a service definition. No writes. */
+export function validatePrivateDirectory(input: string): void {
+  const absolute = resolve(input);
+  let ancestor = absolute;
+  for (;;) {
+    try { lstatSync(ancestor); break; } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      ancestor = dirname(ancestor);
+    }
+  }
+  const canonical = realpathSync(ancestor);
+  assertAncestors(canonical);
+  const stat = lstatSync(canonical);
+  if (!stat.isDirectory() || (ancestor === absolute && (!owned(stat.uid) || (stat.mode & 0o077)))) unsafe();
+  accessSync(canonical, constants.W_OK | constants.X_OK);
 }
 
 /** Canonical directory aliases are allowed, but writable untrusted ancestors are not. */

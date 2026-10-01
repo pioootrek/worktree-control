@@ -54,7 +54,9 @@
     "test:e2e": "node scripts/build-fingerprint.mjs --check && playwright test --config playwright.e2e.config.ts",
     "bench:resources": "node scripts/resource-benchmark.mjs",
     "test:resources": "node --test scripts/*.test.mjs",
-    "test:sqlite-cost": "tsx scripts/sqlite-write-cost.ts"
+    "test:sqlite-cost": "tsx scripts/sqlite-write-cost.ts",
+    "test:backups": "vitest run src/server/modules/backups src/cli/backup-policy-options.test.ts src/server/backup-admin.test.ts src/server/transports/backup-http.test.ts src/server/control-service-storage.test.ts",
+    "test:ui:backups": "playwright test tests/ui/backups.spec.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
