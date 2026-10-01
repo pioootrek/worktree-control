@@ -100,7 +100,7 @@ async function createRepository(base: string, name: string, kind: FixtureProject
 
 export async function startControllerFixture(projectCount = 3, projectKinds: FixtureProjectKind[] = []): Promise<ControllerFixture> {
   const base = await mkdtemp(join(tmpdir(), "worktree-switcher-integration-"));
-  const data = join(base, "data"), state = join(base, "state"); await Promise.all([mkdir(data), mkdir(state)]);
+  const data = join(base, "data"), state = join(base, "state"); await Promise.all([mkdir(data, { mode: 0o700 }), mkdir(state, { mode: 0o700 })]);
   const kinds = Array.from({ length: projectCount }, (_, index) => projectKinds[index] ?? "node");
   const repositories = await Promise.all(Array.from({ length: projectCount }, (_, index) => createRepository(base, `project-${String.fromCharCode(97 + index)}`, kinds[index]!)));
   const ports = await Promise.all(Array.from({ length: projectCount + 2 }, () => freePort()));

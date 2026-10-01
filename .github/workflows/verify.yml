@@ -119,7 +119,7 @@ jobs:
           SHA256=$(node -p 'require("./portable-artifact/provenance.json").artifact.sha256')
           USER_ID=$(id -u)
           TRIAL_ROOT="$RUNNER_TEMP/worktree-switcher lifecycle trial"
-          mkdir -p "$TRIAL_ROOT/prefix" "$TRIAL_ROOT/data" "$TRIAL_ROOT/state" "$TRIAL_ROOT/projects"
+          mkdir -p -m 700 "$TRIAL_ROOT" "$TRIAL_ROOT/prefix" "$TRIAL_ROOT/data" "$TRIAL_ROOT/state" "$TRIAL_ROOT/projects"
           READY="$TRIAL_ROOT/session-ready"
           CONTINUE="$TRIAL_ROOT/session-continue"
           HARNESS_PID=""

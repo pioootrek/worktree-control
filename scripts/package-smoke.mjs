@@ -141,7 +141,7 @@ async function main() {
   const fixture = join(root, "fixture");
   const data = join(root, "data");
   const state = join(root, "state");
-  await Promise.all([mkdir(artifacts), mkdir(prefix), mkdir(fixture), mkdir(data), mkdir(state)]);
+  await Promise.all([mkdir(artifacts), mkdir(prefix), mkdir(fixture), mkdir(data, { mode: 0o700 }), mkdir(state, { mode: 0o700 })]);
 
   let tarball = argument("--tarball");
   if (!tarball) {
@@ -247,7 +247,7 @@ async function main() {
     const damaged = `${index}.damaged`;
     const negativeData = join(root, "negative-data");
     const negativeState = join(root, "negative-state");
-    await Promise.all([mkdir(negativeData), mkdir(negativeState), rename(index, damaged)]);
+    await Promise.all([mkdir(negativeData, { mode: 0o700 }), mkdir(negativeState, { mode: 0o700 }), rename(index, damaged)]);
     // New installations refuse to start without an installation token.
     await run(cliCommand, ["auth", "token", "generate", "--data-dir", negativeData, "--state-dir", negativeState], { cwd: root, env: runtimeEnv });
     const port = await freePort();
