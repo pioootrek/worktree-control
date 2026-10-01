@@ -1,7 +1,8 @@
 import Database from "better-sqlite3";
 import { initializeSchema } from "./migrations";
 
-export const SUPPORTED_SCHEMA_VERSION = 27;
+import { registryChecksum, registryMigration, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
+export { SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 export interface SchemaInspection { version: number; fresh: boolean }
 type Column = { name: string; type: string; notnull: number; pk: number };
 type ForeignKey = { table: string; from: string; to: string; on_delete: string; on_update: string };
@@ -21,6 +22,7 @@ const tableVersions: Record<string, number> = {
   knowledge_import_batches: 22, knowledge_import_staging: 22, knowledge_import_sources: 22,
 };
 const columnVersions: Record<string, number> = {
+  "schema_migrations.name": 28, "schema_migrations.checksum": 28,
   "projects.tls_mode": 3, "projects.tls_key_path": 3, "projects.tls_cert_path": 3, "projects.tls_ca_path": 3,
   "reservations.maximum_expires_at": 4, "reservations.token_hash": 4, "reservations.idempotency_key": 4,
   // Migration 13 explicitly supports the legacy lineage without launch_preset.
@@ -82,10 +84,16 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
   if (!objects.length) return { version: 0, fresh: true };
   if (!objects.some(x => x.type === "table" && x.name === "schema_migrations")) refuse();
   const registry = database.prepare("PRAGMA table_info(schema_migrations)").all() as Column[];
-  if (registry.length !== 2 || registry[0].name !== "version" || registry[0].type !== "INTEGER" || registry[0].pk !== 1 || registry[1].name !== "applied_at" || registry[1].type !== "TEXT" || registry[1].notnull !== 1) refuse();
+  if (![2, 4].includes(registry.length) || registry[0].name !== "version" || registry[0].type !== "INTEGER" || registry[0].pk !== 1 || registry[1].name !== "applied_at" || registry[1].type !== "TEXT" || registry[1].notnull !== 1) refuse();
   const migrations = database.prepare("SELECT version, applied_at FROM schema_migrations ORDER BY version").all() as Array<{ version: number; applied_at: string }>;
   if (!migrations.length || migrations.length > SUPPORTED_SCHEMA_VERSION || migrations.some((x, i) => x.version !== i + 1 || typeof x.applied_at !== "string" || !x.applied_at)) refuse();
   const version = migrations.length;
+  if ((version >= 28) !== (registry.length === 4)) refuse("migration registry");
+  if (version >= 28) {
+    const entries = database.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version").all() as Array<{version:number;name:string|null;checksum:string|null}>;
+    if (entries.some(x => x.version < 28 ? x.name !== null || x.checksum !== null
+      : x.name !== registryMigration.name || x.checksum !== registryChecksum)) refuse("migration checksum or name");
+  }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));
   if (objects.some(x => x.type === "view" || x.type === "trigger") || [...tables].some(x => !(x in tableVersions))) refuse();
   for (const [table, introduced] of Object.entries(tableVersions)) {
@@ -106,7 +114,9 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       if (table === "knowledge_history" && version < 20) check = check.replace(",'memory'", "").replace(",'approved','superseded'", "");
       const field = check.match(/^([a-z_]+?)(?:in\(|between|is|[<>=])/)?.[1];
       if (field && version < (columnVersions[`${table}.${field}`] ?? introduced)) continue;
-      if (table === "reservations" && check.startsWith("(") && version < 4) continue;
+      // Migration 4 added lease columns without rebuilding this CHECK. Validate
+      // active leases as an application invariant for that historical lineage.
+      if (table === "reservations" && check.startsWith("(") && !actualChecks.some(x => x.startsWith("("))) continue;
       // Migration 11 added this column without a CHECK in upgraded installations.
       if (table === "test_runs" && field === "environment_mode" && !actualChecks.some(x => x.startsWith(field))) continue;
       // Bootstrap may have supplied the latest constraint before this migration.

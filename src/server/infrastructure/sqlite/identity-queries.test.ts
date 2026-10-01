@@ -1,3 +1,4 @@
+import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -48,6 +49,7 @@ describe("identity and knowledge access SQLite persistence", () => {
     initial.close();
 
     const legacy = new Database(path);
+    stripMigrationProvenance(legacy);
     legacy.exec(`
       DROP TABLE knowledge_project_runtime_links;
       DROP TABLE knowledge_project_grants;
@@ -76,6 +78,7 @@ describe("identity and knowledge access SQLite persistence", () => {
     store.close();
 
     const legacy = new Database(path);
+    stripMigrationProvenance(legacy);
     legacy.prepare("DELETE FROM schema_migrations WHERE version >= 18").run();
     legacy.close();
 

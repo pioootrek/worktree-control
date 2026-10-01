@@ -1,3 +1,4 @@
+import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -671,6 +672,7 @@ describe("remote verification SQLite persistence", () => {
     store.close();
 
     const branchDatabase = new Database(path);
+    stripMigrationProvenance(branchDatabase);
     branchDatabase.exec(`
       DELETE FROM schema_migrations WHERE version >= 15;
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (13, 'now'), (14, 'now');
@@ -694,6 +696,7 @@ describe("remote verification SQLite persistence", () => {
     expect(first.prepare("SELECT 1 FROM schema_migrations WHERE version = 13").get()).toBeTruthy();
     expect(first.prepare("SELECT 1 FROM schema_migrations WHERE version = 14").get()).toBeTruthy();
     expect(first.prepare("SELECT 1 FROM schema_migrations WHERE version = 15").get()).toBeTruthy();
+    stripMigrationProvenance(first);
     first.prepare("DELETE FROM schema_migrations WHERE version >= 14").run();
     first.close();
 

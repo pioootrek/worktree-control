@@ -35,6 +35,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { initializeSchema } from "./migrations";
+import { inspectSchema } from "./schema-inspection";
+import { configureDurability, assertDurability } from "./database-validation";
 import { OwnedSqliteDatabase } from "./owned-database";
 import { IdentityQueries } from "./identity-queries";
 import { KnowledgeQueries } from "./knowledge-queries";
@@ -60,10 +62,10 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     this.ownedDatabase = inspected ?? new OwnedSqliteDatabase(databasePath, true);
     try {
       this.database = this.ownedDatabase.enableWrites();
-      this.database.pragma("journal_mode = WAL");
-      this.database.pragma("foreign_keys = ON");
-      this.database.pragma("busy_timeout = 3000");
-      initializeSchema(this.database);
+      configureDurability(this.database);
+      initializeSchema(this.database, this.ownedDatabase.inspection.fresh, inspectSchema);
+      assertDurability(this.database);
+      this.ownedDatabase.completeInitialization();
       this.testRuns = new TestRunQueries(this.database);
       this.storage = new StorageQueries(this.database);
       this.remoteVerification = new RemoteVerificationQueries(this.database);

@@ -234,7 +234,7 @@ describe("controller HTTPS through Caddy", () => {
     const caddyData = join(directory, "caddy-data");
     const caddyConfig = join(directory, "Caddyfile");
     const accessLog = join(directory, "caddy-access.log");
-    await Promise.all([mkdir(data), mkdir(state), mkdir(caddyData)]);
+    await Promise.all([mkdir(data, { mode: 0o700 }), mkdir(state, { mode: 0o700 }), mkdir(caddyData)]);
     const ca = await createCertificateAuthority(directory);
     const firstCertificate = await createServerCertificate(directory, ca, "server-first", 101, 2);
     const replacementCertificate = await createServerCertificate(directory, ca, "server-replacement", 102, 2);

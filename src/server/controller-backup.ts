@@ -1,5 +1,6 @@
+import { privateDirectory, privateFile } from "./private-storage";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import Database from "better-sqlite3";
 import { acquireDatabaseOwnership, inspectSchema, snapshotAttachments } from "./infrastructure/sqlite";
@@ -19,10 +20,13 @@ function safe(root: string, file: string): string {
 }
 
 export async function createControllerBackup(source: BackupSource, destination: string, options: {applicationVersion:string;attachmentDirectory:string;clock?:()=>string}): Promise<ControllerBackupManifest> {
-  if (existsSync(destination)) throw new Error("Backup destination already exists.");
-  mkdirSync(dirname(destination),{recursive:true,mode:0o700}); const staging=mkdtempSync(join(dirname(destination),`.${basename(destination)}.partial-`)); mkdirSync(join(staging,"attachments"),{recursive:true,mode:0o700});
   try {
-    const databaseFile=join(staging,"state.sqlite3"); await source.backup(databaseFile);
+    lstatSync(destination);
+    throw new Error("Backup destination already exists.");
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  privateDirectory(dirname(destination)); const staging=mkdtempSync(join(dirname(destination),`.${basename(destination)}.partial-`)); mkdirSync(join(staging,"attachments"),{recursive:true,mode:0o700});
+  try {
+    const databaseFile=join(staging,"state.sqlite3"); closeSync(openSync(databaseFile,"wx",0o600)); await source.backup(databaseFile);
     chmodSync(databaseFile, 0o600);
     const snapshot=new Database(databaseFile,{readonly:true,fileMustExist:true});
     let required: Array<{sha256:string;size:number}>;
@@ -37,7 +41,7 @@ export async function createControllerBackup(source: BackupSource, destination: 
       if (!/^[a-f0-9]{64}$/.test(sha256) || !Number.isSafeInteger(size) || size < 0) throw new Error("Invalid attachment metadata.");
       const from=safe(options.attachmentDirectory,file), to=safe(join(staging,"attachments"),file);
       if (!lstatSync(from).isFile() || lstatSync(from).isSymbolicLink()) throw new Error("Attachment must be a regular file.");
-      mkdirSync(dirname(to),{recursive:true,mode:0o700}); copyFileSync(from,to); chmodSync(to,0o600);
+      mkdirSync(dirname(to),{recursive:true,mode:0o700}); copyFileSync(from,to); privateFile(to);
       if(lstatSync(to).size!==size||hash(to)!==sha256) throw new Error("Attachment storage does not match database metadata.");
       return {file,size,sha256};
     });
@@ -68,7 +72,8 @@ function restoreOwnedBackup(source: string, databasePath: string, attachmentDire
   const stagedAttachments=join(stageRoot,"attachments"); mkdirSync(stagedAttachments,{mode:0o700}); for(const entry of manifest.attachments){const target=safe(stagedAttachments,entry.file);mkdirSync(dirname(target),{recursive:true,mode:0o700});copyFileSync(safe(join(source,"attachments"),entry.file),target); chmodSync(target,0o600);}
   const quarantine=join(stageRoot,"previous"); mkdirSync(quarantine,{mode:0o700}); const moved:Array<[string,string]>=[];
   try {
-    for(const current of [databasePath,`${databasePath}-wal`,`${databasePath}-shm`,...(attachmentDirectory?[attachmentDirectory]:[])]) if(existsSync(current)){const old=join(quarantine,basename(current));renameSync(current,old);moved.push([old,current]);}
+    // Markers describe the replaced inode; rollback journals also belong to the old database.
+    for(const current of [databasePath,`${databasePath}-wal`,`${databasePath}-shm`,`${databasePath}-journal`,`${databasePath}.initializing`,...(attachmentDirectory?[attachmentDirectory]:[])]) if(existsSync(current)){const old=join(quarantine,basename(current));renameSync(current,old);moved.push([old,current]);}
     renameSync(stagedDatabase,databasePath); if(attachmentDirectory) renameSync(stagedAttachments,attachmentDirectory);
     try { rmSync(stageRoot,{recursive:true,force:true}); } catch { /* Restored state is committed; retained quarantine is recoverable. */ }
   } catch(error) { if(existsSync(databasePath)) rmSync(databasePath,{force:true}); if(attachmentDirectory&&existsSync(attachmentDirectory)) rmSync(attachmentDirectory,{recursive:true,force:true}); for(const [old,current] of moved.reverse()) if(existsSync(old)) renameSync(old,current); rmSync(stageRoot,{recursive:true,force:true}); throw error; }

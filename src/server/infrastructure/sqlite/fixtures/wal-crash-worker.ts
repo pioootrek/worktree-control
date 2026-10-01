@@ -6,7 +6,7 @@ database.pragma("journal_mode = WAL");
 database.pragma("wal_autocheckpoint = 0");
 database.prepare("UPDATE projects SET name = 'Committed in WAL' WHERE id = 'kept'").run();
 if (process.argv[3] === "future") {
-  database.exec("INSERT INTO schema_migrations(version,applied_at) VALUES(28,'future')");
+  database.exec("INSERT INTO schema_migrations(version,applied_at) VALUES(29,'future')");
 }
 process.send?.({ committed: true });
 setInterval(() => {}, 1000);

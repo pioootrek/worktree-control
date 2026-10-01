@@ -140,7 +140,7 @@ async function run(number) {
     result.phases.baseline = await sample(baseline, "baseline");
     await stop(baseline); baseline = null;
     const data = join(base, "data"), state = join(base, "state");
-    await mkdir(data); await mkdir(state);
+    await mkdir(data, { mode: 0o700 }); await mkdir(state, { mode: 0o700 });
     const port = await freePort(), mcpPort = await freePort();
     check(port !== mcpPort, "Fixture port collision.");
     const bootStart = Date.now();

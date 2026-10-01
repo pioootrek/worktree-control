@@ -52,7 +52,8 @@
     "test:https": "node scripts/build-fingerprint.mjs --check && vitest run --config vitest.https.config.ts",
     "test:e2e": "node scripts/build-fingerprint.mjs --check && playwright test --config playwright.e2e.config.ts",
     "bench:resources": "node scripts/resource-benchmark.mjs",
-    "test:resources": "node --test scripts/*.test.mjs"
+    "test:resources": "node --test scripts/*.test.mjs",
+    "test:sqlite-cost": "tsx scripts/sqlite-write-cost.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",

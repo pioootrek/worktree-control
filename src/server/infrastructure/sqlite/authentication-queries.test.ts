@@ -1,3 +1,4 @@
+import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,6 +33,7 @@ function downgradeToMigration24(path: string): void {
   database.exec("DELETE FROM remote_principals WHERE id = 'installation'");
   restore("remote_principals", "'worker', 'installation'", "'worker'");
   restore("knowledge_history", ", 'installation_token', 'none'", "");
+  stripMigrationProvenance(database);
   database.exec(`
     DELETE FROM controller_settings WHERE key = 'authentication';
     DELETE FROM schema_migrations WHERE version >= 25;
@@ -55,7 +57,7 @@ describe("authentication policy SQLite persistence", () => {
     downgradeToMigration24(path);
 
     const store = new SqliteStateStore(path);
-    expect(store.schemaVersion()).toBe(27);
+    expect(store.schemaVersion()).toBe(28);
     expect(store.getPrincipal("owner-1")).toEqual({ id: "owner-1", kind: "owner", status: "active" });
     expect(store.getPrincipal("installation")).toEqual({ id: "installation", kind: "installation", status: "active" });
     expect(store.getAuthenticationPolicy()).toEqual({ mode: "legacy", token: null, generation: 0 });
@@ -119,15 +121,11 @@ describe("authentication policy SQLite persistence", () => {
     database.prepare("UPDATE controller_settings SET value_json = ? WHERE key = 'authentication'").run(JSON.stringify({ mode: "anything" }));
     database.close();
 
-    const corrupted = new SqliteStateStore(path);
-    expect(() => new AuthenticationService(corrupted).assertStartupPolicy()).toThrow("Zapisana polityka uwierzytelniania jest nieprawidłowa.");
-    corrupted.close();
+    expect(() => new SqliteStateStore(path)).toThrow(/authentication policy/);
 
     const raw = new Database(path);
     raw.exec("DELETE FROM controller_settings WHERE key = 'authentication'");
     raw.close();
-    const missing = new SqliteStateStore(path);
-    expect(() => missing.getAuthenticationPolicy()).toThrow("Brak zapisanej polityki uwierzytelniania.");
-    missing.close();
+    expect(() => new SqliteStateStore(path)).toThrow(/authentication policy/);
   });
 });

@@ -1,3 +1,4 @@
+import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -237,7 +238,7 @@ describe("K4 memory and session context", () => {
     const f = setup(); const before = f.store.listHistory(f.project.id, "task", f.task.id, 25, 0);
     f.store.close();
     const old = new Database(f.path);
-    old.exec("DROP TABLE knowledge_memories; DELETE FROM schema_migrations WHERE version >= 20;"); old.close();
+    stripMigrationProvenance(old); old.exec("DROP TABLE knowledge_memories; DELETE FROM schema_migrations WHERE version >= 20;"); old.close();
     const migrated = new SqliteStateStore(f.path); cleanups.push(() => migrated.close());
     expect(migrated.listHistory(f.project.id, "task", f.task.id, 25, 0)).toEqual(before);
     const service = new KnowledgeService(migrated, new IdentityService(migrated), undefined, () => "collision");

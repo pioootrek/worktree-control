@@ -1,4 +1,6 @@
 import Database from "better-sqlite3";
+import { applyRegistryMigration, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
+import { validateDatabase } from "./database-validation";
 
 /** Built-in test profiles every project starts with; see `test-environment.ts`. */
 const DEFAULT_TEST_PROFILES_JSON = JSON.stringify([
@@ -332,10 +334,21 @@ const schema = `
     VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 `;
 
-export function initializeSchema(database: Database.Database): void {
-  const fresh = !database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'projects'").get();
-  database.exec(schema);
-  applyMigrations(database, fresh);
+export function initializeSchema(database: Database.Database, fresh = !database.prepare("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").get(), validateStructure?: (database: Database.Database) => void): void {
+  if (database.inTransaction) throw new Error("Schema initialization requires its own transaction.");
+  // Historical migration 25 rebuilds a referenced parent. Disable FK outside
+  // the outer transaction, then check every FK before committing any step.
+  const foreignKeys = database.pragma("foreign_keys", { simple: true });
+  database.pragma("foreign_keys = OFF");
+  try {
+    database.transaction(() => {
+      database.exec(schema);
+      applyMigrations(database, fresh);
+      applyRegistryMigration(database);
+      validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
+      validateStructure?.(database);
+    }).immediate();
+  } finally { database.pragma(`foreign_keys = ${foreignKeys ? "ON" : "OFF"}`); }
 }
 
 function applyMigrations(database: Database.Database, fresh: boolean): void {

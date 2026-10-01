@@ -1,3 +1,4 @@
+import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -25,11 +26,11 @@ function fixture(){const root=mkdtempSync(join(tmpdir(),"hub-import-execution-")
 const execute=(store:SqliteStateStore,identity:IdentityService,owner:ReturnType<IdentityService["authenticateBearer"]>,input:Parameters<typeof executeHubImport>[3])=>executeHubImport(store,identity,owner,input,()=>NOW,plan=>plan);
 
 describe("K6b Hub import execution",()=>{
-  it("upgrades schema 26 with only the target provenance index",()=>{
+  it("upgrades schema 26 preserving the target provenance index",()=>{
     const f=fixture(),path=join(f.root,"state.sqlite3");f.store.close();
-    const legacy=new Database(path);legacy.exec("DROP INDEX knowledge_import_sources_target; DELETE FROM schema_migrations WHERE version >= 27");legacy.close();
+    const legacy=new Database(path);stripMigrationProvenance(legacy); legacy.exec("DROP INDEX knowledge_import_sources_target; DELETE FROM schema_migrations WHERE version >= 27");legacy.close();
     const reopened=new SqliteStateStore(path),db=new Database(path);
-    expect(reopened.schemaVersion()).toBe(27);
+    expect(reopened.schemaVersion()).toBe(28);
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='knowledge_import_sources_target'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM schema_migrations WHERE version=27").get()).toBeTruthy();
     db.close();reopened.close();
@@ -280,11 +281,11 @@ describe("K6b Hub import execution",()=>{
     expect(execute(f.store,f.identity,f.owner,stagedInput).status).toBe("staging");
     f.store.close();
     const old=new Database(path);
-    old.exec("ALTER TABLE knowledge_import_batches DROP COLUMN authentication_method; DELETE FROM schema_migrations WHERE version >= 26");
+    stripMigrationProvenance(old); old.exec("ALTER TABLE knowledge_import_batches DROP COLUMN authentication_method; DELETE FROM schema_migrations WHERE version >= 26");
     expect((old.prepare("SELECT count(*) AS count FROM knowledge_import_batches").get() as {count:number}).count).toBe(2);
     old.close();
     const store=new SqliteStateStore(path),identity=new IdentityService(store,()=>NOW);
-    expect(store.schemaVersion()).toBe(27);
+    expect(store.schemaVersion()).toBe(28);
     expect(store.getHubImport(publishedInput.batchId)).toMatchObject({status:"published",authenticationMethod:"legacy_unknown"});
     expect(store.getHubImport(stagedInput.batchId)).toMatchObject({status:"staging",cursor:1,authenticationMethod:"legacy_unknown"});
     expect(execute(store,identity,f.owner,publishedInput).authenticationMethod).toBe("legacy_unknown");
@@ -299,11 +300,11 @@ describe("K6b Hub import execution",()=>{
     expect(current.authenticationMethod).toBe("owner_session");
     f.store.close();
     const damaged=new Database(path);
-    damaged.exec("UPDATE knowledge_import_batches SET authentication_method = 'legacy_unknown' WHERE id = 'legacy-batch'; DELETE FROM schema_migrations WHERE version >= 26");
+    stripMigrationProvenance(damaged); damaged.exec("UPDATE knowledge_import_batches SET authentication_method = 'legacy_unknown' WHERE id = 'legacy-batch'; DELETE FROM schema_migrations WHERE version >= 26");
     damaged.close();
 
     const repaired=new SqliteStateStore(path);
-    expect(repaired.schemaVersion()).toBe(27);
+    expect(repaired.schemaVersion()).toBe(28);
     expect(repaired.getHubImport("current-batch")).toEqual(current);
     expect(repaired.getHubImport("legacy-batch")).toMatchObject({actorPrincipalId:f.owner.principalId,authenticationMethod:"legacy_unknown"});
     repaired.close();
