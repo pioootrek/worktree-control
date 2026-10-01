@@ -19,6 +19,7 @@ describe("operational backups in the packaged controller", () => {
     }, 10000, () => "Backup did not complete.");
     await f.setMode(project, "gate");
     const starting = f.requestResult(`/api/projects/${project.id}/operation`, { method: "POST", body: JSON.stringify({ operation: "start", worktreePath: project.main }) });
+    let startOutcome = "pending"; void starting.then(result => { startOutcome = `HTTP ${result.status}`; });
     const pids = await waitFor(async () => { const pids = await f.ownedPids(project); return pids.length ? pids : null; }, 10000, () => "Gated start did not spawn its owned fixture.");
     const input = { action: "restore", backupId: copy.backupId, idempotencyKey: "cancel-start", confirmation: "replace-entire-installation" };
     const accepted = await f.request<RestoreOperation>("/api/backups", { method: "POST", body: JSON.stringify(input) });
@@ -27,7 +28,7 @@ describe("operational backups in the packaged controller", () => {
         const status = await f.request<RestoreOperation>("/api/backups", { method: "POST", body: JSON.stringify({ action: "status", backupId: copy.backupId, idempotencyKey: input.idempotencyKey }) });
         return status.state === "verified" ? status : null;
       } catch { return null; }
-    }, 10000, () => "Restore waited for the gated readiness timeout.");
+    }, 10000, () => `Restore waited for the gated readiness timeout. start=${startOutcome}, ownedAlive=${pids.map(pid => { try { process.kill(pid, 0); return true; } catch { return false; } })}\n${f.diagnostics()}`);
     expect(completed.operationId).toBe(accepted.operationId);
     expect((await starting).ok).toBe(false);
     for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow();

@@ -1,6 +1,7 @@
 import { chmodSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { dirname } from "node:path";
+import { createHttpServerCloser } from "./http-server-lifecycle";
 
 const BODY_LIMIT = 16 * 1024;
 
@@ -47,10 +48,11 @@ export async function listenAdminSocket(
     server.listen(path, () => { server.off("error", reject); resolve(); });
   });
   chmodSync(path, 0o600);
+  const closeServer = createHttpServerCloser(server);
   return {
     server,
     async close() {
-      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+      await closeServer();
       removeStaleSocket(path);
     },
   };

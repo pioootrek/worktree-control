@@ -31,6 +31,7 @@ export interface ControllerFixture {
   testEvents(project: FixtureProject): Promise<FixtureTestEvent[]>;
   ownedPids(project: FixtureProject, worktreePath?: string): Promise<number[]>;
   restart(): Promise<void>; stop(): Promise<void>; close(): Promise<void>;
+  diagnostics(): string;
 }
 
 async function freePort(): Promise<number> {
@@ -105,7 +106,7 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
   const repositories = await Promise.all(Array.from({ length: projectCount }, (_, index) => createRepository(base, `project-${String.fromCharCode(97 + index)}`, kinds[index]!)));
   const ports = await Promise.all(Array.from({ length: projectCount + 2 }, () => freePort()));
   const controllerPort = ports.pop()!, mcpPort = ports.pop()!;
-  let child: ChildProcess | undefined, endpoint = `http://127.0.0.1:${controllerPort}`, accessUrl = "";
+  let child: ChildProcess | undefined, endpoint = `http://127.0.0.1:${controllerPort}`, accessUrl = "", controllerOutput = "";
   const generated = await exec(process.execPath, [join(repositoryRoot, "dist/cli/index.js"), "auth", "token", "generate"], {
     cwd: repositoryRoot, env: { ...process.env, WORKTREE_SWITCHER_DATA_DIR: data, WORKTREE_SWITCHER_STATE_DIR: state }, timeout: 30000,
   });
@@ -113,7 +114,8 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
   const start = async () => {
     let output = "";
     child = spawn(process.execPath, [join(repositoryRoot, "dist/cli/index.js"), "start", "--service-mode", "--host", "127.0.0.1", "--port", String(controllerPort), "--mcp-port", String(mcpPort), "--no-open", "--data-dir", data, "--state-dir", state, "--browse-root", base, "--web-root", join(repositoryRoot, "out"), ...(options.backups ? ["--backup-dir", join(base, "backups"), "--backup-ui-actions", "create,restore"] : [])], { cwd: repositoryRoot, stdio: ["ignore", "pipe", "pipe"] });
-    child.stdout?.on("data", (chunk) => { output += chunk.toString(); }); child.stderr?.on("data", (chunk) => { output += chunk.toString(); });
+    const capture = (chunk: Buffer) => { output += chunk.toString(); controllerOutput = (controllerOutput + chunk.toString()).slice(-8000); };
+    child.stdout?.on("data", capture); child.stderr?.on("data", capture);
     const access = await waitFor(async () => { try { return JSON.parse(await readFile(join(state, "service-access.json"), "utf8")) as { accessUrl: string }; } catch { return null; } }, WAIT_MS, () => `Controller did not publish service access.\n${output}`);
     // Token mode publishes no secret; the browser receives the installation token in the fragment.
     endpoint = new URL(access.accessUrl).origin; accessUrl = `${endpoint}/#token=${encodeURIComponent(token)}`;
@@ -182,6 +184,7 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
         return evidence.split("\n").flatMap((line) => { const pid = Number(line.split(" ")[1]); return Number.isInteger(pid) && pid > 0 ? [pid] : []; });
       },
       async restart() { await stop(); await start(); fixture.endpoint = endpoint; fixture.accessUrl = accessUrl; }, stop,
+      diagnostics: () => controllerOutput.replaceAll(token, "[REDACTED]").replaceAll(base, "[FIXTURE]") + `\nexit=${child?.exitCode} signal=${child?.signalCode}`,
       async close() { try { await stop(); } finally { await rm(base, { recursive: true, force: true }); } },
     }; return fixture;
   } catch (error) { await stop().catch(() => undefined); await rm(base, { recursive: true, force: true }); throw error; }

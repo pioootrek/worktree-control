@@ -1,4 +1,5 @@
 import { handleBackupHttp } from "./transports/backup-http";
+import { createHttpServerCloser } from "./http-server-lifecycle";
 import { BackupError, type BackupOperations, type RestoreOperations } from "./modules/backups";
 import { KnowledgeError, knowledgeFailure } from "./modules/knowledge";
 import { timingSafeEqual } from "node:crypto";
@@ -788,14 +789,12 @@ export function createControllerServer(options: {
     }
   });
 
+  const closeServer = createHttpServerCloser(server);
   return {
     server,
     async close() {
       options.events.close();
-      if (!server.listening) return;
-      await new Promise<void>((resolveClose, reject) => {
-        server.close((error) => error ? reject(error) : resolveClose());
-      });
+      await closeServer();
     },
   };
 }

@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { createHttpServerCloser } from "./http-server-lifecycle";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import type { ControlService } from "./control-service";
@@ -116,6 +117,7 @@ export function createMcpControllerServer(options: {
     })();
   });
 
+  const closeServer = createHttpServerCloser(server);
   return {
     server,
     async closeSessions() {
@@ -123,8 +125,7 @@ export function createMcpControllerServer(options: {
     },
     async close() {
       if (runtimePromise) await (await runtimePromise).close();
-      if (!server.listening) return;
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      await closeServer();
     },
   };
 }
