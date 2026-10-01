@@ -1,0 +1,264 @@
+{
+  "baseHead": "afe9f20d86c7336021684b7a55aeb7dcf41fe338",
+  "featureHead": "fced54c4f94111fb0f815ba4a100de2d864372e2",
+  "packageSmoke": {
+    "archiveEntries": 51,
+    "bytes": 740162,
+    "cleanup": "graceful",
+    "durationMs": 29716,
+    "exitCode": 0,
+    "head": "fced54c4f94111fb0f815ba4a100de2d864372e2",
+    "install": {
+      "mode": "global-prefix",
+      "prefixContainsSpaces": true
+    },
+    "nativeSqlite": {
+      "binary": "node_modules/better-sqlite3/prebuilds/linux-x64.node",
+      "load": "success",
+      "provisioning": "packaged prebuilt"
+    },
+    "node": "v24.19.0",
+    "npm": "11.17.0",
+    "ok": true,
+    "package": "worktree-switcher@0.1.0-trial.1",
+    "platform": "linux-x64",
+    "runner": "llm-worker-heavy-runner",
+    "sha256": "bd8d3ff9b01d4799957e835cefa9b69d2f95ef74476bc004a70f553348dc1069",
+    "steps": [
+      {
+        "durationMs": 3023,
+        "name": "pack",
+        "ok": true
+      },
+      {
+        "durationMs": 25,
+        "name": "archive-manifest",
+        "ok": true
+      },
+      {
+        "durationMs": 38,
+        "name": "archive-content-audit",
+        "ok": true
+      },
+      {
+        "durationMs": 22240,
+        "name": "production-install",
+        "ok": true
+      },
+      {
+        "durationMs": 11,
+        "name": "native-sqlite",
+        "ok": true
+      },
+      {
+        "durationMs": 456,
+        "name": "damaged-asset-rejected",
+        "ok": true
+      },
+      {
+        "durationMs": 212,
+        "name": "doctor",
+        "ok": true
+      },
+      {
+        "durationMs": 424,
+        "name": "offline-cli",
+        "ok": true
+      },
+      {
+        "durationMs": 193,
+        "name": "installation-token",
+        "ok": true
+      },
+      {
+        "durationMs": 211,
+        "name": "controller-readiness",
+        "ok": true
+      },
+      {
+        "durationMs": 76,
+        "name": "packaged-assets",
+        "ok": true
+      },
+      {
+        "durationMs": 175,
+        "name": "live-cli-forwarding",
+        "ok": true
+      },
+      {
+        "durationMs": 984,
+        "name": "mcp-runtime",
+        "ok": true
+      },
+      {
+        "durationMs": 409,
+        "name": "project-removal",
+        "ok": true
+      }
+    ],
+    "tarball": "worktree-switcher-0.1.0-trial.1.tgz",
+    "umask": "022"
+  },
+  "pullRequest": "https://github.com/pioootrek/worktree-switcher/pull/69",
+  "queuedRuns": [
+    {
+      "attribution": "observed_match",
+      "command": "pnpm check",
+      "dirty": false,
+      "exitCode": 0,
+      "finishedAt": "2026-10-01T12:43:09.455Z",
+      "head": "fced54c4f94111fb0f815ba4a100de2d864372e2",
+      "phase": "passed",
+      "runId": "1f7e5c92-b43a-42da-af87-ef97c7d62691",
+      "startedAt": "2026-10-01T12:42:23.445Z"
+    },
+    {
+      "attribution": "observed_match",
+      "command": "pnpm build",
+      "dirty": false,
+      "exitCode": 0,
+      "finishedAt": "2026-10-01T12:43:33.271Z",
+      "head": "fced54c4f94111fb0f815ba4a100de2d864372e2",
+      "phase": "passed",
+      "runId": "c97cef3c-a21b-4947-a95a-cbc6d4750b18",
+      "startedAt": "2026-10-01T12:43:25.722Z"
+    },
+    {
+      "attribution": "observed_match",
+      "command": "pnpm test:integration",
+      "dirty": false,
+      "exitCode": 0,
+      "finishedAt": "2026-10-01T12:45:36.566Z",
+      "head": "fced54c4f94111fb0f815ba4a100de2d864372e2",
+      "phase": "passed",
+      "runId": "b02f63fa-efb1-442d-848c-b3bb73ff48da",
+      "startedAt": "2026-10-01T12:43:56.313Z"
+    },
+    {
+      "attribution": "observed_match",
+      "command": "pnpm test:ui",
+      "dirty": false,
+      "exitCode": 0,
+      "finishedAt": "2026-10-01T12:41:00.341Z",
+      "head": "9b0fcc31f7452e86c24bd4ff0a7459b43d24255f",
+      "phase": "passed",
+      "runId": "9a6e5e9b-dd29-47a7-9502-426dc2fd664f",
+      "startedAt": "2026-10-01T12:37:18.670Z"
+    },
+    {
+      "attribution": "observed_match",
+      "command": "pnpm test:sqlite-cost",
+      "dirty": false,
+      "exitCode": 0,
+      "finishedAt": "2026-10-01T12:45:54.435Z",
+      "head": "fced54c4f94111fb0f815ba4a100de2d864372e2",
+      "phase": "passed",
+      "runId": "52cf1726-5515-46d6-983e-007dce64b05a",
+      "startedAt": "2026-10-01T12:45:50.935Z"
+    }
+  ],
+  "sqliteWriteCost": {
+    "directory": "repository parent filesystem (not OS tmpfs)",
+    "filesystem": "ext4",
+    "nodeVersion": "v24.19.0",
+    "results": [
+      {
+        "mode": "NORMAL",
+        "n": 200,
+        "operation": "project registration",
+        "p50Ms": 0.2162490000000048,
+        "p95Ms": 0.3039169999999558,
+        "totalMs": 73.47394800000001
+      },
+      {
+        "mode": "NORMAL",
+        "n": 200,
+        "operation": "auth policy and audit transaction",
+        "p50Ms": 0.07636600000000726,
+        "p95Ms": 0.13874600000002602,
+        "totalMs": 31.56361200000015
+      },
+      {
+        "mode": "FULL",
+        "n": 200,
+        "operation": "project registration",
+        "p50Ms": 1.5478999999999132,
+        "p95Ms": 3.45895900000005,
+        "totalMs": 388.49016799999856
+      },
+      {
+        "mode": "FULL",
+        "n": 200,
+        "operation": "auth policy and audit transaction",
+        "p50Ms": 1.2441599999999653,
+        "p95Ms": 1.581572000000051,
+        "totalMs": 273.1752440000007
+      },
+      {
+        "mode": "FULL",
+        "n": 200,
+        "operation": "project registration",
+        "p50Ms": 1.5465900000001511,
+        "p95Ms": 2.0520400000000336,
+        "totalMs": 328.0417210000046
+      },
+      {
+        "mode": "FULL",
+        "n": 200,
+        "operation": "auth policy and audit transaction",
+        "p50Ms": 1.2846629999999095,
+        "p95Ms": 1.7248230000000149,
+        "totalMs": 268.52533700000026
+      },
+      {
+        "mode": "NORMAL",
+        "n": 200,
+        "operation": "project registration",
+        "p50Ms": 0.20166199999994205,
+        "p95Ms": 0.25389400000017304,
+        "totalMs": 58.967622999999776
+      },
+      {
+        "mode": "NORMAL",
+        "n": 200,
+        "operation": "auth policy and audit transaction",
+        "p50Ms": 0.07157499999993888,
+        "p95Ms": 0.0969359999999142,
+        "totalMs": 29.203507999998237
+      },
+      {
+        "mode": "NORMAL",
+        "n": 200,
+        "operation": "project registration",
+        "p50Ms": 0.2025290000001405,
+        "p95Ms": 0.2580369999996037,
+        "totalMs": 57.182002000000466
+      },
+      {
+        "mode": "NORMAL",
+        "n": 200,
+        "operation": "auth policy and audit transaction",
+        "p50Ms": 0.06927200000018274,
+        "p95Ms": 0.11399600000004284,
+        "totalMs": 28.82945699999982
+      },
+      {
+        "mode": "FULL",
+        "n": 200,
+        "operation": "project registration",
+        "p50Ms": 1.5379680000000917,
+        "p95Ms": 1.8530760000003283,
+        "totalMs": 318.7719639999991
+      },
+      {
+        "mode": "FULL",
+        "n": 200,
+        "operation": "auth policy and audit transaction",
+        "p50Ms": 1.274395999999797,
+        "p95Ms": 1.5258859999999004,
+        "totalMs": 262.4394290000005
+      }
+    ],
+    "sqliteVersion": "3.53.4"
+  }
+}
