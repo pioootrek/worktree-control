@@ -115,7 +115,7 @@ export function Dashboard() {
           </div>
           {section !== "knowledge" && data.projects.length > 0 && <p className="w-full truncate px-2 pb-0.5 text-xs font-medium text-muted-foreground sm:hidden">{sectionLabel}</p>}
         </header>
-        <BackupsDialog key={token} token={token} open={systemDialog === "backups"} onOpenChange={next => setSystemDialog(next ? "backups" : null)} returnFocus={() => systemTrigger.current?.focus()} />
+        {systemDialog === "backups" && <BackupsDialog key={token} token={token} open onOpenChange={next => setSystemDialog(next ? "backups" : null)} returnFocus={() => systemTrigger.current?.focus()} />}
         <CapacityDialog status={data.capacity} mutate={mutate} setError={setError} open={systemDialog === "capacity"} onOpenChange={(next) => setSystemDialog(next ? "capacity" : null)} returnFocus={() => systemTrigger.current?.focus()} />
         <TestQueueDialog status={data.testQueue} mutate={mutate} setError={setError} open={systemDialog === "queue"} onOpenChange={(next) => setSystemDialog(next ? "queue" : null)} returnFocus={() => systemTrigger.current?.focus()} />
         <McpStatusDialog status={data.mcp} open={systemDialog === "mcp"} onOpenChange={(next) => setSystemDialog(next ? "mcp" : null)} returnFocus={() => systemTrigger.current?.focus()} />

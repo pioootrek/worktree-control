@@ -8,6 +8,8 @@ import { backupCommandSchema } from "@/shared/contracts/backups";
 import { BackupClientError, backupRequest } from "./backup-client";
 
 const STORAGE_KEY = "worktree-switcher-backup-request";
+// The local dashboard also supports HTTP, where randomUUID is unavailable.
+const requestKey = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), byte => byte.toString(16).padStart(2, "0")).join("");
 /** Explicit refresh uses no additional polling or dashboard event subscription. */
 export function BackupsDialog({ token, open, onOpenChange, returnFocus }: { token: string; open: boolean; onOpenChange: (open: boolean) => void; returnFocus: () => void }) {
   const { t, locale } = useI18n();
@@ -83,10 +85,10 @@ export function BackupsDialog({ token, open, onOpenChange, returnFocus }: { toke
         <p className="text-sm">{t("backups.dataDate")}: {date(preview.backup.createdAt)}</p>
         <p className="text-sm">{t("backups.restoreScope")}</p>
         <label className="flex items-start gap-3 text-sm"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} className="mt-1 size-4 shrink-0 accent-primary" />{t("backups.confirmLoss")}</label>
-        <DialogFooter><Button variant="outline" onClick={() => setPreview(null)}>{t("common.cancel")}</Button><Button variant="destructive" disabled={!confirmed || pending} onClick={() => void submit({ action: "restore", backupId: preview.backup.id, idempotencyKey: crypto.randomUUID(), confirmation: "replace-entire-installation" }, true)}>{t("backups.confirmRestore")}</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={() => setPreview(null)}>{t("common.cancel")}</Button><Button variant="destructive" disabled={!confirmed || pending} onClick={() => void submit({ action: "restore", backupId: preview.backup.id, idempotencyKey: requestKey(), confirmation: "replace-entire-installation" }, true)}>{t("backups.confirmRestore")}</Button></DialogFooter>
       </section> : <>
         <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => void refresh()} disabled={pending}>{t("backups.refresh")}</Button>
-          {overview?.policy.uiActions.includes("create") && <Button disabled={pending || overview.maintenance} onClick={() => void submit({ action: "create", idempotencyKey: crypto.randomUUID() }, true)}>{t("backups.create")}</Button>}
+          {overview?.policy.uiActions.includes("create") && <Button disabled={pending || overview.maintenance} onClick={() => void submit({ action: "create", idempotencyKey: requestKey() }, true)}>{t("backups.create")}</Button>}
           {retry && (retry.action === "create" || retry.action === "restore") && <Button variant="outline" disabled={pending} onClick={() => void submit(retry, true)}>{t("backups.retry")}</Button>}
         </div>
         {overview && <>
