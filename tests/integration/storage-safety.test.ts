@@ -17,7 +17,7 @@ function fixture(withDatabase=true) {
   const data=join(root,"data"),state=join(root,"state"),backup=join(root,"backup");
   if(withDatabase){mkdirSync(data,{mode:0o700});const db=new Database(join(data,"state.sqlite3"));try{db.exec(readFileSync(resolve("src/server/infrastructure/sqlite/fixtures/schema-v12.sql"),"utf8"));}finally{db.close();}}
   const args=["--data-dir",data,"--state-dir",state];
-  const env={HOME:root,PATH:process.env.PATH,LANG:"C.UTF-8",XDG_CONFIG_HOME:join(root,"config")};
+  const env={NODE_ENV:"test" as const,HOME:root,PATH:process.env.PATH,LANG:"C.UTF-8",XDG_CONFIG_HOME:join(root,"config")};
   return {root,data,state,backup,args,env,database:join(data,"state.sqlite3")};
 }
 async function run(f:ReturnType<typeof fixture>,args:string[]){return exec(process.execPath,[cli,...args,...f.args],{env:f.env,timeout:15000});}
