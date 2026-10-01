@@ -29,7 +29,7 @@ export class SnapshotVerifier {
       const sourceMode = import.meta.url.endsWith(".ts");
       const entry = fileURLToPath(new URL(sourceMode ? "../../../cli/backup-verifier.ts" : "./backup-verifier.js", import.meta.url));
       const manifest = await new Promise<ControllerBackupManifest>((accept, reject) => {
-        const child = fork(entry, [], { execArgv: sourceMode ? ["--import", "tsx"] : [], cwd: sourceMode ? resolve(dirname(entry), "../..") : undefined, env: inheritedRuntimeEnvironment(), stdio: ["ignore", "ignore", "ignore", "ipc"] });
+        const child = fork(entry, [], { execArgv: sourceMode ? ["--import", "tsx"] : [], cwd: sourceMode ? resolve(dirname(entry), "../..") : undefined, env: { ...inheritedRuntimeEnvironment(), NODE_ENV: "production" }, stdio: ["ignore", "ignore", "ignore", "ipc"] });
         this.child = child;
         let result: ControllerBackupManifest | null = null, failed = false;
         const timeout = setTimeout(() => { failed = true; child.kill("SIGKILL"); }, this.timeoutSeconds * 1000);
