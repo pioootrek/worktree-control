@@ -174,7 +174,10 @@ describe("strict restore validation before replacement", () => {
     expect(() => restoreControllerBackup(f.backup, f.database, f.attachments)).toThrow(/space/); expect(readFileSync(f.database)).toEqual(f.before); expect(existsSync(restoreRoot(f.database))).toBe(false);
   });
   it("refuses actual different-device attachments before replacing data", async () => {
-    const f = await fixture(), elsewhere = mkdtempSync("/tmp/restore-other-device-"); roots.push(elsewhere);
+    const f = await fixture();
+    const alternate = ["/dev/shm", "/tmp"].find(path => existsSync(path) && lstatSync(path).dev !== lstatSync(f.root).dev);
+    if (!alternate) throw new Error("Cross-device fixture requires an existing alternate mount (/dev/shm or /tmp).");
+    const elsewhere = mkdtempSync(join(alternate, "restore-other-device-")); roots.push(elsewhere);
     expect(lstatSync(elsewhere).dev).not.toBe(lstatSync(f.root).dev);
     expect(() => restoreControllerBackup(f.backup, f.database, join(elsewhere, "attachments"))).toThrow(/filesystem/); expect(readFileSync(f.database)).toEqual(f.before);
   });
