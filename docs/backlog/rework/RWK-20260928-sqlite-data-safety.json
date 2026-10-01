@@ -59,6 +59,11 @@
       "author": "agent:codex",
       "date": "2026-10-01",
       "text": "Added Git/run strategy: documentation commit on main, one separate worktree and feature branch per slice, sequential PRs based on main after predecessor review/checks/merge, and no production rollout as part of a slice. Added storage-safety-worker-01.md for S1a+S2a: ownership, non-migrating backup, schema guard and optional CLI pre-migration backup, with isolated acceptance tests and handoff at a PR. This session only writes documentation; no coding worker was started and no commit or PR was created."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-01",
+      "text": "Delivered only S1a + S2a in open PR https://github.com/pioootrek/worktree-switcher/pull/68, feature SHA 7f9f82ce2a9bf24b7d174cbdacd939c1bb952ada. Agreed documentation was separately committed and synchronized on main at 6cd50e69e1c02c9ad34d283fd5769c035ae942b1. Added canonical database ownership, non-migrating inspection/manual backup, unsupported-schema rejection and optional default-off CLI pre-migration backup with service arguments. Managed queue verification on the clean feature SHA passed: check (548 Vitest + 7 script tests), build, integration (22) and Chromium UI (134). Frozen historical SQL fixtures and isolated built CLI/startup tests were used; no actual systemd/launchd installation, old installed-artifact upgrade, production DB or power-loss test. Durable report: storage-safety-s1a-s2a-report-20261001.md in the linked note. Overall item stays open pending remaining slices and acceptance. No merge, production change or next slice."
     }
   ],
   "priority": "next",
