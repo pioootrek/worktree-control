@@ -16,7 +16,8 @@ Prace wykonano na `feat/sqlite-backup-operations`, w osobnym worktree
 zapisano przed kodowaniem i zsynchronizowano na `main` w
 `2ec416287101a3cd9c5b43b4ad608ea4d773fea3`. Implementacja jest w
 [PR #72](https://github.com/pioootrek/worktree-switcher/pull/72).
-Końcowy head: `1147b2ff0269eb6d63dd3df81a104b5aee22707c`.
+Końcowy head po review: `de89e998149112ffbe44c10f4a6a2a420c049ebb`.
+Pierwotne dostarczenie: `1147b2ff0269eb6d63dd3df81a104b5aee22707c`.
 Raport i backlog są oddzielnym commitem dokumentacji na `main`.
 
 ## Polityka i wykonanie
@@ -98,7 +99,47 @@ zakresowe zostają unieważnione. Dawny token instalacji nie odzyskuje zaufania.
 Ponowienie naprawia potwierdzenie, zamiast wykonywać drugi restore.
 CLI odmawia dostępu offline, gdy ten fence pozostaje niedokończony.
 
-## Weryfikacja końcowa
+## Follow-up review
+
+Oba nierozwiązane wątki sklasyfikowano jako `fix` i rozwiązano po publikacji
+poprawek oraz ich weryfikacji. Nie odłożono żadnego do backloga i nie uznano
+żadnego za false positive.
+
+- [Katalog względny aktywnego CLI](https://github.com/pioootrek/worktree-switcher/pull/72#discussion_r4160199484): CLI rozwiązuje ścieżkę względem własnego cwd przed wysłaniem jej kanałem administracyjnym. Regresja skompilowanego CLI z osobnego tymczasowego katalogu sprawdza kompletny manifest we wskazanym przez operatora miejscu.
+- [Brak zlecenia restore](https://github.com/pioootrek/worktree-switcher/pull/72#discussion_r4160200987): brak receipt S3b (`ENOENT`) daje bezpieczny `backup_invalid` / HTTP 404. Inne błędy nadal są propagowane; aktualna autoryzacja poprzedza lookup. Testy sprawdzają nieznany klucz przed/po admission, odpowiedź CLI i odmowę po cofnięciu tokenu.
+
+Poprawki kodu opublikowano w `d557fd6`. Nowa fixture używała początkowo
+nieprawidłowego formatu ID, więc walidacja transportu słusznie zwracała 400.
+Check `e2a651d2-2ba6-4320-99a4-9613bb0e7179` i
+[CI 36923843336](https://github.com/pioootrek/worktree-switcher/actions/runs/36923843336)
+miały 769 PASS i 1 FAIL; log zachowano w
+`/tmp/wts-s4a-review-ci-36923843336-failed.log` przed diagnozą.
+`de89e99` poprawia wyłącznie ID fixture do obowiązującego kontraktu.
+Pozostawiono asercję 404, bez opóźnień, retry i osłabienia testu.
+Najpierw przeszedł ukierunkowany preset backupów, następnie pełne sprawdzenia.
+
+| Preset | Run ID | Wynik na `de89e99` |
+| --- | --- | --- |
+| `node:test:backups` | `6796db69-19b0-4c28-bf36-73fd9cef78ed` | PASS: 53 testy |
+| `node:check` | `ce74ff67-9490-459c-87a9-169b162f3c02` | PASS: lint, typy, 770 Vitest + 7 testów skryptów |
+| `node:build` | `1bde1211-4ba9-4627-8740-caa6df98a14c` | PASS |
+| `node:test:integration` | `c85db7ff-fa0c-4bfb-ab6e-62f5069f5d95` | PASS: 29 testów |
+| `node:test:ui` | `ba9813f4-e95c-4457-b4bb-c40578d41371` | PASS: 142 testy |
+
+Wszystkie powyższe przebiegi zakończyły się `passed`, exit 0, czystym
+enqueue/preflight/finish i `observed_match` na dokładnym końcowym SHA.
+[Końcowy CI 36924532217](https://github.com/pioootrek/worktree-switcher/actions/runs/36924532217)
+przeszedł check/build, HTTPS, integration, UI, E2E, smoke pakietu na Node
+22.23.2/24.21.0 i systemd lifecycle na jednorazowym runnerze.
+Nowy pakiet pochodzi z czystego syntetycznego merge
+`fd164df0e44cd11e946d615c1a180b05521ddd69`, ma 822000 bajtów i SHA256
+`1b61543b27493d1f2c2cd7744eb19fffb134df5c792f81dc9420a9f3220a11d3`.
+Checksumy artefaktu i obu skryptów pasują do provenance; oddzielne raporty
+potwierdzają po 13 kroków smoke z graceful cleanup i udany lifecycle bez faults.
+Pole `pending-package-smoke` w provenance pozostaje stanem z chwili pakowania.
+Wyniki pierwotnego dostarczenia i pakietu poniżej zachowano jako historię.
+
+## Weryfikacja pierwotnego dostarczenia
 
 Zadania wykonano kolejno przez Worktree Switcher MCP, według odkrytych
 presetów i dokładnej ścieżki z `list_worktrees`. Nie uruchamiano ani nie
@@ -168,7 +209,7 @@ CI `36916906421` anulowano przez kolejny commit; nie jest zaliczony.
 
 ## Pakiet, ograniczenia i zakończenie
 
-[Końcowy CI](https://github.com/pioootrek/worktree-switcher/actions/runs/36917252428)
+[CI pierwotnego dostarczenia](https://github.com/pioootrek/worktree-switcher/actions/runs/36917252428)
 przeszedł check/build, HTTPS, integration, UI, E2E i pakowanie. Smoke
 zainstalowanego artefaktu przeszedł na Node 22.23.2 i 24.21.0; lifecycle
 systemd przeszedł na jednorazowym runnerze. Workflow testuje syntetyczny

@@ -114,6 +114,11 @@
       "author": "agent:codex",
       "date": "2026-10-01",
       "text": "S4a delivered for review in PR #72 (https://github.com/pioootrek/worktree-switcher/pull/72), frozen head 1147b2ff0269eb6d63dd3df81a104b5aee22707c. CLI-only immutable optional service policy, bounded durable backup execution/scheduling/retention, installation-token operator GUI and controlled S3b maintenance/handoff/restart are implemented. Exact clean-source managed check (769 Vitest + 7 scripts), build, integration (28), UI (142) and focused backup UI (7) passed with observed_match. Final CI 36917252428 passed, including installed-package smoke on Node 22.23.2 and 24.21.0 and disposable-runner systemd lifecycle. Report and sanitized evidence: storage-safety-s4a-report-20261001.md / storage-safety-s4a-evidence-20261001.json. Parent stays open; S4a awaits review/merge, S4u/S4b/S5 are untouched. No production/host-service change. Power loss, physical disk exhaustion, old-installed-artifact upgrade and actual browser 200% zoom remain unverified; no delivery blocker."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-01",
+      "text": "S4a PR #72 review follow-up: both inline findings classified fix, published and resolved; no backlog/false-positive/unresolved concerns. Active CLI resolves relative backup destinations in the operator cwd; unknown restore status returns safe backup_invalid (HTTP 404) after current authorization. Final head de89e998149112ffbe44c10f4a6a2a420c049ebb. New compiled-controller and HTTP regressions passed. Initial follow-up check/CI 36923843336 failed only because the new fixture used an invalid backup ID; logs were retained, the ID corrected without weakening 404 assertions, and focused backup tests passed (53) before full verification. Final clean-source managed check (770 Vitest + 7 scripts), build, integration (29) and UI (142) passed with observed_match; CI 36924532217 including package smoke and disposable-runner lifecycle is green. Dated S4a report/evidence updated; previous delivery results preserved. Parent remains open; no merge/deployment/next slice."
     }
   ],
   "priority": "next",
