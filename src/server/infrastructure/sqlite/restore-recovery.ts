@@ -119,7 +119,12 @@ function validateInstalled(journal: Journal): void {
 /** Caller holds the canonical database ownership lock and has no SQLite connection. */
 export function recoverOwnedRestore(databasePath: string): void {
   const root = restoreRoot(databasePath); if (!info(root)) return;
-  const journal = readJournal(root, databasePath); if (journal.state === "verified") return;
+  const journal = readJournal(root, databasePath);
+  if (journal.state === "verified") {
+    // The process may have died after publishing this marker but before its
+    // directory fsync. Reaffirm the commit without rehashing later DB writes.
+    syncDirectory(root); syncDirectory(dirname(root)); return;
+  }
   layout(databasePath, journal.attachmentDirectory, [root, join(root, "previous"), join(root, "new")]);
   const current = targets(databasePath, journal.attachmentDirectory);
   const moves = current.map((from, index) => ({ from, to: join(root, "previous", String(index)), identity: journal.previous[index] }));

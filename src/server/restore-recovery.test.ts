@@ -90,6 +90,18 @@ describe("recoverable multi-file restore", () => {
     const store = new SqliteStateStore(f.database); store.addProject({ name: "After restore", repositoryPath: join(f.root, "another"), port: 4569, executable: "pnpm", args: ["dev"] }); store.close();
     const reopened = new SqliteStateStore(f.database); expect(reopened.listProjects()).toHaveLength(2); reopened.close();
   });
+  it("requires verified-marker directory synchronization again before reopening after its fsync failure", async () => {
+    const f = await fixture(), root = restoreRoot(f.database), original = fs.fsyncSync;
+    vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
+      if (fs.realpathSync(`/proc/self/fd/${fd}`) === root && existsSync(join(root, "journal.json")) && JSON.parse(readFileSync(join(root, "journal.json"), "utf8")).payload.state === "verified") throw Object.assign(new Error("commit marker sync refused"), { code: "EIO" });
+      return original(fd);
+    });
+    expect(() => restoreControllerBackup(f.backup, f.database, f.attachments)).toThrow(/commit marker sync refused/);
+    const installed = readFileSync(f.database);
+    expect(() => new SqliteStateStore(f.database)).toThrow(/commit marker sync refused/);
+    expect(readFileSync(f.database)).toEqual(installed); expect(existsSync(`${f.database}.owner.lock`)).toBe(false);
+    vi.restoreAllMocks(); assertNew(f);
+  });
   it("restores an initially absent target, including a crash after new database rename", async () => {
     const f = await fixture(); rmSync(f.database); for (const suffix of ["-wal", "-shm", "-journal", ".initializing"]) rmSync(`${f.database}${suffix}`); rmSync(f.attachments, { recursive: true });
     await kill(f, "after-6"); const store = new SqliteStateStore(f.database); expect(store.listProjects()[0]?.name).toBe("New runtime"); store.close(); expect(readFileSync(join(f.attachments, sha.slice(0, 2), sha))).toEqual(bytes);
