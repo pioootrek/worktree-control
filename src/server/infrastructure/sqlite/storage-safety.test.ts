@@ -47,7 +47,83 @@ const options = (attachmentDirectory: string, backupDirectory?: string) => ({
   attachmentDirectory, applicationVersion:"isolated-test", backupBeforeMigration:Boolean(backupDirectory), backupDirectory,
 });
 
+async function crashWalWriter(path: string, removeIndex: boolean, future = false) {
+  const worker = fileURLToPath(new URL("./fixtures/wal-crash-worker.ts", import.meta.url));
+  const child = fork(worker, [path, future ? "future" : "supported"], {
+    execArgv: ["--import", "tsx"], stdio: ["ignore", "ignore", "pipe", "ipc"],
+  });
+  const abort = new AbortController();
+  const timeout = setTimeout(() => abort.abort(), 5000);
+  try {
+    const [message] = await once(child, "message", { signal: abort.signal });
+    expect(message).toEqual({ committed: true });
+  } finally {
+    clearTimeout(timeout);
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, "exit");
+      child.kill("SIGKILL");
+      const [, signal] = await exited;
+      expect(signal).toBe("SIGKILL");
+    }
+  }
+  expect(lstatSync(`${path}-wal`).size).toBeGreaterThan(32);
+  expect(existsSync(`${path}-shm`)).toBe(true);
+  if (removeIndex) rmSync(`${path}-shm`);
+}
+
 describe("SQLite storage safety", () => {
+  it.each([false, true])("inspects, backs up and migrates a committed WAL after SIGKILL (remove index=%s)", async removeIndex => {
+    const f = fixture(12);
+    await crashWalWriter(f.paths.databasePath, removeIndex);
+    const before = readFileSync(f.paths.databasePath);
+    const walBefore = readFileSync(`${f.paths.databasePath}-wal`);
+    // The record must come from WAL; reading only the main file still sees its old value.
+    const mainOnlyPath = join(f.root, "main-only.sqlite3");
+    writeFileSync(mainOnlyPath, before);
+    const mainOnly = new Database(mainOnlyPath, { readonly: true });
+    try { expect(mainOnly.prepare("SELECT name FROM projects").get()).toEqual({ name: "Kept" }); }
+    finally { mainOnly.close(); }
+
+    const inspected = new OwnedSqliteDatabase(f.paths.databasePath);
+    try {
+      expect(inspected.database.readonly).toBe(true);
+      expect(inspected.schemaVersion()).toBe(12);
+      expect(inspected.database.prepare("SELECT name FROM projects").get()).toEqual({ name: "Committed in WAL" });
+    } finally { inspected.close(); }
+    const backup = join(f.root, "backup");
+    await runBackupCommand(["create", backup], f.paths, "test", () => {});
+    expect(readFileSync(f.paths.databasePath)).toEqual(before);
+    expect(readFileSync(`${f.paths.databasePath}-wal`)).toEqual(walBefore);
+    const snapshot = new Database(join(backup, "state.sqlite3"), { readonly: true });
+    try {
+      expect(inspectSchema(snapshot).version).toBe(12);
+      expect(snapshot.prepare("SELECT name FROM projects").get()).toEqual({ name: "Committed in WAL" });
+    } finally { snapshot.close(); }
+    const store = await openControllerStore(f.paths.databasePath, options(f.paths.knowledgeAttachmentDirectory, join(f.root, "pre-migration")));
+    try {
+      expect(store.schemaVersion()).toBe(27);
+      expect(store.getProject("kept")?.name).toBe("Committed in WAL");
+    } finally { store.close(); }
+    expect(existsSync(`${f.paths.databasePath}.owner.lock`)).toBe(false);
+    expect(existsSync(f.paths.controllerLockPath)).toBe(false);
+  }, 10000);
+
+  it.each([false, true])("rejects a future schema committed only in WAL without changing the main file or WAL (remove index=%s)", async removeIndex => {
+    const f = fixture(12);
+    await crashWalWriter(f.paths.databasePath, removeIndex, true);
+    const before = readFileSync(f.paths.databasePath);
+    const walBefore = readFileSync(`${f.paths.databasePath}-wal`);
+    expect(() => new SqliteStateStore(f.paths.databasePath)).toThrow(/Unsupported/);
+    await expect(openControllerStore(f.paths.databasePath, options(f.paths.knowledgeAttachmentDirectory))).rejects.toThrow(/Unsupported/);
+    await expect(runAuthCommand(["mode", "set", "open"], f.paths, { write: () => {} })).rejects.toThrow(/Unsupported/);
+    await expect(runBackupCommand(["create", join(f.root, "backup")], f.paths, "test", () => {})).rejects.toThrow(/Unsupported/);
+    expect(readFileSync(f.paths.databasePath)).toEqual(before);
+    expect(readFileSync(`${f.paths.databasePath}-wal`)).toEqual(walBefore);
+    expect(existsSync(join(f.root, "backup"))).toBe(false);
+    expect(existsSync(`${f.paths.databasePath}.owner.lock`)).toBe(false);
+    expect(existsSync(f.paths.controllerLockPath)).toBe(false);
+  }, 10000);
+
   it.each([12,24,26] as const)("manual backup preserves raw schema v%s, rows and referenced attachments", async version => {
     const f=fixture(version); const before=readFileSync(f.paths.databasePath);
     const destination=join(f.root,"backup");
