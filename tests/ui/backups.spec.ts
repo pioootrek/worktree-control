@@ -31,7 +31,7 @@ for (const locale of ["en", "pl"] as const) {
     if (locale === "pl") await selectLanguage(page);
     await openSystemDialog(page, "backups.title", locale);
     const dialog = page.getByRole("dialog");
-    await expect(dialog.getByText(locale === "pl" ? /Jeszcze niezweryfikowana przez tę usługę/ : /Not yet verified by this service/)).toBeVisible();
+    await expect(dialog.getByText(locale === "pl" ? /Brak zapisanego wyniku weryfikacji/ : /No stored verification result/)).toBeVisible();
     await expect(dialog.getByText(locale === "pl" ? /Weryfikacja nieudana/ : /Verification failed/)).toBeVisible();
     await expect(dialog.getByRole("button", { name: `${locale === "pl" ? "Odtwórz" : "Restore"} ${migration.id}`, exact: true })).toBeEnabled();
     await page.keyboard.press("Escape"); await expect(dialog).toHaveCount(0);

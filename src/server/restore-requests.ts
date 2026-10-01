@@ -44,6 +44,11 @@ function readRecord(path: string): Record {
 function sameRequest(record: Record, actor: RestoreActor): void {
   if (record.actor.actorId !== actor.actorId || record.actor.idempotencyKey !== actor.idempotencyKey || record.actor.backupId !== actor.backupId) throw new Error("Restore idempotency key conflicts with a different request.");
 }
+function assertRequestCapacity(directory: string): void {
+  const entries = opendirSync(directory); let count = 0;
+  try { while (entries.readSync()) if (++count >= 1024) throw new Error("Restore request history limit reached; operator review is required."); }
+  finally { entries.closeSync(); }
+}
 
 /** Admission only: may run with an open database, never changes live files or starts processes. */
 function prepareRequest(databasePath: string, actorId: string, value: unknown, policy: RestoreRequestPolicy) {
@@ -52,9 +57,7 @@ function prepareRequest(databasePath: string, actorId: string, value: unknown, p
   const directory = requestDirectory(databasePath), path = join(directory, `${keyFor(actor)}.json`);
   try { const record = readRecord(path); sameRequest(record, actor); syncDirectory(directory); syncDirectory(dirname(directory)); return { existing: status(record), actor, directory, path, source: record.source }; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  const entries = opendirSync(directory); let count = 0;
-  try { while (entries.readSync()) if (++count >= 1024) throw new Error("Restore request history limit reached; operator review is required."); }
-  finally { entries.closeSync(); }
+  assertRequestCapacity(directory);
   return { existing: null, actor, directory, path, source: resolve(policy.resolveBackup(input.backupId)) };
 }
 export function requestControllerRestore(databasePath: string, actorId: string, value: unknown, policy: RestoreRequestPolicy): RestoreRequestStatus {
@@ -80,6 +83,10 @@ export async function requestControllerRestoreAsync(databasePath: string, actorI
 }
 
 function publishRequest({ actor, source, directory, path }: ReturnType<typeof prepareRequest>, manifest: ControllerBackupManifest): RestoreRequestStatus {
+  // Async verification yields to other requests; enforce the durable bound again.
+  try { const existing = readRecord(path); sameRequest(existing, actor); return status(existing); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  assertRequestCapacity(directory);
   const record: Record = { formatVersion: 1, operationId: randomUUID(), actor, createdAt: new Date().toISOString(), source, manifestHash: checksum(manifest), state: "requested" };
   const temporary = join(directory, `.request-${record.operationId}`);
   const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
