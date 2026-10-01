@@ -12,8 +12,10 @@ import { createControllerBackup } from "./controller-backup";
 vi.mock("node:fs", async importOriginal => ({ ...await importOriginal<typeof import("node:fs")>() }));
 const cleanups: Array<() => void> = [];
 afterEach(() => { vi.restoreAllMocks(); cleanups.splice(0).reverse().forEach(cleanup => cleanup()); });
-function fixture() {
-  const root = fs.mkdtempSync(join(tmpdir(), "attachment-backup-")); cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
+function fixture(executeOnlyAncestor = false) {
+  const outer = fs.mkdtempSync(join(tmpdir(), "attachment-backup-")), root = executeOnlyAncestor ? join(outer, "data") : outer;
+  if (executeOnlyAncestor) fs.mkdirSync(root, { mode: 0o700 });
+  cleanups.push(() => { fs.chmodSync(outer, 0o700); fs.rmSync(outer, { recursive: true, force: true }); });
   const owned = new OwnedSqliteDatabase(join(root, "state.sqlite3"), true), store = new SqliteStateStore(join(root, "state.sqlite3"), owned); cleanups.push(() => store.close());
   const ids = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
   const identity = new IdentityService(store, undefined, () => ids.shift() ?? randomUUID());
@@ -23,6 +25,7 @@ function fixture() {
   const attachments = join(root, "attachments"), service = new KnowledgeAttachmentService(store, identity, attachments);
   const upload = (data: Buffer, key: string) => service.upload(project.id, "task", task.id, { filename: "proof.txt", mediaType: "text/plain", data, idempotencyKey: key }, owner);
   upload(Buffer.from("original"), "original");
+  if (executeOnlyAncestor) fs.chmodSync(outer, 0o111);
   return { root, owned, store, identity, owner, project, attachments, upload, service };
 }
 function hub(f: ReturnType<typeof fixture>, bytes: Buffer) {
@@ -42,6 +45,29 @@ function hub(f: ReturnType<typeof fixture>, bytes: Buffer) {
 }
 
 describe("immutable attachments during backup", () => {
+  for (const operation of ["upload", "hub", "project"]) {
+    it.each(["legacy", "execute-only"])(`backs up and runs ${operation} with %s directories`, async layout => {
+      const f = fixture(layout === "execute-only"), external = fixture(), exported = join(external.root, "export");
+      exportKnowledgeProject(external.store, external.identity, external.project.id, exported, external.attachments, external.owner, { applicationVersion: "test" });
+      const original = f.store.exportKnowledgeProject(f.project.id)!.attachments[0];
+      const shard = join(f.attachments, String(original.sha256).slice(0, 2));
+      const legacy = () => { if (layout === "legacy") { fs.chmodSync(f.attachments, 0o775); fs.chmodSync(shard, 0o775); } };
+      legacy();
+      const before = await createControllerBackup(f.store, join(f.root, "before"), { applicationVersion: "test", attachmentDirectory: f.attachments });
+      expect(before.attachments).toHaveLength(1);
+      legacy();
+      if (operation === "upload") f.upload(Buffer.from("original"), "legacy");
+      if (operation === "hub") hub(f, Buffer.from("original"));
+      if (operation === "project") importKnowledgeProject(f.store, f.identity, exported, f.attachments, f.owner);
+      const destination = join(f.root, "after"), after = await createControllerBackup(f.store, destination, { applicationVersion: "test", attachmentDirectory: f.attachments });
+      expect(after.attachments).toHaveLength(1);
+      expect(fs.readFileSync(join(destination, "attachments", after.attachments[0].file), "utf8")).toBe("original");
+      if (layout === "legacy") for (const path of [f.attachments, shard]) expect(fs.statSync(path).mode & 0o777).toBe(0o700);
+      const project = operation === "hub" ? "hub" : operation === "project" ? external.project.id : f.project.id;
+      expect(f.store.exportKnowledgeProject(project)!.attachments).toHaveLength(operation === "upload" ? 2 : 1);
+    });
+  }
+
   for (const operation of ["upload", "hub", "project"]) {
     it.each(["before", "after"])(`copies exactly the snapshot references with ${operation} committing %s the snapshot`, async boundary => {
       const f = fixture(), external = fixture(), exported = join(external.root, "export");

@@ -6,14 +6,14 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { InvalidAttachmentObject, publishAttachmentObject } from "./attachment-objects";
+import { InvalidAttachmentObject, attachmentObjectPath, publishAttachmentObject } from "./attachment-objects";
 
 vi.mock("node:fs", async importOriginal => ({ ...await importOriginal<typeof import("node:fs")>() }));
 const roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); roots.splice(0).forEach(path => fs.rmSync(path, { recursive: true, force: true })); });
 function fixture() {
   const parent = fs.mkdtempSync(join(tmpdir(), "durable-object-")); roots.push(parent);
-  const root = join(parent, "new", "attachments"), bytes = Buffer.from("immutable object");
+  const root = join(parent, "attachments"), bytes = Buffer.from("immutable object");
   const object = { sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length };
   return { parent, root, bytes, object, path: join(root, object.sha256.slice(0, 2), object.sha256) };
 }
@@ -29,15 +29,79 @@ describe("durable attachment objects", () => {
     expect(fs.statSync(f.path).ino).toBe(inode);
     expect(fs.statSync(f.path).nlink).toBe(1);
     expect(fs.statSync(f.path).mode & 0o777).toBe(0o600);
-    for (const path of [f.root, dirname(f.path), join(f.parent, "new")]) expect(fs.statSync(path).mode & 0o777).toBe(0o700);
+    for (const path of [f.root, dirname(f.path)]) expect(fs.statSync(path).mode & 0o777).toBe(0o700);
     noStaging(f.root);
   });
 
   it("retains legacy directory modes and accepts a canonical parent alias", () => {
-    const f = fixture(), alias = join(f.parent, "alias"); fs.mkdirSync(join(f.parent, "new"), { mode: 0o755 }); fs.chmodSync(join(f.parent, "new"), 0o755);
-    fs.symlinkSync(join(f.parent, "new"), alias, "dir");
+    const f = fixture(), alias = join(f.parent, "alias"); fs.chmodSync(f.parent, 0o755);
+    fs.symlinkSync(f.parent, alias, "dir");
     publishAttachmentObject(join(alias, "attachments"), f.object, f.bytes);
-    expect(fs.readFileSync(f.path)).toEqual(f.bytes); expect(fs.statSync(join(f.parent, "new")).mode & 0o777).toBe(0o755);
+    expect(fs.readFileSync(f.path)).toEqual(f.bytes); expect(fs.statSync(f.parent).mode & 0o777).toBe(0o755);
+  });
+
+  it.each(["publish", "backup source"])("hardens owned legacy 0775 root/shard directories for %s", operation => {
+    const f = fixture(); fs.mkdirSync(dirname(f.path), { recursive: true });
+    fs.chmodSync(f.root, 0o775); fs.chmodSync(dirname(f.path), 0o775);
+    fs.writeFileSync(f.path, f.bytes, { mode: 0o600 });
+    const inode = fs.statSync(f.path).ino;
+    if (operation === "publish") publishAttachmentObject(f.root, f.object, f.bytes);
+    else expect(attachmentObjectPath(f.root, f.object)).toBe(f.path);
+    for (const path of [f.root, dirname(f.path)]) expect(fs.statSync(path).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(f.path).ino).toBe(inode); expect(fs.readFileSync(f.path)).toEqual(f.bytes);
+  });
+
+  it("publishes and retries under an unreadable outer ancestor without syncing it", () => {
+    const f = fixture(), data = join(f.parent, "data"), root = join(data, "attachments");
+    fs.mkdirSync(data, { mode: 0o700 }); fs.chmodSync(f.parent, 0o111);
+    try {
+      expect(() => fs.readdirSync(f.parent)).toThrow(expect.objectContaining({ code: "EACCES" }));
+      const open = vi.spyOn(fs, "openSync"), sync = fs.fsyncSync;
+      vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
+        if (fs.fstatSync(fd).isDirectory()) throw Object.assign(new Error("interrupted sync"), { code: "EIO" });
+        sync(fd);
+      });
+      expect(() => publishAttachmentObject(root, f.object, f.bytes)).toThrow("interrupted sync");
+      vi.mocked(fs.fsyncSync).mockImplementation(sync);
+      const path = publishAttachmentObject(root, f.object, f.bytes);
+      expect(fs.readFileSync(path)).toEqual(f.bytes);
+      expect(attachmentObjectPath(root, f.object)).toBe(path);
+      expect(open.mock.calls.some(([path]) => path === f.parent)).toBe(false);
+    } finally { fs.chmodSync(f.parent, 0o700); }
+  });
+
+  it.each(["root", "shard"])("refuses a legacy %s symlink without hardening its target", location => {
+    const f = fixture(), outside = join(f.parent, "outside");
+    fs.mkdirSync(outside); fs.chmodSync(outside, 0o775);
+    if (location === "shard") fs.mkdirSync(f.root, { mode: 0o700 });
+    fs.symlinkSync(outside, location === "root" ? f.root : dirname(f.path), "dir");
+    expect(() => publishAttachmentObject(f.root, f.object, f.bytes)).toThrow(InvalidAttachmentObject);
+    expect(fs.statSync(outside).mode & 0o777).toBe(0o775);
+  });
+
+  it("never creates outer ancestors whose entries it cannot retain across retries", () => {
+    const f = fixture();
+    expect(() => publishAttachmentObject(join(f.parent, "missing", "attachments"), f.object, f.bytes)).toThrow(expect.objectContaining({ code: "ENOENT" }));
+    expect(fs.existsSync(join(f.parent, "missing"))).toBe(false);
+  });
+
+  it("rejects a writable outer ancestor without changing its mode", () => {
+    const f = fixture(); fs.chmodSync(f.parent, 0o775);
+    expect(() => publishAttachmentObject(f.root, f.object, f.bytes)).toThrow(InvalidAttachmentObject);
+    expect(fs.statSync(f.parent).mode & 0o777).toBe(0o775);
+    expect(fs.existsSync(f.root)).toBe(false);
+  });
+
+  it("never hardens a foreign-owned legacy object directory", () => {
+    const f = fixture(); fs.mkdirSync(f.root); fs.chmodSync(f.root, 0o775);
+    const stat = fs.lstatSync, chmod = vi.spyOn(fs, "fchmodSync");
+    vi.spyOn(fs, "lstatSync").mockImplementation(((path: fs.PathLike) => {
+      const info = stat(path);
+      if (path === f.root) Object.defineProperty(info, "uid", { value: (process.getuid?.() ?? 0) + 1 });
+      return info;
+    }) as typeof fs.lstatSync);
+    expect(() => publishAttachmentObject(f.root, f.object, f.bytes)).toThrow(InvalidAttachmentObject);
+    expect(chmod).not.toHaveBeenCalled(); expect(fs.statSync(f.root).mode & 0o777).toBe(0o775);
   });
 
   it("synchronizes content before linking and every required directory before returning", () => {

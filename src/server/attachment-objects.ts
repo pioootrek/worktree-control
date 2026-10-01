@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, realpathSync, rmSync, writeSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, realpathSync, rmSync, writeSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { syncDirectory } from "./private-storage";
 
@@ -9,26 +9,37 @@ export interface AttachmentObject { sha256: string; size: number }
 function invalid(): never { throw new InvalidAttachmentObject("Unsafe attachment object path or conflicting content."); }
 function owned(uid: number): boolean { return !process.getuid || uid === process.getuid(); }
 
-function directory(path: string, allowAlias = false): void {
+function directory(path: string): void {
+  const info = lstatSync(path);
+  if (!info.isDirectory() || ((info.mode & 0o022) && !(info.mode & 0o1000))) invalid();
+}
+
+function objectDirectory(path: string, create: boolean): void {
   let info;
   try { info = lstatSync(path); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    const parent = dirname(path);
-    if (parent !== path) directory(parent, true);
+    if (!create || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     try { mkdirSync(path, { mode: 0o700 }); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
     info = lstatSync(path);
   }
-  if (allowAlias && info.isSymbolicLink()) { directory(realpathSync(path)); return; }
-  // Retain existing read/traverse permissions; never repair untrusted directories.
-  if (!info.isDirectory() || ((info.mode & 0o022) && !(info.mode & 0o1000))) invalid();
+  if (!info.isDirectory() || !owned(info.uid)) invalid();
+  if (info.mode & 0o022) {
+    // Older releases used the umask (commonly 002). Narrow only our root/shard,
+    // after checking the opened inode; never chmod an alias or foreign directory.
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
+    try {
+      const opened = fstatSync(fd);
+      if (!opened.isDirectory() || !owned(opened.uid) || opened.dev !== info.dev || opened.ino !== info.ino) invalid();
+      fchmodSync(fd, 0o700);
+      fsyncSync(fd);
+    } finally { closeSync(fd); }
+  }
 }
 
 function objectPath(root: string, object: AttachmentObject, create: boolean): string {
   if (!/^[a-f0-9]{64}$/.test(object.sha256) || !Number.isSafeInteger(object.size) || object.size < 0) invalid();
   const input = resolve(root), parent = dirname(input);
-  if (create) directory(parent, true);
   // Support canonical parent aliases, as database ownership does. Root/shard
   // aliases themselves remain forbidden; never follow them when creating files.
   const absolute = join(realpathSync(parent), basename(input)), shard = join(absolute, object.sha256.slice(0, 2));
@@ -37,11 +48,8 @@ function objectPath(root: string, object: AttachmentObject, create: boolean): st
     directory(current);
     if (dirname(current) === current) break;
   }
-  if (create) { directory(absolute); directory(shard); }
-  for (const path of [absolute, shard]) {
-    const info = lstatSync(path);
-    if (!info.isDirectory() || !owned(info.uid) || (info.mode & 0o022)) invalid();
-  }
+  objectDirectory(absolute, create);
+  objectDirectory(shard, create);
   return join(shard, object.sha256);
 }
 
@@ -78,11 +86,12 @@ function verify(fd: number, object: AttachmentObject, copyTo?: number): void {
   if (position !== object.size || hash.digest("hex") !== object.sha256) invalid();
 }
 
-/** Synchronize every ancestor, including entries left by an interrupted earlier attempt. */
+/** Sync shard, object root and its existing parent, also on interrupted retries. */
 function syncParents(path: string): void {
+  const boundary = dirname(dirname(path));
   for (let current = path; ; current = dirname(current)) {
     syncDirectory(current);
-    if (dirname(current) === current) break;
+    if (current === boundary) break;
   }
 }
 
@@ -91,6 +100,9 @@ function syncParents(path: string): void {
  * This is also the backup retention invariant: no live operation unlinks objects
  * while SQLite Backup API selects a snapshot or its attachments are copied.
  * Only this call's private staging is cleaned. There is deliberately no GC.
+ * The caller supplies an existing durable parent (owned database data directory
+ * or backup staging). This operation creates only the object root and shard;
+ * their parent's entry and outer ancestors are never changed by publication.
  */
 export function publishAttachmentObject(root: string, object: AttachmentObject, source: Uint8Array | { path: string }): string {
   const destination = objectPath(root, object, true), shard = dirname(destination);
