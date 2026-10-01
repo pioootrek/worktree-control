@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, lstatSync, rmdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 interface LockRecord {
@@ -21,6 +21,21 @@ export class ControllerAlreadyRunningError extends Error {
 
 export function acquireControllerLock(path: string): ControllerLock {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  return withAcquisition(path, () => acquireLock(path));
+}
+
+/** Serializes publication and stale replacement; an abandoned guard requires operator inspection. */
+function withAcquisition<T>(path: string, operation: () => T): T {
+  const guard = `${path}.acquiring`;
+  try { mkdirSync(guard, { mode: 0o700 }); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Ownership acquisition is in progress or interrupted. Inspect the lock before retrying.");
+    throw error;
+  }
+  try { return operation(); } finally { rmdirSync(guard); }
+}
+
+function acquireLock(path: string): ControllerLock {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const record: LockRecord = {
     pid: process.pid,
     token: randomUUID(),
@@ -32,6 +47,9 @@ export function acquireControllerLock(path: string): ControllerLock {
       const descriptor = openSync(path, "wx", 0o600);
       try {
         writeFileSync(descriptor, `${JSON.stringify(record)}\n`, "utf8");
+      } catch (error) {
+        unlinkSync(path);
+        throw error;
       } finally {
         closeSync(descriptor);
       }
@@ -41,7 +59,7 @@ export function acquireControllerLock(path: string): ControllerLock {
           if (released) return;
           released = true;
           try {
-            const current = parseLock(readFileSync(path, "utf8"));
+            const current = readLock(path);
             if (current?.token === record.token) unlinkSync(path);
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -51,7 +69,8 @@ export function acquireControllerLock(path: string): ControllerLock {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const current = readLock(path);
-      if (current && processExists(current.pid)) {
+      if (!current) throw new Error("Ownership lock is incomplete or unrecognized. Inspect it before removal.");
+      if (processExists(current.pid)) {
         throw new ControllerAlreadyRunningError(current.pid);
       }
       try {
@@ -66,17 +85,19 @@ export function acquireControllerLock(path: string): ControllerLock {
 
 function readLock(path: string): LockRecord | null {
   try {
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.nlink !== 1) throw new Error("Ownership lock must be a regular file without aliases.");
     return parseLock(readFileSync(path, "utf8"));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    return null;
+    throw error;
   }
 }
 
 function parseLock(value: string): LockRecord | null {
   try {
     const parsed = JSON.parse(value) as Partial<LockRecord>;
-    return typeof parsed.pid === "number" && typeof parsed.token === "string" && typeof parsed.startedAt === "string"
+    return typeof parsed.pid === "number" && Number.isInteger(parsed.pid) && parsed.pid > 0 && typeof parsed.token === "string" && parsed.token.length > 0 && typeof parsed.startedAt === "string"
       ? parsed as LockRecord
       : null;
   } catch {

@@ -34,7 +34,7 @@ function downgradeToMigration24(path: string): void {
   restore("knowledge_history", ", 'installation_token', 'none'", "");
   database.exec(`
     DELETE FROM controller_settings WHERE key = 'authentication';
-    DELETE FROM schema_migrations WHERE version = 25;
+    DELETE FROM schema_migrations WHERE version >= 25;
     INSERT INTO remote_principals(id, kind, status) VALUES ('owner-1', 'owner', 'active');
     INSERT INTO knowledge_projects(id, name, status, revision, created_at, updated_at)
       VALUES ('project-1', 'Existing', 'active', 1, '${NOW}', '${NOW}');

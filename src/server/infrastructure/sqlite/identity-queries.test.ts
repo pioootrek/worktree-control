@@ -53,8 +53,7 @@ describe("identity and knowledge access SQLite persistence", () => {
       DROP TABLE knowledge_project_grants;
       DROP TABLE knowledge_projects;
       DROP TABLE principal_credentials;
-      DELETE FROM schema_migrations WHERE version = 17;
-      DELETE FROM schema_migrations WHERE version = 18;
+      DELETE FROM schema_migrations WHERE version >= 17;
     `);
     legacy.close();
 
@@ -77,7 +76,7 @@ describe("identity and knowledge access SQLite persistence", () => {
     store.close();
 
     const legacy = new Database(path);
-    legacy.prepare("DELETE FROM schema_migrations WHERE version = 18").run();
+    legacy.prepare("DELETE FROM schema_migrations WHERE version >= 18").run();
     legacy.close();
 
     const migrated = new SqliteStateStore(path);

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -80,7 +80,7 @@ describe("SqliteStateStore", () => {
     const django = initial.addProject({ ...projectInput("Django", "/code/django", 3217), launchPreset: "django" });
     initial.close();
     const legacy = new Database(path);
-    legacy.exec("DELETE FROM schema_migrations WHERE version = 13");
+    legacy.exec("DELETE FROM schema_migrations WHERE version >= 13");
     legacy.close();
     const repaired = new SqliteStateStore(path);
     expect(repaired.getProject(auto.id)?.launchPreset).toBe("auto");
@@ -149,7 +149,7 @@ describe("SqliteStateStore", () => {
 
     const database = new Database(databasePath);
     database.exec("ALTER TABLE test_runs DROP COLUMN source_json");
-    database.prepare("DELETE FROM schema_migrations WHERE version = 12").run();
+    database.prepare("DELETE FROM schema_migrations WHERE version >= 12").run();
     database.close();
 
     const migrated = new SqliteStateStore(databasePath);
@@ -258,7 +258,7 @@ describe("SqliteStateStore", () => {
     const database = new Database(databasePath);
     database.prepare("UPDATE projects SET args_json = ? WHERE id = ?")
       .run(JSON.stringify(["dev", "--", "--port", "3212"]), project.id);
-    database.prepare("DELETE FROM schema_migrations WHERE version = 2").run();
+    database.prepare("DELETE FROM schema_migrations WHERE version >= 2").run();
     database.close();
 
     const migrated = new SqliteStateStore(databasePath);
@@ -317,7 +317,7 @@ describe("SqliteStateStore", () => {
     store.close();
 
     const database = new Database(databasePath);
-    database.prepare("DELETE FROM schema_migrations WHERE version = 9").run();
+    database.prepare("DELETE FROM schema_migrations WHERE version >= 9").run();
     database.close();
 
     const migrated = new SqliteStateStore(databasePath);
@@ -373,19 +373,15 @@ describe("SqliteStateStore", () => {
     directories.push(directory);
     const databasePath = join(directory, "state.sqlite3");
     const database = new Database(databasePath);
+    database.exec(readFileSync(new URL("./fixtures/schema-v12.sql", import.meta.url), "utf8"));
     database.exec(`
-      CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
-      INSERT INTO schema_migrations VALUES (1, 'now'), (2, 'now');
-      CREATE TABLE projects (
-        id TEXT PRIMARY KEY, name TEXT NOT NULL, repository_path TEXT NOT NULL UNIQUE,
-        port INTEGER NOT NULL UNIQUE, executable TEXT NOT NULL, args_json TEXT NOT NULL,
-        healthcheck_path TEXT NOT NULL, startup_timeout_ms INTEGER NOT NULL,
-        selected_worktree_path TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-      );
-      INSERT INTO projects VALUES (
-        'legacy', 'Legacy', '/code/legacy', 3214, 'pnpm', '["run","dev"]',
-        '/', 45000, NULL, 'now', 'now'
-      );
+      DELETE FROM schema_migrations WHERE version > 2;
+      ALTER TABLE projects DROP COLUMN tls_mode;
+      ALTER TABLE projects DROP COLUMN tls_key_path;
+      ALTER TABLE projects DROP COLUMN tls_cert_path;
+      ALTER TABLE projects DROP COLUMN tls_ca_path;
+      INSERT INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at)
+      VALUES('legacy','Legacy','/code/legacy',3214,'pnpm','["run","dev"]','/',45000,'now','now');
     `);
     database.close();
 
@@ -399,22 +395,18 @@ describe("SqliteStateStore", () => {
     directories.push(directory);
     const databasePath = join(directory, "state.sqlite3");
     const database = new Database(databasePath);
+    database.exec(readFileSync(new URL("./fixtures/schema-v12.sql", import.meta.url), "utf8"));
     database.exec(`
-      CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
-      INSERT INTO schema_migrations VALUES (1, 'now'), (2, 'now'), (3, 'now');
-      CREATE TABLE projects (
-        id TEXT PRIMARY KEY, name TEXT NOT NULL, repository_path TEXT NOT NULL UNIQUE,
-        port INTEGER NOT NULL UNIQUE, tls_mode TEXT NOT NULL DEFAULT 'off',
-        tls_key_path TEXT, tls_cert_path TEXT, tls_ca_path TEXT,
-        executable TEXT NOT NULL, args_json TEXT NOT NULL, healthcheck_path TEXT NOT NULL,
-        startup_timeout_ms INTEGER NOT NULL, selected_worktree_path TEXT,
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-      );
+      DELETE FROM schema_migrations WHERE version > 3;
+      DROP INDEX active_agent_idempotency_key;
+      DROP TABLE reservations;
       CREATE TABLE reservations (
-        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, worktree_path TEXT NOT NULL,
-        kind TEXT NOT NULL, owner TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL,
-        expires_at TEXT, released_at TEXT, released_by TEXT
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        worktree_path TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('human','agent')),
+        owner TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL, expires_at TEXT,
+        released_at TEXT, released_by TEXT
       );
+      CREATE UNIQUE INDEX one_active_reservation_per_project ON reservations(project_id) WHERE released_at IS NULL;
     `);
     database.close();
 

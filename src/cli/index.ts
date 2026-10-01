@@ -44,7 +44,8 @@ import { createControllerServer } from "../server/http-server";
 import { resolveAppPaths } from "../server/paths";
 import { ProcessManager } from "../server/process-manager";
 import { loadOrCreateSecret } from "../server/secret-file";
-import { SqliteStateStore } from "../server/sqlite-store";
+import { openControllerStore } from "../server/controller-storage";
+import { parseMigrationBackupOptions } from "./migration-backup-options";
 import { WorktreeStorageManager } from "../server/worktree-storage";
 import { TestJobManager } from "../server/test-job-manager";
 
@@ -63,6 +64,7 @@ function optionalPositiveNumber(value: string | undefined, label: string): numbe
 async function main(): Promise<void> {
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
+  const migrationBackup = parseMigrationBackupOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
   const knowledgeArgs = command === "knowledge" ? parseKnowledgeCommandArgs(process.argv.slice(3)) : undefined;
   const paths = knowledgeArgs
     ? resolveAppPaths(knowledgeArgs.dataDir, knowledgeArgs.stateDir)
@@ -88,7 +90,7 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "backup") {
-    await runBackupCommand(process.argv.slice(3), paths, packageJson.version, writeCliLine);
+    await runBackupCommand(withoutPathOptions(process.argv.slice(3)), paths, packageJson.version, writeCliLine);
     return;
   }
   if (command === "project" || command === "doctor") {
@@ -135,20 +137,24 @@ async function main(): Promise<void> {
   const webRoot = resolve(option("--web-root") ?? defaultWebRoot);
   if (!existsSync(webRoot)) throw new Error(translate(locale, "cli.missingPanel", { path: webRoot }));
 
+  const memoryWarningMiB = optionalPositiveNumber(option("--memory-warning-mib"), "Memory warning threshold");
   const controllerLock = acquireControllerLock(paths.controllerLockPath);
 
   const events = new EventStream();
-  const logs = new FileLogWriter(paths.logDirectory);
-  const store = new SqliteStateStore(paths.databasePath);
+  let store;
+  try {
+    store = await openControllerStore(paths.databasePath, { ...migrationBackup, applicationVersion: packageJson.version, attachmentDirectory: paths.knowledgeAttachmentDirectory });
+  } catch (error) { controllerLock.release(); throw error; }
   const authentication = new AuthenticationService(store);
+  let logs: FileLogWriter;
   try {
     authentication.assertStartupPolicy();
+    logs = new FileLogWriter(paths.logDirectory);
   } catch (error) {
     store.close();
     controllerLock.release();
     throw error;
   }
-  const memoryWarningMiB = optionalPositiveNumber(option("--memory-warning-mib"), "Memory warning threshold");
   const processes = new ProcessManager((projectId) => events.publish({ kinds: ["runtime"], projectIds: [projectId] }), logs, {
     memoryWarningThresholdBytes: memoryWarningMiB === null ? null : Math.round(memoryWarningMiB * 1024 * 1024),
   });
@@ -311,6 +317,7 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
   const action = args[0] ?? "status";
   const manager = new UserServiceManager();
   if (action === "install") {
+    const migrationBackup = parseMigrationBackupOptions(args);
     const entrypointPath = realpathSync(resolve(process.argv[1]));
     if (extname(entrypointPath) !== ".js") {
       throw new Error("Build Worktree Switcher first, then install the service with: node dist/cli/index.js service install");
@@ -338,6 +345,7 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
       noMcp: args.includes("--no-mcp"),
       memoryWarningMiB,
       publicOrigin,
+      ...migrationBackup,
     });
     const result = manager.install({
       nodePath: resolve(process.execPath),
