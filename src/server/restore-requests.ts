@@ -97,6 +97,7 @@ export function getControllerRestoreRequestStatus(databasePath: string, actor: R
   restoreActorSchema.parse(actor); policy.authorize(actor.actorId, actor.backupId);
   const canonical = join(privateDirectory(dirname(resolve(databasePath))), basename(databasePath));
   const record = readRecord(join(requestDirectory(canonical), `${keyFor(actor)}.json`)); sameRequest(record, actor);
-  const receipt = getOwnedRestoreStatus(canonical, record.operationId);
-  return receipt?.state === "verified" ? { ...status(record), state: "verified" } : status(record);
+  // A visible journal rename can precede a failed directory fsync. Only the
+  // locked executor acknowledges completion and repairs a missing receipt.
+  return status(record);
 }

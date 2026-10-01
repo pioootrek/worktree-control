@@ -92,15 +92,19 @@ describe("recoverable multi-file restore", () => {
   });
   it("requires verified-marker directory synchronization again before reopening after its fsync failure", async () => {
     const f = await fixture(), root = restoreRoot(f.database), original = fs.fsyncSync;
+    const policy = { authorize: () => {}, resolveBackup: () => f.backup };
+    requestControllerRestore(f.database, actor.actorId, { backupId: actor.backupId, idempotencyKey: actor.idempotencyKey, confirmation: "replace-entire-installation" }, policy);
     vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
       if (fs.realpathSync(`/proc/self/fd/${fd}`) === root && existsSync(join(root, "journal.json")) && JSON.parse(readFileSync(join(root, "journal.json"), "utf8")).payload.state === "verified") throw Object.assign(new Error("commit marker sync refused"), { code: "EIO" });
       return original(fd);
     });
-    expect(() => restoreControllerBackup(f.backup, f.database, f.attachments)).toThrow(/commit marker sync refused/);
+    expect(() => executeControllerRestoreRequest(f.database, f.attachments, actor, policy)).toThrow(/commit marker sync refused/);
+    expect(getControllerRestoreRequestStatus(f.database, actor, policy).state).toBe("requested");
     const installed = readFileSync(f.database);
     expect(() => new SqliteStateStore(f.database)).toThrow(/commit marker sync refused/);
     expect(readFileSync(f.database)).toEqual(installed); expect(existsSync(`${f.database}.owner.lock`)).toBe(false);
-    vi.restoreAllMocks(); assertNew(f);
+    vi.restoreAllMocks(); executeControllerRestoreRequest(f.database, f.attachments, actor, policy); assertNew(f);
+    expect(getControllerRestoreRequestStatus(f.database, actor, policy).state).toBe("verified");
   });
   it("restores an initially absent target, including a crash after new database rename", async () => {
     const f = await fixture(); rmSync(f.database); for (const suffix of ["-wal", "-shm", "-journal", ".initializing"]) rmSync(`${f.database}${suffix}`); rmSync(f.attachments, { recursive: true });
