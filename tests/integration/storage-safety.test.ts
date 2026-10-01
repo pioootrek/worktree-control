@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -25,6 +25,16 @@ async function stop(child:ChildProcess){if(child.exitCode!==null||child.signalCo
 async function port():Promise<number>{return new Promise((accept,reject)=>{const server=createServer();server.once("error",reject);server.listen(0,"127.0.0.1",()=>{const address=server.address();if(!address||typeof address==="string")throw Error("No fixture port");server.close(error=>error?reject(error):accept(address.port));});});}
 
 describe("built SQLite safety CLI",()=>{
+  it("offline CLI creates private data and copies under umask 000",async()=>{
+    const f=fixture(false);
+    const broad=async(args:string[])=>exec(process.execPath,["--input-type=module","-e",
+      "const args=JSON.parse(process.argv[1]); const module=process.argv[2]; process.umask(0); process.argv=[process.execPath,...args]; await import(module);",
+      JSON.stringify([cli,...args,...f.args]),new URL(`file://${cli}`).href],{env:f.env,timeout:15000});
+    await broad(["auth","status"]);
+    await broad(["backup","create",f.backup]);
+    for(const file of [f.database,join(f.backup,"state.sqlite3"),join(f.backup,"manifest.json")]) expect(lstatSync(file).mode&0o777).toBe(0o600);
+    for(const dir of [f.data,f.state,f.backup]) expect(lstatSync(dir).mode&0o777).toBe(0o700);
+  });
   it("manual backup through built CLI path flags preserves the old schema",async()=>{
     const f=fixture();const before=readFileSync(f.database);
     await run(f,["backup","create",f.backup]);
@@ -53,7 +63,7 @@ describe("built SQLite safety CLI",()=>{
       const access=JSON.parse(readFileSync(join(f.state,"service-access.json"),"utf8"));expect(access.authenticationMode).toBe("legacy");
       if(enabled){const [copy]=readdirSync(f.backup);expect(JSON.parse(readFileSync(join(f.backup,copy,"manifest.json"),"utf8")).database.schemaVersion).toBe(12);}else expect(existsSync(f.backup)).toBe(false);
     } finally {await stop(child);}
-    const db=new Database(f.database,{readonly:true});try{expect(db.prepare("SELECT max(version) version FROM schema_migrations").get()).toEqual({version:27});}finally{db.close();}
+    const db=new Database(f.database,{readonly:true});try{expect(db.prepare("SELECT max(version) version FROM schema_migrations").get()).toEqual({version:28});}finally{db.close();}
     expect(existsSync(join(f.state,"controller.lock"))).toBe(false);expect(existsSync(`${f.database}.owner.lock`)).toBe(false);
   });
 });

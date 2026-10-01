@@ -101,7 +101,7 @@ describe("SQLite storage safety", () => {
     } finally { snapshot.close(); }
     const store = await openControllerStore(f.paths.databasePath, options(f.paths.knowledgeAttachmentDirectory, join(f.root, "pre-migration")));
     try {
-      expect(store.schemaVersion()).toBe(27);
+      expect(store.schemaVersion()).toBe(28);
       expect(store.getProject("kept")?.name).toBe("Committed in WAL");
     } finally { store.close(); }
     expect(existsSync(`${f.paths.databasePath}.owner.lock`)).toBe(false);
@@ -149,7 +149,7 @@ describe("SQLite storage safety", () => {
   it("verifies the old snapshot before migrating and preserves its authentication and attachments", async () => {
     const f=fixture(); const target=join(f.root,"backups");
     const store=await openControllerStore(f.paths.databasePath,options(f.paths.knowledgeAttachmentDirectory,target));
-    try { expect(store.schemaVersion()).toBe(27); expect(store.getProject("kept")?.name).toBe("Kept"); expect(store.getAuthenticationPolicy().mode).toBe("legacy"); } finally { store.close(); }
+    try { expect(store.schemaVersion()).toBe(28); expect(store.getProject("kept")?.name).toBe("Kept"); expect(store.getAuthenticationPolicy().mode).toBe("legacy"); } finally { store.close(); }
     const [backup]=readdirSync(target);
     expect(backup).toMatch(/^pre-migration-v24-/);
     const snapshot=new Database(join(target,backup,"state.sqlite3"),{readonly:true});
@@ -173,7 +173,7 @@ describe("SQLite storage safety", () => {
   it("migrates with backups disabled without requiring a destination or attachment storage", async () => {
     const f=fixture(); rmSync(f.paths.knowledgeAttachmentDirectory,{recursive:true});
     const store=await openControllerStore(f.paths.databasePath,options(f.paths.knowledgeAttachmentDirectory));
-    try { expect(store.schemaVersion()).toBe(27); expect(store.getProject("kept")?.name).toBe("Kept"); } finally {store.close();}
+    try { expect(store.schemaVersion()).toBe(28); expect(store.getProject("kept")?.name).toBe("Kept"); } finally {store.close();}
     expect(readdirSync(f.root).sort()).toEqual(["data"]);
   });
 

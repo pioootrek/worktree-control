@@ -1,3 +1,4 @@
+import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { createHash } from "node:crypto";
 import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -55,6 +56,7 @@ describe("SqliteStateStore", () => {
     const project = initial.addProject(projectInput("Legacy", "/code/legacy", 3218));
     initial.close();
     const legacy = new Database(path);
+    stripMigrationProvenance(legacy);
     legacy.exec("ALTER TABLE knowledge_import_batches DROP COLUMN authentication_method; ALTER TABLE projects DROP COLUMN launch_preset; DELETE FROM schema_migrations WHERE version > 12;");
     legacy.close();
     const repaired = new SqliteStateStore(path);
@@ -80,6 +82,7 @@ describe("SqliteStateStore", () => {
     const django = initial.addProject({ ...projectInput("Django", "/code/django", 3217), launchPreset: "django" });
     initial.close();
     const legacy = new Database(path);
+    stripMigrationProvenance(legacy);
     legacy.exec("DELETE FROM schema_migrations WHERE version >= 13");
     legacy.close();
     const repaired = new SqliteStateStore(path);
@@ -149,6 +152,7 @@ describe("SqliteStateStore", () => {
 
     const database = new Database(databasePath);
     database.exec("ALTER TABLE test_runs DROP COLUMN source_json");
+    stripMigrationProvenance(database);
     database.prepare("DELETE FROM schema_migrations WHERE version >= 12").run();
     database.close();
 
@@ -258,6 +262,7 @@ describe("SqliteStateStore", () => {
     const database = new Database(databasePath);
     database.prepare("UPDATE projects SET args_json = ? WHERE id = ?")
       .run(JSON.stringify(["dev", "--", "--port", "3212"]), project.id);
+    stripMigrationProvenance(database);
     database.prepare("DELETE FROM schema_migrations WHERE version >= 2").run();
     database.close();
 
@@ -317,6 +322,7 @@ describe("SqliteStateStore", () => {
     store.close();
 
     const database = new Database(databasePath);
+    stripMigrationProvenance(database);
     database.prepare("DELETE FROM schema_migrations WHERE version >= 9").run();
     database.close();
 
@@ -412,6 +418,7 @@ describe("SqliteStateStore", () => {
 
     const migrated = new SqliteStateStore(databasePath);
     migrated.close();
+    new SqliteStateStore(databasePath).close();
     const inspected = new Database(databasePath);
     const columns = inspected.prepare("PRAGMA table_info(reservations)").all() as Array<{ name: string }>;
     expect(columns.map(({ name }) => name)).toEqual(expect.arrayContaining([

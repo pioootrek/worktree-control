@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, lstatSync, rmdirSync } from "node:fs";
+import { privateDirectory, privateFile } from "./private-storage";
 import { dirname } from "node:path";
 
 interface LockRecord {
@@ -20,7 +21,7 @@ export class ControllerAlreadyRunningError extends Error {
 }
 
 export function acquireControllerLock(path: string): ControllerLock {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  privateDirectory(dirname(path));
   return withAcquisition(path, () => acquireLock(path));
 }
 
@@ -35,7 +36,7 @@ function withAcquisition<T>(path: string, operation: () => T): T {
 }
 
 function acquireLock(path: string): ControllerLock {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  privateDirectory(dirname(path));
   const record: LockRecord = {
     pid: process.pid,
     token: randomUUID(),
@@ -85,6 +86,7 @@ function acquireLock(path: string): ControllerLock {
 
 function readLock(path: string): LockRecord | null {
   try {
+    privateFile(path);
     const stat = lstatSync(path);
     if (!stat.isFile() || stat.nlink !== 1) throw new Error("Ownership lock must be a regular file without aliases.");
     return parseLock(readFileSync(path, "utf8"));
