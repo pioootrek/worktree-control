@@ -72,7 +72,8 @@ function restoreOwnedBackup(source: string, databasePath: string, attachmentDire
   const stagedAttachments=join(stageRoot,"attachments"); mkdirSync(stagedAttachments,{mode:0o700}); for(const entry of manifest.attachments){const target=safe(stagedAttachments,entry.file);mkdirSync(dirname(target),{recursive:true,mode:0o700});copyFileSync(safe(join(source,"attachments"),entry.file),target); chmodSync(target,0o600);}
   const quarantine=join(stageRoot,"previous"); mkdirSync(quarantine,{mode:0o700}); const moved:Array<[string,string]>=[];
   try {
-    for(const current of [databasePath,`${databasePath}-wal`,`${databasePath}-shm`,...(attachmentDirectory?[attachmentDirectory]:[])]) if(existsSync(current)){const old=join(quarantine,basename(current));renameSync(current,old);moved.push([old,current]);}
+    // Markers describe the replaced inode; rollback journals also belong to the old database.
+    for(const current of [databasePath,`${databasePath}-wal`,`${databasePath}-shm`,`${databasePath}-journal`,`${databasePath}.initializing`,...(attachmentDirectory?[attachmentDirectory]:[])]) if(existsSync(current)){const old=join(quarantine,basename(current));renameSync(current,old);moved.push([old,current]);}
     renameSync(stagedDatabase,databasePath); if(attachmentDirectory) renameSync(stagedAttachments,attachmentDirectory);
     try { rmSync(stageRoot,{recursive:true,force:true}); } catch { /* Restored state is committed; retained quarantine is recoverable. */ }
   } catch(error) { if(existsSync(databasePath)) rmSync(databasePath,{force:true}); if(attachmentDirectory&&existsSync(attachmentDirectory)) rmSync(attachmentDirectory,{recursive:true,force:true}); for(const [old,current] of moved.reverse()) if(existsSync(old)) renameSync(old,current); rmSync(stageRoot,{recursive:true,force:true}); throw error; }

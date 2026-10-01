@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
+import { OwnedSqliteDatabase } from "../../src/server/infrastructure/sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 const exec=promisify(execFile);
@@ -25,6 +26,17 @@ async function stop(child:ChildProcess){if(child.exitCode!==null||child.signalCo
 async function port():Promise<number>{return new Promise((accept,reject)=>{const server=createServer();server.once("error",reject);server.listen(0,"127.0.0.1",()=>{const address=server.address();if(!address||typeof address==="string")throw Error("No fixture port");server.close(error=>error?reject(error):accept(address.port));});});}
 
 describe("built SQLite safety CLI",()=>{
+  it("restores over interrupted initialization and starts the recovered database through offline CLI", async () => {
+    const source = fixture(false);
+    await run(source, ["auth", "status"]);
+    await run(source, ["backup", "create", source.backup]);
+    const target = fixture(false);
+    new OwnedSqliteDatabase(target.database, true).close();
+    writeFileSync(`${target.database}-journal`, Buffer.alloc(512), {mode:0o600});
+    expect((await run(target, ["backup", "restore", source.backup])).stdout).toContain("Backup restored.");
+    for (const suffix of [".initializing", "-journal", ".owner.lock"]) expect(existsSync(`${target.database}${suffix}`)).toBe(false);
+    expect((await run(target, ["auth", "status"])).stdout).toContain('"mode": "token"');
+  });
   it("offline CLI creates private data and copies under umask 000",async()=>{
     const f=fixture(false);
     const broad=async(args:string[])=>exec(process.execPath,["--input-type=module","-e",
