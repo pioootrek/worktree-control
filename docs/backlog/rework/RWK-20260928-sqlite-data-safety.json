@@ -109,11 +109,16 @@
       "author": "agent:codex",
       "date": "2026-10-01",
       "text": "Closed S3b under owner authorization: PR #71 merged as 42859c9d34db15b060e2f553c5e75a55af8c1175, final feature head 99f53b69441a33617abacd6cbca8516e1632c9d9. Diagnosed the existing mobile Escape failure: navigation exit animation retained the Radix keyboard layer after detail autofocus; five immediate-keyboard attempts failed, both listener-ready and navigation-unmounted controls passed five times. Fix immediately unmounts closing mobile navigation, preserving opening animation. Deterministic regression failed before the fix and all 10 focus cases passed afterward; dirty development runs are distinguished from clean validation. Added focused UI preset and failed-browser CI artifact retention. Final clean managed check passed (722 Vitest including 76 restore cases + 7 scripts, lint/types, observed_match). Full CI 36907715558 passed check/build/HTTPS/integration (26)/UI (135)/E2E, package smoke on Node 22/24 and service lifecycle. Report and evidence updated on main. Parent remains open; next S4a, then independent user schedules S4u and operational acceptance S5. Backups stay optional/default-off. No production deployment or host limits/service change."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-01",
+      "text": "S4a delivered for review in PR #72 (https://github.com/pioootrek/worktree-switcher/pull/72), frozen head 1147b2ff0269eb6d63dd3df81a104b5aee22707c. CLI-only immutable optional service policy, bounded durable backup execution/scheduling/retention, installation-token operator GUI and controlled S3b maintenance/handoff/restart are implemented. Exact clean-source managed check (769 Vitest + 7 scripts), build, integration (28), UI (142) and focused backup UI (7) passed with observed_match. Final CI 36917252428 passed, including installed-package smoke on Node 22.23.2 and 24.21.0 and disposable-runner systemd lifecycle. Report and sanitized evidence: storage-safety-s4a-report-20261001.md / storage-safety-s4a-evidence-20261001.json. Parent stays open; S4a awaits review/merge, S4u/S4b/S5 are untouched. No production/host-service change. Power loss, physical disk exhaustion, old-installed-artifact upgrade and actual browser 200% zoom remain unverified; no delivery blocker."
     }
   ],
   "priority": "next",
   "problem": [
-    "Main protects SQLite ownership, startup, migrations, durable immutable attachments, durable backup publication and recoverable multi-file restore through merged PRs #68–#71. Optional scheduling, GUI and off-host recovery acceptance remain incomplete.",
+    "Main protects SQLite ownership, startup, migrations, durable immutable attachments, durable backup publication and recoverable multi-file restore through merged PRs #68–#71. S4a optional operational backup scheduling and operator GUI are ready for review in PR #72, outside main. S4u user schedules, S4b off-host transfer and S5 operational acceptance remain incomplete.",
     "Knowledge cutover needs verified backup operations, private file handling, exclusive database ownership and recorded failure/restore evidence. The existing K7a pilot does not prove these guarantees."
   ],
   "risk": {

@@ -1,6 +1,7 @@
 # Plan domknięcia bezpieczeństwa danych SQLite
 
-Data: 2026-10-01. Status: S1–S3 scalone; S4/S5 pozostają do wykonania.
+Data: 2026-10-01. Status: S1–S3 scalone; S4a gotowe do review w PR #72;
+S4u, S4b i S5 pozostają do wykonania.
 Stan realizacji jest poniżej; pierwotna diagnoza zachowana jako punkt odniesienia.
 Zadanie: [RWK-20260928-sqlite-data-safety](../../rework/RWK-20260928-sqlite-data-safety.json).
 Kod sprawdzony przy tworzeniu planu: `6a9df6e0879b4b9ad69969b1cc4b5bd4264a363c`.
@@ -9,14 +10,22 @@ historycznym punktem odniesienia. Powiązane prace:
 [migracja wiedzy](implementation-plan.md) i
 [aktualizacja pakietu](../NOTE-20260908-portable-verification-plan/controller-package-trial.md).
 
-## Stan realizacji po S3b — 2026-10-01
+## Stan realizacji po dostarczeniu S4a — 2026-10-01
 
 S1a/S2a, S1b/S2b, S3a i S3b są na `main` przez PR #68–#71.
 S3b zamknięto w `42859c9d34db15b060e2f553c5e75a55af8c1175` po poprawce mobilnego Escape i zielonym CI.
 [Raport S3b](storage-safety-s3b-report-20261001.md) rozdziela końcowe wyniki,
 wcześniejsze próby oraz niezweryfikowaną utratę zasilania i upgrade starego artefaktu.
-Następny slice: S4a. S4u nadal obejmuje niezależne harmonogramy użytkowników,
-a S5 odbiór operacyjny. Zadanie nadrzędne pozostaje otwarte. Nie wykonano
+S4a dostarczono w [PR #72](https://github.com/pioootrek/worktree-switcher/pull/72)
+na `1147b2ff0269eb6d63dd3df81a104b5aee22707c`: opcjonalne operacyjne backupy,
+polityka CLI, harmonogram usługi, retencja i GUI operatora z kontrolowanym
+restore S3b. [Raport S4a](storage-safety-s4a-report-20261001.md) i jego dowody
+potwierdzają czysty check/build/integration/UI na dokładnym SHA oraz zielony CI
+z smoke pakietu i lifecycle na jednorazowym runnerze. PR oczekuje review
+i scalenia; kod S4a nie jest jeszcze na `main`.
+S4u nadal obejmuje niezależne harmonogramy użytkowników, S4b transfer poza
+hosta, a S5 odbiór operacyjny. Nie rozpoczęto kolejnego slice'a.
+Zadanie nadrzędne pozostaje otwarte. Nie wykonano
 wdrożenia produkcyjnego; backupy pozostają opcjonalne i domyślnie wyłączone.
 
 ## Historyczny punkt startowy — przed S1
@@ -81,8 +90,11 @@ polityki uruchomienia usługi.
 Walidacja parametrów następuje przed otwarciem bazy i zmianą konfiguracji usługi;
 błędne argumenty nie powodują cichego użycia innego trybu.
 
-Nazwy flag są propozycją kontraktu do dopracowania podczas implementacji,
-a nie istniejącymi poleceniami:
+Poniższa tabela zachowuje propozycje z pierwotnego planu, w tym flagi przyszłych
+slice'ów. Faktyczny kontrakt S4a (`--backup-interval-seconds`, oddzielne
+`--backup-retain-count`/`--backup-retain-days` i limity) jest opisany w
+[raporcie S4a](storage-safety-s4a-report-20261001.md) i README. Nie należy
+traktować pozostałych propozycji jako istniejących poleceń:
 
 | Parametr CLI | Znaczenie |
 | --- | --- |
