@@ -17,7 +17,7 @@ S3b zamknięto w `42859c9d34db15b060e2f553c5e75a55af8c1175` po poprawce mobilneg
 [Raport S3b](storage-safety-s3b-report-20261001.md) rozdziela końcowe wyniki,
 wcześniejsze próby oraz niezweryfikowaną utratę zasilania i upgrade starego artefaktu.
 S4a dostarczono w [PR #72](https://github.com/pioootrek/worktree-switcher/pull/72)
-na `de89e998149112ffbe44c10f4a6a2a420c049ebb` po poprawkach review: opcjonalne operacyjne backupy,
+na `dcbf1a7e7dc47001710fe26dc5daf113ff708ae1` po poprawkach review: opcjonalne operacyjne backupy,
 polityka CLI, harmonogram usługi, retencja i GUI operatora z kontrolowanym
 restore S3b. [Raport S4a](storage-safety-s4a-report-20261001.md) i jego dowody
 potwierdzają czysty check/build/integration/UI na dokładnym SHA oraz zielony CI

@@ -16,7 +16,8 @@ Prace wykonano na `feat/sqlite-backup-operations`, w osobnym worktree
 zapisano przed kodowaniem i zsynchronizowano na `main` w
 `2ec416287101a3cd9c5b43b4ad608ea4d773fea3`. Implementacja jest w
 [PR #72](https://github.com/pioootrek/worktree-switcher/pull/72).
-Końcowy head po review: `de89e998149112ffbe44c10f4a6a2a420c049ebb`.
+Końcowy head po follow-up Opusa: `dcbf1a7e7dc47001710fe26dc5daf113ff708ae1`.
+Wcześniejszy follow-up Kimi: `de89e998149112ffbe44c10f4a6a2a420c049ebb`.
 Pierwotne dostarczenie: `1147b2ff0269eb6d63dd3df81a104b5aee22707c`.
 Raport i backlog są oddzielnym commitem dokumentacji na `main`.
 
@@ -53,11 +54,16 @@ Nie odtwarza kolejki ani lawiny zaległych terminów. Ręczne tworzenie nie zmie
 terminu usługi. Błędy backupu, admission harmonogramu i retencji są widoczne,
 bez zatrzymania działającej aplikacji.
 
-Rejestr ma limit 1024 operacji i 4 MiB. GUI pokazuje ostatnie 50.
+Rejestr ma oddzielne limity 1024 ręcznych i 1082 okresowych operacji,
+łącznie najwyżej 2106 wpisów i nadal 4 MiB. GUI pokazuje ostatnie 50.
 Starsze zakończone operacje okresowe bez istniejącego materiału są usuwane
 z historii; trwały watermark terminów odmawia ich powtórnego wykonania.
-Ręczne klucze pozostają. Zapełniony rejestr odmawia nowego admission i wymaga
-przeglądu operatora. Katalog ogranicza skan do 4096 wpisów i 1024 kopii.
+Ręczne klucze pozostają. Zapełnienie ich limitu odmawia nowych ręcznych
+zleceń, zachowuje ich status po restarcie i nie zajmuje limitu harmonogramu.
+Wspólny limit bajtów lub brak miejsca nadal mogą zatrzymać admission.
+Bezpieczna procedura obsługi pełnej historii ręcznej pozostaje otwartym
+punktem operacyjnym w zadaniu nadrzędnym; ręczne kasowanie ledgeru nie jest
+procedurą recovery. Katalog ogranicza skan do 4096 wpisów i 1024 kopii.
 
 Retencja działa wyłącznie po udanym okresowym backupie z włączonym
 harmonogramem. Usuwa tylko własne, zapisane w rejestrze, okresowe kopie po
@@ -85,9 +91,10 @@ zlecenie i klucz bez sekretu tokenu; ponowne otwarcie odczytuje aktualną
 autoryzację i status. Nie powstała dodatkowa subskrypcja ani pętla odpytywania.
 
 Trwałe zlecenie S3b poprzedza odpowiedź i maintenance. Maintenance blokuje
-nowe zapisy/zlecenia HTTP, MCP i CLI, zamyka admission wspólnego lifecycle,
-kończy przyjęte operacje i backup, anuluje testy przez ich maszynę stanów,
-a następnie zatrzymuje zweryfikowane własne procesy. Błąd cleanup zatrzymuje
+nowe zapisy/zlecenia HTTP, MCP i CLI, zamyka admission wspólnego lifecycle
+i startów procesów. Koordynuje drain przyjętych operacji i backupu z anulowaniem
+testów przez ich maszynę stanów oraz zatrzymaniem zweryfikowanych własnych
+procesów. Błąd cleanup zatrzymuje
 handoff. SQLite zostaje zamknięte przed executorem pod lockiem bazy;
 singleton kontrolera pozostaje utrzymany. HTTP nie podmienia otwartej bazy.
 
@@ -99,7 +106,85 @@ zakresowe zostają unieważnione. Dawny token instalacji nie odzyskuje zaufania.
 Ponowienie naprawia potwierdzenie, zamiast wykonywać drugi restore.
 CLI odmawia dostępu offline, gdy ten fence pozostaje niedokończony.
 
-## Follow-up review
+## Follow-up niezapisanych uwag Opusa — 2026-10-02
+
+Odczytano zachowany wynik n8n execution `9579`: Opus oceniał head `1147b2f`
+i przygotował pięć uwag, ale odmowa uprawnień nie pozwoliła opublikować ich
+na GitHub. Nie są to nowe wątki GitHub ani ponowne review aktualnego head.
+Każdą sprawdzono względem bieżącego kodu; wyniki opisuje poniższa tabela.
+
+| Uwaga | Wynik |
+| --- | --- |
+| Względna ścieżka aktywnego CLI | `fix`, już wdrożony po Kimi w `d557fd6`; regresja nadal sprawdza katalog operatora. |
+| Historia ręcznych zleceń blokuje harmonogram | `fix`: niezależny budżet 1082 wpisów okresowych; zapełnione 1024 ręczne klucze i restart nie blokują nowych terminów usługi. Ręcznych kluczy nie kasuje się automatycznie. |
+| Shutdown czeka na timeout startu | `fix`: admission procesów zamyka się przed listenerami, start sprawdza zamknięcie przed spawn i podczas readiness. Cleanup procesów i drain lifecycle przebiegają razem. HTTP/MCP/admin zamykają idle keep-alive po końcu przyjętej odpowiedzi. |
+| Preview blokuje HTTP pełną walidacją | `fix`: preview, admission i weryfikacja retencji korzystają z jednego ograniczonego procesu, otwierającego tylko clone. Deadline i limity bajtów pochodzą z CLI; shutdown czeka na jego zakończenie i cleanup. Autoryzację i manifest sprawdza się ponownie po await; równoczesne zlecenia są ograniczone, a jednakowe klucze restore współdzielą przyjęcie. |
+| Kopia pre-migration bez ledgeru wygląda na uszkodzoną | `fix`: osobny stan `unverified` / brak zapisanego wyniku, odróżniony od `failed` w PL/EN. Taka kopia pozostaje chroniona; pełny preview nadal jest wymagany przed potwierdzeniem w GUI. |
+
+`dcbf1a7` wspólnie sprawdza admission backupu i restore przed oraz po
+asynchronicznej walidacji. Starszy receipt S3b nie może otworzyć nowego
+handoff podczas zamykania kontrolera; odczyt statusu pozostaje dostępny.
+Regresja potwierdza odmowę, brak nowego handoff i zachowanie danych.
+
+Po przeniesieniu walidacji poza event loop test ujawnił utratę eventu `close`,
+gdy klient odłączał się przed zakończeniem admission. `ca5f554` sprawdza także
+zamkniętą odpowiedź i uruchamia to samo trwałe zlecenie. Smoke tarballa sprawdza
+obecność helpera oraz rzeczywisty backup i preview po instalacji pakietu.
+
+Nieudany check `13815243-54f8-4720-ad61-bf07aec98895` na `ceb6841` wykrył
+trzy błędy typów IPC/środowiska. Log zapisano przed zmianą w
+`/tmp/wts-s4a-opus-check-ceb6841.json`; ukierunkowany typecheck
+`a9d7b423-6237-46bb-8dbd-b4ad7d95d82c` przeszedł po poprawce w `22c1884`.
+Diagnoza HTTP `97551330-5a7b-4393-a586-5d0e22d519a4` miała 62 PASS i 1 FAIL;
+log zapisano w `/tmp/wts-s4a-opus-disconnect-diagnostic.json`.
+Po poprawce wszystkie 63 przeszły na czystym `ca5f554` w
+`4db4f492-0969-4d95-8c3f-a3c4ef48a0a9`.
+
+Pełna integracja `1f47ef85-1180-414b-81d4-50c1c72863f8` i
+[CI 36930284650](https://github.com/pioootrek/worktree-switcher/actions/runs/36930284650)
+wykryły błąd drain listenera w nowym gated-start regression: 29 PASS i 1 FAIL.
+Logi zachowano przed diagnozą (`/tmp/wts-s4a-opus-integration-ca5f554-failed.json`,
+`/tmp/wts-s4a-opus-ci-36930284650-failed.log`). Ukierunkowane przebiegi
+`cf226ef9-864b-40d7-b1a3-0a74e29141e5` i
+`1a8c3583-c580-4bce-ae79-8ed3f816de0a` dodały dowód: start oddał HTTP 400,
+PID własnego procesu nie żył, ale kontroler czekał na listener podczas status
+pollingu. Teardown SIGTERM był nieczysty; żadnego z tych przebiegów nie zaliczono.
+`d48f10e` zamyka idle keep-alive po zakończeniu odpowiedzi, zachowując aktywne
+handlery i wspólny drain. Ukierunkowane cztery integracje przeszły na czystym
+SHA; gated restore trwał 1,3 s. Nie zwiększano timeoutów, nie dodano opóźnień
+ani retry i nie osłabiono asercji. CI `36929665933` anulowane przez późniejszy
+commit także nie jest zaliczone. Brudne przebiegi diagnostyczne pozostają
+wyłącznie dowodem diagnozy, niezależnie od exit code.
+
+Końcowe kontrole lokalne wykonano kolejno przez MCP na czystym
+`dcbf1a7e7dc47001710fe26dc5daf113ff708ae1`, z `observed_match` dla
+każdego enqueue/preflight/finish:
+
+| Preset | Run ID | Wynik |
+| --- | --- | --- |
+| `node:test:backups` | `c2cffaa3-ce64-4c36-95ff-0b6f281e7118` | PASS: 64 testy |
+| `node:check` | `ca98f5b0-ed54-4031-af27-90f83b3cb2ff` | PASS: lint, typy, 782 Vitest / 91 plików + 7 testów skryptów |
+| `node:build` | `e20834c9-1686-437d-80b5-1d0cd2d12972` | PASS: eksport i bundle CLI z helperem |
+| `node:test:integration` | `b149b882-f81b-48c4-b750-b3a4336f05cb` | PASS: 30 testów / 6 plików |
+| `node:test:ui` | `4ff22a2c-4914-4c45-a2f3-56aba4a6e65c` | PASS: 144 testy, 1 worker; PL/EN, keyboard i mobile |
+
+[Końcowe CI 36932383355](https://github.com/pioootrek/worktree-switcher/actions/runs/36932383355)
+ma wszystkie cztery joby zielone: check/build z HTTPS, integracją, UI i E2E,
+smoke pakietu na Node 22.23.2 i 24.21.0 oraz lifecycle usługi na jednorazowym
+runnerze. Pobrane artefakty sprawdzono niezależnie: checksumy tarballa i obu
+skryptów pasują do provenance, a tarball zawiera helper `backup-verifier.js`
+i jego trzy współdzielone chunki. Źródło pakietu to czysty syntetyczny merge
+`269636fac2ab0fa442bea4b209427e6860c4e25a`, odrębny od feature head.
+Tarball ma 824242 bajty i SHA256
+`2d5b671659a7c916e402b916b92f0b5ff5ba3a3e77d4b640430586b2c5c3d3bb`.
+Oba raporty smoke potwierdzają 14 kroków, w tym backup i pełny preview
+z zainstalowanego artefaktu, oraz graceful cleanup. Lifecycle ma 3 preflight,
+6 faz i 2 scenariusze negatywne, bez faults; cleanup potwierdza brak usługi
+i zachowanie danych. `pending-package-smoke` w provenance opisuje chwilę
+pakowania; późniejsze raporty smoke są dowodem ukończenia. Anulowane CI
+`36931812431` nie jest zaliczeniem. Nie pozostał bloker weryfikacji S4a.
+
+## Follow-up review Kimi — head `de89e99`
 
 Oba nierozwiązane wątki sklasyfikowano jako `fix` i rozwiązano po publikacji
 poprawek oraz ich weryfikacji. Nie odłożono żadnego do backloga i nie uznano
@@ -227,8 +312,10 @@ Raport lifecycle potwierdza 3 preflight, 6 faz i 2 negatywne scenariusze,
 brak faults oraz usunięcie usługi przy zachowaniu danych. Zwięzłe wyniki
 i powiązanie artefaktu są zapisane w pliku dowodów.
 
-Kopie pozostają na jednym hoście. Timeout jest kooperacyjny: synchroniczne
-I/O może potrwać dłużej przed następnym sprawdzeniem. Ręczne klucze idempotencji
+Kopie pozostają na jednym hoście. Timeout tworzenia kopii jest kooperacyjny:
+synchroniczne I/O może potrwać dłużej przed następnym sprawdzeniem. Walidacja
+online ma limit czasu własnego procesu pomocniczego, z zakończeniem procesu
+i cleanupem przed odpowiedzią. Ręczne klucze idempotencji
 i chronione kopie mogą wypełnić limity, wymagając przeglądu operatora.
 Przerwane stagingi i stare generacje pozostają materiałem recovery i mogą
 zajmować dysk. Nie wykonano fizycznego zapełnienia dysku, power loss,

@@ -119,6 +119,16 @@
       "author": "agent:codex",
       "date": "2026-10-01",
       "text": "S4a PR #72 review follow-up: both inline findings classified fix, published and resolved; no backlog/false-positive/unresolved concerns. Active CLI resolves relative backup destinations in the operator cwd; unknown restore status returns safe backup_invalid (HTTP 404) after current authorization. Final head de89e998149112ffbe44c10f4a6a2a420c049ebb. New compiled-controller and HTTP regressions passed. Initial follow-up check/CI 36923843336 failed only because the new fixture used an invalid backup ID; logs were retained, the ID corrected without weakening 404 assertions, and focused backup tests passed (53) before full verification. Final clean-source managed check (770 Vitest + 7 scripts), build, integration (29) and UI (142) passed with observed_match; CI 36924532217 including package smoke and disposable-runner lifecycle is green. Dated S4a report/evidence updated; previous delivery results preserved. Parent remains open; no merge/deployment/next slice."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-02",
+      "text": "Operational follow-up from unpublished Opus finding 2 (n8n execution 9579, PR #72): define a safe operator procedure for exhaustion of the 1024 retained manual backup idempotency keys. S4a preserves those keys and refuses new manual admission at the bound; deleting or hand-editing the ledger is not a recovery procedure and could replay old requests. The service now has an independent bounded budget of 1082 scheduled records, with durable deadline watermark pruning. Shared 4 MiB ledger, catalog, protected-material and disk limits still apply. The operational procedure remains open in this parent for acceptance; no S4u/S4b/S5 implementation was started."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-02",
+      "text": "S4a PR #72 follow-up of unpublished Opus review (n8n execution 9579, source head 1147b2f): five primary findings classified fix, one already fixed after Kimi and four new fixes; no false positives or unresolved review findings. Final feature SHA dcbf1a7e7dc47001710fe26dc5daf113ff708ae1. Clean MCP checks passed: 64 focused backups, lint/types with 782 Vitest + 7 script tests, build, 30 integrations, 144 UI tests. CI 36932383355 passed all four jobs, including two 14-step installed-package smoke runs and isolated systemd lifecycle. The tarball is from clean synthetic merge 269636fac2ab0fa442bea4b209427e6860c4e25a, SHA256 2d5b671659a7c916e402b916b92f0b5ff5ba3a3e77d4b640430586b2c5c3d3bb; checksum/provenance/helper presence audited. Failure logs preceded targeted diagnosis; dirty diagnostic and cancelled runs are not counted as clean passes. Protocol/report/evidence updated separately on main. Manual-history exhaustion procedure remains the open operational point above. Parent remains open; no PR merge, deployment or next slice."
     }
   ],
   "priority": "next",
