@@ -9,9 +9,12 @@ export interface ServiceStartArgumentsOptions {
   noMcp: boolean;
   memoryWarningMiB: number | null;
   publicOrigin?: string;
+  backupBeforeMigration?: boolean;
+  backupDirectory?: string;
 }
 
 export function buildServiceStartArguments(options: ServiceStartArgumentsOptions): string[] {
+  if (options.backupBeforeMigration && !options.backupDirectory) throw new Error("--backup-before-migration requires --backup-dir.");
   const arguments_ = [
     "--service-mode", "--no-open",
     "--host", options.host,
@@ -25,5 +28,7 @@ export function buildServiceStartArguments(options: ServiceStartArgumentsOptions
   if (options.noMcp) arguments_.push("--no-mcp");
   if (options.memoryWarningMiB !== null) arguments_.push("--memory-warning-mib", String(options.memoryWarningMiB));
   if (options.publicOrigin) arguments_.push("--public-url", options.publicOrigin);
+  if (options.backupDirectory) arguments_.push("--backup-dir", options.backupDirectory);
+  if (options.backupBeforeMigration) arguments_.push("--backup-before-migration");
   return arguments_;
 }

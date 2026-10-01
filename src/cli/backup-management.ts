@@ -1,6 +1,7 @@
 import type { AppPaths } from "@/server/paths";
 import { acquireControllerLock } from "@/server/controller-lock";
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
+import { OwnedSqliteDatabase } from "@/server/infrastructure/sqlite";
 import { SqliteStateStore } from "@/server/sqlite-store";
 import { authenticateOfflineActor } from "./offline-actor";
 import { cliCredential, OWNER_CREDENTIAL_REQUIRED, OWNER_CREDENTIAL_VARIABLES } from "./credentials";
@@ -14,7 +15,7 @@ export async function runBackupCommand(args: string[], paths: AppPaths, applicat
   try {
     if(operation==="create") {
       const [directory]=input;
-      const store=new SqliteStateStore(paths.databasePath);
+      const store=new OwnedSqliteDatabase(paths.databasePath);
       try { const result=await createControllerBackup(store,directory,{applicationVersion,attachmentDirectory:paths.knowledgeAttachmentDirectory}); write(JSON.stringify(result,null,2)); }
       finally { store.close(); }
     } else if(operation==="restore") { restoreControllerBackup(input[0]!,paths.databasePath,paths.knowledgeAttachmentDirectory); write("Backup restored.");

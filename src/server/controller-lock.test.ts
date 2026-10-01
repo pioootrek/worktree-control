@@ -26,14 +26,23 @@ describe("acquireControllerLock", () => {
     expect(() => acquireControllerLock(path).release()).not.toThrow();
   });
 
-  it("replaces a stale or malformed lock", () => {
+  it("preserves an incomplete lock until it can be inspected", () => {
     const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-lock-"));
     directories.push(directory);
     const path = join(directory, "controller.lock");
     writeFileSync(path, "not-json");
 
+    expect(() => acquireControllerLock(path)).toThrow("incomplete");
+    expect(readFileSync(path,"utf8")).toBe("not-json");
+  });
+
+  it("replaces a complete lock only after its owner is gone", () => {
+    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-lock-"));
+    directories.push(directory);
+    const path = join(directory,"controller.lock");
+    writeFileSync(path, JSON.stringify({pid:2147483647,token:"stale",startedAt:"now"}));
     const lock = acquireControllerLock(path);
-    expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({ pid: process.pid });
+    expect(JSON.parse(readFileSync(path,"utf8")).pid).toBe(process.pid);
     lock.release();
   });
 });

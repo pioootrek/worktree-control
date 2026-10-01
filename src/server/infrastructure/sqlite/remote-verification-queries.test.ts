@@ -13,6 +13,7 @@ import {
   type RemoteVerificationRequest,
 } from "@/server/modules/remote-verification";
 import { SqliteStateStore } from "./index";
+import { RemoteVerificationQueries } from "./remote-verification-queries";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const directories: string[] = [];
@@ -85,7 +86,7 @@ function submit(store: SqliteStateStore, id = "request-1", commitSha = SHA): Rem
   }, { principalId: "owner-1" });
 }
 
-function attemptService(store: SqliteStateStore, times: string[], ids: string[] = ["attempt-1"]) {
+function attemptService(store: ConstructorParameters<typeof RemoteVerificationAttemptService>[0], times: string[], ids: string[] = ["attempt-1"]) {
   let timeIndex = 0;
   let idIndex = 0;
   const service = new RemoteVerificationAttemptService(
@@ -160,7 +161,7 @@ describe("remote verification SQLite persistence", () => {
     reopened.close();
   });
 
-  it("scopes one idempotency winner per principal across connections", () => {
+  it("scopes one idempotency winner per principal across raw persistence connections", () => {
     const path = databasePath();
     const first = new SqliteStateStore(path);
     provision(first);
@@ -171,7 +172,9 @@ describe("remote verification SQLite persistence", () => {
       permissions: ["submit"],
       revokedAt: null,
     }, "local-user");
-    const second = new SqliteStateStore(path);
+    expect(() => new SqliteStateStore(path)).toThrow("already running");
+    const secondConnection = new Database(path);
+    const second = new RemoteVerificationQueries(secondConnection);
 
     expect(first.createOrReplayRemoteVerificationRequest(request("request-1"))).toEqual(request("request-1"));
     expect(second.createOrReplayRemoteVerificationRequest(request("request-2"))).toEqual(request("request-1"));
@@ -180,7 +183,7 @@ describe("remote verification SQLite persistence", () => {
     expect(second.createOrReplayRemoteVerificationRequest(otherPrincipalRequest)).toEqual(otherPrincipalRequest);
 
     first.close();
-    second.close();
+    secondConnection.close();
     const database = new Database(path, { readonly: true });
     expect(database.prepare("SELECT COUNT(*) AS count FROM remote_verification_requests").get()).toEqual({ count: 2 });
     database.close();
@@ -285,12 +288,14 @@ describe("remote verification SQLite persistence", () => {
     store.close();
   });
 
-  it("atomically replays one assignment across controller connections", () => {
+  it("atomically replays one assignment across raw persistence connections", () => {
     const path = databasePath();
     const first = new SqliteStateStore(path);
     provision(first);
     const accepted = submit(first);
-    const second = new SqliteStateStore(path);
+    expect(() => new SqliteStateStore(path)).toThrow("already running");
+    const secondConnection = new Database(path);
+    const second = new RemoteVerificationQueries(secondConnection);
     const firstService = attemptService(first, ["2026-09-11T00:01:00.000Z"], ["attempt-1"]);
     const secondService = attemptService(second, ["2026-09-11T00:02:00.000Z"], ["attempt-2"]);
 
@@ -299,7 +304,7 @@ describe("remote verification SQLite persistence", () => {
     expect(first.getRemoteVerificationRequest(accepted.id)?.phase).toBe("assigned");
 
     first.close();
-    second.close();
+    secondConnection.close();
     const database = new Database(path, { readonly: true });
     expect(database.prepare("SELECT COUNT(*) AS count FROM remote_verification_attempts").get()).toEqual({ count: 1 });
     database.close();
@@ -667,7 +672,7 @@ describe("remote verification SQLite persistence", () => {
 
     const branchDatabase = new Database(path);
     branchDatabase.exec(`
-      DELETE FROM schema_migrations WHERE version = 15;
+      DELETE FROM schema_migrations WHERE version >= 15;
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (13, 'now'), (14, 'now');
       ALTER TABLE projects DROP COLUMN launch_preset;
     `);
@@ -689,7 +694,7 @@ describe("remote verification SQLite persistence", () => {
     expect(first.prepare("SELECT 1 FROM schema_migrations WHERE version = 13").get()).toBeTruthy();
     expect(first.prepare("SELECT 1 FROM schema_migrations WHERE version = 14").get()).toBeTruthy();
     expect(first.prepare("SELECT 1 FROM schema_migrations WHERE version = 15").get()).toBeTruthy();
-    first.prepare("DELETE FROM schema_migrations WHERE version IN (14, 15)").run();
+    first.prepare("DELETE FROM schema_migrations WHERE version >= 14").run();
     first.close();
 
     new SqliteStateStore(path).close();

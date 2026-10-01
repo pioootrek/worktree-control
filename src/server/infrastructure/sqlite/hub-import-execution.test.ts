@@ -27,7 +27,7 @@ const execute=(store:SqliteStateStore,identity:IdentityService,owner:ReturnType<
 describe("K6b Hub import execution",()=>{
   it("upgrades schema 26 with only the target provenance index",()=>{
     const f=fixture(),path=join(f.root,"state.sqlite3");f.store.close();
-    const legacy=new Database(path);legacy.exec("DROP INDEX knowledge_import_sources_target; DELETE FROM schema_migrations WHERE version=27");legacy.close();
+    const legacy=new Database(path);legacy.exec("DROP INDEX knowledge_import_sources_target; DELETE FROM schema_migrations WHERE version >= 27");legacy.close();
     const reopened=new SqliteStateStore(path),db=new Database(path);
     expect(reopened.schemaVersion()).toBe(27);
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='knowledge_import_sources_target'").get()).toBeTruthy();
@@ -280,7 +280,7 @@ describe("K6b Hub import execution",()=>{
     expect(execute(f.store,f.identity,f.owner,stagedInput).status).toBe("staging");
     f.store.close();
     const old=new Database(path);
-    old.exec("ALTER TABLE knowledge_import_batches DROP COLUMN authentication_method; DELETE FROM schema_migrations WHERE version = 26");
+    old.exec("ALTER TABLE knowledge_import_batches DROP COLUMN authentication_method; DELETE FROM schema_migrations WHERE version >= 26");
     expect((old.prepare("SELECT count(*) AS count FROM knowledge_import_batches").get() as {count:number}).count).toBe(2);
     old.close();
     const store=new SqliteStateStore(path),identity=new IdentityService(store,()=>NOW);
@@ -299,7 +299,7 @@ describe("K6b Hub import execution",()=>{
     expect(current.authenticationMethod).toBe("owner_session");
     f.store.close();
     const damaged=new Database(path);
-    damaged.exec("UPDATE knowledge_import_batches SET authentication_method = 'legacy_unknown' WHERE id = 'legacy-batch'; DELETE FROM schema_migrations WHERE version = 26");
+    damaged.exec("UPDATE knowledge_import_batches SET authentication_method = 'legacy_unknown' WHERE id = 'legacy-batch'; DELETE FROM schema_migrations WHERE version >= 26");
     damaged.close();
 
     const repaired=new SqliteStateStore(path);

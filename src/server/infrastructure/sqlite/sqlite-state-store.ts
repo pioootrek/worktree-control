@@ -35,6 +35,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { initializeSchema } from "./migrations";
+import { OwnedSqliteDatabase } from "./owned-database";
 import { IdentityQueries } from "./identity-queries";
 import { KnowledgeQueries } from "./knowledge-queries";
 import { mapProject, type ProjectRow } from "./project-mapping";
@@ -53,19 +54,26 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   private readonly authentication: AuthenticationQueries;
   private readonly knowledge: KnowledgeQueries;
 
-  constructor(databasePath: string) {
-    mkdirSync(dirname(databasePath), { recursive: true });
-    this.database = new Database(databasePath);
-    this.database.pragma("journal_mode = WAL");
-    this.database.pragma("foreign_keys = ON");
-    this.database.pragma("busy_timeout = 3000");
-    initializeSchema(this.database);
-    this.testRuns = new TestRunQueries(this.database);
-    this.storage = new StorageQueries(this.database);
-    this.remoteVerification = new RemoteVerificationQueries(this.database);
-    this.identity = new IdentityQueries(this.database);
-    this.authentication = new AuthenticationQueries(this.database);
-    this.knowledge = new KnowledgeQueries(this.database);
+  private readonly ownedDatabase: OwnedSqliteDatabase;
+
+  constructor(databasePath: string, inspected?: OwnedSqliteDatabase) {
+    this.ownedDatabase = inspected ?? new OwnedSqliteDatabase(databasePath, true);
+    try {
+      this.database = this.ownedDatabase.enableWrites();
+      this.database.pragma("journal_mode = WAL");
+      this.database.pragma("foreign_keys = ON");
+      this.database.pragma("busy_timeout = 3000");
+      initializeSchema(this.database);
+      this.testRuns = new TestRunQueries(this.database);
+      this.storage = new StorageQueries(this.database);
+      this.remoteVerification = new RemoteVerificationQueries(this.database);
+      this.identity = new IdentityQueries(this.database);
+      this.authentication = new AuthenticationQueries(this.database);
+      this.knowledge = new KnowledgeQueries(this.database);
+    } catch (error) {
+      this.ownedDatabase.close();
+      throw error;
+    }
   }
 
   backup(destination: string): Promise<void> { return this.database.backup(destination).then(() => undefined); }
@@ -1041,7 +1049,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   }
 
   close(): void {
-    this.database.close();
+    this.ownedDatabase.close();
   }
 
   private expireReservations(projectId: string): void {
