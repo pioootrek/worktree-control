@@ -64,6 +64,11 @@
       "author": "agent:codex",
       "date": "2026-10-01",
       "text": "Delivered only S1a + S2a in open PR https://github.com/pioootrek/worktree-switcher/pull/68, feature SHA 7f9f82ce2a9bf24b7d174cbdacd939c1bb952ada. Agreed documentation was separately committed and synchronized on main at 6cd50e69e1c02c9ad34d283fd5769c035ae942b1. Added canonical database ownership, non-migrating inspection/manual backup, unsupported-schema rejection and optional default-off CLI pre-migration backup with service arguments. Managed queue verification on the clean feature SHA passed: check (548 Vitest + 7 script tests), build, integration (22) and Chromium UI (134). Frozen historical SQL fixtures and isolated built CLI/startup tests were used; no actual systemd/launchd installation, old installed-artifact upgrade, production DB or power-loss test. Durable report: storage-safety-s1a-s2a-report-20261001.md in the linked note. Overall item stays open pending remaining slices and acceptance. No merge, production change or next slice."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-01",
+      "text": "Handled PR #68 n8n feedback. One unresolved WAL/read-only startup concern was classified false positive after proving recovery with a real SIGKILL writer and both retained/missing -shm on SQLite 3.53.4. Added four crash tests in feature commit f1f02a6b42d3eb3539c53055eab96dd63e417df3, without changing production code or slice scope. Managed check run 9af0b41a-e634-4f9b-8ae7-6c115aa3e4b0 passed on clean SHA (552 Vitest + 7 script tests; lint/typecheck; observed_match). Evidence was posted in the original thread and it was resolved. Updated the existing S1a/S2a report; previous build/integration/UI results remain attributed to 7f9f82c. Power-loss behavior and remaining slices remain unverified; no merge or production change."
     }
   ],
   "priority": "next",

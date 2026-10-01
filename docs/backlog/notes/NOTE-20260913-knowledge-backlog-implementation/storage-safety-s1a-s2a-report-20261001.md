@@ -87,3 +87,47 @@ GUI również nie wchodzą do tego PR-a.
 
 Gałąź feature została wypchnięta. Nie wykonano merge, wdrożenia, zmian na
 produkcji ani zmian limitów hosta. Nie rozpoczęto kolejnego slice'a.
+
+
+## Follow-up po review n8n, 2026-10-01
+
+Rozpatrzono jeden nierozwiązany [wątek review](https://github.com/pioootrek/worktree-switcher/pull/68#discussion_r4154495369).
+Zgłoszenie twierdziło, że otwarcie read-only uniemożliwia odzyskanie WAL po
+awaryjnym zakończeniu procesu. Klasyfikacja tej regresji to `false positive`;
+brak pokrycia testem awarii został uzupełniony. Nie dodano odroczonej pozycji
+backloga ani zmiany kodu produkcyjnego.
+
+Nowy commit feature to `f1f02a6b42d3eb3539c53055eab96dd63e417df3`, wypchnięty
+na tę samą gałąź PR-a. Dodaje cztery testy z rzeczywistym procesem piszącym
+WAL, zatrzymanym przez SIGKILL przed zamknięciem połączenia. Oba warianty
+zachowują lub usuwają indeks `-shm`.
+
+Testy wspieranego schematu dowodzą, że zatwierdzony rekord znajduje się tylko
+w WAL, a inspekcja read-only, ręczny backup i migracja z wymaganą kopią
+zachowują ten rekord. Inspekcja i ręczny backup nie zmieniają bajtów głównego
+pliku bazy ani WAL. Dwa dalsze przypadki umieszczają nowszy schemat tylko w
+WAL i sprawdzają odmowę przez store/startup, offline auth i ręczny backup.
+Plik bazy i WAL pozostają niezmienione; własne locki są zwalniane.
+
+[Dokumentacja SQLite](https://www.sqlite.org/wal.html#read_only_databases)
+opisuje odczyt WAL przez połączenie read-only od wersji 3.22.0, między innymi
+gdy katalog pozwala na utworzenie plików towarzyszących. Własność bazy wymaga
+utworzenia sąsiedniego locka w tym katalogu. Próby na SQLite 3.53.4 potwierdzają
+odczyt po awarii oraz odtworzenie brakującego indeksu. Rozpoznanie schematu
+nadal poprzedza otwarcie do zapisu.
+
+Kolejka MCP wykonała `pnpm check` na czystym nowym SHA. Uruchomienie
+`9af0b41a-e634-4f9b-8ae7-6c115aa3e4b0` zakończyło się `passed`, kodem 0 i
+`observed_match`: 552 testy Vitest w 79 plikach, w tym wszystkie cztery nowe
+przypadki, oraz 7 testów skryptów. Lint i typecheck przeszły, wcześniejszy
+warning React Hooks pozostał. `git diff --check` przeszedł.
+
+Ten follow-up zmienia tylko testy i ich fixture. Nie powtarzano builda,
+testów integracyjnych ani UI; wyniki ich wcześniejszych uruchomień odnoszą
+się do pierwotnego SHA wskazanego w tabeli. SIGKILL potwierdza zachowanie po
+przerwaniu procesu, bez gwarancji odporności na utratę zasilania.
+
+W wątku zapisano [odpowiedź z dowodami](https://github.com/pioootrek/worktree-switcher/pull/68#discussion_r4154709987)
+i oznaczono go jako rozwiązany. Bilans tego review to 0 `fix` regresji,
+0 `backlog`, 1 `false positive`, z uzupełnionym pokryciem testowym.
+Nie wykonano merge, wdrożenia ani kolejnego slice'a.
