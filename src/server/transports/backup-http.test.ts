@@ -58,7 +58,7 @@ it("coalesces double clicks/lost responses and rejects foreign origins", async (
 });
 it("returns the same safe not-found for unknown create and restore keys and still reauthorizes", async () => {
   const f = await fixture(["create", "restore"]);
-  const missing = { action: "status", backupId: "backup-missing", idempotencyKey: "unknown" };
+  const missing = { action: "status", backupId: "backup-00000000-0000-4000-8000-000000000000", idempotencyKey: "unknown" };
   for (const input of [{ action: "status", idempotencyKey: "unknown" }, missing]) {
     const response = await f.request("POST", input);
     expect(response.status).toBe(404);
