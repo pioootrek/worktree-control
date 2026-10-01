@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, parse, resolve } from "node:path";
 
 function owned(uid: number): boolean { return !process.getuid || uid === process.getuid(); }
@@ -20,7 +20,16 @@ export function privateDirectory(input: string): string {
     }
   }
   assertAncestors(realpathSync(ancestor));
-  for (const path of missing.reverse()) mkdirSync(path, { mode: 0o700 });
+  for (const path of missing.reverse()) {
+    mkdirSync(path, { mode: 0o700 });
+    try { syncDirectory(dirname(path)); }
+    catch (error) {
+      // Remove only our still-empty unpublished directory so retry recreates
+      // and synchronizes its entry. Never remove another caller's contents.
+      try { rmdirSync(path); } catch { /* Preserve the synchronization failure. */ }
+      throw error;
+    }
+  }
   const canonical = realpathSync(absolute);
   assertAncestors(canonical);
   const stat = lstatSync(canonical);
