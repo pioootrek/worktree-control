@@ -50,7 +50,7 @@ export function requestControllerRestore(databasePath: string, actorId: string, 
   const input = requestInputSchema.parse(value), actor = restoreActorSchema.parse({ actorId, backupId: input.backupId, idempotencyKey: input.idempotencyKey });
   policy.authorize(actorId, input.backupId);
   const directory = requestDirectory(databasePath), path = join(directory, `${keyFor(actor)}.json`);
-  try { const record = readRecord(path); sameRequest(record, actor); return status(record); }
+  try { const record = readRecord(path); sameRequest(record, actor); syncDirectory(directory); syncDirectory(dirname(directory)); return status(record); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (readdirSync(directory).length >= 1024) throw new Error("Restore request history limit reached; operator review is required.");
   const source = resolve(policy.resolveBackup(input.backupId)), manifest = parseManifest(readBoundedJson(join(source, "manifest.json"), BACKUP_LIMITS.manifestBytes));
@@ -80,6 +80,7 @@ export function executeControllerRestoreRequest(databasePath: string, attachment
   const ownership = acquireDatabaseOwnership(databasePath);
   try {
     const path = join(requestDirectory(ownership.path), `${keyFor(actor)}.json`), record = readRecord(path); sameRequest(record, actor);
+    syncDirectory(dirname(path)); syncDirectory(dirname(dirname(path)));
     if (record.state === "verified") return status(record);
     const previous = getOwnedRestoreStatus(ownership.path, record.operationId);
     if (previous?.operationId !== record.operationId) {

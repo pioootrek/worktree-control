@@ -225,6 +225,21 @@ describe("strict restore validation before replacement", () => {
 });
 
 describe("controlled restore request handoff", () => {
+  it("reaffirms request publication durability before replay or execution after a directory fsync failure", async () => {
+    const f = await fixture(), policy = { authorize: () => {}, resolveBackup: () => f.backup }, input = { backupId: actor.backupId, idempotencyKey: actor.idempotencyKey, confirmation: "replace-entire-installation" };
+    const directory = `${f.database}.restore-requests`, original = fs.fsyncSync;
+    vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
+      if (fs.realpathSync(`/proc/self/fd/${fd}`) === directory && fs.readdirSync(directory).some(name => name.endsWith(".json"))) throw Object.assign(new Error("request sync refused"), { code: "EIO" });
+      return original(fd);
+    });
+    expect(() => requestControllerRestore(f.database, actor.actorId, input, policy)).toThrow(/request sync refused/);
+    const visible = getControllerRestoreRequestStatus(f.database, actor, policy);
+    expect(() => requestControllerRestore(f.database, actor.actorId, input, policy)).toThrow(/request sync refused/);
+    expect(() => executeControllerRestoreRequest(f.database, f.attachments, actor, policy)).toThrow(/request sync refused/);
+    expect(readFileSync(f.database)).toEqual(f.before); expect(existsSync(restoreRoot(f.database))).toBe(false);
+    vi.restoreAllMocks(); expect(requestControllerRestore(f.database, actor.actorId, input, policy).operationId).toBe(visible.operationId);
+    expect(executeControllerRestoreRequest(f.database, f.attachments, actor, policy)).toMatchObject({ operationId: visible.operationId, state: "verified" }); assertNew(f);
+  });
   it("admits without replacing an open database, requires lock handoff, persists status and deduplicates retries", async () => {
     const f = await fixture(); for (const suffix of ["-wal", "-shm", "-journal", ".initializing"]) rmSync(`${f.database}${suffix}`);
     const store = new SqliteStateStore(f.database), policy = { authorize: vi.fn(), resolveBackup: () => f.backup };
@@ -315,7 +330,7 @@ describe("restore durability and historical snapshots", () => {
       prepareOwnedRestore(f.backup, ownership.path, f.attachments, actor, { operationId: accepted.operationId, manifestHash: createHash("sha256").update(JSON.stringify(manifest)).digest("hex") });
       recoverOwnedRestore(ownership.path);
     } finally { ownership.lock.release(); }
-    expect(getControllerRestoreRequestStatus(f.database, actor, policy).state).toBe("verified");
+    expect(getControllerRestoreRequestStatus(f.database, actor, policy).state).toBe("requested");
     restoreControllerBackup(f.backup, f.database, f.attachments);
     const store = new SqliteStateStore(f.database); store.addProject({ name: "After", repositoryPath: join(f.root, "after"), port: 5678, executable: "pnpm", args: ["dev"] }); store.close();
     expect(executeControllerRestoreRequest(f.database, f.attachments, actor, policy).state).toBe("verified");
