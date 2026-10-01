@@ -92,6 +92,17 @@ function layout(databasePath: string, attachmentDirectory: string, roots: string
     if (statSync(path).dev !== device || mountId(path) !== mount || !localFilesystems.has(statfsSync(path).type)) throw new Error("Unsupported restore filesystem layout; all targets must use one supported local device.");
     syncDirectory(path); // Discover permission/fsync refusal before touching active data.
   }
+  // A previous process may have died between mkdir and its parent fsync.
+  // Persist both target-parent chains even when those directories now exist.
+  const attachmentParent = dirname(attachmentDirectory);
+  let common = parent;
+  while (common !== dirname(common) && attachmentParent !== common && !attachmentParent.startsWith(common + sep)) common = dirname(common);
+  for (const start of [parent, attachmentParent]) {
+    for (let current = start; ; current = dirname(current)) {
+      syncDirectory(current);
+      if (current === common) break;
+    }
+  }
   const attachment = resolve(attachmentDirectory), root = restoreRoot(databasePath);
   const reserved = [...targets(databasePath, attachmentDirectory).slice(0, 5), `${databasePath}.owner.lock`, root];
   if (attachment === parent || parent.startsWith(attachment + sep) || reserved.some(path => path === attachment || path.startsWith(attachment + sep) || attachment.startsWith(path + sep))) throw new Error("Unsupported restore path overlap.");

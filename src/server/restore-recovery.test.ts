@@ -173,14 +173,15 @@ describe("strict restore validation before replacement", () => {
     vi.spyOn(fs, "statfsSync").mockImplementation(path => ({ ...original(path), bavail: 0 }));
     expect(() => restoreControllerBackup(f.backup, f.database, f.attachments)).toThrow(/space/); expect(readFileSync(f.database)).toEqual(f.before); expect(existsSync(restoreRoot(f.database))).toBe(false);
   });
-  it("stops before replacement when a newly created attachment parent cannot be synchronized, then retries", async () => {
+  it.each(["fresh", "interrupted"])("stops before replacement when a %s attachment parent cannot be synchronized, then retries", async mode => {
     const f = await fixture(), parent = join(f.root, "new-parent"), target = join(parent, "nested", "attachments"), original = fs.fsyncSync;
+    if (mode === "interrupted") { mkdirSync(parent, { mode: 0o700 }); mkdirSync(dirname(target), { mode: 0o700 }); }
     vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
-      if (existsSync(parent) && fs.realpathSync(`/proc/self/fd/${fd}`) === f.root) throw Object.assign(new Error("parent sync refused"), { code: "EIO" });
+      if (existsSync(parent) && fs.realpathSync(`/proc/self/fd/${fd}`) === (mode === "fresh" ? f.root : parent)) throw Object.assign(new Error("parent sync refused"), { code: "EIO" });
       return original(fd);
     });
     expect(() => restoreControllerBackup(f.backup, f.database, target)).toThrow(/parent sync refused/);
-    expect(readFileSync(f.database)).toEqual(f.before); expect(existsSync(parent)).toBe(false); expect(existsSync(restoreRoot(f.database))).toBe(false);
+    expect(readFileSync(f.database)).toEqual(f.before); expect(existsSync(parent)).toBe(mode === "interrupted"); expect(existsSync(restoreRoot(f.database))).toBe(false);
     vi.restoreAllMocks(); restoreControllerBackup(f.backup, f.database, target);
     expect(readFileSync(join(target, sha.slice(0, 2), sha))).toEqual(bytes);
     const restored = new SqliteStateStore(f.database);
