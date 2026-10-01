@@ -9,7 +9,10 @@ describe("operational backups in the packaged controller", () => {
   it("backs up live ownership via HTTP and CLI then performs one fenced whole-installation restore", async () => {
     fixture = await startControllerFixture(1, [], { backups: true });
     const f = fixture, project = f.projects[0]!;
-    const owner = JSON.parse(await f.cli(["identity", "bootstrap-owner"])) as { token: string };
+    const admin = <T>(input: unknown) => f.request<T>("/api/identity/admin", { method: "POST", headers: { Authorization: `Bearer ${f.installationToken}` }, body: JSON.stringify(input) });
+    const { principal } = await admin<{ principal: { id: string } }>({ action: "create-agent" });
+    const scopedCredential = await admin<{ token: string }>({ action: "issue-agent-token", principalId: principal.id, label: "restore fixture" });
+    expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${scopedCredential.token}` } })).status).toBe(200);
     const key = "live-copy";
     const copy = await f.request<BackupOperation>("/api/backups", { method: "POST", body: JSON.stringify({ action: "create", idempotencyKey: key }) });
     const complete = await waitFor(async () => {
@@ -45,7 +48,7 @@ describe("operational backups in the packaged controller", () => {
     const dashboard = await f.request<ControllerDashboardResponse>("/api/dashboard");
     expect(dashboard.capacity.enabled).toBe(false);
     expect(dashboard.projects[0]?.runtime.phase).toBe("stopped");
-    const scoped = await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${owner.token}` } }); expect(scoped.status).toBe(401);
+    const scoped = await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${scopedCredential.token}` } }); expect(scoped.status).toBe(401);
     const policy = await f.request<BackupOverview>("/api/backups"); expect(policy.policy.uiActions).toEqual(["create", "restore"]); expect(policy.policy.intervalSeconds).toBeNull();
     await f.request("/api/settings/capacity", { method: "POST", body: JSON.stringify({ enabled: true, limit: 2 }) });
     const repeated = await f.request<RestoreOperation>("/api/backups", { method: "POST", body: JSON.stringify(input) }); expect(repeated.operationId).toBe(accepted.operationId);

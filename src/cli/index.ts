@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { BackupOperations, RestoreOperations, recoverBackupHandoff, finishBackupHandoff } from "../server/modules/backups";
+import { BackupOperations, RestoreOperations, recoverBackupHandoff, finishBackupHandoff, assertBackupHandoffCompleted } from "../server/modules/backups";
 import { backupAdminHandler } from "../server/backup-admin";
 import { parseBackupPolicyOptions, validateBackupPolicyDestination } from "./backup-policy-options";
 import type { ControllerLock } from "../server/controller-lock";
@@ -75,6 +75,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const paths = knowledgeArgs
     ? resolveAppPaths(knowledgeArgs.dataDir, knowledgeArgs.stateDir)
     : resolveAppPaths(option("--data-dir"), option("--state-dir"));
+  if (["knowledge", "auth", "identity", "backup", "project", "doctor"].includes(command) || (command === "config" && process.argv[3] === "mcp")) assertBackupHandoffCompleted(paths.databasePath);
   if (command === "service") {
     await handleServiceCommand(process.argv.slice(3), paths);
     return;

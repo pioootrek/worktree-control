@@ -327,6 +327,8 @@ and finite tests, closes SQLite, executes the recoverable replacement, and
 rebuilds the controller with the same startup arguments. Current installation
 authentication is fenced outside the restored database. Restored sessions and
 scoped credentials are revoked; issue fresh credentials after reconnecting.
+Offline CLI access is refused while an executing handoff still needs this fence;
+start the controller to complete recovery first.
 Use **Refresh status** after a disconnect, or retry the retained request with its
 original key. This never repeats an already completed restore.
 

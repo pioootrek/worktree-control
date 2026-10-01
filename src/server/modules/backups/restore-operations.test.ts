@@ -6,7 +6,7 @@ import { AuthenticationService } from "@/server/modules/authentication";
 import { IdentityService } from "@/server/modules/identity";
 import { BackupOperations } from "./backup-operations";
 import { backupPolicySchema } from "./policy";
-import { RestoreOperations, recoverBackupHandoff, finishBackupHandoff } from "./restore-operations";
+import { RestoreOperations, recoverBackupHandoff, finishBackupHandoff, assertBackupHandoffCompleted } from "./restore-operations";
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 async function fixture(restartFailure?: string) {
@@ -46,6 +46,7 @@ describe("operator restore orchestration", () => {
     const f = await fixture(); const accepted = f.restores.admit(f.current, f.input);
     f.restores.launch(f.current, f.input);
     expect(() => f.execute()).toThrow(/already running/);
+    expect(() => assertBackupHandoffCompleted(f.database)).toThrow("complete restore authentication recovery");
     expect(f.store.listProjects()).toHaveLength(2);
     await f.backups.close(); f.store.close();
     const handoff = recoverBackupHandoff(f.database, f.attachments, f.policy)!;
@@ -53,6 +54,7 @@ describe("operator restore orchestration", () => {
     const restored = new SqliteStateStore(f.database);
     try {
       finishBackupHandoff(f.database, handoff, restored);
+      expect(() => assertBackupHandoffCompleted(f.database)).not.toThrow();
       const auth = new AuthenticationService(restored), identity = new IdentityService(restored, undefined, undefined, undefined, auth);
       expect(auth.authenticateInstallation(f.oldToken)).toBeNull();
       expect(auth.authenticateInstallation(f.newToken)).not.toBeNull();
