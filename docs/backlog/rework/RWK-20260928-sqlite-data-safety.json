@@ -89,11 +89,16 @@
       "author": "agent:codex",
       "date": "2026-10-01",
       "text": "Addressed PR #70 review in af34b7b31b843281ee08305bff464045e2a3ce61: 2 fix, 0 backlog, 0 false positives. Owned legacy root/shard directories with writable umask modes (0775) are safely narrowed to 0700 using an inode-checked no-follow descriptor, also on backup source lookup. Directory fsync stops at shard/root/existing data or backup-staging parent; publisher never creates outer ancestors, and retry still synchronizes every entry it can create. Real legacy and execute-only fixtures cover upload, both imports, backup and interrupted retry; symlinks/foreign ownership/writable outer ancestors remain refused. Managed check passed (646 Vitest + 7 scripts), build and built CLI integration (25) passed on the clean SHA with observed_match. Both original threads have evidence replies and are resolved; full re-fetch confirms 0 unresolved. Dated report/raw evidence updated. UI/package smoke results remain attributed only to the original ffdff68 SHA. No power-loss or old installed-artifact upgrade proof, production changes, merge or later slice; optional backups remain default-off and the overall task stays open."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-01",
+      "text": "Confirmed PR #70 merged at c5c49e2a6bcfd0a15db533b8acfa31d042666222 and started only S3b from fetched origin/main on feat/sqlite-recoverable-restore in a separate worktree. Before implementation, recorded states, intent-before-rename/fsync rules, recovery at each boundary, previous-set retention, fail-closed corruption handling and a controlled request/lock handoff in storage-safety-s3b-protocol.md. Implementation and verification are in progress. S4 schedules/GUI, merge and production deployment remain outside this work."
     }
   ],
   "priority": "next",
   "problem": [
-    "Main now protects SQLite ownership, startup and migration through merged PRs #68 and #69. Attachment durability is implemented in S3a PR #70 pending review/merge; full durable backup-directory and multi-file restore recovery, optional scheduling, GUI and off-host recovery acceptance remain incomplete.",
+    "Main now protects SQLite ownership, startup, migrations and durable immutable attachments through merged PRs #68, #69 and #70. S3b durable backup-directory publication and multi-file restore recovery are in progress; optional scheduling, GUI and off-host recovery acceptance remain incomplete.",
     "Knowledge cutover needs verified backup operations, private file handling, exclusive database ownership and recorded failure/restore evidence. The existing K7a pilot does not prove these guarantees."
   ],
   "risk": {
