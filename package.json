@@ -48,6 +48,7 @@
     "typecheck": "tsc --noEmit",
     "test:modules": "vitest run src/server/modules src/server/infrastructure src/architecture.test.ts",
     "test:ui": "playwright test",
+    "test:ui:detail-focus": "playwright test tests/ui/detail-focus.spec.ts",
     "test:integration": "node scripts/build-fingerprint.mjs --check && vitest run --config vitest.integration.config.ts",
     "test:https": "node scripts/build-fingerprint.mjs --check && vitest run --config vitest.https.config.ts",
     "test:e2e": "node scripts/build-fingerprint.mjs --check && playwright test --config playwright.e2e.config.ts",

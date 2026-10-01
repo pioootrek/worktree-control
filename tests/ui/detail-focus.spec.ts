@@ -6,6 +6,36 @@ async function openSection(page: Page, name: "Tests" | "Resources", width: numbe
   await page.getByRole("navigation").getByRole("button", { name, exact: true }).click();
 }
 
+test("mobile test details own Escape immediately after receiving focus", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 });
+  let escapePressed = false;
+  await page.exposeFunction("recordDetailEscape", () => { escapePressed = true; });
+  await page.addInitScript(() => {
+    const recordEscape = (window as unknown as { recordDetailEscape: () => Promise<void> }).recordDetailEscape;
+    const onFocus = (event: FocusEvent) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement) || target.textContent?.trim() !== "Jump to log"
+        || !target.closest('[role="dialog"][data-slot="sheet-content"]')) return;
+      document.removeEventListener("focusin", onFocus, true);
+      target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      void recordEscape();
+    };
+    document.addEventListener("focusin", onFocus, true);
+  });
+  const data = dashboardFixture();
+  data.projects[0].testRuns = [testRunFixture()];
+  await mountDashboard(page, data);
+  await openSection(page, "Tests", 390);
+  const details = page.locator("[data-tests-dashboard]").getByRole("button", { name: "Result: test · main", exact: true });
+  await details.focus();
+  await page.keyboard.press("Enter");
+  // Deliver Escape synchronously at autofocus, before browser/driver latency or
+  // visibility polling can hide the navigation/detail layer handoff race.
+  await expect.poll(() => escapePressed).toBe(true);
+  await expect(page.getByRole("dialog")).toBeHidden();
+  await expect(details).toBeFocused();
+});
+
 for (const width of [390, 1440]) {
   test(`test details return focus after Escape and a breakpoint change from ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
