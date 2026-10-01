@@ -7,7 +7,8 @@ harmonogramy i GUI w S4.
 
 - Punkt startowy po fetch: `f2aeef2c7f29427ecff36c53450fbbb69f41c01a`, merge PR #69.
   Sprawdzenie ancestry potwierdziło obecność tego commita w `origin/main`.
-- SHA implementacji: `ffdff68a67e76baa22238789f7712fd538230c48`.
+- SHA pierwotnej implementacji: `ffdff68a67e76baa22238789f7712fd538230c48`.
+- SHA po review: `af34b7b31b843281ee08305bff464045e2a3ce61`.
 - Gałąź: `feat/sqlite-durable-attachments`.
 - Osobny worktree: `/home/pioootrek/development/worktree-switcher-s3a`.
 - PR: [#70](https://github.com/pioootrek/worktree-switcher/pull/70), otwarty do `main`.
@@ -35,15 +36,21 @@ jest zawartość zwycięzcy. Istniejący obiekt pozostaje na tym samym inode;
 ponowienie nie wymaga kolejnego zapisu treści.
 
 Po publikacji lub deduplikacji synchronizowane są plik końcowy, shard, katalog
-obiektów i jego przodkowie. Dotyczy to także katalogów pozostałych po wcześniejszym
-przerwaniu. SQL może zatwierdzić referencję dopiero po ukończeniu tej operacji.
+obiektów i istniejący katalog nadrzędny danych albo stagingu backupu. Dotyczy to
+także katalogów root/shard pozostałych po wcześniejszym przerwaniu. Publisher
+tworzy tylko root/shard; nie tworzy katalogów ponad tą granicą. SQL może
+zatwierdzić referencję dopiero po ukończeniu tej operacji.
 Odmowa synchronizacji zatrzymuje zapis metadanych. W imporcie Huba zachowano
 istniejącą transakcję IMMEDIATE i state machine batcha; import projektu nadal
 zatwierdza cały snapshot w jednej transakcji.
 
 Nowe katalogi są prywatne niezależnie od umask. Istniejące bezpieczne tryby
-katalogów pozostają zachowane. Kanoniczne aliasy przodków działają; symlinki
-roota, sharda lub obiektu i zapisywalne niezaufane ścieżki są odrzucane.
+katalogów pozostają zachowane. Własne katalogi root/shard legacy z bitami zapisu
+grupy/innych, np. 0775 po umask 002, są zawężane do 0700 przez sprawdzony
+deskryptor, także podczas odczytu źródła backupu. Kanoniczne aliasy przodków
+działają; symlinki roota, sharda lub obiektu, obca własność i zapisywalne
+niezaufane ścieżki są odrzucane. Przodkowie ponad katalogiem danych/stagingu
+są sprawdzani przez stat, bez wymagania odczytu katalogu i bez fsync.
 Import projektu sprawdza też każdy rozmiar referencji współdzielących hash,
 żeby mapowanie deduplikacji nie ukryło sprzecznych metadanych.
 
@@ -74,7 +81,7 @@ Backupy pozostają opcjonalne i domyślnie wyłączone.
 
 ## Weryfikacja
 
-Końcowe runy kolejki MCP wykonano pojedynczo na dokładnym odkrytym worktree,
+Pierwotne końcowe runy kolejki MCP wykonano pojedynczo na dokładnym odkrytym worktree,
 czystym `ffdff68a67e76baa22238789f7712fd538230c48` i z `observed_match`.
 Nie przejmowano ani nie uruchamiano zarządzanego serwera deweloperskiego.
 Chromium sprawdza statyczny dashboard przez fixture; integracja uruchamia własne
@@ -153,3 +160,58 @@ Nie używano produkcyjnej bazy, nie wdrażano kodu, nie restartowano usług host
 ani nie zmieniano guardów, limitów lub watchdogów. Nie wykonano aktualizacji
 starego zainstalowanego artefaktu, cutover ani późniejszego slice'a.
 PR pozostaje do review; nie wykonano merge. Całe zadanie jest otwarte.
+
+## Review follow-up, 2026-10-01
+
+Odczytano wszystkie review submissions i wątki inline PR #70 wraz z odpowiedziami
+i stanem; paginacja nie miała kolejnych stron. Trzy review submissions potwierdziły
+te same dwa problemy. Klasyfikacja: 2 `fix`, 0 `backlog`, 0 `false positive`.
+
+- [Katalogi legacy 0775](https://github.com/pioootrek/worktree-switcher/pull/70#discussion_r4156699166):
+  wcześniejsze wydania tworzyły root/shard według umask. Odrzucanie tych katalogów
+  blokowało upload/import i backup istniejących danych. Wprowadzono zawężanie
+  tylko własnych root/shard przez `O_NOFOLLOW`/`O_DIRECTORY`, sprawdzenie właściciela,
+  device/inode deskryptora, `fchmod(0700)` i `fsync`. Tryby bez zapisu grupy/innych
+  są zachowane; symlinki, cudze katalogi i writable ancestors nie są naprawiane.
+- [Nieczytelny przodek](https://github.com/pioootrek/worktree-switcher/pull/70#discussion_r4156699184):
+  otwieranie wszystkich katalogów aż do `/` dodawało niepotrzebny wymóg read.
+  Synchronizacja kończy się na istniejącym rodzicu rootu. Katalog nadrzędny
+  jest ustalony przez własność bazy lub utworzenie stagingu backupu; publisher
+  tworzy tylko root/shard. Retry synchronizuje wszystkie trzy katalogi,
+  również jeśli poprzednia próba zdążyła utworzyć root/shard lub opublikować plik.
+  Nieczytelne zewnętrzne przodki nadal podlegają kontroli ścieżki i uprawnień.
+
+Poprawka jest w `af34b7b31b843281ee08305bff464045e2a3ce61`, opublikowanym normalnym
+push na istniejącej gałęzi PR. Doszło 14 przypadków: prawdziwe root/shard 0775
+przy publikacji i odczycie źródła, rzeczywisty przodek 0111, retry po EIO
+po publikacji, brak open poza granicą fsync, odrzucenie aliasów i obcej własności
+bez chmod, odmowa zmiany writable ancestor oraz backup/upload/oba importy
+w konfiguracjach legacy i execute-only. Niezmienność inode/bajtów pozostaje
+sprawdzana. Dziewięć dotychczasowych SIGKILL i konkurencyjni publisherzy przeszli.
+
+Runy wykonano kolejno na czystym SHA poprawki; wszystkie mają `observed_match`:
+
+| Polecenie | Wynik | ID runu |
+| --- | --- | --- |
+| `pnpm check` | passed, lint/typecheck, 646 Vitest w 83 plikach i 7 skryptów | `d43845cc-5e84-4e5d-a1e1-e0a9e1ade5f9` |
+| `pnpm build` | passed, statyczny eksport i CLI | `35eb0474-c1dc-4cd9-8444-8f9bfa11d6b5` |
+| `pnpm test:integration` | passed, 25 testów w 5 plikach | `a3410a81-69a5-4b0f-8eb9-671c34c3bd61` |
+
+Odpowiedzi z klasyfikacją, SHA i wynikami opublikowano w oryginalnych wątkach,
+następnie oba rozwiązano. Ponowny pełny odczyt potwierdził 2 resolved,
+0 unresolved i obecność obu odpowiedzi. Stany przed/po i runy zapisano
+w `reviewFollowUp` w [dowodach](storage-safety-s3a-evidence-20261001.json).
+`git diff --check` przeszedł. Warning dashboardu pozostaje wcześniejszy.
+
+Lokalnie nie powtarzano UI ani package smoke: ich wcześniejsze wyniki dotyczą wyłącznie
+`ffdff68`, a nie SHA poprawki. Nowe fixture legacy odtwarzają uprawnienia starszych
+wydań; nie są aktualizacją starego zainstalowanego artefaktu. Przypadki uprawnień
+są na lokalnym tmpfs, SIGKILL nadal na ext4. Nie wykonano testu utraty zasilania,
+realnego zapełnienia dysku, wdrożenia, użycia produkcyjnej bazy ani merge.
+Backupy pozostają opcjonalne i domyślnie wyłączone; zadanie otwarte, S3b/S4 poza zakresem.
+
+GitHub [Verify, run 36880723312](https://github.com/pioootrek/worktree-switcher/actions/runs/36880723312)
+na SHA poprawki zakończył `check-build`, `package-smoke` na Node 22.23.2 i 24.21.0
+oraz `package-service-lifecycle` z SUCCESS. Statusy odczytano z GitHub i zapisano
+oddzielnie od lokalnych runów kolejki w dowodach review. Kanoniczne Hub `fmt`
+i `validate` oraz `git diff --check` przeszły dla aktualizacji dokumentacji.

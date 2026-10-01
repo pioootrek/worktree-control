@@ -1678,5 +1678,607 @@
     "prefixContainsSpaces": true,
     "nativeSqlite": "packaged prebuilt, loaded successfully",
     "scope": "fresh isolated installation, not an old installed-artifact upgrade"
+  },
+  "reviewFollowUp": {
+    "date": "2026-10-01",
+    "head": "af34b7b31b843281ee08305bff464045e2a3ce61",
+    "classifications": {
+      "fix": 2,
+      "backlog": 0,
+      "falsePositive": 0
+    },
+    "threadsBefore": {
+      "pageInfo": {
+        "hasNextPage": false,
+        "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0xMC0wMVQxNDo0MTo1OVrOp_4Xcw=="
+      },
+      "nodes": [
+        {
+          "id": "PRRT_kwDOUINt8M6n_hdo",
+          "isResolved": false,
+          "isOutdated": true,
+          "path": "src/server/attachment-objects.ts",
+          "line": null,
+          "comments": {
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0xMC0wMVQxNDo0MTo1OVrO98IyHg=="
+            },
+            "nodes": [
+              {
+                "id": "PRRC_kwDOUINt8M73wjIe",
+                "databaseId": 4156699166,
+                "author": {
+                  "login": "pioootrek"
+                },
+                "body": "**Upgrade regression: directories created by earlier releases are now rejected.**\n\nBefore this PR, the upload, Hub import and project import paths created the attachment root and shard directories with `mkdirSync(..., { recursive: true })` and no `mode`. Their permissions therefore came from the process umask. With a group-writable umask such as `002` (the default for user-private-group logins on Debian and Ubuntu), these directories are `0o775`. This line now treats any `0o022` bit on the root or shard as invalid and never repairs it. On an existing installation:\n\n- `createControllerBackup` → `attachmentObjectPath` throws `Unsafe attachment object path` for every existing attachment. Full backups and `--backup-before-migration` stop working.\n- Uploads and imports into any existing shard fail with `invalid_request`.\n\nThe data directory itself passes, because `privateDirectory` requires it to be `0o700`. Only the attachment subdirectories, which old code never hardened, are affected. That makes this hard to diagnose.\n\nThe new tests always create these directories through the new code, or use a `0o755` parent (\"retains legacy directory modes\"), so this path is untested. Two possible fixes: harden owned legacy root and shard directories once (for example, `fchmod` to `0o700` when the owner matches the current user and there is no symlink), or apply the check only to directories this code creates. Please also add a test with a pre-existing `0o775` root and shard.\n\nReviewed by: claude-opus-5-5",
+                "url": "https://github.com/pioootrek/worktree-switcher/pull/70#discussion_r4156699166",
+                "createdAt": "2026-10-01T14:41:59Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDOUINt8M6n_hdz",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "src/server/attachment-objects.ts",
+          "line": 93,
+          "comments": {
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0xMC0wMVQxNDo0MTo1OVrO98IyMA=="
+            },
+            "nodes": [
+              {
+                "id": "PRRC_kwDOUINt8M73wjIw",
+                "databaseId": 4156699184,
+                "author": {
+                  "login": "pioootrek"
+                },
+                "body": "**Publication now requires read permission on every ancestor up to `/`.**\n\n`syncParents` calls `syncDirectory`, which runs `openSync(path, O_RDONLY)`, on every directory from the shard up to the filesystem root. Opening a directory needs read permission. Path traversal only needs execute permission, and `privateDirectory`/`assertAncestors` do not require ancestors to be readable. So a data directory under an execute-only ancestor fails here. Examples are `WORKTREE_SWITCHER_DATA_DIR=/srv/ws/data` with `/srv` set to `root:root 0711`, or a home directory under a hardened `0711` parent.\n\nThe failure happens after `linkSync` has already published the object, so `upload`, Hub import and project import all throw EACCES before SQL runs. Retries take the \"existing object\" branch and fail in the same `syncParents` call, so the condition is permanent. Before this PR, the same configuration worked. This is not an injected-fault case like the `directory-sync:EACCES` test. It is a deterministic regression for that layout.\n\nDurability only needs fsync on directories whose entries this call (or an interrupted earlier attempt) could have created: the shard, the root, and newly created ancestors up to the first pre-existing private directory. Ancestors above the database private data directory never get new entries from this code. Please limit the walk, or treat EACCES on those outer ancestors as non-fatal.\n\nReviewed by: claude-opus-5-5",
+                "url": "https://github.com/pioootrek/worktree-switcher/pull/70#discussion_r4156699184",
+                "createdAt": "2026-10-01T14:41:59Z"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "threadsAfter": {
+      "pageInfo": {
+        "hasNextPage": false,
+        "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0xMC0wMVQxNDo0MTo1OVrOp_4Xcw=="
+      },
+      "nodes": [
+        {
+          "id": "PRRT_kwDOUINt8M6n_hdo",
+          "isResolved": true,
+          "isOutdated": true,
+          "path": "src/server/attachment-objects.ts",
+          "line": null,
+          "comments": {
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0xMC0wMVQxNTowMjo0NlrO98X5TQ=="
+            },
+            "nodes": [
+              {
+                "id": "PRRC_kwDOUINt8M73wjIe",
+                "databaseId": 4156699166,
+                "author": {
+                  "login": "pioootrek"
+                },
+                "body": "**Upgrade regression: directories created by earlier releases are now rejected.**\n\nBefore this PR, the upload, Hub import and project import paths created the attachment root and shard directories with `mkdirSync(..., { recursive: true })` and no `mode`. Their permissions therefore came from the process umask. With a group-writable umask such as `002` (the default for user-private-group logins on Debian and Ubuntu), these directories are `0o775`. This line now treats any `0o022` bit on the root or shard as invalid and never repairs it. On an existing installation:\n\n- `createControllerBackup` → `attachmentObjectPath` throws `Unsafe attachment object path` for every existing attachment. Full backups and `--backup-before-migration` stop working.\n- Uploads and imports into any existing shard fail with `invalid_request`.\n\nThe data directory itself passes, because `privateDirectory` requires it to be `0o700`. Only the attachment subdirectories, which old code never hardened, are affected. That makes this hard to diagnose.\n\nThe new tests always create these directories through the new code, or use a `0o755` parent (\"retains legacy directory modes\"), so this path is untested. Two possible fixes: harden owned legacy root and shard directories once (for example, `fchmod` to `0o700` when the owner matches the current user and there is no symlink), or apply the check only to directories this code creates. Please also add a test with a pre-existing `0o775` root and shard.\n\nReviewed by: claude-opus-5-5",
+                "url": "https://github.com/pioootrek/worktree-switcher/pull/70#discussion_r4156699166",
+                "createdAt": "2026-10-01T14:41:59Z"
+              },
+              {
+                "id": "PRRC_kwDOUINt8M73xflN",
+                "databaseId": 4156946765,
+                "author": {
+                  "login": "pioootrek"
+                },
+                "body": "fix — addressed in af34b7b31b843281ee08305bff464045e2a3ce61 (now on the PR branch).\n\nOwned legacy root/shard directories with group/world write permissions are narrowed to 0700 using O_NOFOLLOW/O_DIRECTORY, an ownership + device/inode check on the opened descriptor, fchmod and fsync. The backup source lookup uses the same repair, so a pre-existing 0775 installation can back up before its next upload/import. Safe existing modes remain unchanged; symlink roots/shards, foreign ownership and writable outer ancestors are still rejected without chmod.\n\nRegression tests cover real pre-existing 0775 roots/shards for upload, Hub import, project import and backup, plus unchanged object inode/bytes and rejection without repair of foreign directories and symlink targets. On the clean SHA above, managed pnpm check passed (646 Vitest + 7 script tests), pnpm build passed, and built CLI integration passed (25 tests).",
+                "url": "https://github.com/pioootrek/worktree-switcher/pull/70#discussion_r4156946765",
+                "createdAt": "2026-10-01T15:02:46Z"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_kwDOUINt8M6n_hdz",
+          "isResolved": true,
+          "isOutdated": false,
+          "path": "src/server/attachment-objects.ts",
+          "line": 93,
+          "comments": {
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0xMC0wMVQxNTowMjo1MFrO98X79g=="
+            },
+            "nodes": [
+              {
+                "id": "PRRC_kwDOUINt8M73wjIw",
+                "databaseId": 4156699184,
+                "author": {
+                  "login": "pioootrek"
+                },
+                "body": "**Publication now requires read permission on every ancestor up to `/`.**\n\n`syncParents` calls `syncDirectory`, which runs `openSync(path, O_RDONLY)`, on every directory from the shard up to the filesystem root. Opening a directory needs read permission. Path traversal only needs execute permission, and `privateDirectory`/`assertAncestors` do not require ancestors to be readable. So a data directory under an execute-only ancestor fails here. Examples are `WORKTREE_SWITCHER_DATA_DIR=/srv/ws/data` with `/srv` set to `root:root 0711`, or a home directory under a hardened `0711` parent.\n\nThe failure happens after `linkSync` has already published the object, so `upload`, Hub import and project import all throw EACCES before SQL runs. Retries take the \"existing object\" branch and fail in the same `syncParents` call, so the condition is permanent. Before this PR, the same configuration worked. This is not an injected-fault case like the `directory-sync:EACCES` test. It is a deterministic regression for that layout.\n\nDurability only needs fsync on directories whose entries this call (or an interrupted earlier attempt) could have created: the shard, the root, and newly created ancestors up to the first pre-existing private directory. Ancestors above the database private data directory never get new entries from this code. Please limit the walk, or treat EACCES on those outer ancestors as non-fatal.\n\nReviewed by: claude-opus-5-5",
+                "url": "https://github.com/pioootrek/worktree-switcher/pull/70#discussion_r4156699184",
+                "createdAt": "2026-10-01T14:41:59Z"
+              },
+              {
+                "id": "PRRC_kwDOUINt8M73xfv2",
+                "databaseId": 4156947446,
+                "author": {
+                  "login": "pioootrek"
+                },
+                "body": "fix — addressed in af34b7b31b843281ee08305bff464045e2a3ce61 (now on the PR branch).\n\nDirectory fsync now stops after the shard, object root and its existing parent. The publisher creates only root/shard directories under the already established data directory or backup staging; it never creates outer ancestors. Every publication and deduplication retry synchronizes all three directories, including entries left by an interrupted attempt. Ancestors above this boundary are still checked for unsafe paths/permissions with stat, but never opened for read or synchronized.\n\nA real execute-only (0111) outer ancestor test verifies publication, failure after link, retry, source lookup and absence of any open on that ancestor. Upload, Hub import, project import and backup also pass under that layout. Required directory sync failures still prevent SQL metadata commits; the nine SIGKILL cases continue to pass. Managed check (646 Vitest + 7 script tests), build and built CLI integration (25 tests) passed on the clean SHA above. SIGKILL remains process-interruption evidence only, not a power-loss test.",
+                "url": "https://github.com/pioootrek/worktree-switcher/pull/70#discussion_r4156947446",
+                "createdAt": "2026-10-01T15:02:50Z"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "runs": [
+      {
+        "id": "d43845cc-5e84-4e5d-a1e1-e0a9e1ade5f9",
+        "presetId": "node:check",
+        "worktreePath": "/home/pioootrek/development/worktree-switcher-s3a",
+        "head": "af34b7b31b843281ee08305bff464045e2a3ce61",
+        "dirty": false,
+        "phase": "passed",
+        "startedAt": "2026-10-01T14:58:01.747Z",
+        "finishedAt": "2026-10-01T14:59:07.557Z",
+        "exitCode": 0,
+        "signal": null,
+        "error": null,
+        "source": {
+          "version": 1,
+          "scope": "git-observations",
+          "enqueue": {
+            "observedAt": "2026-10-01T14:58:01.600Z",
+            "head": "af34b7b31b843281ee08305bff464045e2a3ce61",
+            "branch": "feat/sqlite-durable-attachments",
+            "dirty": false,
+            "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "statusEntries": 0,
+            "complete": true,
+            "errorCode": null
+          },
+          "preflight": {
+            "observedAt": "2026-10-01T14:58:01.721Z",
+            "head": "af34b7b31b843281ee08305bff464045e2a3ce61",
+            "branch": "feat/sqlite-durable-attachments",
+            "dirty": false,
+            "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "statusEntries": 0,
+            "complete": true,
+            "errorCode": null
+          },
+          "finish": {
+            "observedAt": "2026-10-01T14:59:07.630Z",
+            "head": "af34b7b31b843281ee08305bff464045e2a3ce61",
+            "branch": "feat/sqlite-durable-attachments",
+            "dirty": false,
+            "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "statusEntries": 0,
+            "complete": true,
+            "errorCode": null
+          },
+          "queueComparison": "match",
+          "executionComparison": "match",
+          "attribution": "observed_match",
+          "reasonCodes": [],
+          "processOutcome": "passed"
+        },
+        "logs": [
+          "$ pnpm run check",
+          "$ pnpm lint && pnpm typecheck && pnpm test && pnpm test:resources",
+          "$ eslint .",
+          "/home/pioootrek/development/worktree-switcher-s3a/src/features/knowledge/knowledge-dashboard.tsx",
+          "  87:6  warning  React Hook useEffect has a missing dependency: 'selection.tab'. Either include it or remove the dependency array  react-hooks/exhaustive-deps",
+          "✖ 1 problem (0 errors, 1 warning)",
+          "$ tsc --noEmit",
+          "$ vitest run",
+          " RUN  v4.1.11 /home/pioootrek/development/worktree-switcher-s3a",
+          " ✓ src/server/infrastructure/sqlite/durable-attachments.test.ts (9 tests) 11568ms",
+          "     ✓ upload recovers after SIGKILL at before-file without a missing committed object  2725ms",
+          "     ✓ upload recovers after SIGKILL at after-file without a missing committed object  1217ms",
+          "     ✓ upload recovers after SIGKILL at before-commit without a missing committed object  1163ms",
+          "     ✓ hub recovers after SIGKILL at before-file without a missing committed object  1579ms",
+          "     ✓ hub recovers after SIGKILL at after-file without a missing committed object  808ms",
+          "     ✓ hub recovers after SIGKILL at before-commit without a missing committed object  1071ms",
+          "     ✓ project recovers after SIGKILL at before-file without a missing committed object  1034ms",
+          "     ✓ project recovers after SIGKILL at after-file without a missing committed object  1293ms",
+          "     ✓ project recovers after SIGKILL at before-commit without a missing committed object  669ms",
+          " ✓ src/server/mcp-http-server.test.ts (2 tests) 4436ms",
+          "     ✓ limits scoped credentials to knowledge and identity and reauthenticates existing sessions  4247ms",
+          " ✓ src/server/infrastructure/sqlite/durable-migrations.test.ts (33 tests) 17303ms",
+          "     ✓ initializes/upgrades undefined with verified FULL and honest provenance  399ms",
+          "     ✓ rejects inconsistent checksum without resetting auth or data  2031ms",
+          "     ✓ rejects inconsistent name without resetting auth or data  2690ms",
+          "     ✓ rejects inconsistent gap without resetting auth or data  1879ms",
+          "     ✓ rejects inconsistent legacy-provenance without resetting auth or data  1851ms",
+          "     ✓ rejects inconsistent missing-policy without resetting auth or data  1391ms",
+          "     ✓ rejects inconsistent future without resetting auth or data  1065ms",
+          "     ✓ recovers a real SIGKILL during uncommitted fresh without auth downgrade  302ms",
+          "     ✓ recovers a real SIGKILL during uncommitted migration without auth downgrade  302ms",
+          "     ✓ rejects fk failures and releases resources  1080ms",
+          "     ✓ rejects integrity failures and releases resources  1125ms",
+          "     ✓ rejects policy failures and releases resources  1150ms",
+          "     ✓ rejects reply-project failures and releases resources  1072ms",
+          " ✓ src/server/process-manager.test.ts (11 tests) 19647ms",
+          "     ✓ starts a healthy server and stops its owned process group  495ms",
+          "     ✓ retains ownership after cleanup failure and permits a safe retry  366ms",
+          "     ✓ cleans stubborn descendants before releasing ownership: stop  4292ms",
+          "     ✓ cleans stubborn descendants before releasing ownership: shutdown  4257ms",
+          "     ✓ cleans stubborn descendants before releasing ownership: early-exit  4261ms",
+          "     ✓ cleans stubborn descendants before releasing ownership: startup-timeout  4760ms",
+          "     ✓ tracks current, peak, CPU, and bounded history while the process is active  340ms",
+          " ✓ src/server/test-log-lifecycle.test.ts (15 tests) 2885ms",
+          "     ✓ closes twelve completed job logs before publishing results and never reopens late output  963ms",
+          "     ✓ finalizes exactly once after cancelled  382ms",
+          "     ✓ still stops active processes when another cancellation fails during shutdown  370ms",
+          " ✓ src/server/infrastructure/sqlite/storage-safety.test.ts (23 tests) 19329ms",
+          "     ✓ inspects, backs up and migrates a committed WAL after SIGKILL (remove index=false)  1350ms",
+          "     ✓ inspects, backs up and migrates a committed WAL after SIGKILL (remove index=true)  894ms",
+          "     ✓ rejects a future schema committed only in WAL without changing the main file or WAL (remove index=false)  716ms",
+          "     ✓ rejects a future schema committed only in WAL without changing the main file or WAL (remove index=true)  1024ms",
+          "     ✓ manual backup preserves raw schema v12, rows and referenced attachments  660ms",
+          "     ✓ manual backup preserves raw schema v24, rows and referenced attachments  2359ms",
+          "     ✓ manual backup preserves raw schema v26, rows and referenced attachments  2300ms",
+          "     ✓ required backup failure (destination) leaves schema and data unchanged and releases ownership  1399ms",
+          "     ✓ required backup failure (attachment) leaves schema and data unchanged and releases ownership  1137ms",
+          "     ✓ rejects future schema before changing the database, journal or authentication through normal start and offline CLI  1114ms",
+          "     ✓ rejects foreign schema before changing the database, journal or authentication through normal start and offline CLI  1145ms",
+          "     ✓ rejects gap schema before changing the database, journal or authentication through normal start and offline CLI  1019ms",
+          "     ✓ rejects partial schema before changing the database, journal or authentication through normal start and offline CLI  1093ms",
+          "     ✓ rejects shape schema before changing the database, journal or authentication through normal start and offline CLI  1059ms",
+          "     ✓ rejects constraint schema before changing the database, journal or authentication through normal start and offline CLI  1029ms",
+          "     ✓ admits one of two simultaneous real processes using different state directories and directory aliases  454ms",
+          " ✓ src/server/knowledge-transports.test.ts (6 tests) 2277ms",
+          "     ✓ filters SSE with current grant state without recording passive credential usage  566ms",
+          "     ✓ filters SSE with current credential state without recording passive credential usage  659ms",
+          "     ✓ filters SSE with current expiry state without recording passive credential usage  564ms",
+          " ✓ src/server/modules/knowledge/hub-import-plan.test.ts (8 tests) 2020ms",
+          "     ✓ reports nested note.json attachments and stable location-independent hashes  319ms",
+          "     ✓ enforces per-file and file-count limits before validation  485ms",
+          " ✓ src/server/attachment-backup.test.ts (19 tests) 1498ms",
+          " ✓ src/server/infrastructure/sqlite/sqlite-state-store.test.ts (17 tests) 1074ms",
+          " ✓ src/server/infrastructure/sqlite/hub-import-execution.test.ts (39 tests) 1753ms",
+          " ✓ src/server/infrastructure/git/remote-verification-workspace.test.ts (7 tests) 1217ms",
+          " ✓ src/server/infrastructure/sqlite/knowledge-memory.test.ts (17 tests) 1003ms",
+          " ✓ src/server/infrastructure/sqlite/knowledge-queries.test.ts (16 tests) 874ms",
+          " ✓ src/server/installation-token-transports.test.ts (8 tests) 731ms",
+          " ✓ src/cli/identity-management.test.ts (7 tests) 695ms",
+          " ✓ src/server/control-service-capacity.test.ts (11 tests) 548ms",
+          " ✓ src/server/infrastructure/sqlite/remote-verification-queries.test.ts (19 tests) 780ms",
+          " ✓ src/server/modules/environments/environments-integration.test.ts (9 tests) 571ms",
+          " ✓ src/server/infrastructure/sqlite/knowledge-project-transfer.test.ts (8 tests) 531ms",
+          " ✓ src/cli/auth-management.test.ts (5 tests) 384ms",
+          " ✓ src/server/control-service-storage.test.ts (5 tests) 442ms",
+          " ✓ src/server/worktree-storage.test.ts (6 tests) 411ms",
+          " ✓ src/cli/backup-management.test.ts (2 tests) 441ms",
+          " ✓ src/server/infrastructure/sqlite/knowledge-attachments.test.ts (8 tests) 309ms",
+          " ✓ src/server/controller-backup.test.ts (4 tests) 386ms",
+          " ✓ src/server/control-service-agent.test.ts (5 tests) 305ms",
+          " ✓ src/server/infrastructure/sqlite/identity-queries.test.ts (5 tests) 269ms",
+          " ✓ src/server/modules/dashboard/dashboard-query.test.ts (7 tests) 312ms",
+          " ✓ src/server/http-server.test.ts (25 tests) 253ms",
+          " ✓ src/cli/project-management.test.ts (9 tests) 320ms",
+          " ✓ src/server/owned-process-group.test.ts (5 tests) 215ms",
+          " ✓ src/features/dashboard/dashboard-events.test.ts (6 tests) 233ms",
+          " ✓ src/server/infrastructure/sqlite/authentication-queries.test.ts (4 tests) 209ms",
+          " ✓ src/cli/knowledge-management.test.ts (8 tests) 200ms",
+          " ✓ src/server/attachment-objects.test.ts (27 tests) 202ms",
+          " ✓ src/server/git-worktrees.test.ts (6 tests) 182ms",
+          " ✓ src/server/log-writer.test.ts (8 tests) 180ms",
+          " ✓ src/cli/mcp-config.test.ts (4 tests) 176ms",
+          " ✓ src/server/resource-monitor.test.ts (1 test) 153ms",
+          " ✓ src/server/modules/status/status-service.test.ts (12 tests) 54ms",
+          " ✓ src/server/admin-socket.test.ts (2 tests) 36ms",
+          " ✓ src/server/control-service-dashboard.test.ts (1 test) 105ms",
+          " ✓ src/server/directory-browser.test.ts (3 tests) 26ms",
+          " ✓ src/server/resource-monitor-concurrency.test.ts (7 tests) 45ms",
+          " ✓ src/server/modules/identity/identity-service.test.ts (14 tests) 27ms",
+          " ✓ src/server/test-job-manager.test.ts (23 tests) 27662ms",
+          "     ✓ rejects a queued source change before spawning the command  403ms",
+          "     ✓ does not inherit production NODE_ENV from the controller  410ms",
+          "     ✓ honors the global limit and runs at most one test per worktree  1446ms",
+          "     ✓ does not stop active runs when the global limit is lowered  668ms",
+          "     ✓ cancels queued and running jobs and restricts agent cancellation to the author  585ms",
+          "     ✓ keeps cancellation non-terminal until a signal-handling child exits  844ms",
+          "     ✓ keeps the worktree occupied on cleanup failure and retries cancellation  1296ms",
+          "     ✓ automatically retries transient cleanup failure without changing a passed result  323ms",
+          "     ✓ preserves an observed passed result when cleanup is retried explicitly  470ms",
+          "     ✓ bounds output-pipe close after the owned process group has exited  2394ms",
+          "     ✓ retains the queue slot until a silent stubborn descendant exits: cancel  4415ms",
+          "     ✓ retains the queue slot until a silent stubborn descendant exits: timeout  4706ms",
+          "     ✓ retains the queue slot until a silent stubborn descendant exits: launcher-exit  3969ms",
+          "     ✓ retains the queue slot until a silent stubborn descendant exits: shutdown  4230ms",
+          " ✓ src/cli/service-manager.test.ts (5 tests) 20ms",
+          " ✓ src/server/launch-command.test.ts (15 tests) 19ms",
+          " ✓ src/server/events.test.ts (3 tests) 31ms",
+          " ✓ src/features/verification/test-results-model.test.ts (6 tests) 23ms",
+          " ✓ src/server/infrastructure/sqlite/knowledge-search-snippet.test.ts (3 tests) 35ms",
+          " ✓ src/server/modules/verification/verification-service.test.ts (2 tests) 34ms",
+          " ✓ src/server/modules/environments/profile-validation.test.ts (10 tests) 27ms",
+          " ✓ src/server/modules/environments/test-environment.test.ts (5 tests) 25ms",
+          " ✓ src/cli/controller-addresses.test.ts (9 tests) 10ms",
+          " ✓ src/cli/migration-backup-options.test.ts (13 tests) 28ms",
+          " ✓ src/server/modules/remote-verification/remote-verification-service.test.ts (10 tests) 15ms",
+          " ✓ src/server/modules/authentication/authentication-service.test.ts (9 tests) 18ms",
+          " ✓ src/server/controller-lock.test.ts (3 tests) 28ms",
+          " ✓ src/server/modules/lifecycle/project-lifecycle.test.ts (5 tests) 14ms",
+          " ✓ src/features/projects/worktree-insights.test.ts (2 tests) 8ms",
+          " ✓ src/server/test-command.test.ts (3 tests) 11ms",
+          " ✓ src/cli/browser.test.ts (2 tests) 6ms",
+          " ✓ src/features/knowledge/document-reader-policy.test.ts (4 tests) 17ms",
+          " ✓ src/cli/service-access.test.ts (2 tests) 7ms",
+          " ✓ src/server/modules/authentication/controller-authentication.test.ts (5 tests) 8ms",
+          " ✓ src/server/infrastructure/sqlite/knowledge-history-projection.test.ts (3 tests) 10ms",
+          " ✓ src/server/infrastructure/sqlite/knowledge-memory-reading.test.ts (2 tests) 12ms",
+          " ✓ src/features/logs/log-text.test.ts (2 tests) 15ms",
+          " ✓ src/architecture.test.ts (3 tests) 34ms",
+          " ✓ src/features/storage/resource-summary.test.ts (3 tests) 8ms",
+          " ✓ src/server/secret-file.test.ts (1 test) 11ms",
+          " ✓ src/server/infrastructure/sqlite/knowledge-thread-presentation.test.ts (1 test) 5ms",
+          " ✓ src/server/runtime-failure.test.ts (4 tests) 7ms",
+          " ✓ src/cli/pairing-url.test.ts (1 test) 6ms",
+          " ✓ src/server/test-source-attribution.test.ts (3 tests) 7ms",
+          " ✓ src/cli/output.test.ts (2 tests) 6ms",
+          " ✓ src/i18n/messages.test.ts (4 tests) 6ms",
+          " ✓ src/i18n/server-errors.test.ts (2 tests) 6ms",
+          " ✓ src/cli/service-install.test.ts (1 test) 4ms",
+          " ✓ src/shared/contracts/knowledge-links.test.ts (1 test) 4ms",
+          " ✓ src/server/runtime-environment.test.ts (1 test) 4ms",
+          " Test Files  83 passed (83)",
+          "      Tests  646 passed (646)",
+          "   Start at  16:58:35",
+          "   Duration  31.51s (transform 4.00s, setup 0ms, import 15.15s, tests 124.80s, environment 12ms)",
+          "$ node --test scripts/*.test.mjs",
+          "✔ lifecycle arguments require an explicit non-root UID (1.842373ms)",
+          "✔ lifecycle reports redact browser and bearer credentials (0.429903ms)",
+          "✔ systemd definition must point at installed paths and omit builder paths (1.011784ms)",
+          "✔ resource benchmark uses local transport with the advertised browser origin (1.815904ms)",
+          "✔ CPU uses one-core process time and RSS uses the sample median (0.351967ms)",
+          "✔ growth compares identical running workloads, not the empty controller (0.442462ms)",
+          "✔ invalid measurements fail rather than becoming a passing zero (0.312863ms)",
+          "ℹ tests 7",
+          "ℹ suites 0",
+          "ℹ pass 7",
+          "ℹ fail 0",
+          "ℹ cancelled 0",
+          "ℹ skipped 0",
+          "ℹ todo 0",
+          "ℹ duration_ms 78.963444"
+        ]
+      },
+      {
+        "id": "35eb0474-c1dc-4cd9-8444-8f9bfa11d6b5",
+        "presetId": "node:build",
+        "worktreePath": "/home/pioootrek/development/worktree-switcher-s3a",
+        "head": "af34b7b31b843281ee08305bff464045e2a3ce61",
+        "dirty": false,
+        "phase": "passed",
+        "startedAt": "2026-10-01T14:59:18.805Z",
+        "finishedAt": "2026-10-01T14:59:27.951Z",
+        "exitCode": 0,
+        "signal": null,
+        "error": null,
+        "source": {
+          "version": 1,
+          "scope": "git-observations",
+          "enqueue": {
+            "observedAt": "2026-10-01T14:59:18.643Z",
+            "head": "af34b7b31b843281ee08305bff464045e2a3ce61",
+            "branch": "feat/sqlite-durable-attachments",
+            "dirty": false,
+            "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "statusEntries": 0,
+            "complete": true,
+            "errorCode": null
+          },
+          "preflight": {
+            "observedAt": "2026-10-01T14:59:18.777Z",
+            "head": "af34b7b31b843281ee08305bff464045e2a3ce61",
+            "branch": "feat/sqlite-durable-attachments",
+            "dirty": false,
+            "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "statusEntries": 0,
+            "complete": true,
+            "errorCode": null
+          },
+          "finish": {
+            "observedAt": "2026-10-01T14:59:28.025Z",
+            "head": "af34b7b31b843281ee08305bff464045e2a3ce61",
+            "branch": "feat/sqlite-durable-attachments",
+            "dirty": false,
+            "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "statusEntries": 0,
+            "complete": true,
+            "errorCode": null
+          },
+          "queueComparison": "match",
+          "executionComparison": "match",
+          "attribution": "observed_match",
+          "reasonCodes": [],
+          "processOutcome": "passed"
+        },
+        "logs": [
+          "$ pnpm run build",
+          "$ next build && tsup src/cli/index.ts --format esm --platform node --target node22 --clean --out-dir dist/cli && node scripts/build-fingerprint.mjs --write",
+          "▲ Next.js 16.3.3 (Turbopack)",
+          "✓ Running next.config.ts took 24ms",
+          "  Creating an optimized production build ...",
+          "✓ Compiled successfully in 550ms",
+          "  Running TypeScript ...",
+          "  Finished TypeScript in 5.0s ...",
+          "  Collecting page data using 4 workers ...",
+          "  Generating static pages using 4 workers (0/3) ...",
+          "✓ Generating static pages using 4 workers (3/3) in 513ms",
+          "  Finalizing page optimization ...",
+          "Route (app)",
+          "┌ ○ /",
+          "└ ○ /_not-found",
+          "○  (Static)  prerendered as static content",
+          "CLI Building entry: src/cli/index.ts",
+          "CLI Using tsconfig: tsconfig.json",
+          "CLI tsup v8.5.1",
+          "CLI Target: node22",
+          "CLI Cleaning output folder",
+          "ESM Build start",
+          "ESM dist/cli/mcp-runtime-GN4QPWSC.js 29.51 KB",
+          "ESM dist/cli/chunk-IZPCNB2T.js       126.17 KB",
+          "ESM dist/cli/index.js                588.29 KB",
+          "ESM ⚡️ Build success in 84ms"
+        ]
+      },
+      {
+        "id": "a3410a81-69a5-4b0f-8eb9-671c34c3bd61",
+        "presetId": "node:test:integration",
+        "worktreePath": "/home/pioootrek/development/worktree-switcher-s3a",
+        "head": "af34b7b31b843281ee08305bff464045e2a3ce61",
+        "dirty": false,
+        "phase": "passed",
+        "startedAt": "2026-10-01T14:59:51.182Z",
+        "finishedAt": "2026-10-01T15:01:37.191Z",
+        "exitCode": 0,
+        "signal": null,
+        "error": null,
+        "source": {
+          "version": 1,
+          "scope": "git-observations",
+          "enqueue": {
+            "observedAt": "2026-10-01T14:59:51.033Z",
+            "head": "af34b7b31b843281ee08305bff464045e2a3ce61",
+            "branch": "feat/sqlite-durable-attachments",
+            "dirty": false,
+            "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "statusEntries": 0,
+            "complete": true,
+            "errorCode": null
+          },
+          "preflight": {
+            "observedAt": "2026-10-01T14:59:51.157Z",
+            "head": "af34b7b31b843281ee08305bff464045e2a3ce61",
+            "branch": "feat/sqlite-durable-attachments",
+            "dirty": false,
+            "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "statusEntries": 0,
+            "complete": true,
+            "errorCode": null
+          },
+          "finish": {
+            "observedAt": "2026-10-01T15:01:37.266Z",
+            "head": "af34b7b31b843281ee08305bff464045e2a3ce61",
+            "branch": "feat/sqlite-durable-attachments",
+            "dirty": false,
+            "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "statusEntries": 0,
+            "complete": true,
+            "errorCode": null
+          },
+          "queueComparison": "match",
+          "executionComparison": "match",
+          "attribution": "observed_match",
+          "reasonCodes": [],
+          "processOutcome": "passed"
+        },
+        "logs": [
+          "$ pnpm run test:integration",
+          "$ node scripts/build-fingerprint.mjs --check && vitest run --config vitest.integration.config.ts",
+          " RUN  v4.1.11 /home/pioootrek/development/worktree-switcher-s3a",
+          " ✓ tests/integration/server-capacity.test.ts (10 tests) 71633ms",
+          "     ✓ C1: reports HTTP exhaustion and a retained MCP claim separately  1437ms",
+          "     ✓ C2: grants the last slot once when http arrives first  5337ms",
+          "     ✓ C2: grants the last slot once when mcp arrives first  5343ms",
+          "     ✓ C3: retains a slot across switch and restart  1833ms",
+          "     ✓ C4: releases capacity after early exit and readiness timeout cleanup  50008ms",
+          "     ✓ C5: preserves survivors when lowering and persists settings across restart  1518ms",
+          "     ✓ C6: refuses an unrelated port owner without consuming capacity  655ms",
+          "     ✓ C7: graceful controller shutdown closes every owned listener  4762ms",
+          "     ✓ does not mistake an unresponsive live listener for a closed endpoint  712ms",
+          " ✓ tests/integration/knowledge-flow.test.ts (3 tests) 12336ms",
+          "     ✓ keeps knowledge and idempotency across restart with no runtime projects  5271ms",
+          "     ✓ hands an approved decision and open question to a third MCP session and detects a stale CLI export  5265ms",
+          "     ✓ publishes deduplicated CLI attachments, replays after restart and copies their snapshot bytes  1799ms",
+          " ✓ tests/integration/managed-test-queue.test.ts (3 tests) 11696ms",
+          "     ✓ discovers and runs portable Node and Django presets with qualified source and final output  1216ms",
+          "     ✓ serializes one worktree, runs distinct worktrees concurrently, and honors a lowered limit  5506ms",
+          "     ✓ replays idempotent submissions and restricts cancellation to the creating MCP session  4972ms",
+          " ✓ tests/integration/storage-safety.test.ts (8 tests) 6132ms",
+          "     ✓ restores over interrupted initialization and starts the recovered database through offline CLI  746ms",
+          "     ✓ offline CLI creates private data and copies under umask 000  382ms",
+          "     ✓ manual backup through built CLI path flags preserves the old schema  489ms",
+          "     ✓ required backup failure stops the built startup before schema and authentication changes  520ms",
+          "     ✓ starts and stops an isolated migrated controller with pre-migration backup enabled=false  318ms",
+          "     ✓ starts and stops an isolated migrated controller with pre-migration backup enabled=true  3274ms",
+          " ✓ tests/integration/multi-project-switching.test.ts (1 test) 1875ms",
+          "     ✓ switches one of three real Git projects without restarting the others or changing ports  1873ms",
+          " Test Files  5 passed (5)",
+          "      Tests  25 passed (25)",
+          "   Start at  16:59:52",
+          "   Duration  105.06s (transform 94ms, setup 0ms, import 758ms, tests 103.67s, environment 1ms)"
+        ]
+      }
+    ],
+    "unresolved": 0,
+    "limits": [
+      "SIGKILL is process interruption only, not power-loss evidence.",
+      "Legacy directory fixtures are not an old installed-artifact upgrade.",
+      "Local UI and package smoke were not repeated on the follow-up SHA; GitHub package smoke/lifecycle success is recorded separately.",
+      "No production database, deployment, merge, real disk-full, guard change or later slice."
+    ],
+    "githubCi": {
+      "headRefOid": "af34b7b31b843281ee08305bff464045e2a3ce61",
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-10-01T15:06:07Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/pioootrek/worktree-switcher/actions/runs/36880723312/job/110431510474",
+          "name": "check-build",
+          "startedAt": "2026-10-01T14:59:42Z",
+          "status": "COMPLETED",
+          "workflowName": "Verify"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-10-01T15:07:07Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/pioootrek/worktree-switcher/actions/runs/36880723312/job/110434516723",
+          "name": "package-smoke (22.23.2)",
+          "startedAt": "2026-10-01T15:06:12Z",
+          "status": "COMPLETED",
+          "workflowName": "Verify"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-10-01T15:07:04Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/pioootrek/worktree-switcher/actions/runs/36880723312/job/110434516783",
+          "name": "package-smoke (24.21.0)",
+          "startedAt": "2026-10-01T15:06:11Z",
+          "status": "COMPLETED",
+          "workflowName": "Verify"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-10-01T15:07:01Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/pioootrek/worktree-switcher/actions/runs/36880723312/job/110434516715",
+          "name": "package-service-lifecycle",
+          "startedAt": "2026-10-01T15:06:09Z",
+          "status": "COMPLETED",
+          "workflowName": "Verify"
+        }
+      ]
+    }
   }
 }
