@@ -79,11 +79,16 @@
       "author": "agent:codex",
       "date": "2026-10-01",
       "text": "Addressed PR #69 review on 2026-10-01: one valid restore-sidecar regression fixed in caea79a, final feature SHA ee55994f0156cc4bcd0fb320632f0a972bc20758. Restore now quarantines .initializing and -journal with the old database and restores them on publication failure. Managed check (588 Vitest + 7 scripts), build and built CLI integration (24) passed on the clean final revision with observed_match. An initial fixture import failure is recorded and corrected. Evidence reply posted; full thread re-fetch confirms 1 fix, 0 backlog, 0 false positives, 0 unresolved. Report and raw evidence updated. PR remains draft; overall task stays open. No merge, deployment, production change or later slice."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-01",
+      "text": "PR #69 is merged at f2aeef2c7f29427ecff36c53450fbbb69f41c01a. Implemented only S3a from that fetched main in separate worktree worktree-switcher-s3a and branch feat/sqlite-durable-attachments. Open PR https://github.com/pioootrek/worktree-switcher/pull/70, feature SHA ffdff68a67e76baa22238789f7712fd538230c48. Upload, Hub import, project import and backup attachment copies share private staging, size/hash verification, file fsync, exclusive no-overwrite publication and directory fsync before SQL commit. Immutable published objects survive rollback and metadata deletion, preserving shared hashes and every snapshot source through backup copying; no new live database connection, lock map or automatic GC. Public formats/schema 28 and optional default-off backups remain. Sequential managed check (632 Vitest + 7 scripts), build, built CLI integration (25) and Chromium (134) all passed on the clean feature SHA with observed_match. Guarded package smoke passed 14 steps with graceful cleanup. Tests include nine ext4 SIGKILL boundaries across three paths, SQL rollback/retry with shared hashes, simultaneous publishers, snapshot interleavings, injected EIO/ENOSPC/EACCES and actual directory permission denial. Earlier fixture/typecheck failures and dirty-source attribution are recorded in the dated S3a report and evidence. SIGKILL is not power-loss evidence; no real disk-full, macOS, hardware, old installed-artifact upgrade, production database or deployment test. Orphans/staging may consume disk; full backup/restore durability stays in S3b and scheduling/GUI in S4. Overall task stays open; no merge or later slice."
     }
   ],
   "priority": "next",
   "problem": [
-    "Current backup create opens an auto-migrating store before taking the copy; normal startup lacks future-schema rejection. Attachment publication and multi-file restore do not yet provide a durable crash-recovery protocol.",
+    "Main now protects SQLite ownership, startup and migration through merged PRs #68 and #69. Attachment durability is implemented in S3a PR #70 pending review/merge; full durable backup-directory and multi-file restore recovery, optional scheduling, GUI and off-host recovery acceptance remain incomplete.",
     "Knowledge cutover needs verified backup operations, private file handling, exclusive database ownership and recorded failure/restore evidence. The existing K7a pilot does not prove these guarantees."
   ],
   "risk": {
