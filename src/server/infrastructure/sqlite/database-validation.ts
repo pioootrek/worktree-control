@@ -2,9 +2,9 @@ import type Database from "better-sqlite3";
 import { AuthenticationQueries } from "./authentication-queries";
 
 export function validateDatabase(database: Database.Database, version: number): void {
-  const integrity = database.pragma("integrity_check") as Array<{ integrity_check: string }>;
+  const integrity = database.pragma("integrity_check(1)") as Array<{ integrity_check: string }>;
   if (integrity.length !== 1 || integrity[0].integrity_check !== "ok") throw new Error("SQLite integrity check failed; startup stopped.");
-  if ((database.pragma("foreign_key_check") as unknown[]).length) throw new Error("SQLite foreign key check failed; startup stopped.");
+  if (database.prepare("PRAGMA foreign_key_check").get()) throw new Error("SQLite foreign key check failed; startup stopped.");
   const fail = (rule: string) => { throw new Error(`SQLite application invariant failed (${rule}); startup stopped.`); };
   if (version >= 4 && database.prepare(`SELECT 1 FROM reservations WHERE released_at IS NULL AND NOT (
     (kind='human' AND expires_at IS NULL AND maximum_expires_at IS NULL AND token_hash IS NULL)

@@ -1,5 +1,6 @@
-import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
-import { dirname, parse, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, parse, resolve } from "node:path";
 
 function owned(uid: number): boolean { return !process.getuid || uid === process.getuid(); }
 function unsafe(): never {
@@ -19,7 +20,16 @@ export function privateDirectory(input: string): string {
     }
   }
   assertAncestors(realpathSync(ancestor));
-  for (const path of missing.reverse()) mkdirSync(path, { mode: 0o700 });
+  for (const path of missing.reverse()) {
+    mkdirSync(path, { mode: 0o700 });
+    try { syncDirectory(dirname(path)); }
+    catch (error) {
+      // Remove only our still-empty unpublished directory so retry recreates
+      // and synchronizes its entry. Never remove another caller's contents.
+      try { rmdirSync(path); } catch { /* Preserve the synchronization failure. */ }
+      throw error;
+    }
+  }
   const canonical = realpathSync(absolute);
   assertAncestors(canonical);
   const stat = lstatSync(canonical);
@@ -59,4 +69,17 @@ export function privateFile(path: string, optional = false, validateOnly = false
 export function syncDirectory(path: string): void {
   const fd = openSync(path, constants.O_RDONLY);
   try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+
+/** Atomic journal replacement. Never infer success from a rename without fsync. */
+export function durableJson(path: string, value: unknown): void {
+  const temporary = join(dirname(path), `.journal-${randomUUID()}`);
+  let published = false;
+  try {
+    const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try { writeFileSync(fd, JSON.stringify(value)); fsyncSync(fd); } finally { closeSync(fd); }
+    renameSync(temporary, path); published = true; syncDirectory(dirname(path));
+  } finally {
+    if (!published) { try { rmSync(temporary, { force: true }); } catch { /* Preserve the original failure. */ } }
+  }
 }

@@ -187,7 +187,9 @@ function Sidebar({
   if (isMobile) {
     return (
       <Sheet open={openMobile} onOpenChange={setOpenMobile} {...props}>
-        <SheetContent
+        {/* Remove the navigation layer on close. Retaining it for an exit
+            animation can steal Escape from an immediately opened detail sheet. */}
+        {openMobile && <SheetContent
           dir={dir}
           data-sidebar="sidebar"
           data-slot="sidebar"
@@ -210,7 +212,7 @@ function Sidebar({
             <SheetDescription>{mobileDescription}</SheetDescription>
           </SheetHeader>
           <div className="flex h-full w-full flex-col">{children}</div>
-        </SheetContent>
+        </SheetContent>}
       </Sheet>
     )
   }

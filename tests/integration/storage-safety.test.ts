@@ -82,3 +82,16 @@ describe("built SQLite safety CLI",()=>{
     expect(existsSync(join(f.state,"controller.lock"))).toBe(false);expect(existsSync(`${f.database}.owner.lock`)).toBe(false);
   });
 });
+
+it("built offline restore retains durable proof and rejects a corrupt journal before auth startup", async () => {
+  const f = fixture(); await run(f, ["backup", "create", f.backup]); await run(f, ["backup", "restore", f.backup]);
+  const journal = join(`${f.database}.restore`, "journal.json"), receipt = JSON.parse(readFileSync(journal, "utf8"));
+  expect(receipt.payload).toMatchObject({ state: "verified", completed: 8, actor: { backupId: "offline-cli" } });
+  expect(existsSync(join(`${f.database}.restore`, "previous", "0"))).toBe(true);
+  const records = readdirSync(`${f.database}.restore-requests`); expect(records).toHaveLength(1);
+  expect(JSON.parse(readFileSync(join(`${f.database}.restore-requests`, records[0]), "utf8")).payload.state).toBe("verified");
+  writeFileSync(journal, "{broken", { mode: 0o600 }); const before = readFileSync(f.database);
+  await expect(run(f, ["auth", "status"])).rejects.toMatchObject({ stderr: expect.stringContaining("Restore recovery stopped") });
+  expect(readFileSync(f.database)).toEqual(before); expect(existsSync(`${f.database}.owner.lock`)).toBe(false);
+  expect(existsSync(join(`${f.database}.restore`, "previous", "0"))).toBe(true);
+});

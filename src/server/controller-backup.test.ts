@@ -43,9 +43,10 @@ describe("controller backup", () => {
     expect(existsSync(`${databasePath}.owner.lock`)).toBe(false);
   });
 
-  it("restores the original initialization marker and journal if publication fails", async () => {
+  it("preserves the original initialization marker and journal if target preflight fails", async () => {
     const {directory, backupPath, databasePath, marker} = await interruptedRestoreFixture(false);
     const original = readFileSync(databasePath), journal = readFileSync(`${databasePath}-journal`);
+    writeFileSync(join(directory,"missing-parent"), "not a directory", {mode:0o600});
     expect(() => restoreControllerBackup(backupPath, databasePath, join(directory,"missing-parent","attachments"))).toThrow();
     expect(readFileSync(databasePath)).toEqual(original);
     expect(readFileSync(`${databasePath}.initializing`)).toEqual(marker);
