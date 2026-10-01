@@ -52,7 +52,7 @@ test("lost response and reload retain the same request key, refresh reauthorizes
   const keys = f.requests.filter(request => request.action === "create").map(request => request.idempotencyKey);
   expect(keys).toHaveLength(2); expect(keys[0]).toBe(keys[1]);
   await page.keyboard.press("Escape"); await openSystemDialog(page, "backups.title");
-  await expect(page.getByRole("status")).toContainText("Restored and verified");
+  await expect(page.getByRole("dialog").getByRole("status")).toContainText("Restored and verified");
   expect(f.requests.find(request => request.action === "status")?.idempotencyKey).toBe(keys[0]);
   f.deny(); await page.getByRole("button", { name: "Refresh status", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("operator authority");
