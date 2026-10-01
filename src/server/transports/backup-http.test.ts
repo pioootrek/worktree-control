@@ -56,6 +56,23 @@ it("coalesces double clicks/lost responses and rejects foreign origins", async (
   expect(status.state).toBe("succeeded");
   expect((await f.request("POST", input, f.token, "https://foreign.test")).status).toBe(403);
 });
+it("returns the same safe not-found for unknown create and restore keys and still reauthorizes", async () => {
+  const f = await fixture(["create", "restore"]);
+  const missing = { action: "status", backupId: "backup-missing", idempotencyKey: "unknown" };
+  for (const input of [{ action: "status", idempotencyKey: "unknown" }, missing]) {
+    const response = await f.request("POST", input);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ code: "backup_invalid", error: "backup_invalid" });
+  }
+  const created = await (await f.request("POST", { action: "create", idempotencyKey: "copy" })).json();
+  await f.backups.drain();
+  const accepted = await f.request("POST", { action: "restore", backupId: created.backupId, idempotencyKey: "accepted", confirmation: "replace-entire-installation" });
+  expect(accepted.status).toBe(202);
+  expect((await f.request("POST", { ...missing, backupId: created.backupId })).status).toBe(404);
+  expect((await f.request("POST", missing, "legacy-pairing")).status).toBe(403);
+  f.auth.rotateToken("fixture");
+  expect((await f.request("POST", missing)).status).toBe(403);
+});
 it("requires explicit whole-installation confirmation and gates new writes during maintenance", async () => {
   const f = await fixture(["create", "restore"]);
   const result = await (await f.request("POST", { action: "create", idempotencyKey: "create" })).json(); await f.backups.drain();

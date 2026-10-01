@@ -27,7 +27,7 @@ export async function runBackupCommand(args: string[], paths: AppPaths, applicat
     if (!(error instanceof ControllerAlreadyRunningError) || !["create", "restore", "now", "list", "status"].includes(operation)) throw error;
     const result = await requestAdminSocket(paths.adminSocketPath, {
       command: "backup", operation, idempotencyKey: key,
-      ...(operation === "create" ? { destination: input[0] } : {}),
+      ...(operation === "create" ? { destination: resolve(input[0]!) } : {}),
       ...((operation === "restore" || (operation === "status" && input[0])) ? { backupId: basename(input[0]!) } : {}),
     });
     write(JSON.stringify(result, null, 2)); return;

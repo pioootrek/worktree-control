@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { BackupOverview, BackupOperation, RestoreOperation, RestorePreview } from "../../src/shared/contracts/backups";
 import type { TestRun, ControllerDashboardResponse } from "../../src/shared/contracts";
 import { startControllerFixture, waitFor, type ControllerFixture } from "../support/controller-fixture";
@@ -62,5 +65,22 @@ describe("operational backups in the packaged controller", () => {
     expect((await f.requestResult("/api/backups", { method: "POST", body: JSON.stringify({ action: "create", idempotencyKey: "denied" }) })).status).toBe(403);
     expect((await f.requestResult("/api/backups", { method: "PATCH", body: JSON.stringify({ intervalSeconds: 60 }) })).status).toBe(405);
     expect((await f.requestResult("/api/backups", { method: "POST", body: JSON.stringify({ action: "configure", uiActions: ["restore"] }) })).status).toBe(400);
+  });
+  it("resolves an active CLI relative backup in the operator cwd and returns safe missing restore status", async () => {
+    fixture = await startControllerFixture(0, [], { backups: true });
+    const f = fixture, cwd = await mkdtemp(join(tmpdir(), "backup-operator-cwd-"));
+    try {
+      const created = JSON.parse(await f.cli(["backup", "create", "./manual-copy", "--idempotency-key", "relative"], {}, "environment", cwd)) as BackupOperation;
+      const completed = await waitFor(async () => {
+        const status = JSON.parse(await f.cli(["backup", "status", "--idempotency-key", "relative"])) as BackupOperation;
+        return ["succeeded", "failed", "interrupted"].includes(status.state) ? status : null;
+      }, 10000, () => "Relative CLI backup did not finish.");
+      expect(completed.state).toBe("succeeded");
+      expect(JSON.parse(await readFile(join(cwd, "manual-copy", "manifest.json"), "utf8"))).toMatchObject({ formatVersion: 1 });
+      await expect(f.cli(["backup", "status", created.backupId, "--idempotency-key", "missing-restore"])).rejects.toThrow("backup_invalid");
+      const status = await f.requestResult("/api/backups", { method: "POST", body: JSON.stringify({ action: "status", backupId: created.backupId, idempotencyKey: "missing-restore" }) });
+      expect(status.status).toBe(404);
+      expect(status.body).toEqual({ code: "backup_invalid", error: "backup_invalid" });
+    } finally { await rm(cwd, { recursive: true, force: true }); }
   });
 });

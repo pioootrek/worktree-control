@@ -110,7 +110,12 @@ export class RestoreOperations {
   status(actor: BackupActor, backupId: string, key: string): RestoreOperation {
     this.backups.authorize(actor);
     const identity: RestoreActor = { actorId: sameActor(actor), backupId, idempotencyKey: key };
-    const status = getControllerRestoreRequestStatus(this.database, identity, this.requestPolicy(actor, false));
+    let status;
+    try { status = getControllerRestoreRequestStatus(this.database, identity, this.requestPolicy(actor, false)); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new BackupError("backup_invalid", 404);
+      throw error;
+    }
     const handoff = readRecord(handoffPath(this.database), handoffSchema);
     return handoff?.operationId === status.operationId ? publicStatus(handoff) : { ...status };
   }
