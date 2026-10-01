@@ -38,7 +38,7 @@ function assertAncestors(path: string): void {
 }
 
 /** Narrow only the explicitly selected owned data file; never follow links. */
-export function privateFile(path: string, optional = false): void {
+export function privateFile(path: string, optional = false, validateOnly = false): void {
   let stat;
   try { stat = lstatSync(path); } catch (error) {
     if (optional && (error as NodeJS.ErrnoException).code === "ENOENT") return;
@@ -47,6 +47,7 @@ export function privateFile(path: string, optional = false): void {
   if (!stat.isFile() || stat.nlink !== 1 || !owned(stat.uid)) {
     throw new Error("Data file must be owned by the current user and be a regular file without symlink or hardlink aliases.");
   }
+  if (validateOnly) return;
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const opened = fstatSync(fd);

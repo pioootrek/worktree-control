@@ -10,10 +10,10 @@ import { validateDatabase } from "./database-validation";
 export function acquireDatabaseOwnership(input: string): { path: string; lock: ControllerLock } {
   const absolute = resolve(input);
   const path = join(privateDirectory(dirname(absolute)), basename(absolute));
-  const validate = () => {
-    for (const file of [path, `${path}-wal`, `${path}-shm`, `${path}-journal`, `${path}.initializing`]) privateFile(file, true);
+  const validate = (validateOnly = false) => {
+    for (const file of [path, `${path}-wal`, `${path}-shm`, `${path}-journal`, `${path}.initializing`]) privateFile(file, true, validateOnly);
   };
-  validate();
+  validate(true);
   const lock = acquireControllerLock(`${path}.owner.lock`);
   try { validate(); return { path, lock }; } catch (error) { lock.release(); throw error; }
 }

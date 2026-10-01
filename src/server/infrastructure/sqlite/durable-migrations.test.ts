@@ -155,6 +155,15 @@ describe("durable SQLite initialization and migration", () => {
     expect(existsSync(`${f.path}.initializing`)).toBe(false);
   });
 
+  it("does not change data permissions while another owner holds the database",()=>{
+    const f=fixture(26), owner=new OwnedSqliteDatabase(f.path);
+    try {
+      chmodSync(f.path,0o644);
+      expect(()=>new OwnedSqliteDatabase(f.path)).toThrow(/already running/);
+      expect(lstatSync(f.path).mode&0o777).toBe(0o644);
+    } finally {owner.close();}
+  });
+
   it("refuses foreign ownership without changing permissions",()=>{
     if(!process.getuid)return;
     const f=fixture(26), uid=process.getuid();
