@@ -22,6 +22,8 @@ export async function handleBackupHttp(request: IncomingMessage, response: Serve
       let launched = false;
       const launch = () => { if (!launched) { launched = true; setImmediate(() => restores.launch(actor, input)); } };
       response.once("finish", launch); response.once("close", launch);
+      // Async validation may finish after the client's close event already fired.
+      if (response.destroyed || response.writableFinished) launch();
       reply(202, status);
     }
   } catch (error) {

@@ -98,3 +98,18 @@ it("keeps HTTP responsive during preview and denies an overlapping validation", 
   expect((await f.request("POST", { action: "preview", backupId: created.backupId })).status).toBe(503);
   release(); expect((await pending).status).toBe(200);
 });
+it("launches durable restore even when the client disconnects during validation", async () => {
+  const f = await fixture(["create", "restore"]);
+  const created = f.backups.create("local-admin", "disconnect"); await f.backups.drain();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const verify = f.backups.catalog.verifyAsync.bind(f.backups.catalog);
+  const validation = vi.spyOn(f.backups.catalog, "verifyAsync").mockImplementation(async id => { await gate; return verify(id); });
+  const abort = new AbortController();
+  const pending = fetch(`${f.base}/api/backups`, { method: "POST", signal: abort.signal, headers: { "X-Worktree-Switcher-Token": f.token, origin: f.base, "Content-Type": "application/json" }, body: JSON.stringify({ action: "restore", backupId: created.backupId, idempotencyKey: "lost-during-validation", confirmation: "replace-entire-installation" }) }).catch(error => error);
+  await vi.waitFor(() => expect(validation).toHaveBeenCalledOnce());
+  abort.abort(); await pending; release();
+  await vi.waitFor(() => expect(f.restart).toHaveBeenCalledOnce(), { timeout: 3000 });
+  const status = await (await f.request("POST", { action: "status", backupId: created.backupId, idempotencyKey: "lost-during-validation" })).json();
+  expect(status.state).toBe("maintenance");
+});
