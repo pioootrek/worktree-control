@@ -80,12 +80,13 @@ function refuse(detail = ""): never { throw new Error(`Unsupported or unrecogniz
 /** Read-only recognition, before persistent PRAGMA, DDL or authentication setup. */
 export function inspectSchema(database: Database.Database): SchemaInspection {
   if (database.pragma("application_id", {simple:true}) !== 0 || database.pragma("user_version", {simple:true}) !== 0) refuse();
-  const objects = database.prepare("SELECT name, type FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").all() as Array<{ name: string; type: string }>;
+  const objects = database.prepare("SELECT name, type FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1025").all() as Array<{ name: string; type: string }>;
+  if (objects.length > 1024) refuse("schema object limit");
   if (!objects.length) return { version: 0, fresh: true };
   if (!objects.some(x => x.type === "table" && x.name === "schema_migrations")) refuse();
   const registry = database.prepare("PRAGMA table_info(schema_migrations)").all() as Column[];
   if (![2, 4].includes(registry.length) || registry[0].name !== "version" || registry[0].type !== "INTEGER" || registry[0].pk !== 1 || registry[1].name !== "applied_at" || registry[1].type !== "TEXT" || registry[1].notnull !== 1) refuse();
-  const migrations = database.prepare("SELECT version, applied_at FROM schema_migrations ORDER BY version").all() as Array<{ version: number; applied_at: string }>;
+  const migrations = database.prepare("SELECT version, applied_at FROM schema_migrations ORDER BY version LIMIT ?").all(SUPPORTED_SCHEMA_VERSION + 1) as Array<{ version: number; applied_at: string }>;
   if (!migrations.length || migrations.length > SUPPORTED_SCHEMA_VERSION || migrations.some((x, i) => x.version !== i + 1 || typeof x.applied_at !== "string" || !x.applied_at)) refuse();
   const version = migrations.length;
   if ((version >= 28) !== (registry.length === 4)) refuse("migration registry");
@@ -137,7 +138,9 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
   return { version, fresh: false };
 }
 
-export function snapshotAttachments(database: Database.Database): Array<{ sha256: string; size: number }> {
+export function snapshotAttachments(database: Database.Database, limit = 50_000): Array<{ sha256: string; size: number }> {
   if (!database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_attachments'").get()) return [];
-  return database.prepare("SELECT DISTINCT sha256, size FROM knowledge_attachments ORDER BY sha256").all() as Array<{ sha256: string; size: number }>;
+  const rows = database.prepare("SELECT DISTINCT sha256, size FROM knowledge_attachments ORDER BY sha256 LIMIT ?").all(limit + 1) as Array<{ sha256: string; size: number }>;
+  if (rows.length > limit) throw new Error("Backup exceeds attachment metadata limit.");
+  return rows;
 }

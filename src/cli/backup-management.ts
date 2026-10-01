@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
+import { requestControllerRestore, executeControllerRestoreRequest } from "@/server/restore-requests";
 import type { AppPaths } from "@/server/paths";
 import { acquireControllerLock } from "@/server/controller-lock";
-import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
+import { createControllerBackup } from "@/server/controller-backup";
 import { OwnedSqliteDatabase } from "@/server/infrastructure/sqlite";
 import { SqliteStateStore } from "@/server/sqlite-store";
 import { authenticateOfflineActor } from "./offline-actor";
@@ -18,7 +20,12 @@ export async function runBackupCommand(args: string[], paths: AppPaths, applicat
       const store=new OwnedSqliteDatabase(paths.databasePath);
       try { const result=await createControllerBackup(store,directory,{applicationVersion,attachmentDirectory:paths.knowledgeAttachmentDirectory}); write(JSON.stringify(result,null,2)); }
       finally { store.close(); }
-    } else if(operation==="restore") { restoreControllerBackup(input[0]!,paths.databasePath,paths.knowledgeAttachmentDirectory); write("Backup restored.");
+    } else if(operation==="restore") { const actor = { actorId: `local-uid:${process.getuid?.() ?? "unknown"}`, backupId: "offline-cli", idempotencyKey: randomUUID() };
+      // Local administrative invocation is the explicit confirmation. Future web
+      // adapters provide their own operator policy and ID-to-catalog resolver.
+      const policy = { authorize: () => {}, resolveBackup: () => input[0]! };
+      requestControllerRestore(paths.databasePath, actor.actorId, { backupId: actor.backupId, idempotencyKey: actor.idempotencyKey, confirmation: "replace-entire-installation" }, policy);
+      executeControllerRestoreRequest(paths.databasePath, paths.knowledgeAttachmentDirectory, actor, policy); write("Backup restored.");
     } else {
       const token=cliCredential(environment,OWNER_CREDENTIAL_VARIABLES);
       const store=new SqliteStateStore(paths.databasePath); try { const {identity,actor}=authenticateOfflineActor(store,token,OWNER_CREDENTIAL_REQUIRED);

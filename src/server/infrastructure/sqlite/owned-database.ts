@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 import { acquireControllerLock, type ControllerLock } from "@/server/controller-lock";
 import { privateDirectory, privateFile, syncDirectory } from "../../private-storage";
 import { inspectSchema, type SchemaInspection } from "./schema-inspection";
+import { recoverOwnedRestore } from "./restore-recovery";
 import { validateDatabase } from "./database-validation";
 
 /** Canonical parent aliases are supported; file symlinks and hardlinks are refused. */
@@ -15,7 +16,7 @@ export function acquireDatabaseOwnership(input: string): { path: string; lock: C
   };
   validate(true);
   const lock = acquireControllerLock(`${path}.owner.lock`);
-  try { validate(); return { path, lock }; } catch (error) { lock.release(); throw error; }
+  try { recoverOwnedRestore(path); validate(); return { path, lock }; } catch (error) { lock.release(); throw error; }
 }
 
 /** One connection and database lock, transferable from inspection to migration. */
