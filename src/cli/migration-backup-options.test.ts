@@ -30,7 +30,7 @@ describe("migration backup startup options",()=>{
     const runner:ServiceCommandRunner={run:()=>({status:0,stdout:"",stderr:""})};
     try {
       const startArguments=buildServiceStartArguments({...base,...parseMigrationBackupOptions(["service","install","--backup-before-migration","--backup-dir",join(root,"copies")])});
-      const manager=new UserServiceManager({platform:"linux",homeDirectory:root,environment:{},runner});
+      const manager=new UserServiceManager({platform:"linux",homeDirectory:root,environment:{NODE_ENV:"test"},runner});
       mkdirSync(join(root,"state","logs"),{recursive:true});
       const installed=manager.install({nodePath:process.execPath,entrypointPath:join(root,"isolated.js"),workingDirectory:root,startArguments,stateDirectory:join(root,"state"),refresh:false});
       const definition=readFileSync(installed.definitionPath,"utf8");
