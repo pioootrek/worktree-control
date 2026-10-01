@@ -104,11 +104,16 @@
       "author": "agent:codex",
       "date": "2026-10-01",
       "text": "S3b final implementation is frozen at 34533a7c9f4eba85cee27f91d56f1217916e7719 in open PR #71. Clean-source managed check (722 Vitest including 76 restore cases + 7 scripts), build, built CLI integration (26) and Chromium UI (134) all passed on this exact SHA with observed_match. GitHub CI 36897518466 attempt 1 passed check/build/HTTPS/integration but failed mobile detail-focus.spec.ts:28 after Escape (133 UI PASS, 1 FAIL); E2E/package checks were skipped. Browser code/config/tests are unchanged from the base. Escape did not dismiss an open drawer; a Radix listener/navigation transition race is a hypothesis, not a proven cause. CI uploaded no failure artifacts. Attempt 2 was requested before the owner stop instruction and cancelled during check; no further full reruns or restore changes. Report/evidence and PR description now reflect the final SHA and actual results. Remaining blocker is targeted diagnosis with retained trace before full CI retry. Overall task stays open for S4/S5; no merge, deployment or host service/limit change."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-01",
+      "text": "Closed S3b under owner authorization: PR #71 merged as 42859c9d34db15b060e2f553c5e75a55af8c1175, final feature head 99f53b69441a33617abacd6cbca8516e1632c9d9. Diagnosed the existing mobile Escape failure: navigation exit animation retained the Radix keyboard layer after detail autofocus; five immediate-keyboard attempts failed, both listener-ready and navigation-unmounted controls passed five times. Fix immediately unmounts closing mobile navigation, preserving opening animation. Deterministic regression failed before the fix and all 10 focus cases passed afterward; dirty development runs are distinguished from clean validation. Added focused UI preset and failed-browser CI artifact retention. Final clean managed check passed (722 Vitest including 76 restore cases + 7 scripts, lint/types, observed_match). Full CI 36907715558 passed check/build/HTTPS/integration (26)/UI (135)/E2E, package smoke on Node 22/24 and service lifecycle. Report and evidence updated on main. Parent remains open; next S4a, then independent user schedules S4u and operational acceptance S5. Backups stay optional/default-off. No production deployment or host limits/service change."
     }
   ],
   "priority": "next",
   "problem": [
-    "Main protects SQLite ownership, startup, migrations and durable immutable attachments through merged PRs #68, #69 and #70. S3b durable backup publication and multi-file restore recovery are submitted in PR #71; optional scheduling, GUI and off-host recovery acceptance remain incomplete.",
+    "Main protects SQLite ownership, startup, migrations, durable immutable attachments, durable backup publication and recoverable multi-file restore through merged PRs #68–#71. Optional scheduling, GUI and off-host recovery acceptance remain incomplete.",
     "Knowledge cutover needs verified backup operations, private file handling, exclusive database ownership and recorded failure/restore evidence. The existing K7a pilot does not prove these guarantees."
   ],
   "risk": {

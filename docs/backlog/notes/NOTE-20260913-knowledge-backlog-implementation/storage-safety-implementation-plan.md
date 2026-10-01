@@ -1,17 +1,27 @@
 # Plan domknięcia bezpieczeństwa danych SQLite
 
-Data: 2026-10-01. Status: plan odświeżony na prośbę właściciela;
-implementacja bezpieczeństwa opisana poniżej pozostaje do wykonania.
+Data: 2026-10-01. Status: S1–S3 scalone; S4/S5 pozostają do wykonania.
+Stan realizacji jest poniżej; pierwotna diagnoza zachowana jako punkt odniesienia.
 Zadanie: [RWK-20260928-sqlite-data-safety](../../rework/RWK-20260928-sqlite-data-safety.json).
-Aktualnie sprawdzony kod: `6a9df6e0879b4b9ad69969b1cc4b5bd4264a363c`.
+Kod sprawdzony przy tworzeniu planu: `6a9df6e0879b4b9ad69969b1cc4b5bd4264a363c`.
 [Ocena z 28 września](storage-safety-assessment-20260928.md) pozostaje
 historycznym punktem odniesienia. Powiązane prace:
 [migracja wiedzy](implementation-plan.md) i
 [aktualizacja pakietu](../NOTE-20260908-portable-verification-plan/controller-package-trial.md).
 
-## Stan potwierdzony 1 października
+## Stan realizacji po S3b — 2026-10-01
 
-| Obszar | Obecny kod i znaczenie dla planu |
+S1a/S2a, S1b/S2b, S3a i S3b są na `main` przez PR #68–#71.
+S3b zamknięto w `42859c9d34db15b060e2f553c5e75a55af8c1175` po poprawce mobilnego Escape i zielonym CI.
+[Raport S3b](storage-safety-s3b-report-20261001.md) rozdziela końcowe wyniki,
+wcześniejsze próby oraz niezweryfikowaną utratę zasilania i upgrade starego artefaktu.
+Następny slice: S4a. S4u nadal obejmuje niezależne harmonogramy użytkowników,
+a S5 odbiór operacyjny. Zadanie nadrzędne pozostaje otwarte. Nie wykonano
+wdrożenia produkcyjnego; backupy pozostają opcjonalne i domyślnie wyłączone.
+
+## Historyczny punkt startowy — przed S1
+
+| Obszar | Kod w punkcie startowym i znaczenie dla planu |
 | --- | --- |
 | Kopia przed aktualizacją | `src/cli/backup-management.ts` tworzy `SqliteStateStore` przed backupem. Konstruktor uruchamia migracje. Samo wywołanie nowego CLI nie zapewnia więc kopii starego schematu. |
 | Wersja schematu | `src/server/infrastructure/sqlite/migrations.ts` kończy się migracją 27. Restore ma osobny limit `actual > 27`; normalne otwarcie nie ma równoważnej odmowy przed DDL. Ocena z września opisywała schemat 26. |

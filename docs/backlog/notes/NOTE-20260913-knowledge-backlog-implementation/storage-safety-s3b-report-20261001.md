@@ -13,9 +13,11 @@ Zakres: wyłącznie S3b z [planu](storage-safety-implementation-plan.md).
 - Przed implementacją przeczytano AGENTS, plan, architekturę, backlog i raport S3a.
   [Stany i zachowanie po awarii](storage-safety-s3b-protocol.md) zapisano na
   `main` w commicie `0241440`, przed commitem implementacji.
-- Dokładny końcowy SHA implementacji: `34533a7c9f4eba85cee27f91d56f1217916e7719`.
+- Dokładny końcowy SHA implementacji z poprawką UI: `99f53b69441a33617abacd6cbca8516e1632c9d9`.
+  Rdzeń restore zamknięto wcześniej na `34533a7c9f4eba85cee27f91d56f1217916e7719`.
   Pierwszy commit implementacji: `486061f677001b6b3dd6e2f9992c596be986f79d`.
-- PR do `main`: [PR #71](https://github.com/pioootrek/worktree-switcher/pull/71).
+- Scalony do `main`: [PR #71](https://github.com/pioootrek/worktree-switcher/pull/71).
+  Merge SHA: `42859c9d34db15b060e2f553c5e75a55af8c1175`, czas: 2026-10-01T18:42:22Z. S3b zamknięte; bez wdrożenia produkcyjnego.
 - Raport i dowody są osobnym zapisem dokumentacyjnym na `main`.
   Wyniki poniżej dotyczą SHA kodu, nie późniejszego commita dokumentacji.
 
@@ -104,7 +106,7 @@ jego lokalne administracyjne wywołanie stanowi potwierdzenie. Nie dodano
 tras HTTP/MCP, polityki GUI, automatycznego restartu ani harmonogramów.
 Orkiestracja utrzymania i rzeczywista autoryzacja adaptera web pozostają S4.
 
-## Weryfikacja dokładnego SHA
+## Weryfikacja rdzenia restore przed poprawką UI
 
 Wszystkie polecenia uruchomiono przez kolejkę Worktree Switcher, na dokładnej
 ścieżce z `list_worktrees`, według `list_test_presets`. Zadania wykonywano
@@ -177,56 +179,73 @@ oraz 24.21.0 i lifecycle systemd na disposable runnerze.
 To dodatkowy wynik wcześniejszej rewizji, nie dowód starego artefaktu ani
 wdrożenia na tym hoście. Workflow PR korzysta z syntetycznego merge checkout.
 Późniejsze przebiegi CI anulowane przez kolejne commity nie są zaliczone.
-[GitHub CI dla końcowego head SHA, attempt 1](https://github.com/pioootrek/worktree-switcher/actions/runs/36897518466/attempts/1)
+[Historyczny GitHub CI dla `34533a7`, attempt 1](https://github.com/pioootrek/worktree-switcher/actions/runs/36897518466/attempts/1)
 zakończył się błędem UI: 133 PASS, 1 FAIL. Check, build, HTTPS i integration
 przeszły; E2E, pakowanie i zależne próby pakietu nie zostały wykonane.
-Wszystkie cztery końcowe lokalne presety przeszły przez kolejkę na dokładnym SHA.
+Wszystkie cztery lokalne presety w powyższej tabeli przeszły na `34533a7`.
+Wyniki końcowego `99f53b6` po poprawce UI są zapisane poniżej.
 
-## Diagnoza CI i pozostały blocker
+## Diagnoza i usunięcie blokady CI
 
-Nieudany przypadek to `test details return focus after Escape and a breakpoint
-change from 390px`, w `tests/ui/detail-focus.spec.ts:10`. Panel był widoczny,
-a przycisk `Jump to log` miał fokus. Po pojedynczym `Escape` asercja w linii 28
-przez 5 sekund i 14 odczytów widziała dialog z `data-state="open"`.
-Awaria nastąpiła przed sprawdzaniem powrotu fokusu i zmianą breakpointu;
-nie jest błędem końcowej animacji ukrycia panelu ze stanem `closed`.
+CI `36897518466`, attempt 1, zatrzymało się na mobilnym teście Escape:
+szczegóły pozostawały otwarte po naciśnięciu klawisza. Attempt 2 anulowano
+po poleceniu właściciela; nie jest zaliczonym wynikiem. Stary workflow nie
+opublikował trace, więc dokładnej sekwencji tamtego przebiegu nie da się
+potwierdzić. Późniejsza lokalna diagnoza odtworzyła odpowiadający mu mechanizm.
 
-Porównanie z bazą `c5c49e2` nie wykazuje zmian w `src/app`, `src/features`,
-`src/components`, `src/shared`, `tests/ui` ani `playwright.config.ts`.
-Fixture ładuje statyczny dashboard i podstawia odpowiedzi przeglądarki;
-ten przypadek nie uruchamia SQLite ani restore. Zaliczenie tego samego testu
-w lokalnej kolejce na `34533a7` nie ustala przyczyny różnicy środowisk.
+Mobilna nawigacja pozostawała zamontowana podczas animacji wyjścia. Szczegóły
+otrzymywały autofocus, zanim Radix przeniósł listener Escape na nową najwyższą
+warstwę. Rzeczywisty klawisz Playwright wysłany w tym oknie trafiał do starej
+nawigacji i pozostawiał szczegóły otwarte. W reprezentatywnym śladzie Escape
+nastąpił po 797,0 ms, a listener szczegółów pojawił się dopiero po 807,2 ms.
 
-Hipoteza do ukierunkowanego sprawdzenia: wyścig gotowości warstwy Radix
-obsługującej Escape przy przejściu z mobilnej nawigacji do szczegółów.
-`openSection()` zamyka nawigację i od razu pozwala otworzyć szczegóły przez
-fokus/Enter. Nie czeka na demontaż poprzedniego Sheet. `ProjectNavigation`
-ustawia `openMobile=false`, ale Sheet pozostaje podczas animacji wyjścia,
-a jego `onCloseAutoFocus` przywraca fokus triggerowi. W zainstalowanym
-`@radix-ui/react-dismissable-layer` 1.1.19 rejestracja warstwy, aktualizacja
-stosu warstw i instalacja listenera Escape odbywają się w osobnych
-efektach; listener dostaje wyłącznie najwyższa warstwa. Sam fokus przycisku
-nie potwierdza gotowości tego listenera. Jest to mechanizm możliwego wyścigu,
-nie potwierdzona przyczyna tego konkretnego przebiegu.
+Próby diagnostyczne przez kolejkę, na syntetycznym statycznym dashboardzie:
 
-Nie można rozstrzygnąć hipotezy z dostępnego logu. GitHub API zwróciło zero
-artefaktów; wskazane w logu screenshot, `error-context.md` i `trace.zip`
-nie zostały opublikowane. Workflow `verify.yml` wysyła w tym jobie tylko
-pakiet po udanej weryfikacji, bez publikacji diagnostyki Playwright po błędzie.
-Nie dopisano retry, opóźnień ani zmian UI, które maskowałyby brak diagnozy.
+| Próba | Wynik przeglądarki |
+| --- | --- |
+| Oryginalny test bez zmian, 20 powtórzeń | 20 PASS |
+| Instrumentacja, CPU rates 1 i 6 | 16 PASS |
+| Rzeczywisty Escape natychmiast po autofocus | 5 FAIL |
+| Escape po gotowości listenera | 5 PASS |
+| Otwarcie szczegółów po demontażu nawigacji | 5 PASS |
 
-Attempt 2 został zlecony przed otrzymaniem polecenia wstrzymania ponowień,
-następnie anulowany; stan terminalny to `cancelled`, podczas `pnpm check`.
-Nie jest wynikiem zaliczonej weryfikacji. Po poleceniu nie rozpoczęto nowych
-pełnych przebiegów ani zmian restore. Udostępnione presety kolejki nie mają
-wariantu ograniczonego do `detail-focus.spec.ts`; nie obchodzono kolejki.
+Te robocze przebiegi miały brudne źródło; wyniki procesu diagnozują mechanizm,
+ale nie certyfikują czystego commita. Ślady pozostają lokalnie w
+`/tmp/wts-escape-diagnosis-20261001/`; trwałe podsumowanie jest w tym raporcie.
 
-Handoff: implementacja i dokumentacja S3b są przygotowane do oceny, ale
-pozostaje blocker CI dla `detail-focus.spec.ts:28`. Przed następnym pełnym
-ponowieniem potrzebna jest ukierunkowana próba mobilnego przypadku z zapisem
-zdarzeń keydown, gotowości najwyższej warstwy i czasu demontażu nawigacji,
-oraz zachowany trace błędu. Dopiero ten materiał rozstrzygnie wyścig
-listenera lub wskaże inną przyczynę. Pełnego CI na końcowym SHA nie zaliczono.
+Commit `99f53b6` demontuje zawartość mobilnej nawigacji od razu po zamknięciu.
+Usuwa jej animację wyjścia; animacja otwierania zostaje. Nie dodaje globalnego
+handlera klawiatury ani opóźnień. Deterministyczny test regresyjny wysyła DOM
+keydown Escape synchronicznie przy autofocus, aby czas transmisji sterownika
+nie ukrywał wyścigu. Dotychczasowe testy rzeczywistej klawiatury, powrotu fokusu
+i zmiany breakpointu pozostają. Dodano preset `test:ui:detail-focus` i upload
+`test-results/` po błędzie CI z retencją siedmiu dni.
+
+Regresja przed poprawką: run `21d24d0c-52d0-4b6b-bebb-7b7435af8a0a`, exit 1,
+1 FAIL + 9 PASS. Po poprawce: `84f5eaae-4d80-4254-b29a-992b487932ac`, exit 0,
+10 PASS. Oba wyniki są robocze; pierwszy ma także zmianę źródła podczas biegu
+(edycja workflow, nie kodu przeglądarki). Nie przedstawiamy ich jako czystych
+zaliczeń kolejki. Roboczy build początkowo wykrył błąd typu przy rzutowaniu
+Window w regresji; po korekcie build przeszedł (`f63cb374-e4df-4319-8bba-aaf5a2611822`).
+
+## Końcowa weryfikacja i zamknięcie S3b
+
+- Dokładny czysty head `99f53b69441a33617abacd6cbca8516e1632c9d9`: kolejka `node:check`, run
+  `b0e33349-7e32-4cf6-85bd-0fe39d3130f4`, `passed`, exit 0,
+  `observed_match`; lint, typy, 722 Vitest (76 restore) i 7 testów skryptów.
+- [Pełny CI dla tego head](https://github.com/pioootrek/worktree-switcher/actions/runs/36907715558): PASS — check, build, HTTPS,
+  integracja (26), Chromium UI (135), E2E, pakowanie, smoke Node 22.23.2
+  i 24.21.0 oraz lifecycle systemd na jednorazowym runnerze.
+  Workflow PR testuje syntetyczny merge checkout; nie utożsamiamy go z
+  lokalnym dokładnym SHA. Nie wykonywano ponownego pełnego lokalnego zestawu,
+  ponieważ CI zweryfikowało końcowy build i przepływy przeglądarkowe.
+- PR #71 scalono jako `42859c9d34db15b060e2f553c5e75a55af8c1175`. Nie pozostały otwarte wątki review.
+  Dokumentacja i backlog są oddzielną aktualizacją na `main`.
+
+Poprzednia blokada CI jest usunięta. Kolejny slice to S4a: polityka CLI,
+opcjonalny harmonogram usługi, retencja i operacje GUI operatora. Niezależne
+harmonogramy użytkowników pozostają S4u; odbiór operacyjny S5. Automatyczne
+backupy pozostają domyślnie wyłączone. Produkcji nie wdrażano.
 
 ## Wcześniejsze przebiegi i ograniczenia
 
@@ -250,8 +269,8 @@ sprawdzają istniejący eksport dashboardu, a nie przyszłe GUI restore.
 Stare generacje, orphan objects i staging po SIGKILL mogą zużywać dysk;
 nie ma automatycznego GC. Te granice są częścią przekazania do S4/S5.
 
-Zadanie nadrzędne pozostaje otwarte. S3b dostarczono do przeglądu w jednym PR.
-Nie scalono tego PR i nie wdrożono go na produkcję.
+Zadanie nadrzędne pozostaje otwarte na S4/S5. S3b scalono w PR #71.
+Nie wdrożono go na produkcję.
 
 ## Podstawa synchronizacji
 
