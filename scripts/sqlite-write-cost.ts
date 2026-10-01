@@ -1,10 +1,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { expect, it } from "vitest";
-import { OwnedSqliteDatabase, SqliteStateStore } from "./index";
+import { strict as assert } from "node:assert";
+import { OwnedSqliteDatabase, SqliteStateStore } from "../src/server/infrastructure/sqlite";
 
-it("measures representative isolated WAL writes under FULL and a NORMAL comparison", () => {
+function measureWriteCost(): void {
   const results: Array<{ mode: string; operation: string; n: number; p50Ms: number; p95Ms: number; totalMs: number }> = [];
   let sqliteVersion = "";
   for (const mode of ["NORMAL", "FULL", "FULL", "NORMAL", "NORMAL", "FULL"]) {
@@ -14,7 +14,7 @@ it("measures representative isolated WAL writes under FULL and a NORMAL comparis
     try {
       // Only this disposable benchmark connection changes mode. Application opens always require FULL.
       owned.database.pragma(`synchronous = ${mode}`);
-      expect(owned.database.pragma("synchronous", { simple: true })).toBe(mode === "FULL" ? 2 : 1);
+      assert.equal(owned.database.pragma("synchronous", { simple: true }), mode === "FULL" ? 2 : 1);
       sqliteVersion = (owned.database.prepare("SELECT sqlite_version() version").get() as {version:string}).version;
       for (const operation of ["project registration", "auth policy and audit transaction"]) {
         const samples: number[] = [];
@@ -30,4 +30,6 @@ it("measures representative isolated WAL writes under FULL and a NORMAL comparis
     } finally {store.close();rmSync(root,{recursive:true,force:true});}
   }
   console.log("SQLITE_WRITE_COST "+JSON.stringify({sqliteVersion,nodeVersion:process.version,directory:"repository parent filesystem (not OS tmpfs)",results}));
-}, 30000);
+}
+
+measureWriteCost();
