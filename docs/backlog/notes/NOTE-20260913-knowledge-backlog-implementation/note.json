@@ -7,7 +7,9 @@
       "FEAT-20260905-shared-project-memory",
       "RWK-20260928-sqlite-data-safety"
     ],
-    "summary": "K0 closed in DONE-20260927-knowledge-k0-contracts; K1 closed in DONE-20260926-knowledge-k1-identity. K2–K6 implementations and K7a tooling are on main. The token-mode K7a pilot passed on an isolated copy at 6423734 (k7a-token-pilot-20260927.md); cutover, K2–K6 acceptance reconciliation and K8/K9 remain in the parent. SQLite remains current; PostgreSQL is deferred. Read the dated status at the top of implementation-plan.md before its historical sequence. Storage safety assessment and S0–S6 completion plan added on 2026-09-28; RWK-20260928-sqlite-data-safety tracks technical prerequisites before real-project cutover."
+    "storage_safety_baseline_commit": "6a9df6e0879b4b9ad69969b1cc4b5bd4264a363c",
+    "storage_safety_last_reviewed": "2026-10-01",
+    "summary": "K0 closed in DONE-20260927-knowledge-k0-contracts; K1 closed in DONE-20260926-knowledge-k1-identity. K2–K6 implementations and K7a tooling are on main. The token-mode K7a pilot passed on an isolated copy at 6423734 (k7a-token-pilot-20260927.md); cutover, K2–K6 acceptance reconciliation and K8/K9 remain in the parent. SQLite remains current; PostgreSQL is deferred. Read the dated status at the top of implementation-plan.md before its historical sequence. Storage safety assessment and S0–S6 completion plan added on 2026-09-28; RWK-20260928-sqlite-data-safety tracks technical prerequisites before real-project cutover. Storage safety plan refreshed on 2026-10-01 against 6a9df6e: schema 27, pre-migration backup and ownership gaps rechecked; proposed recovery targets, backup retention/off-host protection, bounded PR sequence, restore recovery and production upgrade procedure added. Operational parameters remain proposed; no implementation or production change was performed. Owner clarified that backups are optional and configured only through CLI parameters, with GUI limited to browsing and optional operator-authorized on-demand creation/restore. The current plan supersedes mandatory backup assumptions: automatic backups default off, migration gates apply only when enabled, and SaaS tenant administrators cannot manage global backups. A further owner proposal adds independent application user-space schedules managed through GUI/API within CLI policy. Service schedule/retention remain CLI-only; user timing/retention are separate and execution is shared and bounded. SaaS user schedules cover authorized logical exports, never whole-installation SQLite backups. S4u records this additional scope. The plan now defines one feature branch/worktree and PR per slice, sequential main-based delivery and a first-run handoff in storage-safety-worker-01.md. Each worker run ends at a reviewable PR; merge and production rollout are separate."
   },
   "created": "2026-09-13",
   "files": [
@@ -18,7 +20,8 @@
     "database-portability.md",
     "k7a-token-pilot-20260927.md",
     "storage-safety-assessment-20260928.md",
-    "storage-safety-implementation-plan.md"
+    "storage-safety-implementation-plan.md",
+    "storage-safety-worker-01.md"
   ],
   "id": "NOTE-20260913-knowledge-backlog-implementation",
   "last_reviewed": "2026-09-27",

@@ -19,6 +19,46 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "Saved assessment and ordered S0–S6 plan under NOTE-20260913-knowledge-backlog-implementation. Implementation is not started. Technical completion covers S0–S5 and a ready S6 procedure; actual project cutover and observation remain with the shared-project-memory parent."
+    },
+    {
+      "author": "human:pioootrek",
+      "date": "2026-10-01",
+      "text": "Requested a concrete SQLite safety plan covering backups and recovery after discussing the older production release and the next backlog priorities."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-01",
+      "text": "Refreshed the existing storage-safety-implementation-plan.md against main 6a9df6e0879b4b9ad69969b1cc4b5bd4264a363c. Reconfirmed auto-migration before backup, schema 27, missing future-schema startup guard and incomplete restore durability. Added proposed 60-minute RPO and prepared-host RTO, 30-minute backups, local/off-host retention, encryption and separate recovery keys, external monitoring, backup contents, restore state table, six scoped PRs and a production upgrade procedure independent of Knowledge cutover. Current production service identifies release a727fd8 and package 0.1.0-trial.1; its database/schema was not inspected. Values and operational destinations remain proposals. Documentation only; no backup, migration, service change or implementation was performed."
+    },
+    {
+      "author": "human:pioootrek",
+      "date": "2026-10-01",
+      "text": "Backups must be optional and configurable. Prefer configuration exclusively through CLI parameters so SaaS users cannot change it from the GUI. Proposed GUI functions are browsing backups, restore and on-demand creation."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-01",
+      "text": "Updated plan to default automatic backups off, configure policy only through operator CLI startup/service arguments, preserve manual operation, and make migration/import backup gates conditional on enabled policy. Proposed operator GUI supports listing, on-demand creation and confirmed restore; server-side authorization and CLI action policy protect all HTTP calls. SaaS tenant administrators cannot inspect or restore whole-installation backups. No GUI/API/MCP configuration mutation; restored DB cannot override deployment arguments. Added default-off, CLI-only, tenant-boundary, idempotency and controlled GUI restore acceptance tests. Documentation only."
+    },
+    {
+      "author": "human:pioootrek",
+      "date": "2026-10-01",
+      "text": "Suggested an additional user-space schedule independent of the schedule defined on the service."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-01",
+      "text": "Plan now separates operator CLI service policy from optional per-user schedules managed in GUI/API. User-space means application settings, not another controller. Schedules have independent ownership, timing and retention, share bounded execution, and cannot alter or delete service backups. Operator policy controls availability, quotas and allowed targets. SaaS user schedules are limited to authorized logical project/data exports; full SQLite snapshots and restore remain operator-only. Added S4u and tests for independence, concurrent due times, revoked grants and post-restore revalidation. No implementation performed."
+    },
+    {
+      "author": "human:pioootrek",
+      "date": "2026-10-01",
+      "text": "Requested that the feature-branch/per-slice PR and worker-run strategy be recorded in the plan, together with the first worker prompt."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-01",
+      "text": "Added Git/run strategy: documentation commit on main, one separate worktree and feature branch per slice, sequential PRs based on main after predecessor review/checks/merge, and no production rollout as part of a slice. Added storage-safety-worker-01.md for S1a+S2a: ownership, non-migrating backup, schema guard and optional CLI pre-migration backup, with isolated acceptance tests and handoff at a PR. This session only writes documentation; no coding worker was started and no commit or PR was created."
     }
   ],
   "priority": "next",
@@ -37,22 +77,29 @@
   },
   "schema_version": 1,
   "scope": [
-    "Follow S0–S5 in storage-safety-implementation-plan.md: agree recovery/access requirements, enforce database ownership and durable private writes, separate pre-migration backup from schema changes, harden attachment and restore durability, and deliver regular backups with recovery evidence.",
+    "Follow S0–S5 in storage-safety-implementation-plan.md: enforce ownership and durable private writes, separate inspection/backup/migration, harden restore, and deliver optional configurable backups with recovery evidence. Automatic backups default off; service policy is configured only through operator CLI startup/service parameters; optional additional user schedules are configured separately within that policy.",
     "Preserve the single local SQLite controller and existing application interfaces; no PostgreSQL or ORM migration is required.",
     "Provide the S6 project-cutover procedure to the shared-project-memory parent. Real-project cutover, host account changes and operational backup destinations require their own concrete rollout scope; saving this plan does not execute them.",
-    "Keep code and repository-owned instructions in Git. Avoid two writable sources for migrated knowledge and retain a readable archival/export path."
+    "Keep code and repository-owned instructions in Git. Avoid two writable sources for migrated knowledge and retain a readable archival/export path.",
+    "GUI may list authorized backups and offer on-demand creation and confirmed restore within operator CLI policy. Full-installation operations remain operator-only. GUI/API cannot change service settings, but may manage independent user schedules for permitted scopes, with separate retention and shared bounded execution."
   ],
   "source": "Owner storage-safety discussion and request to save an implementation plan on 2026-09-28",
   "status": "open",
   "title": "Secure SQLite migrations, durable storage and recovery before knowledge cutover",
   "type": "rework",
   "validation": [
-    "Backup made with the new application preserves the supported old schema before migration; backup failure prevents migration.",
+    "Requested backups preserve the supported old schema before migration. A backup failure blocks migration only when pre-migration backup protection is enabled; with backups off, supported migration succeeds without creating backup jobs or requiring a destination.",
     "Supported historical fixtures migrate without data loss; future schemas are rejected before mutation; interrupted initialization and migration recover without silent reset or authentication downgrade.",
     "Crash-point tests cover attachment publication and every restore stage, including disk-full and permission failures, corrupted or incomplete backups, unsafe paths, and foreign-key violations.",
     "Different state directories cannot obtain independent application ownership of the same database; direct CLI creation produces private data files.",
     "An independent restore preserves records, attachment bytes, identities, grants and history; scheduled backup failures and retention are verified against agreed recovery objectives.",
-    "Record exact-revision check/build and installed-artifact upgrade/recovery results; distinguish process interruption from unverified power-loss behavior."
+    "Record exact-revision check/build and installed-artifact upgrade/recovery results; distinguish process interruption from unverified power-loss behavior.",
+    "Fresh installs and absent configuration keep automatic backups off. Manual creation does not enable scheduling; local-only mode needs no external destination. CLI/service settings survive restart, while disabled scheduling creates no stale-backup alerts or retention deletions.",
+    "GUI/API/MCP cannot mutate deployment backup policy. Tenant and organization administrators cannot access global backup operations; operator actions require server-side CLI policy and authentication. GUI on-demand/restore use IDs, idempotency, bounded status and auditable outcomes.",
+    "GUI restore validates and confirms whole-installation impact, coordinates maintenance and exclusive database ownership, survives disconnect/restart and never replaces an open database. Restoring a DB cannot change CLI policy.",
+    "Changing or disabling a user schedule cannot alter service timing, retention or protected backups. Disabling the service schedule does not disable permitted user schedules. All schedules share one bounded executor with operator-defined per-user limits.",
+    "User schedules reauthorize owner, project/data scope and destination at mutation and execution, including after restoring old records. Reject foreign resources and revoked grants; SaaS user exports never include the whole SQLite database or installation credentials.",
+    "Concurrent due times, duplicate delivery, restarts, time zones and queue limits preserve attribution and idempotency without backlog bursts or starvation of service backups."
   ],
   "value": [
     "Protect authoritative project knowledge during updates and failures, with an exercised recovery procedure and explicit limits on local-agent access."
