@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
-import { OwnedSqliteDatabase } from "../../src/server/infrastructure/sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 const exec=promisify(execFile);
@@ -31,7 +30,11 @@ describe("built SQLite safety CLI",()=>{
     await run(source, ["auth", "status"]);
     await run(source, ["backup", "create", source.backup]);
     const target = fixture(false);
-    new OwnedSqliteDatabase(target.database, true).close();
+    // Isolated state at the initialization boundary; only the built CLI consumes it.
+    mkdirSync(target.data, {mode:0o700});
+    writeFileSync(target.database, "", {mode:0o600});
+    const {dev, ino} = lstatSync(target.database);
+    writeFileSync(`${target.database}.initializing`, JSON.stringify({format:1,device:dev,inode:ino}), {mode:0o600});
     writeFileSync(`${target.database}-journal`, Buffer.alloc(512), {mode:0o600});
     expect((await run(target, ["backup", "restore", source.backup])).stdout).toContain("Backup restored.");
     for (const suffix of [".initializing", "-journal", ".owner.lock"]) expect(existsSync(`${target.database}${suffix}`)).toBe(false);
