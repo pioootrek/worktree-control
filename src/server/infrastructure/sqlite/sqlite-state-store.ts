@@ -29,11 +29,10 @@ import type {
 } from "@/server/modules/identity";
 import type { AuthenticationPolicy, AuthenticationStore } from "@/server/modules/authentication";
 import type { HubImportBatch, HubImportExecutionStore, HubImportMapping, KnowledgeHistoryEntry, KnowledgeMutationContext, KnowledgeMutationResult, KnowledgePage, KnowledgeProjectSnapshot, KnowledgeRelation, KnowledgeReply, KnowledgeRuntimeLinkResult, KnowledgeStore, KnowledgeTask, KnowledgeThread } from "@/server/modules/knowledge";
-import { KnowledgeError } from "@/server/modules/knowledge";
+import { KnowledgeError, publishKnowledgeAttachment } from "@/server/modules/knowledge";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, resolve, sep } from "node:path";
+import { dirname } from "node:path";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { configureDurability, assertDurability } from "./database-validation";
@@ -136,7 +135,6 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   }
 
   publishHubImport(batchId: string, now: string, attachmentDirectory?: string): HubImportBatch {
-    const installed:string[]=[];
     try{return this.database.transaction(() => {
       const batch=this.getHubImport(batchId); if(!batch) throw new KnowledgeError("not_found","Import batch not found.");
       if(batch.status==="published") return batch;
@@ -217,9 +215,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
           if(!parent) throw new KnowledgeError("invalid_request",`Attachment has no imported note: ${mapping.sourcePath}`); const memoryId=stable("memory",parent);
           const encoded=typeof payload.dataBase64==="string"?payload.dataBase64:"",bytes=Buffer.from(encoded,"base64"),hash=createHash("sha256").update(bytes).digest("hex");
           if(bytes.byteLength!==mapping.size||hash!==mapping.sourceSha256||bytes.toString("base64")!==encoded) throw new KnowledgeError("revision_conflict",`Staged attachment is invalid: ${mapping.sourcePath}`);
-          const root=resolve(attachmentDirectory),shard=resolve(root,hash.slice(0,2)),file=resolve(shard,hash);if(!file.startsWith(root+sep)) throw new KnowledgeError("invalid_request","Attachment target is unsafe.");mkdirSync(root,{recursive:true});if(lstatSync(root).isSymbolicLink()||!lstatSync(root).isDirectory()) throw new KnowledgeError("invalid_request","Attachment storage is unsafe.");mkdirSync(shard,{recursive:true});if(lstatSync(shard).isSymbolicLink()||!lstatSync(shard).isDirectory()) throw new KnowledgeError("invalid_request","Attachment shard is unsafe.");
-          if(existsSync(file)){if(lstatSync(file).isSymbolicLink()||!lstatSync(file).isFile()) throw new KnowledgeError("invalid_request","Attachment object is unsafe.");const current=readFileSync(file);if(current.byteLength!==bytes.byteLength||createHash("sha256").update(current).digest("hex")!==hash) throw new KnowledgeError("invalid_request","Existing attachment object conflicts with the import.");}
-          else{const fd=openSync(file,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o600);try{writeFileSync(fd,bytes);}finally{closeSync(fd);}chmodSync(file,0o600);installed.push(file);}
+          publishKnowledgeAttachment(attachmentDirectory, { sha256: hash, size: bytes.byteLength }, bytes);
           targetId=stable("attachment",mapping);this.database.prepare("INSERT INTO knowledge_attachments(id,project_id,record_kind,record_id,filename,media_type,size,sha256,created_by,created_at) VALUES (?,?,'memory',?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET filename=excluded.filename,media_type=excluded.media_type,size=excluded.size,sha256=excluded.sha256")
             .run(targetId,batch.targetProjectId,memoryId,text(payload.fileName,mapping.sourcePath.slice(slash+1),255,"Attachment filename"),text(payload.mediaType,"application/octet-stream",255,"Attachment media type"),bytes.byteLength,hash,batch.actorPrincipalId,now);
         }
@@ -261,7 +257,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       this.database.prepare("DELETE FROM knowledge_import_staging WHERE batch_id=?").run(batchId);
       this.database.prepare("UPDATE knowledge_import_batches SET status='published', published_at=?, updated_at=? WHERE id=?").run(now,now,batchId);
       return this.getHubImport(batchId)!;
-    }).immediate();}catch(error){for(const file of installed.reverse())rmSync(file,{force:true});this.database.transaction(()=>{this.database.prepare("DELETE FROM knowledge_import_staging WHERE batch_id=?").run(batchId);this.database.prepare("UPDATE knowledge_import_batches SET status='failed',error=?,updated_at=? WHERE id=? AND status='staging'").run(error instanceof Error?error.message.slice(0,2000):"Import publication failed.",now,batchId);}).immediate();throw error;}
+    }).immediate();}catch(error){this.database.transaction(()=>{this.database.prepare("DELETE FROM knowledge_import_staging WHERE batch_id=?").run(batchId);this.database.prepare("UPDATE knowledge_import_batches SET status='failed',error=?,updated_at=? WHERE id=? AND status='staging'").run(error instanceof Error?error.message.slice(0,2000):"Import publication failed.",now,batchId);}).immediate();throw error;}
   }
 
   exportKnowledgeProject(projectId: string): KnowledgeProjectSnapshot | null {

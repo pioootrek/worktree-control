@@ -611,10 +611,10 @@ describe("K6b Hub import execution",()=>{
     expect(f.store.getKnowledgeProject("revision-retry")?.revision).toBe(4);expect(f.store.listTasks("revision-retry",25,0).items).toHaveLength(2);f.store.close();
   });
 
-  it("removes newly installed attachment objects when database publication rolls back",()=>{
+  it("retains durable attachment objects when database publication rolls back",()=>{
     const f=fixture(),bytes=Buffer.from("rollback proof"),hash=createHash("sha256").update(bytes).digest("hex"),note=mapping("docs/backlog/notes/NOTE-one/note.json","note","memory",{id:"NOTE-one",title:"Note",body:"Body"});
     const attachment:HubImportMapping={sourcePath:"docs/backlog/notes/NOTE-one/proof.txt",sourceKind:"attachment",targetKind:"attachment",legacyId:null,disposition:"mapped",sourceSha256:hash,size:bytes.byteLength,mappedFields:[],sourceOnlyFields:[]},orphan=mapping("docs/backlog/feature/missing.json#notes/0","task_note","historical_comment",{id:"missing:note:0",text:"Orphan"});orphan.legacyId="missing:note:0";
     const report=plan([note,attachment,orphan]),directory=join(f.root,"attachments");expect(()=>executeHubImport(f.store,f.identity,f.owner,{plan:report,targetProjectId:"rollback-files",targetProjectName:"Rollback",attachmentDirectory:directory},()=>NOW,value=>value,()=>bytes)).toThrow();
-    expect(f.store.getKnowledgeProject("rollback-files")).toBeNull();expect(existsSync(join(directory,hash.slice(0,2),hash))).toBe(false);f.store.close();
+    expect(f.store.getKnowledgeProject("rollback-files")).toBeNull();expect(existsSync(join(directory,hash.slice(0,2),hash))).toBe(true);f.store.close();
   });
 });

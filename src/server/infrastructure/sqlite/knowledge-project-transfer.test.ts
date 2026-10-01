@@ -76,9 +76,22 @@ describe("logical knowledge project transfer",()=>{
     const manifestPath=join(destination,"manifest.json"),manifest=JSON.parse(readFileSync(manifestPath,"utf8")); manifest.counts.attachments=1001; writeFileSync(manifestPath,JSON.stringify(manifest)); expect(()=>importKnowledgeProject(f.store,f.identity,destination,f.attachmentDirectory,f.owner)).toThrowError(expect.objectContaining({code:"limit_exceeded"})); f.store.close();
   });
 
-  it("removes newly installed objects when database publication fails",()=>{
+  it("rejects conflicting sizes on references sharing one declared hash", () => {
+    const root = mkdtempSync(join(tmpdir(), "knowledge-import-conflict-")); roots.push(root);
+    const f = fixture(root), destination = join(root, "export");
+    try {
+      exportKnowledgeProject(f.store, f.identity, f.project.id, destination, f.attachmentDirectory, f.owner, { applicationVersion: "test" });
+      rewriteSnapshot(destination, snapshot => { snapshot.attachments.unshift({ ...snapshot.attachments[0], id: "conflicting-reference", size: 1 }); });
+      const manifestPath = join(destination, "manifest.json"), manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      manifest.counts.attachments = 2; writeFileSync(manifestPath, JSON.stringify(manifest));
+      expect(() => importKnowledgeProject(f.store, f.identity, destination, f.attachmentDirectory, f.owner)).toThrowError(expect.objectContaining({ code: "invalid_request", message: "Conflicting attachment metadata in project snapshot." }));
+      expect(f.store.exportKnowledgeProject(f.project.id)!.attachments).toHaveLength(1);
+    } finally { f.store.close(); }
+  });
+
+  it("retains durable objects when database publication fails",()=>{
     const sourceRoot=mkdtempSync(join(tmpdir(),"knowledge-import-rollback-source-")),targetRoot=mkdtempSync(join(tmpdir(),"knowledge-import-rollback-target-")); roots.push(sourceRoot,targetRoot); const source=fixture(sourceRoot),destination=join(sourceRoot,"export"); exportKnowledgeProject(source.store,source.identity,source.project.id,destination,source.attachmentDirectory,source.owner,{applicationVersion:"test"}); source.store.close();
     let next=0; const ids=["20000000-0000-4000-8000-000000000001","20000000-0000-4000-8000-000000000002"],store=new SqliteStateStore(join(targetRoot,"state.sqlite3")),identity=new IdentityService(store,undefined,()=>ids[next++]!,()=>"d".repeat(64)),actor=identity.authenticateBearer(identity.bootstrapOwnerSession().token),attachments=join(targetRoot,"knowledge-attachments"),sha=createHash("sha256").update("evidence").digest("hex");
-    expect(()=>importKnowledgeProject(store,identity,destination,attachments,actor)).toThrowError(expect.objectContaining({code:"invalid_request"})); expect(existsSync(join(attachments,sha.slice(0,2),sha))).toBe(false); expect(store.getKnowledgeProject(source.project.id)).toBeNull(); store.close();
+    expect(()=>importKnowledgeProject(store,identity,destination,attachments,actor)).toThrowError(expect.objectContaining({code:"invalid_request"})); expect(existsSync(join(attachments,sha.slice(0,2),sha))).toBe(true); expect(store.getKnowledgeProject(source.project.id)).toBeNull(); store.close();
   });
 });
