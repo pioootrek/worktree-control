@@ -73,7 +73,7 @@ function knownStructure(): Map<string, TableShape> {
     return reference;
   } finally { database.close(); }
 }
-function refuse(): never { throw new Error("Unsupported or unrecognized database schema. Use a compatible release or inspect an isolated copy; the source was not migrated."); }
+function refuse(detail = ""): never { throw new Error(`Unsupported or unrecognized database schema${detail ? ` (${detail})` : ""}. Use a compatible release or inspect an isolated copy; the source was not migrated.`); }
 
 /** Read-only recognition, before persistent PRAGMA, DDL or authentication setup. */
 export function inspectSchema(database: Database.Database): SchemaInspection {
@@ -104,11 +104,13 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       if (table === "remote_principals" && version < 25) check = check.replace(",'installation'", "");
       if (table === "knowledge_history" && version < 25) check = check.replace(",'installation_token','none'", "");
       if (table === "knowledge_history" && version < 20) check = check.replace(",'memory'", "").replace(",'approved','superseded'", "");
-      const field = check.match(/^[a-z_]+/)?.[0];
+      const field = check.match(/^([a-z_]+?)(?:in\(|between|is|[<>=])/)?.[1];
       if (field && version < (columnVersions[`${table}.${field}`] ?? introduced)) continue;
       if (table === "reservations" && check.startsWith("(") && version < 4) continue;
+      // Migration 11 added this column without a CHECK in upgraded installations.
+      if (table === "test_runs" && field === "environment_mode" && !actualChecks.some(x => x.startsWith(field))) continue;
       // Bootstrap may have supplied the latest constraint before this migration.
-      if (!actualChecks.includes(check) && !actualChecks.includes(expected.checks.find(x => x.startsWith(field ?? check)) ?? check)) refuse();
+      if (!actualChecks.includes(check) && !actualChecks.includes(expected.checks.find(x => x.startsWith(field ?? check)) ?? check)) refuse(`constraint in ${table}: ${field ?? "lease"}`);
     }
     const keys = uniqueKeys(database, table);
     if (expected.uniqueKeys.some(key => !keys.includes(key))) refuse();
