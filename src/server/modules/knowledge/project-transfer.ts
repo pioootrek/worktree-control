@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { chmodSync, constants, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { constants, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import type { AuthenticatedPrincipal, IdentityService } from "@/server/modules/identity";
 import type { KnowledgeProjectExportManifest, KnowledgeProjectSnapshot } from "./contracts";
 import { KnowledgeError } from "./knowledge-error";
+import { publishKnowledgeAttachment } from "./durable-attachments";
 import { parseKnowledgeProjectExportManifest, parseKnowledgeProjectSnapshot } from "./project-transfer-schema";
 
 interface TransferStore {
@@ -71,10 +72,14 @@ export function importKnowledgeProject(store: TransferStore, identity: Pick<Iden
   if(snapshot.attachments.length>MAX_FILES||snapshot.attachments.some(item=>Number(item.size)>MAX_FILE_BYTES)||snapshot.attachments.reduce((sum,item)=>sum+Number(item.size),0)>MAX_BYTES) throw new KnowledgeError("limit_exceeded","Knowledge import exceeds attachment limits.");
   if(!Array.isArray(manifest.attachments)||manifest.attachments.length>MAX_FILES||manifest.attachments.some(item=>!Number.isSafeInteger(item.size)||item.size<1||item.size>MAX_FILE_BYTES)) throw new KnowledgeError("limit_exceeded","Knowledge import object manifest exceeds attachment limits.");
   const declared=new Map(manifest.attachments.map(item=>[item.sha256,item.size])); const referenced=new Map(snapshot.attachments.map(item=>[String(item.sha256),Number(item.size)])); if(canonical([...declared].sort())!==canonical([...referenced].sort())) throw new KnowledgeError("invalid_request","Attachment manifest does not match project metadata.");
-  mkdirSync(dirname(attachmentDirectory),{recursive:true}); const staged=mkdtempSync(join(dirname(attachmentDirectory),".knowledge-import-")),installed:string[]=[]; try {
-    for(const item of manifest.attachments){if(!/^[a-f0-9]{64}$/.test(item.sha256)||item.file!==join(item.sha256.slice(0,2),item.sha256)) throw new KnowledgeError("invalid_request","Invalid attachment manifest entry."); const bytes=readRegular(safe(join(source,"attachments"),item.file)); if(bytes.byteLength!==item.size||hashData(bytes)!==item.sha256) throw new KnowledgeError("invalid_request","Attachment integrity check failed."); const existing=safe(attachmentDirectory,item.file); if(existsSync(existing)){const current=readRegular(existing); if(current.byteLength!==item.size||hashData(current)!==item.sha256) throw new KnowledgeError("invalid_request","Existing attachment object conflicts with the import."); continue;} const target=safe(staged,item.file); mkdirSync(dirname(target),{recursive:true}); copyFileSync(safe(join(source,"attachments"),item.file),target); chmodSync(target,0o600);}
-    try { for(const item of manifest.attachments){const target=safe(attachmentDirectory,item.file); if(existsSync(target)) continue; mkdirSync(dirname(target),{recursive:true}); renameSync(safe(staged,item.file),target); installed.push(target);} store.importKnowledgeProject(snapshot); }
-    catch(error) { for(const path of installed.reverse()) rmSync(path,{force:true}); throw error; }
-    return manifest;
-  } finally {rmSync(staged,{recursive:true,force:true});}
+  if (snapshot.attachments.some(item => declared.get(String(item.sha256)) !== Number(item.size)))
+    throw new KnowledgeError("invalid_request", "Conflicting attachment metadata in project snapshot.");
+  for (const item of manifest.attachments) {
+    if (!/^[a-f0-9]{64}$/.test(item.sha256) || item.file !== join(item.sha256.slice(0,2), item.sha256))
+      throw new KnowledgeError("invalid_request", "Invalid attachment manifest entry.");
+    const sourcePath = safe(join(source, "attachments"), item.file);
+    publishKnowledgeAttachment(attachmentDirectory, item, { path: sourcePath });
+  }
+  store.importKnowledgeProject(snapshot);
+  return manifest;
 }

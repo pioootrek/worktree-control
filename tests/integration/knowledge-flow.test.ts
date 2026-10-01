@@ -1,3 +1,8 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
+import type { KnowledgeAttachment } from "../../src/shared/contracts/knowledge-attachments";
 import type { KnowledgeMemory, KnowledgeTaskContext, KnowledgeExport } from "../../src/shared/contracts/knowledge-memory";
 import { afterEach, describe, expect, it } from "vitest";
 import { startControllerFixture, type ControllerFixture } from "../support/controller-fixture";
@@ -78,6 +83,32 @@ describe("built knowledge controller and CLI", () => {
       // One read restores scope/decisions/questions; three later reads inspect freshness, updated context and provenance.
       expect((await fixture.request<{ projects: unknown[] }>("/api/dashboard")).projects).toEqual([]);
     } finally { await third.close(); }
+  });
+
+  it("publishes deduplicated CLI attachments, replays after restart and copies their snapshot bytes", async () => {
+    fixture = await startControllerFixture(0);
+    const token = fixture.installationToken;
+    const { project } = await fixture.request<{ project: { id: string } }>("/api/identity/admin", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ action: "create-knowledge-project", name: "Durable files" }) });
+    const environment = { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: token };
+    const task = JSON.parse(await fixture.cli(["knowledge", "create_task", "--json", JSON.stringify({ projectId: project.id, title: "Evidence", description: "Durable bytes", idempotencyKey: "task" })], environment)) as KnowledgeMutationResult<KnowledgeTask>;
+    const bytes = Buffer.from("built CLI attachment"), sha256 = createHash("sha256").update(bytes).digest("hex");
+    const input = { projectId: project.id, recordKind: "task", recordId: task.value.id, filename: "proof.txt", mediaType: "text/plain", dataBase64: bytes.toString("base64"), sha256, idempotencyKey: "attachment" };
+    const args = ["knowledge", "create_attachment", "--json", JSON.stringify(input)];
+    const saved = JSON.parse(await fixture.cli(args, environment)) as KnowledgeMutationResult<KnowledgeAttachment>;
+    await fixture.cli(["knowledge", "create_attachment", "--json", JSON.stringify({ ...input, idempotencyKey: "same-hash" })], environment);
+    await fixture.restart();
+    const replay = JSON.parse(await fixture.cli(args, environment)) as KnowledgeMutationResult<KnowledgeAttachment>;
+    expect(replay).toEqual({ value: saved.value, replayed: true });
+    const downloaded = JSON.parse(await fixture.cli(["knowledge", "attachment", "--json", JSON.stringify({ projectId: project.id, attachmentId: saved.value.id })], environment)) as { dataBase64: string };
+    expect(Buffer.from(downloaded.dataBase64, "base64")).toEqual(bytes);
+    await fixture.stop();
+    const root = await mkdtemp(join(tmpdir(), "built-attachment-backup-"));
+    try {
+      const destination = join(root, "backup"), manifest = JSON.parse(await fixture.cli(["backup", "create", destination])) as { formatVersion: number; attachments: Array<{ file: string; size: number; sha256: string }> };
+      expect(manifest.formatVersion).toBe(1); expect(manifest.attachments).toHaveLength(1);
+      expect(manifest.attachments[0]).toMatchObject({ sha256, size: bytes.length });
+      expect(await readFile(join(destination, "attachments", manifest.attachments[0].file))).toEqual(bytes);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
 });

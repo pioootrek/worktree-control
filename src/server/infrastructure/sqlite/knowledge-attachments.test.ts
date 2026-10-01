@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SqliteStateStore } from "./sqlite-state-store";
 import { IdentityService } from "@/server/modules/identity";
 import { KnowledgeAttachmentService, KnowledgeService } from "@/server/modules/knowledge";
@@ -56,11 +56,32 @@ describe("knowledge attachments", () => {
     mkdirSync(root,{recursive:true}); const outside=mkdtempSync(join(tmpdir(),"attachment-outside-")); cleanups.push(()=>rmSync(outside,{recursive:true,force:true})); symlinkSync(outside,join(root,hash.slice(0,2)));
     expect(()=>f.service.upload(f.project.id,"task","task-1",{filename:"proof",mediaType:"text/plain",data,idempotencyKey:"link"},f.owner)).toThrowError(expect.objectContaining({code:"invalid_request"}));
   });
-  it("removes a newly installed object when metadata persistence fails",()=>{
+  it("retains a durable orphan when metadata persistence fails",()=>{
     const f=setup(), first=Buffer.from("first"); f.service.upload(f.project.id,"task","task-1",{filename:"one",mediaType:"text/plain",data:first,idempotencyKey:"one"},f.owner);
     const data=Buffer.from("second"), hash=createHash("sha256").update(data).digest("hex"), root=f.attachmentDirectory;
-    const ids=(()=>{let n=0;return()=>n++===0?"temporary":"id-2";})(); const failing=new KnowledgeAttachmentService(f.store,f.identity,root,undefined,undefined,ids);
+    const ids=()=>"id-1"; const failing=new KnowledgeAttachmentService(f.store,f.identity,root,undefined,undefined,ids);
     expect(()=>failing.upload(f.project.id,"task","task-1",{filename:"two",mediaType:"text/plain",data,idempotencyKey:"two"},f.owner)).toThrow();
-    expect(existsSync(join(root,hash.slice(0,2),hash))).toBe(false);
+    expect(existsSync(join(root,hash.slice(0,2),hash))).toBe(true);
   });
+  it("keeps another committed reference when a shared-hash upload rolls back, then retries", () => {
+    const f = setup(), data = Buffer.from("evidence");
+    const input = { filename: "proof", mediaType: "text/plain", data, idempotencyKey: "one" };
+    const saved = f.service.upload(f.project.id, "task", "task-1", input, f.owner).value;
+    const failing = new KnowledgeAttachmentService(f.store, f.identity, f.attachmentDirectory, undefined, undefined, () => saved.id);
+    expect(() => failing.upload(f.project.id, "task", "task-1", { ...input, idempotencyKey: "two" }, f.owner)).toThrow();
+    expect(f.service.download(f.project.id, saved.id, f.owner).data).toEqual(data);
+    expect(f.store.listAttachments(f.project.id, "task", "task-1", 25, 0).items).toHaveLength(1);
+    expect(f.service.upload(f.project.id, "task", "task-1", { ...input, idempotencyKey: "two" }, f.owner).replayed).toBe(false);
+    expect(f.service.download(f.project.id, saved.id, f.owner).data).toEqual(data);
+  });
+  it("reuses an object after a transaction error without committing a premature reference", () => {
+    const f = setup(), input = { filename: "proof", mediaType: "text/plain", data: Buffer.from("evidence"), idempotencyKey: "retry" };
+    const save = vi.spyOn(f.store, "saveAttachment").mockImplementationOnce(() => { throw new Error("SQL failed"); });
+    expect(() => f.service.upload(f.project.id, "task", "task-1", input, f.owner)).toThrow("SQL failed");
+    expect(f.store.listAttachments(f.project.id, "task", "task-1", 25, 0).items).toHaveLength(0);
+    save.mockRestore();
+    const saved = f.service.upload(f.project.id, "task", "task-1", input, f.owner).value;
+    expect(f.service.download(f.project.id, saved.id, f.owner).data).toEqual(input.data);
+  });
+
 });

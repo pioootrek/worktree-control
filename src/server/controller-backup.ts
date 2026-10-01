@@ -1,4 +1,5 @@
-import { privateDirectory, privateFile } from "./private-storage";
+import { attachmentObjectPath, publishAttachmentObject } from "./attachment-objects";
+import { privateDirectory } from "./private-storage";
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
@@ -26,6 +27,9 @@ export async function createControllerBackup(source: BackupSource, destination: 
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   privateDirectory(dirname(destination)); const staging=mkdtempSync(join(dirname(destination),`.${basename(destination)}.partial-`)); mkdirSync(join(staging,"attachments"),{recursive:true,mode:0o700});
   try {
+    // The owner keeps every published object immutable and retained through this
+    // await and the copy below. SQL deletion/rollback never unlinks live objects;
+    // offline restore is excluded by the existing database ownership lock.
     const databaseFile=join(staging,"state.sqlite3"); closeSync(openSync(databaseFile,"wx",0o600)); await source.backup(databaseFile);
     chmodSync(databaseFile, 0o600);
     const snapshot=new Database(databaseFile,{readonly:true,fileMustExist:true});
@@ -39,10 +43,8 @@ export async function createControllerBackup(source: BackupSource, destination: 
     } finally { snapshot.close(); }
     const attachments=required.map(({sha256,size})=>{ const file=join(sha256.slice(0,2),sha256);
       if (!/^[a-f0-9]{64}$/.test(sha256) || !Number.isSafeInteger(size) || size < 0) throw new Error("Invalid attachment metadata.");
-      const from=safe(options.attachmentDirectory,file), to=safe(join(staging,"attachments"),file);
-      if (!lstatSync(from).isFile() || lstatSync(from).isSymbolicLink()) throw new Error("Attachment must be a regular file.");
-      mkdirSync(dirname(to),{recursive:true,mode:0o700}); copyFileSync(from,to); privateFile(to);
-      if(lstatSync(to).size!==size||hash(to)!==sha256) throw new Error("Attachment storage does not match database metadata.");
+      const from = attachmentObjectPath(options.attachmentDirectory, { sha256, size });
+      publishAttachmentObject(join(staging, "attachments"), { sha256, size }, { path: from });
       return {file,size,sha256};
     });
     const manifest: ControllerBackupManifest={formatVersion:1,applicationVersion:options.applicationVersion,createdAt:(options.clock??(()=>new Date().toISOString()))(),database:{file:"state.sqlite3",size:lstatSync(databaseFile).size,sha256:hash(databaseFile),schemaVersion},attachments};

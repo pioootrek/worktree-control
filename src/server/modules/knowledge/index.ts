@@ -9,3 +9,4 @@ export { PINNED_HUB_VALIDATOR_COMMIT, calculateHubImportPlanHash, planHubImport 
 export type { HubImportPlan, HubImportPlanOptions, HubImportMapping } from "./hub-import-plan";
 export { executeHubImport, newImportTargetId } from "./hub-import-execution";
 export type { HubImportBatch, HubImportBatchStatus, HubImportAuthenticationMethod, HubImportExecutionStore, ExecuteHubImportInput } from "./hub-import-execution";
+export { publishKnowledgeAttachment } from "./durable-attachments";
