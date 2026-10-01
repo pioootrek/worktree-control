@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SqliteStateStore } from "@/server/sqlite-store";
+import { requestControllerRestore } from "@/server/restore-requests";
 import { AuthenticationService } from "@/server/modules/authentication";
 import { IdentityService } from "@/server/modules/identity";
 import { BackupOperations } from "./backup-operations";
@@ -32,6 +33,16 @@ async function fixture(restartFailure?: string) {
   return { root, database, attachments, store, policy, backups, restores, current, input, authentication, oldToken, newToken, owner, failure, execute: () => { if (!work) throw new Error("No handoff"); work(); } };
 }
 describe("operator restore orchestration", () => {
+  it("does not turn an older S3b receipt into a new handoff after admission closes", async () => {
+    const f = await fixture();
+    requestControllerRestore(f.database, `installation:${f.current.credentialId}`, { backupId: f.input.backupId, idempotencyKey: f.input.idempotencyKey, confirmation: f.input.confirmation }, { authorize: () => {}, resolveBackup: id => f.backups.catalog.path(id) });
+    await f.backups.close();
+    await expect(f.restores.admit(f.current, f.input)).rejects.toThrow("backup_busy");
+    await expect(f.restores.preview(f.current, f.input.backupId)).rejects.toThrow("backup_busy");
+    expect(f.restores.status(f.current, f.input.backupId, f.input.idempotencyKey).state).toBe("requested");
+    expect(existsSync(join(`${f.database}.backup-operations`, "handoff.json"))).toBe(false);
+    expect(f.store.listProjects()).toHaveLength(2);
+  });
   it("coalesces simultaneous admission, bounds previews and reauthorizes after validation", async () => {
     const f = await fixture();
     let release!: () => void;

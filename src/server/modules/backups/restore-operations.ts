@@ -65,11 +65,13 @@ export class RestoreOperations {
   }) {}
   async preview(actor: BackupActor, id: string): Promise<RestorePreview> {
     this.backups.authorize(actor, "restore");
+    this.backups.assertAdmission();
     if (this.busy || this.previewing || this.pending) throw new BackupError("backup_busy", 503);
     this.previewing = true;
     try {
       const manifest = await this.backups.catalog.verifyAsync(id);
       this.backups.authorize(actor, "restore");
+      this.backups.assertAdmission();
       if (recordHash(manifest) !== recordHash(this.backups.catalog.manifest(id))) throw new BackupError("backup_invalid");
       const backup = this.backups.catalog.list().find(copy => copy.id === id);
       if (!backup) throw new BackupError("backup_invalid");
@@ -84,6 +86,7 @@ export class RestoreOperations {
     const same = previous && previous.actor.actorId === sameActor(actor) && previous.actor.idempotencyKey === input.idempotencyKey;
     if (same && previous.actor.backupId !== input.backupId) throw new BackupError("backup_invalid");
     if (same && previous.state !== "interrupted" && previous.state !== "failed") return publicStatus(previous);
+    this.backups.assertAdmission();
     if (this.pending) {
       if (this.pending.actorId !== sameActor(actor) || this.pending.key !== input.idempotencyKey) throw new BackupError("backup_busy", 503);
       if (this.pending.backupId !== input.backupId) throw new BackupError("backup_invalid");
@@ -100,6 +103,7 @@ export class RestoreOperations {
     const policy = this.requestPolicy(actor);
     const status = await requestControllerRestoreAsync(this.database, sameActor(actor), { backupId: input.backupId, idempotencyKey: input.idempotencyKey, confirmation: input.confirmation }, policy, () => this.backups.catalog.verifyAsync(input.backupId));
     this.backups.authorize(actor, "restore");
+    this.backups.assertAdmission();
     if (status.state === "verified") return { ...status, state: "verified" };
     const record: RestoreHandoff = { format: 1, actor: { actorId: sameActor(actor), backupId: input.backupId, idempotencyKey: input.idempotencyKey }, operationId: status.operationId, createdAt: status.createdAt, state: "requested", authentication: null, local: actor === "local-admin" };
     writeRecord(handoffPath(this.database), record);
@@ -140,6 +144,6 @@ export class RestoreOperations {
     return handoff?.operationId === status.operationId ? publicStatus(handoff) : { ...status };
   }
   private requestPolicy(actor: BackupActor, action = true): RestoreRequestPolicy {
-    return { authorize: actorId => { if (actorId !== sameActor(actor)) throw new BackupError("backup_forbidden", 403); this.backups.authorize(actor, action ? "restore" : undefined); }, resolveBackup: id => this.backups.catalog.path(id) };
+    return { authorize: actorId => { if (actorId !== sameActor(actor)) throw new BackupError("backup_forbidden", 403); this.backups.authorize(actor, action ? "restore" : undefined); if (action) this.backups.assertAdmission(); }, resolveBackup: id => this.backups.catalog.path(id) };
   }
 }

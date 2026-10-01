@@ -81,6 +81,9 @@ export class BackupOperations {
     if (typeof actor === "string") return;
     if (actor.authenticationMethod !== "installation_token" || !this.deps.authorize(actor) || (action && !this.policy.uiActions.includes(action))) throw new BackupError("backup_forbidden", 403);
   }
+  assertAdmission(): void {
+    if (this.closed || this.persistenceFailed || this.deps.maintenance()) throw new BackupError("backup_busy", 503);
+  }
   overview(actor: BackupActor): BackupOverview {
     this.authorize(actor);
     const { directory, ...policy } = this.policy;
@@ -101,7 +104,7 @@ export class BackupOperations {
       if (destination && resolve(destination) !== previous.destination) throw new BackupError("backup_invalid");
       return publicOperation(previous);
     }
-    if (this.closed || this.persistenceFailed || this.deps.maintenance()) throw new BackupError("backup_busy", 503);
+    this.assertAdmission();
     if (!destination && !this.policy.directory) throw new BackupError("backup_invalid");
     if (destination && actor !== "local-admin") throw new BackupError("backup_forbidden", 403);
     const scheduledAt = actor === "scheduler" && /^service:[0-9]+$/.test(key) ? Number(key.slice(8)) : null;
