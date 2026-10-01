@@ -4,7 +4,8 @@ Zadanie [RWK-20260928-sqlite-data-safety](../../rework/RWK-20260928-sqlite-data-
 pozostaje otwarte. Ten slice zaczął się od `main` na merge'u PR #68,
 `afe9f20d86c7336021684b7a55aeb7dcf41fe338`.
 
-- SHA feature: `fced54c4f94111fb0f815ba4a100de2d864372e2`.
+- SHA dostarczenia slice'a: `fced54c4f94111fb0f815ba4a100de2d864372e2`.
+- SHA po review: `ee55994f0156cc4bcd0fb320632f0a972bc20758`.
 - Gałąź: `feat/sqlite-durable-migrations`.
 - Osobny worktree: `worktree-switcher-sqlite-durable-migrations`.
 - PR: [#69](https://github.com/pioootrek/worktree-switcher/pull/69), otwarty do `main`.
@@ -65,10 +66,11 @@ Nowy wspólny limit schematu to 28; schemat 29 jest odrzucany również z WAL.
 ## Weryfikacja
 
 Końcowe check/build/integration/pomiar korzystają z presetów kolejki MCP Worktree
-Switcher, z dokładnym odkrytym worktree, pojedynczo, na czystym końcowym SHA feature.
+Switcher, z dokładnym odkrytym worktree, pojedynczo, na czystym SHA dostarczenia `fced54c`.
 Chromium przeszedł na czystym `9b0fcc3`; późniejszy `fced54c` zmienił wyłącznie
 tworzenie prywatnych katalogów w fixture'ach integracji/HTTPS, skryptach smoke/benchmark
-i workflow lifecycle. Kod runtime i dashboardu nie zmienił się po runie UI.
+i workflow lifecycle. Do SHA dostarczenia `fced54c` kod runtime i dashboardu
+nie zmienił się po runie UI; późniejsza poprawka restore jest opisana poniżej.
 Nie przejmowano ani nie uruchamiano zarządzanego serwera deweloperskiego.
 
 | Polecenie | Wynik | ID uruchomienia |
@@ -146,3 +148,46 @@ artefaktu ani próby na produkcyjnej bazie. Nie zmieniono usług lub ustawień h
 Pełne trwałe publikowanie załączników i protokół restore, retencja, harmonogramy,
 GUI backupów i transfer zewnętrzny pozostają kolejnymi slice'ami.
 Nie wykonano merge, wdrożenia, cutover ani kolejnego slice'a.
+
+## Review follow-up, 2026-10-01
+
+Po zleceniu review do wszystkich reviewerów znaleziono jeden nierozwiązany wątek:
+[stary znacznik inicjalizacji po restore](https://github.com/pioootrek/worktree-switcher/pull/69#discussion_r4155819873).
+Klasyfikacja: **fix**. Restore zastępował inode bazy, ale nie przenosił znacznika
+`.initializing`; późniejszy start odrzucał jego niezgodność. Lista pomijała też
+rollback journal starej bazy. Pozostałe opublikowane review nie podały dodatkowych usterek.
+
+Commit `caea79a1c01d8bf7fa419349a9f0fdf5d64efd5e` dodaje `.initializing` i `-journal`
+do istniejącej kwarantanny pod lockiem bazy. Pomyślny restore nie zostawia tych
+plików przy nowej bazie, a błąd publikacji przywraca je przez istniejący rollback.
+Nie usuwa się znacznika w normalnym starcie ani nie osłabia jego sprawdzania.
+To poprawka zgodności tego slice'a; pełny trwały protokół restore pozostaje później.
+
+Trzy testy jednostkowe pokrywają restore stanu inicjalizacji przed i po COMMIT
+oraz błąd publikacji załączników po przeniesieniu starych plików. Sprawdzają
+odzyskane projekty, token mode, ponowne otwarcie i zwolnienie locka; przy błędzie
+porównują oryginalne bajty bazy, znacznika i journala, a następnie ponawiają inicjalizację.
+Nowy test zbudowanego CLI odtwarza kopię nad pustą, oznaczoną bazą i ponownie
+otwiera ją przez offline `auth status`.
+
+Pierwszy run integracji `abde1c7f-db2f-4bad-9f1b-d91d1fd402c3` na `caea79a`
+zakończył się failed: fixture importował kod kontrolera z aliasami `@/`, których
+konfiguracja integracji zbudowanego artefaktu nie rozwiązuje. Suite storage-safety
+nie załadował się; 16 testów pozostałych suite'ów przeszło. Commit `ee55994` usuwa
+ten import i przygotowuje izolowane pliki fixture'a, konsumowane wyłącznie przez CLI.
+
+Końcowe check na czystym `ee55994`: passed, 588 Vitest + 7 skryptów, lint/typecheck,
+run `66819b02-b5a2-494b-9783-195953381b0e`, observed_match. Build passed,
+run `a9830ee2-6402-41c0-a9d2-0f37a2a6affa`, observed_match.
+Integracja passed, 24 testy w 5 plikach, run `5d909790-cdd4-4180-bd4a-5a6c1ac76a19`,
+observed_match na tym samym czystym `ee55994`. `git diff --check` przeszedł.
+Nie powtarzano UI ani pomiaru FULL; wcześniejsze wyniki zachowują swoje SHA.
+GitHub CI wcześniejszego `fced54c` przeszedł check-build, package smoke na Node 22/24
+i package-service-lifecycle. Nie jest to weryfikacja końcowego SHA follow-up.
+
+Poprawka jest wypchnięta na PR. W oryginalnym wątku opublikowano
+[odpowiedź z dowodami](https://github.com/pioootrek/worktree-switcher/pull/69#discussion_r4156026297)
+i rozwiązano wątek. Ponowny odczyt pełnej listy potwierdził: fix 1, backlog 0,
+false positive 0, unresolved 0. PR pozostaje draft; CI nowej rewizji jest osobnym
+uruchomieniem. Zadanie backlogowe pozostaje otwarte. Bez merge, wdrożenia,
+zmian usług lub konfiguracji hosta i rozpoczynania następnego slice'a.

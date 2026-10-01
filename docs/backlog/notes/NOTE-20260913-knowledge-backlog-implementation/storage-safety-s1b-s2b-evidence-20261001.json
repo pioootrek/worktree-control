@@ -157,6 +157,69 @@
       "startedAt": "2026-10-01T12:45:50.935Z"
     }
   ],
+  "reviewFollowUp": {
+    "classification": "fix",
+    "counts": {
+      "backlog": 0,
+      "falsePositive": 0,
+      "fix": 1,
+      "unresolved": 0
+    },
+    "failedRuns": [
+      {
+        "attribution": "observed_match",
+        "command": "pnpm test:integration",
+        "dirty": false,
+        "exitCode": 1,
+        "finishedAt": "2026-10-01T13:35:48.410Z",
+        "head": "caea79a1c01d8bf7fa419349a9f0fdf5d64efd5e",
+        "phase": "failed",
+        "reason": "Built CLI integration fixture imported controller source with @/ aliases unavailable in its Vitest config; corrected in ee55994. Storage-safety suite did not load; 16 other tests passed.",
+        "runId": "abde1c7f-db2f-4bad-9f1b-d91d1fd402c3",
+        "startedAt": "2026-10-01T13:34:10.170Z"
+      }
+    ],
+    "fixCommit": "caea79a1c01d8bf7fa419349a9f0fdf5d64efd5e",
+    "head": "ee55994f0156cc4bcd0fb320632f0a972bc20758",
+    "queuedRuns": [
+      {
+        "attribution": "observed_match",
+        "command": "pnpm check",
+        "dirty": false,
+        "exitCode": 0,
+        "finishedAt": "2026-10-01T13:37:19.956Z",
+        "head": "ee55994f0156cc4bcd0fb320632f0a972bc20758",
+        "phase": "passed",
+        "runId": "66819b02-b5a2-494b-9783-195953381b0e",
+        "startedAt": "2026-10-01T13:36:36.920Z"
+      },
+      {
+        "attribution": "observed_match",
+        "command": "pnpm build",
+        "dirty": false,
+        "exitCode": 0,
+        "finishedAt": "2026-10-01T13:37:56.477Z",
+        "head": "ee55994f0156cc4bcd0fb320632f0a972bc20758",
+        "phase": "passed",
+        "runId": "a9830ee2-6402-41c0-a9d2-0f37a2a6affa",
+        "startedAt": "2026-10-01T13:37:49.347Z"
+      },
+      {
+        "attribution": "observed_match",
+        "command": "pnpm test:integration",
+        "dirty": false,
+        "exitCode": 0,
+        "finishedAt": "2026-10-01T13:40:23.452Z",
+        "head": "ee55994f0156cc4bcd0fb320632f0a972bc20758",
+        "phase": "passed",
+        "runId": "5d909790-cdd4-4180-bd4a-5a6c1ac76a19",
+        "startedAt": "2026-10-01T13:38:42.685Z"
+      }
+    ],
+    "replyUrl": "https://github.com/pioootrek/worktree-switcher/pull/69#discussion_r4156026297",
+    "resolved": true,
+    "threadId": "PRRT_kwDOUINt8M6n9W3b"
+  },
   "sqliteWriteCost": {
     "directory": "repository parent filesystem (not OS tmpfs)",
     "filesystem": "ext4",
