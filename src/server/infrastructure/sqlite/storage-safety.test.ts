@@ -180,7 +180,7 @@ describe("SQLite storage safety", () => {
   it.each(["future","foreign","gap","partial","shape","constraint"])("rejects %s schema before changing the database, journal or authentication through normal start and offline CLI",async variant => {
     const f=fixture();
     raw(f.paths.databasePath,db=>{
-      if(variant==="future") db.exec("INSERT INTO schema_migrations(version,applied_at) VALUES (25,'future'),(26,'future'),(27,'future'),(28,'future')");
+      if(variant==="future") db.exec("INSERT INTO schema_migrations(version,applied_at) VALUES (25,'future'),(26,'future'),(27,'future'),(28,'future'),(29,'future')");
       if(variant==="foreign") db.exec("CREATE TABLE foreign_data(id TEXT)");
       if(variant==="gap") db.exec("DELETE FROM schema_migrations WHERE version=5");
       if(variant==="partial") db.exec("DELETE FROM schema_migrations");
@@ -208,10 +208,10 @@ describe("SQLite storage safety", () => {
     const f=fixture(12); const backup=join(f.root,"backup"); await runBackupCommand(["create",backup],f.paths,"test",()=>{});
     const target=join(f.root,"restored.sqlite3"); restoreControllerBackup(backup,target);
     const inspected=new OwnedSqliteDatabase(target); expect(inspected.schemaVersion()).toBe(12); inspected.close();
-    raw(join(backup,"state.sqlite3"),db=>db.exec("INSERT INTO schema_migrations(version,applied_at) VALUES(28,'future')"));
+    raw(join(backup,"state.sqlite3"),db=>db.exec("INSERT INTO schema_migrations(version,applied_at) VALUES(29,'future')"));
     const manifest=JSON.parse(readFileSync(join(backup,"manifest.json"),"utf8"));
     manifest.database.size=lstatSync(join(backup,"state.sqlite3")).size;
-    manifest.database.sha256=createHash("sha256").update(readFileSync(join(backup,"state.sqlite3"))).digest("hex");manifest.database.schemaVersion=28;
+    manifest.database.sha256=createHash("sha256").update(readFileSync(join(backup,"state.sqlite3"))).digest("hex");manifest.database.schemaVersion=29;
     writeFileSync(join(backup,"manifest.json"),JSON.stringify(manifest));
     const before=readFileSync(target);
     expect(()=>restoreControllerBackup(backup,target)).toThrow(/Unsupported/);
