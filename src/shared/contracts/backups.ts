@@ -11,7 +11,7 @@ export const backupCommandSchema = z.discriminatedUnion("action", [
 export type BackupCommand = z.infer<typeof backupCommandSchema>;
 export interface BackupEntry {
   id: string; createdAt: string | null; sizeBytes: number | null;
-  compatibility: "supported" | "unsupported"; verification: "verified" | "failed";
+  compatibility: "supported" | "unsupported"; verification: "verified" | "unverified" | "failed";
   protected: boolean;
 }
 export interface BackupOperation {

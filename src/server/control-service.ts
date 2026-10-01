@@ -550,10 +550,15 @@ export class ControlService {
     });
   }
 
+  closeAdmission(): void {
+    this.lifecycle.closeAdmission();
+    this.processes.closeAdmission?.();
+  }
+
   async shutdown(): Promise<void> {
+    this.closeAdmission();
     const failures: unknown[] = [];
-    await this.lifecycle.closeAndDrain();
-    const cleanup = await Promise.allSettled([this.tests?.shutdown(), this.processes.stopAll()]);
+    const cleanup = await Promise.allSettled([this.lifecycle.closeAndDrain(), this.tests?.shutdown(), this.processes.stopAll()]);
     failures.push(...cleanup.filter((result) => result.status === "rejected").map((result) => result.reason));
     try {
       await this.storage?.close();

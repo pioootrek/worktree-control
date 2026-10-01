@@ -4,7 +4,7 @@ import { backupCommandSchema } from "@/shared/contracts/backups";
 
 const inputSchema = z.object({ command: z.literal("backup"), operation: z.enum(["create", "now", "restore", "status", "list"]), destination: z.string().min(1).max(4096).optional(), idempotencyKey: z.string().min(1).max(256).optional(), backupId: z.string().optional() }).strict();
 export function backupAdminHandler(backups: BackupOperations, restores: RestoreOperations): (body: unknown) => unknown {
-  return body => {
+  return async body => {
     const input = inputSchema.parse(body);
     if (input.operation === "list") return backups.overview("local-admin");
     if (input.operation === "status") {
@@ -16,7 +16,7 @@ export function backupAdminHandler(backups: BackupOperations, restores: RestoreO
     // A running restore selects only a configured catalog ID, never a web path.
     const id = input.backupId;
     const request = backupCommandSchema.parse({ action: "restore", backupId: id, idempotencyKey: input.idempotencyKey, confirmation: "replace-entire-installation" });
-    const status = restores.admit("local-admin", request);
+    const status = await restores.admit("local-admin", request);
     setImmediate(() => restores.launch("local-admin", { backupId: id!, idempotencyKey: input.idempotencyKey! }));
     return status;
   };

@@ -2,10 +2,10 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { BackupActor, BackupOperations } from "./backup-operations";
 import { BackupError, type BackupPolicy } from "./policy";
-import { readRecord, writeRecord } from "./records";
+import { readRecord, recordHash, writeRecord } from "./records";
 import type { RestoreOperation, RestorePreview } from "@/shared/contracts/backups";
 import { backupCommandSchema } from "@/shared/contracts/backups";
-import { executeControllerRestoreRequest, getControllerRestoreRequestStatus, requestControllerRestore, type RestoreRequestPolicy } from "@/server/restore-requests";
+import { executeControllerRestoreRequest, getControllerRestoreRequestStatus, requestControllerRestoreAsync, type RestoreRequestPolicy } from "@/server/restore-requests";
 import { restoreActorSchema, type RestoreActor } from "@/server/infrastructure/sqlite";
 import { privateDirectory } from "@/server/private-storage";
 import type { AuthenticationPolicy, AuthenticationStore } from "@/server/modules/authentication";
@@ -55,21 +55,28 @@ export function finishBackupHandoff(database: string, record: RestoreHandoff, st
 }
 export class RestoreOperations {
   private busy = false;
+  private previewing = false;
+  private pending: { actorId: string; backupId: string; key: string; promise: Promise<RestoreOperation> } | null = null;
   constructor(private readonly backups: BackupOperations, private readonly database: string, private readonly attachments: string, private readonly deps: {
     authentication: () => AuthenticationPolicy;
     enterMaintenance: () => void;
     restart: (execute: () => void) => Promise<void>;
     failure: (error: unknown) => void;
   }) {}
-  preview(actor: BackupActor, id: string): RestorePreview {
+  async preview(actor: BackupActor, id: string): Promise<RestorePreview> {
     this.backups.authorize(actor, "restore");
-    if (this.busy) throw new BackupError("backup_busy", 503);
-    this.backups.catalog.verify(id);
-    const backup = this.backups.catalog.list().find(copy => copy.id === id);
-    if (!backup) throw new BackupError("backup_invalid");
-    return { backup: { ...backup, verification: "verified" }, scope: "entire-installation", invalidatesScopedCredentials: true, stopsManagedProcessesAndTests: true };
+    if (this.busy || this.previewing || this.pending) throw new BackupError("backup_busy", 503);
+    this.previewing = true;
+    try {
+      const manifest = await this.backups.catalog.verifyAsync(id);
+      this.backups.authorize(actor, "restore");
+      if (recordHash(manifest) !== recordHash(this.backups.catalog.manifest(id))) throw new BackupError("backup_invalid");
+      const backup = this.backups.catalog.list().find(copy => copy.id === id);
+      if (!backup) throw new BackupError("backup_invalid");
+      return { backup: { ...backup, verification: "verified" }, scope: "entire-installation", invalidatesScopedCredentials: true, stopsManagedProcessesAndTests: true };
+    } finally { this.previewing = false; }
   }
-  admit(actor: BackupActor, value: unknown): RestoreOperation {
+  async admit(actor: BackupActor, value: unknown): Promise<RestoreOperation> {
     const input = backupCommandSchema.parse(value);
     if (input.action !== "restore") throw new BackupError("backup_invalid");
     this.backups.authorize(actor, "restore");
@@ -77,9 +84,22 @@ export class RestoreOperations {
     const same = previous && previous.actor.actorId === sameActor(actor) && previous.actor.idempotencyKey === input.idempotencyKey;
     if (same && previous.actor.backupId !== input.backupId) throw new BackupError("backup_invalid");
     if (same && previous.state !== "interrupted" && previous.state !== "failed") return publicStatus(previous);
-    if (this.busy) throw new BackupError("backup_busy", 503);
+    if (this.pending) {
+      if (this.pending.actorId !== sameActor(actor) || this.pending.key !== input.idempotencyKey) throw new BackupError("backup_busy", 503);
+      if (this.pending.backupId !== input.backupId) throw new BackupError("backup_invalid");
+      const result = await this.pending.promise;
+      this.backups.authorize(actor, "restore");
+      return result;
+    }
+    if (this.busy || this.previewing) throw new BackupError("backup_busy", 503);
+    const promise = this.admitVerified(actor, input);
+    this.pending = { actorId: sameActor(actor), backupId: input.backupId, key: input.idempotencyKey, promise };
+    try { return await promise; } finally { this.pending = null; }
+  }
+  private async admitVerified(actor: BackupActor, input: Extract<z.infer<typeof backupCommandSchema>, { action: "restore" }>): Promise<RestoreOperation> {
     const policy = this.requestPolicy(actor);
-    const status = requestControllerRestore(this.database, sameActor(actor), { backupId: input.backupId, idempotencyKey: input.idempotencyKey, confirmation: input.confirmation }, policy);
+    const status = await requestControllerRestoreAsync(this.database, sameActor(actor), { backupId: input.backupId, idempotencyKey: input.idempotencyKey, confirmation: input.confirmation }, policy, () => this.backups.catalog.verifyAsync(input.backupId));
+    this.backups.authorize(actor, "restore");
     if (status.state === "verified") return { ...status, state: "verified" };
     const record: RestoreHandoff = { format: 1, actor: { actorId: sameActor(actor), backupId: input.backupId, idempotencyKey: input.idempotencyKey }, operationId: status.operationId, createdAt: status.createdAt, state: "requested", authentication: null, local: actor === "local-admin" };
     writeRecord(handoffPath(this.database), record);

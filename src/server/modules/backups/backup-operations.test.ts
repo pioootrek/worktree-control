@@ -1,4 +1,4 @@
-import { mkdtempSync, existsSync, rmSync, symlinkSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, existsSync, rmSync, renameSync, symlinkSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -25,6 +25,36 @@ function fixture(options: Record<string, unknown> = {}) {
 }
 
 describe("service backup operations", () => {
+  it("distinguishes an unrecorded valid migration copy from a failed verification", async () => {
+    const f = fixture(); const created = f.operations.create(f.actor, "migration-fixture"); await f.operations.drain();
+    const id = `pre-migration-v1-${crypto.randomUUID()}`;
+    renameSync(join(f.policy.directory!, created.backupId), join(f.policy.directory!, id));
+    expect(f.operations.overview(f.actor).copies).toEqual([expect.objectContaining({ id, compatibility: "supported", verification: "unverified", protected: true })]);
+    await expect(f.operations.catalog.verifyAsync(id)).resolves.toMatchObject({ formatVersion: 1 });
+    writeFileSync(join(f.policy.directory!, id, "manifest.json"), "corrupt", { mode: 0o600 });
+    expect(f.operations.overview(f.actor).copies[0]).toMatchObject({ verification: "failed", protected: true });
+  });
+  it("keeps the schedule usable with a full manual idempotency history across restart", async () => {
+    const f = fixture({ intervalSeconds: 60 }); await f.operations.close();
+    const path = join(f.operations.recordDirectory, "ledger.json"), envelope = JSON.parse(readFileSync(path, "utf8"));
+    envelope.payload.operations = Array.from({ length: 1024 }, (_, index) => ({ operationId: crypto.randomUUID(), backupId: `backup-${crypto.randomUUID()}`, actorId: `installation:${f.actor.credentialId}`, key: `manual:${index}`, state: "failed", createdAt: new Date(f.deps.clock()).toISOString(), finishedAt: new Date(f.deps.clock()).toISOString(), error: "backup_failed", destination: join(f.policy.directory!, `absent-${index}`), scheduled: false, manifestHash: null }));
+    envelope.sha256 = recordHash(envelope.payload); writeFileSync(path, JSON.stringify(envelope), { mode: 0o600 });
+    const firstId = envelope.payload.operations[0].operationId;
+    const restarted = new BackupOperations(f.policy, f.deps);
+    try {
+      expect(restarted.create(f.actor, "manual:0").operationId).toBe(firstId);
+      expect(() => restarted.create(f.actor, "new-manual")).toThrow("backup_limit");
+      f.advance(60_000); restarted.tick(); await restarted.drain();
+      expect(restarted.overview(f.actor).schedule.lastOperation?.state).toBe("succeeded");
+      expect(restarted.overview(f.actor).schedule.error).toBeNull();
+    } finally { await restarted.close(); }
+    const again = new BackupOperations(f.policy, f.deps);
+    try {
+      expect(again.create(f.actor, "manual:0").operationId).toBe(firstId);
+      f.advance(60_000); again.tick(); await again.drain();
+      expect(again.overview(f.actor).schedule.lastOperation?.state).toBe("succeeded");
+    } finally { await again.close(); }
+  });
   it("serializes live backups on the controller connection and persists idempotency across restart", async () => {
     const f = fixture();
     const a = f.operations.create(f.actor, "same"), duplicate = f.operations.create(f.actor, "same");

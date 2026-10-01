@@ -172,7 +172,7 @@ describe("ControlService worktree storage", () => {
     store.close();
   });
 
-  it("drains accepted work before stopping processes and closing persistence during shutdown", async () => {
+  it("stops owned processes while draining accepted work and closes persistence last", async () => {
     const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-cache-shutdown-"));
     directories.push(directory);
     const store = new SqliteStateStore(join(directory, "state.sqlite3"));
@@ -199,13 +199,13 @@ describe("ControlService worktree storage", () => {
     const shutdown = service.shutdown();
 
     await Promise.resolve();
-    expect(processes.stopAll).not.toHaveBeenCalled();
+    expect(processes.stopAll).toHaveBeenCalledOnce();
     expect(close).not.toHaveBeenCalled();
     releaseCleaner();
     await deletion;
     await shutdown;
     expect(close).toHaveBeenCalledOnce();
-    expect(order).toEqual(["deletion-drained", "processes-stopped", "store-closed"]);
+    expect(order).toEqual(["processes-stopped", "deletion-drained", "store-closed"]);
   });
 
   it("blocks real automatic storage admission for the worktree during deletion", async () => {

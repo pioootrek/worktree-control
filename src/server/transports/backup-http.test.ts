@@ -85,3 +85,16 @@ it("requires explicit whole-installation confirmation and gates new writes durin
   const write = await fetch(`${f.base}/api/knowledge`, { method: "POST", body: "{}" }); expect(write.status).toBe(503);
   expect(f.store.listProjects()).toEqual([]);
 });
+it("keeps HTTP responsive during preview and denies an overlapping validation", async () => {
+  const f = await fixture(["create", "restore"]);
+  const created = f.backups.create("local-admin", "responsive"); await f.backups.drain();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const verify = f.backups.catalog.verifyAsync.bind(f.backups.catalog);
+  const validation = vi.spyOn(f.backups.catalog, "verifyAsync").mockImplementation(async id => { await gate; return verify(id); });
+  const pending = f.request("POST", { action: "preview", backupId: created.backupId });
+  await vi.waitFor(() => expect(validation).toHaveBeenCalledOnce());
+  expect((await f.request()).status).toBe(200);
+  expect((await f.request("POST", { action: "preview", backupId: created.backupId })).status).toBe(503);
+  release(); expect((await pending).status).toBe(200);
+});

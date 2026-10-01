@@ -13,10 +13,10 @@ export async function handleBackupHttp(request: IncomingMessage, response: Serve
     if (!parsed.success) throw new BackupError("backup_invalid");
     const input = parsed.data;
     if (input.action === "create") reply(202, backups.create(actor, input.idempotencyKey));
-    else if (input.action === "preview") reply(200, restores.preview(actor, input.backupId));
+    else if (input.action === "preview") reply(200, await restores.preview(actor, input.backupId));
     else if (input.action === "status") reply(200, input.backupId ? restores.status(actor, input.backupId, input.idempotencyKey) : backups.status(actor, input.idempotencyKey));
     else {
-      const status = restores.admit(actor, input);
+      const status = await restores.admit(actor, input);
       // A lost response still leaves a durable request. The close event starts
       // the same operation; duplicate listeners are coalesced by the service.
       let launched = false;

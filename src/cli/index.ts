@@ -328,6 +328,8 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     if (closing) return;
     closing = true;
     maintenance = true;
+    // Cancel pending starts before closing listeners, which wait for their HTTP responses.
+    service.closeAdmission();
     process.removeListener("SIGINT", handleSignal);
     process.removeListener("SIGTERM", handleSignal);
     writeCliLine(translate(locale, "cli.stopping"));

@@ -32,18 +32,44 @@ async function fixture(restartFailure?: string) {
   return { root, database, attachments, store, policy, backups, restores, current, input, authentication, oldToken, newToken, owner, failure, execute: () => { if (!work) throw new Error("No handoff"); work(); } };
 }
 describe("operator restore orchestration", () => {
+  it("coalesces simultaneous admission, bounds previews and reauthorizes after validation", async () => {
+    const f = await fixture();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const verify = f.backups.catalog.verifyAsync.bind(f.backups.catalog);
+    const validation = vi.spyOn(f.backups.catalog, "verifyAsync").mockImplementation(async id => { await gate; return verify(id); });
+    const first = f.restores.admit(f.current, f.input), duplicate = f.restores.admit(f.current, f.input);
+    await expect(f.restores.admit(f.current, { ...f.input, idempotencyKey: "other" })).rejects.toThrow("backup_busy");
+    await expect(f.restores.preview(f.current, f.input.backupId)).rejects.toThrow("backup_busy");
+    expect(validation).toHaveBeenCalledOnce();
+    expect(f.store.listProjects()).toHaveLength(2);
+    release();
+    expect(await duplicate).toEqual(await first);
+  });
+  it.each(["preview", "admit"] as const)("refuses revoked access after asynchronous %s validation", async action => {
+    const f = await fixture();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const verify = f.backups.catalog.verifyAsync.bind(f.backups.catalog);
+    vi.spyOn(f.backups.catalog, "verifyAsync").mockImplementation(async id => { await gate; return verify(id); });
+    const pending = action === "preview" ? f.restores.preview(f.current, f.input.backupId) : f.restores.admit(f.current, f.input);
+    const rejection = expect(pending).rejects.toThrow("backup_forbidden");
+    f.authentication.rotateToken("fixture"); release(); await rejection;
+    expect(existsSync(join(`${f.database}.backup-operations`, "handoff.json"))).toBe(false);
+    expect(f.store.listProjects()).toHaveLength(2);
+  });
   it("previews entire-installation effects and persists admission before entering maintenance", async () => {
     const f = await fixture();
-    expect(f.restores.preview(f.current, f.input.backupId)).toMatchObject({ scope: "entire-installation", invalidatesScopedCredentials: true, stopsManagedProcessesAndTests: true });
-    const accepted = f.restores.admit(f.current, f.input);
+    expect(await f.restores.preview(f.current, f.input.backupId)).toMatchObject({ scope: "entire-installation", invalidatesScopedCredentials: true, stopsManagedProcessesAndTests: true });
+    const accepted = await f.restores.admit(f.current, f.input);
     expect(existsSync(`${f.database}.restore-requests`)).toBe(true);
     expect(f.store.listProjects()).toHaveLength(2);
-    expect(f.restores.admit(f.current, f.input)).toEqual(accepted);
+    expect(await f.restores.admit(f.current, f.input)).toEqual(accepted);
     expect(() => f.backups.create(f.current, "during-maintenance")).toThrow("backup_busy");
-    expect(() => f.restores.admit(f.current, { ...f.input, idempotencyKey: "overlap" })).toThrow("backup_busy");
+    await expect(f.restores.admit(f.current, { ...f.input, idempotencyKey: "overlap" })).rejects.toThrow("backup_busy");
   });
   it("refuses replacement with an open owner then repairs the same request under handoff ownership", async () => {
-    const f = await fixture(); const accepted = f.restores.admit(f.current, f.input);
+    const f = await fixture(); const accepted = await f.restores.admit(f.current, f.input);
     f.restores.launch(f.current, f.input);
     expect(() => f.execute()).toThrow(/already running/);
     expect(() => assertBackupHandoffCompleted(f.database)).toThrow("complete restore authentication recovery");
@@ -68,7 +94,7 @@ describe("operator restore orchestration", () => {
     finally { reopened.close(); }
   });
   it("accounts for a crash before maintenance/handoff without replacing the old database", async () => {
-    const f = await fixture(); const accepted = f.restores.admit(f.current, f.input);
+    const f = await fixture(); const accepted = await f.restores.admit(f.current, f.input);
     await f.backups.close(); f.store.close();
     expect(recoverBackupHandoff(f.database, f.attachments, f.policy)).toBeNull();
     const reopened = new SqliteStateStore(f.database);
@@ -77,7 +103,7 @@ describe("operator restore orchestration", () => {
     expect(accepted.state).toBe("requested");
   });
   it("rechecks revoked operator authority and never hands off using historical grants", async () => {
-    const f = await fixture(); f.restores.admit(f.current, f.input);
+    const f = await fixture(); await f.restores.admit(f.current, f.input);
     f.authentication.rotateToken("fixture");
     f.restores.launch(f.current, f.input);
     expect(f.failure).toHaveBeenCalledOnce();
@@ -86,13 +112,13 @@ describe("operator restore orchestration", () => {
     expect(f.store.listProjects()).toHaveLength(2);
   });
   it("refuses an executing handoff when restart CLI disables restore", async () => {
-    const f = await fixture(); f.restores.admit(f.current, f.input); f.restores.launch(f.current, f.input);
+    const f = await fixture(); await f.restores.admit(f.current, f.input); f.restores.launch(f.current, f.input);
     await f.backups.close(); f.store.close(); f.execute();
     expect(() => recoverBackupHandoff(f.database, f.attachments, { ...f.policy, uiActions: [] })).toThrow("backup_forbidden");
   });
   it("preserves live data and a failed receipt when maintenance cleanup cannot be verified", async () => {
     const f = await fixture("fixture: owned process stop unconfirmed");
-    f.restores.admit(f.current, f.input); f.restores.launch(f.current, f.input);
+    await f.restores.admit(f.current, f.input); f.restores.launch(f.current, f.input);
     await vi.waitFor(() => expect(f.failure).toHaveBeenCalledOnce());
     expect(() => f.execute()).toThrow("No handoff");
     expect(f.restores.status(f.current, f.input.backupId, f.input.idempotencyKey).state).toBe("failed");

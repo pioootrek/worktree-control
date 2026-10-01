@@ -35,7 +35,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "next build && tsup src/cli/index.ts --format esm --platform node --target node22 --clean --out-dir dist/cli && node scripts/build-fingerprint.mjs --write",
+    "build": "next build && tsup src/cli/index.ts src/cli/backup-verifier.ts --format esm --platform node --target node22 --clean --out-dir dist/cli && node scripts/build-fingerprint.mjs --write",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:resources",
     "dev": "node scripts/dev-controller.mjs",
     "dev:web": "next dev",

@@ -9,6 +9,29 @@ import { startControllerFixture, waitFor, type ControllerFixture } from "../supp
 describe("operational backups in the packaged controller", () => {
   let fixture: ControllerFixture | undefined;
   afterEach(async () => { await fixture?.close(); fixture = undefined; });
+  it("restores during a gated start without waiting for readiness timeout or leaving owned processes", async () => {
+    fixture = await startControllerFixture(1, [], { backups: true });
+    const f = fixture, project = f.projects[0]!;
+    const copy = await f.request<BackupOperation>("/api/backups", { method: "POST", body: JSON.stringify({ action: "create", idempotencyKey: "before-start" }) });
+    await waitFor(async () => {
+      const status = await f.request<BackupOperation>("/api/backups", { method: "POST", body: JSON.stringify({ action: "status", idempotencyKey: "before-start" }) });
+      return status.state === "succeeded" ? status : null;
+    }, 10000, () => "Backup did not complete.");
+    await f.setMode(project, "gate");
+    const starting = f.requestResult(`/api/projects/${project.id}/operation`, { method: "POST", body: JSON.stringify({ operation: "start", worktreePath: project.main }) });
+    const pids = await waitFor(async () => { const pids = await f.ownedPids(project); return pids.length ? pids : null; }, 10000, () => "Gated start did not spawn its owned fixture.");
+    const input = { action: "restore", backupId: copy.backupId, idempotencyKey: "cancel-start", confirmation: "replace-entire-installation" };
+    const accepted = await f.request<RestoreOperation>("/api/backups", { method: "POST", body: JSON.stringify(input) });
+    const completed = await waitFor(async () => {
+      try {
+        const status = await f.request<RestoreOperation>("/api/backups", { method: "POST", body: JSON.stringify({ action: "status", backupId: copy.backupId, idempotencyKey: input.idempotencyKey }) });
+        return status.state === "verified" ? status : null;
+      } catch { return null; }
+    }, 10000, () => "Restore waited for the gated readiness timeout.");
+    expect(completed.operationId).toBe(accepted.operationId);
+    expect((await starting).ok).toBe(false);
+    for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow();
+  });
   it("backs up live ownership via HTTP and CLI then performs one fenced whole-installation restore", async () => {
     fixture = await startControllerFixture(1, [], { backups: true });
     const f = fixture, project = f.projects[0]!;

@@ -9,13 +9,13 @@ function overview(): BackupOverview { return {
   schedule: { nextAt: null, lastOperation: null, error: null, retention: "idle" }, maintenance: false, operations: [],
   copies: [{ id, createdAt: "2026-10-01T00:00:00Z", sizeBytes: 100000, compatibility: "supported", verification: "verified", protected: true }],
 }; }
-async function mount(page: Page) {
+async function mount(page: Page, copies = overview().copies) {
   const fixture = await mountDashboard(page, undefined, { accessToken: token });
   let denied = false, loseConnection = false;
   const requests: Array<Record<string, unknown>> = [];
   await page.route("**/api/backups", route => {
     if (denied) return route.fulfill({ status: 403, json: { code: "backup_forbidden" } });
-    if (route.request().method() === "GET") return route.fulfill({ json: overview() });
+    if (route.request().method() === "GET") return route.fulfill({ json: { ...overview(), copies } });
     const input = route.request().postDataJSON(); requests.push(input);
     if (input.action === "preview") return route.fulfill({ json: { backup: overview().copies[0], scope: "entire-installation", invalidatesScopedCredentials: true, stopsManagedProcessesAndTests: true } });
     if (loseConnection && input.action !== "status") { loseConnection = false; return route.abort("connectionreset"); }
@@ -24,6 +24,18 @@ async function mount(page: Page) {
   return { ...fixture, requests, deny: () => { denied = true; }, disconnect: () => { loseConnection = true; } };
 }
 for (const locale of ["en", "pl"] as const) {
+  test(`migration backup verification states are distinct in ${locale}`, async ({ page }) => {
+    const migration = { ...overview().copies[0], id: "pre-migration-v1-00000000-0000-4000-8000-000000000003", verification: "unverified" as const };
+    const failed = { ...overview().copies[0], id: "backup-00000000-0000-4000-8000-000000000004", verification: "failed" as const };
+    await mount(page, [migration, failed]);
+    if (locale === "pl") await selectLanguage(page);
+    await openSystemDialog(page, "backups.title", locale);
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText(locale === "pl" ? /Jeszcze niezweryfikowana przez tę usługę/ : /Not yet verified by this service/)).toBeVisible();
+    await expect(dialog.getByText(locale === "pl" ? /Weryfikacja nieudana/ : /Verification failed/)).toBeVisible();
+    await expect(dialog.getByRole("button", { name: `${locale === "pl" ? "Odtwórz" : "Restore"} ${migration.id}`, exact: true })).toBeEnabled();
+    await page.keyboard.press("Escape"); await expect(dialog).toHaveCount(0);
+  });
   test(`operator backup policy, loss confirmation and keyboard in ${locale}`, async ({ page }) => {
     const f = await mount(page);
     if (locale === "pl") await selectLanguage(page);

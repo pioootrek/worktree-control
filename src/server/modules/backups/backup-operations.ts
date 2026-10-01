@@ -20,7 +20,10 @@ const operationSchema = z.object({
   destination: z.string(), scheduled: z.boolean(), manifestHash: z.string().nullable(),
 }).strict();
 type Operation = z.infer<typeof operationSchema>;
-const ledgerSchema = z.object({ format: z.literal(1), nextAt: z.number().nullable(), intervalSeconds: z.number().nullable(), scheduledThrough: z.number().nullable().default(null), scheduleError: z.enum(["backup_failed", "backup_limit"]).nullable().default(null), retention: z.enum(["idle", "succeeded", "failed"]), operations: z.array(operationSchema).max(1024) }).strict();
+const MANUAL_HISTORY_LIMIT = 1024;
+// Maximum retained copies, recent retired deadlines and pending operations.
+const SERVICE_HISTORY_LIMIT = 1000 + 50 + 32;
+const ledgerSchema = z.object({ format: z.literal(1), nextAt: z.number().nullable(), intervalSeconds: z.number().nullable(), scheduledThrough: z.number().nullable().default(null), scheduleError: z.enum(["backup_failed", "backup_limit"]).nullable().default(null), retention: z.enum(["idle", "succeeded", "failed"]), operations: z.array(operationSchema).max(MANUAL_HISTORY_LIMIT + SERVICE_HISTORY_LIMIT) }).strict();
 type Ledger = z.infer<typeof ledgerSchema>;
 export type BackupActor = AuthenticatedPrincipal | "local-admin" | "scheduler";
 export interface BackupDependencies {
@@ -54,7 +57,7 @@ export class BackupOperations {
     this.now = deps.clock ?? Date.now;
     this.recordDirectory = privateDirectory(`${deps.databasePath}.backup-operations`);
     this.path = join(this.recordDirectory, "ledger.json");
-    this.catalog = new BackupCatalog(this.policy.directory, this.recordDirectory);
+    this.catalog = new BackupCatalog(this.policy.directory, this.recordDirectory, this.policy.maxBytes, this.policy.timeoutSeconds);
     this.ledger = readRecord(this.path, ledgerSchema) ?? { format: 1, nextAt: null, intervalSeconds: null, scheduledThrough: null, scheduleError: null, retention: "idle", operations: [] };
     for (const operation of this.ledger.operations) {
       if (operation.state !== "queued" && operation.state !== "running") continue;
@@ -84,10 +87,10 @@ export class BackupOperations {
     const protectedIds = this.protectedIds();
     const copies = this.catalog.list().map(copy => {
       const record = this.ledger.operations.find(operation => operation.backupId === copy.id && operation.state === "succeeded");
-      if (!record) return { ...copy, verification: "failed" as const, protected: true };
+      if (!record) return { ...copy, protected: true };
       try { if (record.manifestHash !== recordHash(this.catalog.manifest(copy.id))) return { ...copy, verification: "failed" as const, protected: true }; }
       catch { return { ...copy, verification: "failed" as const, protected: true }; }
-      return { ...copy, protected: !record.scheduled || protectedIds.has(copy.id) };
+      return { ...copy, verification: "verified" as const, protected: !record.scheduled || protectedIds.has(copy.id) };
     });
     return { policy: { ...policy, destinationConfigured: Boolean(directory) }, schedule: { nextAt: this.ledger.nextAt === null ? null : new Date(this.ledger.nextAt).toISOString(), lastOperation: this.lastScheduled(), error: this.ledger.scheduleError, retention: this.ledger.retention }, maintenance: this.deps.maintenance(), copies, operations: this.ledger.operations.slice(-50).reverse().map(publicOperation) };
   }
@@ -104,7 +107,8 @@ export class BackupOperations {
     const scheduledAt = actor === "scheduler" && /^service:[0-9]+$/.test(key) ? Number(key.slice(8)) : null;
     if (actor === "scheduler" && (scheduledAt === null || scheduledAt <= (this.ledger.scheduledThrough ?? -1))) throw new BackupError("backup_invalid", 409);
     this.pruneScheduledHistory();
-    if (this.ledger.operations.length >= 1024 || this.ledger.operations.filter(operation => operation.state === "queued" || operation.state === "running").length >= this.policy.queueLimit) throw new BackupError("backup_limit", 409);
+    const scheduled = actor === "scheduler";
+    if (this.ledger.operations.filter(operation => operation.scheduled === scheduled).length >= (scheduled ? SERVICE_HISTORY_LIMIT : MANUAL_HISTORY_LIMIT) || this.ledger.operations.filter(operation => operation.state === "queued" || operation.state === "running").length >= this.policy.queueLimit) throw new BackupError("backup_limit", 409);
     const id = `backup-${randomUUID()}`;
     const operation: Operation = { operationId: randomUUID(), backupId: id, actorId: actorId(actor), key, state: "queued", createdAt: this.iso(), finishedAt: null, error: null, destination: destination ? resolve(destination) : join(this.policy.directory!, id), scheduled: actor === "scheduler", manifestHash: null };
     this.ledger.operations.push(operation);
@@ -138,7 +142,7 @@ export class BackupOperations {
   async close(): Promise<void> {
     this.closed = true; if (this.timer) clearTimeout(this.timer); this.timer = null;
     for (const operation of this.ledger.operations) if (operation.state === "queued") { operation.state = "interrupted"; operation.error = "backup_interrupted"; operation.finishedAt = this.iso(); }
-    try { this.save(); } finally { await this.drain(); }
+    try { this.save(); } finally { await this.catalog.close(); await this.drain(); }
   }
   private pump(): void {
     if (this.active || this.closed || this.persistenceFailed) return;
@@ -163,20 +167,23 @@ export class BackupOperations {
     operation.finishedAt = this.iso();
     try { this.save(); } catch { operation.state = "failed"; operation.error = "backup_failed"; this.persistenceFailed = true; return; }
     if (operation.state === "succeeded" && operation.scheduled && this.policy.intervalSeconds !== null && !this.closed) {
-      try { this.retain(); this.ledger.retention = "succeeded"; }
+      try { await this.retain(); this.ledger.retention = "succeeded"; }
       catch { this.ledger.retention = "failed"; }
       try { this.save(); } catch { this.ledger.retention = "failed"; this.persistenceFailed = true; }
     }
   }
-  private retain(): void {
+  private async retain(): Promise<void> {
     const protectedIds = this.protectedIds();
     const records = this.ledger.operations.filter(value => value.scheduled && value.state === "succeeded").sort((a,b) => b.createdAt.localeCompare(a.createdAt));
     for (const [index, operation] of records.entries()) {
-      if (protectedIds.has(operation.backupId) || !this.policy.directory || operation.destination !== join(this.policy.directory, operation.backupId) || !existsSync(operation.destination)) continue;
+      if (protectedIds.has(operation.backupId) || this.catalog.verifyingIds.has(operation.backupId) || !this.policy.directory || operation.destination !== join(this.policy.directory, operation.backupId) || !existsSync(operation.destination)) continue;
       if (index < this.policy.retainCount && Date.parse(operation.createdAt) >= this.now() - this.policy.retainDays * 86400 * 1000) continue;
       const stat = lstatSync(operation.destination);
       if (!stat.isDirectory() || stat.isSymbolicLink()) throw new BackupError("backup_invalid");
-      const manifest = this.catalog.verify(operation.backupId);
+      const manifest = await this.catalog.verifyAsync(operation.backupId);
+      if (this.closed || this.protectedIds().has(operation.backupId)) continue;
+      const current = lstatSync(this.catalog.path(operation.backupId));
+      if (current.dev !== stat.dev || current.ino !== stat.ino || recordHash(this.catalog.manifest(operation.backupId)) !== recordHash(manifest)) throw new BackupError("backup_invalid");
       if (recordHash(manifest) !== operation.manifestHash || manifestBytes(manifest) > this.policy.maxBytes) throw new BackupError("backup_invalid");
       rmSync(operation.destination, { recursive: true }); syncDirectory(this.policy.directory);
     }

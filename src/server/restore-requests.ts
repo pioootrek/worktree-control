@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fsyncSync, linkSync, lstatSync, mkdtempSync, openSync, opendirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
-import { BACKUP_LIMITS, parseManifest, readBoundedJson, sha256Schema, validateBackup, validateBackupFiles, ensureStagingCapacity, stageVerifiedBackup } from "./infrastructure/sqlite";
+import { BACKUP_LIMITS, parseManifest, readBoundedJson, sha256Schema, validateBackup, validateBackupFiles, ensureStagingCapacity, stageVerifiedBackup, type ControllerBackupManifest } from "./infrastructure/sqlite";
 import { acquireDatabaseOwnership } from "./infrastructure/sqlite";
 import { durableJson, privateDirectory, syncDirectory } from "./private-storage";
 import { getOwnedRestoreStatus, prepareOwnedRestore, recoverOwnedRestore, restoreActorSchema, type RestoreActor } from "./infrastructure/sqlite";
@@ -46,21 +46,40 @@ function sameRequest(record: Record, actor: RestoreActor): void {
 }
 
 /** Admission only: may run with an open database, never changes live files or starts processes. */
-export function requestControllerRestore(databasePath: string, actorId: string, value: unknown, policy: RestoreRequestPolicy): RestoreRequestStatus {
+function prepareRequest(databasePath: string, actorId: string, value: unknown, policy: RestoreRequestPolicy) {
   const input = requestInputSchema.parse(value), actor = restoreActorSchema.parse({ actorId, backupId: input.backupId, idempotencyKey: input.idempotencyKey });
   policy.authorize(actorId, input.backupId);
   const directory = requestDirectory(databasePath), path = join(directory, `${keyFor(actor)}.json`);
-  try { const record = readRecord(path); sameRequest(record, actor); syncDirectory(directory); syncDirectory(dirname(directory)); return status(record); }
+  try { const record = readRecord(path); sameRequest(record, actor); syncDirectory(directory); syncDirectory(dirname(directory)); return { existing: status(record), actor, directory, path, source: record.source }; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   const entries = opendirSync(directory); let count = 0;
   try { while (entries.readSync()) if (++count >= 1024) throw new Error("Restore request history limit reached; operator review is required."); }
   finally { entries.closeSync(); }
-  const source = resolve(policy.resolveBackup(input.backupId)), manifest = parseManifest(readBoundedJson(join(source, "manifest.json"), BACKUP_LIMITS.manifestBytes));
+  return { existing: null, actor, directory, path, source: resolve(policy.resolveBackup(input.backupId)) };
+}
+export function requestControllerRestore(databasePath: string, actorId: string, value: unknown, policy: RestoreRequestPolicy): RestoreRequestStatus {
+  const context = prepareRequest(databasePath, actorId, value, policy);
+  if (context.existing) return context.existing;
+  const { source, directory } = context, manifest = parseManifest(readBoundedJson(join(source, "manifest.json"), BACKUP_LIMITS.manifestBytes));
   validateBackupFiles(source, manifest); ensureStagingCapacity(directory, manifest);
   const preview = mkdtempSync(join(directory, ".preview-"));
   try {
     const staged = stageVerifiedBackup(source, preview, manifest); durableJson(join(preview, "manifest.json"), staged); validateBackup(preview, staged, true);
   } finally { rmSync(preview, { recursive: true, force: true }); }
+  return publishRequest(context, manifest);
+}
+
+/** Live admission delegates expensive snapshot validation to a bounded adapter. */
+export async function requestControllerRestoreAsync(databasePath: string, actorId: string, value: unknown, policy: RestoreRequestPolicy, verify: (source: string) => Promise<ControllerBackupManifest>): Promise<RestoreRequestStatus> {
+  const context = prepareRequest(databasePath, actorId, value, policy);
+  if (context.existing) return context.existing;
+  const manifest = await verify(context.source);
+  policy.authorize(actorId, context.actor.backupId);
+  if (resolve(policy.resolveBackup(context.actor.backupId)) !== context.source || checksum(parseManifest(readBoundedJson(join(context.source, "manifest.json"), BACKUP_LIMITS.manifestBytes))) !== checksum(manifest)) throw new Error("Restore source changed during validation.");
+  return publishRequest(context, manifest);
+}
+
+function publishRequest({ actor, source, directory, path }: ReturnType<typeof prepareRequest>, manifest: ControllerBackupManifest): RestoreRequestStatus {
   const record: Record = { formatVersion: 1, operationId: randomUUID(), actor, createdAt: new Date().toISOString(), source, manifestHash: checksum(manifest), state: "requested" };
   const temporary = join(directory, `.request-${record.operationId}`);
   const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);

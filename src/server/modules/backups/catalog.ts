@@ -1,13 +1,16 @@
 import { lstatSync, mkdtempSync, opendirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { backupIdSchema, type BackupEntry } from "@/shared/contracts/backups";
-import { BACKUP_LIMITS, ensureStagingCapacity, parseManifest, readBoundedJson, stageVerifiedBackup, validateBackup, type ControllerBackupManifest } from "@/server/infrastructure/sqlite";
-import { durableJson, privateDirectory } from "@/server/private-storage";
+import { BACKUP_LIMITS, parseManifest, readBoundedJson, verifyBackupSnapshot, type ControllerBackupManifest } from "@/server/infrastructure/sqlite";
+import { privateDirectory } from "@/server/private-storage";
 import { BackupError } from "./policy";
+import { SnapshotVerifier } from "./snapshot-verifier";
 export const manifestBytes = (manifest: ControllerBackupManifest): number => manifest.database.size + manifest.attachments.reduce((sum, file) => sum + file.size, 0);
 /** Catalog paths are resolved exclusively from IDs inside the CLI destination. */
 export class BackupCatalog {
-  constructor(private readonly root: string | undefined, private readonly scratch: string) {}
+  private readonly verifier: SnapshotVerifier;
+  readonly verifyingIds = new Set<string>();
+  constructor(private readonly root: string | undefined, private readonly scratch: string, private readonly maxBytes: number = BACKUP_LIMITS.totalBytes, timeoutSeconds = 300) { this.verifier = new SnapshotVerifier(scratch, timeoutSeconds, maxBytes); }
   path(id: string): string {
     if (!backupIdSchema.safeParse(id).success || !this.root) throw new BackupError("backup_invalid");
     const path = join(privateDirectory(this.root), id), stat = lstatSync(path);
@@ -26,7 +29,7 @@ export class BackupCatalog {
         if (entries.length >= 1024) throw new BackupError("backup_limit");
         try {
           const manifest = this.manifest(item.name);
-          entries.push({ id: item.name, createdAt: manifest.createdAt, sizeBytes: manifestBytes(manifest), compatibility: "supported", verification: "verified", protected: item.name.startsWith("pre-migration-") });
+          entries.push({ id: item.name, createdAt: manifest.createdAt, sizeBytes: manifestBytes(manifest), compatibility: "supported", verification: "unverified", protected: item.name.startsWith("pre-migration-") });
         } catch {
           entries.push({ id: item.name, createdAt: null, sizeBytes: null, compatibility: "unsupported", verification: "failed", protected: true });
         }
@@ -37,18 +40,27 @@ export class BackupCatalog {
   verify(id: string): ControllerBackupManifest {
     return this.verifyPath(this.path(id));
   }
+  async verifyAsync(id: string): Promise<ControllerBackupManifest> {
+    if (this.verifyingIds.has(id)) throw new BackupError("backup_busy", 503);
+    this.verifyingIds.add(id);
+    try { return await this.verifyPathAsync(this.path(id)); }
+    finally { this.verifyingIds.delete(id); }
+  }
+  async verifyPathAsync(source: string): Promise<ControllerBackupManifest> {
+    privateDirectory(source);
+    const manifest = parseManifest(readBoundedJson(join(source, "manifest.json"), BACKUP_LIMITS.manifestBytes, true));
+    if (manifestBytes(manifest) > this.maxBytes) throw new BackupError("backup_limit");
+    return this.verifier.verify(source);
+  }
+  async close(): Promise<void> { await this.verifier.close(); }
   /** Only server-recorded destinations or catalog paths may reach this method. */
   verifyPath(source: string): ControllerBackupManifest {
     const stat = lstatSync(source);
     if (!stat.isDirectory() || (stat.mode & 0o077) || (process.getuid && stat.uid !== process.getuid())) throw new BackupError("backup_invalid");
     privateDirectory(source);
-    const manifest = parseManifest(readBoundedJson(join(source, "manifest.json"), BACKUP_LIMITS.manifestBytes, true));
-    ensureStagingCapacity(this.scratch, manifest);
     const temporary = mkdtempSync(join(this.scratch, ".verify-"));
     try {
-      const staged = stageVerifiedBackup(source, temporary, manifest);
-      durableJson(join(temporary, "manifest.json"), staged); validateBackup(temporary, staged, true);
-      return manifest;
+      return verifyBackupSnapshot(source, this.scratch, temporary);
     } finally { rmSync(temporary, { recursive: true, force: true }); }
   }
 }
