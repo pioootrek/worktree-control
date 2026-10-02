@@ -31,6 +31,21 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+        id: check
+      - name: Diagnose failed unit checks without changing their result
+        if: failure() && steps.check.outcome == 'failure'
+        run: |
+          node -e 'const os=require("node:os");console.log(JSON.stringify({node:process.version,availableParallelism:os.availableParallelism(),memoryBytes:os.totalmem(),load:os.loadavg()}))'
+          df -h . /tmp
+          pnpm test src/server/restore-recovery.test.ts src/server/test-job-manager.test.ts src/server/infrastructure/sqlite/durable-migrations.test.ts src/server/infrastructure/sqlite/sqlite-state-store.test.ts --maxWorkers=1 --reporter=json --outputFile=unit-failure-diagnostic.json
+      - name: Retain unit failure timings
+        if: failure() && steps.check.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: unit-failure-diagnostic
+          path: unit-failure-diagnostic.json
+          retention-days: 7
+          if-no-files-found: warn
       - run: pnpm build
       - name: Install verified Caddy fixture
         shell: bash
