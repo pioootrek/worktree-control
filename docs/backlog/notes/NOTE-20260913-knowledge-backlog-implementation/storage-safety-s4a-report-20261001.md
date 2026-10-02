@@ -16,7 +16,11 @@ Prace wykonano na `feat/sqlite-backup-operations`, w osobnym worktree
 zapisano przed kodowaniem i zsynchronizowano na `main` w
 `2ec416287101a3cd9c5b43b4ad608ea4d773fea3`. Implementacja jest w
 [PR #72](https://github.com/pioootrek/worktree-switcher/pull/72).
-Końcowy head po follow-up Opusa: `dcbf1a7e7dc47001710fe26dc5daf113ff708ae1`.
+Końcowy head po poprawce ponownego połączenia GUI i diagnostyce CI:
+`4914ef90e807aa8b3afe54309fc6b66a5c6fe297`.
+Kod aplikacji jest identyczny z `3138353454e53a7a2a323ad7fae6e0d96aa2313b`;
+ostatni commit zmienia wyłącznie workflow CI.
+Head wcześniejszego follow-up Opusa: `dcbf1a7e7dc47001710fe26dc5daf113ff708ae1`.
 Wcześniejszy follow-up Kimi: `de89e998149112ffbe44c10f4a6a2a420c049ebb`.
 Pierwotne dostarczenie: `1147b2ff0269eb6d63dd3df81a104b5aee22707c`.
 Raport i backlog są oddzielnym commitem dokumentacji na `main`.
@@ -105,6 +109,72 @@ poza bazą i przywracana przed listenerami; wszystkie przywrócone poświadczeni
 zakresowe zostają unieważnione. Dawny token instalacji nie odzyskuje zaufania.
 Ponowienie naprawia potwierdzenie, zamiast wykonywać drugi restore.
 CLI odmawia dostępu offline, gdy ten fence pozostaje niedokończony.
+
+## Ponowne połączenie GUI i timeouty CI — 2026-10-02
+
+`3138353` zachowuje autoryzowany katalog po `404 backup_invalid` statusu
+wcześniej zapisanego create/restore, dla którego admission nie utworzył receipt.
+Dialog pokazuje błąd i umożliwia jawne ponowienie z tym samym kluczem;
+nie pokazuje sukcesu ani nie inicjuje drugiej operacji automatycznie.
+Odpowiedź HTTP 403 usuwa katalog, podgląd, operację i retry również wtedy,
+gdy jej kod nie jest `backup_forbidden`. Dodano regresje dla create i restore,
+odmowy polityki, braku receipt i cofnięcia autoryzacji.
+
+Przed poprawką dwie nowe regresje UI nie przeszły (9 PASS, 2 FAIL).
+Po poprawce roboczy przebieg miał 14 PASS, ale był brudny i nie stanowi
+czystego zaliczenia. Brudny pełny check z 781 PASS / 1 FAIL też nie jest PASS.
+Wszystkie robocze wyniki i obserwacje Git zachowano w pliku dowodów.
+
+| Preset na czystym `3138353` | Run ID | Wynik |
+| --- | --- | --- |
+| `node:check` | `9d750025-a26b-4e3b-86e8-d0642ea0e319` | PASS: lint, typy, 782 Vitest + 7 skryptów |
+| `node:build` | `b30988d9-2c0a-42d9-a4df-9738ac637a2b` | PASS |
+| `node:test:ui:backups` | `dfb24b5f-71c2-4ca1-b5d2-b66e722faf63` | PASS: 14 testów |
+| `node:test:backups` | `786be92e-8876-48e8-98f1-fcfdd0c58a66` | PASS: 64 testy |
+
+Każdy z tych przebiegów zakończył się exit 0, z czystym enqueue/preflight/finish
+i `observed_match`. Nie uruchamiano ani nie przełączano serwera developerskiego.
+
+[CI 36978679398](https://github.com/pioootrek/worktree-switcher/actions/runs/36978679398)
+na `3138353` zakończył się błędem w obu próbach. Próba 1: 781 PASS / 1 FAIL,
+timeout 5000 ms w launch evidence `sqlite-state-store` (6424 ms).
+Próba 2: 778 PASS / 4 FAIL: ENOSPC replacement restore (6126 ms), request-fsync
+replay (5458 ms), cancellation terminal (5158 ms), shm-hardlink (6352 ms).
+Budowanie, integracje, browser i kontrole pakietu w tych próbach były pominięte.
+Test launch evidence przeszedł w próbie 2 (1598 ms), a cztery pozostałe
+przeszły w próbie 1 (1341/1878/748/2274 ms). Pliki tych testów i konfiguracja
+Vitest są niezmienione względem `main`.
+
+Ukierunkowane cztery pliki przeszły lokalnie po 149 testów przy jednym
+i czterech workerach; pełny czysty check też przeszedł. Ukierunkowane czasy
+przy jednym workerze: 1065/2030/580/7/260 ms odpowiednio dla ENOSPC,
+request-fsync, cancellation, shm-hardlink i launch evidence. Porównanie nie
+odtworzyło awarii i nie dowodzi przyczyny. Równoczesne trwałe I/O lub
+planowanie runnera pozostają hipotezami, bez dowodu przeciążenia ani naprawy
+backendu. Nie podniesiono timeoutów, nie osłabiono asercji i nie dodano retry.
+Pierwszą błędnie zadaną komendę diagnostyczną przerwano (exit 143);
+nie została zaliczona. Zweryfikowany osierocony proces fixture po tej komendzie
+zakończono przed poprawnym porównaniem.
+
+`4914ef9` dodaje diagnostykę wyłącznie po nieudanym check: te same cztery pliki
+z jednym workerem, czasy w JSON i zachowanie artefaktu na tym samym runnerze.
+Pierwotny check pozostaje nieudany, nawet gdy diagnostyka przejdzie.
+YAML i `git diff --check` przeszły.
+[Końcowy CI 36998292347](https://github.com/pioootrek/worktree-switcher/actions/runs/36998292347)
+na head `4914ef9` przeszedł wszystkie cztery joby: check (782 Vitest + 7 skryptów),
+build, HTTPS (1), integracje (30), UI (149), E2E (3), smoke pakietu na Node
+22.23.2/24.21.0 i lifecycle na jednorazowym runnerze. Kroki diagnostyczne były
+pominięte, ponieważ check przeszedł; ten wynik nie ustala przyczyny poprzednich
+timeoutów. Zielony CI `36932383355` nadal dotyczy wyłącznie wcześniejszego `dcbf1a7`.
+
+Pakiet pochodzi z czystego syntetycznego merge
+`67e44dcb44c4c75b473171a0efd394700ec09dfb`; ma 824318 bajtów i SHA256
+`174e2a96db27c3ca8c8ff66bffb8b14e2457b2edac5dcebbc84881cd6bfadbf9`.
+Checksumy tarballa i skryptów smoke/lifecycle pasują do provenance, a helper
+backup-verifier jest w tarballu. Oba raporty smoke mają po 14 udanych kroków
+oraz graceful cleanup; lifecycle przeszedł bez faults i zachował dane po
+usunięciu izolowanej usługi. `pending-package-smoke` w provenance to stan
+z chwili pakowania, oddzielne raporty potwierdzają zakończenie.
 
 ## Follow-up niezapisanych uwag Opusa — 2026-10-02
 
@@ -323,6 +393,7 @@ aktualizacji ze starego zainstalowanego artefaktu ani próby na produkcyjnej baz
 Nie zmieniano produkcji, usług ani hostowych limitów.
 
 PR jest gotowy do review, wszystkie wymagane kontrole są zielone.
-Nie ma rzeczywistego blokera w dostarczeniu S4a. Zadanie nadrzędne
+Końcowy CI nie ma blokera w dostarczeniu S4a; przyczyna wcześniejszych
+timeoutów pozostaje nieustalona. Zadanie nadrzędne
 pozostaje otwarte. S4u, transfer poza hosta S4b, odbiór S5 i późniejszy cutover
 nie zostały rozpoczęte. Nie scalono PR i nie wdrożono produkcji.
