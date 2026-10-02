@@ -139,11 +139,16 @@
       "author": "agent:codex",
       "date": "2026-10-02",
       "text": "Started only S4u from fetched main c7f3cca, confirming merged S4a 0c2f187. Created isolated worktree worktree-switcher-s4u and feat/sqlite-user-backup-schedules. Published pre-implementation contract storage-safety-s4u-protocol.md: default-off independent CLI policy, bounded knowledge-discussions projection (existing raw transfer is unsafe for this scope), current scoped principal/grants, external durable application schedule/deadline records, shared S4a executor, isolated retention and restore credential revalidation. No implementation or acceptance claimed; parent remains open."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-02",
+      "text": "S4u delivered for review in PR #73 (https://github.com/pioootrek/worktree-switcher/pull/73), final feature SHA 31e9ccd9e22d4dcf0e1e85656b4d841b8fee13f3. Independent default-off CLI user policy, scoped-principal GUI/API schedules, narrow project discussion projection, shared single S4a executor with service priority, external durable version/deadline/idempotency records, isolated retention and online/offline restore credential revalidation are implemented. No SQLite schema change or second live connection. Clean managed build/integration (32)/UI (164) passed on final SHA with observed_match. Earlier local check (827 + 7 scripts) and focused S4u (46 including three SIGKILL boundaries) retain their original SHA attribution. Final CI 37050621798 is green: lint/types, 828 Vitest + 7 scripts, build/HTTPS, integration/UI/E2E (3), 14-step installed package smoke on Node 22.23.2 and 24.21.0, disposable systemd lifecycle. Package SHA256 c8cc7e154df46acbd39b62b627c7b947b83898c058a1ceea761f4d2987d1f615 from clean synthetic merge f937bd9ef82d9b2531a13cf9feacb29808b7d7a4; checksums/provenance/bundled S4u audited. Dated report, sanitized evidence and selected screenshots record corrected failures, changed-source exclusion and limits. Only knowledge-discussions is available; no SaaS human-account adapter, hard filesystem-call timeout, power-loss proof, old-artifact upgrade or external-ledger new-host recovery proof. Parent remains open; no merge/deployment, host limits/service change, transfer, client restore, attachment GC or S4b/S5 work."
     }
   ],
   "priority": "next",
   "problem": [
-    "Main includes SQLite ownership, durable migrations and attachments, recoverable restore and S4a optional operational backup scheduling/retention with operator GUI through merged PRs #68–#72. S4u user schedules, S4b off-host transfer and S5 operational acceptance remain incomplete.",
+    "Main includes SQLite ownership, durable migrations and attachments, recoverable restore and S4a optional operational backup scheduling/retention with operator GUI through merged PRs #68–#72. S4u user schedules are submitted for review in PR #73; S4b off-host transfer and S5 operational acceptance remain incomplete.",
     "Knowledge cutover needs verified backup operations, private file handling, exclusive database ownership and recorded failure/restore evidence. The existing K7a pilot does not prove these guarantees."
   ],
   "risk": {

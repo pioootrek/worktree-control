@@ -1,7 +1,7 @@
 # Plan domknięcia bezpieczeństwa danych SQLite
 
 Aktualizacja: 2026-10-02. Status: S1–S3 i S4a scalone;
-S4u, S4b i S5 pozostają do wykonania.
+S4u dostarczono do review w PR #73; S4b i S5 pozostają do wykonania.
 Stan realizacji jest poniżej; pierwotna diagnoza zachowana jako punkt odniesienia.
 Zadanie: [RWK-20260928-sqlite-data-safety](../../rework/RWK-20260928-sqlite-data-safety.json).
 Kod sprawdzony przy tworzeniu planu: `6a9df6e0879b4b9ad69969b1cc4b5bd4264a363c`.
@@ -26,9 +26,21 @@ rozdziela lokalne wyniki dla kodu aplikacji od końcowego CI `36998292347`:
 782 Vitest, 7 testów skryptów, build, HTTPS, 30 integracyjnych, 149 UI,
 3 E2E, smoke pakietu Node 22/24 i lifecycle na jednorazowym runnerze.
 Przyczyna wcześniejszych timeoutów pozostaje nieustalona; dodano diagnostykę
-bez zmiany timeoutów, asercji ani retry. Następny slice to S4u.
-S4u nadal obejmuje niezależne harmonogramy użytkowników, S4b transfer poza
-hosta, a S5 odbiór operacyjny. Nie rozpoczęto kolejnego slice'a.
+bez zmiany timeoutów, asercji ani retry.
+
+S4u dostarczono w [PR #73](https://github.com/pioootrek/worktree-switcher/pull/73),
+head `31e9ccd9e22d4dcf0e1e85656b4d841b8fee13f3`.
+Niezależna polityka CLI domyślnie wyłącza harmonogramy użytkowników;
+GUI/API zarządza własnymi rekordami, a wspólny executor S4a wykonuje wyłącznie
+ograniczony eksport `knowledge-discussions` po sprawdzeniu tożsamości i grantów.
+Zewnętrzny dziennik terminów i receipt nie cofa się wraz z SQLite;
+online/offline restore wymaga świeżego poświadczenia i jawnej ponownej walidacji.
+[Raport S4u](storage-safety-s4u-report-20261002.md) zawiera kontrakt,
+wyniki MCP przypisane do SHA, błędy i ograniczenia. Końcowe CI `37050621798`
+przeszło: 828 Vitest + 7 skryptów, build/HTTPS, 32 integracyjne, 164 UI,
+3 E2E, smoke pakietu Node 22/24 i jednorazowy lifecycle systemd.
+PR pozostaje niescalony. S4b obejmuje transfer poza hosta, a S5 odbiór
+operacyjny; żadnego z tych slice'ów nie rozpoczęto.
 Zadanie nadrzędne pozostaje otwarte. Nie wykonano
 wdrożenia produkcyjnego; backupy pozostają opcjonalne i domyślnie wyłączone.
 
