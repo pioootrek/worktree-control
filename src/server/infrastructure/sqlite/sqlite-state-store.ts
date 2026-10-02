@@ -265,6 +265,28 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     }).immediate();}catch(error){this.database.transaction(()=>{this.database.prepare("DELETE FROM knowledge_import_staging WHERE batch_id=?").run(batchId);this.database.prepare("UPDATE knowledge_import_batches SET status='failed',error=?,updated_at=? WHERE id=? AND status='staging'").run(error instanceof Error?error.message.slice(0,2000):"Import publication failed.",now,batchId);}).immediate();throw error;}
   }
 
+  /** S4u projection: current discussion content only, never raw history or installation data. */
+  exportUserDiscussions(projectId: string, maxBytes: number): Record<string, unknown> {
+    return this.database.transaction(() => {
+      const project = this.database.prepare("SELECT id, name FROM knowledge_projects WHERE id = ? AND status = 'active'").get(projectId);
+      if (!project) throw new Error("Discussion project unavailable.");
+      const definitions = [
+        { table: "knowledge_threads", fields: "id, title, body, revision, created_at AS createdAt, updated_at AS updatedAt", text: "length(CAST(title AS BLOB)) + length(CAST(body AS BLOB))" },
+        { table: "knowledge_replies", fields: "id, thread_id AS threadId, body, revision, created_at AS createdAt, updated_at AS updatedAt", text: "length(CAST(body AS BLOB))" },
+      ];
+      let bytes = 0;
+      for (const { table, text } of definitions) {
+        const size = this.database.prepare(`SELECT count(*) AS count, coalesce(sum(${text}), 0) AS bytes FROM ${table} WHERE project_id = ?`).get(projectId) as { count: number; bytes: number };
+        bytes += size.bytes;
+        if (size.count > 1000 || bytes > Math.min(maxBytes, 16 * 1024 ** 2)) throw new Error("Discussion export exceeds content limits.");
+      }
+      const invalid = this.database.prepare("SELECT 1 FROM knowledge_replies r LEFT JOIN knowledge_threads t ON r.thread_id = t.id AND r.project_id = t.project_id WHERE r.project_id = ? AND t.id IS NULL LIMIT 1").get(projectId);
+      if (invalid) throw new Error("Discussion references an unavailable thread.");
+      const rows = definitions.map(({ table, fields }) => this.database.prepare(`SELECT ${fields} FROM ${table} WHERE project_id = ? ORDER BY id LIMIT 1000`).all(projectId));
+      return { project, threads: rows[0], replies: rows[1] };
+    })();
+  }
+
   exportKnowledgeProject(projectId: string): KnowledgeProjectSnapshot | null {
     const project = this.database.prepare("SELECT * FROM knowledge_projects WHERE id = ?").get(projectId) as Record<string, unknown> | undefined;
     if (!project) return null;

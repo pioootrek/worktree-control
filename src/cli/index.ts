@@ -1,5 +1,6 @@
+import { parseUserBackupOptions } from "./user-backup-options";
 #!/usr/bin/env node
-import { BackupOperations, RestoreOperations, recoverBackupHandoff, finishBackupHandoff, assertBackupHandoffCompleted } from "../server/modules/backups";
+import { UserSchedules, BackupOperations, RestoreOperations, recoverBackupHandoff, finishBackupHandoff, assertBackupHandoffCompleted } from "../server/modules/backups";
 import { backupAdminHandler } from "../server/backup-admin";
 import { parseBackupPolicyOptions, validateBackupPolicyDestination } from "./backup-policy-options";
 import type { ControllerLock } from "../server/controller-lock";
@@ -69,6 +70,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
   const backupPolicy = parseBackupPolicyOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
+  const userBackupPolicy = parseUserBackupOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
   const migrationBackup = parseMigrationBackupOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
   validateBackupPolicyDestination(backupPolicy);
   const knowledgeArgs = command === "knowledge" ? parseKnowledgeCommandArgs(process.argv.slice(3)) : undefined;
@@ -165,6 +167,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     controllerLock.release();
     throw error;
   }
+  let userSchedules: UserSchedules | undefined;
   let backups: BackupOperations;
   try {
     backups = new BackupOperations(backupPolicy, {
@@ -183,6 +186,19 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     ...(projectId ? { projectIds: [projectId] } : {}),
   }));
   const identity = new IdentityService(store, undefined, undefined, undefined, authentication);
+  try {
+    userSchedules = new UserSchedules(userBackupPolicy, backups, {
+      authorize: (actor, projectId) => {
+        identity.describeIdentity(actor);
+        if (projectId) {
+          identity.authorizeKnowledge(actor, projectId, "knowledge:read");
+          identity.authorizeKnowledge(actor, projectId, "knowledge:export");
+        }
+      },
+      projectName: projectId => store.getKnowledgeProject(projectId)?.name ?? null,
+      exportDiscussions: (projectId, maxBytes) => store.exportUserDiscussions(projectId, maxBytes),
+    });
+  } catch (error) { userSchedules?.close(); await backups.close(); await logs.close(); store.close(); controllerLock.release(); throw error; }
   const attachments = new KnowledgeAttachmentService(store, identity, paths.knowledgeAttachmentDirectory);
   const knowledge = new KnowledgeService(store, identity, undefined, undefined, events.publishKnowledge, attachments);
   const service = new ControlService(store, new SystemGitWorktreeReader(), processes, logs, undefined, storage, undefined, undefined, tests, lifecycle, knowledge);
@@ -241,13 +257,13 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     identity,
     authentication,
     publicOrigin,
-    backups, restores, maintenance: () => maintenance,
+    backups, restores, userSchedules, maintenance: () => maintenance,
   });
   try {
     await listen(controller.server, port, host);
     if (mcp) await listen(mcp.server, mcpPort, "127.0.0.1");
   } catch (error) {
-    await backups.close();
+    userSchedules?.close(); await backups.close();
     await mcp?.close();
     await controller.close();
     await service.shutdown();
@@ -298,7 +314,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       return authenticationHandler(body);
     });
   } catch (error) {
-    await backups.close();
+    userSchedules?.close(); await backups.close();
     await mcp?.close();
     await controller.close();
     await service.shutdown();
@@ -323,6 +339,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
 
   if (!process.argv.includes("--no-open") && !serviceMode) openBrowser(interactiveAddress);
   backups.start();
+  userSchedules.start();
   let closing = false;
   const shutdown = async (handoff = false) => {
     if (closing) return;
@@ -335,7 +352,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     writeCliLine(translate(locale, "cli.stopping"));
     try {
       let backupFailure: unknown = null;
-      try { await backups.close(); } catch (error) { backupFailure = error; }
+      try { userSchedules?.close(); await backups.close(); } catch (error) { backupFailure = error; }
       const listeners = await Promise.allSettled([mcp?.close(), controller.close(), adminSocket.close()]);
       const listenerFailures = listeners.filter((result) => result.status === "rejected");
       let serviceFailure: unknown = null;
@@ -368,6 +385,7 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
   if (action === "install") {
     const migrationBackup = parseMigrationBackupOptions(args);
     const backupPolicy = parseBackupPolicyOptions(args);
+    const userBackupPolicy = parseUserBackupOptions(args);
     const entrypointPath = realpathSync(resolve(process.argv[1]));
     if (extname(entrypointPath) !== ".js") {
       throw new Error("Build Worktree Switcher first, then install the service with: node dist/cli/index.js service install");
@@ -396,7 +414,7 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
       memoryWarningMiB,
       publicOrigin,
       ...migrationBackup,
-      backupPolicy,
+      backupPolicy, userBackupPolicy,
     });
     const result = manager.install({
       nodePath: resolve(process.execPath),
