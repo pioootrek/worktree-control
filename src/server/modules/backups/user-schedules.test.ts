@@ -22,7 +22,7 @@ function fixture(userOptions: Record<string, unknown> = {}, serviceOptions: Reco
   const agent = identity.createAgent(owner), token = identity.issueAgentToken({ principalId: agent.id, label: "other user" }, owner), other = identity.authenticateBearer(token.token);
   identity.setKnowledgeGrant({ projectId: project.id, principalId: agent.id, permissions: ["knowledge:read", "knowledge:export"] }, owner);
   const knowledge = new KnowledgeService(store, identity);
-  const thread = knowledge.createThread({ projectId: project.id, title: "Visible topic", body: "Visible content", idempotencyKey: "thread" }, owner);
+  const thread = knowledge.createThread(project.id, { title: "Visible topic", body: "Visible content" }, { idempotencyKey: "thread" }, owner);
   let now = Date.now(), maintenance = false, failExport = false;
   const backups = new BackupOperations(backupPolicySchema.parse({ directory: join(root, "service"), ...serviceOptions }), { source: store, databasePath: join(root, "state.sqlite3"), attachmentDirectory: join(root, "attachments"), applicationVersion: "test", estimateBytes: () => store.backupEstimateBytes(), authorize: () => true, maintenance: () => maintenance, clock: () => now });
   const policy = userBackupPolicySchema.parse({ enabled: true, projects: [project.id], targets: [{ id: "local", directory: join(root, "exports") }], minIntervalSeconds: 60, ...userOptions });
@@ -63,7 +63,7 @@ describe("independent user export schedules", () => {
   it("exports only allowlisted discussion fields, excluding raw history, identities, secrets and another project", async () => {
     const f = fixture(); const otherProject = f.identity.createKnowledgeProject({ name: "OTHER TENANT" }, f.owner);
     f.identity.setKnowledgeGrant({ projectId: otherProject.id, principalId: f.owner.principalId, permissions: ["knowledge:write"] }, f.owner);
-    f.knowledge.createThread({ projectId: otherProject.id, title: "OTHER SECRET", body: "OTHER CONTENT", idempotencyKey: "other" }, f.owner);
+    f.knowledge.createThread(otherProject.id, { title: "OTHER SECRET", body: "OTHER CONTENT" }, { idempotencyKey: "other" }, f.owner);
     f.save(); f.advance(); f.schedules.tick(); await f.backups.drain();
     const run = f.schedules.overview(f.owner).artifacts[0], artifact = f.schedules.command(f.owner, { action: "artifact", executionId: run.executionId });
     const serialized = JSON.stringify(artifact);

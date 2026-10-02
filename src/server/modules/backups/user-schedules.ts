@@ -85,32 +85,32 @@ export class UserSchedules {
   command(actor: AuthenticatedPrincipal, input: UserScheduleCommand): UserSchedule | Record<string, unknown> {
     this.authenticate(actor);
     const parsed = userScheduleCommandSchema.safeParse(input); if (!parsed.success) throw new UserBackupError("invalid");
-    input = parsed.data;
-    if (input.action === "artifact") {
-      const execution = this.ledger.executions.find(value => value.executionId === input.executionId && value.configuration.ownerId === actor.principalId);
+    const command = parsed.data;
+    if (command.action === "artifact") {
+      const execution = this.ledger.executions.find(value => value.executionId === command.executionId && value.configuration.ownerId === actor.principalId);
       if (!execution || execution.state !== "succeeded" || !this.canRead(execution.configuration, actor)) throw new UserBackupError("forbidden", 403);
       return this.readArtifact(execution);
     }
-    const receipt = this.ledger.mutations.find(value => value.ownerId === actor.principalId && value.key === input.idempotencyKey);
-    if (input.action === "status") {
+    const receipt = this.ledger.mutations.find(value => value.ownerId === actor.principalId && value.key === command.idempotencyKey);
+    if (command.action === "status") {
       if (!receipt) throw new UserBackupError("invalid", 404);
       if (!this.canRead(receipt.response, actor)) throw new UserBackupError("forbidden", 403);
       return this.publicSchedule(receipt.response, actor);
     }
     if (receipt) {
-      if (receipt.hash !== recordHash(input)) throw new UserBackupError("changed", 409);
+      if (receipt.hash !== recordHash(command)) throw new UserBackupError("changed", 409);
       if (!this.canRead(receipt.response, actor)) throw new UserBackupError("forbidden", 403);
       return this.publicSchedule(receipt.response, actor);
     }
     this.admission();
-    const existing = this.ledger.schedules.find(value => value.id === input.id);
+    const existing = this.ledger.schedules.find(value => value.id === command.id);
     if (existing && existing.ownerId !== actor.principalId) throw new UserBackupError("forbidden", 403);
-    if ((existing?.version ?? 0) !== input.version) throw new UserBackupError("changed", 409);
+    if ((existing?.version ?? 0) !== command.version) throw new UserBackupError("changed", 409);
     if (this.ledger.mutations.length >= 1024 || (!existing && (this.ledger.schedules.length >= 256 || this.ledger.schedules.filter(value => value.ownerId === actor.principalId).length >= this.policy.maxSchedules))) throw new UserBackupError("limit", 409);
-    const schedule: Schedule = { ...input.configuration, id: input.id, ownerId: actor.principalId, actor: { ...actor }, version: input.version + 1, nextAt: input.configuration.enabled ? this.now() + input.configuration.intervalSeconds * 1000 : null, reason: null, retention: "idle" };
+    const schedule: Schedule = { ...command.configuration, id: command.id, ownerId: actor.principalId, actor: { ...actor }, version: command.version + 1, nextAt: command.configuration.enabled ? this.now() + command.configuration.intervalSeconds * 1000 : null, reason: null, retention: "idle" };
     this.validate(schedule);
     if (existing) this.ledger.schedules[this.ledger.schedules.indexOf(existing)] = schedule; else this.ledger.schedules.push(schedule);
-    this.ledger.mutations.push({ ownerId: actor.principalId, key: input.idempotencyKey, hash: recordHash(input), response: { ...schedule } });
+    this.ledger.mutations.push({ ownerId: actor.principalId, key: command.idempotencyKey, hash: recordHash(command), response: { ...schedule } });
     this.save(); return this.publicSchedule(schedule, actor);
   }
   start(): void { if (this.policy.enabled && !this.closed) { this.tick(); this.arm(); } }

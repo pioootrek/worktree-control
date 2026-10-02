@@ -1,5 +1,5 @@
-import { parseUserBackupOptions } from "./user-backup-options";
 #!/usr/bin/env node
+import { parseUserBackupOptions } from "./user-backup-options";
 import { UserSchedules, BackupOperations, RestoreOperations, recoverBackupHandoff, finishBackupHandoff, assertBackupHandoffCompleted } from "../server/modules/backups";
 import { backupAdminHandler } from "../server/backup-admin";
 import { parseBackupPolicyOptions, validateBackupPolicyDestination } from "./backup-policy-options";
