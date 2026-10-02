@@ -109,10 +109,10 @@ function UserSchedulesPanel({ token, onOpenChange, returnFocus, disconnect }: Di
   const update = (patch: Partial<UserScheduleInput>) => setDraft(value => value ? { ...value, configuration: { ...value.configuration, ...patch } } : null);
   const date = (value: string | null) => value ? new Date(value).toLocaleString(locale) : t("backups.unknown");
   return <Dialog open onOpenChange={onOpenChange}>
-    <DialogContent closeLabel={t("common.close")} className="max-h-[90dvh] overflow-y-auto sm:max-w-3xl" onCloseAutoFocus={event => { event.preventDefault(); returnFocus(); }}>
+    <DialogContent closeLabel={t("common.close")} className="max-h-[90dvh] grid-cols-1 overflow-y-auto sm:max-w-3xl" onCloseAutoFocus={event => { event.preventDefault(); returnFocus(); }}>
       <DialogHeader><DialogTitle>{t("userBackups.title")}</DialogTitle><DialogDescription>{t("userBackups.description")}</DialogDescription></DialogHeader>
       {error && <p role="alert" className="break-words text-sm text-destructive">{error}</p>}
-      <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={pending} onClick={disconnect}>{t("userBackups.disconnect")}</Button><Button variant="outline" disabled={pending} onClick={() => void refresh()}>{t("backups.refresh")}</Button>
+      <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={pending} onClick={disconnect} className="h-auto min-h-9 max-w-full whitespace-normal text-start">{t("userBackups.disconnect")}</Button><Button variant="outline" disabled={pending} onClick={() => void refresh()}>{t("backups.refresh")}</Button>
         {overview?.policy.enabled && <Button disabled={pending || overview.maintenance || !overview.projects.length || !overview.targets.length} onClick={startDraft}>{t("userBackups.create")}</Button>}
         {retry && <Button variant="outline" disabled={pending} onClick={() => void save(retry)}>{t("backups.retry")}</Button>}
       </div>

@@ -56,10 +56,11 @@ for (const locale of ["en", "pl"] as const) {
     expect(f.errors).toEqual([]);
   });
   for (const width of [1440, 1366, 390, 320]) test(`layout ${width}px in ${locale}`, async ({ page }, testInfo) => {
-    await page.addInitScript(theme => localStorage.setItem("theme", theme), width === 320 || width === 1366 ? "light" : "dark");
+    await page.addInitScript(theme => localStorage.setItem("worktree-switcher-theme", theme), width === 320 || width === 1366 ? "light" : "dark");
     await page.setViewportSize({ width, height: 650 }); await mount(page); if (locale === "pl") await selectLanguage(page);
     await openSystemDialog(page, "userBackups.title", locale); await page.getByRole("button", { name: add }).click();
     const dialog = page.getByRole("dialog"); await expect(dialog.getByRole("button", { name: save })).toBeVisible();
+    expect(await page.locator("html").evaluate(element => element.classList.contains("dark"))).toBe(width !== 320 && width !== 1366);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath(`s4u-${locale}-${width}.png`) });
