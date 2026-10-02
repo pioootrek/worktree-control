@@ -134,6 +134,11 @@
       "author": "agent:codex",
       "date": "2026-10-02",
       "text": "Owner authorized merge of S4a PR #72. Merged at 0c2f187a2865549ce73b3ad79e8be84b4ebf55f4 (2026-10-02T17:50:47Z), exact feature head 4914ef90e807aa8b3afe54309fc6b66a5c6fe297. All four final CI 36998292347 jobs passed: check (782 Vitest + 7 scripts), build/HTTPS, 30 integration, 149 UI, 3 E2E, package smoke Node 22/24 and disposable service lifecycle. Both GitHub review threads are resolved. Includes reconnect fix preserving authorized catalog and original retry key after missing admission receipt; 403 still removes protected data. Earlier timeout cause remains unproven; diagnostics added without weakening checks. Plan/report updated on main. S4a closed; parent remains open for S4u, S4b/S5 and operational limits. No production deployment or next slice started."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-02",
+      "text": "Started only S4u from fetched main c7f3cca, confirming merged S4a 0c2f187. Created isolated worktree worktree-switcher-s4u and feat/sqlite-user-backup-schedules. Published pre-implementation contract storage-safety-s4u-protocol.md: default-off independent CLI policy, bounded knowledge-discussions projection (existing raw transfer is unsafe for this scope), current scoped principal/grants, external durable application schedule/deadline records, shared S4a executor, isolated retention and restore credential revalidation. No implementation or acceptance claimed; parent remains open."
     }
   ],
   "priority": "next",
