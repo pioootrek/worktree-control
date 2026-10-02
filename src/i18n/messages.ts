@@ -2,6 +2,11 @@ export type Locale = "pl" | "en";
 export type TranslationValues = Record<string, string | number>;
 
 const pl = {
+  "userBackups.credential": "Poświadczenie zakresowe",
+  "userBackups.credentialHelp": "Podaj sesję właściciela lub token agenta. Ta sesja dotyczy tylko własnych harmonogramów i nie zmienia sesji instalacji.",
+  "userBackups.connect": "Połącz harmonogramy",
+  "userBackups.disconnect": "Zmień poświadczenie harmonogramów",
+
   "userBackups.title": "Moje harmonogramy eksportu",
   "userBackups.description": "Eksport treści dyskusji projektu. Bez historii, tożsamości i załączników. Kopie lokalne nie chronią przed utratą hosta.",
   "userBackups.policy": "Polityka operatora (tylko odczyt): minimum {interval} s, {count} harmonogramów, {bytes} B na użytkownika, {seconds} s, kolejka {queue}.",
@@ -886,6 +891,11 @@ const pl = {
 } as const;
 
 const en: Record<keyof typeof pl, string> = {
+  "userBackups.credential": "Scoped credential",
+  "userBackups.credentialHelp": "Enter an owner session or agent token. This session is only for your schedules and leaves the installation session unchanged.",
+  "userBackups.connect": "Connect schedules",
+  "userBackups.disconnect": "Change schedule credential",
+
   "userBackups.title": "My export schedules",
   "userBackups.description": "Project discussion content export. Excludes history, identities and attachments. Local copies do not protect against host loss.",
   "userBackups.policy": "Operator policy (read only): minimum {interval} s, {count} schedules, {bytes} B per user, {seconds} s, queue {queue}.",

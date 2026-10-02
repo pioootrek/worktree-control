@@ -100,7 +100,7 @@ export function Dashboard() {
                 {!loading && !accessRequired && <DropdownMenuLabel>{dashboardSummary(locale, runningCount, data.projects.length)}</DropdownMenuLabel>}
                 <DropdownMenuItem onSelect={() => setSystemDialog("capacity")}><Gauge aria-hidden />{t("capacity.openSettings")}<span className="ml-auto tabular-nums text-muted-foreground">{data.capacity.enabled ? `${data.capacity.used}/${data.capacity.limit}` : data.capacity.used}</span></DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => setSystemDialog("queue")}><TestTube2 aria-hidden />{t("tests.openSettings")}<span className="ml-auto tabular-nums text-muted-foreground">{data.testQueue.running}/{data.testQueue.limit}{data.testQueue.queued ? ` +${data.testQueue.queued}` : ""}</span></DropdownMenuItem>
-                {knowledgeToken.startsWith("wts_") && <DropdownMenuItem onSelect={() => setSystemDialog("user-backups")}><Gauge aria-hidden />{t("userBackups.title")}</DropdownMenuItem>}
+                <DropdownMenuItem onSelect={() => setSystemDialog("user-backups")}><Gauge aria-hidden />{t("userBackups.title")}</DropdownMenuItem>
                 {token.startsWith("wsi_") && <DropdownMenuItem onSelect={() => setSystemDialog("backups")}><Gauge aria-hidden />{t("backups.title")}</DropdownMenuItem>}
                 <DropdownMenuItem onSelect={() => setSystemDialog("mcp")}><Radio aria-hidden />{t("mcp.openStatus")}<span className="ml-auto text-muted-foreground">{t(`mcp.phase.${data.mcp.phase}`)}</span></DropdownMenuItem>
               </DropdownMenuContent>

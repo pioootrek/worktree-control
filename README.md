@@ -295,7 +295,9 @@ attachments, tasks and memories. The existing full project transfer format is
 not exposed to schedules. Export content remains user-authored project data.
 
 Scoped owner/agent credentials with current `knowledge:read` and `knowledge:export`
-grants open **System → My export schedules**. They manage only their own records
+grants open **System → My export schedules**. The panel accepts a separate scoped
+credential when the dashboard uses an installation token. Its session changes
+neither the installation session nor service policy. They manage only their own records
 and download only authorized complete exports. Installation/open/legacy/worker
 identities cannot own a user schedule. Expired or revoked activation credentials
 block execution; edit with a current credential to reactivate. This version uses

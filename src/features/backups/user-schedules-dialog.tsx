@@ -18,7 +18,26 @@ async function request<T>(token: string, input?: UserScheduleCommand): Promise<T
 }
 const configuration = (schedule: UserSchedule): UserScheduleInput => ({ projectId: schedule.projectId, scope: schedule.scope, targetId: schedule.targetId, enabled: schedule.enabled, intervalSeconds: schedule.intervalSeconds, retainCount: schedule.retainCount, retainDays: schedule.retainDays });
 
-export function UserSchedulesDialog({ token, onOpenChange, returnFocus }: { token: string; onOpenChange: (open: boolean) => void; returnFocus: () => void }) {
+type DialogProps = { token: string; onOpenChange: (open: boolean) => void; returnFocus: () => void };
+export function UserSchedulesDialog({ token: initialToken, onOpenChange, returnFocus }: DialogProps) {
+  const { t } = useI18n();
+  const [token, setToken] = useState(initialToken.startsWith("wts_") ? initialToken : "");
+  const [draftToken, setDraftToken] = useState("");
+  useEffect(() => {
+    if (initialToken.startsWith("wts_")) return;
+    try { const stored = sessionStorage.getItem("worktree-switcher-user-schedule-token"); if (stored?.startsWith("wts_")) setToken(stored); } catch { /* A credential can still be supplied without persistence. */ }
+  }, [initialToken]);
+  const disconnect = () => { try { sessionStorage.removeItem("worktree-switcher-user-schedule-token"); } catch {} setToken(""); setDraftToken(""); };
+  if (token) return <UserSchedulesPanel key={token} token={token} onOpenChange={onOpenChange} returnFocus={returnFocus} disconnect={disconnect} />;
+  return <Dialog open onOpenChange={onOpenChange}><DialogContent closeLabel={t("common.close")} className="max-h-[90dvh] overflow-y-auto" onCloseAutoFocus={event => { event.preventDefault(); returnFocus(); }}>
+    <DialogHeader><DialogTitle>{t("userBackups.title")}</DialogTitle><DialogDescription>{t("userBackups.credentialHelp")}</DialogDescription></DialogHeader>
+    <form className="grid gap-3" onSubmit={event => { event.preventDefault(); const value = draftToken.trim(); if (!value) return; try { sessionStorage.setItem("worktree-switcher-user-schedule-token", value); } catch {} setToken(value); setDraftToken(""); }}>
+      <label className="grid gap-1 text-sm">{t("userBackups.credential")}<input type="password" autoComplete="off" required value={draftToken} onChange={event => setDraftToken(event.target.value)} className="min-w-0 rounded border bg-background p-2" /></label>
+      <Button type="submit">{t("userBackups.connect")}</Button>
+    </form>
+  </DialogContent></Dialog>;
+}
+function UserSchedulesPanel({ token, onOpenChange, returnFocus, disconnect }: DialogProps & { disconnect: () => void }) {
   const { t, locale } = useI18n();
   const [overview, setOverview] = useState<UserScheduleOverview | null>(null);
   const [draft, setDraft] = useState<{ id: string; version: number; configuration: UserScheduleInput } | null>(null);
@@ -93,7 +112,7 @@ export function UserSchedulesDialog({ token, onOpenChange, returnFocus }: { toke
     <DialogContent closeLabel={t("common.close")} className="max-h-[90dvh] overflow-y-auto sm:max-w-3xl" onCloseAutoFocus={event => { event.preventDefault(); returnFocus(); }}>
       <DialogHeader><DialogTitle>{t("userBackups.title")}</DialogTitle><DialogDescription>{t("userBackups.description")}</DialogDescription></DialogHeader>
       {error && <p role="alert" className="break-words text-sm text-destructive">{error}</p>}
-      <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={pending} onClick={() => void refresh()}>{t("backups.refresh")}</Button>
+      <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={pending} onClick={disconnect}>{t("userBackups.disconnect")}</Button><Button variant="outline" disabled={pending} onClick={() => void refresh()}>{t("backups.refresh")}</Button>
         {overview?.policy.enabled && <Button disabled={pending || overview.maintenance || !overview.projects.length || !overview.targets.length} onClick={startDraft}>{t("userBackups.create")}</Button>}
         {retry && <Button variant="outline" disabled={pending} onClick={() => void save(retry)}>{t("backups.retry")}</Button>}
       </div>
