@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { controllerRestoreBoundary } from "../server/restore-requests";
 import { parseUserBackupOptions } from "./user-backup-options";
 import { UserSchedules, BackupOperations, RestoreOperations, recoverBackupHandoff, finishBackupHandoff, assertBackupHandoffCompleted } from "../server/modules/backups";
 import { backupAdminHandler } from "../server/backup-admin";
@@ -187,9 +188,12 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   }));
   const identity = new IdentityService(store, undefined, undefined, undefined, authentication);
   try {
+    const restoreBoundary = controllerRestoreBoundary(paths.databasePath);
     userSchedules = new UserSchedules(userBackupPolicy, backups, {
+      restoreGeneration: () => restoreBoundary.generation,
       authorize: (actor, projectId) => {
         identity.describeIdentity(actor);
+        if (restoreBoundary.createdAt && (store.getCredentialForAuthentication(actor.credentialId)?.createdAt ?? "") <= restoreBoundary.createdAt) throw new Error("Schedule credential requires post-restore renewal.");
         if (projectId) {
           identity.authorizeKnowledge(actor, projectId, "knowledge:read");
           identity.authorizeKnowledge(actor, projectId, "knowledge:export");

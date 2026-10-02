@@ -31,7 +31,7 @@ describe("S4u in built controller", () => {
     const api = <T>(input?: unknown, token = issued.token) => f.request<T>("/api/user-backups", { headers: { Authorization: `Bearer ${token}` }, ...(input ? { method: "POST", body: JSON.stringify(input) } : {}) });
     await f.request("/api/knowledge", { method: "POST", headers: { Authorization: `Bearer ${issued.token}` }, body: JSON.stringify({ operation: "create_thread", input: { projectId, title: "Exported discussion", body: "S4u content", idempotencyKey: "content" } }) });
     const copy = await f.request<BackupOperation>("/api/backups", { method: "POST", body: JSON.stringify({ action: "create", idempotencyKey: "before-schedule" }) });
-    await waitFor(async () => (await f.request<BackupOperation>("/api/backups", { method: "POST", body: JSON.stringify({ action: "status", idempotencyKey: "before-schedule" }) })).state === "succeeded" ? true : null);
+    await waitFor(async () => (await f.request<BackupOperation>("/api/backups", { method: "POST", body: JSON.stringify({ action: "status", idempotencyKey: "before-schedule" }) })).state === "succeeded" ? true : null, 10000, () => "Service backup did not finish.");
     const input = { action: "save", id: randomUUID(), version: 0, idempotencyKey: "create-schedule", configuration: { projectId, scope: "knowledge-discussions", targetId: "local", enabled: true, intervalSeconds: 60, retainCount: 2, retainDays: 30 } };
     const saved = await api<UserSchedule>(input); expect(saved.ownerId).toBe(principal.id);
     expect((await api<UserSchedule>(input)).id).toBe(saved.id);
@@ -42,12 +42,12 @@ describe("S4u in built controller", () => {
     const ledger = JSON.parse(await readFile(path, "utf8")); ledger.payload.schedules[0].nextAt = Date.now() - 86400_000;
     ledger.sha256 = createHash("sha256").update(JSON.stringify(canonical(ledger.payload))).digest("hex"); await writeFile(path, JSON.stringify(ledger), { mode: 0o600 });
     await f.restart();
-    const run = await waitFor(async () => { const data = await api<UserScheduleOverview>(); return data.artifacts[0]?.state === "succeeded" ? data.artifacts[0] : null; });
+    const run = await waitFor(async () => { const data = await api<UserScheduleOverview>(); return data.artifacts[0]?.state === "succeeded" ? data.artifacts[0] : null; }, 10000, () => "User export did not finish.");
     expect((await api<UserScheduleOverview>()).artifacts).toHaveLength(1);
     expect(JSON.stringify(await api({ action: "artifact", executionId: run.executionId }))).toContain("S4u content");
     const restore = { action: "restore", backupId: copy.backupId, idempotencyKey: "rollback-before-schedule", confirmation: "replace-entire-installation" };
     await f.request("/api/backups", { method: "POST", body: JSON.stringify(restore) });
-    await waitFor(async () => { try { const status = await f.request<RestoreOperation>("/api/backups", { method: "POST", body: JSON.stringify({ action: "status", backupId: copy.backupId, idempotencyKey: restore.idempotencyKey }) }); return status.state === "verified" ? true : null; } catch { return null; } });
+    await waitFor(async () => { try { const status = await f.request<RestoreOperation>("/api/backups", { method: "POST", body: JSON.stringify({ action: "status", backupId: copy.backupId, idempotencyKey: restore.idempotencyKey }) }); return status.state === "verified" ? true : null; } catch { return null; } }, 10000, () => "Restore did not finish.");
     expect((await f.requestResult("/api/user-backups", { headers: { Authorization: `Bearer ${issued.token}` } })).status).toBe(403);
     const fresh = await admin<{ token: string }>({ action: "issue-agent-token", principalId: principal.id, label: "post-restore" });
     const after = await api<UserScheduleOverview>(undefined, fresh.token);

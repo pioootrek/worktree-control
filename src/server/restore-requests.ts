@@ -132,6 +132,22 @@ export function getControllerRestoreRequestStatus(databasePath: string, actor: R
 }
 
 /** Retention protection from durable S3b receipts, including interrupted requests. */
+export function controllerRestoreBoundary(databasePath: string): { generation: string; createdAt: string | null } {
+  const directory = `${resolve(databasePath)}.restore-requests`;
+  let entries;
+  try { entries = opendirSync(directory); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { generation: checksum([]), createdAt: null }; throw error; }
+  const ids: string[] = []; let createdAt: string | null = null, visited = 0;
+  try { for (;;) {
+    const entry = entries.readSync(); if (!entry) break;
+    if (++visited > 1024) throw new Error("Restore request history exceeds its bound.");
+    if (!/^[0-9a-f]{64}\.json$/.test(entry.name)) continue;
+    const record = readRecord(join(directory, entry.name)); ids.push(record.operationId);
+    if (createdAt === null || record.createdAt > createdAt) createdAt = record.createdAt;
+  } } finally { entries.closeSync(); }
+  // Conservative fence includes admitted restores that subsequently failed.
+  return { generation: checksum(ids.sort()), createdAt };
+}
+
 export function protectedControllerRestoreBackupIds(databasePath: string): Set<string> {
   const directory = `${resolve(databasePath)}.restore-requests`;
   let entries;

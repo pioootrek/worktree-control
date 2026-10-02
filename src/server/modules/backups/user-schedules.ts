@@ -12,7 +12,7 @@ import { UserBackupError, userBackupPolicySchema, type UserBackupPolicy } from "
 
 const actorSchema = z.object({ principalId: z.string(), principalKind: z.enum(["owner", "agent", "worker", "installation"]), credentialId: z.string(), authenticationMethod: z.enum(["owner_session", "agent_token", "worker_token", "installation_token", "none"]) }).strict();
 const reasonSchema = z.enum(["disabled", "forbidden", "policy", "limit", "busy", "changed", "failed", "interrupted"]);
-const scheduleSchema = userScheduleInputSchema.extend({ id: z.uuid(), ownerId: z.string(), version: z.number().int().positive(), nextAt: z.number().nullable(), actor: actorSchema, reason: reasonSchema.nullable(), retention: z.enum(["idle", "succeeded", "failed"]) }).strict();
+const scheduleSchema = userScheduleInputSchema.extend({ id: z.uuid(), ownerId: z.string(), version: z.number().int().positive(), nextAt: z.number().nullable(), actor: actorSchema, restoreGeneration: z.string(), reason: reasonSchema.nullable(), retention: z.enum(["idle", "succeeded", "failed"]) }).strict();
 const executionSchema = z.object({ executionId: z.uuid(), configuration: scheduleSchema, dueAt: z.number(), state: z.enum(["queued", "running", "succeeded", "failed", "interrupted", "denied"]), reason: reasonSchema.nullable(), finishedAt: z.string().nullable(), destination: z.string(), hash: z.string().nullable(), bytes: z.number().nonnegative() }).strict();
 const mutationSchema = z.object({ ownerId: z.string(), key: z.string(), hash: z.string(), response: scheduleSchema }).strict();
 const ledgerSchema = z.object({ format: z.literal(1), schedules: z.array(scheduleSchema).max(256), executions: z.array(executionSchema).max(2048), mutations: z.array(mutationSchema).max(1024) }).strict();
@@ -25,6 +25,7 @@ export interface UserScheduleDependencies {
   projectName: (projectId: string) => string | null;
   exportDiscussions: (projectId: string, maxBytes: number) => Record<string, unknown>;
   clock?: () => number;
+  restoreGeneration?: () => string;
 }
 
 /** Durable application schedules; SQLite restore never rewinds this deadline ledger. */
@@ -62,6 +63,7 @@ export class UserSchedules {
   }
   private validate(schedule: Schedule): void {
     this.authenticate(schedule.actor);
+    if (schedule.restoreGeneration !== (this.deps.restoreGeneration?.() ?? "")) throw new UserBackupError("forbidden", 403);
     if (!this.policy.enabled || !this.policy.projects.includes(schedule.projectId) || !this.policy.targets.some(value => value.id === schedule.targetId)
       || schedule.intervalSeconds < this.policy.minIntervalSeconds || schedule.retainCount > this.policy.retainCount || schedule.retainDays > this.policy.retainDays
       || this.ledger.schedules.filter(value => value.ownerId === schedule.ownerId).length > this.policy.maxSchedules) throw new UserBackupError("policy", 403);
@@ -107,7 +109,7 @@ export class UserSchedules {
     if (existing && existing.ownerId !== actor.principalId) throw new UserBackupError("forbidden", 403);
     if ((existing?.version ?? 0) !== command.version) throw new UserBackupError("changed", 409);
     if (this.ledger.mutations.length >= 1024 || (!existing && (this.ledger.schedules.length >= 256 || this.ledger.schedules.filter(value => value.ownerId === actor.principalId).length >= this.policy.maxSchedules))) throw new UserBackupError("limit", 409);
-    const schedule: Schedule = { ...command.configuration, id: command.id, ownerId: actor.principalId, actor: { ...actor }, version: command.version + 1, nextAt: command.configuration.enabled ? this.now() + command.configuration.intervalSeconds * 1000 : null, reason: null, retention: "idle" };
+    const schedule: Schedule = { ...command.configuration, id: command.id, ownerId: actor.principalId, actor: { ...actor }, restoreGeneration: this.deps.restoreGeneration?.() ?? "", version: command.version + 1, nextAt: command.configuration.enabled ? this.now() + command.configuration.intervalSeconds * 1000 : null, reason: null, retention: "idle" };
     this.validate(schedule);
     if (existing) this.ledger.schedules[this.ledger.schedules.indexOf(existing)] = schedule; else this.ledger.schedules.push(schedule);
     this.ledger.mutations.push({ ownerId: actor.principalId, key: command.idempotencyKey, hash: recordHash(command), response: { ...schedule } });
@@ -184,10 +186,10 @@ export class UserSchedules {
     if (!artifact || artifact.source !== "user-schedule" || artifact.ownerId !== config.ownerId || artifact.projectId !== config.projectId || artifact.scope !== config.scope || artifact.targetId !== config.targetId || artifact.scheduleId !== config.id || artifact.version !== config.version || artifact.executionId !== execution.executionId || artifact.dueAt !== new Date(execution.dueAt).toISOString() || (execution.hash !== null && recordHash(artifact) !== execution.hash)) throw new UserBackupError("failed");
     return artifact;
   }
-  private canRead(schedule: Schedule, actor: AuthenticatedPrincipal): boolean { try { this.validate({ ...schedule, actor }); return schedule.ownerId === actor.principalId; } catch { return false; } }
+  private canRead(schedule: Schedule, actor: AuthenticatedPrincipal): boolean { try { this.validate({ ...schedule, actor, restoreGeneration: this.deps.restoreGeneration?.() ?? "" }); return schedule.ownerId === actor.principalId; } catch { return false; } }
   private publicSchedule(schedule: Schedule, actor: AuthenticatedPrincipal): UserSchedule {
-    const { actor: storedActor, nextAt, ...config } = schedule;
-    void storedActor;
+    const { actor: storedActor, restoreGeneration, nextAt, ...config } = schedule;
+    void storedActor; void restoreGeneration;
     let reason: ScheduleReason | null = schedule.enabled ? schedule.reason : "disabled";
     try { this.validate({ ...schedule, actor }); if (schedule.enabled) this.validate(schedule); } catch (error) { reason = this.reason(error); }
     const last = [...this.ledger.executions].reverse().find(value => value.configuration.id === schedule.id);
