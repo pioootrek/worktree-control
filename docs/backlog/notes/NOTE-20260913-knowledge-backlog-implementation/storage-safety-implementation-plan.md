@@ -1,6 +1,6 @@
 # Plan domknięcia bezpieczeństwa danych SQLite
 
-Data: 2026-10-01. Status: S1–S3 scalone; S4a gotowe do review w PR #72;
+Aktualizacja: 2026-10-02. Status: S1–S3 i S4a scalone;
 S4u, S4b i S5 pozostają do wykonania.
 Stan realizacji jest poniżej; pierwotna diagnoza zachowana jako punkt odniesienia.
 Zadanie: [RWK-20260928-sqlite-data-safety](../../rework/RWK-20260928-sqlite-data-safety.json).
@@ -10,19 +10,23 @@ historycznym punktem odniesienia. Powiązane prace:
 [migracja wiedzy](implementation-plan.md) i
 [aktualizacja pakietu](../NOTE-20260908-portable-verification-plan/controller-package-trial.md).
 
-## Stan realizacji po dostarczeniu S4a — 2026-10-01
+## Stan realizacji po scaleniu S4a — 2026-10-02
 
 S1a/S2a, S1b/S2b, S3a i S3b są na `main` przez PR #68–#71.
 S3b zamknięto w `42859c9d34db15b060e2f553c5e75a55af8c1175` po poprawce mobilnego Escape i zielonym CI.
 [Raport S3b](storage-safety-s3b-report-20261001.md) rozdziela końcowe wyniki,
 wcześniejsze próby oraz niezweryfikowaną utratę zasilania i upgrade starego artefaktu.
-S4a dostarczono w [PR #72](https://github.com/pioootrek/worktree-switcher/pull/72)
-na `dcbf1a7e7dc47001710fe26dc5daf113ff708ae1` po poprawkach review: opcjonalne operacyjne backupy,
-polityka CLI, harmonogram usługi, retencja i GUI operatora z kontrolowanym
-restore S3b. [Raport S4a](storage-safety-s4a-report-20261001.md) i jego dowody
-potwierdzają czysty check/build/integration/UI na dokładnym SHA oraz zielony CI
-z smoke pakietu i lifecycle na jednorazowym runnerze. PR oczekuje review
-i scalenia; kod S4a nie jest jeszcze na `main`.
+S4a scalono w [PR #72](https://github.com/pioootrek/worktree-switcher/pull/72)
+jako `0c2f187a2865549ce73b3ad79e8be84b4ebf55f4`. Końcowy head:
+`4914ef90e807aa8b3afe54309fc6b66a5c6fe297`. Zakres obejmuje opcjonalne
+operacyjne backupy, politykę CLI, harmonogram usługi, retencję i GUI operatora
+z kontrolowanym restore S3b oraz poprawką ponownego otwierania panelu po
+braku receipt zlecenia. [Raport S4a](storage-safety-s4a-report-20261001.md)
+rozdziela lokalne wyniki dla kodu aplikacji od końcowego CI `36998292347`:
+782 Vitest, 7 testów skryptów, build, HTTPS, 30 integracyjnych, 149 UI,
+3 E2E, smoke pakietu Node 22/24 i lifecycle na jednorazowym runnerze.
+Przyczyna wcześniejszych timeoutów pozostaje nieustalona; dodano diagnostykę
+bez zmiany timeoutów, asercji ani retry. Następny slice to S4u.
 S4u nadal obejmuje niezależne harmonogramy użytkowników, S4b transfer poza
 hosta, a S5 odbiór operacyjny. Nie rozpoczęto kolejnego slice'a.
 Zadanie nadrzędne pozostaje otwarte. Nie wykonano

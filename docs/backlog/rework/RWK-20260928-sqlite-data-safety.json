@@ -129,11 +129,16 @@
       "author": "agent:codex",
       "date": "2026-10-02",
       "text": "S4a PR #72 follow-up of unpublished Opus review (n8n execution 9579, source head 1147b2f): five primary findings classified fix, one already fixed after Kimi and four new fixes; no false positives or unresolved review findings. Final feature SHA dcbf1a7e7dc47001710fe26dc5daf113ff708ae1. Clean MCP checks passed: 64 focused backups, lint/types with 782 Vitest + 7 script tests, build, 30 integrations, 144 UI tests. CI 36932383355 passed all four jobs, including two 14-step installed-package smoke runs and isolated systemd lifecycle. The tarball is from clean synthetic merge 269636fac2ab0fa442bea4b209427e6860c4e25a, SHA256 2d5b671659a7c916e402b916b92f0b5ff5ba3a3e77d4b640430586b2c5c3d3bb; checksum/provenance/helper presence audited. Failure logs preceded targeted diagnosis; dirty diagnostic and cancelled runs are not counted as clean passes. Protocol/report/evidence updated separately on main. Manual-history exhaustion procedure remains the open operational point above. Parent remains open; no PR merge, deployment or next slice."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-02",
+      "text": "Owner authorized merge of S4a PR #72. Merged at 0c2f187a2865549ce73b3ad79e8be84b4ebf55f4 (2026-10-02T17:50:47Z), exact feature head 4914ef90e807aa8b3afe54309fc6b66a5c6fe297. All four final CI 36998292347 jobs passed: check (782 Vitest + 7 scripts), build/HTTPS, 30 integration, 149 UI, 3 E2E, package smoke Node 22/24 and disposable service lifecycle. Both GitHub review threads are resolved. Includes reconnect fix preserving authorized catalog and original retry key after missing admission receipt; 403 still removes protected data. Earlier timeout cause remains unproven; diagnostics added without weakening checks. Plan/report updated on main. S4a closed; parent remains open for S4u, S4b/S5 and operational limits. No production deployment or next slice started."
     }
   ],
   "priority": "next",
   "problem": [
-    "Main protects SQLite ownership, startup, migrations, durable immutable attachments, durable backup publication and recoverable multi-file restore through merged PRs #68–#71. S4a optional operational backup scheduling and operator GUI are ready for review in PR #72, outside main. S4u user schedules, S4b off-host transfer and S5 operational acceptance remain incomplete.",
+    "Main includes SQLite ownership, durable migrations and attachments, recoverable restore and S4a optional operational backup scheduling/retention with operator GUI through merged PRs #68–#72. S4u user schedules, S4b off-host transfer and S5 operational acceptance remain incomplete.",
     "Knowledge cutover needs verified backup operations, private file handling, exclusive database ownership and recorded failure/restore evidence. The existing K7a pilot does not prove these guarantees."
   ],
   "risk": {

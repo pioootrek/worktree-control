@@ -2,7 +2,7 @@
 
 Data: 2026-10-01. Zadanie: `RWK-20260928-sqlite-data-safety`.
 Zakres: wyłącznie S4a. Implementacja i wymagana weryfikacja zakończone;
-PR jest gotowy do review, bez scalenia ani wdrożenia.
+PR #72 scalono 2026-10-02 jako `0c2f187a2865549ce73b3ad79e8be84b4ebf55f4`. Bez wdrożenia produkcyjnego.
 
 ## Rewizja i kontrakt
 
@@ -392,8 +392,9 @@ zajmować dysk. Nie wykonano fizycznego zapełnienia dysku, power loss,
 aktualizacji ze starego zainstalowanego artefaktu ani próby na produkcyjnej bazie.
 Nie zmieniano produkcji, usług ani hostowych limitów.
 
-PR jest gotowy do review, wszystkie wymagane kontrole są zielone.
+PR #72 scalono po zielonych wymaganych kontrolach i sprawdzeniu braku
+nierozwiązanych wątków review.
 Końcowy CI nie ma blokera w dostarczeniu S4a; przyczyna wcześniejszych
 timeoutów pozostaje nieustalona. Zadanie nadrzędne
 pozostaje otwarte. S4u, transfer poza hosta S4b, odbiór S5 i późniejszy cutover
-nie zostały rozpoczęte. Nie scalono PR i nie wdrożono produkcji.
+nie zostały rozpoczęte. S4a jest na `main`; nie wdrożono produkcji.
