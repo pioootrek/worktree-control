@@ -58,7 +58,7 @@
     "test:backups": "vitest run src/server/modules/backups src/cli/backup-policy-options.test.ts src/server/backup-admin.test.ts src/server/transports/backup-http.test.ts src/server/control-service-storage.test.ts",
     "test:ui:backups": "playwright test tests/ui/backups.spec.ts",
     "test:integration:backups": "node scripts/build-fingerprint.mjs --check && vitest run --config vitest.integration.config.ts tests/integration/backup-operations.test.ts",
-    "test:user-backups": "vitest run src/server/modules/backups/user-schedules.test.ts src/cli/user-backup-options.test.ts src/server/transports/user-backup-http.test.ts",
+    "test:user-backups": "vitest run src/server/modules/backups/user-schedules.test.ts src/server/modules/backups/user-export-crash.test.ts src/cli/user-backup-options.test.ts src/server/transports/user-backup-http.test.ts",
     "test:ui:user-backups": "playwright test tests/ui/user-backups.spec.ts"
   },
   "dependencies": {

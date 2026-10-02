@@ -13,7 +13,7 @@ import { UserBackupError, userBackupPolicySchema, type UserBackupPolicy } from "
 const actorSchema = z.object({ principalId: z.string(), principalKind: z.enum(["owner", "agent", "worker", "installation"]), credentialId: z.string(), authenticationMethod: z.enum(["owner_session", "agent_token", "worker_token", "installation_token", "none"]) }).strict();
 const reasonSchema = z.enum(["disabled", "forbidden", "policy", "limit", "busy", "changed", "failed", "interrupted"]);
 const scheduleSchema = userScheduleInputSchema.extend({ id: z.uuid(), ownerId: z.string(), version: z.number().int().positive(), nextAt: z.number().nullable(), actor: actorSchema, restoreGeneration: z.string(), reason: reasonSchema.nullable(), retention: z.enum(["idle", "succeeded", "failed"]) }).strict();
-const executionSchema = z.object({ executionId: z.uuid(), configuration: scheduleSchema, dueAt: z.number(), state: z.enum(["queued", "running", "succeeded", "failed", "interrupted", "denied"]), reason: reasonSchema.nullable(), finishedAt: z.string().nullable(), destination: z.string(), hash: z.string().nullable(), bytes: z.number().nonnegative() }).strict();
+const executionSchema = z.object({ executionId: z.uuid(), configuration: scheduleSchema, dueAt: z.number(), deadline: z.number().nullable().default(null), state: z.enum(["queued", "running", "succeeded", "failed", "interrupted", "denied"]), reason: reasonSchema.nullable(), finishedAt: z.string().nullable(), destination: z.string(), hash: z.string().nullable(), bytes: z.number().nonnegative() }).strict();
 const mutationSchema = z.object({ ownerId: z.string(), key: z.string(), hash: z.string(), response: scheduleSchema }).strict();
 const ledgerSchema = z.object({ format: z.literal(1), schedules: z.array(scheduleSchema).max(256), executions: z.array(executionSchema).max(2048), mutations: z.array(mutationSchema).max(1024) }).strict();
 type Schedule = z.infer<typeof scheduleSchema>;
@@ -49,6 +49,7 @@ export class UserSchedules {
       execution.state = "interrupted"; execution.reason = "interrupted"; execution.finishedAt = this.iso();
       // A visible complete publication is recovered only under current policy and authority.
       try {
+        if (execution.deadline === null || this.now() >= execution.deadline) throw new UserBackupError("limit");
         this.validate(execution.configuration); const artifact = this.readArtifact(execution);
         syncDirectory(this.target(execution.configuration));
         execution.hash = recordHash(artifact); execution.bytes = lstatSync(execution.destination).size;
@@ -129,7 +130,7 @@ export class UserSchedules {
       this.ledger.executions = this.ledger.executions.filter(value => lastResults.has(value.executionId) || recent.has(value.executionId) || value.state === "queued" || value.state === "running" || existsSync(value.destination));
       if (this.ledger.executions.length >= 2048) { schedule.reason = "limit"; this.save(); continue; }
       const executionId = randomUUID();
-      const execution: Execution = { executionId, configuration: { ...schedule, actor: { ...schedule.actor } }, dueAt, state: "queued", reason: null, finishedAt: null,
+      const execution: Execution = { executionId, configuration: { ...schedule, actor: { ...schedule.actor } }, dueAt, deadline: null, state: "queued", reason: null, finishedAt: null,
         destination: this.policy.targets.find(value => value.id === schedule.targetId) ? join(this.target(schedule), `user-export-${executionId}.json`) : "", hash: null, bytes: 0 };
       this.ledger.executions.push(execution); this.save();
       try {
@@ -149,8 +150,8 @@ export class UserSchedules {
       this.admission(); this.validate(config);
       const current = this.ledger.schedules.find(value => value.id === config.id);
       if (!current?.enabled || current.version !== config.version) throw new UserBackupError("changed", 409);
-      execution.state = "running"; this.save();
       const deadline = this.now() + this.policy.timeoutSeconds * 1000;
+      execution.deadline = deadline; execution.state = "running"; this.save();
       const artifact = { format: 1 as const, source: "user-schedule" as const, ownerId: config.ownerId, scope: config.scope, projectId: config.projectId, targetId: config.targetId, scheduleId: config.id, version: config.version, executionId: execution.executionId, dueAt: new Date(execution.dueAt).toISOString(), data: this.deps.exportDiscussions(config.projectId, Math.min(this.policy.maxBytes, ARTIFACT_MAX)) };
       const bytes = Buffer.byteLength(JSON.stringify({ payload: artifact, sha256: recordHash(artifact) }));
       const used = this.ledger.executions.filter(value => value.configuration.ownerId === config.ownerId && value !== execution && existsSync(value.destination)).reduce((sum, value) => sum + lstatSync(value.destination).size, 0);
@@ -164,6 +165,7 @@ export class UserSchedules {
       if (this.now() >= deadline) throw new UserBackupError("limit", 409);
       linkSync(staging, execution.destination); syncDirectory(parent);
       rmSync(staging); staging = null; syncDirectory(parent);
+      if (this.now() >= deadline) throw new UserBackupError("limit", 409);
       execution.hash = recordHash(artifact); execution.bytes = bytes;
       this.finish(execution, "succeeded", null);
       if (current.enabled && current.version === config.version && !this.closed) {
