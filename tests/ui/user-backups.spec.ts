@@ -56,6 +56,7 @@ for (const locale of ["en", "pl"] as const) {
     expect(f.errors).toEqual([]);
   });
   for (const width of [1440, 1366, 390, 320]) test(`layout ${width}px in ${locale}`, async ({ page }, testInfo) => {
+    await page.addInitScript(theme => localStorage.setItem("theme", theme), width === 320 || width === 1366 ? "light" : "dark");
     await page.setViewportSize({ width, height: 650 }); await mount(page); if (locale === "pl") await selectLanguage(page);
     await openSystemDialog(page, "userBackups.title", locale); await page.getByRole("button", { name: add }).click();
     const dialog = page.getByRole("dialog"); await expect(dialog.getByRole("button", { name: save })).toBeVisible();
@@ -64,3 +65,23 @@ for (const locale of ["en", "pl"] as const) {
     await page.screenshot({ path: testInfo.outputPath(`s4u-${locale}-${width}.png`) });
   });
 }
+test("installation session remains separate from a connected schedule credential", async ({ page }) => {
+  const installation = `wsi_00000000-0000-4000-8000-000000000003_${"b".repeat(64)}`;
+  const f = await mountDashboard(page, undefined, { accessToken: installation });
+  const authorization: string[] = [];
+  await page.route("**/api/user-backups", route => {
+    authorization.push(route.request().headers().authorization);
+    return route.fulfill({ json: { policy: { enabled: false, minIntervalSeconds: 60, maxSchedules: 4, maxBytes: 1024 ** 2, timeoutSeconds: 30, queueLimit: 2, retainCount: 10, retainDays: 30 }, projects: [], targets: [], schedules: [], artifacts: [], maintenance: false } });
+  });
+  await openSystemDialog(page, "userBackups.title");
+  await page.getByLabel("Scoped credential", { exact: true }).fill(token);
+  await page.getByRole("button", { name: "Connect schedules" }).click();
+  await expect(page.getByRole("dialog").getByText("Schedules are unavailable or this schedule is disabled. Copies remain.")).toBeVisible();
+  expect(authorization).toEqual([`Bearer ${token}`]);
+  await page.keyboard.press("Escape"); await openSystemDialog(page, "userBackups.title");
+  await expect(page.getByRole("button", { name: "Change schedule credential" })).toBeVisible();
+  await page.getByRole("button", { name: "Change schedule credential" }).click();
+  await expect(page.getByLabel("Scoped credential", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape"); await page.getByRole("button", { name: "System", exact: true }).click();
+  await expect(page.getByRole("menuitem").filter({ hasText: "Installation backups" })).toBeVisible(); expect(f.errors).toEqual([]);
+});
