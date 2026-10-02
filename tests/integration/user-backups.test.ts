@@ -18,7 +18,9 @@ describe("S4u in built controller", () => {
     fixture = await startControllerFixture(0);
     const f = fixture;
     expect((await f.requestResult("/api/user-backups", { headers: { Authorization: `Bearer ${f.installationToken}` } })).status).toBe(403);
-    const owner = JSON.parse(await f.cli(["identity", "bootstrap-owner"])) as { token: string };
+    const admin = <T>(body: unknown) => f.request<T>("/api/identity/admin", { method: "POST", headers: { Authorization: `Bearer ${f.installationToken}` }, body: JSON.stringify(body) });
+    const { principal } = await admin<{ principal: { id: string } }>({ action: "create-agent" });
+    const owner = await admin<{ token: string }>({ action: "issue-agent-token", principalId: principal.id, label: "default-off owner" });
     const overview = await f.request<UserScheduleOverview>("/api/user-backups", { headers: { Authorization: `Bearer ${owner.token}` } });
     expect(overview.policy.enabled).toBe(false); expect(overview.targets).toEqual([]);
   });
