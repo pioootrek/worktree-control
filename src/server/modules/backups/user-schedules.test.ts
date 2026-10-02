@@ -143,7 +143,7 @@ describe("independent user export schedules", () => {
     const f = fixture(); const command = f.input(); f.save(command);
     const path = join(f.backups.recordDirectory, "user-schedules.json");
     const ledger = readRecord(path, z.any())!; const schedule = ledger.schedules[0];
-    ledger.executions.push({ executionId: randomUUID(), configuration: schedule, dueAt: schedule.nextAt, state: "queued", reason: null, finishedAt: null, destination: join(f.root, "exports", "missing.json"), hash: null, bytes: 0 });
+    ledger.executions.push({ executionId: randomUUID(), configuration: schedule, dueAt: schedule.nextAt, deadline: null, state: "queued", reason: null, finishedAt: null, destination: join(f.root, "exports", "missing.json"), hash: null, bytes: 0 });
     writeRecord(path, ledger); f.schedules.close();
     const restarted = new UserSchedules(f.policy, f.backups, f.deps); cleanup.push(() => restarted.close());
     expect(restarted.overview(f.owner).artifacts[0]).toMatchObject({ state: "interrupted", reason: "interrupted" });
