@@ -60,6 +60,23 @@ afterEach(async () => {
 });
 
 describe("ProcessManager", () => {
+  it("cancels a pending start on shutdown and refuses queued starts before spawn", async () => {
+    const manager = new ProcessManager(); managers.push(manager);
+    const fixture = project(await unusedPort());
+    fixture.args = ["-e", "setInterval(() => {}, 1000)"];
+    fixture.startupTimeoutMs = 60_000;
+    const starting = manager.start(fixture, process.cwd());
+    const rejected = expect(starting).rejects.toThrow(/podczas startu|zamykany/);
+    await waitFor(() => manager.snapshot(fixture.id).phase === "starting");
+    const pid = manager.snapshot(fixture.id).pid!;
+    manager.closeAdmission();
+    await manager.stopAll(); await rejected;
+    expect(() => process.kill(pid, 0)).toThrow();
+    const beforeSpawn = vi.fn();
+    await expect(manager.start({ ...fixture, id: "queued" }, process.cwd(), beforeSpawn)).rejects.toThrow("zamykany");
+    expect(beforeSpawn).not.toHaveBeenCalled();
+    expect(manager.statusSummary(fixture.id).ownsProcess).toBe(false);
+  });
   it("starts a healthy server and stops its owned process group", async () => {
     const manager = new ProcessManager();
     managers.push(manager);

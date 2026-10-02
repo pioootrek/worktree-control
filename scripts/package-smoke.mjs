@@ -164,6 +164,7 @@ async function main() {
     const files = stdout.trim().split("\n");
     for (const required of [
       "package/dist/cli/index.js",
+      "package/dist/cli/backup-verifier.js",
       "package/out/index.html",
       "package/skills/worktree-switcher/SKILL.md",
       "package/docs/authentication.md",
@@ -300,7 +301,7 @@ async function main() {
   let stdout = "";
   let stderr = "";
   const publicOrigin = "https://switcher.example.test";
-  controller = spawn(cliCommand, ["start", "--service-mode", "--no-open", "--host", "127.0.0.1", "--port", String(dashboardPort), "--public-url", publicOrigin, "--mcp-port", String(mcpPort), "--browse-root", fixture, ...common], {
+  controller = spawn(cliCommand, ["start", "--service-mode", "--no-open", "--host", "127.0.0.1", "--port", String(dashboardPort), "--public-url", publicOrigin, "--mcp-port", String(mcpPort), "--browse-root", fixture, "--backup-dir", join(root, "backups"), "--backup-ui-actions", "create,restore", ...common], {
     cwd: root, env: runtimeEnv, stdio: ["ignore", "pipe", "pipe"],
   });
   controller.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
@@ -341,6 +342,19 @@ async function main() {
   await step("live-cli-forwarding", async () => {
     const listed = JSON.parse((await run(cliCommand, ["project", "list", "--json", ...common], { cwd: root, env: { ...runtimeEnv, WORKTREE_SWITCHER_TOKEN: token } })).stdout);
     check(listed[0].id === project.id, "Live CLI did not forward to the singleton controller.");
+  });
+
+  await step("installation-backup-verifier", async () => {
+    const accepted = JSON.parse((await run(cliCommand, ["backup", "now", "--idempotency-key", "package-copy", ...common], { cwd: root, env: runtimeEnv })).stdout);
+    const terminal = await waitFor(async () => {
+      const status = JSON.parse((await run(cliCommand, ["backup", "status", "--idempotency-key", "package-copy", ...common], { cwd: root, env: runtimeEnv })).stdout);
+      if (status.state === "queued" || status.state === "running") throw new Error("Backup is still executing.");
+      return status;
+    }, "Installed backup did not reach a terminal state");
+    check(terminal.state === "succeeded" && terminal.operationId === accepted.operationId, "Installed backup failed.");
+    const response = await fetch(`http://127.0.0.1:${dashboardPort}/api/backups`, { method: "POST", headers: { "Content-Type": "application/json", Origin: publicOrigin, "X-Worktree-Switcher-Token": token }, body: JSON.stringify({ action: "preview", backupId: accepted.backupId }), signal: AbortSignal.timeout(STEP_TIMEOUT) });
+    const preview = await response.json();
+    check(response.ok && preview.scope === "entire-installation" && preview.backup?.verification === "verified", "Installed verifier could not validate its backup clone.");
   });
 
   const unauthorized = await fetch(`http://127.0.0.1:${mcpPort}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });

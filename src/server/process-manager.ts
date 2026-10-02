@@ -93,6 +93,7 @@ async function isPortOpen(port: number): Promise<boolean> {
 }
 
 export class ProcessManager {
+  private closing = false;
   private readonly runtimes = new Map<string, RuntimeEntry>();
   private readonly onChange: (projectId: string) => void;
   private readonly logs: LogWriter;
@@ -148,6 +149,7 @@ export class ProcessManager {
   }
 
   async start(project: Project, worktreePath: string, beforeSpawn?: () => void): Promise<void> {
+    this.assertStartAdmission();
     const current = this.runtimes.get(project.id) ?? emptyRuntime(project.id);
     if (current.group || current.cleanup) throw new Error("Serwer projektu już działa.");
     if (await isPortOpen(project.port)) {
@@ -157,7 +159,9 @@ export class ProcessManager {
       this.markFailed(runtime, failure);
       throw new Error(failure.message);
     }
+    this.assertStartAdmission();
     beforeSpawn?.();
+    this.assertStartAdmission();
 
     const runtime: RuntimeEntry = {
       ...emptyRuntime(project.id),
@@ -205,11 +209,12 @@ export class ProcessManager {
 
     const deadline = Date.now() + project.startupTimeoutMs;
     while (Date.now() < deadline) {
-      if (!runtime.child || runtime.phase !== "starting") {
+      if (this.closing || !runtime.child || runtime.phase !== "starting") {
+        if (this.closing) await this.cleanupRuntime(runtime);
         if (runtime.cleanup) await runtime.cleanup;
         throw new Error(runtime.error ?? "Proces zakończył się podczas startu.");
       }
-      if (await this.isHealthy(project) && runtime.child && runtime.phase === "starting") {
+      if (await this.isHealthy(project) && !this.closing && runtime.child && runtime.phase === "starting") {
         runtime.phase = "running";
         runtime.error = null;
         runtime.failure = null;
@@ -266,6 +271,13 @@ export class ProcessManager {
     const results = await Promise.allSettled([...this.runtimes.keys()].map((id) => this.stop(id)));
     const failures = results.filter((result) => result.status === "rejected");
     if (failures.length) throw new AggregateError(failures.map((result) => result.reason), "Nie zakończono wszystkich serwerów.");
+  }
+
+  /** Closing is permanent for this controller; queued or preflight starts cannot spawn. */
+  closeAdmission(): void { this.closing = true; }
+
+  private assertStartAdmission(): void {
+    if (this.closing) throw new Error("Kontroler jest zamykany i nie przyjmuje nowych operacji.");
   }
 
   private async isHealthy(project: Project): Promise<boolean> {

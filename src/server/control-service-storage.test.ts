@@ -172,24 +172,27 @@ describe("ControlService worktree storage", () => {
     store.close();
   });
 
-  it("drains an accepted deletion before closing persistence during shutdown", async () => {
+  it("stops owned processes while draining accepted work and closes persistence last", async () => {
     const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-cache-shutdown-"));
     directories.push(directory);
     const store = new SqliteStateStore(join(directory, "state.sqlite3"));
     const project = store.addProject({ name: "Web", repositoryPath: "/code/web", port: 3301, executable: "pnpm", args: [] });
     const worktree = { path: "/code/web", head: "abc", shortHead: "abc", branch: "main", detached: false, locked: false, prunable: false, dirty: false } satisfies Worktree;
     const git = { list: vi.fn(async () => [worktree]), close: vi.fn() } as unknown as GitWorktreeReader;
+    const order: string[] = [];
     const processes = {
       snapshot: vi.fn(() => ({ phase: "stopped", worktreePath: null })),
-      stopAll: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => { order.push("processes-stopped"); }),
     } as unknown as ProcessManager;
     let releaseCleaner!: () => void;
     const gate = new Promise<void>((resolve) => { releaseCleaner = resolve; });
     const cleaner = { remove: vi.fn(async () => {
       await gate;
+      order.push("deletion-drained");
       return { cache: "next" as const, worktreePath: worktree.path, removed: true };
     }) };
-    const close = vi.spyOn(store, "close");
+    const closeStore = store.close.bind(store);
+    const close = vi.spyOn(store, "close").mockImplementation(() => { order.push("store-closed"); closeStore(); });
     const service = new ControlService(store, git, processes, undefined, undefined, undefined, cleaner);
     const deletion = service.deleteWorktreeCache(project.id, worktree.path, "next");
     await vi.waitFor(() => expect(cleaner.remove).toHaveBeenCalledOnce());
@@ -202,6 +205,7 @@ describe("ControlService worktree storage", () => {
     await deletion;
     await shutdown;
     expect(close).toHaveBeenCalledOnce();
+    expect(order).toEqual(["processes-stopped", "deletion-drained", "store-closed"]);
   });
 
   it("blocks real automatic storage admission for the worktree during deletion", async () => {

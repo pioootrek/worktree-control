@@ -1,3 +1,6 @@
+import { handleBackupHttp } from "./transports/backup-http";
+import { createHttpServerCloser } from "./http-server-lifecycle";
+import { BackupError, type BackupOperations, type RestoreOperations } from "./modules/backups";
 import { KnowledgeError, knowledgeFailure } from "./modules/knowledge";
 import { timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
@@ -200,7 +203,7 @@ function parseReservation(value: unknown): {
   };
 }
 
-async function readJson(request: IncomingMessage, limit = JSON_LIMIT): Promise<unknown> {
+async function readRequestJson(request: IncomingMessage, limit = JSON_LIMIT): Promise<unknown> {
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
@@ -387,7 +390,15 @@ export function createControllerServer(options: {
   identity?: IdentityService;
   authentication?: ControllerAuthenticationDependencies["authentication"];
   publicOrigin?: string;
+  backups?: BackupOperations;
+  restores?: RestoreOperations;
+  maintenance?: () => boolean;
 }): ControllerServer {
+  const readJson = async (request: IncomingMessage, limit?: number): Promise<unknown> => {
+    const input = await readRequestJson(request, limit);
+    if (options.maintenance?.()) throw new BackupError("backup_busy", 503);
+    return input;
+  };
   const fallbackOrigin = `http://${options.host}:${options.port}`;
   const dependencies = { authentication: options.authentication, identity: options.identity };
   /** Dashboard and runtime API: the pairing token in legacy mode, the installation token in token mode. */
@@ -416,6 +427,14 @@ export function createControllerServer(options: {
     try {
       if (url.pathname.startsWith("/api/")) {
         response.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
+        if (url.pathname === "/api/backups" && options.backups && options.restores) {
+          if (!hasValidOrigin(request, options.publicOrigin)) { json(response, 403, { code: "origin_forbidden", error: "origin_forbidden" }); return; }
+          const runtime = authenticateRuntime(request);
+          const actor = runtime?.kind === "installation" ? runtime.actor : authenticateActor(request);
+          await handleBackupHttp(request, response, actor, options.backups, options.restores, readRequestJson, (status, body) => json(response, status, body));
+          return;
+        }
+        if (options.maintenance?.()) { json(response, 503, { code: "backup_busy", error: "backup_busy" }); return; }
         if (url.pathname === "/api/knowledge") {
           if (request.headers.origin && !hasValidOrigin(request, options.publicOrigin)) {
             json(response, 403, { code: "origin_forbidden", error: "Request origin rejected." });
@@ -762,6 +781,7 @@ export function createControllerServer(options: {
       }
       serveStatic(options.webRoot, url.pathname, response, request.method === "HEAD");
     } catch (error) {
+      if (error instanceof BackupError) { json(response, error.status, { code: error.code, error: error.code }); return; }
       const rawMessage = messageFrom(error);
       const conflict = /zajęty|zablokowany|osiągnięto limit|UNIQUE constraint/i.test(rawMessage);
       const message = localizeServerMessage(rawMessage, locale);
@@ -769,14 +789,12 @@ export function createControllerServer(options: {
     }
   });
 
+  const closeServer = createHttpServerCloser(server);
   return {
     server,
     async close() {
       options.events.close();
-      if (!server.listening) return;
-      await new Promise<void>((resolveClose, reject) => {
-        server.close((error) => error ? reject(error) : resolveClose());
-      });
+      await closeServer();
     },
   };
 }

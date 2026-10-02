@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fsyncSync, linkSync, lstatSync, mkdtempSync, openSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fsyncSync, linkSync, lstatSync, mkdtempSync, openSync, opendirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
-import { BACKUP_LIMITS, parseManifest, readBoundedJson, sha256Schema, validateBackup, validateBackupFiles, ensureStagingCapacity, stageVerifiedBackup } from "./infrastructure/sqlite";
+import { BACKUP_LIMITS, parseManifest, readBoundedJson, sha256Schema, validateBackup, validateBackupFiles, ensureStagingCapacity, stageVerifiedBackup, type ControllerBackupManifest } from "./infrastructure/sqlite";
 import { acquireDatabaseOwnership } from "./infrastructure/sqlite";
 import { durableJson, privateDirectory, syncDirectory } from "./private-storage";
 import { getOwnedRestoreStatus, prepareOwnedRestore, recoverOwnedRestore, restoreActorSchema, type RestoreActor } from "./infrastructure/sqlite";
@@ -44,21 +44,49 @@ function readRecord(path: string): Record {
 function sameRequest(record: Record, actor: RestoreActor): void {
   if (record.actor.actorId !== actor.actorId || record.actor.idempotencyKey !== actor.idempotencyKey || record.actor.backupId !== actor.backupId) throw new Error("Restore idempotency key conflicts with a different request.");
 }
+function assertRequestCapacity(directory: string): void {
+  const entries = opendirSync(directory); let count = 0;
+  try { while (entries.readSync()) if (++count >= 1024) throw new Error("Restore request history limit reached; operator review is required."); }
+  finally { entries.closeSync(); }
+}
 
 /** Admission only: may run with an open database, never changes live files or starts processes. */
-export function requestControllerRestore(databasePath: string, actorId: string, value: unknown, policy: RestoreRequestPolicy): RestoreRequestStatus {
+function prepareRequest(databasePath: string, actorId: string, value: unknown, policy: RestoreRequestPolicy) {
   const input = requestInputSchema.parse(value), actor = restoreActorSchema.parse({ actorId, backupId: input.backupId, idempotencyKey: input.idempotencyKey });
   policy.authorize(actorId, input.backupId);
   const directory = requestDirectory(databasePath), path = join(directory, `${keyFor(actor)}.json`);
-  try { const record = readRecord(path); sameRequest(record, actor); syncDirectory(directory); syncDirectory(dirname(directory)); return status(record); }
+  try { const record = readRecord(path); sameRequest(record, actor); syncDirectory(directory); syncDirectory(dirname(directory)); return { existing: status(record), actor, directory, path, source: record.source }; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  if (readdirSync(directory).length >= 1024) throw new Error("Restore request history limit reached; operator review is required.");
-  const source = resolve(policy.resolveBackup(input.backupId)), manifest = parseManifest(readBoundedJson(join(source, "manifest.json"), BACKUP_LIMITS.manifestBytes));
+  assertRequestCapacity(directory);
+  return { existing: null, actor, directory, path, source: resolve(policy.resolveBackup(input.backupId)) };
+}
+export function requestControllerRestore(databasePath: string, actorId: string, value: unknown, policy: RestoreRequestPolicy): RestoreRequestStatus {
+  const context = prepareRequest(databasePath, actorId, value, policy);
+  if (context.existing) return context.existing;
+  const { source, directory } = context, manifest = parseManifest(readBoundedJson(join(source, "manifest.json"), BACKUP_LIMITS.manifestBytes));
   validateBackupFiles(source, manifest); ensureStagingCapacity(directory, manifest);
   const preview = mkdtempSync(join(directory, ".preview-"));
   try {
     const staged = stageVerifiedBackup(source, preview, manifest); durableJson(join(preview, "manifest.json"), staged); validateBackup(preview, staged, true);
   } finally { rmSync(preview, { recursive: true, force: true }); }
+  return publishRequest(context, manifest);
+}
+
+/** Live admission delegates expensive snapshot validation to a bounded adapter. */
+export async function requestControllerRestoreAsync(databasePath: string, actorId: string, value: unknown, policy: RestoreRequestPolicy, verify: (source: string) => Promise<ControllerBackupManifest>): Promise<RestoreRequestStatus> {
+  const context = prepareRequest(databasePath, actorId, value, policy);
+  if (context.existing) return context.existing;
+  const manifest = await verify(context.source);
+  policy.authorize(actorId, context.actor.backupId);
+  if (resolve(policy.resolveBackup(context.actor.backupId)) !== context.source || checksum(parseManifest(readBoundedJson(join(context.source, "manifest.json"), BACKUP_LIMITS.manifestBytes))) !== checksum(manifest)) throw new Error("Restore source changed during validation.");
+  return publishRequest(context, manifest);
+}
+
+function publishRequest({ actor, source, directory, path }: ReturnType<typeof prepareRequest>, manifest: ControllerBackupManifest): RestoreRequestStatus {
+  // Async verification yields to other requests; enforce the durable bound again.
+  try { const existing = readRecord(path); sameRequest(existing, actor); return status(existing); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  assertRequestCapacity(directory);
   const record: Record = { formatVersion: 1, operationId: randomUUID(), actor, createdAt: new Date().toISOString(), source, manifestHash: checksum(manifest), state: "requested" };
   const temporary = join(directory, `.request-${record.operationId}`);
   const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
@@ -101,4 +129,19 @@ export function getControllerRestoreRequestStatus(databasePath: string, actor: R
   // A visible journal rename can precede a failed directory fsync. Only the
   // locked executor acknowledges completion and repairs a missing receipt.
   return status(record);
+}
+
+/** Retention protection from durable S3b receipts, including interrupted requests. */
+export function protectedControllerRestoreBackupIds(databasePath: string): Set<string> {
+  const directory = `${resolve(databasePath)}.restore-requests`;
+  let entries;
+  try { entries = opendirSync(directory); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Set(); throw error; }
+  const result = new Set<string>();
+  let visited = 0;
+  try { for (;;) {
+    const entry = entries.readSync(); if (!entry) break;
+    if (++visited > 1024) throw new Error("Restore request history exceeds its bound.");
+    if (/^[0-9a-f]{64}\.json$/.test(entry.name)) result.add(readRecord(join(directory, entry.name)).actor.backupId);
+  } } finally { entries.closeSync(); }
+  return result;
 }

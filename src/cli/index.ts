@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+import { BackupOperations, RestoreOperations, recoverBackupHandoff, finishBackupHandoff, assertBackupHandoffCompleted } from "../server/modules/backups";
+import { backupAdminHandler } from "../server/backup-admin";
+import { parseBackupPolicyOptions, validateBackupPolicyDestination } from "./backup-policy-options";
+import type { ControllerLock } from "../server/controller-lock";
 import { parseKnowledgeCommandArgs, runKnowledgeCommand } from "./knowledge-management";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
@@ -61,14 +65,17 @@ function optionalPositiveNumber(value: string | undefined, label: string): numbe
   return parsed;
 }
 
-async function main(): Promise<void> {
+async function main(retainedLock?: ControllerLock): Promise<void> {
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
+  const backupPolicy = parseBackupPolicyOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
   const migrationBackup = parseMigrationBackupOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
+  validateBackupPolicyDestination(backupPolicy);
   const knowledgeArgs = command === "knowledge" ? parseKnowledgeCommandArgs(process.argv.slice(3)) : undefined;
   const paths = knowledgeArgs
     ? resolveAppPaths(knowledgeArgs.dataDir, knowledgeArgs.stateDir)
     : resolveAppPaths(option("--data-dir"), option("--state-dir"));
+  if (["knowledge", "auth", "identity", "backup", "project", "doctor"].includes(command) || (command === "config" && process.argv[3] === "mcp")) assertBackupHandoffCompleted(paths.databasePath);
   if (command === "service") {
     await handleServiceCommand(process.argv.slice(3), paths);
     return;
@@ -138,13 +145,16 @@ async function main(): Promise<void> {
   if (!existsSync(webRoot)) throw new Error(translate(locale, "cli.missingPanel", { path: webRoot }));
 
   const memoryWarningMiB = optionalPositiveNumber(option("--memory-warning-mib"), "Memory warning threshold");
-  const controllerLock = acquireControllerLock(paths.controllerLockPath);
+  const controllerLock = retainedLock ?? acquireControllerLock(paths.controllerLockPath);
+  let maintenance = false;
 
   const events = new EventStream();
   let store;
   try {
+    const handoff = recoverBackupHandoff(paths.databasePath, paths.knowledgeAttachmentDirectory, backupPolicy);
     store = await openControllerStore(paths.databasePath, { ...migrationBackup, applicationVersion: packageJson.version, attachmentDirectory: paths.knowledgeAttachmentDirectory });
-  } catch (error) { controllerLock.release(); throw error; }
+    if (handoff) finishBackupHandoff(paths.databasePath, handoff, store);
+  } catch (error) { store?.close(); controllerLock.release(); throw error; }
   const authentication = new AuthenticationService(store);
   let logs: FileLogWriter;
   try {
@@ -155,6 +165,14 @@ async function main(): Promise<void> {
     controllerLock.release();
     throw error;
   }
+  let backups: BackupOperations;
+  try {
+    backups = new BackupOperations(backupPolicy, {
+      databasePath: paths.databasePath, attachmentDirectory: paths.knowledgeAttachmentDirectory, applicationVersion: packageJson.version,
+      source: store, estimateBytes: () => store.backupEstimateBytes(),
+      authorize: actor => authentication.isCurrentInstallationActor(actor), maintenance: () => maintenance,
+    });
+  } catch (error) { await logs.close(); store.close(); controllerLock.release(); throw error; }
   const processes = new ProcessManager((projectId) => events.publish({ kinds: ["runtime"], projectIds: [projectId] }), logs, {
     memoryWarningThresholdBytes: memoryWarningMiB === null ? null : Math.round(memoryWarningMiB * 1024 * 1024),
   });
@@ -168,6 +186,16 @@ async function main(): Promise<void> {
   const attachments = new KnowledgeAttachmentService(store, identity, paths.knowledgeAttachmentDirectory);
   const knowledge = new KnowledgeService(store, identity, undefined, undefined, events.publishKnowledge, attachments);
   const service = new ControlService(store, new SystemGitWorktreeReader(), processes, logs, undefined, storage, undefined, undefined, tests, lifecycle, knowledge);
+  const restores = new RestoreOperations(backups, paths.databasePath, paths.knowledgeAttachmentDirectory, {
+    authentication: () => store.getAuthenticationPolicy(),
+    enterMaintenance: () => { maintenance = true; lifecycle.closeAdmission(); },
+    restart: async execute => {
+      await shutdown(true);
+      execute();
+      await main(controllerLock);
+    },
+    failure: error => { console.error(error instanceof Error ? error.message : "Restore handoff failed."); void shutdown().finally(() => { controllerLock.release(); process.exit(1); }); },
+  });
   const accessToken = randomBytes(32).toString("base64url");
   const sessionId = randomBytes(8).toString("hex");
   const mcpSessions = new Set<string>();
@@ -177,7 +205,11 @@ async function main(): Promise<void> {
     port: mcpPort,
     accessToken: loadOrCreateSecret(paths.mcpTokenPath),
     identity,
-    authentication,
+    authentication: {
+      mode: () => maintenance ? "better-auth" : authentication.mode(),
+      authenticateInstallation: token => maintenance ? null : authentication.authenticateInstallation(token),
+      anonymousInstallation: () => maintenance ? null : authentication.anonymousInstallation(),
+    },
     onDiagnostic: (message, details) => {
       const mcpSessionId = typeof details?.sessionId === "string" ? details.sessionId : null;
       if (message === "mcp.session_started" && mcpSessionId) {
@@ -209,11 +241,13 @@ async function main(): Promise<void> {
     identity,
     authentication,
     publicOrigin,
+    backups, restores, maintenance: () => maintenance,
   });
   try {
     await listen(controller.server, port, host);
     if (mcp) await listen(mcp.server, mcpPort, "127.0.0.1");
   } catch (error) {
+    await backups.close();
     await mcp?.close();
     await controller.close();
     await service.shutdown();
@@ -248,7 +282,7 @@ async function main(): Promise<void> {
   });
   let adminSocket: AdminSocketServer;
   try {
-    adminSocket = await listenAdminSocket(paths.adminSocketPath, authenticationAdminHandler({
+    const authenticationHandler = authenticationAdminHandler({
       authentication,
       closeMcpSessions: async () => { await mcp?.closeSessions(); },
       disconnectEvents: () => events.disconnectAll(),
@@ -256,8 +290,15 @@ async function main(): Promise<void> {
         if (serviceMode) recordServiceAccess();
         logs.controller("authentication.policy_changed", { command, mode: authentication.mode() });
       },
-    }));
+    });
+    const backupHandler = backupAdminHandler(backups, restores);
+    adminSocket = await listenAdminSocket(paths.adminSocketPath, body => {
+      if (body && typeof body === "object" && "command" in body && body.command === "backup") return backupHandler(body);
+      if (maintenance) throw new Error("Controller is in maintenance.");
+      return authenticationHandler(body);
+    });
   } catch (error) {
+    await backups.close();
     await mcp?.close();
     await controller.close();
     await service.shutdown();
@@ -281,12 +322,20 @@ async function main(): Promise<void> {
   }
 
   if (!process.argv.includes("--no-open") && !serviceMode) openBrowser(interactiveAddress);
+  backups.start();
   let closing = false;
-  const shutdown = async () => {
+  const shutdown = async (handoff = false) => {
     if (closing) return;
     closing = true;
+    maintenance = true;
+    // Cancel pending starts before closing listeners, which wait for their HTTP responses.
+    service.closeAdmission();
+    process.removeListener("SIGINT", handleSignal);
+    process.removeListener("SIGTERM", handleSignal);
     writeCliLine(translate(locale, "cli.stopping"));
     try {
+      let backupFailure: unknown = null;
+      try { await backups.close(); } catch (error) { backupFailure = error; }
       const listeners = await Promise.allSettled([mcp?.close(), controller.close(), adminSocket.close()]);
       const listenerFailures = listeners.filter((result) => result.status === "rejected");
       let serviceFailure: unknown = null;
@@ -295,11 +344,11 @@ async function main(): Promise<void> {
       } catch (error) {
         serviceFailure = error;
       }
-      const failures = [...listenerFailures.map((result) => result.reason), ...(serviceFailure ? [serviceFailure] : [])];
+      const failures = [...(backupFailure ? [backupFailure] : []), ...listenerFailures.map((result) => result.reason), ...(serviceFailure ? [serviceFailure] : [])];
       if (failures.length) throw new AggregateError(failures, "Controller shutdown did not complete cleanly.");
     } finally {
       if (serviceMode) removeServiceAccess(paths.serviceAccessPath);
-      controllerLock.release();
+      if (!handoff) controllerLock.release();
     }
   };
   const handleSignal = () => void shutdown().then(
@@ -318,6 +367,7 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
   const manager = new UserServiceManager();
   if (action === "install") {
     const migrationBackup = parseMigrationBackupOptions(args);
+    const backupPolicy = parseBackupPolicyOptions(args);
     const entrypointPath = realpathSync(resolve(process.argv[1]));
     if (extname(entrypointPath) !== ".js") {
       throw new Error("Build Worktree Switcher first, then install the service with: node dist/cli/index.js service install");
@@ -346,6 +396,7 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
       memoryWarningMiB,
       publicOrigin,
       ...migrationBackup,
+      backupPolicy,
     });
     const result = manager.install({
       nodePath: resolve(process.execPath),

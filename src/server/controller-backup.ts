@@ -9,9 +9,13 @@ import { acquireDatabaseOwnership, inspectSchema, snapshotAttachments } from "./
 import { hashFile, parseManifest, syncTree, validateBackup, type ControllerBackupManifest } from "./infrastructure/sqlite";
 import { prepareOwnedRestore, recoverOwnedRestore, type RestoreActor } from "./infrastructure/sqlite";
 export type { ControllerBackupManifest } from "./infrastructure/sqlite";
-interface BackupSource { backup(destination: string): Promise<void>; schemaVersion?(): number }
+interface BackupSource { backup(destination: string, options?: { progress: () => number }): Promise<void>; schemaVersion?(): number }
 
-export async function createControllerBackup(source: BackupSource, destination: string, options: {applicationVersion:string;attachmentDirectory:string;clock?:()=>string}): Promise<ControllerBackupManifest> {
+export async function createControllerBackup(source: BackupSource, destination: string, options: {applicationVersion:string;attachmentDirectory:string;clock?:()=>string;maxBytes?:number;deadline?:number;now?:()=>number}): Promise<ControllerBackupManifest> {
+  const check = (bytes = 0) => {
+    if ((options.now ?? Date.now)() > (options.deadline ?? Infinity) || bytes > (options.maxBytes ?? Infinity)) throw new Error("Backup execution limit exceeded.");
+  };
+  check();
   try {
     lstatSync(destination);
     throw new Error("Backup destination already exists.");
@@ -21,7 +25,7 @@ export async function createControllerBackup(source: BackupSource, destination: 
     // The owner keeps every published object immutable and retained through this
     // await and the copy below. SQL deletion/rollback never unlinks live objects;
     // offline restore is excluded by the existing database ownership lock.
-    const databaseFile=join(staging,"state.sqlite3"); closeSync(openSync(databaseFile,"wx",0o600)); await source.backup(databaseFile);
+    const databaseFile=join(staging,"state.sqlite3"); closeSync(openSync(databaseFile,"wx",0o600)); await source.backup(databaseFile, { progress: () => { check(); return 200; } });
     chmodSync(databaseFile, 0o600);
     const snapshot=new Database(databaseFile,{fileMustExist:true});
     let required: Array<{sha256:string;size:number}>;
@@ -31,7 +35,8 @@ export async function createControllerBackup(source: BackupSource, destination: 
       schemaVersion = inspectSchema(snapshot).version;
       required = snapshotAttachments(snapshot);
     } finally { snapshot.close(); }
-    const attachments=required.map(({sha256,size})=>{ const file=join(sha256.slice(0,2),sha256);
+    check(lstatSync(databaseFile).size + required.reduce((sum, item) => sum + item.size, 0));
+    const attachments=required.map(({sha256,size})=>{ check(); const file=join(sha256.slice(0,2),sha256);
       if (!/^[a-f0-9]{64}$/.test(sha256) || !Number.isSafeInteger(size) || size < 0) throw new Error("Invalid attachment metadata.");
       const from = attachmentObjectPath(options.attachmentDirectory, { sha256, size });
       publishAttachmentObject(join(staging, "attachments"), { sha256, size }, { path: from });
@@ -41,7 +46,7 @@ export async function createControllerBackup(source: BackupSource, destination: 
     parseManifest(manifest);
     durableJson(join(staging,"manifest.json"), manifest);
     validateBackup(staging, manifest, true); syncTree(staging);
-    renameSync(staging,destination); syncDirectory(dirname(destination)); return manifest;
+    check(); renameSync(staging,destination); syncDirectory(dirname(destination)); return manifest;
   } catch(error) { rmSync(staging,{recursive:true,force:true}); throw error; }
 }
 

@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { createHttpServerCloser } from "./http-server-lifecycle";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import type { ControlService } from "./control-service";
@@ -103,7 +104,10 @@ export function createMcpControllerServer(options: {
       }
       try {
         const body = request.method === "POST" ? await readJson(request) : undefined;
-        await (await runtime()).handle(request, response, authentication, body);
+        const currentRuntime = await runtime();
+        const currentAuthentication = authenticate(request, options.accessToken, options);
+        if (!currentAuthentication) return jsonError(response, 401, "A valid MCP bearer token is required.");
+        await currentRuntime.handle(request, response, currentAuthentication, body);
       } catch (error) {
         options.onDiagnostic?.("mcp.request_failed", {
           error: error instanceof Error ? error.message : String(error),
@@ -113,6 +117,7 @@ export function createMcpControllerServer(options: {
     })();
   });
 
+  const closeServer = createHttpServerCloser(server);
   return {
     server,
     async closeSessions() {
@@ -120,8 +125,7 @@ export function createMcpControllerServer(options: {
     },
     async close() {
       if (runtimePromise) await (await runtimePromise).close();
-      if (!server.listening) return;
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      await closeServer();
     },
   };
 }

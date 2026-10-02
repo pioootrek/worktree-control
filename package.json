@@ -35,7 +35,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "next build && tsup src/cli/index.ts --format esm --platform node --target node22 --clean --out-dir dist/cli && node scripts/build-fingerprint.mjs --write",
+    "build": "next build && tsup src/cli/index.ts src/cli/backup-verifier.ts --format esm --platform node --target node22 --clean --out-dir dist/cli && node scripts/build-fingerprint.mjs --write",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:resources",
     "dev": "node scripts/dev-controller.mjs",
     "dev:web": "next dev",
@@ -54,7 +54,10 @@
     "test:e2e": "node scripts/build-fingerprint.mjs --check && playwright test --config playwright.e2e.config.ts",
     "bench:resources": "node scripts/resource-benchmark.mjs",
     "test:resources": "node --test scripts/*.test.mjs",
-    "test:sqlite-cost": "tsx scripts/sqlite-write-cost.ts"
+    "test:sqlite-cost": "tsx scripts/sqlite-write-cost.ts",
+    "test:backups": "vitest run src/server/modules/backups src/cli/backup-policy-options.test.ts src/server/backup-admin.test.ts src/server/transports/backup-http.test.ts src/server/control-service-storage.test.ts",
+    "test:ui:backups": "playwright test tests/ui/backups.spec.ts",
+    "test:integration:backups": "node scripts/build-fingerprint.mjs --check && vitest run --config vitest.integration.config.ts tests/integration/backup-operations.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",

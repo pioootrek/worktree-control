@@ -151,8 +151,10 @@ export class ProjectLifecycle {
     return this.releaseFrom(this.scans, key);
   }
 
+  closeAdmission(): void { this.closing = true; }
+
   async closeAndDrain(): Promise<void> {
-    this.closing = true;
+    this.closeAdmission();
     await Promise.allSettled([...this.locks.values()]);
   }
 

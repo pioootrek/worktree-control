@@ -1,3 +1,4 @@
+import { snapshotAttachments } from "./schema-inspection";
 import type { KnowledgeTaskPage, KnowledgeReplyPage, KnowledgeRelationDestination } from "@/shared/contracts/knowledge";
 import type { KnowledgeMemory, KnowledgeSearchHit, KnowledgeSearchOptions } from "@/shared/contracts/knowledge-memory";
 import type { KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
@@ -77,7 +78,11 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     }
   }
 
-  backup(destination: string): Promise<void> { return this.database.backup(destination).then(() => undefined); }
+  backupEstimateBytes(): number {
+    return Number(this.database.pragma("page_count", { simple: true })) * Number(this.database.pragma("page_size", { simple: true }))
+      + snapshotAttachments(this.database).reduce((sum, entry) => sum + entry.size, 0);
+  }
+  backup(destination: string, options?: { progress: () => number }): Promise<void> { return this.database.backup(destination, options).then(() => undefined); }
   schemaVersion(): number { return (this.database.prepare("SELECT max(version) version FROM schema_migrations").get() as { version: number }).version; }
 
   private mapHubImportBatch(row: Record<string, unknown>): HubImportBatch {
