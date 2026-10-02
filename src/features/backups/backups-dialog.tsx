@@ -25,20 +25,31 @@ export function BackupsDialog({ token, open, onOpenChange, returnFocus }: { toke
   const [retry, setRetry] = useState<BackupCommand | null>(null);
   const focusPreview = useCallback((node: HTMLElement | null) => { node?.focus(); }, []);
   const fail = useCallback((cause: unknown) => {
-    const code = cause instanceof BackupClientError ? cause.code : "disconnected";
-    if (code === "backup_forbidden") { setOverview(null); setPreview(null); setOperation(null); }
+    const code = cause instanceof BackupClientError ? (cause.status === 403 ? "backup_forbidden" : cause.code) : "disconnected";
+    if (code === "backup_forbidden") { setOverview(null); setPreview(null); setOperation(null); setRetry(null); }
     setError(t(code === "backup_forbidden" ? "backups.forbidden" : code === "backup_busy" ? "backups.busy" : code === "disconnected" ? "backups.disconnected" : "backups.failed"));
   }, [t]);
   const load = useCallback(async () => {
     const data = await backupRequest<BackupOverview>(token);
     const input = saved.current;
-    const status = input && (input.action === "create" || input.action === "restore")
-      ? await backupRequest<BackupOperation | RestoreOperation>(token, { action: "status", idempotencyKey: input.idempotencyKey, ...(input.action === "restore" ? { backupId: input.backupId } : {}) }) : null;
-    return { data, status, input };
+    let status: BackupOperation | RestoreOperation | null = null;
+    let statusError: BackupClientError | null = null;
+    if (input && (input.action === "create" || input.action === "restore")) {
+      try {
+        status = await backupRequest<BackupOperation | RestoreOperation>(token, { action: "status", idempotencyKey: input.idempotencyKey, ...(input.action === "restore" ? { backupId: input.backupId } : {}) });
+      } catch (cause) {
+        // A pre-admission failure has no receipt. Keep the authorized catalog
+        // and original command available for an explicit retry, without success.
+        if (!(cause instanceof BackupClientError) || cause.status !== 404 || cause.code !== "backup_invalid") throw cause;
+        statusError = cause;
+      }
+    }
+    return { data, status, input, statusError };
   }, [token]);
   const apply = useCallback((result: Awaited<ReturnType<typeof load>>) => {
     setOverview(result.data); setOperation(result.status); setRetry(result.input); setError(null);
-  }, []);
+    if (result.statusError) fail(result.statusError);
+  }, [fail]);
   const refresh = useCallback(async () => {
     const current = generation.current;
     try { const result = await load(); if (generation.current === current) apply(result); }
