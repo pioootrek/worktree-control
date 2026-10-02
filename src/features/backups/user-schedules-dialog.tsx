@@ -25,6 +25,7 @@ export function UserSchedulesDialog({ token, onOpenChange, returnFocus }: { toke
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState<Extract<UserScheduleCommand, { action: "save" }> | null>(null);
   const [pending, setPending] = useState(false);
+  const focusForm = useCallback((node: HTMLSelectElement | null) => { node?.focus(); }, []);
   const busy = useRef(false);
   const alive = useRef(true);
   const saved = useRef<Extract<UserScheduleCommand, { action: "save" }> | null>(null);
@@ -100,7 +101,7 @@ export function UserSchedulesDialog({ token, onOpenChange, returnFocus }: { toke
         {overview.maintenance && <p role="status">{t("userBackups.reason.busy")}</p>}
         {overview.policy.enabled && !overview.projects.length && <p role="status">{t("userBackups.reason.forbidden")}</p>}
         {draft && <form className="grid gap-3 sm:grid-cols-2" onSubmit={event => { event.preventDefault(); void save({ action: "save", ...draft, idempotencyKey: uuid() }); }}>
-          <label className="grid gap-1 text-sm">{t("userBackups.project")}<select className="min-w-0 rounded border bg-background p-2" value={draft.configuration.projectId} onChange={event => update({ projectId: event.target.value })}>{overview.projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+          <label className="grid gap-1 text-sm">{t("userBackups.project")}<select ref={focusForm} className="min-w-0 rounded border bg-background p-2" value={draft.configuration.projectId} onChange={event => update({ projectId: event.target.value })}>{overview.projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
           <label className="grid gap-1 text-sm">{t("userBackups.target")}<select className="min-w-0 rounded border bg-background p-2" value={draft.configuration.targetId} onChange={event => update({ targetId: event.target.value })}>{overview.targets.map(id => <option key={id} value={id}>{id}</option>)}</select></label>
           <label className="grid gap-1 text-sm">{t("userBackups.interval")}<input type="number" required min={overview.policy.minIntervalSeconds} max={30 * 86400} className="min-w-0 rounded border bg-background p-2" value={draft.configuration.intervalSeconds} onChange={event => update({ intervalSeconds: Number(event.target.value) })} /></label>
           <label className="grid gap-1 text-sm">{t("userBackups.count")}<input type="number" required min={1} max={overview.policy.retainCount} className="min-w-0 rounded border bg-background p-2" value={draft.configuration.retainCount} onChange={event => update({ retainCount: Number(event.target.value) })} /></label>
