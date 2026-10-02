@@ -276,7 +276,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       ];
       let bytes = 0;
       for (const { table, text } of definitions) {
-        const size = this.database.prepare(`SELECT count(*) AS count, coalesce(sum(${text}), 0) AS bytes FROM ${table} WHERE project_id = ?`).get(projectId) as { count: number; bytes: number };
+        const size = this.database.prepare(`SELECT count(*) AS count, coalesce(sum(${text}), 0) AS bytes FROM (SELECT * FROM ${table} WHERE project_id = ? LIMIT 1001)`).get(projectId) as { count: number; bytes: number };
         bytes += size.bytes;
         if (size.count > 1000 || bytes > Math.min(maxBytes, 16 * 1024 ** 2)) throw new Error("Discussion export exceeds content limits.");
       }

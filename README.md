@@ -271,6 +271,70 @@ Data defaults to `~/.local/share/worktree-switcher`; runtime state and logs use
 `~/.local/state/worktree-switcher`. The controller respects `XDG_DATA_HOME` and
 `XDG_STATE_HOME`, and startup options can override these paths.
 
+## Optional user export schedules
+
+User schedules default to off, independently of installation backups. An
+operator enables only the supported scope and allowed project/target IDs:
+
+```sh
+worktree-switcher start --user-backup-enabled \
+  --user-backup-scopes knowledge-discussions \
+  --user-backup-projects <knowledge-project-id> \
+  --user-backup-target local=/private/user-exports \
+  --user-backup-min-interval-seconds 3600 --user-backup-max-schedules 4 \
+  --user-backup-max-bytes 67108864 --user-backup-timeout-seconds 30 \
+  --user-backup-queue-limit 2 --user-backup-retain-count 10 \
+  --user-backup-retain-days 30
+```
+
+`service install --refresh` preserves these arguments. Repeat `--user-backup-target`
+for up to 16 private local targets; projects are a comma-separated allowlist.
+The only supported scope is current discussion text (`knowledge-discussions`).
+It excludes history, authorship, import sources, identities, credentials,
+attachments, tasks and memories. The existing full project transfer format is
+not exposed to schedules. Export content remains user-authored project data.
+
+Scoped owner/agent credentials with current `knowledge:read` and `knowledge:export`
+grants open **System → My export schedules**. They manage only their own records
+and download only authorized complete exports. Installation/open/legacy/worker
+identities cannot own a user schedule. Expired or revoked activation credentials
+block execution; edit with a current credential to reactivate. This version uses
+the existing principal types and does not add a SaaS account provider.
+
+Limits: minimum interval 60–2,592,000 seconds, schedules per principal 1–32,
+bytes per principal 1 MiB–1 GiB, cooperative timeout 1–300 seconds, pending jobs
+per principal 1–32, retention maximum 1–100 copies and 1–365 days. Defaults are
+shown above. The shared `--backup-queue-limit` (default four) also bounds all
+pending/running service backups and user exports. Only one executes at a time;
+queued service jobs have priority. A discussion export has at most 1000 threads,
+1000 replies and a complete JSON envelope smaller than 4 MiB. Oversize content
+is refused. Synchronous bounded phases can exceed the timeout before its next
+check; no successful publication occurs after a failed deadline check.
+
+Creating, enabling or editing increments the version and sets the next UTC
+instant to now plus the interval. Disabling clears that instant and keeps copies.
+An overdue schedule attempts only one slot, then advances to a future instant.
+Queued work of an old version fails. Retry a lost mutation with its original
+idempotency key; status failure for one request keeps the available panel visible.
+No HTTP operation modifies operator policy or grants restore authority.
+
+Checksummed private application records live beside the installation operation
+ledger, outside SQLite snapshots. This keeps configuration, versions, deadlines
+and receipt keys from rolling back during restore; transfer to a new host is
+outside this feature. There are at most 256 schedules, 2048 execution records
+and 1024 mutation keys globally, also bounded by a 4 MiB record. Exhaustion
+refuses new admission. Do not delete the ledger to clear these limits.
+A restore receipt changes the validation generation; even an admitted restore
+that later fails requires explicit revalidation. S4u rejects credentials issued
+before that restore boundary, including credentials resurrected by offline
+restore. Issue a fresh scoped credential and save the schedule again.
+
+Retention runs after success on an enabled current version. It removes only
+verified artifacts of that owner, schedule, project and target, preserves the
+newest and leaves installation/manual/pre-migration/recovery/unknown material
+untouched. Retention failure is visible. Disabled schedules perform no deletion.
+Local exports require a surviving host and filesystem.
+
 ## Optional installation backups
 
 Automatic backups and browser create/restore actions default to off. Only the
@@ -293,8 +357,7 @@ of host process limits. A timed-out operation cannot publish a successful copy;
 synchronous filesystem work may take longer before reaching its next limit check.
 
 `--backup-before-migration --backup-dir <directory>` retains its independent,
-default-off migration gate. No user schedules, off-host transfer or attachment
-store garbage collection are included. Local copies require a surviving host
+default-off migration gate. No off-host transfer or attachment store garbage collection is included. Local copies require a surviving host
 and filesystem to be useful.
 
 ```sh

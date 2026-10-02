@@ -28,6 +28,7 @@ export function UserSchedulesDialog({ token, onOpenChange, returnFocus }: { toke
   const focusForm = useCallback((node: HTMLSelectElement | null) => { node?.focus(); }, []);
   const busy = useRef(false);
   const alive = useRef(true);
+  const loadGeneration = useRef(0);
   const saved = useRef<Extract<UserScheduleCommand, { action: "save" }> | null>(null);
   const report = useCallback((cause: unknown) => {
     const code = cause instanceof RequestError ? cause.code : "disconnected";
@@ -35,18 +36,19 @@ export function UserSchedulesDialog({ token, onOpenChange, returnFocus }: { toke
     setError(t(keys[code as keyof typeof keys] ?? (code === "disconnected" ? "backups.disconnected" : "backups.failed")));
   }, [t]);
   const refresh = useCallback(async () => {
+    const generation = ++loadGeneration.current;
     try {
       const data = await request<UserScheduleOverview>(token);
-      if (!alive.current) return;
+      if (!alive.current || generation !== loadGeneration.current) return;
       setOverview(data); setError(null);
       const input = saved.current;
       if (input) {
         // Missing or inaccessible one-request status cannot discard the available panel.
         try { await request(token, { action: "status", idempotencyKey: input.idempotencyKey }); }
-        catch (cause) { if (alive.current) report(cause); }
+        catch (cause) { if (alive.current && generation === loadGeneration.current) report(cause); }
       }
     } catch (cause) {
-      if (!alive.current) return;
+      if (!alive.current || generation !== loadGeneration.current) return;
       if (cause instanceof RequestError && cause.status === 403) { setOverview(null); setDraft(null); setRetry(null); }
       report(cause);
     }
@@ -59,7 +61,7 @@ export function UserSchedulesDialog({ token, onOpenChange, returnFocus }: { toke
       saved.current = parsed?.success && parsed.data.action === "save" ? parsed.data : null;
       setRetry(saved.current);
     } catch { saved.current = null; }
-    void refresh(); return () => { alive.current = false; };
+    void refresh(); return () => { alive.current = false; loadGeneration.current++; };
   }, [token, refresh]);
   const save = async (input: Extract<UserScheduleCommand, { action: "save" }>) => {
     if (busy.current) return; busy.current = true; setPending(true); setError(null);

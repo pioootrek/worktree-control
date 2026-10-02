@@ -64,7 +64,7 @@ export class UserSchedules {
   private validate(schedule: Schedule): void {
     this.authenticate(schedule.actor);
     if (schedule.restoreGeneration !== (this.deps.restoreGeneration?.() ?? "")) throw new UserBackupError("forbidden", 403);
-    if (!this.policy.enabled || !this.policy.projects.includes(schedule.projectId) || !this.policy.targets.some(value => value.id === schedule.targetId)
+    if (!this.policy.enabled || !this.policy.scopes.includes(schedule.scope) || !this.policy.projects.includes(schedule.projectId) || !this.policy.targets.some(value => value.id === schedule.targetId)
       || schedule.intervalSeconds < this.policy.minIntervalSeconds || schedule.retainCount > this.policy.retainCount || schedule.retainDays > this.policy.retainDays
       || this.ledger.schedules.filter(value => value.ownerId === schedule.ownerId).length > this.policy.maxSchedules) throw new UserBackupError("policy", 403);
     try { this.deps.authorize(schedule.actor, schedule.projectId); } catch { throw new UserBackupError("forbidden", 403); }
@@ -115,7 +115,7 @@ export class UserSchedules {
     this.ledger.mutations.push({ ownerId: actor.principalId, key: command.idempotencyKey, hash: recordHash(command), response: { ...schedule } });
     this.save(); return this.publicSchedule(schedule, actor);
   }
-  start(): void { if (this.policy.enabled && !this.closed) { this.tick(); this.arm(); } }
+  start(): void { if (this.policy.enabled && !this.closed) { try { this.tick(); } catch { this.broken = true; } this.arm(); } }
   tick(): void {
     if (!this.policy.enabled || this.closed || this.broken || this.isBusy()) return;
     for (const schedule of this.ledger.schedules) {
@@ -124,7 +124,9 @@ export class UserSchedules {
       schedule.nextAt = this.now() + schedule.intervalSeconds * 1000;
       // Bound outcomes while retaining every extant artifact and the recent 50 results.
       const recent = new Set(this.ledger.executions.slice(-50).map(value => value.executionId));
-      this.ledger.executions = this.ledger.executions.filter(value => recent.has(value.executionId) || value.state === "queued" || value.state === "running" || existsSync(value.destination));
+      const latest = new Map(this.ledger.executions.map(value => [value.configuration.id, value.executionId]));
+      const lastResults = new Set(latest.values());
+      this.ledger.executions = this.ledger.executions.filter(value => lastResults.has(value.executionId) || recent.has(value.executionId) || value.state === "queued" || value.state === "running" || existsSync(value.destination));
       if (this.ledger.executions.length >= 2048) { schedule.reason = "limit"; this.save(); continue; }
       const executionId = randomUUID();
       const execution: Execution = { executionId, configuration: { ...schedule, actor: { ...schedule.actor } }, dueAt, state: "queued", reason: null, finishedAt: null,

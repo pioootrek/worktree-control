@@ -25,7 +25,7 @@ function fixture(userOptions: Record<string, unknown> = {}, serviceOptions: Reco
   const thread = knowledge.createThread(project.id, { title: "Visible topic", body: "Visible content" }, { idempotencyKey: "thread" }, owner);
   let now = Date.now(), maintenance = false, failExport = false;
   const backups = new BackupOperations(backupPolicySchema.parse({ directory: join(root, "service"), ...serviceOptions }), { source: store, databasePath: join(root, "state.sqlite3"), attachmentDirectory: join(root, "attachments"), applicationVersion: "test", estimateBytes: () => store.backupEstimateBytes(), authorize: () => true, maintenance: () => maintenance, clock: () => now });
-  const policy = userBackupPolicySchema.parse({ enabled: true, projects: [project.id], targets: [{ id: "local", directory: join(root, "exports") }], minIntervalSeconds: 60, ...userOptions });
+  const policy = userBackupPolicySchema.parse({ enabled: true, scopes: ["knowledge-discussions"], projects: [project.id], targets: [{ id: "local", directory: join(root, "exports") }], minIntervalSeconds: 60, ...userOptions });
   const deps = { authorize: (actor: typeof owner, id?: string) => { identity.describeIdentity(actor); if (id) { identity.authorizeKnowledge(actor, id, "knowledge:read"); identity.authorizeKnowledge(actor, id, "knowledge:export"); } }, projectName: (id: string) => store.getKnowledgeProject(id)?.name ?? null, exportDiscussions: (id: string, budget: number) => { if (failExport) throw new Error("injected failure"); return store.exportUserDiscussions(id, budget); }, clock: () => now };
   const schedules = new UserSchedules(policy, backups, deps);
   cleanup.push(() => rmSync(root, { recursive: true, force: true }), () => store.close(), () => backups.close(), () => schedules.close());
@@ -148,5 +148,48 @@ describe("independent user export schedules", () => {
     const restarted = new UserSchedules(f.policy, f.backups, f.deps); cleanup.push(() => restarted.close());
     expect(restarted.overview(f.owner).artifacts[0]).toMatchObject({ state: "interrupted", reason: "interrupted" });
     expect(recordHash(ledger)).toMatch(/^[a-f0-9]{64}$/);
+  });
+  it("refuses an offline restore generation even if old credentials are active again", async () => {
+    const f = fixture(); f.save(); f.schedules.close();
+    const restored = new UserSchedules(f.policy, f.backups, { ...f.deps, restoreGeneration: () => "restored" }); cleanup.push(() => restored.close());
+    expect(restored.overview(f.owner).schedules[0].reason).toBe("forbidden");
+    f.advance(); restored.tick(); await f.backups.drain();
+    expect(restored.overview(f.owner).artifacts[0]).toMatchObject({ state: "denied", reason: "forbidden" });
+    const input = f.input(); input.id = restored.overview(f.owner).schedules[0].id; input.version = 1;
+    expect((restored.command(f.owner, input) as UserSchedule).reason).toBeNull();
+  });
+  it("checks storage and cooperative time limits before publication", async () => {
+    for (const failure of ["bytes", "time"] as const) {
+      const f = fixture({ maxBytes: 1024 ** 2 }); f.save();
+      f.deps.exportDiscussions = () => { if (failure === "time") f.advance(31_000); return { body: "x".repeat(failure === "bytes" ? 1024 ** 2 : 1) }; };
+      f.advance(); f.schedules.tick(); await f.backups.drain();
+      expect(f.schedules.overview(f.owner).artifacts[0]).toMatchObject({ state: "failed", reason: "limit", artifactAvailable: false });
+    }
+  });
+  it("preserves foreign/corrupt publication material and refuses overwrite or download", async () => {
+    const f = fixture(); let release!: () => void;
+    f.backups.enqueueExport("block", 1, () => new Promise<void>(resolve => { release = resolve; }), () => {}); await Promise.resolve();
+    f.save(); f.advance(); f.schedules.tick();
+    const ledger = JSON.parse(readFileSync(join(f.backups.recordDirectory, "user-schedules.json"), "utf8")).payload;
+    const destination = ledger.executions[0].destination;
+    // Create the exact path as operator fixture material before the queued export runs.
+    const { mkdirSync } = await import("node:fs"); mkdirSync(join(f.root, "exports"), { mode: 0o700 }); writeFileSync(destination, "foreign evidence", { mode: 0o600 });
+    release(); await f.backups.drain();
+    expect(readFileSync(destination, "utf8")).toBe("foreign evidence");
+    expect(f.schedules.overview(f.owner).artifacts[0]).toMatchObject({ state: "failed", artifactAvailable: false });
+    expect(() => f.schedules.command(f.owner, { action: "artifact", executionId: ledger.executions[0].executionId })).toThrow("forbidden");
+  });
+  it("reconciles an interrupted receipt only for its complete exact artifact", async () => {
+    const f = fixture(); f.save(); f.advance(); f.schedules.tick(); await f.backups.drain(); f.schedules.close();
+    const path = join(f.backups.recordDirectory, "user-schedules.json"), ledger = readRecord(path, z.any())!;
+    ledger.executions[0].state = "running"; ledger.executions[0].finishedAt = null; writeRecord(path, ledger);
+    const restarted = new UserSchedules(f.policy, f.backups, f.deps); cleanup.push(() => restarted.close());
+    expect(restarted.overview(f.owner).artifacts[0]).toMatchObject({ state: "succeeded", artifactAvailable: true });
+    writeFileSync(ledger.executions[0].destination, "corrupt", { mode: 0o600 });
+    expect(() => restarted.command(f.owner, { action: "artifact", executionId: ledger.executions[0].executionId })).toThrow();
+  });
+  it("enforces per-principal schedule limits and refuses oversize discussion sets without truncation", () => {
+    const f = fixture({ maxSchedules: 1 }); f.save(); expect(() => f.save()).toThrow("limit"); f.save(f.input(), f.other);
+    expect(() => f.store.exportUserDiscussions(f.project.id, 1)).toThrow("limits");
   });
 });
