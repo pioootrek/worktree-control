@@ -89,6 +89,7 @@ export class UserSchedules {
     this.authenticate(actor);
     const parsed = userScheduleCommandSchema.safeParse(input); if (!parsed.success) throw new UserBackupError("invalid");
     const command = parsed.data;
+    if (this.broken) throw new UserBackupError("busy", 503);
     if (command.action === "artifact") {
       const execution = this.ledger.executions.find(value => value.executionId === command.executionId && value.configuration.ownerId === actor.principalId);
       if (!execution || execution.state !== "succeeded" || !this.canRead(execution.configuration, actor)) throw new UserBackupError("forbidden", 403);
@@ -194,7 +195,7 @@ export class UserSchedules {
   private publicSchedule(schedule: Schedule, actor: AuthenticatedPrincipal): UserSchedule {
     const { actor: storedActor, restoreGeneration, nextAt, ...config } = schedule;
     void storedActor; void restoreGeneration;
-    let reason: ScheduleReason | null = schedule.enabled ? schedule.reason : "disabled";
+    let reason: ScheduleReason | null = this.broken ? "busy" : schedule.enabled ? schedule.reason : "disabled";
     try { this.validate({ ...schedule, actor }); if (schedule.enabled) this.validate(schedule); } catch (error) { reason = this.reason(error); }
     const last = [...this.ledger.executions].reverse().find(value => value.configuration.id === schedule.id);
     return { ...config, nextAt: nextAt === null ? null : new Date(nextAt).toISOString(), reason, lastResult: last && this.canRead(last.configuration, actor) ? this.result(last) : null };

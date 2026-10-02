@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteStateStore } from "@/server/infrastructure/sqlite";
@@ -187,6 +187,16 @@ describe("independent user export schedules", () => {
     expect(restarted.overview(f.owner).artifacts[0]).toMatchObject({ state: "succeeded", artifactAvailable: true });
     writeFileSync(ledger.executions[0].destination, "corrupt", { mode: 0o600 });
     expect(() => restarted.command(f.owner, { action: "artifact", executionId: ledger.executions[0].executionId })).toThrow();
+  });
+  it("fails closed after uncertain mutation persistence instead of confirming an in-memory retry", () => {
+    const f = fixture(); const command = f.input();
+    chmodSync(f.backups.recordDirectory, 0o500);
+    try {
+      expect(() => f.save(command)).toThrow();
+      expect(() => f.save(command)).toThrow("busy");
+      expect(f.schedules.overview(f.owner).maintenance).toBe(true);
+      expect(f.schedules.overview(f.owner).schedules[0].reason).toBe("busy");
+    } finally { chmodSync(f.backups.recordDirectory, 0o700); }
   });
   it("enforces per-principal schedule limits and refuses oversize discussion sets without truncation", () => {
     const f = fixture({ maxSchedules: 1 }); f.save(); expect(() => f.save()).toThrow("limit"); f.save(f.input(), f.other);
