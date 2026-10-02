@@ -25,7 +25,10 @@ export function UserSchedulesDialog({ token: initialToken, onOpenChange, returnF
   const [draftToken, setDraftToken] = useState("");
   useEffect(() => {
     if (initialToken.startsWith("wts_")) return;
-    try { const stored = sessionStorage.getItem("worktree-switcher-user-schedule-token"); if (stored?.startsWith("wts_")) setToken(stored); } catch { /* A credential can still be supplied without persistence. */ }
+    const frame = requestAnimationFrame(() => {
+      try { const stored = sessionStorage.getItem("worktree-switcher-user-schedule-token"); if (stored?.startsWith("wts_")) setToken(stored); } catch { /* A credential can still be supplied without persistence. */ }
+    });
+    return () => cancelAnimationFrame(frame);
   }, [initialToken]);
   const disconnect = () => { try { sessionStorage.removeItem("worktree-switcher-user-schedule-token"); } catch {} setToken(""); setDraftToken(""); };
   if (token) return <UserSchedulesPanel key={token} token={token} onOpenChange={onOpenChange} returnFocus={returnFocus} disconnect={disconnect} />;
@@ -80,7 +83,7 @@ function UserSchedulesPanel({ token, onOpenChange, returnFocus, disconnect }: Di
       saved.current = parsed?.success && parsed.data.action === "save" ? parsed.data : null;
       setRetry(saved.current);
     } catch { saved.current = null; }
-    void refresh(); return () => { alive.current = false; loadGeneration.current++; };
+    void refresh(); return () => { alive.current = false; };
   }, [token, refresh]);
   const save = async (input: Extract<UserScheduleCommand, { action: "save" }>) => {
     if (busy.current) return; busy.current = true; setPending(true); setError(null);

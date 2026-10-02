@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { randomUUID, createHash } from "node:crypto";
+import { dirname, join } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 import type { UserExportResult, UserSchedule, UserScheduleOverview } from "../../src/shared/contracts/user-backups";
 import type { BackupOperation, RestoreOperation } from "../../src/shared/contracts/backups";
@@ -58,5 +59,16 @@ describe("S4u in built controller", () => {
     const invalid = await f.requestResult("/api/user-backups", { method: "POST", headers: { Authorization: `Bearer ${fresh.token}` }, body: JSON.stringify({ ...input, ownerId: "foreign" }) });
     expect(invalid.status).toBe(400);
     const result: UserExportResult = (await api<UserScheduleOverview>(undefined, fresh.token)).artifacts[0]; expect(result.executionId).toBe(run.executionId);
+    await f.stop();
+    await f.cli(["backup", "restore", join(dirname(dirname(databasePath)), "backups", copy.backupId), "--idempotency-key", "offline-rollback"]);
+    await f.restart();
+    // Offline restore resurrects the old database credential, but S4u must refuse it.
+    expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${issued.token}` } })).status).toBe(200);
+    expect((await f.requestResult("/api/user-backups", { headers: { Authorization: `Bearer ${issued.token}` } })).status).toBe(403);
+    const postOffline = await admin<{ token: string }>({ action: "issue-agent-token", principalId: principal.id, label: "post-offline-restore" });
+    const offlineOverview = await api<UserScheduleOverview>(undefined, postOffline.token);
+    expect(offlineOverview.schedules[0]).toMatchObject({ id: saved.id, version: 2, reason: "forbidden" });
+    expect(offlineOverview.artifacts[0].executionId).toBe(run.executionId);
+    expect((await api<UserSchedule>({ ...input, version: 2, idempotencyKey: "revalidate-offline" }, postOffline.token)).version).toBe(3);
   });
 });
