@@ -1,6 +1,6 @@
 {
   "date": "2026-10-03",
-  "status": "in_progress",
+  "status": "merged",
   "runs": [
     {
       "id": "ea9eff65-55f2-475d-a795-0f621c944197",
@@ -883,5 +883,44 @@
         "  17 passed (35.7s)"
       ]
     }
-  ]
+  ],
+  "merge": {
+    "pr": 73,
+    "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+    "commit": "1f9c90fff36af25d5ca609299270d51dabc70a96",
+    "mergedAt": "2026-10-03T11:02:57Z"
+  },
+  "ci": {
+    "runId": 37117584381,
+    "conclusion": "success",
+    "vitest": 890,
+    "scripts": 7,
+    "integration": 33,
+    "ui": 166,
+    "e2e": 3,
+    "packageSmokeNodes": [
+      "22.23.2",
+      "24.21.0"
+    ],
+    "packageSmokeStepsEach": 14,
+    "lifecycle": "passed",
+    "artifactSha256": "261ea9d58821fbfbf9ef0dcd9a7e16a8415101b620e395b395e6d15786e5d37f",
+    "syntheticMerge": "0ce5829a0a541835a50cbb740df2e1d40784f520"
+  },
+  "review": {
+    "transport": "n8n dispatch-code-review",
+    "target": "all",
+    "claude": "two findings fixed",
+    "codex": {
+      "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+      "submittedAt": "2026-10-03T11:01:37Z",
+      "result": "no new actionable issues"
+    },
+    "kimi": {
+      "result": "incomplete",
+      "reason": "existing systemd runtime limit of 20 minutes",
+      "exitCode": 143
+    },
+    "unresolvedThreads": 0
+  }
 }

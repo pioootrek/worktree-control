@@ -1,6 +1,6 @@
 # S4u integrated closeout, 2026-10-03
 
-Status: in progress. Owner authorized completing both agent threads, n8n review and merge when ready. GitHub has one open PR (#73); the two agent branches had no separate PRs. Both are integrated into the existing feature branch, preserving their commits.
+Status: merged. PR #73 was merged at 2026-10-03T11:02:57Z as `1f9c90fff36af25d5ca609299270d51dabc70a96`, from verified head `6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4`. The entries below preserve the work and verification sequence. Owner authorized completing both agent threads, n8n review and merge when ready. GitHub has one open PR (#73); the two agent branches had no separate PRs. Both are integrated into the existing feature branch, preserving their commits.
 
 Agent 1: 3530ea77f2d1352f165940c3e530a3feeccd594b, bounded generation/version-bound mutation receipts. Agent 2: db12e4b46eb885d9f25a0ad2ee68fcc098823497, private operator export recovery. Merge 81a61ff resolves the shared schedule module and updates agent-2 fixtures to the new key protocol.
 
@@ -34,3 +34,13 @@ All four runs observed clean matching enqueue/preflight/finish Git state at 6f3d
 | test:ui:user-backups | d6cb113a-2da8-4dae-93b9-0ccab30eefbf | PASS: 17 Chromium tests, PL/EN retries/expiry/keyboard and 1440/1366/390/320 layouts |
 
 No development server was claimed, started or switched. The global test queue remained serial. Browser fixtures use static export with intercepted HTTP; they do not establish end-to-end browser recovery of real data. Exact source records and relevant output tails are in the closeout evidence file. GitHub run 37117584381 and remaining n8n reviews are pending.
+
+## Merge and final external acceptance
+
+PR #73 merged at 2026-10-03T11:02:57Z as `1f9c90fff36af25d5ca609299270d51dabc70a96`, using exact-head matching for `6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4`. Both original agent heads are ancestors of main. There were no separate agent PRs; their two branches were integrated and closed together in #73.
+
+[CI 37117584381](https://github.com/pioootrek/worktree-switcher/actions/runs/37117584381) passed all four jobs: 890 Vitest + 7 script tests, build, HTTPS, 33 integrations, 166 UI and 3 E2E; installed-package smoke passed 14 steps each on Node 22.23.2 and 24.21.0, and disposable systemd lifecycle passed with graceful cleanup/service absent/data preserved. Downloaded artifact and smoke/lifecycle helper SHA256 values were independently checked. Tarball `261ea9d58821fbfbf9ef0dcd9a7e16a8415101b620e395b395e6d15786e5d37f`, 841802 bytes, from clean synthetic merge `0ce5829a0a541835a50cbb740df2e1d40784f520` whose parents are main `a3216e6` and final feature `6f3db2f`. Later main changes before merge were documentation only.
+
+n8n dispatch used dispatch-code-review, target all. Claude's two new findings were fixed in f6ed795, tested, replied and resolved. Both original deferred findings also received replies updating their outcome to implemented fixes. Codex reviewed final 6f3db2f at 11:01:37Z and reported no new actionable issues. Final thread re-fetch found zero unresolved threads and no additional pages. Kimi did not complete: the existing reviewer systemd RuntimeMaxSec=20min stopped it at 11:00 UTC (exit 143, result timeout), with no published review. It is not counted as completed acceptance; host limits were unchanged and the accepted dispatch was not duplicated.
+
+S4u is closed. The parent RWK stays open for S4b off-host transfer and S5 operational acceptance. No production deployment, production database access, host service/limit changes or later slice. Physical power loss, physical disk exhaustion, installed old-artifact upgrade, new-host ledger recovery, actual macOS lifecycle and browser 200% zoom remain unverified.

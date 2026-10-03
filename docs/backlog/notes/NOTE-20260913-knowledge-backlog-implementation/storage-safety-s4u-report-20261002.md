@@ -1,6 +1,8 @@
 # S4u delivery report — 2026-10-02
 
-Latest implementation (review follow-up, 2026-10-03): `fa011f6972948d479ebf698ee8c629469c527222`.
+Historical delivery report. PR #73 was subsequently merged as `1f9c90fff36af25d5ca609299270d51dabc70a96` on 2026-10-03. Current outcome and final evidence are in [the integrated closeout report](storage-safety-s4u-closeout-20261003.md); earlier open/deferred statements below describe their original revisions.
+
+Historical review revision before integrated closeout: `fa011f6972948d479ebf698ee8c629469c527222`.
 Original delivery implementation: `31e9ccd9e22d4dcf0e1e85656b4d841b8fee13f3`.
 PR: https://github.com/pioootrek/worktree-switcher/pull/73.
 Baseline: fetched main `c7f3cca49ff3b31e7a4b3553f7f581eb30a7e8d0`, including S4a merge `0c2f187a2865549ce73b3ad79e8be84b4ebf55f4`. The pre-implementation contract was published on main in `4ad7b0e8ca2694d0ee16ff11b697a8461ef0033f`.

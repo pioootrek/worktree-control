@@ -164,11 +164,16 @@
       "author": "agent:codex",
       "date": "2026-10-03",
       "text": "Owner authorized completing both agent branches, using n8n review and merging when ready. Both local branches are integrated into existing PR #73 (no separate agent PRs existed). Mutation receipt fairness and explicit export recovery are implemented; staging now remains charged and pins execution history across timeout/restart/pruning. First n8n review added retained-success byte/history capacity findings, fixed with explicit confirmed operator cleanup of verified succeeded exports in f6ed795; original outcomes remain unchanged and automatic retention remains success-driven. Focused 108 tests and full 890 Vitest + 7 scripts passed at f6ed795. CI timeout diagnosed as deep Buffer equality cost: native exact byte comparison reduced the measured scenario from 4022 ms to 215 ms without changing timeout or production behavior. Final head 6f3db2f verification and remaining n8n review are pending. Protocol, report and sanitized evidence are in storage-safety-s4u-closeout-20261003.md and its evidence file. No production deployment or host policy change; parent remains open."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-03",
+      "text": "S4u merged in PR #73 at 1f9c90fff36af25d5ca609299270d51dabc70a96 from final head 6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4, preserving both agent branches. Final managed check/build/integration/UI passed with observed_match; CI 37117584381 passed all four jobs (890 Vitest + 7 scripts, HTTPS, 33 integrations, 166 UI, 3 E2E, 14-step package smoke Node 22/24 and lifecycle). Artifact SHA256 261ea9d58821fbfbf9ef0dcd9a7e16a8415101b620e395b395e6d15786e5d37f verified. n8n: two new Claude capacity findings fixed; Codex final-head review found no new actionable issues; zero unresolved threads. Kimi hit existing 20-minute runtime limit without publishing and is recorded incomplete. Both prior deferred operational blockers are implemented. See integrated closeout report/evidence. Parent remains open for S4b/S5; no production deployment or host policy change."
     }
   ],
   "priority": "next",
   "problem": [
-    "Main includes SQLite ownership, durable migrations and attachments, recoverable restore and S4a optional operational backup scheduling/retention with operator GUI through merged PRs #68–#72. S4u user schedules are submitted for review in PR #73; S4b off-host transfer and S5 operational acceptance remain incomplete.",
+    "Main includes SQLite ownership, durable migrations and attachments, recoverable restore, S4a optional operational backup scheduling/retention and S4u independent user export schedules with bounded mutation receipts and operator capacity recovery through merged PRs #68–#73. S4b off-host transfer and S5 operational acceptance remain incomplete.",
     "Knowledge cutover needs verified backup operations, private file handling, exclusive database ownership and recorded failure/restore evidence. The existing K7a pilot does not prove these guarantees."
   ],
   "risk": {

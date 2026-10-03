@@ -1,7 +1,7 @@
 # Plan domknięcia bezpieczeństwa danych SQLite
 
-Aktualizacja: 2026-10-02. Status: S1–S3 i S4a scalone;
-S4u dostarczono do review w PR #73; S4b i S5 pozostają do wykonania.
+Aktualizacja: 2026-10-03. Status: S1–S3, S4a i S4u scalone;
+S4b i S5 pozostają do wykonania.
 Stan realizacji jest poniżej; pierwotna diagnoza zachowana jako punkt odniesienia.
 Zadanie: [RWK-20260928-sqlite-data-safety](../../rework/RWK-20260928-sqlite-data-safety.json).
 Kod sprawdzony przy tworzeniu planu: `6a9df6e0879b4b9ad69969b1cc4b5bd4264a363c`.
@@ -10,7 +10,7 @@ historycznym punktem odniesienia. Powiązane prace:
 [migracja wiedzy](implementation-plan.md) i
 [aktualizacja pakietu](../NOTE-20260908-portable-verification-plan/controller-package-trial.md).
 
-## Stan realizacji po scaleniu S4a — 2026-10-02
+## Stan realizacji po scaleniu S4u — 2026-10-03
 
 S1a/S2a, S1b/S2b, S3a i S3b są na `main` przez PR #68–#71.
 S3b zamknięto w `42859c9d34db15b060e2f553c5e75a55af8c1175` po poprawce mobilnego Escape i zielonym CI.
@@ -28,25 +28,32 @@ rozdziela lokalne wyniki dla kodu aplikacji od końcowego CI `36998292347`:
 Przyczyna wcześniejszych timeoutów pozostaje nieustalona; dodano diagnostykę
 bez zmiany timeoutów, asercji ani retry.
 
-S4u dostarczono w [PR #73](https://github.com/pioootrek/worktree-switcher/pull/73),
-head po review `fa011f6972948d479ebf698ee8c629469c527222`.
-Niezależna polityka CLI domyślnie wyłącza harmonogramy użytkowników;
-GUI/API zarządza własnymi rekordami, a wspólny executor S4a wykonuje wyłącznie
-ograniczony eksport `knowledge-discussions` po sprawdzeniu tożsamości i grantów.
-Zewnętrzny dziennik terminów i receipt nie cofa się wraz z SQLite;
-online/offline restore wymaga świeżego poświadczenia i jawnej ponownej walidacji.
-[Raport S4u](storage-safety-s4u-report-20261002.md) zawiera kontrakt,
-wyniki MCP przypisane do SHA, błędy i ograniczenia. Końcowe CI `37101748053`
-przeszło: 836 Vitest + 7 skryptów, build/HTTPS, 32 integracyjne, 164 UI,
-3 E2E, smoke pakietu Node 22/24 i jednorazowy lifecycle systemd.
-Review z 3 października: 1 fix (refresh zachowuje politykę użytkowników),
-2 backlog, 0 false positives i 0 unresolved. W otwartym rodzicu zapisano
-wyczerpanie globalnych kluczy mutacji oraz quota materiału po przerwaniu;
-ich procedury odzyskiwania i uczciwy podział pojemności pozostają do wykonania.
-PR pozostaje niescalony. S4b obejmuje transfer poza hosta, a S5 odbiór
-operacyjny; żadnego z tych slice'ów nie rozpoczęto.
-Zadanie nadrzędne pozostaje otwarte. Nie wykonano
-wdrożenia produkcyjnego; backupy pozostają opcjonalne i domyślnie wyłączone.
+S4u scalono w [PR #73](https://github.com/pioootrek/worktree-switcher/pull/73)
+jako `1f9c90fff36af25d5ca609299270d51dabc70a96`, z końcowego head
+`6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4`. Oba lokalne wątki agentów
+weszły do tego PR-a. Niezależna polityka CLI domyślnie wyłącza harmonogramy
+użytkowników; GUI/API zarządza własnymi harmonogramami eksportu
+`knowledge-discussions` w jej granicach. Wspólny executor zachowuje priorytet
+backupów usługi, a zewnętrzne wersje, terminy i klucze nie cofają się z SQLite.
+
+Domknięcie obejmuje ograniczoną historię czterech potwierdzeń na harmonogram,
+bez ponownego wykonania wygasłych żądań, oraz jawne odzyskiwanie miejsca przez
+operatora. Zweryfikowane eksporty, także staging po przerwaniu i udane kopie,
+można usunąć przez prywatne CLI po podglądzie i potwierdzeniu. Nieznane lub
+niebezpieczne pliki pozostają; niepewne operacje zachowują obciążenie quota.
+Usunięcie ostatniej udanej kopii wymaga jawnego potwierdzenia operatora.
+
+[Raport domknięcia](storage-safety-s4u-closeout-20261003.md) zawiera wyniki,
+review i ograniczenia. Końcowe CI `37117584381`: 890 Vitest + 7 skryptów,
+build/HTTPS, 33 integracyjne, 166 UI, 3 E2E, smoke pakietu Node 22/24
+oraz lifecycle systemd na jednorazowym runnerze. Review n8n: dwie nowe uwagi
+Claude naprawiono, Codex nie znalazł nowych problemów w końcowym commicie,
+zero nierozwiązanych wątków. Kimi przekroczył limit 20 minut i nie opublikował
+wyniku; tego przebiegu nie zaliczono jako ukończonego review.
+
+S4b obejmuje transfer poza hosta, a S5 odbiór operacyjny; tych etapów nie
+rozpoczęto. Zadanie nadrzędne pozostaje otwarte. Nie wykonano wdrożenia
+produkcyjnego; backupy pozostają opcjonalne i domyślnie wyłączone.
 
 ## Historyczny punkt startowy — przed S1
 
