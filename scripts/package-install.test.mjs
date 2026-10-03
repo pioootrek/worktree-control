@@ -18,3 +18,7 @@ test("driver failure diagnostics preserve safe phase and cleanup without child s
 test("malformed driver output cannot enter public failure diagnostics", () => driver('console.log("wsi_PRIVATE secret/path"); process.exitCode=1', async (path, root) => {
   await assert.rejects(verifyInstalledDriver(path, root, [], root), error => error.message.includes('"outputKind":"invalid-json"') && !error.message.includes("PRIVATE") && !error.message.includes("secret/path"));
 }));
+
+test("valid JSON with malformed diagnostic fields stays a bounded failure", () => driver('console.log(JSON.stringify({errorCode:"fixture_failed",failureStep:"wsi_PRIVATE secret/path",steps:{at:"PRIVATE"}})); process.exitCode=1', async (path, root) => {
+  await assert.rejects(verifyInstalledDriver(path, root, [], root), error => error.message.includes('"outputKind":"fixture-error"') && error.message.includes('"lastCompletedStep":null') && !error.message.includes("PRIVATE") && !error.message.includes("secret/path"));
+}));
