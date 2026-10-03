@@ -25,12 +25,12 @@ export async function resticFixture() {
     const repository = `rest:https://127.0.0.1:${port}/fixture/`;
     child = spawn(server, ["--listen", `127.0.0.1:${port}`, "--path", repositoryRoot, "--htpasswd-file", htpasswd, "--tls", "--tls-cert", cert, "--tls-key", tlsKey, "--append-only"], { stdio: "ignore" });
     const environment = { RESTIC_REPOSITORY: repository, RESTIC_PASSWORD_FILE: key, RESTIC_REST_USERNAME: "fixture", RESTIC_REST_PASSWORD: "fixture-backend-password", GOMAXPROCS: "2", NODE_ENV: "test" as const };
-    const run = (args: string[], env: NodeJS.ProcessEnv = environment) => exec(restic, ["--no-cache", "--cacert", cert, ...args], { env, timeout: 30000, maxBuffer: 1024 * 1024 });
+    const run = (args: string[], env: NodeJS.ProcessEnv = environment, cwd?: string) => exec(restic, ["--no-cache", "--cacert", cert, ...args], { env, cwd, timeout: 30000, maxBuffer: 1024 * 1024 });
     const runWithoutCa = (args: string[]) => exec(restic, ["--no-cache", ...args], { env: environment, timeout: 30000, maxBuffer: 1024 * 1024 });
     await waitFor(async () => { try { await run(["init", "--json"]); return true; } catch { if (child!.exitCode !== null) throw new Error("Fixture REST server exited before init."); return null; } }, 10000, () => "Disposable HTTPS REST repository did not initialize.");
     const repositoryId = (JSON.parse((await run(["cat", "config"])).stdout) as { id: string }).id;
     const startupArguments = ["--backup-remote-enabled", "--backup-remote-restic", restic, "--backup-remote-repository", repository, "--backup-remote-repository-id", repositoryId, "--backup-remote-password-file", key, "--backup-remote-credentials-file", credentials, "--backup-remote-ca-file", cert, "--backup-remote-attempt-limit", "1", "--backup-remote-timeout-seconds", "30"];
     const provenance = { restic: (await exec(restic, ["version"])).stdout.trim(), restServer: (await exec(server, ["--version"])).stdout.trim(), resticSha256: createHash("sha256").update(await readFile(restic)).digest("hex"), restServerSha256: createHash("sha256").update(await readFile(server)).digest("hex") };
-    return { root, startupArguments, run, runWithoutCa, environment, key, credentials, provenance, async close() { try { if (child) await closeFixtureChild(child); } finally { await rm(root, { recursive: true, force: true }); } } };
+    return { root, configuration: { executable: restic, repository, repositoryId, passwordFile: key, credentialsFile: credentials, caFile: cert }, startupArguments, run, runWithoutCa, environment, key, credentials, provenance, async close() { try { if (child) await closeFixtureChild(child); } finally { await rm(root, { recursive: true, force: true }); } } };
   } catch (error) { try { if (child) await closeFixtureChild(child); } finally { await rm(root, { recursive: true, force: true }); } throw error; }
 }

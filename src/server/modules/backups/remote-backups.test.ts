@@ -5,9 +5,10 @@ import { tmpdir } from "node:os";
 import { SqliteStateStore } from "@/server/sqlite-store";
 import { BackupOperations } from "./backup-operations";
 import { backupPolicySchema } from "./policy";
-import { remoteBackupPolicySchema, type RemoteBackupTransport } from "./remote-policy";
+import { remoteBackupPolicySchema, RemoteBackupReconciliationError, type RemoteBackupTransport } from "./remote-policy";
 import { readRecord, writeRecord } from "./records";
 import { z } from "zod";
+import { rebindRemoteLedger } from "./remote-records";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -34,7 +35,7 @@ describe("optional installation transfer", () => {
   it("does not create remote records, timers, connections or alarms by default", async () => {
     const f = fixture(false); f.operations.start();
     f.operations.create("local-admin", "local"); await f.operations.drain();
-    expect(f.operations.remote.status()).toEqual({ enabled: false, pending: 0, error: null, lastConfirmed: null, recovery: "not-measured", transfers: [] });
+    expect(f.operations.remote.status()).toEqual({ enabled: false, pending: 0, error: null, lastConfirmed: null, recovery: "not-measured", destinationId: null, rebindGeneration: 0, archives: [], transfers: [] });
     expect(existsSync(join(f.operations.recordDirectory, "remote.json"))).toBe(false);
     expect(f.transport.upload).not.toHaveBeenCalled();
   });
@@ -132,4 +133,117 @@ describe("optional installation transfer", () => {
       expect(persisted.lastConfirmed).not.toBeNull();
     } finally { await restarted.close(); }
   });
+  it("preserves archived pins when disabled and admits only one explicit new-target transfer with original age", async () => {
+    const f = fixture(); vi.mocked(f.transport.upload).mockRejectedValueOnce(new Error("old uncertain outcome"));
+    const copy = f.operations.create("local-admin", "old-target"); await f.operations.drain(); await f.operations.close();
+    const path = join(f.operations.recordDirectory, "remote.json"); rebindRemoteLedger(path, f.transport.destinationId, "c".repeat(64), 1);
+    const transport = { ...f.transport, destinationId: "c".repeat(64) };
+    const disabled = new BackupOperations(f.policy, { ...f.deps, remoteTransport: undefined });
+    expect(disabled.remote.protectedIds().has(copy.backupId)).toBe(true); await disabled.close();
+    const restarted = new BackupOperations(f.policy, { ...f.deps, remoteTransport: transport });
+    try {
+      restarted.start(); await restarted.drain(); expect(transport.upload).toHaveBeenCalledOnce();
+      expect(restarted.remote.status()).toMatchObject({ lastConfirmed: null, pending: 0, archives: [{ pinned: 1, receipts: 1 }] });
+      expect(() => restarted.remote.reupload(`backup-${crypto.randomUUID()}`)).toThrow("backup_invalid");
+      restarted.remote.reupload(copy.backupId); restarted.remote.reupload(copy.backupId); await restarted.drain();
+      expect(transport.upload).toHaveBeenCalledTimes(2);
+      expect(restarted.remote.status().lastConfirmed).toMatchObject({ backupId: copy.backupId, dataAt: copy.createdAt });
+      expect(restarted.remote.protectedIds().has(copy.backupId)).toBe(true);
+      expect(readRecord(path, z.any()).archives[0].receipts[0].error).toBe("remote_failed");
+    } finally { await restarted.close(); }
+  });
+  it("persists continuation budgets through restart without spending another write attempt", async () => {
+    const f = fixture(true, { retrySeconds: 60 });
+    const proof = { snapshotId: "d".repeat(64), tree: "e".repeat(64), state: "partial" as const };
+    vi.mocked(f.transport.upload).mockResolvedValue({ progress: true, proofs: [proof], uploadAttempted: false });
+    const copy = f.operations.create("local-admin", "progress"); await f.operations.drain();
+    expect(f.operations.remote.status().transfers[0]).toMatchObject({ state: "pending", attempts: 0, reconciliation: { passes: 1, classified: 1, readReservedBytes: 256 * 1024 * 1024 } });
+    await f.operations.close(); const restarted = new BackupOperations(f.policy, f.deps);
+    try {
+      restarted.start(); await restarted.drain(); expect(f.transport.upload).toHaveBeenCalledOnce();
+      for (let i = 1; i < 8; i++) { f.advance(); restarted.remote.tick(); await restarted.drain(); }
+      expect(f.transport.upload).toHaveBeenCalledTimes(8);
+      expect(restarted.remote.status().transfers[0]).toMatchObject({ state: "failed", attempts: 0, reconciliation: { passes: 8, classified: 1, readReservedBytes: 2 * 1024 ** 3 } });
+      f.advance(); restarted.remote.tick(); await restarted.drain(); expect(f.transport.upload).toHaveBeenCalledTimes(8);
+      vi.mocked(f.transport.upload).mockResolvedValue({ snapshotId: "f".repeat(64) }); restarted.remote.retry(copy.backupId, 1); await restarted.drain();
+      expect(vi.mocked(f.transport.upload).mock.calls[8][0].reconciliation?.proofs).toEqual([proof]);
+      expect(restarted.remote.status().transfers[0]).toMatchObject({ state: "confirmed", attempts: 1, retryGeneration: 1, reconciliation: { passes: 1 } });
+    } finally { await restarted.close(); }
+  });
+
+  it("retains original source identity and requires fenced operator retry after changed inventory", async () => {
+    const f = fixture(true, { attemptLimit: 3, retrySeconds: 60 });
+    const proof = { snapshotId: "d".repeat(64), tree: "e".repeat(64), state: "partial" as const };
+    vi.mocked(f.transport.upload).mockResolvedValueOnce({ progress: true, proofs: [proof], uploadAttempted: false, inventoryHash: "f".repeat(64) }).mockRejectedValueOnce(new RemoteBackupReconciliationError());
+    const copy = f.operations.create("local-admin", "changed-inventory"); await f.operations.drain(); f.advance(); f.operations.remote.tick(); await f.operations.drain();
+    expect(f.operations.remote.status().transfers[0]).toMatchObject({ state: "failed", error: "remote_inventory_changed", reconciliation: { passes: 2, classified: 1 } });
+    await f.operations.close(); const restarted = new BackupOperations(backupPolicySchema.parse({ ...f.policy, intervalSeconds: null }), f.deps);
+    try {
+      restarted.start(); f.advance(); restarted.remote.tick(); await restarted.drain(); expect(f.transport.upload).toHaveBeenCalledTimes(2);
+      vi.mocked(f.transport.upload).mockResolvedValue({ snapshotId: "c".repeat(64) });
+      restarted.remote.retry(copy.backupId, 1); await restarted.drain();
+      const input = vi.mocked(f.transport.upload).mock.calls[2][0], original = vi.mocked(f.transport.upload).mock.calls[0][0];
+      expect(input.reconciliation?.inventoryHash).toBeUndefined(); expect(input.reconciliation?.proofs).toEqual([proof]);
+      expect(input.manifestSha256).toBe(original.manifestSha256); expect(input.installationId).toBe(original.installationId); expect(input.backupId).toBe(copy.backupId);
+      expect(restarted.remote.status().lastConfirmed?.dataAt).toBe(copy.createdAt);
+    } finally { await restarted.close(); }
+  });
+  it("refuses explicit reupload when the archived original manifest changed", async () => {
+    const f = fixture(); const copy = f.operations.create("local-admin", "original"); await f.operations.drain(); await f.operations.close();
+    const path = join(f.operations.recordDirectory, "remote.json"); rebindRemoteLedger(path, "a".repeat(64), "c".repeat(64), 1);
+    const manifestPath = join(f.policy.directory!, copy.backupId, "manifest.json"), manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.applicationVersion = "changed"; writeFileSync(manifestPath, JSON.stringify(manifest), { mode: 0o600 });
+    const restarted = new BackupOperations(f.policy, { ...f.deps, remoteTransport: { ...f.transport, destinationId: "c".repeat(64) } });
+    try { expect(() => restarted.remote.reupload(copy.backupId)).toThrow("backup_invalid"); expect(f.transport.upload).toHaveBeenCalledOnce(); expect(restarted.remote.status().lastConfirmed).toBeNull(); }
+    finally { await restarted.close(); }
+  });
+
+  it("holds remote evidence capacity across await while permitting duplicate identity reads", async () => {
+    const f = fixture(true, { pendingLimit: 2 }); vi.mocked(f.transport.upload).mockRejectedValue(new Error("old uncertain outcomes"));
+    const a = f.operations.create("local-admin", "first-old"), b = f.operations.create("local-admin", "second-old");
+    await f.operations.drain(); await f.operations.close();
+    rebindRemoteLedger(join(f.operations.recordDirectory, "remote.json"), "a".repeat(64), "c".repeat(64), 1);
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(f.transport.upload).mockImplementationOnce(async () => { await hold; return { snapshotId: "f".repeat(64) }; });
+    const restarted = new BackupOperations(backupPolicySchema.parse({ ...f.policy, intervalSeconds: null }), { ...f.deps, remoteTransport: { ...f.transport, destinationId: "c".repeat(64) } });
+    try {
+      restarted.remote.reupload(a.backupId);
+      const deadline = Date.now() + 10000;
+      while (vi.mocked(f.transport.upload).mock.calls.length < 3 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+      expect(f.transport.upload).toHaveBeenCalledTimes(3);
+      expect(restarted.remote.reupload(a.backupId).transfers).toHaveLength(1);
+      expect(() => restarted.remote.reupload(b.backupId)).toThrow("backup_busy");
+      expect(restarted.remote.status().transfers).toHaveLength(1);
+      release(); await restarted.drain();
+      restarted.remote.reupload(b.backupId); await restarted.drain();
+      expect(f.transport.upload).toHaveBeenCalledTimes(4);
+      expect(restarted.remote.status().archives[0].pinned).toBe(2);
+    } finally { release(); await restarted.close(); }
+  }, 20000);
+
+  it("releases saturated archived and confirmed proof caches without losing pins or blocking new uploads", async () => {
+    const f = fixture(true, { pendingLimit: 8 });
+    const proofs = Array.from({ length: 256 }, (_, i) => ({ snapshotId: i.toString(16).padStart(64, "0"), tree: "e".repeat(64), state: "partial" as const }));
+    vi.mocked(f.transport.upload).mockResolvedValue({ progress: true, proofs, uploadAttempted: false });
+    const copies = [];
+    for (let i = 0; i < 4; i++) { copies.push(f.operations.create("local-admin", `saturated-${i}`)); await f.operations.drain(); }
+    const path = join(f.operations.recordDirectory, "remote.json");
+    expect(readRecord(path, z.any()).receipts.reduce((n: number, r: { reconciliation: { proofs: unknown[] } }) => n + r.reconciliation.proofs.length, 0)).toBe(1024);
+    await f.operations.close(); const rebound = rebindRemoteLedger(path, "a".repeat(64), "c".repeat(64), 1);
+    expect(rebound.archives[0].receipts).toHaveLength(4);
+    expect(rebound.archives[0].receipts.every(r => r.reconciliation?.proofs.length === 0 && r.reconciliation.passes === 1)).toBe(true);
+    vi.mocked(f.transport.upload).mockResolvedValue({ snapshotId: "f".repeat(64), proofs });
+    const restarted = new BackupOperations(backupPolicySchema.parse({ ...f.policy, intervalSeconds: null }), { ...f.deps, remoteTransport: { ...f.transport, destinationId: "c".repeat(64) } });
+    try {
+      for (const copy of copies.slice(0, 2)) {
+        restarted.remote.reupload(copy.backupId); await restarted.drain();
+        expect(restarted.remote.status().transfers[0]).toMatchObject({ state: "confirmed", reconciliation: { classified: 0 } });
+        expect(vi.mocked(f.transport.upload).mock.lastCall?.[0].proofLimit).toBe(256);
+      }
+      expect(restarted.remote.protectedIds().size).toBe(4);
+      expect(restarted.remote.status().archives[0]).toMatchObject({ pinned: 4, receipts: 4 });
+    } finally { await restarted.close(); }
+  });
+
 });

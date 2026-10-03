@@ -1,33 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync } from "node:fs";
 import { join } from "node:path";
-import { z } from "zod";
 import { hashFile } from "@/server/infrastructure/sqlite";
 import { backupIdSchema } from "@/shared/contracts/backups";
 import type { BackupCatalog } from "./catalog";
 import { BackupError } from "./policy";
-import { readRecord, recordHash, writeRecord } from "./records";
-import type { RemoteBackupTransport } from "./remote-policy";
+import { recordHash } from "./records";
+import { assertRemoteLedgerCapacity, readRemoteLedger, writeRemoteLedger, REMOTE_LIMITS, type RemoteLedger, type Receipt } from "./remote-records";
+import { RemoteBackupReconciliationError, type RemoteBackupTransport } from "./remote-policy";
 
-const receiptSchema = z.object({
-  backupId: backupIdSchema, manifestHash: z.string().regex(/^[a-f0-9]{64}$/),
-  manifestSha256: z.string().regex(/^[a-f0-9]{64}$/), dataAt: z.iso.datetime(), sizeBytes: z.number().int().nonnegative(),
-  state: z.enum(["pending", "running", "confirmed", "failed"]), attempts: z.number().int().min(0).max(10),
-  nextAt: z.number().nullable(), confirmedAt: z.iso.datetime().nullable(), snapshotId: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
-  error: z.enum(["remote_failed", "remote_interrupted"]).nullable(),
-  retryGeneration: z.number().int().nonnegative().default(0),
-}).strict();
-type Receipt = z.infer<typeof receiptSchema>;
-const confirmationSchema = z.object({ backupId: backupIdSchema, dataAt: z.iso.datetime(), confirmedAt: z.iso.datetime(), snapshotId: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
-const RECEIPT_LIMIT = 2176;
-const ledgerSchema = z.object({ format: z.literal(1), installationId: z.uuid(), destinationId: z.string().regex(/^[a-f0-9]{64}$/), receipts: z.array(receiptSchema).max(RECEIPT_LIMIT), lastConfirmed: confirmationSchema.nullable().default(null) }).strict();
-type Ledger = z.infer<typeof ledgerSchema>;
 export interface RemoteBackupStatus {
   enabled: boolean; pending: number; error: "remote_failed" | "remote_limit" | null;
   lastConfirmed: { backupId: string; dataAt: string; confirmedAt: string; snapshotId: string } | null;
   // A remote receipt proves an authenticated snapshot, not a recovery drill.
   recovery: "not-measured";
-  transfers: Array<Omit<Receipt, "manifestHash" | "manifestSha256">>;
+  destinationId: string | null; rebindGeneration: number;
+  archives: Array<{ destinationId: string; receipts: number; pinned: number; lastConfirmed: RemoteBackupStatus["lastConfirmed"] }>;
+  transfers: Array<Omit<Receipt, "manifestHash" | "manifestSha256" | "reconciliation"> & { reconciliation: { passes: number; classified: number; readReservedBytes: number } | null }>;
 }
 interface RemoteDependencies {
   directory: string | undefined; recordDirectory: string; catalog: BackupCatalog; now: () => number;
@@ -39,17 +28,17 @@ interface RemoteDependencies {
 /** External ledger survives database restore; execution belongs to BackupOperations. */
 export class RemoteBackups {
   private readonly path: string;
-  private ledger: Ledger | null;
+  private ledger: RemoteLedger | null;
   private queued = false;
   private closed = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private persistenceFailed = false;
   constructor(private readonly transport: RemoteBackupTransport | undefined, private readonly deps: RemoteDependencies) {
     this.path = join(deps.recordDirectory, "remote.json");
-    this.ledger = readRecord(this.path, ledgerSchema);
+    this.ledger = readRemoteLedger(this.path);
     if (transport && !deps.directory) throw new BackupError("backup_invalid");
     if (transport && this.ledger && this.ledger.destinationId !== transport.destinationId) throw new BackupError("backup_invalid");
-    if (transport && !this.ledger) { this.ledger = { format: 1, installationId: randomUUID(), destinationId: transport.destinationId, receipts: [], lastConfirmed: null }; this.save(); }
+    if (transport && !this.ledger) { this.ledger = { format: 2, installationId: randomUUID(), destinationId: transport.destinationId, receipts: [], lastConfirmed: null, archives: [], rebindGeneration: 0, lastRebind: null }; this.save(); }
     if (transport && this.ledger) {
       for (const receipt of this.ledger.receipts) if (receipt.state === "running") {
         // The remote outcome is unknown. A retry must discover the stable identity first.
@@ -59,15 +48,16 @@ export class RemoteBackups {
     }
   }
   get enabled(): boolean { return Boolean(this.transport); }
-  hasReceipt(backupId: string): boolean { return Boolean(this.ledger?.receipts.some(receipt => receipt.backupId === backupId)); }
+  hasReceipt(backupId: string): boolean { return Boolean(this.ledger && [this.ledger, ...this.ledger.archives].some(ledger => ledger.receipts.some(receipt => receipt.backupId === backupId))); }
   assertCapacity(reserved = 0): void {
     if (!this.transport) return;
     if (this.persistenceFailed || this.closed) throw new BackupError("backup_busy", 503);
-    if (this.pending() + reserved >= this.transport.policy.pendingLimit || (this.ledger?.receipts.length ?? 0) + reserved >= RECEIPT_LIMIT) throw new BackupError("backup_limit", 409);
+    if (this.pending() + reserved >= this.transport.policy.pendingLimit || (this.ledger?.receipts.length ?? 0) + reserved >= REMOTE_LIMITS.receipts) throw new BackupError("backup_limit", 409);
+    if (this.ledger) assertRemoteLedgerCapacity(this.ledger, (reserved + 1) * 1024);
   }
   protectedIds(): Set<string> {
     // Disabled transport preserves sources for explicit future retries as well.
-    return new Set(this.ledger?.receipts.filter(receipt => receipt.state !== "confirmed").map(receipt => receipt.backupId));
+    return new Set(this.ledger ? [this.ledger, ...this.ledger.archives].flatMap(ledger => ledger.receipts.filter(receipt => receipt.state !== "confirmed").map(receipt => receipt.backupId)) : []);
   }
   status(): RemoteBackupStatus {
     return {
@@ -75,7 +65,9 @@ export class RemoteBackups {
       error: !this.enabled ? null : this.persistenceFailed || this.deps.unrecorded() || this.ledger?.receipts.some(receipt => receipt.error) ? "remote_failed" : this.pending() >= this.transport!.policy.pendingLimit ? "remote_limit" : null,
       lastConfirmed: this.ledger?.lastConfirmed ?? null,
       recovery: "not-measured",
-      transfers: (this.ledger?.receipts ?? []).slice(-50).reverse().map(({ manifestHash, manifestSha256, ...receipt }) => { void manifestHash; void manifestSha256; return receipt; }),
+      destinationId: this.ledger?.destinationId ?? null, rebindGeneration: this.ledger?.rebindGeneration ?? 0,
+      archives: (this.ledger?.archives ?? []).map(archive => ({ destinationId: archive.destinationId, receipts: archive.receipts.length, pinned: archive.receipts.filter(receipt => receipt.state !== "confirmed").length, lastConfirmed: archive.lastConfirmed })),
+      transfers: (this.ledger?.receipts ?? []).slice(-50).reverse().map(({ manifestHash, manifestSha256, reconciliation, ...receipt }) => { void manifestHash; void manifestSha256; return { ...receipt, reconciliation: reconciliation ? { passes: reconciliation.passes, classified: reconciliation.proofs.length, readReservedBytes: reconciliation.readReservedBytes } : null }; }),
     };
   }
   /** Only server-recorded, successful copies in the configured catalog are eligible. */
@@ -88,6 +80,23 @@ export class RemoteBackups {
     this.ledger!.receipts.push({ backupId, manifestHash, manifestSha256: hashFile(join(this.deps.catalog.path(backupId), "manifest.json")).sha256, dataAt, sizeBytes: manifest.database.size + manifest.attachments.reduce((sum, file) => sum + file.size, 0), state: "pending", attempts: 0, nextAt: this.deps.now(), confirmedAt: null, snapshotId: null, error: null, retryGeneration: 0 });
     this.save();
   }
+  /** Explicit singular admission; archived intent alone never schedules a new upload. */
+  reupload(backupId: string): RemoteBackupStatus {
+    backupIdSchema.parse(backupId);
+    if (!this.transport || this.closed || this.persistenceFailed || this.deps.maintenance()) throw new BackupError("backup_busy", 503);
+    if (this.ledger!.receipts.some(receipt => receipt.backupId === backupId)) return this.status();
+    // Keep the running pass's proof/envelope reservation stable while it awaits
+    // external effects. Existing identity reads remain idempotent above.
+    if (this.queued) throw new BackupError("backup_busy", 409);
+    const archived = this.ledger!.archives.flatMap(archive => archive.receipts).filter(receipt => receipt.backupId === backupId);
+    const original = archived[0];
+    if (!original || archived.some(receipt => receipt.manifestHash !== original.manifestHash || receipt.manifestSha256 !== original.manifestSha256 || receipt.dataAt !== original.dataAt)) throw new BackupError("backup_invalid");
+    const manifest = this.deps.catalog.manifest(backupId);
+    if (recordHash(manifest) !== original.manifestHash || hashFile(join(this.deps.catalog.path(backupId), "manifest.json")).sha256 !== original.manifestSha256) throw new BackupError("backup_invalid");
+    this.compact(); this.assertCapacity();
+    this.ledger!.receipts.push({ ...original, state: "pending", attempts: 0, nextAt: this.deps.now(), confirmedAt: null, snapshotId: null, error: null, retryGeneration: 0, reconciliation: { passes: 0, readReservedBytes: 0, proofs: [] } });
+    this.save(); this.tick(); return this.status();
+  }
   retry(backupId: string, generation: number): RemoteBackupStatus {
     backupIdSchema.parse(backupId);
     if (!Number.isSafeInteger(generation) || generation < 1) throw new BackupError("backup_invalid");
@@ -99,6 +108,7 @@ export class RemoteBackups {
     if (generation !== receipt.retryGeneration + 1) throw new BackupError("backup_invalid", 409);
     if (receipt.state === "running" || this.queued) throw new BackupError("backup_busy", 409);
     receipt.retryGeneration = generation; receipt.attempts = 0;
+    if (receipt.reconciliation) { receipt.reconciliation.passes = 0; receipt.reconciliation.readReservedBytes = 0; delete receipt.reconciliation.inventoryHash; }
     receipt.state = "pending"; receipt.nextAt = this.deps.now(); this.save(); this.tick();
     return this.status();
   }
@@ -118,23 +128,44 @@ export class RemoteBackups {
     if (this.closed || this.deps.maintenance()) return;
     try {
       const reconcileOnly = receipt.attempts >= this.transport!.policy.attemptLimit;
+      const progress = receipt.reconciliation ??= { passes: 0, readReservedBytes: 0, proofs: [] };
+      if (progress.passes >= REMOTE_LIMITS.passes) throw new BackupError("backup_limit", 409);
+      // Reserve the entire pass before spawning: a crash cannot reset read/candidate budgets.
+      progress.passes++; progress.readReservedBytes += REMOTE_LIMITS.readBytes;
       receipt.state = "running"; if (!reconcileOnly) receipt.attempts++; receipt.nextAt = null; this.save();
       const manifest = await this.deps.catalog.verifyAsync(receipt.backupId);
       const source = this.deps.catalog.path(receipt.backupId);
       if (this.closed || recordHash(manifest) !== receipt.manifestHash || hashFile(join(source, "manifest.json")).sha256 !== receipt.manifestSha256) throw new BackupError("backup_invalid");
       const files = [{ path: "/manifest.json", size: lstatSync(join(source, "manifest.json")).size }, { path: "/state.sqlite3", size: manifest.database.size }, ...manifest.attachments.map(file => ({ path: `/attachments/${file.file}`, size: file.size }))];
-      const result = await this.transport!.upload({ installationId: this.ledger!.installationId, backupId: receipt.backupId, source, manifestSha256: receipt.manifestSha256, files }, { reconcileOnly });
+      const otherProofs = [this.ledger!, ...this.ledger!.archives].reduce((sum, ledger) => sum + ledger.receipts.filter(value => value !== receipt).reduce((n, value) => n + (value.reconciliation?.proofs.length ?? 0), 0), 0);
+      const proofLimit = Math.min(REMOTE_LIMITS.candidates, REMOTE_LIMITS.proofs - otherProofs);
+      // Reserve bounded proof/confirmation space before any possible remote write.
+      assertRemoteLedgerCapacity(this.ledger!, Math.max(0, proofLimit - progress.proofs.length) * 200 + 1024);
+      const result = await this.transport!.upload({ installationId: this.ledger!.installationId, backupId: receipt.backupId, source, manifestSha256: receipt.manifestSha256, files, reconciliation: progress, proofLimit }, { reconcileOnly });
+      if (result.inventoryHash) progress.inventoryHash = result.inventoryHash;
+      if ("proofs" in result && result.proofs) {
+        if (result.proofs.length > REMOTE_LIMITS.candidates || result.proofs.length + otherProofs > REMOTE_LIMITS.proofs) throw new BackupError("backup_limit", 409);
+        progress.proofs = result.proofs;
+      }
+      if ("progress" in result) {
+        if (!reconcileOnly && !result.uploadAttempted) receipt.attempts--;
+        receipt.state = progress.passes < REMOTE_LIMITS.passes ? "pending" : "failed";
+        receipt.error = receipt.state === "failed" ? "remote_failed" : null;
+        receipt.nextAt = receipt.state === "pending" ? this.deps.now() + this.transport!.policy.retrySeconds * 1000 : null;
+        this.save(); return;
+      }
       if (this.closed || !/^[a-f0-9]{64}$/.test(result.snapshotId)) throw new BackupError("backup_failed");
+      receipt.reconciliation = { passes: progress.passes, readReservedBytes: progress.readReservedBytes, proofs: [] };
       receipt.state = "confirmed"; receipt.snapshotId = result.snapshotId; receipt.confirmedAt = new Date(this.deps.now()).toISOString(); receipt.error = null;
       if (!this.ledger!.lastConfirmed || this.ledger!.lastConfirmed.dataAt <= receipt.dataAt) this.ledger!.lastConfirmed = { backupId: receipt.backupId, dataAt: receipt.dataAt, confirmedAt: receipt.confirmedAt, snapshotId: receipt.snapshotId };
-    } catch {
-      receipt.error = "remote_failed";
-      receipt.state = receipt.attempts < this.transport!.policy.attemptLimit ? "pending" : "failed";
+    } catch (error) {
+      receipt.error = error instanceof RemoteBackupReconciliationError ? "remote_inventory_changed" : "remote_failed";
+      receipt.state = receipt.error !== "remote_inventory_changed" && receipt.attempts < this.transport!.policy.attemptLimit && (receipt.reconciliation?.passes ?? 0) < REMOTE_LIMITS.passes ? "pending" : "failed";
       receipt.nextAt = receipt.state === "pending" ? this.deps.now() + this.transport!.policy.retrySeconds * 1000 : null;
     }
     this.save();
   }
-  private save(): void { if (!this.ledger) return; try { writeRecord(this.path, this.ledger); } catch { this.persistenceFailed = true; throw new BackupError("backup_failed", 503); } }
+  private save(): void { if (!this.ledger) return; try { writeRemoteLedger(this.path, this.ledger); } catch { this.persistenceFailed = true; throw new BackupError("backup_failed", 503); } }
   private compact(): void {
     if (!this.transport || !this.ledger || !this.deps.directory) return;
     const retained = this.ledger.receipts.filter(receipt => receipt.state !== "confirmed" || !this.deps.retired(receipt.backupId) || existsSync(join(this.deps.directory!, receipt.backupId)));
