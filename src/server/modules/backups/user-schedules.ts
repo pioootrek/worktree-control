@@ -128,9 +128,11 @@ export class UserSchedules {
     catch (error) { return Promise.reject(error); }
     return new Promise((resolve, reject) => {
       try {
+        let outcome: unknown, failure: unknown, failed = false;
         this.backups.enqueueExport("local-admin:user-recovery", 1, async () => {
-          try { this.admission(); resolve(this.recovery.command(input)); } catch (error) { reject(error); }
-        }, () => reject(new UserBackupError("busy", 503)));
+          try { this.admission(); outcome = this.recovery.command(input); }
+          catch (error) { failure = error; failed = true; }
+        }, () => reject(new UserBackupError("busy", 503)), () => { if (failed) reject(failure); else resolve(outcome); });
       } catch (error) { reject(error); }
     });
   }

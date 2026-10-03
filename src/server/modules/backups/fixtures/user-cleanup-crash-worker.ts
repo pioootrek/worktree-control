@@ -1,0 +1,36 @@
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
+import { BackupOperations, backupPolicySchema, UserSchedules, userBackupPolicySchema } from "../index";
+import { readRecord, writeRecord } from "../records";
+
+const root = process.argv[2]!, boundary = process.argv[3]!;
+const actor = { principalId: "owner", principalKind: "owner" as const, credentialId: "fixture", authenticationMethod: "owner_session" as const };
+let now = Date.now();
+const backups = new BackupOperations(backupPolicySchema.parse({}), { databasePath: join(root, "state.sqlite3"), attachmentDirectory: join(root, "attachments"), applicationVersion: "test", source: { backup: async () => {} }, estimateBytes: () => 1, authorize: () => true, maintenance: () => false, clock: () => now });
+const policy = userBackupPolicySchema.parse({ enabled: true, scopes: ["knowledge-discussions"], projects: ["project"], targets: [{ id: "local", directory: join(root, "exports") }], minIntervalSeconds: 60, maxBytes: 1024 ** 2 });
+const deps = { authorize: () => {}, projectName: () => "Fixture", exportDiscussions: () => ({ body: "x".repeat(700_000) }), clock: () => now };
+let schedules = new UserSchedules(policy, backups, deps);
+schedules.command(actor, { action: "save", id: randomUUID(), version: 0, idempotencyKey: "create", configuration: { projectId: "project", scope: "knowledge-discussions", targetId: "local", enabled: true, intervalSeconds: 60, retainCount: 1, retainDays: 1 } });
+now += 60_000; schedules.tick(); await backups.drain(); schedules.close();
+const path = join(backups.recordDirectory, "user-schedules.json"), ledger = readRecord(path, z.any())!, execution = ledger.executions[0];
+execution.state = "running"; execution.hash = null; execution.bytes = 0; execution.finishedAt = null; writeRecord(path, ledger); now += 600_000;
+schedules = new UserSchedules(policy, backups, deps);
+const view = await schedules.recover("local-admin", { action: "preview", executionId: execution.executionId }) as { confirmation: string };
+fs.writeFileSync(join(root, "confirmation.json"), JSON.stringify([view]), { mode: 0o600 });
+const rename = fs.renameSync, unlink = fs.unlinkSync, synchronize = fs.fsyncSync;
+const receiptPath = join(backups.recordDirectory, "user-export-recovery.json");
+const kill = () => process.kill(process.pid, "SIGKILL");
+fs.renameSync = (...args) => {
+  const phase = String(args[1]) === receiptPath ? JSON.parse(fs.readFileSync(String(args[0]), "utf8")).payload.entries[0].phase : "other";
+  if ((boundary === "before-intent" && phase === "pending") || (boundary === "before-settle" && phase === "completed")) kill();
+  rename(...args);
+  if ((boundary === "after-intent" && phase === "pending") || (boundary === "after-settle" && phase === "completed")) kill();
+};
+fs.unlinkSync = path => { if (String(path) === execution.destination && boundary === "before-unlink") kill(); unlink(path); if (String(path) === execution.destination && boundary === "after-unlink") kill(); };
+fs.fsyncSync = fd => { synchronize(fd); if (boundary === "after-durable" && fs.fstatSync(fd).isDirectory() && fs.fstatSync(fd).ino === fs.lstatSync(backups.recordDirectory).ino && JSON.parse(fs.readFileSync(receiptPath, "utf8")).payload.entries[0].phase === "completed") kill(); };
+syncBuiltinESMExports();
+await schedules.recover("local-admin", { action: "cleanup", executionId: execution.executionId, confirmation: view.confirmation });
+throw new Error("Cleanup crash boundary was not reached.");
