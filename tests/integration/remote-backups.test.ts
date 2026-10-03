@@ -17,7 +17,7 @@ describe.skipIf(!realResticAvailable)("real restic HTTPS REST transfer and sourc
   it("transfers only verified installation data, authenticates HTTPS, and recovers records/credentials/attachments after source deletion", async () => {
     remote = await resticFixture(); controller = await startControllerFixture(0, [], { backups: true, startupArguments: remote.startupArguments });
     const f = controller, r = remote, token = f.installationToken;
-    const { project } = await f.request<{ project: { id: string } }>("/api/identity/admin", { method: "POST", body: JSON.stringify({ action: "create-knowledge-project", name: "Remote recovery" }) });
+    const { project } = await f.request<{ project: { id: string } }>("/api/identity/admin", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ action: "create-knowledge-project", name: "Remote recovery" }) });
     const task = JSON.parse(await f.cli(["knowledge", "create_task", "--json", JSON.stringify({ projectId: project.id, title: "Recovered task", description: "Remote source-independent data", idempotencyKey: "task" })], { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: token })) as { value: { id: string } };
     const bytes = Buffer.from("remote fixture attachment bytes"), sha256 = createHash("sha256").update(bytes).digest("hex");
     const attachment = JSON.parse(await f.cli(["knowledge", "create_attachment", "--json", JSON.stringify({ projectId: project.id, recordKind: "task", recordId: task.value.id, filename: "proof.txt", mediaType: "text/plain", dataBase64: bytes.toString("base64"), sha256, idempotencyKey: "attachment" })], { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: token })) as { value: { id: string } };
