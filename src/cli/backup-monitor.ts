@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { requestAdminSocket } from "@/server/admin-socket";
+import { resolveAppPaths } from "@/server/paths";
 import { backupMonitorMetadataSchema, type BackupMonitorMetadata } from "@/server/modules/backups";
 
 const optionsSchema = z.object({
@@ -25,7 +26,7 @@ export function parseBackupMonitorOptions(args: string[]): BackupMonitorOptions 
   return result.data;
 }
 type Severity = "disabled" | "healthy" | "warning" | "critical" | "unknown";
-type Alert = "controller_unavailable" | "monitor_timeout" | "invalid_metadata" | "local_missing" | "local_warning" | "local_critical" | "local_failed" | "remote_missing" | "remote_warning" | "remote_critical" | "remote_failed" | "clock_invalid" | "maintenance";
+type Alert = "invalid_options" | "controller_unavailable" | "monitor_timeout" | "invalid_metadata" | "local_missing" | "local_warning" | "local_critical" | "local_failed" | "remote_missing" | "remote_warning" | "remote_critical" | "remote_failed" | "clock_invalid" | "maintenance";
 export interface BackupMonitorReport {
   format: 1; checkedAt: string; enabled: boolean; severity: Severity; exitCode: 0 | 1 | 2 | 3;
   controller: "not-checked" | "available" | "unavailable"; alerts: Alert[];
@@ -34,6 +35,27 @@ export interface BackupMonitorReport {
 }
 function report(now: number, enabled: boolean): BackupMonitorReport {
   return { format: 1, checkedAt: new Date(now).toISOString(), enabled, severity: "disabled", exitCode: 0, controller: "not-checked", alerts: [], evidence: "recorded-snapshot-and-transfer-metadata", remoteReachability: "not-checked", recovery: "not-measured", metadata: null, ages: { localSeconds: null, remoteSeconds: null } };
+}
+/** Catch invocation errors before any other CLI parser or filesystem mutation. */
+export async function runBackupMonitor(args: string[], clock: () => number = Date.now): Promise<BackupMonitorReport> {
+  try {
+    const options: string[] = [], paths: { dataDirectory?: string; stateDirectory?: string } = {};
+    const seen = new Set<string>();
+    for (let index = 0; index < args.length; index++) {
+      const flag = args[index]!;
+      if (flag !== "--data-dir" && flag !== "--state-dir") { options.push(flag); continue; }
+      const value = args[++index];
+      if (seen.has(flag) || !value?.trim() || value.startsWith("--") || value.includes("\0")) throw new Error("Invalid monitor path option.");
+      seen.add(flag); paths[flag === "--data-dir" ? "dataDirectory" : "stateDirectory"] = value;
+    }
+    const policy = parseBackupMonitorOptions(options);
+    const resolved = resolveAppPaths(paths.dataDirectory, paths.stateDirectory);
+    return await probeBackupMonitor(resolved.adminSocketPath, policy, clock);
+  } catch {
+    const result = report(clock(), args.includes("--enabled"));
+    result.severity = "unknown"; result.exitCode = 3; result.alerts = ["invalid_options"];
+    return result;
+  }
 }
 export function evaluateBackupMonitor(metadata: BackupMonitorMetadata, options: BackupMonitorOptions, now: number): BackupMonitorReport {
   const result = report(now, options.enabled);

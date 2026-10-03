@@ -328,6 +328,14 @@ async function main() {
     const live = JSON.parse((await run(cliCommand, ["backup", "monitor", "--enabled", ...common], { cwd: root, env: runtimeEnv })).stdout);
     check(live.controller === "available" && live.severity === "disabled" && live.metadata.scheduleEnabled === false && live.metadata.remote.enabled === false && live.alerts.length === 0, "Monitor did not respect disabled service scheduling.");
   });
+  await step("backup-monitor-invalid-options", async () => {
+    for (const options of [["--enabled", "--timeout-ms", SENTINEL], ["--backup-remote-enabled"]]) {
+      let invalid;
+      try { await exec(cliCommand, ["backup", "monitor", ...options, ...common], { cwd: root, env: runtimeEnv, encoding: "utf8", timeout: STEP_TIMEOUT, maxBuffer: 16 * 1024 }); }
+      catch (error) { check(error.code === 3 && error.stderr === "", "Invalid monitor invocation returned a warning or raw error."); invalid = JSON.parse(error.stdout); }
+      check(invalid?.severity === "unknown" && invalid.controller === "not-checked" && invalid.alerts[0] === "invalid_options" && invalid.metadata === null && !JSON.stringify(invalid).includes(SENTINEL), "Invalid monitor options leaked or failed to return safe JSON.");
+    }
+  });
   check(accessUrl.origin === publicOrigin, "Packaged controller did not advertise the configured public origin.");
   check(access.publicDashboardEndpoint === publicOrigin, "Packaged controller did not record its public endpoint.");
   check(access.localDashboardEndpoint === `http://127.0.0.1:${dashboardPort}`, "Packaged controller did not record its local CLI endpoint.");

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { listenAdminSocket } from "@/server/admin-socket";
 import type { BackupMonitorMetadata } from "@/server/modules/backups";
-import { evaluateBackupMonitor, parseBackupMonitorOptions, probeBackupMonitor } from "./backup-monitor";
+import { evaluateBackupMonitor, parseBackupMonitorOptions, probeBackupMonitor, runBackupMonitor } from "./backup-monitor";
 
 const now = Date.parse("2026-10-03T12:00:00Z"), date = (seconds = 0) => new Date(now - seconds * 1000).toISOString();
 const enabled = parseBackupMonitorOptions(["--enabled"]);
@@ -24,6 +24,14 @@ describe("finite backup monitor", () => {
   });
   it("validates thresholds and rejects duplicate, unknown and service options", () => {
     for (const args of [["--enabled", "--enabled"], ["--warn-after-seconds", "3600"], ["--timeout-ms", "0"], ["--timeout-ms", "NaN"], ["--backup-dir", "/tmp"], ["--critical-after-seconds"], ["constructor", "1"]]) expect(() => parseBackupMonitorOptions(args)).toThrow();
+  });
+  it("turns invocation and path errors into safe unknown reports rather than warnings", async () => {
+    for (const args of [["--enabled", "--timeout-ms", "private-sentinel"], ["--data-dir"], ["--state-dir", "--enabled"], ["--data-dir", "one", "--data-dir", "two"], ["--state-dir", "private-sentinel\0"], ["--backup-remote-enabled"], ["--user-backup-enabled"]]) {
+      const result = await runBackupMonitor(args, () => now);
+      expect(result).toMatchObject({ severity: "unknown", exitCode: 3, controller: "not-checked", alerts: ["invalid_options"], metadata: null });
+      expect(JSON.stringify(result)).not.toContain("private-sentinel");
+    }
+    expect(await runBackupMonitor(["--state-dir", "/absent", "--data-dir", "/absent"], () => now)).toMatchObject({ severity: "disabled", exitCode: 0 });
   });
   it("reports missing controllers as unknown and never creates local state", async () => {
     expect(await probeBackupMonitor(socket(), enabled, () => now)).toMatchObject({ severity: "unknown", exitCode: 3, controller: "unavailable", alerts: ["controller_unavailable"] });

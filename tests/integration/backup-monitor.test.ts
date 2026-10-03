@@ -27,3 +27,14 @@ it("keeps live disabled backup scheduling free of stale or missing-copy alerts",
   fixture = await startControllerFixture(0);
   expect(JSON.parse(await fixture.cli(["backup", "monitor", "--enabled"]))).toMatchObject({ severity: "disabled", exitCode: 0, controller: "available", alerts: [], metadata: { scheduleEnabled: false, local: { dataAt: null }, remote: { enabled: false } } });
 });
+it("returns safe unknown JSON for invalid CLI invocations before service-policy parsing", async () => {
+  fixture = await startControllerFixture(0);
+  for (const args of [["--enabled", "--timeout-ms", "private-sentinel"], ["--enabled", "--enabled"], ["--warn-after-seconds", "3600"], ["--backup-remote-enabled"], ["--user-backup-enabled"], ["--backup-before-migration"], ["--state-dir"], ["--data-dir", "one", "--data-dir", "two"]]) {
+    let failure: { code?: number; stdout?: string; stderr?: string } | undefined;
+    try { await fixture.cli(["backup", "monitor", ...args]); } catch (error) { failure = error as typeof failure; }
+    expect(failure?.code).toBe(3); expect(failure?.stderr).toBe("");
+    const result = JSON.parse(failure!.stdout!) as BackupMonitorReport;
+    expect(result).toMatchObject({ severity: "unknown", exitCode: 3, controller: "not-checked", alerts: ["invalid_options"], metadata: null });
+    expect(failure!.stdout).not.toContain("private-sentinel");
+  }
+});

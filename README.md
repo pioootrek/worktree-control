@@ -410,6 +410,8 @@ remote transfer off produces no stale-backup alerts. Local-only scheduling
 produces no remote alerts; enabled remote transfer is monitored even when copies
 are created manually and the local service schedule is off.
 Thresholds belong to this CLI invocation and cannot modify service policy.
+Invalid invocation options also return safe JSON with `unknown`, exit `3` and
+`invalid_options`, without echoing the arguments or checking the controller.
 
 Local and remote ages use the recorded snapshot creation request time, including
 queue delay. A recent upload completion never refreshes the remote data age.

@@ -29,7 +29,7 @@ import { writeCliLine } from "./output";
 import { runAuthCommand } from "./auth-management";
 import { runIdentityCommand } from "./identity-management";
 import { runBackupCommand } from "./backup-management";
-import { parseBackupMonitorOptions, probeBackupMonitor } from "./backup-monitor";
+import { runBackupMonitor } from "./backup-monitor";
 import { pairingUrl } from "./pairing-url";
 import { openProjectGateway, runDoctorCommand, runProjectCommand } from "./project-management";
 import { controllerAccessToken, localDashboardEndpoint, publicDashboardEndpoint, readServiceAccess, removeServiceAccess, writeServiceAccess } from "./service-access";
@@ -73,6 +73,10 @@ function optionalPositiveNumber(value: string | undefined, label: string): numbe
 async function main(retainedLock?: ControllerLock): Promise<void> {
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
+  if (command === "backup" && process.argv[3] === "monitor") {
+    const result = await runBackupMonitor(process.argv.slice(4));
+    writeCliLine(JSON.stringify(result, null, 2)); process.exitCode = result.exitCode; return;
+  }
   const backupPolicy = parseBackupPolicyOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
   const remoteBackup = parseRemoteBackupOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
   if (command === "start" && remoteBackup.loaded && !backupPolicy.directory) throw new Error("Remote backup transfer requires --backup-dir.");
@@ -83,10 +87,6 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const paths = knowledgeArgs
     ? resolveAppPaths(knowledgeArgs.dataDir, knowledgeArgs.stateDir)
     : resolveAppPaths(option("--data-dir"), option("--state-dir"));
-  if (command === "backup" && process.argv[3] === "monitor") {
-    const result = await probeBackupMonitor(paths.adminSocketPath, parseBackupMonitorOptions(withoutPathOptions(process.argv.slice(4))));
-    writeCliLine(JSON.stringify(result, null, 2)); process.exitCode = result.exitCode; return;
-  }
   if (["knowledge", "auth", "identity", "backup", "project", "doctor"].includes(command) || (command === "config" && process.argv[3] === "mcp")) assertBackupHandoffCompleted(paths.databasePath);
   if (command === "service") {
     await handleServiceCommand(process.argv.slice(3), paths);
