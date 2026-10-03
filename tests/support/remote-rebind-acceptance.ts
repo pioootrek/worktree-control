@@ -43,6 +43,19 @@ export async function remoteRebindAcceptance(artifact?: { cli: string; webRoot: 
     const ledger = JSON.parse(rebound.toString()).payload;
     assert.deepEqual(ledger.archives[0].receipts, before.payload.receipts);
     assert.equal(ledger.lastConfirmed, null); assert.equal(ledger.receipts.length, 0);
+    // Rebind changes the ledger only: stale enabled startup must fail closed.
+    await assert.rejects(f.cli(["start", "--service-mode", "--no-open", "--host", "127.0.0.1", "--port", new URL(f.endpoint).port, "--backup-dir", join(dirname(dirname(database)), "backups"), ...old.startupArguments]), error => {
+      const failure = error as { code?: unknown; killed?: boolean; stderr?: string };
+      return failure.code === 1 && !failure.killed && failure.stderr?.trim() === "backup_invalid";
+    });
+    startupArguments.splice(0, startupArguments.length, "--backup-remote-disabled"); await f.restart();
+    const disabled = await status();
+    assert.equal(disabled.enabled, false); assert.equal(disabled.archives[0].pinned, 1);
+    assert.equal(disabled.lastConfirmed, null);
+    const local = JSON.parse(await f.cli(["backup", "now", "--idempotency-key", "disabled-local-rescue"])) as BackupOperation;
+    await waitFor(async () => { const value = JSON.parse(await f.cli(["backup", "status", "--idempotency-key", "disabled-local-rescue"])) as BackupOperation; return value.state === "succeeded" ? value : null; }, 10000, () => "Explicit disabled startup did not permit local backup.");
+    assert(local.backupId); assert.equal((await status()).archives[0].pinned, 1);
+    assert.equal(JSON.parse((await next.run(["snapshots", "--json"])).stdout).length, 0);
     startupArguments.splice(0, startupArguments.length, ...next.startupArguments, "--backup-remote-retry-seconds", "60"); await f.restart();
     assert.equal((await status()).lastConfirmed, null);
     assert.equal(JSON.parse((await next.run(["snapshots", "--json"])).stdout).length, 0);
@@ -80,6 +93,6 @@ export async function remoteRebindAcceptance(artifact?: { cli: string; webRoot: 
     assert.equal(recovered.transfers.find(item => item.backupId === confirmed.backupId)?.reconciliation?.passes, 2);
     assert.equal(recovered.archives[0].pinned, 1);
     assert.equal(JSON.parse((await next.run(["snapshots", "--json"])).stdout).length, inventory.length);
-    return { evidence: "isolated-https-rebind-and-history", runtime: artifact ? "installed-artifact" : "built-cli", archivedReceipts: 2, archivedPins: 1, explicitReuploads: 2, candidates: 34, continuationPasses: 2, duplicateAdmission: "idempotent", snapshotCountUnchangedAfterReconciliation: true, recovery: "not-measured", fixtureDueTimestampAdvanced: true, ...next.provenance };
+    return { evidence: "isolated-https-rebind-and-history", runtime: artifact ? "installed-artifact" : "built-cli", archivedReceipts: 2, archivedPins: 1, explicitReuploads: 2, candidates: 34, continuationPasses: 2, duplicateAdmission: "idempotent", snapshotCountUnchangedAfterReconciliation: true, recovery: "not-measured", fixtureDueTimestampAdvanced: true, staleEnabledStartup: "refused", explicitDisabledStartup: "local-backup-with-pins", newTargetStartup: "accepted", ...next.provenance };
   } finally { try { await controller?.close(); } finally { try { await next?.close(); } finally { await old.close(); } } }
 }

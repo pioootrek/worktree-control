@@ -489,9 +489,18 @@ port, path or trailing slash for that same repository preserves pending work.
 For a different repository ID, stop the controller and explicitly rebind:
 
 ```sh
-worktree-switcher backup remote rebind --from <current-repository-id> \
+worktree-switcher backup remote rebind --from <current-destination-id> \
   --target-config /private/backup-secrets/new-restic.json --generation <next-generation>
 ```
+
+Use the active `destinationId` from `backup remote status` for `--from`; it is
+SHA256 of the restic repository ID, not the raw `repositoryId` from `cat config`.
+Prepare the new startup parameters and a maintenance window first. Keep any
+supervised service stopped without automatic restart while changing the binding;
+refresh its configuration before resuming. Rebind does not change the service.
+An enabled startup with stale repository parameters fails closed. An explicit
+`--backup-remote-disabled` startup permits local operation while preserving old
+pins if the new policy cannot yet be installed.
 
 The private JSON uses the existing restic configuration fields: `executable`,
 `repository`, `repositoryId`, `passwordFile`, `credentialsFile`, optional `caFile`,
