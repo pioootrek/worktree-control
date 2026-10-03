@@ -169,6 +169,11 @@
       "author": "agent:codex",
       "date": "2026-10-03",
       "text": "S4u merged in PR #73 at 1f9c90fff36af25d5ca609299270d51dabc70a96 from final head 6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4, preserving both agent branches. Final managed check/build/integration/UI passed with observed_match; CI 37117584381 passed all four jobs (890 Vitest + 7 scripts, HTTPS, 33 integrations, 166 UI, 3 E2E, 14-step package smoke Node 22/24 and lifecycle). Artifact SHA256 261ea9d58821fbfbf9ef0dcd9a7e16a8415101b620e395b395e6d15786e5d37f verified. n8n: two new Claude capacity findings fixed; Codex final-head review found no new actionable issues; zero unresolved threads. Kimi hit existing 20-minute runtime limit without publishing and is recorded incomplete. Both prior deferred operational blockers are implemented. See integrated closeout report/evidence. Parent remains open for S4b/S5; no production deployment or host policy change."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-03",
+      "text": "Owner requested continuing with root orchestration and coding exclusively by gpt-6.1-sol high to limit cost. Started one worker for bounded S4b on main 891eb4d: optional default-off restic HTTPS REST adapter, CLI-only policy, durable transfer status/retry and retention protection, isolated recovery evidence. Split the former S4b+S5 PR row: independent monitoring, operational destination/key custody, measured real-host recovery and old/new package acceptance remain S5. No implementation outcome yet, production transfer, deployment or host-policy change."
     }
   ],
   "priority": "next",

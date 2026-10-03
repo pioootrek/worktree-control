@@ -610,7 +610,17 @@ do implementacji; numery PR-ów zostaną nadane przy ich utworzeniu.
 | S3b | `controller-backup.ts`, bootstrap i CLI: manifest, staging, dziennik restore i recovery przed otwarciem adaptera; protokół kontrolowanego zlecenia restore z GUI | Awaria w każdej granicy podmiany odzyskuje kompletny stan lub zatrzymuje start z zachowanym materiałem |
 | S4a | Konfiguracja usługi tylko parametrami CLI; opcjonalny harmonogram i retencja; GUI operatora z listą, „Utwórz teraz” i zleceniem restore przez wspólne operacje | Domyślnie brak automatyzacji i akcji web; operator włącza je przez CLI; uprawnienia wymuszone w API; GUI nie edytuje konfiguracji; testy PL/EN, klawiatury, potwierdzenia i ponownego połączenia |
 | S4u | Osobne harmonogramy użytkowników w GUI/API, trwałe przypisanie właściciela i zakresu, retencja w granicach CLI oraz wspólne wykonanie | Niezależność od harmonogramu usługi, kontrola zakresu przy wykonaniu, ograniczenia kolejki i testy braku wpływu na cudze kopie |
-| S4b + S5 | Adapter transferu, monitor i instrukcja odzyskania, harness aktualizacji pakietu | Kopia spoza hosta odtworzona bez źródłowej instalacji; zmierzone cele; próba starego i nowego artefaktu |
+| S4b | Opcjonalny adapter restic, polityka CLI, trwały status transferu i ochrona lokalnych źródeł; izolowana próba pobrania i odzyskania | Zweryfikowana kopia przechodzi szyfrowany transport i odzyskanie na fixture; domyślnie brak transferu; błędy i ponowienia nie udają sukcesu |
+| S5 | Niezależny monitor, operacyjna instrukcja odzyskania i harness aktualizacji pakietu | Kopia z wybranego celu poza hostem odtworzona bez źródłowej instalacji; zmierzone cele; próba starego i nowego artefaktu |
+
+Doprecyzowanie wykonawcze z 2026-10-03: po scaleniu S4u oddzielamy S4b od
+odbioru S5, aby zachować jeden zakres na PR. Pierwszy adapter S4b korzysta
+z restic i backendu HTTPS REST; konfiguracja pozostaje wyłącznie po stronie
+operatora CLI. Testy transportu używają izolowanych, sztucznych danych.
+Wybór celu produkcyjnego, przechowywania kluczy i włączenie usługi wymagają
+osobnego zakresu wdrożenia. Izolowana próba nie dowodzi ochrony przed utratą
+rzeczywistego hosta ani spełnienia produkcyjnego RPO/RTO. S4b nie dodaje
+transportu pełnej bazy do harmonogramów użytkowników.
 
 Nowe odpowiedzialności wydzielamy przy ich pierwszym użyciu zgodnie z
 [mapą modułów](../../../codebase-organization.md). Nie dokładamy całej logiki
