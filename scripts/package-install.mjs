@@ -58,7 +58,7 @@ export async function verifyInstalledDriver(script, packageRoot, input = [], roo
       try { report = JSON.parse(output.trim()); outputKind = report.errorCode === "fixture_failed" ? "fixture-error" : report.evidence ? "success-evidence" : "other-json"; } catch { /* Raw child output is private. */ }
       const label = value => typeof value === "string" && /^[a-z0-9-]{1,100}$/.test(value) ? value : null;
       if (forcedReason || code !== 0 || signal || outputKind !== "success-evidence") {
-        const diagnostic = { exitCode: code, signal, outputKind, forcedReason, failureStep: label(report?.failureStep), lastCompletedStep: label(report?.steps?.at(-1)?.name), cleanup: report?.cleanup?.ok === true ? "clean" : report?.cleanup?.ok === false ? "failed" : "unknown" };
+        const diagnostic = { exitCode: code, signal, outputKind, forcedReason, failureStep: label(report?.failureStep), lastCompletedStep: label(report?.steps?.at(-1)?.name), cleanup: report?.cleanup?.ok === true ? "clean" : report?.cleanup?.ok === false ? "failed" : "unknown", cleanupFailures: ["controllers", "remote", "files"].filter(key => report?.cleanup?.[key] === "failed") };
         reject(new Error(`Explicit installed verification failed: ${JSON.stringify(diagnostic)}`));
       } else accept({ driver: "explicit-local-repository-script", runtime: "installed-artifact", evidence: report });
     });

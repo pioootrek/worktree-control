@@ -241,7 +241,7 @@ try {
     for (const path of copies) { await rm(path, { recursive: true, force: true }); await assert.rejects(lstat(path), error => error.code === "ENOENT"); }
     removedLocalCopies = copies.length;
   });
-  const recovered = installation(currentRoot, join(root, "source-deleted-recovery")), download = join(root, "remote-download"), recoveryStartedAt = Date.now();
+  const recovered = installation(currentRoot, join(root, "remote-recovered")), download = join(root, "remote-download"), recoveryStartedAt = Date.now();
   await step("source-deleted-HTTPS-restore-with-installed-runtime", async () => {
     await remote.run(["restore", confirmed.snapshotId, "--target", download, "--verify"]);
     assert.equal(digest(await readFile(join(download, "manifest.json"))), remoteManifestHash);
@@ -264,6 +264,6 @@ finally {
   for (const item of installations.reverse()) { try { await item.stop(); } catch { cleanup.ok = false; cleanup.controllers = "failed"; } }
   try { await remote?.close(); } catch { cleanup.ok = false; cleanup.remote = "failed"; }
   try { if (root) await rm(root, { recursive: true, force: true }); } catch { cleanup.ok = false; cleanup.files = "failed"; }
-  if (!cleanup.ok) { report = { ok: false, errorCode: "fixture_failed", failureStep: "cleanup", steps }; process.exitCode = 1; }
+  if (!cleanup.ok) { if (report?.errorCode !== "fixture_failed") report = { ok: false, errorCode: "fixture_failed", failureStep: "cleanup", steps }; process.exitCode = 1; }
   console.log(JSON.stringify({ ...report, cleanup }));
 }

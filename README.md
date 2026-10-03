@@ -584,8 +584,10 @@ of host process limits. A timed-out operation cannot publish a successful copy;
 synchronous filesystem work may take longer before reaching its next limit check.
 
 `--backup-before-migration --backup-dir <directory>` retains its independent,
-default-off migration gate. No off-host transfer or attachment store garbage collection is included. Local copies require a surviving host
-and filesystem to be useful.
+default-off migration gate. This local policy does not enable remote transfer
+or attachment store garbage collection. Configure the optional remote transfer
+separately as described above. Local copies require a surviving host and
+filesystem to be useful.
 
 ```sh
 worktree-switcher backup now --idempotency-key operator-request-1
@@ -611,14 +613,17 @@ mode cannot browse or operate installation backups. Policy is read-only;
 mutations. The list reports verification at publication; restore preview and
 admission independently validate the complete artifact again.
 
-Restore explicitly replaces the entire installation and loses later changes.
+Online catalog restore explicitly replaces the entire installation and loses
+later changes.
 A durable receipt precedes maintenance. Maintenance stops owned managed processes
 and finite tests, closes SQLite, executes the recoverable replacement, and
 rebuilds the controller with the same startup arguments. Current installation
 authentication is fenced outside the restored database. Restored sessions and
 scoped credentials are revoked; issue fresh credentials after reconnecting.
 Offline CLI access is refused while an executing handoff still needs this fence;
-start the controller to complete recovery first.
+start the controller to complete recovery first. Offline directory restore
+preserves credentials and grants from the snapshot; inspect and revoke stale
+credentials/grants as needed before exposing the recovered installation.
 Use **Refresh status** after a disconnect, or retry the retained request with its
 original key. This never repeats an already completed restore.
 
