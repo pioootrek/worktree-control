@@ -528,6 +528,8 @@ output remain unknown and cannot authorize another write. Read output is bounded
 to 256MiB per pass and eight automatic passes (2GiB reserved total), preserving
 the per-command 8MiB manifest and 64MiB tree limits. Upload progress has a separate
 64MiB bound. Global proof limits are 256 per receipt and 1,024 across all bindings.
+Confirmation and rebind discard disposable proof/inventory caches while retaining
+receipts, original identities, budget counters, confirmations and uncertain pins.
 Continuations share the existing executor and configured retry spacing.
 
 Changed inventory fails closed as `remote_inventory_changed` until an explicit
