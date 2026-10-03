@@ -8,6 +8,7 @@ import { backupPolicySchema } from "./policy";
 import { remoteBackupPolicySchema, type RemoteBackupTransport } from "./remote-policy";
 import { readRecord, writeRecord } from "./records";
 import { z } from "zod";
+import { rebindRemoteLedger } from "./remote-records";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -34,7 +35,7 @@ describe("optional installation transfer", () => {
   it("does not create remote records, timers, connections or alarms by default", async () => {
     const f = fixture(false); f.operations.start();
     f.operations.create("local-admin", "local"); await f.operations.drain();
-    expect(f.operations.remote.status()).toEqual({ enabled: false, pending: 0, error: null, lastConfirmed: null, recovery: "not-measured", transfers: [] });
+    expect(f.operations.remote.status()).toEqual({ enabled: false, pending: 0, error: null, lastConfirmed: null, recovery: "not-measured", destinationId: null, rebindGeneration: 0, archives: [], transfers: [] });
     expect(existsSync(join(f.operations.recordDirectory, "remote.json"))).toBe(false);
     expect(f.transport.upload).not.toHaveBeenCalled();
   });
@@ -132,4 +133,42 @@ describe("optional installation transfer", () => {
       expect(persisted.lastConfirmed).not.toBeNull();
     } finally { await restarted.close(); }
   });
+  it("preserves archived pins when disabled and admits only one explicit new-target transfer with original age", async () => {
+    const f = fixture(); vi.mocked(f.transport.upload).mockRejectedValueOnce(new Error("old uncertain outcome"));
+    const copy = f.operations.create("local-admin", "old-target"); await f.operations.drain(); await f.operations.close();
+    const path = join(f.operations.recordDirectory, "remote.json"); rebindRemoteLedger(path, f.transport.destinationId, "c".repeat(64), 1);
+    const transport = { ...f.transport, destinationId: "c".repeat(64) };
+    const disabled = new BackupOperations(f.policy, { ...f.deps, remoteTransport: undefined });
+    expect(disabled.remote.protectedIds().has(copy.backupId)).toBe(true); await disabled.close();
+    const restarted = new BackupOperations(f.policy, { ...f.deps, remoteTransport: transport });
+    try {
+      restarted.start(); await restarted.drain(); expect(transport.upload).toHaveBeenCalledOnce();
+      expect(restarted.remote.status()).toMatchObject({ lastConfirmed: null, pending: 0, archives: [{ pinned: 1, receipts: 1 }] });
+      expect(() => restarted.remote.reupload(`backup-${crypto.randomUUID()}`)).toThrow("backup_invalid");
+      restarted.remote.reupload(copy.backupId); restarted.remote.reupload(copy.backupId); await restarted.drain();
+      expect(transport.upload).toHaveBeenCalledTimes(2);
+      expect(restarted.remote.status().lastConfirmed).toMatchObject({ backupId: copy.backupId, dataAt: copy.createdAt });
+      expect(restarted.remote.protectedIds().has(copy.backupId)).toBe(true);
+      expect(readRecord(path, z.any()).archives[0].receipts[0].error).toBe("remote_failed");
+    } finally { await restarted.close(); }
+  });
+  it("persists continuation budgets through restart without spending another write attempt", async () => {
+    const f = fixture(true, { retrySeconds: 60 });
+    const proof = { snapshotId: "d".repeat(64), tree: "e".repeat(64), state: "partial" as const };
+    vi.mocked(f.transport.upload).mockResolvedValue({ progress: true, proofs: [proof], uploadAttempted: false });
+    const copy = f.operations.create("local-admin", "progress"); await f.operations.drain();
+    expect(f.operations.remote.status().transfers[0]).toMatchObject({ state: "pending", attempts: 0, reconciliation: { passes: 1, classified: 1, readReservedBytes: 256 * 1024 * 1024 } });
+    await f.operations.close(); const restarted = new BackupOperations(f.policy, f.deps);
+    try {
+      restarted.start(); await restarted.drain(); expect(f.transport.upload).toHaveBeenCalledOnce();
+      for (let i = 1; i < 8; i++) { f.advance(); restarted.remote.tick(); await restarted.drain(); }
+      expect(f.transport.upload).toHaveBeenCalledTimes(8);
+      expect(restarted.remote.status().transfers[0]).toMatchObject({ state: "failed", attempts: 0, reconciliation: { passes: 8, classified: 1, readReservedBytes: 2 * 1024 ** 3 } });
+      f.advance(); restarted.remote.tick(); await restarted.drain(); expect(f.transport.upload).toHaveBeenCalledTimes(8);
+      vi.mocked(f.transport.upload).mockResolvedValue({ snapshotId: "f".repeat(64) }); restarted.remote.retry(copy.backupId, 1); await restarted.drain();
+      expect(vi.mocked(f.transport.upload).mock.calls[8][0].reconciliation?.proofs).toEqual([proof]);
+      expect(restarted.remote.status().transfers[0]).toMatchObject({ state: "confirmed", attempts: 1, retryGeneration: 1, reconciliation: { passes: 1 } });
+    } finally { await restarted.close(); }
+  });
+
 });

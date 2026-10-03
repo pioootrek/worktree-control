@@ -12,10 +12,11 @@ export function backupAdminHandler(backups: BackupOperations, restores: RestoreO
     if (body && typeof body === "object" && "command" in body && body.command === "backup-remote") {
       const input = z.discriminatedUnion("action", [
         z.object({ command: z.literal("backup-remote"), action: z.literal("status") }).strict(),
+        z.object({ command: z.literal("backup-remote"), action: z.literal("reupload"), backupId: z.string() }).strict(),
         z.object({ command: z.literal("backup-remote"), action: z.literal("retry"), backupId: z.string(), generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }).strict(),
       ]).parse(body);
       // Only this OS-authenticated CLI socket handles remote administration.
-      return input.action === "status" ? backups.remote.status() : backups.remote.retry(input.backupId, input.generation);
+      return input.action === "status" ? backups.remote.status() : input.action === "reupload" ? backups.remote.reupload(input.backupId) : backups.remote.retry(input.backupId, input.generation);
     }
     if (body && typeof body === "object" && "command" in body && body.command === "user-export-recovery") {
       if (!schedules) throw new BackupError("backup_invalid");

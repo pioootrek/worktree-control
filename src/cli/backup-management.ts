@@ -1,4 +1,5 @@
-import { BackupOperations, backupPolicySchema } from "@/server/modules/backups";
+import { BackupError, BackupOperations, backupPolicySchema, rebindRemoteBackup } from "@/server/modules/backups";
+import { loadResticConfiguration, ResticBackupTransport } from "@/server/infrastructure/backups";
 import { BACKUP_LIMITS, parseManifest, readBoundedJson } from "@/server/infrastructure/sqlite";
 import { randomUUID } from "node:crypto";
 import { requestControllerRestore, executeControllerRestoreRequest } from "@/server/restore-requests";
@@ -14,10 +15,24 @@ import { exportKnowledgeProject, importKnowledgeProject } from "@/server/modules
 
 export async function runBackupCommand(args: string[], paths: AppPaths, applicationVersion: string, write: (line:string)=>void=console.log, environment:Readonly<Record<string,string|undefined>>=process.env): Promise<void> {
   if (args[0] === "remote") {
+    if (args[1] === "rebind") {
+      if (args.length !== 8 || args[2] !== "--from" || args[4] !== "--target-config" || args[6] !== "--generation" || !/^[0-9]+$/.test(args[7])) throw new Error("Usage: backup remote rebind --from <destination-id> --target-config <private-json> --generation <next-generation>");
+      let transport: ResticBackupTransport | undefined;
+      try {
+        transport = new ResticBackupTransport(loadResticConfiguration(readBoundedJson(resolve(args[5]), 16 * 1024, true)));
+        const result = await rebindRemoteBackup({ controllerLockPath: paths.controllerLockPath, databasePath: paths.databasePath, from: args[3], destinationId: transport.destinationId, generation: Number(args[7]) }, directory => transport!.verifyRepository(directory));
+        write(JSON.stringify(result, null, 2));
+      } catch (error) {
+        if (error instanceof BackupError && error.code === "backup_limit") throw new Error("Remote rebind archive/evidence limit reached (maximum 4 archives); preserve existing records and pins for operator review.");
+        throw new Error("Remote rebind refused: verify singleton ownership, completed restore, private target configuration and generation.");
+      }
+      finally { await transport?.close(); }
+      return;
+    }
     const [, action, backupId, flag, generation, ...extra] = args;
-    if (!((action === "status" && args.length === 2) || (action === "retry" && backupId && flag === "--generation" && generation && /^[0-9]+$/.test(generation) && Number.isSafeInteger(Number(generation)) && Number(generation) > 0)) || extra.length) throw new Error("Usage: backup remote status | retry <backup-id> --generation <next-generation>");
+    if (!((action === "status" && args.length === 2) || (action === "reupload" && backupId && args.length === 3) || (action === "retry" && backupId && flag === "--generation" && generation && /^[0-9]+$/.test(generation) && Number.isSafeInteger(Number(generation)) && Number(generation) > 0)) || extra.length) throw new Error("Usage: backup remote status | reupload <backup-id> | retry <backup-id> --generation <next-generation>");
     // Never open a second SQLite owner or infer a remote target from recovered DB data.
-    const result = await requestAdminSocket(paths.adminSocketPath, { command: "backup-remote", action, ...(backupId ? { backupId, generation: Number(generation) } : {}) });
+    const result = await requestAdminSocket(paths.adminSocketPath, { command: "backup-remote", action, ...(backupId ? { backupId } : {}), ...(action === "retry" ? { generation: Number(generation) } : {}) });
     write(JSON.stringify(result, null, 2)); return;
   }
   if (args[0] === "user-cleanup") {

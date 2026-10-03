@@ -23,6 +23,11 @@ export function assertBackupHandoffCompleted(database: string): void {
   const record = readRecord(join(`${database}.backup-operations`, "handoff.json"), handoffSchema);
   if (record?.state === "executing") throw new Error("Start the controller to complete restore authentication recovery before offline administration.");
 }
+/** Read-only guard called under canonical ownership; does not run recovery. */
+export function assertNoUnfinishedBackupHandoff(database: string): void {
+  const record = readRecord(join(`${database}.backup-operations`, "handoff.json"), handoffSchema);
+  if (record && record.state !== "verified" && record.state !== "failed" && record.state !== "interrupted") throw new BackupError("backup_busy", 409);
+}
 function executionPolicy(record: RestoreHandoff, policy: BackupPolicy, catalog: BackupCatalog): RestoreRequestPolicy {
   return {
     authorize(actorId, backupId) {

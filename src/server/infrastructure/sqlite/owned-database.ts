@@ -4,11 +4,11 @@ import Database from "better-sqlite3";
 import { acquireControllerLock, type ControllerLock } from "@/server/controller-lock";
 import { privateDirectory, privateFile, syncDirectory } from "../../private-storage";
 import { inspectSchema, snapshotAttachments, type SchemaInspection } from "./schema-inspection";
-import { recoverOwnedRestore } from "./restore-recovery";
+import { getOwnedRestoreStatus, recoverOwnedRestore } from "./restore-recovery";
 import { validateDatabase } from "./database-validation";
 
 /** Canonical parent aliases are supported; file symlinks and hardlinks are refused. */
-export function acquireDatabaseOwnership(input: string): { path: string; lock: ControllerLock } {
+export function acquireDatabaseOwnership(input: string, options?: { inspectOnly: true; inspect?: (canonicalPath: string) => void }): { path: string; lock: ControllerLock } {
   const absolute = resolve(input);
   const path = join(privateDirectory(dirname(absolute)), basename(absolute));
   const validate = (validateOnly = false) => {
@@ -16,7 +16,16 @@ export function acquireDatabaseOwnership(input: string): { path: string; lock: C
   };
   validate(true);
   const lock = acquireControllerLock(`${path}.owner.lock`);
-  try { recoverOwnedRestore(path); validate(); return { path, lock }; } catch (error) { lock.release(); throw error; }
+  try {
+    if (options?.inspectOnly) {
+      // Authoritative refusal under the canonical lock: never resume a restore.
+      const restore = getOwnedRestoreStatus(path);
+      if (restore && restore.state !== "verified") throw new Error("Unfinished restore prevents offline inspection.");
+      options.inspect?.(path);
+      validate(true);
+    } else { recoverOwnedRestore(path); validate(); }
+    return { path, lock };
+  } catch (error) { lock.release(); throw error; }
 }
 
 /** One connection and database lock, transferable from inspection to migration. */

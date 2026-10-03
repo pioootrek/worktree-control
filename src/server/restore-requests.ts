@@ -26,11 +26,12 @@ export interface RestoreRequestPolicy {
 const status = (record: Record): RestoreRequestStatus => ({ operationId: record.operationId, backupId: record.actor.backupId, state: record.state, createdAt: record.createdAt });
 const keyFor = (actor: RestoreActor) => checksum([actor.actorId, actor.idempotencyKey]);
 function requestDirectory(databasePath: string): string { return privateDirectory(`${resolve(databasePath)}.restore-requests`); }
-function readRecord(path: string): Record {
+function readRecord(path: string, repairAlias = true): Record {
   const envelope = z.object({ payload: recordSchema, sha256: sha256Schema }).strict().parse(readBoundedJson(path, 32 * 1024, true, true));
   if (envelope.sha256 !== checksum(envelope.payload)) throw new Error("Corrupt restore request; preserve it for inspection.");
   // Complete an interrupted immutable publication only for its own known alias.
   if (lstatSync(path).nlink !== 1) {
+    if (!repairAlias) throw new Error("Unfinished restore request publication prevents offline inspection.");
     const temporary = join(dirname(path), `.request-${envelope.payload.operationId}`), target = lstatSync(path);
     let alias;
     try { alias = lstatSync(temporary); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; if (lstatSync(path).nlink !== 1) throw new Error("Unsafe restore request alias."); }
@@ -160,4 +161,17 @@ export function protectedControllerRestoreBackupIds(databasePath: string): Set<s
     if (/^[0-9a-f]{64}\.json$/.test(entry.name)) result.add(readRecord(join(directory, entry.name)).actor.backupId);
   } } finally { entries.closeSync(); }
   return result;
+}
+
+/** Offline inspection must not acknowledge or resume any admitted replacement. */
+export function assertNoUnfinishedControllerRestoreRequests(databasePath: string): void {
+  const directory = `${resolve(databasePath)}.restore-requests`;
+  let entries;
+  try { entries = opendirSync(directory); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  let visited = 0;
+  try { for (;;) {
+    const entry = entries.readSync(); if (!entry) break;
+    if (++visited > 1024) throw new Error("Restore request history exceeds its bound.");
+    if (/^[0-9a-f]{64}\.json$/.test(entry.name) && readRecord(join(directory, entry.name), false).state !== "verified") throw new Error("Unfinished restore prevents offline inspection.");
+  } } finally { entries.closeSync(); }
 }
