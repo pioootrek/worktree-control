@@ -174,6 +174,11 @@
       "author": "agent:codex",
       "date": "2026-10-03",
       "text": "Owner requested continuing with root orchestration and coding exclusively by gpt-6.1-sol high to limit cost. Started one worker for bounded S4b on main 891eb4d: optional default-off restic HTTPS REST adapter, CLI-only policy, durable transfer status/retry and retention protection, isolated recovery evidence. Split the former S4b+S5 PR row: independent monitoring, operational destination/key custody, measured real-host recovery and old/new package acceptance remain S5. No implementation outcome yet, production transfer, deployment or host-policy change."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-03",
+      "text": "S4b PR #74 review: n8n Claude found progress-output exhaustion on long restic uploads and URL-bound destination identity. Sol6.1high is fixing bounded streamed progress and fencing by authenticated cryptographic repository ID, with regressions. Changing the locator of the same repository belongs in S4b. Replacing it with a different cryptographic repository remains an explicit S5 migration/rebind workflow: preserve old pending sources/receipts, distinguish old confirmations from protection at the new destination, authorize bounded re-uploads and establish new recovery evidence. Never recommend deleting remote.json. Until that workflow exists, disable remote transfer to keep the controller available, preserve pending pins and use explicit local destination backups for rescue. Review threads: https://github.com/pioootrek/worktree-switcher/pull/74#discussion_r4173188521 and https://github.com/pioootrek/worktree-switcher/pull/74#discussion_r4173188523. Runtime fixes and final verification are pending; no production changes."
     }
   ],
   "priority": "next",

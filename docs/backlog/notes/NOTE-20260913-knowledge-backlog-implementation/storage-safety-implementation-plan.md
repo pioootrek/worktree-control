@@ -518,6 +518,16 @@ zewnętrznej, jeśli użytkownik ją włączył.
 
 ## S5. Dowody odbioru
 
+Otwarty zakres operacyjny po review S4b (PR #74): przygotować jawny workflow
+zamiany repozytorium restic na inne, o nowym kryptograficznym ID. Zachować
+poprzednie potwierdzenia i źródła oczekujące na transfer; nie uznawać ich za
+ochronę w nowym celu. Wymagane są ograniczone, jawnie zlecone ponowne wysyłki
+i nowy dowód odzyskania. Zmiana adresu tego samego repozytorium zachowuje ID
+i nie wymaga takiej migracji. Do czasu tego workflow operator może wyłączyć
+transfer, pozostawić chronione źródła i wykonywać lokalne kopie ratunkowe do
+jawnie podanej lokalizacji. Usuwanie dziennika transferów nie jest procedurą
+zmiany celu.
+
 | Próba | Oczekiwany wynik |
 | --- | --- |
 | Wspierane stare schematy → aktualny; ponowne otwarcie | Dane, tożsamości i historia zachowane, brak ponownej transformacji |
