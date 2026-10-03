@@ -33,7 +33,11 @@ describe("service backup operations", () => {
     expect(f.operations.monitorMetadata()).toMatchObject({ scheduleEnabled: true, local: { dataAt: "2026-10-01T00:00:00.000Z", lastAttempt: { state: "succeeded" }, error: null }, remote: { enabled: false, dataAt: null } });
     expect(JSON.stringify(f.operations.monitorMetadata())).not.toContain(f.root);
     expect(JSON.stringify(f.operations.monitorMetadata())).not.toContain(f.actor.credentialId);
-    rmSync(join(f.policy.directory!, created.backupId), { recursive: true });
+    const copy = join(f.policy.directory!, created.backupId);
+    renameSync(join(copy, "state.sqlite3"), join(copy, "state.saved"));
+    symlinkSync(join(copy, "state.saved"), join(copy, "state.sqlite3"));
+    expect(f.operations.monitorMetadata().local).toMatchObject({ dataAt: null, error: "metadata_unavailable" });
+    rmSync(copy, { recursive: true });
     expect(f.operations.monitorMetadata().local).toMatchObject({ dataAt: null, error: "metadata_unavailable" });
     expect(scan).not.toHaveBeenCalled(); expect(hydrate).not.toHaveBeenCalled();
   });

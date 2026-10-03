@@ -129,8 +129,9 @@ export class BackupOperations {
     let error: BackupMonitorMetadata["local"]["error"] = this.persistenceFailed ? "metadata_unavailable" : this.ledger.scheduleError ?? (this.ledger.retention === "failed" ? "retention_failed" : null);
     if (successful) {
       try {
-        const directory = lstatSync(successful.destination), manifest = lstatSync(join(successful.destination, "manifest.json"));
-        if (!directory.isDirectory() || !manifest.isFile()) throw new Error("Missing recorded copy.");
+        const directory = lstatSync(successful.destination), manifest = lstatSync(join(successful.destination, "manifest.json")), database = lstatSync(join(successful.destination, "state.sqlite3"));
+        if (!directory.isDirectory() || !manifest.isFile() || !database.isFile()
+          || [directory, manifest, database].some(stat => (stat.mode & 0o077) || (process.getuid && stat.uid !== process.getuid()))) throw new Error("Missing or unsafe recorded copy.");
       } catch { dataAt = null; error = "metadata_unavailable"; }
     }
     const remote = this.remote.status();
