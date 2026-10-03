@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, writeFile, stat } from "node:fs/promises";
+import { readFile, writeFile, stat, unlink } from "node:fs/promises";
 import { afterEach, expect, it } from "vitest";
 import type { UserSchedule, UserScheduleOverview } from "../../src/shared/contracts/user-backups";
 import { startControllerFixture, waitFor, type ControllerFixture } from "../support/controller-fixture";
@@ -22,15 +22,16 @@ it("built CLI reclaims an expired publication through the active private admin c
   const command = { action: "save", id: randomUUID(), version: 0, idempotencyKey: "cleanup-schedule", configuration: { projectId, scope: "knowledge-discussions", targetId: "local", enabled: true, intervalSeconds: 60, retainCount: 2, retainDays: 30 } };
   await api<UserSchedule>(command);
   const databasePath = (await f.cli(["config", "path"])).trim(), path = `${databasePath}.backup-operations/user-schedules.json`;
-  const rewrite = async (mutate: (payload: { schedules: Array<{ nextAt: number }>; executions: Array<{ executionId: string; state: string; reason: string | null; finishedAt: string | null; destination: string; hash: string | null; bytes: number }> }) => void) => {
+  const rewrite = async (mutate: (payload: { schedules: Array<{ nextAt: number }>; executions: Array<{ executionId: string; state: string; reason: string | null; finishedAt: string | null; destination: string; deadline: number; hash: string | null; bytes: number }> }) => void) => {
     const envelope = JSON.parse(await readFile(path, "utf8")); mutate(envelope.payload);
     envelope.sha256 = createHash("sha256").update(JSON.stringify(canonical(envelope.payload))).digest("hex"); await writeFile(path, JSON.stringify(envelope), { mode: 0o600 });
   };
   await f.stop(); await rewrite(payload => { payload.schedules[0]!.nextAt = Date.now() - 86400_000; }); await f.restart();
   const exported = await waitFor(async () => { const data = await api<UserScheduleOverview>(); return data.artifacts[0]?.state === "succeeded" ? data.artifacts[0] : null; }, 10000, () => "Fixture export did not finish.");
   await f.stop();
-  // Use an already-durable real publication and retain its elapsed persisted deadline.
-  await rewrite(payload => { const execution = payload.executions[0]!; execution.state = "interrupted"; execution.reason = "interrupted"; execution.hash = null; execution.bytes = 0; });
+  // Model a historical publication without an inode stamp and downtime beyond its deadline.
+  await rewrite(payload => { const execution = payload.executions[0]!; execution.state = "running"; execution.reason = null; execution.finishedAt = null; execution.deadline = Date.now() - 600_000; execution.hash = null; execution.bytes = 0; });
+  await unlink(`${databasePath}.backup-operations/user-export-recovery.json`);
   await expect(f.cli(["backup", "user-cleanup", "list"])).rejects.toThrow(); // No offline owner fallback.
   await f.restart();
   const candidates = JSON.parse(await f.cli(["backup", "user-cleanup", "list"])) as Array<{ executionId: string; eligible: boolean }>;

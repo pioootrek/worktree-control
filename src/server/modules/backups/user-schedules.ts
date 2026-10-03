@@ -19,7 +19,7 @@ const executionSchema = z.object({ executionId: z.uuid(), configuration: schedul
 const mutationSchema = z.object({ ownerId: z.string(), key: z.string(), hash: z.string(), response: scheduleSchema }).strict();
 const ledgerSchema = z.object({ format: z.literal(1), schedules: z.array(scheduleSchema).max(256), executions: z.array(executionSchema).max(2048), mutations: z.array(mutationSchema).max(1024) }).strict();
 type Schedule = z.infer<typeof scheduleSchema>;
-export type Execution = z.infer<typeof executionSchema>;
+type Execution = z.infer<typeof executionSchema>;
 
 const ARTIFACT_MAX = 4 * 1024 ** 2 - 4096;
 export interface UserScheduleDependencies {

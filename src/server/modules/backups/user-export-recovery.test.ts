@@ -11,11 +11,11 @@ import { readRecord, writeRecord } from "./records";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => { vi.restoreAllMocks(); syncBuiltinESMExports(); for (const close of cleanup.splice(0).reverse()) await close(); });
-function fixture(root = mkdtempSync(join(tmpdir(), "user-recovery-"))) {
+function fixture(root = mkdtempSync(join(tmpdir(), "user-recovery-")), bodySize = 700_000) {
   let now = Date.now(), maintenance = false;
   const backups = new BackupOperations(backupPolicySchema.parse({}), { databasePath: join(root, "state.sqlite3"), attachmentDirectory: join(root, "attachments"), applicationVersion: "test", source: { backup: async () => {} }, estimateBytes: () => 1, authorize: () => true, maintenance: () => maintenance, clock: () => now });
   const policy = userBackupPolicySchema.parse({ enabled: true, scopes: ["knowledge-discussions"], projects: ["project"], targets: [{ id: "local", directory: join(root, "exports") }], minIntervalSeconds: 60, maxBytes: 1024 ** 2 });
-  const deps = { authorize: () => {}, projectName: () => "Fixture", exportDiscussions: () => ({ body: "x".repeat(700_000) }), clock: () => now };
+  const deps = { authorize: () => {}, projectName: () => "Fixture", exportDiscussions: () => ({ body: "x".repeat(bodySize) }), clock: () => now };
   let schedules = new UserSchedules(policy, backups, deps);
   const actor = (principalId = "owner") => ({ principalId, principalKind: "owner" as const, credentialId: "fixture", authenticationMethod: "owner_session" as const });
   const save = (owner = "owner") => schedules.command(actor(owner), { action: "save", id: randomUUID(), version: 0, idempotencyKey: randomUUID(), configuration: { projectId: "project", scope: "knowledge-discussions", targetId: "local", enabled: true, intervalSeconds: 60, retainCount: 1, retainDays: 1 } });
@@ -106,7 +106,7 @@ it("rejects queued and running executions at admission, without waiting for them
 });
 
 for (const field of ["ownerId", "scope", "projectId", "targetId", "scheduleId", "version", "executionId", "dueAt", "source", "checksum"]) it(`refuses a foreign or damaged ${field} in a historical publication`, async () => {
-  const f = fixture(), execution = await interrupted(f), envelope = JSON.parse(readFileSync(execution.destination, "utf8"));
+  const f = fixture(undefined, 32), execution = await interrupted(f), envelope = JSON.parse(readFileSync(execution.destination, "utf8"));
   unlinkSync(join(f.backups.recordDirectory, "user-export-recovery.json")); // Legacy artifact without a publication stamp.
   if (field === "checksum") envelope.sha256 = "0".repeat(64);
   else { envelope.payload[field] = field === "version" ? 999 : field.endsWith("Id") ? randomUUID() : "foreign"; envelope.sha256 = (await import("./records")).recordHash(envelope.payload); }
@@ -210,4 +210,25 @@ for (const boundary of ["before-intent", "after-intent", "before-unlink", "after
   const mutationReceipts = f.ledger().mutations;
   if (!completed) { f.advance(); f.schedules.tick(); await f.backups.drain(); expect(f.schedules.overview(f.actor()).artifacts[0].state).toBe("succeeded"); }
   expect(f.ledger().mutations).toEqual(mutationReceipts);
+});
+
+
+it("bounds the recovery journal and refuses new intent without eviction or unlink at capacity", async () => {
+  const f = fixture(undefined, 32), execution = await interrupted(f), view = await preview(f, execution.executionId), path = join(f.backups.recordDirectory, "user-export-recovery.json");
+  const ledger = readRecordWithoutSync(path), original = ledger.entries[0];
+  ledger.entries = Array.from({ length: 2048 }, () => ({ ...original, executionId: randomUUID(), phase: "pending" })); writeRecord(path, ledger); f.restart();
+  await expect(reclaim(f, view)).rejects.toThrow("limit"); expect(existsSync(execution.destination)).toBe(true); expect(readRecordWithoutSync(path)).toEqual(ledger);
+});
+
+it("pins pending charge and execution beyond the ordinary recent-result pruning window", async () => {
+  const f = fixture(), execution = await interrupted(f), view = await preview(f, execution.executionId), synchronize = fs.fsyncSync;
+  vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
+    if (fs.fstatSync(fd).isDirectory() && fs.fstatSync(fd).ino === lstatSync(join(f.root, "exports")).ino && !existsSync(execution.destination)) throw new Error("injected unlink fsync"); synchronize(fd);
+  }); syncBuiltinESMExports(); await expect(reclaim(f, view)).rejects.toThrow("injected unlink fsync"); vi.restoreAllMocks(); syncBuiltinESMExports();
+  const ledger = f.ledger();
+  for (let i = 0; i < 60; i++) { const id = randomUUID(); ledger.executions.push({ ...execution, executionId: id, state: "failed", reason: "limit", destination: join(f.root, "exports", `user-export-${id}.json`) }); }
+  writeRecord(f.path, ledger); f.restart(); f.advance(); f.schedules.tick(); await f.backups.drain();
+  expect(f.ledger().executions.some((value: { executionId: string }) => value.executionId === execution.executionId)).toBe(true); expect(f.schedules.overview(f.actor()).artifacts[0].reason).toBe("limit");
+  expect((await reclaim(f, view)).state).toBe("completed"); f.advance(); f.schedules.tick(); await f.backups.drain();
+  expect(f.schedules.overview(f.actor()).artifacts[0].state).toBe("succeeded"); await expect(reclaim(f, view)).rejects.toMatchObject({ code: "invalid", status: 404 });
 });

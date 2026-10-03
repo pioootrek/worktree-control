@@ -3,9 +3,8 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 import { readBoundedJson } from "@/server/infrastructure/sqlite";
 import { syncDirectory, validatePrivateDirectory } from "@/server/private-storage";
-import { artifactSchema } from "./user-export-artifact";
+import { artifactSchema, type RecoveryExecution as Execution } from "./user-export-artifact";
 import { readRecord, recordHash, writeRecord } from "./records";
-import type { Execution } from "./user-schedules";
 import { UserBackupError, type UserBackupPolicy } from "./user-policy";
 
 const identitySchema = z.object({ dev: z.number(), ino: z.number(), uid: z.number(), mode: z.number(), size: z.number(), mtimeMs: z.number(), birthtimeMs: z.number() }).strict();
