@@ -12,8 +12,12 @@ export interface RemoteBackupSource {
   installationId: string; backupId: string; source: string; manifestSha256: string;
   files: Array<{ path: string; size: number }>;
   reconciliation?: RemoteProgress;
+  proofLimit?: number;
 }
-export type RemoteBackupOutcome = { snapshotId: string; proofs?: RemoteProgress["proofs"] } | { progress: true; proofs: RemoteProgress["proofs"]; uploadAttempted: boolean };
+export class RemoteBackupReconciliationError extends Error {
+  constructor() { super("remote_inventory_changed"); }
+}
+export type RemoteBackupOutcome = { snapshotId: string; proofs?: RemoteProgress["proofs"]; inventoryHash?: string } | { progress: true; proofs: RemoteProgress["proofs"]; inventoryHash?: string; uploadAttempted: boolean };
 /** Adapters must reconcile an uncertain prior upload before creating a snapshot. */
 export interface RemoteBackupTransport {
   readonly destinationId: string;

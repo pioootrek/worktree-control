@@ -6,8 +6,8 @@ import { backupIdSchema } from "@/shared/contracts/backups";
 import type { BackupCatalog } from "./catalog";
 import { BackupError } from "./policy";
 import { recordHash } from "./records";
-import { readRemoteLedger, writeRemoteLedger, REMOTE_LIMITS, type RemoteLedger, type Receipt } from "./remote-records";
-import type { RemoteBackupTransport } from "./remote-policy";
+import { assertRemoteLedgerCapacity, readRemoteLedger, writeRemoteLedger, REMOTE_LIMITS, type RemoteLedger, type Receipt } from "./remote-records";
+import { RemoteBackupReconciliationError, type RemoteBackupTransport } from "./remote-policy";
 
 export interface RemoteBackupStatus {
   enabled: boolean; pending: number; error: "remote_failed" | "remote_limit" | null;
@@ -53,6 +53,7 @@ export class RemoteBackups {
     if (!this.transport) return;
     if (this.persistenceFailed || this.closed) throw new BackupError("backup_busy", 503);
     if (this.pending() + reserved >= this.transport.policy.pendingLimit || (this.ledger?.receipts.length ?? 0) + reserved >= REMOTE_LIMITS.receipts) throw new BackupError("backup_limit", 409);
+    if (this.ledger) assertRemoteLedgerCapacity(this.ledger, (reserved + 1) * 1024);
   }
   protectedIds(): Set<string> {
     // Disabled transport preserves sources for explicit future retries as well.
@@ -104,7 +105,7 @@ export class RemoteBackups {
     if (generation !== receipt.retryGeneration + 1) throw new BackupError("backup_invalid", 409);
     if (receipt.state === "running" || this.queued) throw new BackupError("backup_busy", 409);
     receipt.retryGeneration = generation; receipt.attempts = 0;
-    if (receipt.reconciliation) { receipt.reconciliation.passes = 0; receipt.reconciliation.readReservedBytes = 0; }
+    if (receipt.reconciliation) { receipt.reconciliation.passes = 0; receipt.reconciliation.readReservedBytes = 0; delete receipt.reconciliation.inventoryHash; }
     receipt.state = "pending"; receipt.nextAt = this.deps.now(); this.save(); this.tick();
     return this.status();
   }
@@ -133,9 +134,13 @@ export class RemoteBackups {
       const source = this.deps.catalog.path(receipt.backupId);
       if (this.closed || recordHash(manifest) !== receipt.manifestHash || hashFile(join(source, "manifest.json")).sha256 !== receipt.manifestSha256) throw new BackupError("backup_invalid");
       const files = [{ path: "/manifest.json", size: lstatSync(join(source, "manifest.json")).size }, { path: "/state.sqlite3", size: manifest.database.size }, ...manifest.attachments.map(file => ({ path: `/attachments/${file.file}`, size: file.size }))];
-      const result = await this.transport!.upload({ installationId: this.ledger!.installationId, backupId: receipt.backupId, source, manifestSha256: receipt.manifestSha256, files, reconciliation: progress }, { reconcileOnly });
+      const otherProofs = [this.ledger!, ...this.ledger!.archives].reduce((sum, ledger) => sum + ledger.receipts.filter(value => value !== receipt).reduce((n, value) => n + (value.reconciliation?.proofs.length ?? 0), 0), 0);
+      const proofLimit = Math.min(REMOTE_LIMITS.candidates, REMOTE_LIMITS.proofs - otherProofs);
+      // Reserve bounded proof/confirmation space before any possible remote write.
+      assertRemoteLedgerCapacity(this.ledger!, Math.max(0, proofLimit - progress.proofs.length) * 200 + 1024);
+      const result = await this.transport!.upload({ installationId: this.ledger!.installationId, backupId: receipt.backupId, source, manifestSha256: receipt.manifestSha256, files, reconciliation: progress, proofLimit }, { reconcileOnly });
+      if (result.inventoryHash) progress.inventoryHash = result.inventoryHash;
       if ("proofs" in result && result.proofs) {
-        const otherProofs = [this.ledger!, ...this.ledger!.archives].reduce((sum, ledger) => sum + ledger.receipts.filter(value => value !== receipt).reduce((n, value) => n + (value.reconciliation?.proofs.length ?? 0), 0), 0);
         if (result.proofs.length > REMOTE_LIMITS.candidates || result.proofs.length + otherProofs > REMOTE_LIMITS.proofs) throw new BackupError("backup_limit", 409);
         progress.proofs = result.proofs;
       }
@@ -149,9 +154,9 @@ export class RemoteBackups {
       if (this.closed || !/^[a-f0-9]{64}$/.test(result.snapshotId)) throw new BackupError("backup_failed");
       receipt.state = "confirmed"; receipt.snapshotId = result.snapshotId; receipt.confirmedAt = new Date(this.deps.now()).toISOString(); receipt.error = null;
       if (!this.ledger!.lastConfirmed || this.ledger!.lastConfirmed.dataAt <= receipt.dataAt) this.ledger!.lastConfirmed = { backupId: receipt.backupId, dataAt: receipt.dataAt, confirmedAt: receipt.confirmedAt, snapshotId: receipt.snapshotId };
-    } catch {
-      receipt.error = "remote_failed";
-      receipt.state = receipt.attempts < this.transport!.policy.attemptLimit && (receipt.reconciliation?.passes ?? 0) < REMOTE_LIMITS.passes ? "pending" : "failed";
+    } catch (error) {
+      receipt.error = error instanceof RemoteBackupReconciliationError ? "remote_inventory_changed" : "remote_failed";
+      receipt.state = receipt.error !== "remote_inventory_changed" && receipt.attempts < this.transport!.policy.attemptLimit && (receipt.reconciliation?.passes ?? 0) < REMOTE_LIMITS.passes ? "pending" : "failed";
       receipt.nextAt = receipt.state === "pending" ? this.deps.now() + this.transport!.policy.retrySeconds * 1000 : null;
     }
     this.save();

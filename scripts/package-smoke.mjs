@@ -61,6 +61,33 @@ async function run(file, args, options = {}) {
   }
 }
 
+// Trusted local operator argument only; never discover a driver from an artifact
+// or remote metadata. A separate owned process group bounds all fixture children.
+async function verifyInstalled(script, packageRoot) {
+  if (!script) return null;
+  check(process.platform !== "win32", "Explicit installed verification requires POSIX process groups.");
+  const path = resolve(script);
+  check((await lstat(path)).isFile(), "Verification script must be a local regular file.");
+  const environment = { PATH: process.env.PATH, LANG: "C.UTF-8", ...Object.fromEntries(["WORKTREE_SWITCHER_TEST_RESTIC", "WORKTREE_SWITCHER_TEST_REST_SERVER"].flatMap(name => process.env[name] ? [[name, process.env[name]]] : [])) };
+  return new Promise((accept, reject) => {
+    const child = spawn(process.execPath, [path, packageRoot], { cwd: process.cwd(), env: environment, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+    let output = "", errors = "", failed = false;
+    const stop = signal => { try { if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal); else child.kill(signal); } catch (error) { if (error.code !== "ESRCH") throw error; } };
+    const timeout = setTimeout(() => { failed = true; stop("SIGTERM"); }, 300_000);
+    const force = setTimeout(() => { failed = true; stop("SIGKILL"); }, 305_000);
+    child.stdout.on("data", value => { output += value.toString(); if (output.length > 1024 * 1024) { failed = true; stop("SIGKILL"); } });
+    child.stderr.on("data", value => { errors += value.toString(); if (errors.length > 64 * 1024) { failed = true; stop("SIGKILL"); } });
+    child.once("error", () => { failed = true; });
+    child.once("close", code => {
+      clearTimeout(timeout); clearTimeout(force);
+      // A driver is responsible for graceful cleanup; reject any surviving group.
+      if (process.platform !== "win32" && child.pid) { try { process.kill(-child.pid, 0); failed = true; stop("SIGKILL"); } catch (error) { if (error.code !== "ESRCH") failed = true; } }
+      if (failed || code !== 0) reject(new Error("Explicit installed verification driver failed or required forced cleanup."));
+      else { try { accept({ driver: "explicit-local-repository-script", runtime: "installed-artifact", evidence: JSON.parse(output.trim()) }); } catch { reject(new Error("Installed verification driver did not return bounded JSON evidence.")); } }
+    });
+  });
+}
+
 async function freePort() {
   return await new Promise((accept, reject) => {
     const server = createServer();
@@ -438,6 +465,8 @@ async function main() {
     check(listed.length === 0, "Installed CLI did not remove the fixture project.");
   });
 
+  const additionalVerification = argument("--verification-script") ? await step("explicit-installed-verification", () => verifyInstalled(argument("--verification-script"), packageRoot)) : null;
+
   const dependencyTree = JSON.parse((await run("npm", ["ls", "--global", "--prefix", prefix, "--omit=dev", "--json", "--all"], { cwd: root, env: installEnv })).stdout);
   const dependencies = resolvedDependencies(dependencyTree);
   const report = {
@@ -446,7 +475,7 @@ async function main() {
     npm: (await run("npm", ["--version"])).stdout.trim(), platform: `${process.platform}-${process.arch}`,
     install: { mode: "global-prefix", prefixContainsSpaces: prefix.includes(" ") },
     nativeSqlite: { load: "success", binary: nativeAddon, provisioning: nativeProvisioning },
-    dependencies,
+    dependencies, additionalVerification,
     steps, cleanup: "graceful", durationMs: Date.now() - startedAt,
   };
   const reportPath = argument("--report");

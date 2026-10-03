@@ -65,6 +65,8 @@
     "test:backup-monitor": "vitest run src/cli/backup-monitor.test.ts src/server/modules/backups/backup-operations.test.ts src/server/backup-admin.test.ts src/server/admin-socket.test.ts",
     "test:integration:backup-monitor": "node scripts/build-fingerprint.mjs --check && vitest run --config vitest.integration.config.ts tests/integration/backup-monitor.test.ts",
     "test:integration:remote-backups": "node scripts/build-fingerprint.mjs --check && node scripts/require-restic-fixture.mjs && vitest run --config vitest.integration.config.ts tests/integration/remote-backups.test.ts tests/integration/backup-operations.test.ts tests/integration/user-backups.test.ts",
+    "test:integration:remote-rebind": "node scripts/build-fingerprint.mjs --check && node scripts/require-restic-fixture.mjs && vitest run --config vitest.integration.config.ts tests/integration/remote-rebind.test.ts",
+    "test:package:remote-rebind": "node scripts/build-fingerprint.mjs --check && node scripts/require-restic-fixture.mjs && node scripts/package-smoke.mjs --verification-script scripts/package-remote-rebind.mjs",
     "test:package": "node scripts/build-fingerprint.mjs --check && node scripts/package-smoke.mjs"
   },
   "dependencies": {

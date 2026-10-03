@@ -1,6 +1,6 @@
 export { backupPolicySchema, BackupError, type BackupPolicy } from "./policy";
 export { BackupOperations, type BackupActor } from "./backup-operations";
-export { remoteBackupPolicySchema, type RemoteBackupPolicy, type RemoteBackupSource, type RemoteBackupTransport, type RemoteBackupOutcome } from "./remote-policy";
+export { remoteBackupPolicySchema, RemoteBackupReconciliationError, type RemoteBackupPolicy, type RemoteBackupSource, type RemoteBackupTransport, type RemoteBackupOutcome } from "./remote-policy";
 export { REMOTE_LIMITS, type RemoteProgress } from "./remote-records";
 export { rebindRemoteBackup } from "./remote-rebind";
 export type { RemoteBackupStatus } from "./remote-backups";

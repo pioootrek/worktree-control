@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { RemoteBackupSource, RemoteBackupTransport, RemoteBackupPolicy, RemoteBackupOutcome, RemoteProgress } from "@/server/modules/backups";
-import { REMOTE_LIMITS } from "@/server/modules/backups";
+import { REMOTE_LIMITS, RemoteBackupReconciliationError } from "@/server/modules/backups";
 import { BACKUP_LIMITS } from "@/server/infrastructure/sqlite";
 import type { LoadedResticConfiguration } from "./restic-configuration";
 
@@ -35,7 +35,7 @@ export class ResticBackupTransport implements RemoteBackupTransport {
   }
   upload(source: RemoteBackupSource, options?: { reconcileOnly: boolean }): Promise<RemoteBackupOutcome> {
     if (this.active || this.closed) return Promise.reject(failure());
-    const operation = this.performUpload(source, options?.reconcileOnly ?? false).catch(() => { throw failure(); });
+    const operation = this.performUpload(source, options?.reconcileOnly ?? false).catch(error => { throw error instanceof RemoteBackupReconciliationError ? error : failure(); });
     this.active = operation;
     return operation.finally(() => { this.active = null; });
   }
@@ -65,6 +65,11 @@ export class ResticBackupTransport implements RemoteBackupTransport {
     this.readRemaining = REMOTE_LIMITS.readBytes;
     await this.authenticate(source.source, deadline);
     const snapshots = await this.inventory(source, deadline);
+    const inventoryDigest = (values: typeof snapshots) => digest(JSON.stringify(values.map(snapshot => [snapshot.id, snapshot.tree])));
+    const inventoryHash = inventoryDigest(snapshots);
+    if (source.reconciliation?.inventoryHash && source.reconciliation.inventoryHash !== inventoryHash) throw new RemoteBackupReconciliationError();
+    const proofLimit = source.proofLimit ?? REMOTE_LIMITS.candidates;
+    if (snapshots.length > proofLimit) throw failure();
     const previous = source.reconciliation?.proofs ?? [];
     // Preserve all still-present proofs, including those beyond this pass's
     // cutoff. Restic inventory order alone must never undo durable progress.
@@ -75,15 +80,16 @@ export class ResticBackupTransport implements RemoteBackupTransport {
       if (known) continue;
       // Reserve enough space for the largest supported manifest and tree before
       // starting another candidate. Small candidates can still reach 32 per pass.
-      if (validated >= 32 || this.readRemaining < BACKUP_LIMITS.manifestBytes + 64 * 1024 * 1024) return { progress: true, proofs, uploadAttempted: false };
+      if (validated >= 32 || this.readRemaining < BACKUP_LIMITS.manifestBytes + 64 * 1024 * 1024) return { progress: true, proofs, inventoryHash, uploadAttempted: false };
       const state = await this.classify(snapshot.id, source, deadline);
       validated++; proofs.push({ snapshotId: snapshot.id, tree: snapshot.tree, state });
     }
     const complete = proofs.filter(proof => proof.state === "complete");
     if (complete.length > 1) throw failure();
-    if (complete.length === 1) return { snapshotId: complete[0].snapshotId, proofs };
-    if (reconcileOnly || snapshots.length >= REMOTE_LIMITS.candidates) throw failure();
-    if (validated >= 32 || this.readRemaining < BACKUP_LIMITS.manifestBytes + 64 * 1024 * 1024 + 512 * 1024) return { progress: true, proofs, uploadAttempted: false };
+    if (complete.length === 1) return { snapshotId: complete[0].snapshotId, proofs, inventoryHash };
+    if (reconcileOnly || snapshots.length >= Math.min(REMOTE_LIMITS.candidates, proofLimit)) throw failure();
+    if (validated >= 32 || this.readRemaining < BACKUP_LIMITS.manifestBytes + 64 * 1024 * 1024 + 1024 * 1024) return { progress: true, proofs, inventoryHash, uploadAttempted: false };
+    if (inventoryDigest(await this.inventory(source, deadline)) !== inventoryHash) throw new RemoteBackupReconciliationError();
     const summaries: Array<Record<string, unknown>> = [];
     // Upload progress has its existing independent 64 MiB bound.
     await this.run(["--json", "backup", ".", "--host", `wts-${source.installationId}`, "--tag", this.tags(source).join(","), "--read-concurrency", "1"], source.source, deadline, 64 * 1024 * 1024, line => {
@@ -97,9 +103,9 @@ export class ResticBackupTransport implements RemoteBackupTransport {
     // Our one new immutable snapshot is expected; any other inventory change
     // remains unknown and cannot authorize confirmation or another write.
     if (!created || snapshots.some(snapshot => snapshot.id === createdId) || after.length !== snapshots.length + 1
-      || snapshots.some(snapshot => !after.some(value => value.id === snapshot.id && value.tree === snapshot.tree))) throw failure();
+      || snapshots.some(snapshot => !after.some(value => value.id === snapshot.id && value.tree === snapshot.tree))) throw new RemoteBackupReconciliationError();
     if (await this.classify(createdId, source, deadline) !== "complete") throw failure();
-    return { snapshotId: createdId, proofs: [...proofs, { snapshotId: createdId, tree: created.tree, state: "complete" }] };
+    return { snapshotId: createdId, proofs: [...proofs, { snapshotId: createdId, tree: created.tree, state: "complete" }], inventoryHash: inventoryDigest(after) };
   }
   private async classify(snapshotId: string, source: RemoteBackupSource, deadline: number): Promise<"partial" | "complete"> {
     try { await this.confirm(snapshotId, source, deadline); return "complete"; }

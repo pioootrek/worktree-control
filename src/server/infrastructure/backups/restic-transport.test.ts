@@ -14,6 +14,7 @@ function fixture(mode = "healthy", repository = "rest:https://example.test/repo/
   writeFileSync(statePath, JSON.stringify({ mode, snapshots: [], calls: [], manifest }));
   writeFileSync(script, `#!${process.execPath}
 import {readFileSync,writeFileSync} from 'node:fs';
+import {once} from 'node:events';
 const statePath=${JSON.stringify(statePath)};
 const state=JSON.parse(readFileSync(statePath,'utf8')),args=process.argv.slice(2);
 state.calls.push({args,environment:process.env});
@@ -26,15 +27,18 @@ else if(command==='snapshots') {save();console.log(JSON.stringify(state.snapshot
 else if(command==='backup') {
  if(state.mode==='progress')for(let i=0;i<12000;i++)process.stdout.write(JSON.stringify({message_type:'status',current_files:['x'.repeat(100)]})+'\\n');
  const snapshot={id:String(state.snapshots.length+1).padStart(64,'0'),tree:'b'.repeat(64),hostname:args[args.indexOf('--host')+1],paths:[process.cwd()],tags:args[args.indexOf('--tag')+1].split(','),partial:state.mode==='partial'};
- state.snapshots.push(snapshot);save();console.log(JSON.stringify({message_type:'summary',snapshot_id:snapshot.id}));if(snapshot.partial)process.exit(3);
+ state.snapshots.push(snapshot);save();console.log(JSON.stringify({message_type:'summary',snapshot_id:snapshot.id}));if(snapshot.partial||state.mode==='lost-upload-reply')process.exit(3);
 }
-else if(command==='dump') {save();process.stdout.write(state.mode==='wrong-manifest'?'{}':state.manifest);}
+else if(command==='dump') {save();process.stdout.write(state.mode==='wrong-manifest'?'{}':state.manifest);if(state.mode==='dump-failure')process.exit(1);}
 else if(command==='ls') {
  const snapshot=state.snapshots.find(x=>x.id===args[args.indexOf('ls')+1]);save();
  console.log(JSON.stringify({struct_type:'snapshot',id:snapshot.id}));
  console.log(JSON.stringify({type:'dir',path:'/attachments'}));
  console.log(JSON.stringify({type:'file',path:'/manifest.json',size:Buffer.byteLength(state.manifest)}));
  if(!snapshot.partial)console.log(JSON.stringify({type:'file',path:'/state.sqlite3',size:4}));
+ if(state.mode==='big-tree')for(let i=0;i<24000;i++){const line=JSON.stringify({type:'dir',path:'/extra-'+i+'-'+('x'.repeat(1600))})+'\\n';if(!process.stdout.write(line))await once(process.stdout,'drain');}
+ if(state.mode==='ls-failure')process.exit(1);
+ if(state.mode==='truncated-ls')process.stdout.write('{');
 }
 else {save();process.exit(1);}
 `, { mode: 0o700 });
@@ -79,7 +83,7 @@ describe("shell-free restic adapter", () => {
     expect(first.proofs).toHaveLength(32); expect(first.uploadAttempted).toBe(false);
     // Persisted proof order survives a reordered inventory between invocations.
     writeFileSync(join(f.root, "state.json"), JSON.stringify({ ...f.state(), snapshots: candidates.reverse() }));
-    const second = await f.transport.upload({ ...f.source, reconciliation: { passes: 2, readReservedBytes: 512 * 1024 * 1024, proofs: first.proofs } });
+    const second = await f.transport.upload({ ...f.source, reconciliation: { passes: 2, readReservedBytes: 512 * 1024 * 1024, proofs: first.proofs, inventoryHash: first.inventoryHash } });
     expect("snapshotId" in second).toBe(true);
     if (!("snapshotId" in second)) throw new Error("Expected confirmation");
     expect(second.snapshotId).toBe(String(olderComplete ? 1 : 41).padStart(64, "0"));
@@ -93,6 +97,40 @@ describe("shell-free restic adapter", () => {
     const snapshots = mode === "duplicate" ? [snapshot, snapshot] : Array.from({ length: mode === "overflow" ? 257 : 2 }, (_, index) => ({ ...snapshot, id: String(index + 1).padStart(64, "0") }));
     writeFileSync(join(f.root, "state.json"), JSON.stringify({ ...f.state(), snapshots }));
     await expect(f.transport.upload(f.source)).rejects.toThrow("remote_failed");
+    expect(f.state().calls.some((call: { args: string[] }) => call.args.includes("backup"))).toBe(false);
+  });
+  it.each(["ls-failure", "truncated-ls", "dump-failure"])("never returns partial proof or writes after an unknown authenticated read: %s", async mode => {
+    const f = fixture(); await f.transport.upload(f.source); f.change(mode);
+    await expect(f.transport.upload(f.source)).rejects.toThrow(/^remote_failed$/);
+    expect(f.state().snapshots).toHaveLength(1);
+    expect(f.state().calls.filter((call: { args: string[] }) => call.args.includes("backup"))).toHaveLength(1);
+  });
+  it("reconciles a lost upload reply after a durable inventory fence only through explicit renewal", async () => {
+    const f = fixture("lost-upload-reply", undefined, 15);
+    const tags = [`wts-installation:${f.source.installationId}`, `wts-backup:${f.source.backupId}`, `wts-manifest:${f.source.manifestSha256}`];
+    const snapshots = Array.from({ length: 33 }, (_, index) => ({ id: String(index + 1).padStart(64, "0"), tree: "b".repeat(64), hostname: `wts-${f.source.installationId}`, paths: [f.source.source], tags, partial: true }));
+    writeFileSync(join(f.root, "state.json"), JSON.stringify({ ...f.state(), snapshots }));
+    const first = await f.transport.upload(f.source); if (!("progress" in first)) throw new Error("Expected progress");
+    const source = { ...f.source, reconciliation: { passes: 2, readReservedBytes: 512 * 1024 * 1024, proofs: first.proofs, inventoryHash: first.inventoryHash } };
+    await expect(f.transport.upload(source)).rejects.toThrow("remote_failed");
+    expect(f.state().snapshots).toHaveLength(34);
+    await expect(f.transport.upload(source, { reconcileOnly: true })).rejects.toThrow("remote_inventory_changed");
+    const renewed = await f.transport.upload({ ...source, reconciliation: { ...source.reconciliation, inventoryHash: undefined } });
+    expect("snapshotId" in renewed && renewed.snapshotId).toBe("34".padStart(64, "0"));
+    expect(f.state().calls.filter((call: { args: string[] }) => call.args.includes("backup"))).toHaveLength(1);
+  }, 30000);
+  it("supports >32MiB authenticated listings while bounding aggregate reads and returning continuation", async () => {
+    const f = fixture("big-tree", undefined, 30);
+    const tags = [`wts-installation:${f.source.installationId}`, `wts-backup:${f.source.backupId}`, `wts-manifest:${f.source.manifestSha256}`];
+    const snapshots = Array.from({ length: 10 }, (_, index) => ({ id: String(index + 1).padStart(64, "0"), tree: "b".repeat(64), hostname: `wts-${f.source.installationId}`, paths: [f.source.source], tags, partial: true }));
+    writeFileSync(join(f.root, "state.json"), JSON.stringify({ ...f.state(), snapshots }));
+    const result = await f.transport.upload(f.source); if (!("progress" in result)) throw new Error("Expected bounded continuation");
+    expect(result.proofs.length).toBeGreaterThan(0); expect(result.proofs.length).toBeLessThan(10);
+    expect(result.uploadAttempted).toBe(false);
+    expect(f.state().calls.some((call: { args: string[] }) => call.args.includes("backup"))).toBe(false);
+  }, 45000);
+  it("reserves global evidence slots before any upload", async () => {
+    const f = fixture(); await expect(f.transport.upload({ ...f.source, proofLimit: 0 })).rejects.toThrow("remote_failed");
     expect(f.state().calls.some((call: { args: string[] }) => call.args.includes("backup"))).toBe(false);
   });
   it("never authorizes a new snapshot during read-only final-attempt reconciliation", async () => {
