@@ -1,7 +1,7 @@
 # Plan domknięcia bezpieczeństwa danych SQLite
 
-Aktualizacja: 2026-10-03. Status: S1–S3, S4a, S4u, S4b i S5a scalone;
-S5b i S5c pozostają do wykonania.
+Aktualizacja: 2026-10-03. Status: S1–S3, S4a, S4u, S4b, S5a i S5b scalone;
+S5c jest w realizacji.
 Stan realizacji jest poniżej; pierwotna diagnoza zachowana jako punkt odniesienia.
 Zadanie: [RWK-20260928-sqlite-data-safety](../../rework/RWK-20260928-sqlite-data-safety.json).
 Kod sprawdzony przy tworzeniu planu: `6a9df6e0879b4b9ad69969b1cc4b5bd4264a363c`.
@@ -10,7 +10,7 @@ historycznym punktem odniesienia. Powiązane prace:
 [migracja wiedzy](implementation-plan.md) i
 [aktualizacja pakietu](../NOTE-20260908-portable-verification-plan/controller-package-trial.md).
 
-## Stan realizacji po scaleniu S5a — 2026-10-03
+## Stan realizacji po scaleniu S5b — 2026-10-03
 
 S1a/S2a, S1b/S2b, S3a i S3b są na `main` przez PR #68–#71.
 S3b zamknięto w `42859c9d34db15b060e2f553c5e75a55af8c1175` po poprawce mobilnego Escape i zielonym CI.
@@ -69,7 +69,11 @@ oraz zdalnych i zwraca jednoznaczne kody błędów. [Raport S5a](storage-safety-
 zawiera końcowe testy, review i CI. Monitor nie potwierdza dostępności repozytorium
 ani zdolności odtworzenia na podstawie samych metadanych.
 
-S5b realizuje [kontrakt zmiany repozytorium i uzgadniania historii](storage-safety-s5b-contract-20261003.md).
+S5b scalono w [PR #76](https://github.com/pioootrek/worktree-switcher/pull/76)
+jako `3e99b7b`. Jawny rebind, zachowanie starych dowodów i przypiętych źródeł,
+pojedynczy reupload oraz ograniczone uzgadnianie historii przeszły testy MCP,
+n8n review i cztery zadania CI. [Raport S5b](storage-safety-s5b-report-20261003.md)
+rozdziela lokalne próby HTTPS/pakietu od CI i opisuje procedurę zmiany parametrów usługi.
 S5c obejmie aktualizację zainstalowanych artefaktów, izolowane awarie i recovery
 oraz procedurę S6. Docelowy host, klucze, wdrożenie monitora i powiadomień,
 rzeczywisty pomiar RPO/RTO i rollout pozostają osobnym etapem zgodnie z wyborem

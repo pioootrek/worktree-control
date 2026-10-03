@@ -1,0 +1,477 @@
+{
+  "schemaVersion": 1,
+  "pr": "https://github.com/pioootrek/worktree-switcher/pull/76",
+  "head": "e9b7e6c65b2e0951c06bfdd30a53f41d8af9da28",
+  "runtimeHead": "2ed3918c016460d1e752f603d8ca4310cc01ca69",
+  "runs": [
+    {
+      "key": "s5b-focused-review",
+      "id": "79fab00f-ca10-4fc9-82bf-64b2ea9f6356",
+      "head": "2ed3918c016460d1e752f603d8ca4310cc01ca69",
+      "dirty": false,
+      "preset": "node:test:remote-rebind",
+      "phase": "passed",
+      "startedAt": "2026-10-03T16:21:35.755Z",
+      "finishedAt": "2026-10-03T16:21:52.078Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match"
+    },
+    {
+      "key": "s5b-check-review",
+      "id": "906a5c32-059b-4ced-90c7-a72b11c24d2c",
+      "head": "2ed3918c016460d1e752f603d8ca4310cc01ca69",
+      "dirty": false,
+      "preset": "node:check",
+      "phase": "passed",
+      "startedAt": "2026-10-03T16:22:14.910Z",
+      "finishedAt": "2026-10-03T16:24:25.834Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match"
+    },
+    {
+      "key": "s5b-build-review",
+      "id": "153a82dc-2076-4a2b-8be8-406eb826de73",
+      "head": "942583413e08978ef0c8a67a6bbc1d30f8b9af85",
+      "dirty": false,
+      "preset": "node:build",
+      "phase": "passed",
+      "startedAt": "2026-10-03T16:25:12.336Z",
+      "finishedAt": "2026-10-03T16:25:21.748Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match"
+    },
+    {
+      "key": "s5b-real-https-final",
+      "id": "68000982-8450-4eb7-9bf5-3c5386a8a716",
+      "head": "e9b7e6c65b2e0951c06bfdd30a53f41d8af9da28",
+      "dirty": false,
+      "preset": "node:test:integration:remote-rebind",
+      "phase": "passed",
+      "startedAt": "2026-10-03T16:31:31.859Z",
+      "finishedAt": "2026-10-03T16:32:59.297Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match"
+    },
+    {
+      "key": "s5b-installed-final",
+      "id": "08befbb9-6dcb-499c-adca-87b0df5af35a",
+      "head": "e9b7e6c65b2e0951c06bfdd30a53f41d8af9da28",
+      "dirty": false,
+      "preset": "node:test:package:remote-rebind",
+      "phase": "passed",
+      "startedAt": "2026-10-03T16:34:02.855Z",
+      "finishedAt": "2026-10-03T16:36:02.025Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match"
+    },
+    {
+      "key": "s5b-real-https",
+      "id": "ea8a9f04-6013-4a7e-a6b3-ef43147df4e4",
+      "head": "942583413e08978ef0c8a67a6bbc1d30f8b9af85",
+      "dirty": false,
+      "preset": "node:test:integration:remote-rebind",
+      "phase": "passed",
+      "startedAt": "2026-10-03T16:26:01.617Z",
+      "finishedAt": "2026-10-03T16:27:26.935Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match"
+    },
+    {
+      "key": "s5b-installed",
+      "id": "746ccec7-8c9c-4da5-855a-494b7f8f766a",
+      "head": "942583413e08978ef0c8a67a6bbc1d30f8b9af85",
+      "dirty": false,
+      "preset": "node:test:package:remote-rebind",
+      "phase": "passed",
+      "startedAt": "2026-10-03T16:27:51.493Z",
+      "finishedAt": "2026-10-03T16:29:42.962Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match"
+    },
+    {
+      "key": "s5b-check-654f6af",
+      "id": "68a73311-3889-4f58-8fce-df2881290d3c",
+      "head": "654f6af22f4be59370fdea8de56b699355fe5826",
+      "dirty": false,
+      "preset": "node:check",
+      "phase": "failed",
+      "startedAt": "2026-10-03T15:53:28.358Z",
+      "finishedAt": "2026-10-03T15:57:09.007Z",
+      "exitCode": 1,
+      "signal": null,
+      "attribution": "observed_match"
+    },
+    {
+      "key": "s5b-check-controlled",
+      "id": "be215934-dd97-4b9f-b82d-05c9780aac52",
+      "head": "654f6af22f4be59370fdea8de56b699355fe5826",
+      "dirty": false,
+      "preset": "node:check",
+      "phase": "passed",
+      "startedAt": "2026-10-03T16:07:41.768Z",
+      "finishedAt": "2026-10-03T16:09:46.265Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match"
+    },
+    {
+      "key": "s5b-focused-complete",
+      "id": "7ee4d05e-83fd-4615-bcc0-ac830ed5b268",
+      "head": "5e004c8204dba63a0bb57f83a1fb6c7cd90e5209",
+      "dirty": false,
+      "preset": "node:test:remote-rebind",
+      "phase": "failed",
+      "startedAt": "2026-10-03T15:33:42.984Z",
+      "finishedAt": "2026-10-03T15:33:56.655Z",
+      "exitCode": 1,
+      "signal": null,
+      "attribution": "observed_match"
+    },
+    {
+      "key": "s5b-check-final",
+      "id": "51abee95-84c9-4c4a-9aec-2d1370e1ff3f",
+      "head": "dc6895f4ac1194131564486925325b38265b6966",
+      "dirty": false,
+      "preset": "node:check",
+      "phase": "failed",
+      "startedAt": "2026-10-03T15:37:42.387Z",
+      "finishedAt": "2026-10-03T15:38:02.862Z",
+      "exitCode": 2,
+      "signal": null,
+      "attribution": "observed_match"
+    }
+  ],
+  "artifact": {
+    "sha256": "d396c1e0b1f4a04dde76e7a77546a159be2cda7a327cb80452d92f8accc21e80",
+    "bytes": 857772,
+    "node": "v24.19.0",
+    "npm": "11.17.0",
+    "platform": "linux-x64",
+    "package": "worktree-switcher@0.1.0-trial.1",
+    "tarball": "worktree-switcher-0.1.0-trial.1.tgz",
+    "nativeSqliteLoad": "success",
+    "steps": [
+      {
+        "name": "pack",
+        "ok": true,
+        "durationMs": 2511
+      },
+      {
+        "name": "archive-manifest",
+        "ok": true,
+        "durationMs": 14
+      },
+      {
+        "name": "archive-content-audit",
+        "ok": true,
+        "durationMs": 39
+      },
+      {
+        "name": "production-install",
+        "ok": true,
+        "durationMs": 22138
+      },
+      {
+        "name": "native-sqlite",
+        "ok": true,
+        "durationMs": 11
+      },
+      {
+        "name": "damaged-asset-rejected",
+        "ok": true,
+        "durationMs": 612
+      },
+      {
+        "name": "doctor",
+        "ok": true,
+        "durationMs": 253
+      },
+      {
+        "name": "offline-cli",
+        "ok": true,
+        "durationMs": 506
+      },
+      {
+        "name": "installation-token",
+        "ok": true,
+        "durationMs": 230
+      },
+      {
+        "name": "controller-readiness",
+        "ok": true,
+        "durationMs": 311
+      },
+      {
+        "name": "remote-backup-default-off",
+        "ok": true,
+        "durationMs": 219
+      },
+      {
+        "name": "backup-monitor-live",
+        "ok": true,
+        "durationMs": 392
+      },
+      {
+        "name": "backup-monitor-invalid-options",
+        "ok": true,
+        "durationMs": 382
+      },
+      {
+        "name": "packaged-assets",
+        "ok": true,
+        "durationMs": 70
+      },
+      {
+        "name": "live-cli-forwarding",
+        "ok": true,
+        "durationMs": 212
+      },
+      {
+        "name": "installation-backup-verifier",
+        "ok": true,
+        "durationMs": 582
+      },
+      {
+        "name": "mcp-runtime",
+        "ok": true,
+        "durationMs": 997
+      },
+      {
+        "name": "backup-monitor-controller-absent",
+        "ok": true,
+        "durationMs": 202
+      },
+      {
+        "name": "project-removal",
+        "ok": true,
+        "durationMs": 470
+      },
+      {
+        "name": "explicit-installed-verification",
+        "ok": true,
+        "durationMs": 86661
+      }
+    ],
+    "additionalVerification": {
+      "driver": "explicit-local-repository-script",
+      "runtime": "installed-artifact",
+      "evidence": {
+        "evidence": "isolated-https-rebind-and-history",
+        "runtime": "installed-artifact",
+        "archivedReceipts": 2,
+        "archivedPins": 1,
+        "explicitReuploads": 2,
+        "candidates": 34,
+        "continuationPasses": 2,
+        "duplicateAdmission": "idempotent",
+        "snapshotCountUnchangedAfterReconciliation": true,
+        "recovery": "not-measured",
+        "fixtureDueTimestampAdvanced": true,
+        "staleEnabledStartup": "refused",
+        "explicitDisabledStartup": "local-backup-with-pins",
+        "newTargetStartup": "accepted",
+        "restic": "restic 0.19.1 compiled with go1.26.4 on linux/amd64",
+        "restServer": "rest-server version rest-server 0.14.0 compiled with go1.24.3 on linux/amd64",
+        "resticSha256": "20d4142678d0d95ec11a4759def1b73fd9190abc9ca19e4b62d067c0b387e639",
+        "restServerSha256": "ec4fa7c3472bdc1cde6bfa994d1ee3344bb6e9dc3d9c10c8ff5316e3e77af6fd"
+      }
+    },
+    "cleanup": "graceful",
+    "durationMs": 118067
+  },
+  "failedPressureRun": {
+    "id": "68a73311-3889-4f58-8fce-df2881290d3c",
+    "result": "failed",
+    "unitPassed": 944,
+    "unitFailed": 19,
+    "correlation": "Concurrent host CPU/memory/IO PSI pressure observed; exact cause unproven; no signal/guard-stop recorded.",
+    "cgroupQualification": "t3code.service was diagnostic shell cgroup, not queued test. Controlled actual pnpm/vitest children verified in worktree-switcher.service with memory.events high/max/oom/oomkill=0 and memory PSI avg10/60=0. No limits/timeouts changed."
+  },
+  "limitations": [
+    "Synthetic disposable authenticated HTTPS repositories; no production data/destination/credentials.",
+    "Repository driver is separate from installed runtime, CLI/HTTP/assets/dependencies from installed prefix.",
+    "Stopped fixture nextAt advanced for continuation; production retrySeconds spacing unchanged.",
+    "No target-host RPO, disk/power-loss recovery or real repository drill claim."
+  ],
+  "temporaryTestProfileRemoved": true,
+  "merge": {
+    "commit": "3e99b7b95055ae125749d54bfbebe9975d015cc6",
+    "mergedAt": "2026-10-03T16:44:59Z"
+  },
+  "review": {
+    "workflow": "n8n all",
+    "rounds": 1,
+    "outcomes": {
+      "fix": 3,
+      "backlog": 0,
+      "falsePositive": 0,
+      "unresolved": 0
+    },
+    "threads": [
+      {
+        "url": "https://github.com/pioootrek/worktree-switcher/pull/76#discussion_r4173882828",
+        "resolution": "Persist exact terminal restore outcome; re-arm authorized retry with new operationId.",
+        "reply": "https://github.com/pioootrek/worktree-switcher/pull/76#discussion_r4173933755"
+      },
+      {
+        "url": "https://github.com/pioootrek/worktree-switcher/pull/76#discussion_r4173882832",
+        "resolution": "Release disposable proof caches on confirmation and atomic rebind; retain identities, receipts, counters and pins.",
+        "reply": "https://github.com/pioootrek/worktree-switcher/pull/76#discussion_r4173933819"
+      },
+      {
+        "url": "https://github.com/pioootrek/worktree-switcher/pull/76#discussion_r4173923184",
+        "resolution": "Document stopped-service transition and prove old-enabled refusal, explicit-disabled local operation and new-target startup; preserve identity refusal.",
+        "reply": "https://github.com/pioootrek/worktree-switcher/pull/76#discussion_r4173952716"
+      }
+    ],
+    "codex": "No additional actionable findings on 9425834; final e9 changes README and affected acceptance only."
+  },
+  "ci": {
+    "runId": "37137172368",
+    "conclusion": "success",
+    "jobs": [
+      "check-build",
+      "package-smoke (22.23.2)",
+      "package-smoke (24.21.0)",
+      "package-service-lifecycle"
+    ],
+    "counts": {
+      "unit": 965,
+      "scripts": 7,
+      "https": 1,
+      "integration": 36,
+      "integrationSkipped": 3,
+      "ui": 166,
+      "e2e": 3
+    },
+    "integrationSkipReason": "Disposable restic binaries absent in CI; affected HTTPS and installed rebind acceptance passed separately on final feature head.",
+    "provenance": {
+      "schemaVersion": 1,
+      "package": {
+        "name": "worktree-switcher",
+        "version": "0.1.0-trial.1",
+        "private": true
+      },
+      "source": {
+        "commit": "e09e22ee7d9966cff109405608643f23f5b5e08c",
+        "dirty": false
+      },
+      "artifact": {
+        "filename": "worktree-switcher-0.1.0-trial.1.tgz",
+        "sha256": "50478564cdb7a45c4e2901877d38bd1a0c036edeefb9fb7a67650701c6b59dba",
+        "bytes": 857747
+      },
+      "build": {
+        "node": "v22.23.2",
+        "npm": "10.9.8",
+        "pnpm": "11.22.0"
+      },
+      "ci": {
+        "repository": "pioootrek/worktree-switcher",
+        "runId": "37137172368",
+        "runAttempt": "1",
+        "runUrl": "https://github.com/pioootrek/worktree-switcher/actions/runs/37137172368"
+      },
+      "verification": {
+        "status": "pending-package-smoke",
+        "targets": [
+          "ubuntu-24.04-linux-x64-node22.23.2",
+          "ubuntu-24.04-linux-x64-node24.21.0"
+        ]
+      },
+      "files": {
+        "checksum": "SHA256SUMS",
+        "installGuide": "INSTALL.md",
+        "smoke": "package-smoke.mjs",
+        "smokeSha256": "cffd630b651a8087f479c6ed88a7d30234fab7c61dcc7e16b66e4d71d9d8b386",
+        "lifecycle": "package-lifecycle-trial.mjs",
+        "lifecycleSha256": "5d278e2c97ed003b87e65f1bfb8155a1ca51674ecc7c45dcf8ec174eb2980318"
+      }
+    },
+    "syntheticMergeParents": [
+      "d9eadefb684b4e3751f6af60165081f1cc05d7f8",
+      "e9b7e6c65b2e0951c06bfdd30a53f41d8af9da28"
+    ],
+    "checksumAndBundleAudit": "tarball, smoke, lifecycle, SHA256SUMS and merge parents checked; bundled rebind/reupload/inventory fence present.",
+    "smoke": [
+      {
+        "ok": true,
+        "node": "v22.23.2",
+        "sha256": "50478564cdb7a45c4e2901877d38bd1a0c036edeefb9fb7a67650701c6b59dba",
+        "nativeSqlite": {
+          "load": "success",
+          "binary": "node_modules/better-sqlite3/prebuilds/linux-x64.node",
+          "provisioning": "packaged prebuilt"
+        },
+        "cleanup": "graceful",
+        "durationMs": 28966,
+        "steps": 18
+      },
+      {
+        "ok": true,
+        "node": "v24.21.0",
+        "sha256": "50478564cdb7a45c4e2901877d38bd1a0c036edeefb9fb7a67650701c6b59dba",
+        "nativeSqlite": {
+          "load": "success",
+          "binary": "node_modules/better-sqlite3/prebuilds/linux-x64.node",
+          "provisioning": "packaged prebuilt"
+        },
+        "cleanup": "graceful",
+        "durationMs": 28647,
+        "steps": 18
+      }
+    ],
+    "lifecycle": {
+      "outcome": "passed",
+      "oldFixture": null,
+      "cleanup": {
+        "graceful": true,
+        "serviceAbsent": true,
+        "dataPreserved": true
+      },
+      "phases": [
+        {
+          "name": "install-candidate",
+          "outcome": "passed"
+        },
+        {
+          "name": "status-and-idempotent-install",
+          "outcome": "passed"
+        },
+        {
+          "name": "open-and-restart",
+          "outcome": "passed"
+        },
+        {
+          "name": "new-user-session",
+          "outcome": "passed"
+        },
+        {
+          "name": "stop-and-repeated-install",
+          "outcome": "passed"
+        },
+        {
+          "name": "uninstall-idempotently",
+          "outcome": "passed"
+        }
+      ],
+      "negativeScenarios": [
+        {
+          "name": "foreground-singleton-owner",
+          "outcome": "passed"
+        },
+        {
+          "name": "occupied-dashboard-port",
+          "outcome": "passed"
+        }
+      ]
+    }
+  }
+}
