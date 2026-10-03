@@ -27,7 +27,7 @@ export class ResticBackupTransport implements RemoteBackupTransport {
     this.environment = {
       RESTIC_REPOSITORY: configuration.repository, RESTIC_PASSWORD_FILE: configuration.passwordFile,
       RESTIC_REST_USERNAME: credentials.username, RESTIC_REST_PASSWORD: credentials.password,
-      GOMAXPROCS: "2", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+      GOMAXPROCS: "2", NODE_ENV: "production", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
     };
   }
   upload(source: RemoteBackupSource, options?: { reconcileOnly: boolean }): Promise<{ snapshotId: string }> {

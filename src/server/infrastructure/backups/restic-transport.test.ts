@@ -71,7 +71,7 @@ describe("shell-free restic adapter", () => {
     try { await f.transport.upload(f.source); }
     finally { if (previous === undefined) delete process.env.RESTIC_PASSWORD_COMMAND; else process.env.RESTIC_PASSWORD_COMMAND = previous; }
     const calls = f.state().calls;
-    expect(Object.keys(calls[0].environment).sort()).toEqual(["GOMAXPROCS", "RESTIC_PASSWORD_FILE", "RESTIC_REPOSITORY", "RESTIC_REST_PASSWORD", "RESTIC_REST_USERNAME"].sort());
+    expect(Object.keys(calls[0].environment).sort()).toEqual(["GOMAXPROCS", "NODE_ENV", "RESTIC_PASSWORD_FILE", "RESTIC_REPOSITORY", "RESTIC_REST_PASSWORD", "RESTIC_REST_USERNAME"].sort());
     expect(calls.some((value: { args: string[] }) => value.args.join(" ").includes("fixture-secret"))).toBe(false);
   });
   it("cancels only the active child and waits for exit", async () => {

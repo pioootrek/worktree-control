@@ -24,8 +24,8 @@ export async function resticFixture() {
     const port = await new Promise<number>((accept, reject) => { const probe = createServer(); probe.once("error", reject); probe.listen(0, "127.0.0.1", () => { const address = probe.address(); if (!address || typeof address === "string") return reject(new Error("Fixture port missing.")); probe.close(error => error ? reject(error) : accept(address.port)); }); });
     const repository = `rest:https://127.0.0.1:${port}/fixture/`;
     child = spawn(server, ["--listen", `127.0.0.1:${port}`, "--path", repositoryRoot, "--htpasswd-file", htpasswd, "--tls", "--tls-cert", cert, "--tls-key", tlsKey, "--append-only"], { stdio: "ignore" });
-    const environment = { RESTIC_REPOSITORY: repository, RESTIC_PASSWORD_FILE: key, RESTIC_REST_USERNAME: "fixture", RESTIC_REST_PASSWORD: "fixture-backend-password", GOMAXPROCS: "2" };
-    const run = (args: string[], env: Record<string, string> = environment) => exec(restic, ["--no-cache", "--cacert", cert, ...args], { env, timeout: 30000, maxBuffer: 1024 * 1024 });
+    const environment = { RESTIC_REPOSITORY: repository, RESTIC_PASSWORD_FILE: key, RESTIC_REST_USERNAME: "fixture", RESTIC_REST_PASSWORD: "fixture-backend-password", GOMAXPROCS: "2", NODE_ENV: "test" as const };
+    const run = (args: string[], env: NodeJS.ProcessEnv = environment) => exec(restic, ["--no-cache", "--cacert", cert, ...args], { env, timeout: 30000, maxBuffer: 1024 * 1024 });
     const runWithoutCa = (args: string[]) => exec(restic, ["--no-cache", ...args], { env: environment, timeout: 30000, maxBuffer: 1024 * 1024 });
     await waitFor(async () => { try { await run(["init", "--json"]); return true; } catch { if (child!.exitCode !== null) throw new Error("Fixture REST server exited before init."); return null; } }, 10000, () => "Disposable HTTPS REST repository did not initialize.");
     const repositoryId = (JSON.parse((await run(["cat", "config"])).stdout) as { id: string }).id;
