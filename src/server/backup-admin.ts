@@ -5,6 +5,10 @@ import { backupCommandSchema } from "@/shared/contracts/backups";
 const inputSchema = z.object({ command: z.literal("backup"), operation: z.enum(["create", "now", "restore", "status", "list"]), destination: z.string().min(1).max(4096).optional(), idempotencyKey: z.string().min(1).max(256).optional(), backupId: z.string().optional() }).strict();
 export function backupAdminHandler(backups: BackupOperations, restores: RestoreOperations, schedules?: UserSchedules): (body: unknown) => unknown {
   return async body => {
+    if (body && typeof body === "object" && "command" in body && body.command === "backup-monitor") {
+      z.object({ command: z.literal("backup-monitor") }).strict().parse(body);
+      return backups.monitorMetadata();
+    }
     if (body && typeof body === "object" && "command" in body && body.command === "backup-remote") {
       const input = z.discriminatedUnion("action", [
         z.object({ command: z.literal("backup-remote"), action: z.literal("status") }).strict(),

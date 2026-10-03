@@ -392,6 +392,35 @@ Local exports require a surviving host and filesystem.
 
 ## Optional installation backups
 
+The independent monitor runs once in a separate CLI process:
+
+```bash
+worktree-switcher backup monitor                         # disabled, no probe or alerts
+worktree-switcher backup monitor --enabled \
+  --warn-after-seconds 2700 --critical-after-seconds 3600 --timeout-ms 5000
+```
+
+It reads a small, owner-only controller metadata reply without opening SQLite,
+scanning backups, starting the controller or sending notifications. Configure an
+external scheduler and notification delivery separately. Exit codes are `0` for
+healthy or disabled, `1` for warning, `2` for critical and `3` for unknown.
+An enabled probe reports an absent, unreadable, incompatible or timed-out
+controller as unknown. An available controller with both service scheduling and
+remote transfer off produces no stale-backup alerts. Local-only scheduling
+produces no remote alerts; enabled remote transfer is monitored even when copies
+are created manually and the local service schedule is off.
+Thresholds belong to this CLI invocation and cannot modify service policy.
+Invalid invocation options also return safe JSON with `unknown`, exit `3` and
+`invalid_options`, without echoing the arguments or checking the controller.
+
+Local and remote ages use the recorded snapshot creation request time, including
+queue delay. A recent upload completion never refreshes the remote data age.
+Failed attempts, unavailable local copy paths, retention errors and maintenance
+are reported separately. The reply contains no filesystem paths, credentials,
+actors or backup contents. It checks recorded evidence and local file types;
+it does not rehash copies, contact the remote repository, or prove restoration.
+`remoteReachability: not-checked` and `recovery: not-measured` preserve those limits.
+
 Encrypted transfer defaults to off and is independent of the local schedule.
 The first adapter uses an existing restic HTTPS REST repository. Provision the
 repository and preserve its password outside the source host before enabling

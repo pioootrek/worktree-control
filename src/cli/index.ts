@@ -29,6 +29,7 @@ import { writeCliLine } from "./output";
 import { runAuthCommand } from "./auth-management";
 import { runIdentityCommand } from "./identity-management";
 import { runBackupCommand } from "./backup-management";
+import { runBackupMonitor } from "./backup-monitor";
 import { pairingUrl } from "./pairing-url";
 import { openProjectGateway, runDoctorCommand, runProjectCommand } from "./project-management";
 import { controllerAccessToken, localDashboardEndpoint, publicDashboardEndpoint, readServiceAccess, removeServiceAccess, writeServiceAccess } from "./service-access";
@@ -72,6 +73,10 @@ function optionalPositiveNumber(value: string | undefined, label: string): numbe
 async function main(retainedLock?: ControllerLock): Promise<void> {
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
+  if (command === "backup" && process.argv[3] === "monitor") {
+    const result = await runBackupMonitor(process.argv.slice(4));
+    writeCliLine(JSON.stringify(result, null, 2)); process.exitCode = result.exitCode; return;
+  }
   const backupPolicy = parseBackupPolicyOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
   const remoteBackup = parseRemoteBackupOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
   if (command === "start" && remoteBackup.loaded && !backupPolicy.directory) throw new Error("Remote backup transfer requires --backup-dir.");
@@ -318,7 +323,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     });
     const backupHandler = backupAdminHandler(backups, restores, userSchedules);
     adminSocket = await listenAdminSocket(paths.adminSocketPath, body => {
-      if (body && typeof body === "object" && "command" in body && (body.command === "backup" || body.command === "backup-remote" || body.command === "user-export-recovery")) return backupHandler(body);
+      if (body && typeof body === "object" && "command" in body && (body.command === "backup" || body.command === "backup-remote" || body.command === "backup-monitor" || body.command === "user-export-recovery")) return backupHandler(body);
       if (maintenance) throw new Error("Controller is in maintenance.");
       return authenticationHandler(body);
     });

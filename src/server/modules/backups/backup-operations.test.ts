@@ -1,13 +1,14 @@
 import { mkdtempSync, existsSync, rmSync, renameSync, symlinkSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SqliteStateStore } from "@/server/sqlite-store";
 import { AuthenticationService } from "@/server/modules/authentication";
 import { BackupOperations } from "./backup-operations";
 import { backupPolicySchema } from "./policy";
 import { recordHash } from "./records";
 import type { AuthenticatedPrincipal } from "@/server/modules/identity";
+import { evaluateBackupMonitor, parseBackupMonitorOptions } from "@/cli/backup-monitor";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -25,6 +26,38 @@ function fixture(options: Record<string, unknown> = {}) {
 }
 
 describe("service backup operations", () => {
+  it("reports a later manual failure when scheduled priority overtakes its older admission", async () => {
+    const f = fixture({ intervalSeconds: 60 });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.operations.enqueueExport("monitor-gate", 1, () => gate, () => release());
+    const backup = f.store.backup.bind(f.store);
+    let count = 0;
+    vi.spyOn(f.store, "backup").mockImplementation(async (...args) => { f.advance(1000); if (++count === 2) throw new Error("Manual backup failed."); return backup(...args); });
+    f.operations.create(f.actor, "older-manual"); f.advance(60_000); f.operations.tick();
+    release(); await f.operations.drain();
+    expect(f.operations.overview(f.actor).schedule.lastOperation?.state).toBe("succeeded");
+    expect(f.operations.status(f.actor, "older-manual").state).toBe("failed");
+    const metadata = f.operations.monitorMetadata();
+    expect(metadata.local).toMatchObject({ dataAt: "2026-10-01T00:01:00.000Z", lastAttempt: { dataAt: "2026-10-01T00:00:00.000Z", state: "failed", error: "backup_failed" } });
+    expect(evaluateBackupMonitor(metadata, parseBackupMonitorOptions(["--enabled"]), f.deps.clock())).toMatchObject({ severity: "critical", alerts: ["local_failed"] });
+  });
+  it("projects bounded CLI metadata without scans and distinguishes missing recorded copies", async () => {
+    const f = fixture({ intervalSeconds: 60 });
+    const created = f.operations.create(f.actor, "monitor-copy"); await f.operations.drain();
+    const scan = vi.spyOn(f.operations.catalog, "list").mockImplementation(() => { throw new Error("Monitor must not scan."); });
+    const hydrate = vi.spyOn(f.operations.catalog, "manifest").mockImplementation(() => { throw new Error("Monitor must not hydrate."); });
+    expect(f.operations.monitorMetadata()).toMatchObject({ scheduleEnabled: true, local: { dataAt: "2026-10-01T00:00:00.000Z", lastAttempt: { state: "succeeded" }, error: null }, remote: { enabled: false, dataAt: null } });
+    expect(JSON.stringify(f.operations.monitorMetadata())).not.toContain(f.root);
+    expect(JSON.stringify(f.operations.monitorMetadata())).not.toContain(f.actor.credentialId);
+    const copy = join(f.policy.directory!, created.backupId);
+    renameSync(join(copy, "state.sqlite3"), join(copy, "state.saved"));
+    symlinkSync(join(copy, "state.saved"), join(copy, "state.sqlite3"));
+    expect(f.operations.monitorMetadata().local).toMatchObject({ dataAt: null, error: "metadata_unavailable" });
+    rmSync(copy, { recursive: true });
+    expect(f.operations.monitorMetadata().local).toMatchObject({ dataAt: null, error: "metadata_unavailable" });
+    expect(scan).not.toHaveBeenCalled(); expect(hydrate).not.toHaveBeenCalled();
+  });
   it("distinguishes an unrecorded valid migration copy from a failed verification", async () => {
     const f = fixture(); const created = f.operations.create(f.actor, "migration-fixture"); await f.operations.drain();
     const id = `pre-migration-v1-${crypto.randomUUID()}`;
