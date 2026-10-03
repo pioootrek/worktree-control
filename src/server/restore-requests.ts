@@ -12,11 +12,11 @@ export type RestoreRequestInput = z.infer<typeof requestInputSchema>;
 const recordSchema = z.object({
   formatVersion: z.literal(1), operationId: z.uuid(), actor: restoreActorSchema,
   createdAt: z.iso.datetime(), source: z.string().min(1).max(4096), manifestHash: sha256Schema,
-  state: z.enum(["requested", "verified"]),
+  state: z.enum(["requested", "verified", "failed", "interrupted"]),
 }).strict();
 const checksum = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 type Record = z.infer<typeof recordSchema>;
-export interface RestoreRequestStatus { operationId: string; backupId: string; state: "requested" | "verified"; createdAt: string }
+export interface RestoreRequestStatus { operationId: string; backupId: string; state: Record["state"]; createdAt: string }
 export interface RestoreRequestPolicy {
   /** Must enforce operator installation authority and deployment policy, also at execution. */
   authorize(actorId: string, backupId: string): void;
@@ -56,7 +56,13 @@ function prepareRequest(databasePath: string, actorId: string, value: unknown, p
   const input = requestInputSchema.parse(value), actor = restoreActorSchema.parse({ actorId, backupId: input.backupId, idempotencyKey: input.idempotencyKey });
   policy.authorize(actorId, input.backupId);
   const directory = requestDirectory(databasePath), path = join(directory, `${keyFor(actor)}.json`);
-  try { const record = readRecord(path); sameRequest(record, actor); syncDirectory(directory); syncDirectory(dirname(directory)); return { existing: status(record), actor, directory, path, source: record.source }; }
+  try { const record = readRecord(path); sameRequest(record, actor);
+    if (record.state === "failed" || record.state === "interrupted") {
+      // A retry is a new durable intent; the previous handoff cannot acknowledge it.
+      record.state = "requested"; record.operationId = randomUUID(); record.createdAt = new Date().toISOString();
+      durableJson(path, { payload: record, sha256: checksum(record) });
+    }
+    syncDirectory(directory); syncDirectory(dirname(directory)); return { existing: status(record), actor, directory, path, source: record.source }; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   assertRequestCapacity(directory);
   return { existing: null, actor, directory, path, source: resolve(policy.resolveBackup(input.backupId)) };
@@ -163,8 +169,17 @@ export function protectedControllerRestoreBackupIds(databasePath: string): Set<s
   return result;
 }
 
+/** Persist a terminal handoff outcome before its single record can be replaced. */
+export function finishControllerRestoreRequest(databasePath: string, actor: RestoreActor, operationId: string, state: "failed" | "interrupted"): void {
+  const path = join(`${resolve(databasePath)}.restore-requests`, `${keyFor(actor)}.json`), record = readRecord(path);
+  sameRequest(record, actor);
+  if (record.operationId !== operationId) return; // A newer authorized retry supersedes this handoff.
+  if (record.state === "verified" || record.state === state) return;
+  record.state = state; durableJson(path, { payload: record, sha256: checksum(record) });
+}
+
 /** Offline inspection must not acknowledge or resume any admitted replacement. */
-export function assertNoUnfinishedControllerRestoreRequests(databasePath: string): void {
+export function assertNoUnfinishedControllerRestoreRequests(databasePath: string, terminal?: { operationId: string; actor: RestoreActor } | null): void {
   const directory = `${resolve(databasePath)}.restore-requests`;
   let entries;
   try { entries = opendirSync(directory); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
@@ -172,6 +187,8 @@ export function assertNoUnfinishedControllerRestoreRequests(databasePath: string
   try { for (;;) {
     const entry = entries.readSync(); if (!entry) break;
     if (++visited > 1024) throw new Error("Restore request history exceeds its bound.");
-    if (/^[0-9a-f]{64}\.json$/.test(entry.name) && readRecord(join(directory, entry.name), false).state !== "verified") throw new Error("Unfinished restore prevents offline inspection.");
+    if (!/^[0-9a-f]{64}\.json$/.test(entry.name)) continue;
+    const record = readRecord(join(directory, entry.name), false);
+    if (record.state === "requested" && !(terminal?.operationId === record.operationId && terminal.actor.actorId === record.actor.actorId && terminal.actor.backupId === record.actor.backupId && terminal.actor.idempotencyKey === record.actor.idempotencyKey)) throw new Error("Unfinished restore prevents offline inspection.");
   } } finally { entries.closeSync(); }
 }

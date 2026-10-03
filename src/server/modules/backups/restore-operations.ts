@@ -5,7 +5,7 @@ import { BackupError, type BackupPolicy } from "./policy";
 import { readRecord, recordHash, writeRecord } from "./records";
 import type { RestoreOperation, RestorePreview } from "@/shared/contracts/backups";
 import { backupCommandSchema } from "@/shared/contracts/backups";
-import { executeControllerRestoreRequest, getControllerRestoreRequestStatus, requestControllerRestoreAsync, type RestoreRequestPolicy } from "@/server/restore-requests";
+import { executeControllerRestoreRequest, finishControllerRestoreRequest, getControllerRestoreRequestStatus, requestControllerRestoreAsync, type RestoreRequestPolicy } from "@/server/restore-requests";
 import { restoreActorSchema, type RestoreActor } from "@/server/infrastructure/sqlite";
 import { privateDirectory } from "@/server/private-storage";
 import type { AuthenticationPolicy, AuthenticationStore } from "@/server/modules/authentication";
@@ -24,9 +24,10 @@ export function assertBackupHandoffCompleted(database: string): void {
   if (record?.state === "executing") throw new Error("Start the controller to complete restore authentication recovery before offline administration.");
 }
 /** Read-only guard called under canonical ownership; does not run recovery. */
-export function assertNoUnfinishedBackupHandoff(database: string): void {
+export function assertNoUnfinishedBackupHandoff(database: string): RestoreHandoff | null {
   const record = readRecord(join(`${database}.backup-operations`, "handoff.json"), handoffSchema);
   if (record && record.state !== "verified" && record.state !== "failed" && record.state !== "interrupted") throw new BackupError("backup_busy", 409);
+  return record;
 }
 function executionPolicy(record: RestoreHandoff, policy: BackupPolicy, catalog: BackupCatalog): RestoreRequestPolicy {
   return {
@@ -47,6 +48,7 @@ export function recoverBackupHandoff(database: string, attachments: string, poli
     return record; // Security fence must finish before any listener is constructed.
   }
   if (record.state === "requested" || record.state === "maintenance") { record.state = "interrupted"; writeRecord(path, record); }
+  if (record.state === "failed" || record.state === "interrupted") finishControllerRestoreRequest(database, record.actor, record.operationId, record.state);
   return null;
 }
 /** Replay after crash is safe; completion comes after all credential invalidation. */
@@ -105,6 +107,8 @@ export class RestoreOperations {
     try { return await promise; } finally { this.pending = null; }
   }
   private async admitVerified(actor: BackupActor, input: Extract<z.infer<typeof backupCommandSchema>, { action: "restore" }>): Promise<RestoreOperation> {
+    const previous = readRecord(handoffPath(this.database), handoffSchema);
+    if (previous?.state === "failed" || previous?.state === "interrupted") finishControllerRestoreRequest(this.database, previous.actor, previous.operationId, previous.state);
     const policy = this.requestPolicy(actor);
     const status = await requestControllerRestoreAsync(this.database, sameActor(actor), { backupId: input.backupId, idempotencyKey: input.idempotencyKey, confirmation: input.confirmation }, policy, () => this.backups.catalog.verifyAsync(input.backupId));
     this.backups.authorize(actor, "restore");
@@ -125,14 +129,14 @@ export class RestoreOperations {
       this.backups.authorize(actor, "restore");
       record.authentication = this.deps.authentication();
       writeRecord(handoffPath(this.database), record);
-    } catch (error) { record.state = "failed"; writeRecord(handoffPath(this.database), record); this.deps.failure(error); return; }
+    } catch (error) { record.state = "failed"; writeRecord(handoffPath(this.database), record); finishControllerRestoreRequest(this.database, record.actor, record.operationId, "failed"); this.deps.failure(error); return; }
     void this.deps.restart(() => {
       // Every async drain completed; no auth/admin write can now race this fence.
       record.state = "executing"; writeRecord(handoffPath(this.database), record);
       executeControllerRestoreRequest(this.database, this.attachments, { ...record.actor, backupId: input.backupId, idempotencyKey: input.idempotencyKey }, executionPolicy(record, this.backups.policy, this.backups.catalog));
     }).catch(error => {
       // `executing` stays replayable through S3b; do not erase recovery evidence.
-      if (record.state !== "executing") { record.state = "failed"; writeRecord(handoffPath(this.database), record); }
+      if (record.state !== "executing") { record.state = "failed"; writeRecord(handoffPath(this.database), record); finishControllerRestoreRequest(this.database, record.actor, record.operationId, "failed"); }
       this.deps.failure(error);
     });
   }

@@ -10,7 +10,7 @@ export async function rebindRemoteBackup(input: { controllerLockPath: string; da
   const inspect = (path: string) => {
     const restore = getOwnedRestoreStatus(path);
     if (restore && restore.state !== "verified") throw new Error("Unfinished restore prevents remote rebind.");
-    assertNoUnfinishedBackupHandoff(path); assertNoUnfinishedControllerRestoreRequests(path);
+    const terminal = assertNoUnfinishedBackupHandoff(path); assertNoUnfinishedControllerRestoreRequests(path, terminal);
   };
   // Early refusal, then repeat authoritatively under the canonical DB lock.
   const absolute = resolve(input.databasePath);

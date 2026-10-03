@@ -27,6 +27,10 @@ export const remoteLedgerSchema = z.object({ format: z.literal(2), ...fields, ar
     || ledgers.reduce((sum, value) => sum + value.receipts.reduce((n, receipt) => n + (receipt.reconciliation?.proofs.length ?? 0), 0), 0) > REMOTE_LIMITS.proofs) ctx.addIssue({ code: "custom", message: "Invalid remote evidence bounds" });
 });
 export type RemoteLedger = z.infer<typeof remoteLedgerSchema>;
+/** Immutable archived/confirmed receipts retain counters, not disposable reconciliation cache. */
+export function releaseRemoteProofCache(receipts: Receipt[]): Receipt[] {
+  return receipts.map(receipt => receipt.reconciliation ? { ...receipt, reconciliation: { passes: receipt.reconciliation.passes, readReservedBytes: receipt.reconciliation.readReservedBytes, proofs: [] } } : receipt);
+}
 export function assertRemoteLedgerCapacity(ledger: RemoteLedger, reservedBytes = 0): void {
   if (Buffer.byteLength(JSON.stringify({ payload: ledger, sha256: recordHash(ledger) })) + reservedBytes > 4 * 1024 * 1024) throw new BackupError("backup_limit", 409);
 }
@@ -47,7 +51,7 @@ export function rebindRemoteLedger(path: string, from: string, destinationId: st
   if (generation !== ledger.rebindGeneration + 1 || from !== ledger.destinationId || from === destinationId) throw new BackupError("backup_invalid", 409);
   if (ledger.archives.length >= REMOTE_LIMITS.archives) throw new BackupError("backup_limit", 409);
   const { installationId, receipts, lastConfirmed } = ledger;
-  const next: RemoteLedger = { ...ledger, destinationId, receipts: [], lastConfirmed: null, archives: [...ledger.archives, { installationId, destinationId: from, receipts, lastConfirmed }], rebindGeneration: generation, lastRebind: request };
+  const next: RemoteLedger = { ...ledger, destinationId, receipts: [], lastConfirmed: null, archives: [...ledger.archives.map(archive => ({ ...archive, receipts: releaseRemoteProofCache(archive.receipts) })), { installationId, destinationId: from, receipts: releaseRemoteProofCache(receipts), lastConfirmed }], rebindGeneration: generation, lastRebind: request };
   writeRemoteLedger(path, next);
   return next;
 }

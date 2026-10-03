@@ -155,6 +155,7 @@ export class RemoteBackups {
         this.save(); return;
       }
       if (this.closed || !/^[a-f0-9]{64}$/.test(result.snapshotId)) throw new BackupError("backup_failed");
+      receipt.reconciliation = { passes: progress.passes, readReservedBytes: progress.readReservedBytes, proofs: [] };
       receipt.state = "confirmed"; receipt.snapshotId = result.snapshotId; receipt.confirmedAt = new Date(this.deps.now()).toISOString(); receipt.error = null;
       if (!this.ledger!.lastConfirmed || this.ledger!.lastConfirmed.dataAt <= receipt.dataAt) this.ledger!.lastConfirmed = { backupId: receipt.backupId, dataAt: receipt.dataAt, confirmedAt: receipt.confirmedAt, snapshotId: receipt.snapshotId };
     } catch (error) {

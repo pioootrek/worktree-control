@@ -222,4 +222,28 @@ describe("optional installation transfer", () => {
     } finally { release(); await restarted.close(); }
   }, 20000);
 
+  it("releases saturated archived and confirmed proof caches without losing pins or blocking new uploads", async () => {
+    const f = fixture(true, { pendingLimit: 8 });
+    const proofs = Array.from({ length: 256 }, (_, i) => ({ snapshotId: i.toString(16).padStart(64, "0"), tree: "e".repeat(64), state: "partial" as const }));
+    vi.mocked(f.transport.upload).mockResolvedValue({ progress: true, proofs, uploadAttempted: false });
+    const copies = [];
+    for (let i = 0; i < 4; i++) { copies.push(f.operations.create("local-admin", `saturated-${i}`)); await f.operations.drain(); }
+    const path = join(f.operations.recordDirectory, "remote.json");
+    expect(readRecord(path, z.any()).receipts.reduce((n: number, r: { reconciliation: { proofs: unknown[] } }) => n + r.reconciliation.proofs.length, 0)).toBe(1024);
+    await f.operations.close(); const rebound = rebindRemoteLedger(path, "a".repeat(64), "c".repeat(64), 1);
+    expect(rebound.archives[0].receipts).toHaveLength(4);
+    expect(rebound.archives[0].receipts.every(r => r.reconciliation?.proofs.length === 0 && r.reconciliation.passes === 1)).toBe(true);
+    vi.mocked(f.transport.upload).mockResolvedValue({ snapshotId: "f".repeat(64), proofs });
+    const restarted = new BackupOperations(backupPolicySchema.parse({ ...f.policy, intervalSeconds: null }), { ...f.deps, remoteTransport: { ...f.transport, destinationId: "c".repeat(64) } });
+    try {
+      for (const copy of copies.slice(0, 2)) {
+        restarted.remote.reupload(copy.backupId); await restarted.drain();
+        expect(restarted.remote.status().transfers[0]).toMatchObject({ state: "confirmed", reconciliation: { classified: 0 } });
+        expect(vi.mocked(f.transport.upload).mock.lastCall?.[0].proofLimit).toBe(256);
+      }
+      expect(restarted.remote.protectedIds().size).toBe(4);
+      expect(restarted.remote.status().archives[0]).toMatchObject({ pinned: 4, receipts: 4 });
+    } finally { await restarted.close(); }
+  });
+
 });

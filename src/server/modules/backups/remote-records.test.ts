@@ -14,6 +14,8 @@ import { requestControllerRestore, assertNoUnfinishedControllerRestoreRequests }
 import { recordHash, writeRecord } from "./records";
 import { readRemoteLedger, rebindRemoteLedger, writeRemoteLedger, type RemoteLedger, type Receipt } from "./remote-records";
 import { rebindRemoteBackup } from "./remote-rebind";
+import { recoverBackupHandoff } from "./restore-operations";
+import { backupPolicySchema } from "./policy";
 
 const roots: string[] = [];
 afterEach(() => { roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })); });
@@ -93,6 +95,25 @@ describe("atomic remote rebind evidence", () => {
     expect(() => assertNoUnfinishedControllerRestoreRequests(f.database)).toThrow("publication");
     await expect(rebindRemoteBackup(f.input, async () => {})).rejects.toThrow("publication");
     expect(lstatSync(path).nlink).toBe(2); expect(readFileSync(alias)).toEqual(before); expect(readFileSync(path)).toEqual(before);
+  });
+  it("retains terminal request outcomes across handoff replacement and fences a re-admitted intent", async () => {
+    const f = fixture(), store = new SqliteStateStore(f.database), backup = join(f.root, "copy"), attachments = join(f.root, "attachments");
+    await createControllerBackup(store, backup, { applicationVersion: "fixture", attachmentDirectory: attachments }); store.close();
+    const policy = { authorize: () => {}, resolveBackup: () => backup };
+    const request = (key: string) => requestControllerRestore(f.database, "operator", { backupId: "copy", idempotencyKey: key, confirmation: "replace-entire-installation" }, policy);
+    const handoff = (accepted: ReturnType<typeof request>, key: string, state: "failed" | "requested") => writeRecord(join(`${f.database}.backup-operations`, "handoff.json"), { format: 1, actor: { actorId: "operator", backupId: "copy", idempotencyKey: key }, operationId: accepted.operationId, createdAt: accepted.createdAt, state, authentication: null, local: true });
+    const first = request("first"); handoff(first, "first", "failed");
+    // A crash before persisting the terminal request can use only its exact handoff.
+    await rebindRemoteBackup(f.input, async () => {});
+    recoverBackupHandoff(f.database, attachments, backupPolicySchema.parse({ directory: f.root }));
+    const second = request("second"); handoff(second, "second", "requested");
+    recoverBackupHandoff(f.database, attachments, backupPolicySchema.parse({ directory: f.root }));
+    const next = { ...f.input, from: f.input.destinationId, destinationId: "c".repeat(64), generation: 2 };
+    expect((await rebindRemoteBackup(next, async () => {})).generation).toBe(2);
+    const retried = request("second"); expect(retried.state).toBe("requested"); expect(retried.operationId).not.toBe(second.operationId);
+    const before = readFileSync(f.path);
+    await expect(rebindRemoteBackup({ ...next, from: next.destinationId, destinationId: "d".repeat(64), generation: 3 }, async () => {})).rejects.toThrow("Unfinished restore");
+    expect(readFileSync(f.path)).toEqual(before);
   });
   it.each(["before", "after"])("SIGKILL %s publication preserves one generation and idempotent replay", async point => {
     const f = fixture(); writeFileSync(join(f.root, "input.json"), JSON.stringify(f.input), { mode: 0o600 });
