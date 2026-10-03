@@ -67,7 +67,8 @@
     "test:integration:remote-backups": "node scripts/build-fingerprint.mjs --check && node scripts/require-restic-fixture.mjs && vitest run --config vitest.integration.config.ts tests/integration/remote-backups.test.ts tests/integration/backup-operations.test.ts tests/integration/user-backups.test.ts",
     "test:integration:remote-rebind": "node scripts/build-fingerprint.mjs --check && node scripts/require-restic-fixture.mjs && vitest run --config vitest.integration.config.ts tests/integration/remote-rebind.test.ts",
     "test:package:remote-rebind": "node scripts/build-fingerprint.mjs --check && node scripts/require-restic-fixture.mjs && node scripts/package-smoke.mjs --verification-script scripts/package-remote-rebind.mjs",
-    "test:package:tools": "node --test scripts/package-artifact.test.mjs scripts/package-lifecycle-trial.test.mjs",
+    "test:package:tools": "node --test scripts/package-artifact.test.mjs scripts/package-install.test.mjs scripts/package-lifecycle-trial.test.mjs",
+    "test:package:upgrade:driver": "node scripts/build-fingerprint.mjs --check && node scripts/require-restic-fixture.mjs && node scripts/package-upgrade-trial.mjs --driver-only",
     "test:package:upgrade": "node scripts/build-fingerprint.mjs --check && node scripts/require-restic-fixture.mjs && node scripts/package-upgrade-trial.mjs",
     "test:package": "node scripts/build-fingerprint.mjs --check && node scripts/package-smoke.mjs"
   },

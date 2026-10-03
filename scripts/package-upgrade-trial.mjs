@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
+import { installProductionPrefix, productionInstallEnvironment, verifyInstalledDriver } from "./package-install.mjs";
 import { verifyHistoricalArtifact, verifyTrialFiles } from "./package-artifact.mjs";
 const exec = promisify(execFile);
 const oldArtifact = process.env.WORKTREE_SWITCHER_TEST_OLD_ARTIFACT, oldProvenance = process.env.WORKTREE_SWITCHER_TEST_OLD_PROVENANCE;
@@ -14,9 +15,15 @@ try {
   const provenance = JSON.parse(await readFile(join(output, "provenance.json"), "utf8"));
   if (provenance.source.dirty) throw new Error("Installed upgrade acceptance requires committed clean current source.");
   await verifyTrialFiles(output, provenance);
+  if (process.argv.includes("--driver-only")) {
+    const packageRoot = await installProductionPrefix(join(output, provenance.artifact.filename), join(root, "current-prefix"), root, await productionInstallEnvironment(root), exec);
+    const result = await verifyInstalledDriver("scripts/package-upgrade-driver.mjs", packageRoot, [oldArtifact, oldProvenance], root);
+    console.log(JSON.stringify({ mode: "driver-only-debug-not-full-smoke", currentProvenance: provenance, historicalProvenance: historical, installedAcceptance: result }));
+  } else {
   const result = await exec(process.execPath, [join(output, provenance.files.smoke), "--tarball", join(output, provenance.artifact.filename), "--sha256", provenance.artifact.sha256, "--verification-script", "scripts/package-upgrade-driver.mjs", "--verification-old-artifact", oldArtifact, "--verification-old-provenance", oldProvenance], { timeout: 600000, maxBuffer: 2 * 1024 * 1024 });
   console.log(JSON.stringify({ currentProvenance: provenance, historicalProvenance: historical, installedAcceptance: JSON.parse(result.stdout) }, null, 2));
+  }
 } catch (error) {
   // Child diagnostics come only from trusted local drivers; no application raw errors.
-  console.error(error.stderr?.slice(-8000) ?? "Installed upgrade trial failed."); process.exitCode = 1;
+  console.error(error.stderr?.slice(-8000) ?? error.message ?? "Installed upgrade trial failed."); process.exitCode = 1;
 } finally { await rm(root, { recursive: true, force: true }); }

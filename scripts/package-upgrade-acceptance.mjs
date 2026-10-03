@@ -16,6 +16,7 @@ import { resticFixture } from "../tests/support/restic-fixture.ts";
 const exec = promisify(execFile), [currentRoot, oldArtifact, oldProvenance] = process.argv.slice(2);
 const environment = { PATH: process.env.PATH, LANG: "C.UTF-8", NODE_ENV: "production" };
 const installations = [], steps = [], faults = [], derivativeCopies = [];
+let report;
 let root, remote, stage = "historical-input", ownerToken, seed, currentNative, historicalNative;
 const startedAt = Date.now(), previousUmask = process.umask(0o077);
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -248,17 +249,21 @@ try {
     assert.equal((await recovered.knowledge("task", { projectId: postWrite.projectId, taskId: postWrite.id }, seed.records[0].token)).title, postWrite.title); await recovered.stop();
   });
   const final = databaseState(recovered, currentNative); preservedAudit(initial, final);
-  console.log(JSON.stringify({ evidence: "installed-old-new-upgrade-and-source-deleted-recovery", runtime: "installed-artifacts", driver: "explicit-local-repository-script", historicalProvenance,
+  report = { evidence: "installed-old-new-upgrade-and-source-deleted-recovery", runtime: "installed-artifacts", driver: "explicit-local-repository-script", historicalProvenance,
     native: { old: { load: "success", binary: historicalNative.binary, provisioning: historicalNative.provisioning }, current: { load: "success", binary: currentNative.binary, provisioning: currentNative.provisioning } },
     historicalModes: oldModes, foreground0022: "refused-before-migration-modes-hash-schema-preserved", schemas: { historical: initial.schema, recovered: final.schema }, counts: { historical: initial.counts, recovered: final.counts },
     capabilities: { seeded: ["owner", "agents", "distinct-project-grants", "threads", "replies", "task_from_thread/derived_from", "updated-tasks", "task-history", "memories", "attachment-bytes"], unsupported: ["arbitrary-create_relation"] },
     defaultOff: "upgrade-no-backup-destination-or-jobs", enabledGate: "failure-blocks-migration-verified-schema24-copy-before-upgrade", tenantDenial: "both-projects-before-and-after-upgrade-and-recovery", attachmentHashes: seed.records.map(record => record.attachment.sha256),
     auditPreservation: { exactHistoricalRows: true, counts: Object.fromEntries(Object.entries(initial.audit).map(([table, rows]) => [table, rows.length])) }, refusals: ["format", "corrupt-source-DB", "future-source-schema", "active-canonical-owner"], restoreReplacesExistingGeneration: true, faults, removedLocalCopies, sourceDeletedBeforeRemoteRestore: true, postUpgradeWrite: "preserved-in-current-copy-and-remote-recovery-absent-from-isolated-old-snapshot", oldRecovery: "separate-directory-schema24-never-opened-migrated-DB-with-old-runtime",
     credentials: { offlineRecovery: "historical-owner-session-and-both-scoped-agent-tokens-preserved", tenantGrants: "preserved-and-denial-rechecked", onlineRestoreSecurityFence: "covered-by-existing-S4a-matrix-not-this-offline-driver" },
-    isolatedRecoveryDurationMs: Date.now() - recoveryStartedAt, physicalPowerLoss: "not-tested", operationalRpoRto: "not-measured", restic: remote.provenance, steps, durationMs: Date.now() - startedAt }));
-} catch { console.log(JSON.stringify({ ok: false, errorCode: "fixture_failed", failureStep: stage, steps })); process.exitCode = 1; }
+    isolatedRecoveryDurationMs: Date.now() - recoveryStartedAt, physicalPowerLoss: "not-tested", operationalRpoRto: "not-measured", restic: remote.provenance, steps, durationMs: Date.now() - startedAt };
+} catch { report = { ok: false, errorCode: "fixture_failed", failureStep: stage, steps }; process.exitCode = 1; }
 finally {
   process.umask(previousUmask);
-  try { for (const item of installations.reverse()) await item.stop(); }
-  finally { try { await remote?.close(); } finally { if (root) await rm(root, { recursive: true, force: true }); } }
+  const cleanup = { ok: true, controllers: "clean", remote: "clean", files: "clean" };
+  for (const item of installations.reverse()) { try { await item.stop(); } catch { cleanup.ok = false; cleanup.controllers = "failed"; } }
+  try { await remote?.close(); } catch { cleanup.ok = false; cleanup.remote = "failed"; }
+  try { if (root) await rm(root, { recursive: true, force: true }); } catch { cleanup.ok = false; cleanup.files = "failed"; }
+  if (!cleanup.ok) { report = { ok: false, errorCode: "fixture_failed", failureStep: "cleanup", steps }; process.exitCode = 1; }
+  console.log(JSON.stringify({ ...report, cleanup }));
 }
