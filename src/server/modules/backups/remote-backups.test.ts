@@ -22,6 +22,15 @@ function fixture(enabled = true, transportPolicy: Record<string, unknown> = {}) 
   return { root, operations, policy, deps, transport, advance: () => { now += 60_000; } };
 }
 describe("optional installation transfer", () => {
+  it("opens historical local operation records without changing their checksum or enabling transfer", async () => {
+    const f = fixture(false); f.operations.create("local-admin", "historical"); await f.operations.drain(); await f.operations.close();
+    const path = join(f.operations.recordDirectory, "ledger.json"), ledger = readRecord(path, z.any());
+    for (const operation of ledger.operations) delete operation.remoteRequired;
+    writeRecord(path, ledger);
+    const restarted = new BackupOperations(f.policy, { ...f.deps, remoteTransport: f.transport });
+    try { restarted.start(); await restarted.drain(); expect(restarted.status("local-admin", "historical").state).toBe("succeeded"); expect(f.transport.upload).not.toHaveBeenCalled(); }
+    finally { await restarted.close(); }
+  });
   it("does not create remote records, timers, connections or alarms by default", async () => {
     const f = fixture(false); f.operations.start();
     f.operations.create("local-admin", "local"); await f.operations.drain();

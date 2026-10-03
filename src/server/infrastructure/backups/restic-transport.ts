@@ -78,7 +78,7 @@ export class ResticBackupTransport implements RemoteBackupTransport {
       if (node.struct_type === "snapshot" || node.message_type === "snapshot") { if (header || node.id !== snapshotId) invalid = true; header = true; return; }
       if (!header || typeof node.path !== "string") { invalid = true; return; }
       if (node.type === "dir") { if (!directories.delete(node.path)) invalid = true; }
-      else if (node.type === "file" && files.has(node.path) && files.get(node.path) === node.size) files.delete(node.path);
+      else if (node.type === "file" && files.has(node.path) && files.get(node.path) === (node.size ?? 0)) files.delete(node.path);
       else invalid = true;
     });
     if (!header || invalid || files.size || directories.size) throw new IncompleteSnapshot();

@@ -20,7 +20,8 @@ const operationSchema = z.object({
   createdAt: z.iso.datetime(), finishedAt: z.iso.datetime().nullable(),
   error: z.enum(["backup_failed", "backup_interrupted", "backup_limit"]).nullable(),
   destination: z.string(), scheduled: z.boolean(), manifestHash: z.string().nullable(),
-  remoteRequired: z.boolean().default(false),
+  // Do not default during parsing: defaults would change historical signed ledger payloads.
+  remoteRequired: z.boolean().optional(),
 }).strict();
 type Operation = z.infer<typeof operationSchema>;
 const MANUAL_HISTORY_LIMIT = 1024;
