@@ -1,16 +1,16 @@
 # Plan domknięcia bezpieczeństwa danych SQLite
 
-Aktualizacja: 2026-10-03. Status: S1–S3, S4a, S4u, S4b, S5a i S5b scalone;
-S5c jest w realizacji.
+Aktualizacja: 2026-10-03. Status: S0–S5 zamknięte technicznie; PR #68–#77 scalone.
+Procedura S6 gotowa; wykonanie operacyjne pozostaje osobno.
 Stan realizacji jest poniżej; pierwotna diagnoza zachowana jako punkt odniesienia.
-Zadanie: [RWK-20260928-sqlite-data-safety](../../rework/RWK-20260928-sqlite-data-safety.json).
+Zadanie: [DONE-20261003-sqlite-data-safety](../../done/DONE-20261003-sqlite-data-safety.json).
 Kod sprawdzony przy tworzeniu planu: `6a9df6e0879b4b9ad69969b1cc4b5bd4264a363c`.
 [Ocena z 28 września](storage-safety-assessment-20260928.md) pozostaje
 historycznym punktem odniesienia. Powiązane prace:
 [migracja wiedzy](implementation-plan.md) i
 [aktualizacja pakietu](../NOTE-20260908-portable-verification-plan/controller-package-trial.md).
 
-## Stan realizacji po scaleniu S5b — 2026-10-03
+## Stan realizacji po scaleniu S5c — 2026-10-03
 
 S1a/S2a, S1b/S2b, S3a i S3b są na `main` przez PR #68–#71.
 S3b zamknięto w `42859c9d34db15b060e2f553c5e75a55af8c1175` po poprawce mobilnego Escape i zielonym CI.
@@ -74,10 +74,13 @@ jako `3e99b7b`. Jawny rebind, zachowanie starych dowodów i przypiętych źróde
 pojedynczy reupload oraz ograniczone uzgadnianie historii przeszły testy MCP,
 n8n review i cztery zadania CI. [Raport S5b](storage-safety-s5b-report-20261003.md)
 rozdziela lokalne próby HTTPS/pakietu od CI i opisuje procedurę zmiany parametrów usługi.
-S5c obejmie aktualizację zainstalowanych artefaktów, izolowane awarie i recovery
-oraz procedurę S6. Docelowy host, klucze, wdrożenie monitora i powiadomień,
+S5c scalono w [PR #77](https://github.com/pioootrek/worktree-switcher/pull/77)
+jako `c2be81f`. [Raport S5c](storage-safety-s5c-report-20261003.md) potwierdza
+aktualizację dokładnych zainstalowanych artefaktów, awarie i odzyskanie po usunięciu
+lokalnych kopii. [Runbook](storage-safety-recovery-runbook-20261003.md) opisuje
+powtórzenie próby oraz przekazanie do S6. Docelowy host, klucze, wdrożenie monitora i powiadomień,
 rzeczywisty pomiar RPO/RTO i rollout pozostają osobnym etapem zgodnie z wyborem
-właściciela. Zadanie nadrzędne pozostaje otwarte. Backupy są opcjonalne i domyślnie
+właściciela. Techniczne zadanie zamknięto; rodzice pozostają otwarci. Backupy są opcjonalne i domyślnie
 wyłączone; produkcja nie została zmieniona.
 
 ## Historyczny punkt startowy — przed S1
@@ -565,15 +568,18 @@ commit `a727fd8ff01e141c6494615531e27e72a23f6320` może być bazą oznaczonego
 fixture aktualizacji; nie jest potwierdzeniem obecnej wersji produkcyjnej.
 
 
-Otwarty zakres operacyjny po review S4b (PR #74): przygotować jawny workflow
-zamiany repozytorium restic na inne, o nowym kryptograficznym ID. Zachować
-poprzednie potwierdzenia i źródła oczekujące na transfer; nie uznawać ich za
-ochronę w nowym celu. Wymagane są ograniczone, jawnie zlecone ponowne wysyłki
-i nowy dowód odzyskania. Zmiana adresu tego samego repozytorium zachowuje ID
-i nie wymaga takiej migracji. Do czasu tego workflow operator może wyłączyć
-transfer, pozostawić chronione źródła i wykonywać lokalne kopie ratunkowe do
-jawnie podanej lokalizacji. Usuwanie dziennika transferów nie jest procedurą
-zmiany celu.
+Zakres zmiany repozytorium z review S4b został dostarczony w S5b:
+jawny rebind zachowuje receipts i pending pins, rozdziela stare potwierdzenia od
+nowego celu i dopuszcza pojedyncze jawne ponowne transfery. Procedura wymaga
+przygotowania nowych argumentów usługi przed wznowieniem. Zmiana adresu tego
+samego kryptograficznego repozytorium nie wymaga rebind. Nowa konfiguracja i
+rzeczywisty dowód odzyskania należą do późniejszego odbioru operacyjnego.
+Nie usuwać dziennika transferów jako sposobu zmiany celu.
+
+Limit 1024 ręcznych kluczy backupu pozostaje osobnym
+[otwartym zadaniem](../../rework/RWK-20261003-manual-backup-history-capacity.json).
+Nie należy mylić go z dostarczonymi w S4u limitami mutacji użytkowników i recovery
+quota eksportów. Techniczne zamknięcie S5 nie deklaruje rozwiązania tego limitu.
 
 | Próba | Oczekiwany wynik |
 | --- | --- |
@@ -743,11 +749,12 @@ operacyjnym; samo zlecenie zapisania tego planu jej nie udziela.
    proponowane minimum to siedem dni, do uzgodnienia przed przełączeniem.
    Zapisać napotkane problemy i decyzję o dopuszczeniu kolejnych projektów.
 
-Zadanie ochrony danych zamknąć po S5 i dostarczeniu procedury S6. Faktyczne
+Techniczne zadanie ochrony danych zamknięto 2026-10-03 po S5 i dostarczeniu
+procedury S6; dowody są w datowanych raportach i wpisie done. Faktyczne
 przełączenie i jego okres obserwacji pozostają kryterium rodzica
 `FEAT-20260905-shared-project-memory`; zamknięcie technicznego zadania nie zamyka
-automatycznie K7, K8 ani K9. Przy zamknięciu zastąpić otwarty rekord wpisem
-`done/` z dowodami w jednym commicie, zgodnie z regułami backloga.
+automatycznie K7, K8 ani K9. Otwarty rekord zastąpiono wpisem `done/`;
+pozostałe wybory operacyjne i limit ręcznej historii mają jawne rekordy rodziców/follow-up.
 
 ## Podstawa techniczna
 

@@ -1,0 +1,686 @@
+{
+  "stage": "S5c",
+  "source": {
+    "commit": "2aed542097ec99d32242c4b65fbda97d50adfa8b",
+    "dirty": false
+  },
+  "artifact": {
+    "filename": "worktree-switcher-0.1.0-trial.1.tgz",
+    "sha256": "f81b3b350b21072761df1ebc213a0fc3c62c2c9258c3d2eb2b4d3a1622354713",
+    "bytes": 859412
+  },
+  "historicalProvenance": {
+    "source": {
+      "commit": "a727fd8ff01e141c6494615531e27e72a23f6320",
+      "dirty": false
+    },
+    "artifact": {
+      "filename": "worktree-switcher-0.1.0-trial.1.tgz",
+      "sha256": "b22fd38f590e31f44b1124a02b25aa3683e6d1280017cf0d89ce2d25445a5192",
+      "bytes": 649955
+    },
+    "build": {
+      "node": "v24.19.0",
+      "npm": "11.17.0",
+      "pnpm": "11.22.0"
+    }
+  },
+  "build": {
+    "node": "v24.19.0",
+    "npm": "11.17.0",
+    "pnpm": "11.22.0"
+  },
+  "companions": {
+    "checksum": "SHA256SUMS",
+    "installGuide": "INSTALL.md",
+    "smoke": "package-smoke.mjs",
+    "smokeSha256": "9fd02640e258a83eef9d9c1b3e4070b0fd4dd877cf3fa9b55f4ba0e7a289c664",
+    "installer": "package-install.mjs",
+    "installerSha256": "2ee5fe4c418909e0064a364b95b96c7ba725eb81b3ea5ec63ca281f02d6b5ec7",
+    "lifecycle": "package-lifecycle-trial.mjs",
+    "lifecycleSha256": "5d278e2c97ed003b87e65f1bfb8155a1ca51674ecc7c45dcf8ec174eb2980318"
+  },
+  "smoke": {
+    "ok": true,
+    "node": "v24.19.0",
+    "platform": "linux-x64",
+    "steps": [
+      {
+        "name": "archive-manifest",
+        "ok": true,
+        "durationMs": 23
+      },
+      {
+        "name": "archive-content-audit",
+        "ok": true,
+        "durationMs": 45
+      },
+      {
+        "name": "production-install",
+        "ok": true,
+        "durationMs": 20979
+      },
+      {
+        "name": "native-sqlite",
+        "ok": true,
+        "durationMs": 12
+      },
+      {
+        "name": "damaged-asset-rejected",
+        "ok": true,
+        "durationMs": 621
+      },
+      {
+        "name": "doctor",
+        "ok": true,
+        "durationMs": 256
+      },
+      {
+        "name": "offline-cli",
+        "ok": true,
+        "durationMs": 518
+      },
+      {
+        "name": "installation-token",
+        "ok": true,
+        "durationMs": 234
+      },
+      {
+        "name": "controller-readiness",
+        "ok": true,
+        "durationMs": 310
+      },
+      {
+        "name": "remote-backup-default-off",
+        "ok": true,
+        "durationMs": 199
+      },
+      {
+        "name": "backup-monitor-live",
+        "ok": true,
+        "durationMs": 402
+      },
+      {
+        "name": "backup-monitor-invalid-options",
+        "ok": true,
+        "durationMs": 398
+      },
+      {
+        "name": "packaged-assets",
+        "ok": true,
+        "durationMs": 81
+      },
+      {
+        "name": "live-cli-forwarding",
+        "ok": true,
+        "durationMs": 212
+      },
+      {
+        "name": "installation-backup-verifier",
+        "ok": true,
+        "durationMs": 594
+      },
+      {
+        "name": "mcp-runtime",
+        "ok": true,
+        "durationMs": 1004
+      },
+      {
+        "name": "backup-monitor-controller-absent",
+        "ok": true,
+        "durationMs": 198
+      },
+      {
+        "name": "project-removal",
+        "ok": true,
+        "durationMs": 468
+      },
+      {
+        "name": "explicit-installed-verification",
+        "ok": true,
+        "durationMs": 69571
+      }
+    ],
+    "cleanup": "graceful"
+  },
+  "installedUpgrade": {
+    "evidence": "installed-old-new-upgrade-and-source-deleted-recovery",
+    "runtime": "installed-artifacts",
+    "driver": "explicit-local-repository-script",
+    "historicalProvenance": {
+      "source": {
+        "commit": "a727fd8ff01e141c6494615531e27e72a23f6320",
+        "dirty": false
+      },
+      "artifact": {
+        "filename": "worktree-switcher-0.1.0-trial.1.tgz",
+        "sha256": "b22fd38f590e31f44b1124a02b25aa3683e6d1280017cf0d89ce2d25445a5192",
+        "bytes": 649955
+      },
+      "build": {
+        "node": "v24.19.0",
+        "npm": "11.17.0",
+        "pnpm": "11.22.0"
+      }
+    },
+    "native": {
+      "old": {
+        "load": "success",
+        "binary": "node_modules/better-sqlite3/prebuilds/linux-x64.node",
+        "provisioning": "packaged prebuilt"
+      },
+      "current": {
+        "load": "success",
+        "binary": "node_modules/better-sqlite3/prebuilds/linux-x64.node",
+        "provisioning": "packaged prebuilt"
+      }
+    },
+    "historicalModes": {
+      "umask": "0077",
+      "data": 448,
+      "database": 384
+    },
+    "foreground0022": "refused-before-migration-modes-hash-schema-preserved",
+    "schemas": {
+      "historical": 24,
+      "recovered": 28
+    },
+    "counts": {
+      "historical": {
+        "knowledge_projects": 2,
+        "knowledge_threads": 2,
+        "knowledge_replies": 2,
+        "knowledge_tasks": 2,
+        "knowledge_relations": 2,
+        "knowledge_memories": 2,
+        "knowledge_attachments": 2,
+        "knowledge_history": 12,
+        "remote_principals": 3,
+        "principal_credentials": 3,
+        "knowledge_project_grants": 2,
+        "audit_events": 0,
+        "controller_audit_events": 9
+      },
+      "recovered": {
+        "knowledge_projects": 2,
+        "knowledge_threads": 2,
+        "knowledge_replies": 2,
+        "knowledge_tasks": 3,
+        "knowledge_relations": 2,
+        "knowledge_memories": 2,
+        "knowledge_attachments": 2,
+        "knowledge_history": 13,
+        "remote_principals": 4,
+        "principal_credentials": 3,
+        "knowledge_project_grants": 2,
+        "audit_events": 0,
+        "controller_audit_events": 9
+      }
+    },
+    "capabilities": {
+      "seeded": [
+        "owner",
+        "agents",
+        "distinct-project-grants",
+        "threads",
+        "replies",
+        "task_from_thread/derived_from",
+        "updated-tasks",
+        "task-history",
+        "memories",
+        "attachment-bytes"
+      ],
+      "unsupported": [
+        "arbitrary-create_relation"
+      ]
+    },
+    "defaultOff": "upgrade-no-backup-destination-or-jobs",
+    "enabledGate": "failure-blocks-migration-verified-schema24-copy-before-upgrade",
+    "tenantDenial": "both-projects-before-and-after-upgrade-and-recovery",
+    "attachmentHashes": [
+      "0a66d1713a24edb70fff31ff6ec8445035dc88db004054c39b4d3e2e0c8a2612",
+      "43c35ae4e7cea46e2bfbc928ad5264c5741c27c17e0c30ef3c7e6bc89eb2e52e"
+    ],
+    "auditPreservation": {
+      "exactHistoricalRows": true,
+      "counts": {
+        "audit_events": 0,
+        "controller_audit_events": 9
+      }
+    },
+    "refusals": [
+      "format",
+      "corrupt-source-DB",
+      "future-source-schema",
+      "active-canonical-owner"
+    ],
+    "restoreReplacesExistingGeneration": true,
+    "faults": [
+      {
+        "point": "migration-before",
+        "mechanism": "trusted-local-wrapper/syscall-interception/SIGKILL",
+        "reached": true
+      },
+      {
+        "point": "migration-after-copy",
+        "mechanism": "trusted-local-wrapper/syscall-interception/SIGKILL",
+        "reached": true
+      },
+      {
+        "point": "restore-before",
+        "mechanism": "trusted-local-wrapper/syscall-interception/SIGKILL",
+        "reached": true
+      },
+      {
+        "point": "restore-after",
+        "mechanism": "trusted-local-wrapper/syscall-interception/SIGKILL",
+        "reached": true
+      }
+    ],
+    "removedLocalCopies": 11,
+    "sourceDeletedBeforeRemoteRestore": true,
+    "postUpgradeWrite": "preserved-in-current-copy-and-remote-recovery-absent-from-isolated-old-snapshot",
+    "oldRecovery": "separate-directory-schema24-never-opened-migrated-DB-with-old-runtime",
+    "credentials": {
+      "offlineRecovery": "historical-owner-session-and-both-scoped-agent-tokens-preserved",
+      "tenantGrants": "preserved-and-denial-rechecked",
+      "onlineRestoreSecurityFence": "covered-by-existing-S4a-matrix-not-this-offline-driver"
+    },
+    "isolatedRecoveryDurationMs": 5648,
+    "physicalPowerLoss": "not-tested",
+    "operationalRpoRto": "not-measured",
+    "restic": {
+      "restic": "restic 0.19.1 compiled with go1.26.4 on linux/amd64",
+      "restServer": "rest-server version rest-server 0.14.0 compiled with go1.24.3 on linux/amd64",
+      "resticSha256": "20d4142678d0d95ec11a4759def1b73fd9190abc9ca19e4b62d067c0b387e639",
+      "restServerSha256": "ec4fa7c3472bdc1cde6bfa994d1ee3344bb6e9dc3d9c10c8ff5316e3e77af6fd"
+    },
+    "steps": [
+      {
+        "name": "historical-production-install",
+        "durationMs": 17185,
+        "ok": true
+      },
+      {
+        "name": "historical-native-load",
+        "durationMs": 25,
+        "ok": true
+      },
+      {
+        "name": "current-native-load",
+        "durationMs": 20,
+        "ok": true
+      },
+      {
+        "name": "historical-seed-and-tenant-denial",
+        "durationMs": 7203,
+        "ok": true
+      },
+      {
+        "name": "historical-full-backup",
+        "durationMs": 152,
+        "ok": true
+      },
+      {
+        "name": "foreground-0022-refusal-preserves-data",
+        "durationMs": 378,
+        "ok": true
+      },
+      {
+        "name": "default-off-upgrade-before-migration-crash",
+        "durationMs": 4758,
+        "ok": true
+      },
+      {
+        "name": "enabled-pre-migration-gate-and-crash",
+        "durationMs": 4816,
+        "ok": true
+      },
+      {
+        "name": "preserve-post-upgrade-writes-in-remote-copy",
+        "durationMs": 6343,
+        "ok": true
+      },
+      {
+        "name": "separate-directory-old-recovery-accounting-new-writes",
+        "durationMs": 4279,
+        "ok": true
+      },
+      {
+        "name": "corrupt-manifest-and-canonical-owner-refusals",
+        "durationMs": 784,
+        "ok": true
+      },
+      {
+        "name": "corrupt-database-and-future-schema-refusals",
+        "durationMs": 429,
+        "ok": true
+      },
+      {
+        "name": "installed-restore-before-and-after-replacement",
+        "durationMs": 12867,
+        "ok": true
+      },
+      {
+        "name": "delete-original-installations-and-local-copies",
+        "durationMs": 11,
+        "ok": true
+      },
+      {
+        "name": "source-deleted-HTTPS-restore-with-installed-runtime",
+        "durationMs": 5645,
+        "ok": true
+      }
+    ],
+    "durationMs": 68651,
+    "cleanup": {
+      "ok": true,
+      "controllers": "clean",
+      "remote": "clean",
+      "files": "clean"
+    }
+  },
+  "runs": {
+    "historicalBuild": "8be7daac-d34a-4934-9741-76579c30a890",
+    "build": "b31f602f-0f7d-427f-a3c0-b14d800d0d9e",
+    "focused": "76c43ab4-666f-456e-b633-0ca9689abcb2",
+    "driverOnlyDebug": "36f6f763-cf61-451a-9af4-812ce1b15a72",
+    "fullInstalled": {
+      "id": "8b354c13-73b4-4677-ab79-b7c544c99f82",
+      "head": "2aed542097ec99d32242c4b65fbda97d50adfa8b",
+      "result": "passed",
+      "attribution": "observed_match",
+      "smokeSteps": 19,
+      "upgradeSteps": 15
+    },
+    "check": {
+      "id": "caad3fc1-9940-49f2-9d09-6f5b5af57382",
+      "head": "6c790fdbcc451c32a4ba49421cd240a84c7869a1",
+      "result": "passed",
+      "attribution": "observed_match",
+      "unitTests": 965,
+      "scriptTests": 16
+    },
+    "focusedFinal": {
+      "id": "1605ed07-4744-4ce3-8a19-ad234053b30b",
+      "head": "bd3daef89469fbd90019ccbbc79eee5f6d1b503f",
+      "result": "passed",
+      "attribution": "observed_match",
+      "tests": 13
+    },
+    "integration": {
+      "id": "14ad52ff-3735-4b8a-8289-dec553f762d5",
+      "head": "bd3daef89469fbd90019ccbbc79eee5f6d1b503f",
+      "result": "passed",
+      "attribution": "observed_match",
+      "passed": 36,
+      "skipped": 3,
+      "skipReason": "remote fixture env intentionally absent from default integration profile; real HTTPS covered by full installed upgrade acceptance"
+    },
+    "reviewFocused": {
+      "id": "693411f6-a90d-46f5-bad6-fe5ec10f1406",
+      "head": "db483aecf1ed501c27e34b634d03a9351d39dbac",
+      "result": "passed",
+      "attribution": "observed_match",
+      "tests": 14
+    }
+  },
+  "failedRuns": [
+    {
+      "id": "04c5527e-6428-4637-b8c3-6964cd700736",
+      "head": "04bdc04",
+      "summary": "generic failure; original phase unobserved, replaced with safe diagnostic protocol"
+    },
+    {
+      "id": "4babe659-617a-4ca4-acb4-f77765170099",
+      "head": "f4c08c3",
+      "summary": "seed-projects-and-agent-grants; fixture requested owner-only approval permission for agent"
+    },
+    {
+      "id": "1f4b6051-1e56-4d7c-89cd-7ec106b996a7",
+      "head": "ffd2f23",
+      "summary": "historical-full-backup; historical strict positional parser rejected path flags; use supported fixture environment"
+    },
+    {
+      "id": "b1d098da-d332-43c3-87a1-80e13f16bd07",
+      "head": "eda8926",
+      "summary": "generic driver exit/cleanup outcome not observable in old supervisor; exact cause not proven"
+    },
+    {
+      "id": "43f55bc1-06ca-4cd6-9691-21a724df740e",
+      "head": "ef78e95",
+      "summary": "fixture exit1, cleanup failed after all-copy deletion; nested recovery socket exceeded107; shorter recovery fixture name permits full smoke to pass; raw startup reason not captured"
+    },
+    {
+      "id": "300f19e1-3364-4666-b531-6382b54004e6",
+      "head": "719ed53410a994f7e9a5b0797c9646f897eea2f2",
+      "summary": "new fixture pre-start107-byte guard rejected108-byte off.state/admin.sock before fork; cleanup clean. Shortened common fixture prefix leaves margin; guard/runtime limits unchanged"
+    }
+  ],
+  "unmeasured": [
+    "physical-disk-power-loss",
+    "real-host-offsite-RPO-RTO",
+    "actual-production-version",
+    "operator-destination-key-custody-rollout"
+  ],
+  "finalHead": "2aed542097ec99d32242c4b65fbda97d50adfa8b",
+  "sourceAttribution": "Final full installed smoke/upgrade ran exact clean final2aed542 artifact with shipped guide and current companion hashes. Other passing runs retain their own recorded heads. Broad check/build/integration not redundantly repeated for subsequent fixture/protocol/documentation edits; final CI covers final source.",
+  "cleanup": {
+    "fixtureControllers": "graceful",
+    "disposableRestServer": "graceful",
+    "originalAndDerivativeCopiesRemovedBeforeRemoteRestore": 11,
+    "allOwnTemporaryRoots": "removed",
+    "testEnvironmentProfile": "s5c-isolated-upgrade assignments cleared and profile deleted",
+    "historicalArtifact": "retained locally as explicit fixture/provenance for review reruns"
+  },
+  "earlierPassingInstalled": {
+    "run": "ef8e9f87-d514-4a6c-9e43-8d2333cdada3",
+    "source": {
+      "commit": "0c79d8fd550df25caedb0a35bc6cf32946bbb7ee",
+      "dirty": false
+    },
+    "artifact": {
+      "filename": "worktree-switcher-0.1.0-trial.1.tgz",
+      "sha256": "77d10b5aefd4597c24b0e0466b4b62d5b044c720badfc8a75f8a372b34f2c5a6",
+      "bytes": 858928
+    }
+  },
+  "postReviewChanges": {
+    "claudeA": "root main12f5243 shipped guide helper download/checksum list + scope clarifications, merged into feature",
+    "claudeB": "actual HTTPS phase preserved by bounded grammar + regression db483ae",
+    "fixtureGuard": "common driver prefix shortened, keeping107-byte guard"
+  },
+  "review": {
+    "workflow": "n8n all",
+    "dispatches": 1,
+    "outcomes": {
+      "fix": 2,
+      "backlog": 0,
+      "falsePositive": 0,
+      "unresolved": 0
+    },
+    "threads": [
+      {
+        "url": "https://github.com/pioootrek/worktree-switcher/pull/77#discussion_r4174183556",
+        "resolution": "Add installer companion and checksum scope to shipped guide; update obsolete backup/recovery claims.",
+        "commit": "12f5243f491f4ef37c74c066535d728d3324c66a",
+        "reply": "https://github.com/pioootrek/worktree-switcher/pull/77#discussion_r4174226842"
+      },
+      {
+        "url": "https://github.com/pioootrek/worktree-switcher/pull/77#discussion_r4174183559",
+        "resolution": "Preserve actual mixed-case HTTPS diagnostic phase with bounded grammar and regression.",
+        "commit": "db483aecf1ed501c27e34b634d03a9351d39dbac",
+        "reply": "https://github.com/pioootrek/worktree-switcher/pull/77#discussion_r4174203858"
+      }
+    ],
+    "reviews": [
+      {
+        "reviewer": "claude-opus-5-5",
+        "at": "2026-10-03T17:46:19Z",
+        "head": "6c790fdbcc451c32a4ba49421cd240a84c7869a1",
+        "findings": 2
+      },
+      {
+        "reviewer": "kimi-code/kimi-k3",
+        "at": "2026-10-03T17:57:39Z",
+        "head": "2aed542097ec99d32242c4b65fbda97d50adfa8b",
+        "findings": 0
+      },
+      {
+        "reviewer": "GPT-5 (as published by reviewer)",
+        "at": "2026-10-03T18:00:00Z",
+        "head": "2aed542097ec99d32242c4b65fbda97d50adfa8b",
+        "findings": 0
+      }
+    ]
+  },
+  "ci": {
+    "runId": "37142272392",
+    "checkBuild": "passed",
+    "packageJobs": "passed",
+    "counts": {
+      "unit": 965,
+      "scripts": 18,
+      "https": 1,
+      "integration": 36,
+      "integrationSkipped": 3,
+      "ui": 166,
+      "e2e": 3
+    },
+    "provenance": {
+      "schemaVersion": 1,
+      "package": {
+        "name": "worktree-switcher",
+        "version": "0.1.0-trial.1",
+        "private": true
+      },
+      "source": {
+        "commit": "3b6ccd3c2631fa90e275630944afd173f621dc1c",
+        "dirty": false
+      },
+      "artifact": {
+        "filename": "worktree-switcher-0.1.0-trial.1.tgz",
+        "sha256": "760c80a8ec37ede5e7981c98f4dea8c99f88f4345c86c6c5b072c982b187924c",
+        "bytes": 859397
+      },
+      "build": {
+        "node": "v22.23.2",
+        "npm": "10.9.8",
+        "pnpm": "11.22.0"
+      },
+      "ci": {
+        "repository": "pioootrek/worktree-switcher",
+        "runId": "37142272392",
+        "runAttempt": "1",
+        "runUrl": "https://github.com/pioootrek/worktree-switcher/actions/runs/37142272392"
+      },
+      "verification": {
+        "status": "pending-package-smoke",
+        "targets": [
+          "ubuntu-24.04-linux-x64-node22.23.2",
+          "ubuntu-24.04-linux-x64-node24.21.0"
+        ]
+      },
+      "files": {
+        "checksum": "SHA256SUMS",
+        "installGuide": "INSTALL.md",
+        "smoke": "package-smoke.mjs",
+        "smokeSha256": "9fd02640e258a83eef9d9c1b3e4070b0fd4dd877cf3fa9b55f4ba0e7a289c664",
+        "installer": "package-install.mjs",
+        "installerSha256": "2ee5fe4c418909e0064a364b95b96c7ba725eb81b3ea5ec63ca281f02d6b5ec7",
+        "lifecycle": "package-lifecycle-trial.mjs",
+        "lifecycleSha256": "5d278e2c97ed003b87e65f1bfb8155a1ca51674ecc7c45dcf8ec174eb2980318"
+      }
+    },
+    "syntheticMergeParents": [
+      "12f5243f491f4ef37c74c066535d728d3324c66a",
+      "2aed542097ec99d32242c4b65fbda97d50adfa8b"
+    ],
+    "audit": "Checksums of tarball/smoke/installer/lifecycle and SHA256SUMS match. Corrected INSTALL and bundled docs guide verified; mixed-case phase fix present in delivered installer. Synthetic parents match main and final feature head.",
+    "smoke": [
+      {
+        "ok": true,
+        "node": "v22.23.2",
+        "sha256": "760c80a8ec37ede5e7981c98f4dea8c99f88f4345c86c6c5b072c982b187924c",
+        "nativeSqlite": {
+          "load": "success",
+          "binary": "node_modules/better-sqlite3/prebuilds/linux-x64.node",
+          "provisioning": "packaged prebuilt"
+        },
+        "cleanup": "graceful",
+        "durationMs": 28710,
+        "steps": 18
+      },
+      {
+        "ok": true,
+        "node": "v24.21.0",
+        "sha256": "760c80a8ec37ede5e7981c98f4dea8c99f88f4345c86c6c5b072c982b187924c",
+        "nativeSqlite": {
+          "load": "success",
+          "binary": "node_modules/better-sqlite3/prebuilds/linux-x64.node",
+          "provisioning": "packaged prebuilt"
+        },
+        "cleanup": "graceful",
+        "durationMs": 31524,
+        "steps": 18
+      }
+    ],
+    "lifecycle": {
+      "outcome": "passed",
+      "oldFixture": null,
+      "cleanup": {
+        "graceful": true,
+        "serviceAbsent": true,
+        "dataPreserved": true
+      },
+      "phases": [
+        {
+          "name": "install-candidate",
+          "outcome": "passed"
+        },
+        {
+          "name": "status-and-idempotent-install",
+          "outcome": "passed"
+        },
+        {
+          "name": "open-and-restart",
+          "outcome": "passed"
+        },
+        {
+          "name": "new-user-session",
+          "outcome": "passed"
+        },
+        {
+          "name": "stop-and-repeated-install",
+          "outcome": "passed"
+        },
+        {
+          "name": "uninstall-idempotently",
+          "outcome": "passed"
+        }
+      ],
+      "negativeScenarios": [
+        {
+          "name": "foreground-singleton-owner",
+          "outcome": "passed"
+        },
+        {
+          "name": "occupied-dashboard-port",
+          "outcome": "passed"
+        }
+      ]
+    }
+  },
+  "merge": {
+    "commit": "c2be81f1354d5e924eed7607459497298ceb39de",
+    "mergedAt": "2026-10-03T18:08:10Z"
+  },
+  "pr": "https://github.com/pioootrek/worktree-switcher/pull/77",
+  "temporaryTestProfileRemoved": true,
+  "ownedFixtureCleanup": "complete",
+  "changesAfterEarlierInstalledRun": [
+    "fixture pre-start admin.sock length assertion",
+    "bounded malformed diagnostic steps metadata plus regression"
+  ],
+  "initialSocketGuardHead": "6c790fdbcc451c32a4ba49421cd240a84c7869a1"
+}

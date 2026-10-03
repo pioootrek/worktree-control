@@ -73,16 +73,6 @@
     },
     {
       "area": "core",
-      "id": "RWK-20260928-sqlite-data-safety",
-      "path": "rework/RWK-20260928-sqlite-data-safety.json",
-      "priority": "next",
-      "risk_level": "high",
-      "status": "open",
-      "title": "Secure SQLite migrations, durable storage and recovery before knowledge cutover",
-      "type": "rework"
-    },
-    {
-      "area": "core",
       "id": "FEAT-20260829-local-web-accounts",
       "path": "feature/FEAT-20260829-local-web-accounts.json",
       "priority": "later",
@@ -140,6 +130,16 @@
       "status": "open",
       "title": "Coordinate agent assignments, messages, handoffs, and owner oversight",
       "type": "feature"
+    },
+    {
+      "area": "core",
+      "id": "RWK-20261003-manual-backup-history-capacity",
+      "path": "rework/RWK-20261003-manual-backup-history-capacity.json",
+      "priority": "later",
+      "risk_level": "medium",
+      "status": "open",
+      "title": "Define safe operator recovery at the manual backup history limit",
+      "type": "rework"
     }
   ],
   "notes": [
@@ -388,6 +388,7 @@
         "k7a-token-pilot-20260927.md",
         "storage-safety-assessment-20260928.md",
         "storage-safety-implementation-plan.md",
+        "storage-safety-recovery-runbook-20261003.md",
         "storage-safety-s1a-s2a-report-20261001.md",
         "storage-safety-s1b-s2b-evidence-20261001.json",
         "storage-safety-s1b-s2b-report-20261001.md",
@@ -416,6 +417,8 @@
         "storage-safety-s5b-evidence-20261003.json",
         "storage-safety-s5b-report-20261003.md",
         "storage-safety-s5c-contract-20261003.md",
+        "storage-safety-s5c-evidence-20261003.json",
+        "storage-safety-s5c-report-20261003.md",
         "storage-safety-worker-01.md"
       ],
       "id": "NOTE-20260913-knowledge-backlog-implementation",

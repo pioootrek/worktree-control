@@ -1,6 +1,6 @@
 # Raport S3a, 2026-10-01
 
-Zadanie [RWK-20260928-sqlite-data-safety](../../rework/RWK-20260928-sqlite-data-safety.json)
+Zadanie [RWK-20260928-sqlite-data-safety](https://github.com/pioootrek/worktree-switcher/blob/c2be81f1354d5e924eed7607459497298ceb39de/docs/backlog/rework/RWK-20260928-sqlite-data-safety.json)
 pozostaje otwarte. Slice obejmuje trwałą publikację załączników i ich dostępność
 podczas kopiowania migawki. Pełny protokół restore pozostaje w S3b,
 harmonogramy i GUI w S4.

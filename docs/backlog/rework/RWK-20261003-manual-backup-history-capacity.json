@@ -1,0 +1,49 @@
+{
+  "area": "core",
+  "created": "2026-10-03",
+  "id": "RWK-20261003-manual-backup-history-capacity",
+  "links": {
+    "related_ids": [
+      "FEAT-20260905-shared-project-memory",
+      "FEAT-20260829-license-and-package-release",
+      "NOTE-20260913-knowledge-backlog-implementation"
+    ]
+  },
+  "notes": [
+    {
+      "author": "agent:codex",
+      "date": "2026-10-03",
+      "text": "Preserved as a separate open item when closing the agreed S0–S5 technical deliverable. S4u per-user mutation fairness and export quota recovery were delivered in PR #73; this item is specifically the remaining global manual backup idempotency-history limit, not those completed user-export changes."
+    }
+  ],
+  "priority": "later",
+  "problem": [
+    "Manual backup idempotency records are retained up to 1024 keys. At the bound, new manual admission is refused; no supported reset or rollover protocol exists. Offline backup create uses the same BackupOperations path and does not bypass this bound."
+  ],
+  "risk": {
+    "dimensions": [
+      "data-migration",
+      "process"
+    ],
+    "level": "medium",
+    "rollback": "Retain immutable receipts and fail closed at the bound until a verified replacement protocol exists."
+  },
+  "schema_version": 1,
+  "scope": [
+    "Design an explicit bounded history/recovery protocol before implementing any key retirement, preserving existing retry outcomes across restart, restore and concurrent admission.",
+    "Keep retained keys and safe refusal until that protocol is reviewed. Never recommend deleting or hand-editing the ledger or blind TTL/latest-N pruning.",
+    "Account for shared ledger/catalog/disk limits and the independent scheduled-service history budget; avoid weakening protected backups or introducing another executor."
+  ],
+  "source": "Retained operational follow-up from PR #72 / n8n execution 9579, originally tracked in RWK-20260928-sqlite-data-safety.",
+  "status": "open",
+  "title": "Define safe operator recovery at the manual backup history limit",
+  "type": "rework",
+  "validation": [
+    "Exhaust the manual-key budget and prove existing retries still replay safely while fresh admission refuses.",
+    "For any future rollover implementation, verify duplicate/conflicting keys, in-flight operations, restart, restore rollback and uncertain publication without repeated side effects or lost protected material.",
+    "Document an operator procedure and its limits; a host/key/rollout decision alone does not resolve the capacity protocol."
+  ],
+  "value": [
+    "Keep long-running operator backup use available without replaying forgotten requests or deleting recovery evidence."
+  ]
+}

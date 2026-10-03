@@ -1,0 +1,30 @@
+{
+  "changed": [
+    "Exclusive SQLite ownership, non-migrating inspection/backup, durable private migrations and attachments, future-schema refusal and recoverable full restore.",
+    "Bounded optional operator backups, independent scoped user exports, authorized GUI on-demand/restore, encrypted restic transfer, finite independent monitor and explicit repository rebind/history reconciliation.",
+    "Exact installed historical schema24-to28 upgrade, representative faults, old recovery into a separate directory and source-deleted HTTPS recovery with business/identity/history/audit/attachment/access checks.",
+    "Published runbook and truthful shipped install guide; preserved manual-idempotency exhaustion as a separate open follow-up rather than deleting retained receipts."
+  ],
+  "date": "2026-10-03",
+  "followup_ids": [
+    "FEAT-20260905-shared-project-memory",
+    "FEAT-20260829-license-and-package-release",
+    "RWK-20261003-manual-backup-history-capacity"
+  ],
+  "id": "DONE-20261003-sqlite-data-safety",
+  "item_id": "RWK-20260928-sqlite-data-safety",
+  "schema_version": 1,
+  "source": "PRs #68–#77; final merge c2be81f1354d5e924eed7607459497298ceb39de; NOTE-20260913-knowledge-backlog-implementation dated reports/evidence and recovery runbook. Original open record retained in Git at c2be81f.",
+  "summary": [
+    "Completed the agreed S0–S5 software and isolated-test scope, with a ready S6 handoff. Automatic backups remain optional/default-off and deployment policy CLI-only; authorized GUI actions and independent scoped user schedules cannot mutate it.",
+    "Owner explicitly selected code/isolated tests now and target host, keys and rollout separately. No production/off-host deployment, real RPO/RTO or physical power-loss claim. Real project cutover and observation remain in the knowledge parent."
+  ],
+  "title": "Delivered optional SQLite backup, durable storage and isolated recovery acceptance",
+  "validation": [
+    "Per-slice reports preserve actual managed check/build/integration/UI/package results, failures and source attribution for PRs #68–#76.",
+    "Final S5c managed installed run 8b354c13-73b4-4677-ab79-b7c544c99f82 passed on clean 2aed542: 19 smoke + 15 acceptance steps, four SIGKILL boundaries, 11 local copies deleted and graceful cleanup. Exact old/new artifact hashes and unmeasured limits are in the dated evidence.",
+    "Final CI 37142272392 passed all four jobs: 965 unit + 18 scripts, HTTPS, 36 integration + 3 explicit fixture skips, 166 UI, 3 E2E, 18-step smoke on Node 22/24 and disposable lifecycle. Artifact checksums and provenance were audited.",
+    "One n8n round for PR #77: 2 fix, 0 backlog, 0 false positives, 0 unresolved; Kimi and Codex found no additional concerns at the final head.",
+    "Canonical Hub fmt/validate and git diff --check passed for the closure commit."
+  ]
+}

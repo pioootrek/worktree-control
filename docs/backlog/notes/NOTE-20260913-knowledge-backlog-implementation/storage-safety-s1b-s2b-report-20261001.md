@@ -1,6 +1,6 @@
 # Raport S1b + S2b, 2026-10-01
 
-Zadanie [RWK-20260928-sqlite-data-safety](../../rework/RWK-20260928-sqlite-data-safety.json)
+Zadanie [RWK-20260928-sqlite-data-safety](https://github.com/pioootrek/worktree-switcher/blob/c2be81f1354d5e924eed7607459497298ceb39de/docs/backlog/rework/RWK-20260928-sqlite-data-safety.json)
 pozostaje otwarte. Ten slice zaczął się od `main` na merge'u PR #68,
 `afe9f20d86c7336021684b7a55aeb7dcf41fe338`.
 

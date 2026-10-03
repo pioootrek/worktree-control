@@ -12,7 +12,8 @@
       "FEAT-20260905-agent-fleet-coordination",
       "FEAT-20260905-remote-commit-verification",
       "NOTE-20260913-knowledge-backlog-implementation",
-      "RWK-20260928-sqlite-data-safety"
+      "RWK-20260928-sqlite-data-safety",
+      "RWK-20261003-manual-backup-history-capacity"
     ]
   },
   "notes": [
@@ -125,6 +126,11 @@
       "author": "agent:codex",
       "date": "2026-09-28",
       "text": "Owner requested a saved plan to finish SQLite data safety. RWK-20260928-sqlite-data-safety and NOTE-20260913-knowledge-backlog-implementation/storage-safety-implementation-plan.md define S0–S5 for ownership, durable writes, backup-before-migration, schema guards, crash-safe attachment/restore operations, backup policy and verification. S6 describes one-project cutover after those gates and K7 functional acceptance. Planning only; source files stay authoritative, no runtime or real data changed."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-03",
+      "text": "S5c PR #77 merged as c2be81f from2aed542. Exact historical a727/schema24 and current installed artifacts passed full upgrade/fault/source-deleted HTTPS recovery (19+15steps); final CI37142272392 all four jobs green, artifact provenance audited. One n8n round:2fix,0unresolved; Kimi/Codex no new issues. S0–S5 technical item closed as DONE-20261003-sqlite-data-safety with ready recovery/S6 runbook. Real host, keys, rollout, offsite RPO/RTO and project cutover remain separate. Remaining manual backup history capacity is explicitly tracked in RWK-20261003-manual-backup-history-capacity. Offline recovery preserves snapshot credentials: inspect/revoke stale access before exposing a real recovered installation. The isolated5.648s fixture result is not operational RTO."
     }
   ],
   "priority": "next",
