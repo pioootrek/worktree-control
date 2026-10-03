@@ -272,3 +272,19 @@ it("charges timed-out staging across repeated attempts, history pruning and rest
   f.advance(); f.schedules.tick(); await f.backups.drain();
   expect(f.schedules.overview(f.actor()).artifacts[0].state).toBe("succeeded");
 });
+
+for (const kind of ["corrupt", "foreign", "hardlink", "symlink"]) it(`preserves unsafe staging-only ${kind} during operator preview`, async () => {
+  const f = fixture(), execution = await interrupted(f);
+  const staging = join(f.root, "exports", `.user-export-${execution.executionId}.partial`);
+  renameSync(execution.destination, staging);
+  if (kind === "corrupt") writeFileSync(staging, "corrupt");
+  if (kind === "foreign") {
+    const envelope = JSON.parse(readFileSync(staging, "utf8")); envelope.payload.ownerId = "foreign";
+    writeRecord(staging, envelope.payload);
+  }
+  if (kind === "hardlink") linkSync(staging, join(f.root, "unknown"));
+  if (kind === "symlink") { renameSync(staging, join(f.root, "unknown")); symlinkSync(join(f.root, "unknown"), staging); }
+  const bytes = readFileSync(staging);
+  await expect(preview(f, execution.executionId)).rejects.toThrow();
+  expect(readFileSync(staging)).toEqual(bytes);
+});

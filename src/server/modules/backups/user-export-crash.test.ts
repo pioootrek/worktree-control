@@ -25,5 +25,11 @@ for (const expired of [false, true]) for (const boundary of ["staged", "publishe
     expect(existsSync(join(root, "exports", `user-export-${result.executionId}.json`))).toBe(boundary !== "staged");
     if (result.artifactAvailable) expect(schedules.command(actor, { action: "artifact", executionId: result.executionId })).toMatchObject({ source: "user-schedule", data: { threads: [], replies: [] } });
     if (!expired) { schedules.tick(); await backups.drain(); expect(schedules.overview(actor).artifacts).toHaveLength(1); }
+    if (boundary === "staged") {
+      const view = await schedules.recover("local-admin", { action: "preview", executionId: result.executionId }) as { confirmation: string };
+      await schedules.recover("local-admin", { action: "cleanup", executionId: result.executionId, confirmation: view.confirmation });
+      expect(existsSync(join(root, "exports", `.user-export-${result.executionId}.partial`))).toBe(false);
+      expect(schedules.overview(actor).artifacts[0].state).toBe("interrupted");
+    }
   } finally { schedules?.close(); await backups?.close(); rmSync(root, { recursive: true, force: true }); }
 });
