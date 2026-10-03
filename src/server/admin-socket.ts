@@ -76,7 +76,7 @@ export class AdminRequestError extends Error {
 }
 
 /** Sends one request to a running controller's admin socket. */
-export function requestAdminSocket(path: string, body: unknown, timeoutMs = 15_000): Promise<unknown> {
+export function requestAdminSocket(path: string, body: unknown, timeoutMs = 15_000, maxResponseBytes?: number): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify(body);
     const request = httpRequest({
@@ -87,7 +87,16 @@ export function requestAdminSocket(path: string, body: unknown, timeoutMs = 15_0
       timeout: timeoutMs,
     }, (response) => {
       const chunks: Buffer[] = [];
-      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      let bytes = 0;
+      response.on("error", reject);
+      response.on("data", (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (maxResponseBytes !== undefined && bytes > maxResponseBytes) {
+          request.destroy(Object.assign(new Error("Admin response is too large."), { code: "admin_response_limit" }));
+          return;
+        }
+        chunks.push(chunk);
+      });
       response.on("end", () => {
         try {
           const value = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { result?: unknown; code?: string; error?: string };
@@ -98,6 +107,9 @@ export function requestAdminSocket(path: string, body: unknown, timeoutMs = 15_0
         }
       });
     });
+    // A finite probe must also bound a server that keeps sending small chunks.
+    const deadline = maxResponseBytes === undefined ? undefined : setTimeout(() => request.destroy(Object.assign(new Error("Admin request timed out."), { code: "admin_timeout" })), timeoutMs);
+    request.once("close", () => { if (deadline) clearTimeout(deadline); });
     request.on("timeout", () => request.destroy(new Error("Admin request timed out.")));
     request.on("error", reject);
     request.end(payload);

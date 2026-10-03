@@ -13,6 +13,7 @@ import { BackupError, backupPolicySchema, type BackupPolicy } from "./policy";
 import { readRecord, recordHash, writeRecord } from "./records";
 import { RemoteBackups } from "./remote-backups";
 import type { RemoteBackupTransport } from "./remote-policy";
+import type { BackupMonitorMetadata } from "./monitor";
 
 const operationSchema = z.object({
   operationId: z.uuid(), backupId: z.string(), actorId: z.string(), key: backupKeySchema,
@@ -119,6 +120,23 @@ export class BackupOperations {
       return { ...copy, verification: "verified" as const, protected: !record.scheduled || protectedIds.has(copy.id) };
     });
     return { policy: { ...policy, destinationConfigured: Boolean(directory) }, schedule: { nextAt: this.ledger.nextAt === null ? null : new Date(this.ledger.nextAt).toISOString(), lastOperation: this.lastScheduled(), error: this.ledger.scheduleError, retention: this.ledger.retention }, maintenance: this.deps.maintenance(), copies, operations: this.ledger.operations.slice(-50).reverse().map(publicOperation) };
+  }
+  /** CLI-only metadata; no catalog scan, manifest hydration, paths, identities or keys. */
+  monitorMetadata(): BackupMonitorMetadata {
+    const records = this.ledger.operations.filter(operation => this.policy.directory && operation.destination === join(this.policy.directory, operation.backupId));
+    const latest = records.at(-1), successful = records.findLast(operation => operation.state === "succeeded");
+    let dataAt = successful?.createdAt ?? null;
+    let error: BackupMonitorMetadata["local"]["error"] = this.persistenceFailed ? "metadata_unavailable" : this.ledger.scheduleError ?? (this.ledger.retention === "failed" ? "retention_failed" : null);
+    if (successful) {
+      try {
+        const directory = lstatSync(successful.destination), manifest = lstatSync(join(successful.destination, "manifest.json"));
+        if (!directory.isDirectory() || !manifest.isFile()) throw new Error("Missing recorded copy.");
+      } catch { dataAt = null; error = "metadata_unavailable"; }
+    }
+    const remote = this.remote.status();
+    return { format: 1, observedAt: this.iso(), scheduleEnabled: this.policy.intervalSeconds !== null, maintenance: this.deps.maintenance(),
+      local: { dataAt, lastAttempt: latest ? { dataAt: latest.createdAt, state: latest.state, error: latest.error } : null, error },
+      remote: { enabled: remote.enabled, dataAt: remote.enabled ? remote.lastConfirmed?.dataAt ?? null : null, confirmedAt: remote.enabled ? remote.lastConfirmed?.confirmedAt ?? null : null, pending: remote.pending, error: remote.error } };
   }
   create(actor: BackupActor, key: string, destination?: string): BackupOperation {
     this.authorize(actor, "create"); backupKeySchema.parse(key);

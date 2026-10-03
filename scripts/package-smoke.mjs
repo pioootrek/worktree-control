@@ -322,6 +322,12 @@ async function main() {
     const status = JSON.parse((await run(cliCommand, ["backup", "remote", "status", ...common], { cwd: root, env: runtimeEnv })).stdout);
     check(status.enabled === false && status.pending === 0 && status.error === null && status.lastConfirmed === null && status.recovery === "not-measured", "Installed package unexpectedly enables remote backups.");
   });
+  await step("backup-monitor-live", async () => {
+    const disabled = JSON.parse((await run(cliCommand, ["backup", "monitor", ...common], { cwd: root, env: runtimeEnv })).stdout);
+    check(disabled.severity === "disabled" && disabled.controller === "not-checked" && disabled.alerts.length === 0, "Monitor did not default off.");
+    const live = JSON.parse((await run(cliCommand, ["backup", "monitor", "--enabled", ...common], { cwd: root, env: runtimeEnv })).stdout);
+    check(live.controller === "available" && live.severity === "disabled" && live.metadata.scheduleEnabled === false && live.metadata.remote.enabled === false && live.alerts.length === 0, "Monitor did not respect disabled service scheduling.");
+  });
   check(accessUrl.origin === publicOrigin, "Packaged controller did not advertise the configured public origin.");
   check(access.publicDashboardEndpoint === publicOrigin, "Packaged controller did not record its public endpoint.");
   check(access.localDashboardEndpoint === `http://127.0.0.1:${dashboardPort}`, "Packaged controller did not record its local CLI endpoint.");
@@ -407,6 +413,12 @@ async function main() {
   await client.close();
   client = undefined;
   await stopController();
+  await step("backup-monitor-controller-absent", async () => {
+    let stopped;
+    try { await run(cliCommand, ["backup", "monitor", "--enabled", ...common], { cwd: root, env: runtimeEnv }); }
+    catch (error) { check(error.code === 3, "Stopped monitor returned the wrong exit code."); stopped = JSON.parse(error.stdout); }
+    check(stopped?.severity === "unknown" && stopped.controller === "unavailable" && stopped.alerts[0] === "controller_unavailable", "Monitor certified an absent controller.");
+  });
   check(!existsSync(join(state, "service-access.json")), "Service access record survived graceful shutdown.");
   check(!existsSync(join(state, "controller.lock")), "Controller lock survived graceful shutdown.");
   check(!forcedCleanup, "Forced cleanup was required.");

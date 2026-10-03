@@ -1,7 +1,7 @@
 import { mkdtempSync, existsSync, rmSync, renameSync, symlinkSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SqliteStateStore } from "@/server/sqlite-store";
 import { AuthenticationService } from "@/server/modules/authentication";
 import { BackupOperations } from "./backup-operations";
@@ -25,6 +25,18 @@ function fixture(options: Record<string, unknown> = {}) {
 }
 
 describe("service backup operations", () => {
+  it("projects bounded CLI metadata without scans and distinguishes missing recorded copies", async () => {
+    const f = fixture({ intervalSeconds: 60 });
+    const created = f.operations.create(f.actor, "monitor-copy"); await f.operations.drain();
+    const scan = vi.spyOn(f.operations.catalog, "list").mockImplementation(() => { throw new Error("Monitor must not scan."); });
+    const hydrate = vi.spyOn(f.operations.catalog, "manifest").mockImplementation(() => { throw new Error("Monitor must not hydrate."); });
+    expect(f.operations.monitorMetadata()).toMatchObject({ scheduleEnabled: true, local: { dataAt: "2026-10-01T00:00:00.000Z", lastAttempt: { state: "succeeded" }, error: null }, remote: { enabled: false, dataAt: null } });
+    expect(JSON.stringify(f.operations.monitorMetadata())).not.toContain(f.root);
+    expect(JSON.stringify(f.operations.monitorMetadata())).not.toContain(f.actor.credentialId);
+    rmSync(join(f.policy.directory!, created.backupId), { recursive: true });
+    expect(f.operations.monitorMetadata().local).toMatchObject({ dataAt: null, error: "metadata_unavailable" });
+    expect(scan).not.toHaveBeenCalled(); expect(hydrate).not.toHaveBeenCalled();
+  });
   it("distinguishes an unrecorded valid migration copy from a failed verification", async () => {
     const f = fixture(); const created = f.operations.create(f.actor, "migration-fixture"); await f.operations.drain();
     const id = `pre-migration-v1-${crypto.randomUUID()}`;
