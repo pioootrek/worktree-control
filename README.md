@@ -330,8 +330,15 @@ Checksummed private application records live beside the installation operation
 ledger, outside SQLite snapshots. This keeps configuration, versions, deadlines
 and receipt keys from rolling back during restore; transfer to a new host is
 outside this feature. There are at most 256 schedules, 2048 execution records
-and 1024 mutation keys globally, also bounded by a 4 MiB record. Exhaustion
-refuses new admission. Do not delete the ledger to clear these limits.
+and 1024 mutation receipts globally, also bounded by a 4 MiB record. Each schedule
+retains its last four receipts, so repeated edits cannot consume another
+schedule's history or prevent disabling at the receipt bound. Fetch
+`mutationGeneration` from the overview and construct fresh keys with
+`userScheduleMutationKey(generation, scheduleId, expectedVersion, nonce)`.
+Keep the original key for retries. Compacted keys return `expired` (410);
+durable versions prevent replay. Format-1 ledgers migrate automatically, retaining
+four receipts per schedule; unknown old opaque keys expire. Older controllers
+refuse the new format. Do not delete or reset the ledger to clear limits.
 A restore receipt changes the validation generation; even an admitted restore
 that later fails requires explicit revalidation. S4u rejects credentials issued
 before that restore boundary, including credentials resurrected by offline
@@ -342,7 +349,8 @@ verified artifacts of that owner, schedule, project and target, preserves the
 newest and leaves installation/manual/pre-migration/recovery/unknown material
 untouched. Retention failure is visible. Disabled schedules perform no deletion.
 
-An operator can reclaim a complete user publication left `failed` or
+An operator can reclaim a complete user export, including staging left before
+publication, when its execution is `failed` or
 `interrupted` through the running controller's private admin socket:
 
 ```bash
@@ -351,12 +359,13 @@ worktree-switcher backup user-cleanup preview <execution-id>
 worktree-switcher backup user-cleanup cleanup <execution-id> <confirmation-id>
 ```
 
-The list reads candidate metadata; preview validates one complete publication.
+The list reads candidate metadata; preview validates one complete export.
 Use the confirmation returned by preview. It binds the execution, configured
 target, checksum and file identity; a changed file needs inspection, not a new
 path argument. Cleanup checks the ledger and complete envelope, refuses active
 exports, unknown material, symlinks and unknown hardlinks, and removes a remaining
-staging alias only when it belongs to that same inode. The original execution
+staging alias only when it belongs to that same inode. A staging-only export
+requires a complete matching envelope and the same identity checks. The original execution
 stays failed/interrupted. This operation is unavailable to scoped or installation
 HTTP/MCP clients and does not open an offline database owner.
 
@@ -369,8 +378,10 @@ synchronization and durable settlement. Replays never delete newly created
 material. The journal holds at most 2048 entries and 4 MiB, outside mutation
 history. Pending intents stay pinned; completed receipts follow the existing
 bounded execution history. An expired execution ID is refused and cannot start
-a second cleanup. Staging-only, corrupt or unrecognized evidence requires
-separate inspection and is not deleted by this operation.
+a second cleanup. Staging remains charged and keeps its execution record even
+when a timeout or crash occurred before publication was recorded. Final/staging
+hardlinks count once. Corrupt or unrecognized evidence requires separate
+inspection and is not deleted by this operation.
 
 Local exports require a surviving host and filesystem.
 

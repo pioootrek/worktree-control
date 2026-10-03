@@ -1,5 +1,5 @@
 import { lstatSync, realpathSync, unlinkSync, type Stats } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { readBoundedJson } from "@/server/infrastructure/sqlite";
 import { syncDirectory, validatePrivateDirectory } from "@/server/private-storage";
@@ -37,17 +37,25 @@ export class UserExportRecovery {
     this.ledger = readRecord(this.path, ledgerSchema) ?? { format: 1, entries: [] };
     if (new Set(this.ledger.entries.map(value => value.executionId)).size !== this.ledger.entries.length) refuse();
   }
+  private stagingPath(execution: Execution): string | null {
+    // Derive from the recorded destination so changing CLI targets cannot orphan history.
+    return execution.destination ? join(dirname(execution.destination), `.user-export-${execution.executionId}.partial`) : null;
+  }
   protected(id: string): boolean {
-    const entry = this.entry(id);
-    if (entry?.phase === "pending") return true;
+    if (this.entry(id)?.phase === "pending") return true;
     const execution = this.executions().find(value => value.executionId === id);
-    const target = execution && this.policy.targets.find(value => value.id === execution.configuration.targetId);
-    return Boolean(entry && entry.phase === "publication" && target && statOptional(join(target.directory, `.user-export-${id}.partial`)));
+    const staging = execution && this.stagingPath(execution);
+    // A timeout or crash can precede recordPublication. Keep that execution as well.
+    return Boolean(staging && statOptional(staging));
   }
   charge(execution: Execution): number {
-    const entry = this.entry(execution.executionId);
-    // The saved physical charge survives an absent but not durably settled unlink.
-    return Math.max(statOptional(execution.destination)?.size ?? 0, entry?.phase === "pending" ? entry.file.size : 0);
+    const entry = this.entry(execution.executionId), staging = this.stagingPath(execution);
+    const final = statOptional(execution.destination), partial = staging ? statOptional(staging) : null;
+    const sameFile = final && partial && final.dev === partial.dev && final.ino === partial.ino;
+    const physical = (final?.size ?? 0) + (sameFile ? 0 : partial?.size ?? 0);
+    // Include staging even without a publication stamp; count known hardlink aliases once.
+    // The saved charge survives an absent but not durably settled unlink.
+    return Math.max(physical, entry?.phase === "pending" ? entry.file.size : 0);
   }
   checkRequest(input: unknown): void {
     const parsed = commandSchema.safeParse(input); if (!parsed.success) throw new UserBackupError("invalid");
@@ -60,7 +68,10 @@ export class UserExportRecovery {
       if (value.state !== "failed" && value.state !== "interrupted") return [];
       const entry = this.entry(value.executionId);
       if (entry?.phase === "completed") return [];
-      try { if (entry?.phase !== "pending" && !statOptional(value.destination)) return []; }
+      try {
+        const staging = this.stagingPath(value);
+        if (entry?.phase !== "pending" && !statOptional(value.destination) && !(staging && statOptional(staging))) return [];
+      }
       catch { /* Surface an unreadable candidate for explicit inspection, never deletion. */ }
       // Listing is metadata-only. Never read up to 2048 full artifact bodies on the controller thread.
       return [{ executionId: value.executionId, ownerId: value.configuration.ownerId, scheduleId: value.configuration.id,
@@ -139,10 +150,12 @@ export class UserExportRecovery {
     return { executionId: execution.executionId, binding: this.binding(execution), directory: parentIdentity(lstatSync(paths.parent)), file: fileIdentity(after), checksum, staging };
   }
   private inspect(execution: Execution): Snapshot {
-    const { destination, staging } = this.paths(execution), final = lstatSync(destination), alias = statOptional(staging);
-    if (alias && (!alias.isFile() || alias.dev !== final.dev || alias.ino !== final.ino)) refuse();
-    if (final.nlink !== (alias ? 2 : 1)) refuse();
-    const snapshot = this.snapshot(execution, destination, Boolean(alias));
+    const { destination, staging } = this.paths(execution), final = statOptional(destination), alias = statOptional(staging);
+    if (!final && !alias) refuse();
+    if (alias && (!alias.isFile() || (final && (alias.dev !== final.dev || alias.ino !== final.ino)))) refuse();
+    const file = final ?? alias!;
+    if (file.nlink !== Number(Boolean(final)) + Number(Boolean(alias))) refuse();
+    const snapshot = this.snapshot(execution, final ? destination : staging, Boolean(alias));
     const entry = this.entry(execution.executionId);
     if (entry && (entry.binding !== snapshot.binding || recordHash(entry.directory) !== recordHash(snapshot.directory) || recordHash(entry.file) !== recordHash(snapshot.file) || entry.checksum !== snapshot.checksum)) refuse();
     return snapshot;
