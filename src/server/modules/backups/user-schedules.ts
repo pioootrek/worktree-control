@@ -7,7 +7,7 @@ import { privateDirectory, syncDirectory } from "@/server/private-storage";
 import { userScheduleCommandSchema, userScheduleInputSchema, type ScheduleReason, type UserExportResult, type UserSchedule, type UserScheduleCommand, type UserScheduleOverview } from "@/shared/contracts/user-backups";
 import { artifactSchema } from "./user-export-artifact";
 import { UserExportRecovery } from "./user-export-recovery";
-import { BackupOperations } from "./backup-operations";
+import { BackupOperations, type BackupActor } from "./backup-operations";
 import { BackupError } from "./policy";
 import { readRecord, recordHash, writeRecord } from "./records";
 import { UserBackupError, userBackupPolicySchema, type UserBackupPolicy } from "./user-policy";
@@ -122,7 +122,7 @@ export class UserSchedules {
     this.save(); return this.publicSchedule(schedule, actor);
   }
   /** Local operator authority is supplied only by the private admin transport. */
-  recover(actor: import("./backup-operations").BackupActor, input: unknown): Promise<unknown> {
+  recover(actor: BackupActor, input: unknown): Promise<unknown> {
     if (actor !== "local-admin") return Promise.reject(new UserBackupError("forbidden", 403));
     try { this.admission(); this.recovery.checkRequest(input); }
     catch (error) { return Promise.reject(error); }
@@ -165,7 +165,6 @@ export class UserSchedules {
   close(): void { this.closed = true; if (this.timer) clearTimeout(this.timer); this.timer = null; }
   private async execute(execution: Execution): Promise<void> {
     const config = execution.configuration;
-    let staging: string | null = null;
     try {
       this.admission(); this.validate(config);
       const current = this.ledger.schedules.find(value => value.id === config.id);
@@ -178,14 +177,14 @@ export class UserSchedules {
       if (bytes > ARTIFACT_MAX || used + bytes > this.policy.maxBytes) throw new UserBackupError("limit", 409);
       const parent = privateDirectory(this.target(config)); const disk = statfsSync(parent);
       if (disk.bavail * disk.bsize < bytes + 16 * 1024 ** 2) throw new UserBackupError("limit", 409);
-      staging = join(parent, `.user-export-${execution.executionId}.partial`);
+      const staging = join(parent, `.user-export-${execution.executionId}.partial`);
       if (this.now() >= deadline) throw new UserBackupError("limit", 409);
       writeRecord(staging, artifact);
       this.validate(config); this.admission();
       if (this.now() >= deadline) throw new UserBackupError("limit", 409);
       this.recovery.recordPublication(execution, staging);
       linkSync(staging, execution.destination); syncDirectory(parent);
-      rmSync(staging); staging = null; syncDirectory(parent);
+      rmSync(staging); syncDirectory(parent);
       if (this.now() >= deadline) throw new UserBackupError("limit", 409);
       execution.hash = recordHash(artifact); execution.bytes = bytes;
       this.finish(execution, "succeeded", null);
@@ -193,8 +192,10 @@ export class UserSchedules {
         try { this.retain(current); current.retention = "succeeded"; } catch { current.retention = "failed"; }
         this.save();
       }
-    } catch (error) { this.finish(execution, "failed", this.reason(error)); }
-    finally { /* Uncertain staging/publication evidence is reclaimed only by the operator protocol. */ }
+    } catch (error) {
+      // Preserve uncertain staging/publication evidence for explicit operator recovery.
+      this.finish(execution, "failed", this.reason(error));
+    }
   }
   private retain(schedule: Schedule): void {
     const records = this.ledger.executions.filter(value => value.state === "succeeded" && value.configuration.id === schedule.id && value.configuration.ownerId === schedule.ownerId && value.configuration.projectId === schedule.projectId && value.configuration.targetId === schedule.targetId && value.hash && existsSync(value.destination)).sort((a, b) => b.dueAt - a.dueAt);

@@ -48,9 +48,7 @@ export class UserExportRecovery {
   charge(execution: Execution): number {
     const entry = this.entry(execution.executionId);
     // The saved physical charge survives an absent but not durably settled unlink.
-    const target = this.policy.targets.find(value => value.id === execution.configuration.targetId);
-    const staging = entry?.phase === "publication" && target && statOptional(join(target.directory, `.user-export-${execution.executionId}.partial`));
-    return Math.max(statOptional(execution.destination)?.size ?? 0, entry?.phase === "pending" || staging ? entry!.file.size : 0);
+    return Math.max(statOptional(execution.destination)?.size ?? 0, entry?.phase === "pending" ? entry.file.size : 0);
   }
   checkRequest(input: unknown): void {
     const parsed = commandSchema.safeParse(input); if (!parsed.success) throw new UserBackupError("invalid");
