@@ -455,6 +455,15 @@ replace that whole policy. Use `--backup-remote-disabled` to disable transfer;
 this preserves retry material and makes no background connections or alarms.
 Remote policy/status is not available through dashboard, HTTP or MCP actions.
 
+The cryptographic repository ID fences receipts; changing the HTTPS hostname,
+port, path or trailing slash for that same repository preserves pending work.
+Replacing it with a different repository ID is not supported in this slice.
+If the original repository is lost, start with `--backup-remote-disabled` (or
+refresh the installed service with that flag) to continue controller operation
+and explicit-destination local rescue backups. Pending sources stay pinned.
+Do not delete the remote ledger to retarget: an explicit repository migration
+and rebind workflow remains S5 work.
+
 To recover, use a trusted restic and separately held repository password/backend
 credentials to restore the full confirmed snapshot ID into an empty private
 directory (`restic restore <snapshot-id> --target <directory> --verify`). Run

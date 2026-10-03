@@ -8,7 +8,7 @@ import { ResticBackupTransport } from "./restic-transport";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-function fixture(mode = "healthy") {
+function fixture(mode = "healthy", repository = "rest:https://example.test/repo/") {
   const root = mkdtempSync(join(tmpdir(), "restic-adapter-")), script = join(root, "restic"), statePath = join(root, "state.json");
   const manifest = "{\"fixture\":true}";
   writeFileSync(statePath, JSON.stringify({ mode, snapshots: [], calls: [], manifest }));
@@ -24,6 +24,7 @@ else if(state.mode==='oversized') {save();process.stdout.write('x'.repeat(2*1024
 else if(command==='cat') {save();console.log(JSON.stringify({id:state.mode==='wrong-repository'?'c'.repeat(64):'a'.repeat(64)}));}
 else if(command==='snapshots') {save();console.log(JSON.stringify(state.snapshots));}
 else if(command==='backup') {
+ if(state.mode==='progress')for(let i=0;i<12000;i++)process.stdout.write(JSON.stringify({message_type:'status',current_files:['x'.repeat(100)]})+'\\n');
  const snapshot={id:String(state.snapshots.length+1).padStart(64,'0'),tree:'b'.repeat(64),hostname:args[args.indexOf('--host')+1],paths:[process.cwd()],tags:args[args.indexOf('--tag')+1].split(','),partial:state.mode==='partial'};
  state.snapshots.push(snapshot);save();console.log(JSON.stringify({message_type:'summary',snapshot_id:snapshot.id}));if(snapshot.partial)process.exit(3);
 }
@@ -37,7 +38,7 @@ else if(command==='ls') {
 }
 else {save();process.exit(1);}
 `, { mode: 0o700 });
-  const transport = new ResticBackupTransport({ configuration: { executable: script, repository: "rest:https://example.test/repo/", repositoryId: "a".repeat(64), passwordFile: join(root, "key"), credentialsFile: join(root, "credentials"), uploadKiBPerSecond: 20, policy: remoteBackupPolicySchema.parse({ timeoutSeconds: 1 }) }, credentials: { username: "fixture-user", password: "fixture-secret" } });
+  const transport = new ResticBackupTransport({ configuration: { executable: script, repository, repositoryId: "a".repeat(64), passwordFile: join(root, "key"), credentialsFile: join(root, "credentials"), uploadKiBPerSecond: 20, policy: remoteBackupPolicySchema.parse({ timeoutSeconds: 1 }) }, credentials: { username: "fixture-user", password: "fixture-secret" } });
   const source: RemoteBackupSource = { source: root, installationId: crypto.randomUUID(), backupId: `backup-${crypto.randomUUID()}`, manifestSha256: createHash("sha256").update(manifest).digest("hex"), files: [{ path: "/manifest.json", size: Buffer.byteLength(manifest) }, { path: "/state.sqlite3", size: 4 }] };
   const state = () => JSON.parse(readFileSync(statePath, "utf8"));
   const change = (mode: string) => { writeFileSync(statePath, JSON.stringify({ ...state(), mode })); };
@@ -45,6 +46,16 @@ else {save();process.exit(1);}
   return { root, transport, source, state, change };
 }
 describe("shell-free restic adapter", () => {
+  it("streams over 1 MiB of valid progress without retaining it or losing the summary", async () => {
+    const f = fixture("progress"); expect((await f.transport.upload(f.source)).snapshotId).toBe("1".padStart(64, "0"));
+    expect(f.state().snapshots).toHaveLength(1);
+  });
+  it("binds the fence to repository identity across normalized or changed HTTPS locators", () => {
+    const original = fixture();
+    for (const locator of ["rest:https://EXAMPLE.test:443/repo", "rest:https://moved.test:9443/new-path/"]) {
+      expect(fixture("healthy", locator).transport.destinationId).toBe(original.transport.destinationId);
+    }
+  });
   it("reconciles the stable complete identity and authenticates both manifest and full inventory", async () => {
     const f = fixture(); const first = await f.transport.upload(f.source), retry = await f.transport.upload(f.source);
     expect(retry).toEqual(first); expect(f.state().snapshots).toHaveLength(1);
@@ -71,7 +82,8 @@ describe("shell-free restic adapter", () => {
     try { await f.transport.upload(f.source); }
     finally { if (previous === undefined) delete process.env.RESTIC_PASSWORD_COMMAND; else process.env.RESTIC_PASSWORD_COMMAND = previous; }
     const calls = f.state().calls;
-    expect(Object.keys(calls[0].environment).sort()).toEqual(["GOMAXPROCS", "NODE_ENV", "RESTIC_PASSWORD_FILE", "RESTIC_REPOSITORY", "RESTIC_REST_PASSWORD", "RESTIC_REST_USERNAME"].sort());
+    expect(Object.keys(calls[0].environment).sort()).toEqual(["GOMAXPROCS", "NODE_ENV", "RESTIC_PROGRESS_FPS", "RESTIC_PASSWORD_FILE", "RESTIC_REPOSITORY", "RESTIC_REST_PASSWORD", "RESTIC_REST_USERNAME"].sort());
+    expect(calls[0].environment.RESTIC_PROGRESS_FPS).toBe("1");
     expect(calls.some((value: { args: string[] }) => value.args.join(" ").includes("fixture-secret"))).toBe(false);
   });
   it("cancels only the active child and waits for exit", async () => {

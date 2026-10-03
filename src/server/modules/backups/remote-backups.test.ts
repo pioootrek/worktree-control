@@ -104,9 +104,19 @@ describe("optional installation transfer", () => {
     expect(f.transport.upload).toHaveBeenCalledOnce(); expect(f.operations.remote.status().lastConfirmed).toBeNull();
   });
   it("rejects a replacement repository and preserves external receipts across store data changes", async () => {
-    const f = fixture(); f.operations.create("local-admin", "repository"); await f.operations.drain(); await f.operations.close();
+    const f = fixture(); vi.mocked(f.transport.upload).mockRejectedValue(new Error("lost repository"));
+    const pending = f.operations.create("local-admin", "repository"); await f.operations.drain(); await f.operations.close();
     expect(() => new BackupOperations(f.policy, { ...f.deps, remoteTransport: { ...f.transport, destinationId: "c".repeat(64) } })).toThrow("backup_invalid");
-    expect(readFileSync(join(f.operations.recordDirectory, "remote.json"), "utf8")).toContain("confirmed");
+    const disabled = new BackupOperations(f.policy, { ...f.deps, remoteTransport: undefined });
+    try {
+      disabled.start(); await disabled.drain();
+      expect(disabled.remote.status()).toMatchObject({ enabled: false, pending: 1, error: null });
+      expect(disabled.remote.protectedIds().has(pending.backupId)).toBe(true);
+      disabled.create("local-admin", "rescue", join(f.root, "rescue")); await disabled.drain();
+      expect(disabled.status("local-admin", "rescue").state).toBe("succeeded");
+      expect(f.transport.upload).toHaveBeenCalledOnce();
+      expect(readFileSync(join(f.operations.recordDirectory, "remote.json"), "utf8")).toContain(pending.backupId);
+    } finally { await disabled.close(); }
   });
   it("compacts confirmed retired service receipts beyond 1024 while preserving latest evidence and pending work", async () => {
     const f = fixture(); f.operations.create("local-admin", "seed"); await f.operations.drain(); await f.operations.close();

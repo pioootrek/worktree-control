@@ -21,13 +21,14 @@ export class ResticBackupTransport implements RemoteBackupTransport {
   private closed = false;
   constructor(private readonly loaded: LoadedResticConfiguration) {
     const { configuration, credentials } = loaded;
-    this.destinationId = digest(JSON.stringify([configuration.repository, configuration.repositoryId]));
+    // The authenticated repository is the identity; its HTTPS address is only a locator.
+    this.destinationId = digest(configuration.repositoryId);
     this.policy = Object.freeze({ ...configuration.policy });
     // Intentionally exclude proxies, password commands, repository overrides, Go/Node hooks and inherited secrets.
     this.environment = {
       RESTIC_REPOSITORY: configuration.repository, RESTIC_PASSWORD_FILE: configuration.passwordFile,
       RESTIC_REST_USERNAME: credentials.username, RESTIC_REST_PASSWORD: credentials.password,
-      GOMAXPROCS: "2", NODE_ENV: "production", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+      GOMAXPROCS: "2", NODE_ENV: "production", RESTIC_PROGRESS_FPS: "1", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
     };
   }
   upload(source: RemoteBackupSource, options?: { reconcileOnly: boolean }): Promise<{ snapshotId: string }> {
@@ -46,8 +47,13 @@ export class ResticBackupTransport implements RemoteBackupTransport {
     if (previous) return { snapshotId: previous };
     if (reconcileOnly) throw failure();
     // Relative dot produces a portable snapshot root with no installation-path prefix.
-    const output = await this.run(["--json", "backup", ".", "--host", `wts-${source.installationId}`, "--tag", this.tags(source).join(","), "--read-concurrency", "1"], source.source, deadline);
-    const summaries = output.toString("utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>).filter(item => item.message_type === "summary");
+    const summaries: Array<Record<string, unknown>> = [];
+    // Progress is streamed and discarded. Bound individual lines, total bytes and wall time,
+    // while retaining only one summary even for an hour-long rate-limited transfer.
+    await this.run(["--json", "backup", ".", "--host", `wts-${source.installationId}`, "--tag", this.tags(source).join(","), "--read-concurrency", "1"], source.source, deadline, 64 * 1024 * 1024, line => {
+      const item = JSON.parse(line) as Record<string, unknown>;
+      if (item.message_type === "summary") { if (summaries.length) throw failure(); summaries.push(item); }
+    });
     if (summaries.length !== 1 || summaries[0].dry_run === true || !id.safeParse(summaries[0].snapshot_id).success) throw failure();
     const created = await this.find(source, deadline);
     if (!created || created !== summaries[0].snapshot_id) throw failure();
