@@ -32,7 +32,7 @@ import { openProjectGateway, runDoctorCommand, runProjectCommand } from "./proje
 import { controllerAccessToken, localDashboardEndpoint, publicDashboardEndpoint, readServiceAccess, removeServiceAccess, writeServiceAccess } from "./service-access";
 import { mcpConfigToken } from "./mcp-config";
 import { listenAdminSocket, type AdminSocketServer } from "../server/admin-socket";
-import { buildServiceStartArguments } from "./service-install";
+import { buildServiceStartArguments, resolveServiceUserBackupPolicy } from "./service-install";
 import { UserServiceManager } from "./service-manager";
 import { ControlService } from "../server/control-service";
 import { acquireControllerLock } from "../server/controller-lock";
@@ -389,7 +389,7 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
   if (action === "install") {
     const migrationBackup = parseMigrationBackupOptions(args);
     const backupPolicy = parseBackupPolicyOptions(args);
-    const userBackupPolicy = parseUserBackupOptions(args);
+    const userBackupPolicy = resolveServiceUserBackupPolicy(args, () => manager.readStartArguments());
     const entrypointPath = realpathSync(resolve(process.argv[1]));
     if (extname(entrypointPath) !== ".js") {
       throw new Error("Build Worktree Switcher first, then install the service with: node dist/cli/index.js service install");

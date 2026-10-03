@@ -1,5 +1,5 @@
 import { backupPolicyArguments } from "./backup-policy-options";
-import { userBackupArguments } from "./user-backup-options";
+import { parseUserBackupOptions, userBackupArguments } from "./user-backup-options";
 import { userBackupPolicySchema, type UserBackupPolicy } from "@/server/modules/backups";
 import { backupPolicySchema, type BackupPolicy } from "@/server/modules/backups";
 import { resolve } from "node:path";
@@ -18,6 +18,11 @@ export interface ServiceStartArgumentsOptions {
   backupDirectory?: string;
   backupPolicy?: BackupPolicy;
   userBackupPolicy?: UserBackupPolicy;
+}
+
+export function resolveServiceUserBackupPolicy(args: string[], readInstalled: () => string[] | null): UserBackupPolicy {
+  const inherit = args.includes("--refresh") && !args.some(value => value.startsWith("--user-backup"));
+  return parseUserBackupOptions(inherit ? readInstalled() ?? [] : args);
 }
 
 export function buildServiceStartArguments(options: ServiceStartArgumentsOptions): string[] {

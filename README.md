@@ -287,7 +287,13 @@ worktree-switcher start --user-backup-enabled \
   --user-backup-retain-days 30
 ```
 
-`service install --refresh` preserves these arguments. Repeat `--user-backup-target`
+`service install --refresh` preserves the installed user policy when no
+`--user-backup-*` flags are supplied. Supplying any user-policy flag replaces
+the whole user policy, so repeat all desired allowlists, targets and limits;
+omitting `--user-backup-enabled` in that explicit replacement disables it.
+An unreadable or unsupported installed definition refuses implicit refresh
+before changing the service; provide the complete policy explicitly after review.
+Repeat `--user-backup-target`
 for up to 16 private local targets; projects are a comma-separated allowlist.
 The only supported scope is current discussion text (`knowledge-discussions`).
 It excludes history, authorship, import sources, identities, credentials,

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -89,6 +89,34 @@ export class UserServiceManager {
     } else {
       throw new Error("Persistent user service installation is supported on Linux and macOS only.");
     }
+  }
+
+  /** Read our generated argument array without executing or evaluating the definition. */
+  readStartArguments(): string[] | null {
+    let stat;
+    try { stat = lstatSync(this.definitionPath); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+    if (!stat.isFile() || stat.size > 256 * 1024) throw new Error("Installed service definition cannot be safely read; supply the complete user backup policy.");
+    const definition = readFileSync(this.definitionPath, "utf8");
+    let command: string[];
+    if (this.kind === "systemd") {
+      const lines = definition.split(/\r?\n/).filter(line => line.startsWith("ExecStart="));
+      const value = lines.length === 1 ? lines[0].slice("ExecStart=".length) : "";
+      const quoted = /"((?:\\[\\"]|[^"\\])*)"/g;
+      const matches = [...value.matchAll(quoted)];
+      if (!matches.length || matches.map(match => match[0]).join(" ") !== value || matches.some(match => match[1].replaceAll("%%", "").includes("%"))) throw new Error("Installed service command cannot be safely read; supply the complete user backup policy.");
+      command = matches.map(match => match[1].replace(/\\([\\"])/g, "$1").replaceAll("%%", "%"));
+    } else {
+      const arrays = [...definition.matchAll(/<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/g)];
+      const value = arrays.length === 1 ? arrays[0][1] : "";
+      const strings = /<string>([^<]*)<\/string>/g;
+      const matches = [...value.matchAll(strings)];
+      if (!matches.length || value.replace(strings, "").trim() !== "" || matches.some(match => /&(?!(?:amp|lt|gt|quot|apos);)/.test(match[1]))) throw new Error("Installed service command cannot be safely read; supply the complete user backup policy.");
+      const entities: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+      command = matches.map(match => match[1].replace(/&(amp|lt|gt|quot|apos);/g, (_, name: string) => entities[name]));
+    }
+    if (command.length < 3 || command[2] !== "start" || command.some(value => value.includes("\0"))) throw new Error("Installed service command cannot be safely read; supply the complete user backup policy.");
+    return command.slice(3);
   }
 
   install(options: ServiceInstallOptions): { changed: boolean; definitionPath: string } {

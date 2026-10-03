@@ -202,4 +202,36 @@ describe("independent user export schedules", () => {
     const f = fixture({ maxSchedules: 1 }); f.save(); expect(() => f.save()).toThrow("limit"); f.save(f.input(), f.other);
     expect(() => f.store.exportUserDiscussions(f.project.id, 1)).toThrow("limits");
   });
+  it("preserves accepted retries at the global receipt bound and refuses new keys from every principal", () => {
+    const f = fixture(), command = f.input(); f.save(command); f.schedules.close();
+    const path = join(f.backups.recordDirectory, "user-schedules.json"), ledger = readRecord(path, z.any())!;
+    // Isolated fixture of an exhausted ledger, never an operator reset procedure.
+    const first = ledger.mutations[0];
+    for (let i = 1; i < 1024; i++) ledger.mutations.push({ ...first, key: `retained-${i}`, hash: recordHash({ ...command, version: i, idempotencyKey: `retained-${i}` }), response: { ...first.response, version: i + 1 } });
+    ledger.schedules[0].version = 1024;
+    writeRecord(path, ledger);
+    const restarted = new UserSchedules(f.policy, f.backups, f.deps); cleanup.push(() => restarted.close());
+    expect((restarted.command(f.owner, command) as UserSchedule).version).toBe(1);
+    expect(() => restarted.command(f.owner, { ...command, version: 1024, idempotencyKey: "disable-at-bound", configuration: { ...command.configuration, enabled: false } })).toThrow("limit");
+    expect(() => restarted.command(f.other, f.input())).toThrow("limit");
+    expect(() => restarted.command(f.owner, { ...command, configuration: { ...command.configuration, enabled: false } })).toThrow("changed");
+    expect(readRecord(path, z.any())!.mutations).toEqual(ledger.mutations);
+  });
+  it("keeps expired complete publication as interrupted evidence and charges only its owner's quota", async () => {
+    const f = fixture({ maxBytes: 1024 ** 2 });
+    f.deps.exportDiscussions = () => ({ threads: [{ body: "x".repeat(700_000) }], replies: [] });
+    f.save(); f.advance(); f.schedules.tick(); await f.backups.drain(); f.schedules.close();
+    const path = join(f.backups.recordDirectory, "user-schedules.json"), ledger = readRecord(path, z.any())!;
+    const file = ledger.executions[0].destination, before = readFileSync(file);
+    ledger.executions[0].state = "running"; ledger.executions[0].hash = null; ledger.executions[0].bytes = 0; ledger.executions[0].finishedAt = null;
+    writeRecord(path, ledger); f.advance(600_000);
+    const restarted = new UserSchedules(f.policy, f.backups, f.deps); cleanup.push(() => restarted.close());
+    expect(restarted.overview(f.owner).artifacts[0]).toMatchObject({ state: "interrupted", artifactAvailable: false });
+    expect(() => restarted.command(f.owner, { action: "artifact", executionId: ledger.executions[0].executionId })).toThrow("forbidden");
+    restarted.tick(); await f.backups.drain();
+    expect(restarted.overview(f.owner).artifacts[0]).toMatchObject({ state: "failed", reason: "limit" });
+    restarted.command(f.other, f.input()); f.advance(); restarted.tick(); await f.backups.drain();
+    expect(restarted.overview(f.other).artifacts[0].state).toBe("succeeded");
+    expect(readFileSync(file)).toEqual(before);
+  });
 });

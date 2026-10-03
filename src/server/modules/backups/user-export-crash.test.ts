@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { BackupOperations, backupPolicySchema, UserSchedules, userBackupPolicySchema } from "./index";
 
-for (const boundary of ["staged", "published", "unlinked"]) it(`SIGKILL during user export at ${boundary} never publishes an incomplete success`, async () => {
+for (const expired of [false, true]) for (const boundary of ["staged", "published", "unlinked"]) it(`SIGKILL during user export at ${boundary}, expired=${expired}, never publishes an incomplete success`, async () => {
   const root = mkdtempSync(join(tmpdir(), "user-export-crash-"));
   let backups: BackupOperations | undefined, schedules: UserSchedules | undefined;
   try {
@@ -16,12 +16,14 @@ for (const boundary of ["staged", "published", "unlinked"]) it(`SIGKILL during u
     });
     expect(outcome, outcome.output).toMatchObject({ code: null, signal: "SIGKILL" });
     backups = new BackupOperations(backupPolicySchema.parse({}), { databasePath: join(root, "state.sqlite3"), attachmentDirectory: join(root, "attachments"), applicationVersion: "test", source: { backup: async () => {} }, estimateBytes: () => 1, authorize: () => true, maintenance: () => false });
-    schedules = new UserSchedules(userBackupPolicySchema.parse({ enabled: true, scopes: ["knowledge-discussions"], projects: ["project"], targets: [{ id: "local", directory: join(root, "exports") }], minIntervalSeconds: 60 }), backups, { authorize: () => {}, projectName: () => "Fixture", exportDiscussions: () => { throw new Error("Restart must not recreate queued work."); }, clock: () => Date.now() + 60_000 });
+    const restartTime = Date.now() + (expired ? 600_000 : 60_000);
+    schedules = new UserSchedules(userBackupPolicySchema.parse({ enabled: true, scopes: ["knowledge-discussions"], projects: ["project"], targets: [{ id: "local", directory: join(root, "exports") }], minIntervalSeconds: 60 }), backups, { authorize: () => {}, projectName: () => "Fixture", exportDiscussions: () => { throw new Error("Restart must not recreate queued work."); }, clock: () => restartTime });
     const actor = { principalId: "owner", principalKind: "owner" as const, credentialId: "fixture", authenticationMethod: "owner_session" as const };
     const result = schedules.overview(actor).artifacts[0];
-    expect(result.state).toBe(boundary === "unlinked" ? "succeeded" : "interrupted");
-    expect(result.artifactAvailable).toBe(boundary === "unlinked");
+    expect(result.state).toBe(boundary === "unlinked" && !expired ? "succeeded" : "interrupted");
+    expect(result.artifactAvailable).toBe(boundary === "unlinked" && !expired);
+    expect(existsSync(join(root, "exports", `user-export-${result.executionId}.json`))).toBe(boundary !== "staged");
     if (result.artifactAvailable) expect(schedules.command(actor, { action: "artifact", executionId: result.executionId })).toMatchObject({ source: "user-schedule", data: { threads: [], replies: [] } });
-    schedules.tick(); await backups.drain(); expect(schedules.overview(actor).artifacts).toHaveLength(1);
+    if (!expired) { schedules.tick(); await backups.drain(); expect(schedules.overview(actor).artifacts).toHaveLength(1); }
   } finally { schedules?.close(); await backups?.close(); rmSync(root, { recursive: true, force: true }); }
 });
