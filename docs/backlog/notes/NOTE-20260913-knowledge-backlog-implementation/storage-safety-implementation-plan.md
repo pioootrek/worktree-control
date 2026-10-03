@@ -29,16 +29,20 @@ Przyczyna wcześniejszych timeoutów pozostaje nieustalona; dodano diagnostykę
 bez zmiany timeoutów, asercji ani retry.
 
 S4u dostarczono w [PR #73](https://github.com/pioootrek/worktree-switcher/pull/73),
-head `31e9ccd9e22d4dcf0e1e85656b4d841b8fee13f3`.
+head po review `fa011f6972948d479ebf698ee8c629469c527222`.
 Niezależna polityka CLI domyślnie wyłącza harmonogramy użytkowników;
 GUI/API zarządza własnymi rekordami, a wspólny executor S4a wykonuje wyłącznie
 ograniczony eksport `knowledge-discussions` po sprawdzeniu tożsamości i grantów.
 Zewnętrzny dziennik terminów i receipt nie cofa się wraz z SQLite;
 online/offline restore wymaga świeżego poświadczenia i jawnej ponownej walidacji.
 [Raport S4u](storage-safety-s4u-report-20261002.md) zawiera kontrakt,
-wyniki MCP przypisane do SHA, błędy i ograniczenia. Końcowe CI `37050621798`
-przeszło: 828 Vitest + 7 skryptów, build/HTTPS, 32 integracyjne, 164 UI,
+wyniki MCP przypisane do SHA, błędy i ograniczenia. Końcowe CI `37101748053`
+przeszło: 836 Vitest + 7 skryptów, build/HTTPS, 32 integracyjne, 164 UI,
 3 E2E, smoke pakietu Node 22/24 i jednorazowy lifecycle systemd.
+Review z 3 października: 1 fix (refresh zachowuje politykę użytkowników),
+2 backlog, 0 false positives i 0 unresolved. W otwartym rodzicu zapisano
+wyczerpanie globalnych kluczy mutacji oraz quota materiału po przerwaniu;
+ich procedury odzyskiwania i uczciwy podział pojemności pozostają do wykonania.
 PR pozostaje niescalony. S4b obejmuje transfer poza hosta, a S5 odbiór
 operacyjny; żadnego z tych slice'ów nie rozpoczęto.
 Zadanie nadrzędne pozostaje otwarte. Nie wykonano

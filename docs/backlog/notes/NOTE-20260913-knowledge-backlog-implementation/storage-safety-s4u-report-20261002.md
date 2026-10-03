@@ -1,6 +1,7 @@
 # S4u delivery report — 2026-10-02
 
-Implementation: `31e9ccd9e22d4dcf0e1e85656b4d841b8fee13f3`.
+Latest implementation (review follow-up, 2026-10-03): `fa011f6972948d479ebf698ee8c629469c527222`.
+Original delivery implementation: `31e9ccd9e22d4dcf0e1e85656b4d841b8fee13f3`.
 PR: https://github.com/pioootrek/worktree-switcher/pull/73.
 Baseline: fetched main `c7f3cca49ff3b31e7a4b3553f7f581eb30a7e8d0`, including S4a merge `0c2f187a2865549ce73b3ad79e8be84b4ebf55f4`. The pre-implementation contract was published on main in `4ad7b0e8ca2694d0ee16ff11b697a8461ef0033f`.
 Separate worktree `worktree-switcher-s4u`, branch `feat/sqlite-user-backup-schedules`. Only S4u is implemented. The parent remains open. No merge or production deployment.
@@ -87,3 +88,45 @@ Unverified: power loss, physical disk exhaustion, macOS, old installed-artifact 
 Inspected final screenshots: [PL 320](storage-safety-s4u-pl-320.png), [EN 390](storage-safety-s4u-en-390.png), [PL 1440](storage-safety-s4u-pl-1440.png). Mobile content scrolls inside the bounded dialog; no horizontal overflow was observed. The [original failed PL 320 screenshot](storage-safety-s4u-failed-pl-320.png) is retained separately.
 
 Evidence: [sanitized run records](storage-safety-s4u-evidence-20261002.json). The parent `RWK-20260928-sqlite-data-safety` stays open.
+
+## PR #73 review follow-up — 2026-10-03
+
+All three inline threads were fetched with pagination/state/replies; none was resolved or outdated. General review summaries repeat those concerns and add no separate actionable item. Outcomes: 1 fix, 2 backlog, 0 false positives. No merge or new review dispatch.
+
+### Fixed: service refresh lost user policy
+
+[GPT-5 thread](https://github.com/pioootrek/worktree-switcher/pull/73#discussion_r4169255191), `PRRT_kwDOUINt8M6oeEX9`: valid. Parsing only `install --refresh` returned defaults, and rebuilding the definition removed enabled policy, projects, scope and targets.
+
+Commit `8cd684de4646806c8cc6daa6fbe16eeb5b660e95` makes refresh without user-policy flags inherit the installed user argument array. The manager reads a bounded regular definition, parses the generated systemd quoted command or launchd XML argument array without evaluation, and revalidates the extracted policy through the existing parser. Quoted spaces, percent, backslash and XML entities round-trip. Unrecognized/missing-command/symlink/oversize definitions fail before the service mutation; absence of a definition and legacy definitions without user flags stay default-off. Explicit user-policy flags replace the whole user policy instead of implicitly merging it. README states this boundary.
+
+Tests use isolated paths and fake service runners on Linux; the launchd tests verify serialization/parsing, not actual macOS lifecycle. No host service was installed, refreshed or restarted.
+
+### Backlog: global immutable mutation history
+
+[Claude thread](https://github.com/pioootrek/worktree-switcher/pull/73#discussion_r4169151146), `PRRT_kwDOUINt8M6od0K5`: valid availability/fairness concern, deferred into [RWK-20260928-sqlite-data-safety](../../rework/RWK-20260928-sqlite-data-safety.json), dated note referencing discussion 4169151146. A single principal can consume the global 1024-key budget; new changes, including disable, then fail for every principal. This is not fixed by this follow-up.
+
+The pre-implementation contract explicitly preserves old mutation keys and fails closed at exhaustion. A fixture of 1024 valid retained receipts demonstrates that original retries survive restart, conflicting retries still fail, and fresh owner/foreign-principal mutations refuse without dropping keys. The backlog requires fair per-principal admission and a bounded lifecycle/operator recovery protocol covering replay, in-flight requests, restart, restore and disable-at-cap. Blind TTL/latest-N pruning would weaken the existing replay guarantee; no pruning/reset procedure was introduced. This must remain visible before broader multi-user operational acceptance.
+
+### Backlog: interrupted material consumes owner quota
+
+[Kimi thread](https://github.com/pioootrek/worktree-switcher/pull/73#discussion_r4169216822), `PRRT_kwDOUINt8M6od-VG`: valid capacity concern, deferred into the same parent, dated note referencing discussion 4169216822. Complete publications left failed/interrupted are charged to their owner; success-only retention cannot reclaim them. Enough such material blocks later exports. This is not fixed by this follow-up.
+
+The original protocol preserves uncertain publication evidence. New tests exercise restart beyond the persisted deadline with a complete 700 KB fixture: outcome stays interrupted and unavailable, the next owner export fails quota, another principal can export, and evidence bytes remain unchanged. All three real SIGKILL boundaries now run both within and beyond the deadline; expired complete publication never becomes success. Advancing the fixture clock simulates downtime, not a ten-minute physical wait or power-loss proof. Recovery/quarantine/reclaim needs explicit path/envelope/checksum/inode/alias checks and durable quota accounting; blind unlink after an uncertain fsync is not added.
+
+### Follow-up verification
+
+Final feature head `fa011f6972948d479ebf698ee8c629469c527222`; application fix is in `8cd684d`, followed by a one-line test environment type correction.
+
+| Preset | SHA | Run ID | Result |
+| --- | --- | --- | --- |
+| Focused S4u, 54 tests | `8cd684de4646806c8cc6daa6fbe16eeb5b660e95` | `88ee79df-ae35-4940-b7c2-31c6b10948db` | PASS, observed_match |
+| Check | `8cd684de4646806c8cc6daa6fbe16eeb5b660e95` | `2410087e-c712-46bf-85ca-c6b5ee762536` | FAIL, missing required NODE_ENV in fixture |
+| Check: lint/types, 836 Vitest + 7 scripts | `fa011f6972948d479ebf698ee8c629469c527222` | `91517b7a-5abd-4c89-a847-0c832659cd3d` | PASS, observed_match |
+| Build | `fa011f6972948d479ebf698ee8c629469c527222` | `c5059886-64d0-4fa8-9774-9b287402f0a8` | PASS, observed_match |
+| Integration, 32 tests | `fa011f6972948d479ebf698ee8c629469c527222` | `5ffe8399-9934-4897-8e4b-1857fe003e38` | PASS, observed_match |
+
+Initial check failed because the new service fixture passed `{}` for Next's ProcessEnv type. Added `NODE_ENV: test` in `fa011f6`; no assertions or timeouts changed. CI `37101675853` was cancelled by workflow concurrency after that correction, not counted as green. The untouched Knowledge dashboard's existing lint dependency warning remains. Browser components/tests are unchanged by this follow-up; earlier local UI remains attributed to `31e9ccd`.
+
+Final [CI 37101748053](https://github.com/pioootrek/worktree-switcher/actions/runs/37101748053), attempt 1: all four jobs passed, including 836 Vitest + 7 scripts, build, HTTPS (1), integration (32), UI (164), E2E (3), 14-step installed-package smoke on each Node 22.23.2/24.21.0 and disposable systemd lifecycle. Package audit confirms provenance/checksums and bundled refresh-policy reader. Clean synthetic merge `fff33842189500ca19d575fb85c1c911a8cddbb8`; tarball 836305 bytes, SHA256 `10bf8d5cf91c91bdaca96f6c9aa4870d51071b6fbd0e85203893f73827005976`. Both smoke reports and lifecycle report confirm graceful cleanup. Original package/UI results above retain their original SHA; they are not relabeled as follow-up passes.
+
+The two backlog outcomes were published on main in `af6bbc9` before replying. Replies were posted in the original three threads: fix [4171981073](https://github.com/pioootrek/worktree-switcher/pull/73#discussion_r4171981073), mutation history [4171981143](https://github.com/pioootrek/worktree-switcher/pull/73#discussion_r4171981143), interrupted quota [4171981251](https://github.com/pioootrek/worktree-switcher/pull/73#discussion_r4171981251). Full re-fetch, including pagination for thread replies, confirms 3 resolved threads, 0 unresolved, and no additional actionable general feedback. The two operational issues remain open in the backlog despite resolving their review threads.
