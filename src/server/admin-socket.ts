@@ -92,7 +92,8 @@ export function requestAdminSocket(path: string, body: unknown, timeoutMs = 15_0
       response.on("data", (chunk: Buffer) => {
         bytes += chunk.length;
         if (maxResponseBytes !== undefined && bytes > maxResponseBytes) {
-          request.destroy(Object.assign(new Error("Admin response is too large."), { code: "admin_response_limit" }));
+          reject(Object.assign(new Error("Admin response is too large."), { code: "admin_response_limit" }));
+          response.destroy(); request.destroy();
           return;
         }
         chunks.push(chunk);
@@ -108,9 +109,13 @@ export function requestAdminSocket(path: string, body: unknown, timeoutMs = 15_0
       });
     });
     // A finite probe must also bound a server that keeps sending small chunks.
-    const deadline = maxResponseBytes === undefined ? undefined : setTimeout(() => request.destroy(Object.assign(new Error("Admin request timed out."), { code: "admin_timeout" })), timeoutMs);
+    const timedOut = () => {
+      reject(Object.assign(new Error("Admin request timed out."), maxResponseBytes === undefined ? {} : { code: "admin_timeout" }));
+      request.destroy();
+    };
+    const deadline = maxResponseBytes === undefined ? undefined : setTimeout(timedOut, timeoutMs);
     request.once("close", () => { if (deadline) clearTimeout(deadline); });
-    request.on("timeout", () => request.destroy(Object.assign(new Error("Admin request timed out."), maxResponseBytes === undefined ? {} : { code: "admin_timeout" })));
+    request.on("timeout", timedOut);
     request.on("error", reject);
     request.end(payload);
   });
