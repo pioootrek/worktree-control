@@ -1,7 +1,7 @@
 # Plan domknięcia bezpieczeństwa danych SQLite
 
-Aktualizacja: 2026-10-03. Status: S1–S3, S4a i S4u scalone;
-S4b i S5 pozostają do wykonania.
+Aktualizacja: 2026-10-03. Status: S1–S3, S4a, S4u i S4b scalone;
+S5 pozostaje do wykonania.
 Stan realizacji jest poniżej; pierwotna diagnoza zachowana jako punkt odniesienia.
 Zadanie: [RWK-20260928-sqlite-data-safety](../../rework/RWK-20260928-sqlite-data-safety.json).
 Kod sprawdzony przy tworzeniu planu: `6a9df6e0879b4b9ad69969b1cc4b5bd4264a363c`.
@@ -10,7 +10,7 @@ historycznym punktem odniesienia. Powiązane prace:
 [migracja wiedzy](implementation-plan.md) i
 [aktualizacja pakietu](../NOTE-20260908-portable-verification-plan/controller-package-trial.md).
 
-## Stan realizacji po scaleniu S4u — 2026-10-03
+## Stan realizacji po scaleniu S4b — 2026-10-03
 
 S1a/S2a, S1b/S2b, S3a i S3b są na `main` przez PR #68–#71.
 S3b zamknięto w `42859c9d34db15b060e2f553c5e75a55af8c1175` po poprawce mobilnego Escape i zielonym CI.
@@ -51,9 +51,22 @@ Claude naprawiono, Codex nie znalazł nowych problemów w końcowym commicie,
 zero nierozwiązanych wątków. Kimi przekroczył limit 20 minut i nie opublikował
 wyniku; tego przebiegu nie zaliczono jako ukończonego review.
 
-S4b obejmuje transfer poza hosta, a S5 odbiór operacyjny; tych etapów nie
-rozpoczęto. Zadanie nadrzędne pozostaje otwarte. Nie wykonano wdrożenia
-produkcyjnego; backupy pozostają opcjonalne i domyślnie wyłączone.
+S4b scalono w [PR #74](https://github.com/pioootrek/worktree-switcher/pull/74)
+jako `963b011aa2bc5b5c04b90a33dcb1005246173992`, z head `04f4d01`.
+Opcjonalny transfer restic HTTPS REST jest domyślnie wyłączony, sterowany tylko
+CLI i współdzieli wykonanie backupów. Trwałe potwierdzenia, ograniczone próby,
+ochrona oczekujących źródeł i weryfikacja kompletnego drzewa przeszły testy.
+Izolowane odzyskanie po usunięciu źródła przywróciło zadanie, token i załącznik;
+nie jest to pomiar utraty prawdziwego hosta. [Raport S4b](storage-safety-s4b-report-20261003.md)
+zawiera dowody, review n8n i zielone CI `37124183610` (921 Vitest + 7 skryptów,
+33 integracje, 166 UI, 3 E2E, smoke Node 22/24 i lifecycle). Dwa testy restic
+przeszły osobno w kolejce MCP; CI bez binariów fixture je pomija.
+
+S5 pozostaje otwarte: monitor zewnętrzny, wybór celu i przechowywania kluczy,
+operacyjne RPO/RTO, macierz aktualizacji zainstalowanych artefaktów, migracja
+do innego repozytorium i automatyczna obsługa częściowych migawek. Zadanie
+nadrzędne pozostaje otwarte. Nie wykonano wdrożenia produkcyjnego; backupy
+pozostają opcjonalne i domyślnie wyłączone.
 
 ## Historyczny punkt startowy — przed S1
 

@@ -1,6 +1,7 @@
 # S4b — szyfrowany transfer kopii, 2026-10-03
 
-Status: odbiór lokalny zakończony; CI i scalenie jeszcze oczekują.
+Status: S4b scalone w `963b011aa2bc5b5c04b90a33dcb1005246173992` o 13:02:01 UTC.
+S5 i zadanie nadrzędne pozostają otwarte.
 PR: https://github.com/pioootrek/worktree-switcher/pull/74
 Rewizja: `04f4d0112d9c3516ae14f25978afbdabccaf97dc`.
 Kod produkcyjny nie zmienił się od `6e2f72ebc44018d8d87143c2ca8ba1c966928f4a`.
@@ -74,6 +75,25 @@ typowanie NODE_ENV, naruszenie checksum historycznego dziennika przez domyślne
 pole, brak Bearer w fixture oraz brak uruchomienia odzyskanego kontrolera przed
 odczytem CLI. Wszystkie poprawiono; nie raportujemy ich jako zaliczonych prób.
 Pozostało istniejące ostrzeżenie lint w selection.tab.
+
+## Końcowe CI i scalenie
+
+CI [37124183610](https://github.com/pioootrek/worktree-switcher/actions/runs/37124183610)
+zakończyło wszystkie cztery zadania sukcesem: check/build, smoke Node 22.23.2,
+smoke Node 24.21.0 i systemd lifecycle na jednorazowym runnerze. Check obejmował
+921 Vitest i 7 skryptów; dalej przeszły HTTPS, 33 integracje, 166 UI i 3 E2E.
+Dwa testy prawdziwego restic pominięto w CI bez narzędzi fixture; ich odrębny,
+zaliczony przebieg w kolejce MCP jest wskazany wyżej. Oba raporty smoke CI mają
+15 zaliczonych kroków i graceful cleanup; lokalny smoke ma 16, ponieważ obejmuje
+również przygotowanie pakietu.
+
+Sprawdzono SHA-256 tarballa CI i obu skryptów weryfikujących względem provenance.
+Artefakt CI: 851086 bajtów, SHA-256
+`583fe85592c850780eb52444b43d70621b0721f89660f63e22bb0cf98586113f`.
+Powstał z czystego syntetycznego merge `98c138042a032c35493cdda180338010d62b103e`,
+którego rodzicami są main `4e7b197` i końcowy head `04f4d01`. Późniejsze zmiany
+main przed scaleniem dotyczyły wyłącznie dokumentacji. Merge wykonano z blokadą
+na dokładny head po potwierdzeniu zielonego CI i braku nierozwiązanych wątków.
 
 ## Review n8n
 
