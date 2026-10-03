@@ -560,9 +560,9 @@ validates schema, integrity, references and attachments before publication.
 Check restored records and attachment bytes through authenticated clients,
 rotate credentials after an incident, and configure startup policy separately.
 Keep the source/current state before any rollback after new writes. A transfer
-receipt is not a recovery drill or a host-loss RPO/RTO guarantee: independent
-monitoring, operational key custody, representative recovery measurements and
-the old/new installed-artifact upgrade matrix remain pending acceptance work.
+receipt is not a recovery drill or a host-loss RPO/RTO guarantee: the finite monitor reports ledger metadata, while operational key custody and
+real-host recovery measurements require a separate operator rehearsal. The
+installed upgrade/recovery fixture described below provides isolated evidence.
 
 Automatic backups and browser create/restore actions default to off. Only the
 installation operator selects policy, through `start` or `service install`
@@ -584,8 +584,10 @@ of host process limits. A timed-out operation cannot publish a successful copy;
 synchronous filesystem work may take longer before reaching its next limit check.
 
 `--backup-before-migration --backup-dir <directory>` retains its independent,
-default-off migration gate. No off-host transfer or attachment store garbage collection is included. Local copies require a surviving host
-and filesystem to be useful.
+default-off migration gate. This local policy does not enable remote transfer
+or attachment store garbage collection. Configure the optional remote transfer
+separately as described above. Local copies require a surviving host and
+filesystem to be useful.
 
 ```sh
 worktree-switcher backup now --idempotency-key operator-request-1
@@ -611,14 +613,17 @@ mode cannot browse or operate installation backups. Policy is read-only;
 mutations. The list reports verification at publication; restore preview and
 admission independently validate the complete artifact again.
 
-Restore explicitly replaces the entire installation and loses later changes.
+Online catalog restore explicitly replaces the entire installation and loses
+later changes.
 A durable receipt precedes maintenance. Maintenance stops owned managed processes
 and finite tests, closes SQLite, executes the recoverable replacement, and
 rebuilds the controller with the same startup arguments. Current installation
 authentication is fenced outside the restored database. Restored sessions and
 scoped credentials are revoked; issue fresh credentials after reconnecting.
 Offline CLI access is refused while an executing handoff still needs this fence;
-start the controller to complete recovery first.
+start the controller to complete recovery first. Offline directory restore
+preserves credentials and grants from the snapshot; inspect and revoke stale
+credentials/grants as needed before exposing the recovered installation.
 Use **Refresh status** after a disconnect, or retry the retained request with its
 original key. This never repeats an already completed restore.
 
@@ -678,6 +683,60 @@ pnpm smoke:package
 Browser tests exercise the exported UI with a fixture API. CI also covers the
 real controller, HTTPS, E2E flows and the installed package. Use the managed test
 queue when this repository is registered in Switcher.
+
+## Installed upgrade and recovery acceptance
+
+`pnpm test:package:upgrade` uses the existing trial packer and production-prefix
+installer to exercise exact historical `a727fd8ff01e141c6494615531e27e72a23f6320`
+(schema 24) and the clean current commit. The historical reference does not
+identify the version currently deployed. Build both clean checkouts with their
+original frozen lockfiles and use the historical checkout's `package:trial` to
+produce its tarball and `provenance.json`. Configure these explicit local inputs
+in the registered project's clean test environment profile:
+
+```text
+WORKTREE_SWITCHER_TEST_OLD_ARTIFACT=<historical-tarball>
+WORKTREE_SWITCHER_TEST_OLD_PROVENANCE=<historical-provenance.json>
+WORKTREE_SWITCHER_TEST_RESTIC=<local-restic-executable>
+WORKTREE_SWITCHER_TEST_REST_SERVER=<local-rest-server-executable>
+WORKTREE_SWITCHER_TEST_UPGRADE_REPORT=<new-local-report-file>  # optional
+```
+
+Run the discovered build and `test:package:upgrade` presets sequentially through
+the managed queue. The optional report file must not already exist. The driver
+verifies both artifact digests, installs separate production prefixes, checks
+historical business content/history/audit/attachments and tenant authorization,
+and exercises default-off and enabled pre-migration policy, controlled process
+crashes, replacement of an existing generation and source-deleted recovery from
+a disposable authenticated HTTPS repository. All local derivative copies are
+removed before remote recovery. The repository script supplies fixture
+supervision and syscall interception; application CLI, HTTP, dashboard assets
+and native dependencies come from the installed packages. This supplements the
+existing crash matrices and separate CI service-lifecycle tests.
+
+The historical positive fixture uses the documented service umask `0077`.
+Foreground `0022` is tested separately: current startup refuses unsafe data
+permissions before migration and preserves database bytes, schema and modes.
+Inspect the owner and permissions of your own directories before rollout;
+permission changes require an explicit operator decision. The historical API
+supports `derived_from` through `task_from_thread`, with owner-only approval
+permission; arbitrary `create_relation` is outside its capabilities. Historical
+backup commands use `WORKTREE_SWITCHER_DATA_DIR` and
+`WORKTREE_SWITCHER_STATE_DIR`, since that release does not strip path flags from
+strict backup arguments.
+
+Account for writes made after upgrade before historical recovery. Restore the
+old snapshot into a separate private directory and run old code there; never
+open a migrated database with old code. This offline full recovery preserves
+historical owner/agent credentials and checks scoped grants again; the existing
+online restore security fence has separate acceptance coverage. Record actual
+loss windows and end-to-end recovery time during an operator rehearsal. The
+fixture does not establish physical power-loss durability or real-host/offsite
+RPO/RTO, provision a destination or keys, or change host services.
+
+`test:package:upgrade:driver` is a finite diagnostic preset using the same packer,
+installer and driver, without the normal package smoke. Its evidence is labelled
+as debug evidence; final acceptance requires `test:package:upgrade`.
 
 ## License
 

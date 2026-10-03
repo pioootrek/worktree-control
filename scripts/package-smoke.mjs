@@ -9,8 +9,9 @@ import { basename, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
+import { productionInstallEnvironment, installProductionPrefix, installedSqlite, verifyInstalledDriver } from "./package-install.mjs";
+
 const exec = promisify(execFile);
-const INSTALL_TIMEOUT = 300_000;
 const STEP_TIMEOUT = 45_000;
 const SENTINEL = "portable-smoke-secret-must-not-leak";
 const startedAt = Date.now();
@@ -59,37 +60,6 @@ async function run(file, args, options = {}) {
   } catch (error) {
     throw new Error(`${basename(file)} ${args[0] ?? ""} failed: ${redact(error.stderr || error.message)}`);
   }
-}
-
-// Trusted local operator argument only; never discover a driver from an artifact
-// or remote metadata. A separate owned process group bounds all fixture children.
-async function verifyInstalled(script, packageRoot) {
-  if (!script) return null;
-  check(process.platform !== "win32", "Explicit installed verification requires POSIX process groups.");
-  const path = resolve(script);
-  check((await lstat(path)).isFile(), "Verification script must be a local regular file.");
-  const environment = { PATH: process.env.PATH, LANG: "C.UTF-8", TMPDIR: root, ...Object.fromEntries(["WORKTREE_SWITCHER_TEST_RESTIC", "WORKTREE_SWITCHER_TEST_REST_SERVER"].flatMap(name => process.env[name] ? [[name, process.env[name]]] : [])) };
-  return new Promise((accept, reject) => {
-    const child = spawn(process.execPath, [path, packageRoot], { cwd: process.cwd(), env: environment, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
-    let output = "", errors = "", failed = false;
-    const stop = signal => { try { if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal); else child.kill(signal); } catch (error) { if (error.code !== "ESRCH") throw error; } };
-    const timeout = setTimeout(() => { failed = true; stop("SIGTERM"); }, 300_000);
-    const force = setTimeout(() => { failed = true; stop("SIGKILL"); }, 305_000);
-    let interruptedForce;
-    const interrupt = () => { failed = true; stop("SIGTERM"); interruptedForce ??= setTimeout(() => stop("SIGKILL"), 5_000); };
-    process.on("SIGTERM", interrupt); process.on("SIGINT", interrupt);
-    child.stdout.on("data", value => { output += value.toString(); if (output.length > 1024 * 1024) { failed = true; stop("SIGKILL"); } });
-    child.stderr.on("data", value => { errors += value.toString(); if (errors.length > 64 * 1024) { failed = true; stop("SIGKILL"); } });
-    child.once("error", () => { failed = true; });
-    child.once("close", code => {
-      clearTimeout(timeout); clearTimeout(force);
-      clearTimeout(interruptedForce); process.off("SIGTERM", interrupt); process.off("SIGINT", interrupt);
-      // A driver is responsible for graceful cleanup; reject any surviving group.
-      if (process.platform !== "win32" && child.pid) { try { process.kill(-child.pid, 0); failed = true; stop("SIGKILL"); } catch (error) { if (error.code !== "ESRCH") failed = true; } }
-      if (failed || code !== 0) reject(new Error("Explicit installed verification driver failed or required forced cleanup."));
-      else { try { accept({ driver: "explicit-local-repository-script", runtime: "installed-artifact", evidence: JSON.parse(output.trim()) }); } catch { reject(new Error("Installed verification driver did not return bounded JSON evidence.")); } }
-    });
-  });
 }
 
 async function freePort() {
@@ -233,23 +203,8 @@ async function main() {
     await verifyReadmeLinks(extractedPackage);
   });
 
-  const npmCache = join(root, "npm-cache");
-  const forwardedNetwork = Object.fromEntries([
-    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
-    "NODE_EXTRA_CA_CERTS", "npm_config_registry",
-  ].flatMap((name) => process.env[name] ? [[name, process.env[name]]] : []));
-  const installEnv = {
-    PATH: process.env.PATH,
-    LANG: "C.UTF-8",
-    ...forwardedNetwork,
-    npm_config_cache: npmCache,
-    npm_config_userconfig: join(root, "empty-npmrc"),
-    npm_config_globalconfig: join(root, "empty-global-npmrc"),
-  };
-  await Promise.all([writeFile(installEnv.npm_config_userconfig, ""), writeFile(installEnv.npm_config_globalconfig, "")]);
-  await step("production-install", () => run("npm", ["install", "--global", "--prefix", prefix, "--omit=dev", "--no-audit", "--no-fund", tarball], { cwd: root, env: installEnv, timeout: INSTALL_TIMEOUT }));
-
-  const packageRoot = join(prefix, "lib", "node_modules", "worktree-switcher");
+  const installEnv = await productionInstallEnvironment(root);
+  const packageRoot = await step("production-install", () => installProductionPrefix(tarball, prefix, root, installEnv, run));
   const cli = join(prefix, "bin", "worktree-switcher");
   check((await stat(cli)).isFile(), "Installed CLI is missing.");
   check((await realpath(cli)).startsWith(`${packageRoot}${sep}`), "Installed CLI does not resolve into the trial prefix.");
@@ -262,16 +217,8 @@ async function main() {
   let nativeAddon;
   let nativeProvisioning;
   await step("native-sqlite", async () => {
-    const sqliteRoot = join(packageRoot, "node_modules", "better-sqlite3");
-    const sqlite = await import(pathToFileURL(join(sqliteRoot, "lib", "index.js")));
-    const database = new sqlite.default(":memory:");
-    database.exec("select 1");
-    database.close();
-    const binding = await import(pathToFileURL(join(sqliteRoot, "lib", "binding.js")));
-    const prebuilt = binding.default.getPrebuildPath();
-    const addon = prebuilt ?? join(sqliteRoot, "build", "Release", "better_sqlite3.node");
-    nativeAddon = relative(packageRoot, await realpath(addon));
-    nativeProvisioning = prebuilt ? "packaged prebuilt" : "npm lifecycle source build";
+    const native = await installedSqlite(packageRoot);
+    nativeAddon = native.binary; nativeProvisioning = native.provisioning;
   });
 
   await step("damaged-asset-rejected", async () => {
@@ -469,7 +416,9 @@ async function main() {
     check(listed.length === 0, "Installed CLI did not remove the fixture project.");
   });
 
-  const additionalVerification = argument("--verification-script") ? await step("explicit-installed-verification", () => verifyInstalled(argument("--verification-script"), packageRoot)) : null;
+  const oldArtifact = argument("--verification-old-artifact"), oldProvenance = argument("--verification-old-provenance");
+  check((!oldArtifact && !oldProvenance) || (oldArtifact && oldProvenance && argument("--verification-script")), "Historical inputs require an explicit driver and both artifact/provenance arguments.");
+  const additionalVerification = argument("--verification-script") ? await step("explicit-installed-verification", () => verifyInstalledDriver(argument("--verification-script"), packageRoot, oldArtifact ? [resolve(oldArtifact), resolve(oldProvenance)] : [], root)) : null;
 
   const dependencyTree = JSON.parse((await run("npm", ["ls", "--global", "--prefix", prefix, "--omit=dev", "--json", "--all"], { cwd: root, env: installEnv })).stdout);
   const dependencies = resolvedDependencies(dependencyTree);

@@ -61,6 +61,7 @@ async function main() {
   const installTarget = join(output, "INSTALL.md");
   await Promise.all([
     copyFile(smokeSource, smokeTarget),
+    copyFile(join(repositoryRoot, "scripts/package-install.mjs"), join(output, "package-install.mjs")),
     copyFile(lifecycleSource, lifecycleTarget),
     copyFile(installSource, installTarget),
   ]);
@@ -100,12 +101,14 @@ async function main() {
       installGuide: "INSTALL.md",
       smoke: "package-smoke.mjs",
       smokeSha256: await digest(smokeTarget),
+      installer: "package-install.mjs",
+      installerSha256: await digest(join(output, "package-install.mjs")),
       lifecycle: "package-lifecycle-trial.mjs",
       lifecycleSha256: await digest(lifecycleTarget),
     },
   };
   await Promise.all([
-    writeFile(join(output, "SHA256SUMS"), `${sha256}  ${basename(tarball)}\n`, { mode: 0o600 }),
+    writeFile(join(output, "SHA256SUMS"), `${[[basename(tarball), sha256], [provenance.files.smoke, provenance.files.smokeSha256], [provenance.files.installer, provenance.files.installerSha256], [provenance.files.lifecycle, provenance.files.lifecycleSha256]].map(([file, hash]) => `${hash}  ${file}`).join("\n")}\n`, { mode: 0o600 }),
     writeFile(join(output, "provenance.json"), `${JSON.stringify(provenance, null, 2)}\n`, { mode: 0o600 }),
   ]);
   process.stdout.write(`${JSON.stringify({ output, tarball, provenance }, null, 2)}\n`);
