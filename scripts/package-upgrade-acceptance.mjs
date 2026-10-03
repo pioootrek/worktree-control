@@ -68,10 +68,10 @@ async function seedHistorical(item) {
   const owner = await item.json(["identity", "bootstrap-owner", "--label", "Installed acceptance"]); ownerToken = owner.token;
   stage = "seed-projects-and-agent-grants"; const records = [];
   for (let i = 0; i < 2; i++) {
-    const project = (await item.json(["identity", "create-knowledge-project", "--name", `Historical tenant ${i}`])).project;
-    const agent = (await item.json(["identity", "create-agent"])).principal;
-    const issued = await item.json(["identity", "issue-agent-token", "--principal-id", agent.id, "--label", `Scoped tenant ${i}`]);
-    await item.json(["identity", "grant-knowledge", "--principal-id", agent.id, "--project-id", project.id, "--permissions", "knowledge:read,knowledge:write,knowledge:approve,attachments:read,attachments:write"]);
+    stage = "seed-project"; const project = (await item.json(["identity", "create-knowledge-project", "--name", `Historical tenant ${i}`])).project;
+    stage = "seed-agent"; const agent = (await item.json(["identity", "create-agent"])).principal;
+    stage = "seed-agent-token"; const issued = await item.json(["identity", "issue-agent-token", "--principal-id", agent.id, "--label", `Scoped tenant ${i}`]);
+    stage = "seed-agent-grant"; await item.json(["identity", "grant-knowledge", "--principal-id", agent.id, "--project-id", project.id, "--permissions", "knowledge:read,knowledge:write,attachments:read,attachments:write"]);
     records.push({ project, agent, token: issued.token });
   }
   stage = "seed-controller-start"; await item.start();
