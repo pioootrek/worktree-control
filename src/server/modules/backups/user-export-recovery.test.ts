@@ -47,13 +47,13 @@ it("operator reclaims expired interrupted publication, frees owner quota and pre
   f.save("other"); f.advance(); f.schedules.tick(); await f.backups.drain();
   const other = f.ledger().executions.find((value: typeof execution) => value.configuration.ownerId === "other");
   const otherBytes = readFileSync(other.destination);
-  expect(readFileSync(execution.destination)).toEqual(original);
+  expect(readFileSync(execution.destination).equals(original)).toBe(true);
   // The operator confirms the exact preview, retaining the original execution outcome.
   const recovery = { recover: async (actor: "local-admin", input: unknown) => await f.schedules.recover(actor, input) as View };
   const preview = await recovery.recover("local-admin", { action: "preview", executionId: execution.executionId });
   const done = await recovery.recover("local-admin", { action: "cleanup", executionId: execution.executionId, confirmation: preview.confirmation });
   expect(done.state).toBe("completed"); expect(existsSync(execution.destination)).toBe(false);
-  expect(readFileSync(other.destination)).toEqual(otherBytes);
+  expect(readFileSync(other.destination).equals(otherBytes)).toBe(true);
   expect(f.ledger().executions.find((value: typeof execution) => value.executionId === execution.executionId).state).toBe("interrupted");
   f.advance(); f.schedules.tick(); await f.backups.drain();
   expect(f.schedules.overview(f.actor()).artifacts[0].state).toBe("succeeded");
@@ -122,7 +122,7 @@ for (const field of ["ownerId", "scope", "projectId", "targetId", "scheduleId", 
   if (field === "checksum") envelope.sha256 = "0".repeat(64);
   else { envelope.payload[field] = field === "version" ? 999 : field.endsWith("Id") ? randomUUID() : "foreign"; envelope.sha256 = (await import("./records")).recordHash(envelope.payload); }
   writeFileSync(execution.destination, JSON.stringify(envelope)); const bytes = readFileSync(execution.destination); f.restart();
-  await expect(preview(f, execution.executionId)).rejects.toThrow(); expect(readFileSync(execution.destination)).toEqual(bytes);
+  await expect(preview(f, execution.executionId)).rejects.toThrow(); expect(readFileSync(execution.destination).equals(bytes)).toBe(true);
 });
 
 for (const kind of ["symlink", "hardlink", "extra-hardlink", "foreign-staging", "staging-symlink", "replacement", "corrupt", "directory-symlink", "directory-replacement"]) it(`refuses ${kind} and preserves every unrecognized name`, async () => {
@@ -139,7 +139,7 @@ for (const kind of ["symlink", "hardlink", "extra-hardlink", "foreign-staging", 
   if (kind === "directory-replacement") { renameSync(target, join(f.root, "moved")); fs.mkdirSync(target, { mode: 0o700 }); renameSync(join(f.root, "moved", `user-export-${execution.executionId}.json`), execution.destination); }
   await expect(reclaim(f, view)).rejects.toThrow(); expect(existsSync(execution.destination)).toBe(true);
   if (kind === "foreign-staging") expect(readFileSync(staging, "utf8")).toBe("foreign staging");
-  if (kind === "replacement") expect(readFileSync(extra)).toEqual(bytes);
+  if (kind === "replacement") expect(readFileSync(extra).equals(bytes)).toBe(true);
 });
 
 it("refuses a substituted inode before preview when publication identity is recorded", async () => {
@@ -274,7 +274,7 @@ it("charges timed-out staging across repeated attempts, history pruning and rest
   }
   expect(f.ledger().executions.some((value: { executionId: string }) => value.executionId === execution.executionId)).toBe(true);
   expect(fs.readdirSync(join(f.root, "exports"))).toEqual([`.user-export-${execution.executionId}.partial`]);
-  expect(readFileSync(staging)).toEqual(bytes);
+  expect(readFileSync(staging).equals(bytes)).toBe(true);
   expect(await f.schedules.recover("local-admin", { action: "list" })).toEqual([expect.objectContaining({ executionId: execution.executionId, requiresPreview: true })]);
   const view = await preview(f, execution.executionId); expect(view.staging).toBe(true);
   expect((await reclaim(f, view)).state).toBe("completed"); expect(existsSync(staging)).toBe(false);
@@ -296,7 +296,7 @@ for (const kind of ["corrupt", "foreign", "hardlink", "symlink"]) it(`preserves 
   if (kind === "symlink") { renameSync(staging, join(f.root, "unknown")); symlinkSync(join(f.root, "unknown"), staging); }
   const bytes = readFileSync(staging);
   await expect(preview(f, execution.executionId)).rejects.toThrow();
-  expect(readFileSync(staging)).toEqual(bytes);
+  expect(readFileSync(staging).equals(bytes)).toBe(true);
 });
 
 it("lets the operator release succeeded copies at full owner quota without changing their outcome", async () => {

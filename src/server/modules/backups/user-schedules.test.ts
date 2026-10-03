@@ -251,7 +251,7 @@ describe("independent user export schedules", () => {
     expect(() => f.save({ ...f.input(first.id, 5), idempotencyKey: "unknown-opaque-key" })).toThrow("expired");
     const missing = f.input(first.id, 5);
     expect(() => f.schedules.command(f.owner, { action: "status", idempotencyKey: missing.idempotencyKey })).toThrowError(expect.objectContaining({ status: 404 }));
-    expect(readFileSync(path)).toEqual(before);
+    expect(readFileSync(path).equals(before)).toBe(true);
     const accepted = f.save(missing); expect(f.save(missing)).toEqual(accepted);
     expect(() => f.save({ ...missing, configuration: { ...missing.configuration, enabled: false } })).toThrow("changed");
   });
@@ -295,7 +295,7 @@ describe("independent user export schedules", () => {
     const path = join(f.backups.recordDirectory, "user-schedules.json"), before = readFileSync(path);
     expect(() => restarted.command(f.owner, first)).toThrow("expired");
     expect(() => restarted.command(f.owner, { ...first, version: 6 })).toThrow("changed");
-    expect(readFileSync(path)).toEqual(before);
+    expect(readFileSync(path).equals(before)).toBe(true);
   });
   it("fails closed if eviction and configuration cannot be durably committed", () => {
     const f = fixture(), first = f.input(); f.save(first);
@@ -304,7 +304,7 @@ describe("independent user export schedules", () => {
     chmodSync(f.backups.recordDirectory, 0o500);
     try { expect(() => f.save(next)).toThrow(); expect(() => f.save(next)).toThrow("busy"); expect(() => f.save(first)).toThrow("busy"); }
     finally { chmodSync(f.backups.recordDirectory, 0o700); }
-    expect(readFileSync(path)).toEqual(before); f.schedules.close();
+    expect(readFileSync(path).equals(before)).toBe(true); f.schedules.close();
     const restarted = new UserSchedules(f.policy, f.backups, f.deps); cleanup.push(() => restarted.close());
     expect((restarted.command(f.owner, first) as UserSchedule).version).toBe(1);
     expect((restarted.command(f.owner, next) as UserSchedule).version).toBe(5);
@@ -318,7 +318,7 @@ describe("independent user export schedules", () => {
     const before = readFileSync(path); chmodSync(f.backups.recordDirectory, 0o500);
     try { expect(() => new UserSchedules(f.policy, f.backups, f.deps)).toThrow(); }
     finally { chmodSync(f.backups.recordDirectory, 0o700); }
-    expect(readFileSync(path)).toEqual(before);
+    expect(readFileSync(path).equals(before)).toBe(true);
     const migrated = new UserSchedules(f.policy, f.backups, f.deps); cleanup.push(() => migrated.close());
     expect((migrated.command(f.owner, legacy) as UserSchedule).version).toBe(1);
     expect(() => migrated.command(f.owner, { ...legacy, configuration: { ...legacy.configuration, enabled: false } })).toThrow("changed");
@@ -343,6 +343,6 @@ describe("independent user export schedules", () => {
     expect(restarted.overview(f.owner).artifacts[0]).toMatchObject({ state: "failed", reason: "limit" });
     restarted.command(f.other, f.input()); f.advance(); restarted.tick(); await f.backups.drain();
     expect(restarted.overview(f.other).artifacts[0].state).toBe("succeeded");
-    expect(readFileSync(file)).toEqual(before);
+    expect(readFileSync(file).equals(before)).toBe(true);
   });
 });
