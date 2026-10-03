@@ -1,4 +1,3 @@
-import * as sqliteValidation from "@/server/infrastructure/sqlite";
 import { userScheduleMutationKey } from "@/shared/contracts/user-backups";
 import { randomUUID } from "node:crypto";
 import fs, { chmodSync, existsSync, linkSync, lstatSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
@@ -29,14 +28,6 @@ function fixture(root = mkdtempSync(join(tmpdir(), "user-recovery-")), bodySize 
 }
 
 it("operator reclaims expired interrupted publication, frees owner quota and preserves other user and outcome", async () => {
-  const timings = { readMs: 0, readCount: 0, syncMs: 0, syncCount: 0 };
-  const read = sqliteValidation.readBoundedJson, sync = fs.fsyncSync;
-  vi.spyOn(sqliteValidation, "readBoundedJson").mockImplementation((...args) => {
-    const start = performance.now(); try { return read(...args); } finally { timings.readMs += performance.now() - start; timings.readCount++; }
-  });
-  vi.spyOn(fs, "fsyncSync").mockImplementation(fd => { const start = performance.now(); try { sync(fd); } finally { timings.syncMs += performance.now() - start; timings.syncCount++; } });
-  syncBuiltinESMExports();
-  const start = performance.now();
   const f = fixture(); f.save(); f.advance(); f.schedules.tick(); await f.backups.drain();
   const ledger = f.ledger(), execution = ledger.executions[0], original = readFileSync(execution.destination);
   execution.state = "running"; execution.hash = null; execution.bytes = 0; execution.finishedAt = null;
@@ -57,7 +48,6 @@ it("operator reclaims expired interrupted publication, frees owner quota and pre
   expect(f.ledger().executions.find((value: typeof execution) => value.executionId === execution.executionId).state).toBe("interrupted");
   f.advance(); f.schedules.tick(); await f.backups.drain();
   expect(f.schedules.overview(f.actor()).artifacts[0].state).toBe("succeeded");
-  console.info("[DEBUG-pr73-recovery]", { ...timings, totalMs: performance.now() - start });
 });
 
 
