@@ -25,7 +25,7 @@ async function port() { const server = createServer(); return new Promise((accep
 function installation(packageRoot, base) {
   const item = { packageRoot, base, data: join(base, "data"), state: join(base, "state"), child: null, endpoint: null };
   item.database = join(item.data, "state.sqlite3"); item.cliPath = join(packageRoot, "dist/cli/index.js");
-  item.cli = async (args, token = ownerToken) => (await command(process.execPath, [item.cliPath, ...args, "--data-dir", item.data, "--state-dir", item.state], { env: { ...environment, ...(token ? { WORKTREE_SWITCHER_OWNER_TOKEN: token, WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: token } : {}) } })).stdout;
+  item.cli = async (args, token = ownerToken) => (await command(process.execPath, [item.cliPath, ...args], { env: { ...environment, WORKTREE_SWITCHER_DATA_DIR: item.data, WORKTREE_SWITCHER_STATE_DIR: item.state, ...(token ? { WORKTREE_SWITCHER_OWNER_TOKEN: token, WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: token } : {}) } })).stdout;
   item.json = async (args, token) => JSON.parse(await item.cli(args, token));
   item.knowledge = (operation, input, token) => item.json(["knowledge", operation, "--json", JSON.stringify(input)], token);
   item.stop = async () => { const child = item.child; item.child = null; if (child) await closeFixtureChild(child); };
