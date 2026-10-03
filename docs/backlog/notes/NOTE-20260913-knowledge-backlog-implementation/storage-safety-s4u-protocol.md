@@ -1,6 +1,6 @@
 # S4u: user schedule contract
 
-Written before implementation, 2026-10-02, against main c7f3cca and merged S4a 0c2f187. Only S4u is authorized. No transfer, restore of customer data, attachment GC, deployment or host service changes.
+Written before implementation, 2026-10-02, against main c7f3cca and merged S4a 0c2f187. Updated 2026-10-03 for the owner-authorized PR #73 closeout. Only S4u is authorized. No transfer, restore of customer data, attachment GC, deployment or host service changes.
 
 ## Authority and scope
 
@@ -12,7 +12,7 @@ Existing project-transfer format is unsuitable: it includes raw history snapshot
 
 ## Persistence, deadlines and changes
 
-Application schedule records and execution receipts use checksummed private atomic records beside the S4a ledger, under the same database owner. No additional live SQLite connection or schema change. This store is outside whole-database snapshots and is not rolled back by restore. It has a fixed global schedule/history bound; exhausted mutation history refuses new keys rather than silently forgetting idempotency.
+Application schedule records and execution receipts use checksummed private atomic records beside the S4a ledger, under the same database owner. No additional live SQLite connection or schema change. This store is outside whole-database snapshots and is not rolled back by restore. It has a fixed global schedule/history bound. Format 2 stores a random mutation generation and four receipts per schedule (at most 1024 globally). Fresh keys bind generation, schedule ID, expected version and nonce; forgotten keys cannot execute against a consumed version. Retained identical requests replay; conflicting payloads return 409 and expired keys return 410. Configuration version and receipt compaction commit together. An exhausted receipt history cannot block an authorized disable or consume another schedule's reserved history. Format 1 is checksum-validated before migration; unknown opaque legacy keys expire, retained ones still replay. Older controllers refuse format 2. Never reset generation or schedule versions independently.
 
 UTC deadlines are persisted instants. Creation/enabling or an edit increments configuration version and sets nextAt = current time + interval. Disable clears nextAt without deleting artifacts. Edits invalidate queued work of the previous version. Already running work completes with its captured version; disabling prevents retention. A due tick advances to now + interval before admission, attempting at most one overdue slot per enabled schedule, including after restart. No catch-up storm. Identity is schedule ID + version + original deadline; each admitted execution receives a separate artifact/run ID. The deadline watermark persists outside SQLite. Configuration retry with the same owner/key and identical input returns the original response; a different payload under that key conflicts. Versions prevent lost updates.
 
@@ -35,3 +35,15 @@ GUI separates own schedules from the installation operator's read-only service s
 ## Verification boundary
 
 Use exact discovered worktree and sequential MCP presets. Results count only on committed clean revisions with source observations; package checks use isolated data. Cover CLI/default-off independence, authority and scope, export isolation, queued grant revocation, shared priority/capacity, configuration/retry/deadlines/restart, retention isolation, restore credential fence, interrupted publication and PL/EN keyboard/mobile/reconnection. Record limitations honestly. The parent remains open.
+
+## Operator recovery and staging accounting (2026-10-03)
+
+Both local agent branches are integrated into PR #73. The operator uses the running controller's private admin socket with `backup user-cleanup list`, `preview <execution-id>`, then `cleanup <execution-id> <confirmation>`. Application operations enforce local-admin authority and share the existing backup executor. No offline SQLite owner or user HTTP cleanup endpoint is added.
+
+Only known failed/interrupted executions qualify. Listing reads bounded metadata; preview validates one complete final or staging export. It binds the captured execution, current configured target, complete envelope/checksum, file identity, directory identity and exact permitted aliases. No caller supplies a deletion path. Unknown, corrupt, foreign, symlinked or extra-hardlinked material is preserved. A complete staging-only export is eligible under the same checks; it does not become a successful publication.
+
+A separate checksummed recovery journal durably records intent before unlink. Revalidate surviving names before each unlink, synchronize the directory and durably settle before releasing the charge. Pending intents keep their execution and saved charge across restart, even if names appear absent. Retry uses the same execution and confirmation IDs. Completed replay never deletes replacement material; expired execution IDs refuse. Persistence uncertainty fences admission until normal restart.
+
+All recorded final/staging files count toward owner quota, deduplicating the known final/staging inode pair. Staging preserves its execution record even if timeout/crash preceded the publication stamp or CLI target configuration changed. Repeated failures cannot evade quota by leaving uncharged partials or pruning their history. Unsafe material remains charged and requires inspection. Unknown filesystem files are outside this bounded ID-based operation; no general garbage collector is introduced.
+
+Recovery journal limits remain 2048 entries and 4 MiB. Pending entries cannot be pruned. Mutation and recovery journals remain separate and outside SQLite restore. SIGKILL/injected errors do not establish physical power-loss durability.
