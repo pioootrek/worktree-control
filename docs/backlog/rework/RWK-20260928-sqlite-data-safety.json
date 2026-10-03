@@ -179,6 +179,11 @@
       "author": "agent:codex",
       "date": "2026-10-03",
       "text": "S4b PR #74 review: n8n Claude found progress-output exhaustion on long restic uploads and URL-bound destination identity. Sol6.1high is fixing bounded streamed progress and fencing by authenticated cryptographic repository ID, with regressions. Changing the locator of the same repository belongs in S4b. Replacing it with a different cryptographic repository remains an explicit S5 migration/rebind workflow: preserve old pending sources/receipts, distinguish old confirmations from protection at the new destination, authorize bounded re-uploads and establish new recovery evidence. Never recommend deleting remote.json. Until that workflow exists, disable remote transfer to keep the controller available, preserve pending pins and use explicit local destination backups for rescue. Review threads: https://github.com/pioootrek/worktree-switcher/pull/74#discussion_r4173188521 and https://github.com/pioootrek/worktree-switcher/pull/74#discussion_r4173188523. Runtime fixes and final verification are pending; no production changes."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-03",
+      "text": "S4b PR #74 Kimi review raised the bounded 32-candidate reconciliation limit after repeated partial snapshots. Keep memory/time limits and no automatic remote deletion. Commit 04f4d01 adds a documented operator recovery procedure: separate maintenance credentials, preserve local source/ledger and verified recovery point, independently restore/verify candidates, forget only exact proven-partial IDs, never prune or delete unknown/confirmed/last copies, then retry with a fresh generation. Regression models 34 candidates failing closed without new upload, followed by reconciliation after explicit removal of proven partials while retaining the complete point. General automatic bounded partial-history cleanup/recovery remains S5; do not claim the cap removed. Review https://github.com/pioootrek/worktree-switcher/pull/74#discussion_r4173219012. Final tests are pending. The separate absolute snapshot path allegation will be answered from real restic evidence rather than presumed correct."
     }
   ],
   "priority": "next",
