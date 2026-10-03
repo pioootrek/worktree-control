@@ -351,6 +351,7 @@ worktree-switcher backup user-cleanup preview <execution-id>
 worktree-switcher backup user-cleanup cleanup <execution-id> <confirmation-id>
 ```
 
+The list reads candidate metadata; preview validates one complete publication.
 Use the confirmation returned by preview. It binds the execution, configured
 target, checksum and file identity; a changed file needs inspection, not a new
 path argument. Cleanup checks the ledger and complete envelope, refuses active

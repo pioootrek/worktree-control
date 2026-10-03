@@ -143,7 +143,7 @@ it("accepts a valid historical publication only after exact preview, without tou
   const protectedNames = ["manual-backup.json", "pre-migration-v1.json", "service-backup.json", "restore-material.json", `user-export-${randomUUID()}.json`];
   for (const name of protectedNames) writeFileSync(join(f.root, "exports", name), "protected", { mode: 0o600 });
   const listed = await f.schedules.recover("local-admin", { action: "list" }) as View[];
-  expect(listed.filter(value => value.eligible).map(value => value.executionId)).toEqual([execution.executionId]);
+  expect(listed.map(value => value.executionId)).toEqual([execution.executionId]);
   await expect(f.schedules.recover("local-admin", { action: "cleanup", executionId: execution.executionId, confirmation: "0".repeat(64), path: execution.destination })).rejects.toThrow("invalid");
   await reclaim(f, await preview(f, execution.executionId));
   for (const name of protectedNames) expect(readFileSync(join(f.root, "exports", name), "utf8")).toBe("protected");
@@ -231,4 +231,14 @@ it("pins pending charge and execution beyond the ordinary recent-result pruning 
   expect(f.ledger().executions.some((value: { executionId: string }) => value.executionId === execution.executionId)).toBe(true); expect(f.schedules.overview(f.actor()).artifacts[0].reason).toBe("limit");
   expect((await reclaim(f, view)).state).toBe("completed"); f.advance(); f.schedules.tick(); await f.backups.drain();
   expect(f.schedules.overview(f.actor()).artifacts[0].state).toBe("succeeded"); await expect(reclaim(f, view)).rejects.toMatchObject({ code: "invalid", status: 404 });
+});
+
+
+it("lists candidate metadata without reading artifact bodies or issuing a confirmation", async () => {
+  const f = fixture(undefined, 32), execution = await interrupted(f), read = fs.readSync;
+  vi.spyOn(fs, "readSync").mockImplementation((...args) => { if (fs.fstatSync(args[0]).ino === lstatSync(execution.destination).ino) throw new Error("list must not read artifact bodies"); return read(...args); }); syncBuiltinESMExports();
+  expect(await f.schedules.recover("local-admin", { action: "list" })).toEqual([expect.objectContaining({ executionId: execution.executionId, requiresPreview: true })]);
+  vi.restoreAllMocks(); syncBuiltinESMExports();
+  const view = await preview(f, execution.executionId); expect(view.confirmation).toMatch(/^[a-f0-9]{64}$/); await reclaim(f, view);
+  expect(await f.schedules.recover("local-admin", { action: "list" })).toEqual([]);
 });

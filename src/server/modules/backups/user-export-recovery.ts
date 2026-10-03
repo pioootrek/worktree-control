@@ -56,9 +56,16 @@ export class UserExportRecovery {
   command(input: unknown): unknown {
     this.checkRequest(input);
     const command = commandSchema.parse(input);
-    if (command.action === "list") return this.executions().filter(value => value.state === "failed" || value.state === "interrupted").map(value => {
-      try { return this.preview(value); }
-      catch { return { executionId: value.executionId, ownerId: value.configuration.ownerId, state: value.state, eligible: false }; }
+    if (command.action === "list") return this.executions().flatMap(value => {
+      if (value.state !== "failed" && value.state !== "interrupted") return [];
+      const entry = this.entry(value.executionId);
+      if (entry?.phase === "completed") return [];
+      try { if (entry?.phase !== "pending" && !statOptional(value.destination)) return []; }
+      catch { /* Surface an unreadable candidate for explicit inspection, never deletion. */ }
+      // Listing is metadata-only. Never read up to 2048 full artifact bodies on the controller thread.
+      return [{ executionId: value.executionId, ownerId: value.configuration.ownerId, scheduleId: value.configuration.id,
+        projectId: value.configuration.projectId, targetId: value.configuration.targetId, state: value.state,
+        recoveryState: entry?.phase ?? null, requiresPreview: true }];
     });
     const execution = this.execution(command.executionId);
     if (command.action === "preview") return this.preview(execution);

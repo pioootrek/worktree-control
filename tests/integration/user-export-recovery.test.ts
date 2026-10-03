@@ -34,8 +34,8 @@ it("built CLI reclaims an expired publication through the active private admin c
   await unlink(`${databasePath}.backup-operations/user-export-recovery.json`);
   await expect(f.cli(["backup", "user-cleanup", "list"])).rejects.toThrow(); // No offline owner fallback.
   await f.restart();
-  const candidates = JSON.parse(await f.cli(["backup", "user-cleanup", "list"])) as Array<{ executionId: string; eligible: boolean }>;
-  expect(candidates.filter(value => value.eligible).map(value => value.executionId)).toEqual([exported.executionId]);
+  const candidates = JSON.parse(await f.cli(["backup", "user-cleanup", "list"])) as Array<{ executionId: string; requiresPreview: boolean }>;
+  expect(candidates.filter(value => value.requiresPreview).map(value => value.executionId)).toEqual([exported.executionId]);
   const view = JSON.parse(await f.cli(["backup", "user-cleanup", "preview", exported.executionId])) as { confirmation: string };
   const envelope = JSON.parse(await readFile(path, "utf8")), execution = envelope.payload.executions[0];
   for (const credential of [token, f.installationToken]) expect((await f.requestResult("/api/user-backups", { method: "POST", headers: { Authorization: `Bearer ${credential}` }, body: JSON.stringify({ action: "cleanup", executionId: exported.executionId, confirmation: view.confirmation }) })).ok).toBe(false);
