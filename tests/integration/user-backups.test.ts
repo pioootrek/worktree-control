@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { randomUUID, createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
-import type { UserExportResult, UserSchedule, UserScheduleOverview } from "../../src/shared/contracts/user-backups";
+import { userScheduleMutationKey, type UserExportResult, type UserSchedule, type UserScheduleOverview } from "../../src/shared/contracts/user-backups";
 import type { BackupOperation, RestoreOperation } from "../../src/shared/contracts/backups";
 import { startControllerFixture, waitFor, type ControllerFixture } from "../support/controller-fixture";
 
@@ -35,9 +35,12 @@ describe("S4u in built controller", () => {
     await f.request("/api/knowledge", { method: "POST", headers: { Authorization: `Bearer ${issued.token}` }, body: JSON.stringify({ operation: "create_thread", input: { projectId, title: "Exported discussion", body: "S4u content", idempotencyKey: "content" } }) });
     const copy = await f.request<BackupOperation>("/api/backups", { method: "POST", body: JSON.stringify({ action: "create", idempotencyKey: "before-schedule" }) });
     await waitFor(async () => (await f.request<BackupOperation>("/api/backups", { method: "POST", body: JSON.stringify({ action: "status", idempotencyKey: "before-schedule" }) })).state === "succeeded" ? true : null, 10000, () => "Service backup did not finish.");
-    const input = { action: "save", id: randomUUID(), version: 0, idempotencyKey: "create-schedule", configuration: { projectId, scope: "knowledge-discussions", targetId: "local", enabled: true, intervalSeconds: 60, retainCount: 2, retainDays: 30 } };
+    const generation = (await api<UserScheduleOverview>()).mutationGeneration, id = randomUUID();
+    const input = { action: "save", id, version: 0, idempotencyKey: userScheduleMutationKey(generation, id, 0, randomUUID()), configuration: { projectId, scope: "knowledge-discussions", targetId: "local", enabled: true, intervalSeconds: 60, retainCount: 2, retainDays: 30 } };
     const saved = await api<UserSchedule>(input); expect(saved.ownerId).toBe(principal.id);
     expect((await api<UserSchedule>(input)).id).toBe(saved.id);
+    // Consume the first key's version and compact its receipt before real restores.
+    for (let version = 1; version <= 4; version++) await api<UserSchedule>({ ...input, version, idempotencyKey: userScheduleMutationKey(generation, id, version, randomUUID()) });
     // Controlled fixture deadline setup while the single controller is stopped.
     const databasePath = (await f.cli(["config", "path"])).trim();
     await f.stop();
@@ -54,10 +57,13 @@ describe("S4u in built controller", () => {
     expect((await f.requestResult("/api/user-backups", { headers: { Authorization: `Bearer ${issued.token}` } })).status).toBe(403);
     const fresh = await admin<{ token: string }>({ action: "issue-agent-token", principalId: principal.id, label: "post-restore" });
     const after = await api<UserScheduleOverview>(undefined, fresh.token);
-    expect(after.schedules[0]).toMatchObject({ id: saved.id, version: 1, reason: "forbidden" });
+    expect(after.schedules[0]).toMatchObject({ id: saved.id, version: 5, reason: "forbidden" });
+    expect(after.mutationGeneration).toBe(generation);
+    const expired = await f.requestResult("/api/user-backups", { method: "POST", headers: { Authorization: `Bearer ${fresh.token}` }, body: JSON.stringify(input) });
+    expect(expired.status).toBe(410); expect(expired.body).toMatchObject({ code: "expired" });
     expect(after.artifacts).toHaveLength(1); expect(after.artifacts[0].executionId).toBe(run.executionId);
-    const updated = await api<UserSchedule>({ ...input, version: 1, idempotencyKey: "revalidate" }, fresh.token);
-    expect(updated.version).toBe(2); expect(updated.reason).toBeNull();
+    const updated = await api<UserSchedule>({ ...input, version: 5, idempotencyKey: userScheduleMutationKey(generation, id, 5, randomUUID()) }, fresh.token);
+    expect(updated.version).toBe(6); expect(updated.reason).toBeNull();
     const invalid = await f.requestResult("/api/user-backups", { method: "POST", headers: { Authorization: `Bearer ${fresh.token}` }, body: JSON.stringify({ ...input, ownerId: "foreign" }) });
     expect(invalid.status).toBe(400);
     const result: UserExportResult = (await api<UserScheduleOverview>(undefined, fresh.token)).artifacts[0]; expect(result.executionId).toBe(run.executionId);
@@ -69,8 +75,11 @@ describe("S4u in built controller", () => {
     expect((await f.requestResult("/api/user-backups", { headers: { Authorization: `Bearer ${issued.token}` } })).status).toBe(403);
     const postOffline = await admin<{ token: string }>({ action: "issue-agent-token", principalId: principal.id, label: "post-offline-restore" });
     const offlineOverview = await api<UserScheduleOverview>(undefined, postOffline.token);
-    expect(offlineOverview.schedules[0]).toMatchObject({ id: saved.id, version: 2, reason: "forbidden" });
+    expect(offlineOverview.schedules[0]).toMatchObject({ id: saved.id, version: 6, reason: "forbidden" });
+    expect(offlineOverview.mutationGeneration).toBe(generation);
+    const expiredOffline = await f.requestResult("/api/user-backups", { method: "POST", headers: { Authorization: `Bearer ${postOffline.token}` }, body: JSON.stringify(input) });
+    expect(expiredOffline.status).toBe(410); expect(expiredOffline.body).toMatchObject({ code: "expired" });
     expect(offlineOverview.artifacts[0].executionId).toBe(run.executionId);
-    expect((await api<UserSchedule>({ ...input, version: 2, idempotencyKey: "revalidate-offline" }, postOffline.token)).version).toBe(3);
+    expect((await api<UserSchedule>({ ...input, version: 6, idempotencyKey: userScheduleMutationKey(generation, id, 6, randomUUID()) }, postOffline.token)).version).toBe(7);
   });
 });

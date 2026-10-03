@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useI18n } from "@/i18n/provider";
-import { userScheduleCommandSchema, type UserSchedule, type UserScheduleCommand, type UserScheduleInput, type UserScheduleOverview } from "@/shared/contracts/user-backups";
+import { userScheduleMutationKey, userScheduleCommandSchema, type UserSchedule, type UserScheduleCommand, type UserScheduleInput, type UserScheduleOverview } from "@/shared/contracts/user-backups";
 
 const storageKey = "worktree-switcher-user-schedule-request";
 function uuid(): string {
@@ -54,7 +54,7 @@ function UserSchedulesPanel({ token, onOpenChange, returnFocus, disconnect }: Di
   const saved = useRef<Extract<UserScheduleCommand, { action: "save" }> | null>(null);
   const report = useCallback((cause: unknown) => {
     const code = cause instanceof RequestError ? cause.code : "disconnected";
-    const keys = { forbidden: "userBackups.reason.forbidden", policy: "userBackups.reason.policy", limit: "userBackups.reason.limit", busy: "userBackups.reason.busy", changed: "userBackups.reason.changed", invalid: "userBackups.invalid" } as const;
+    const keys = { forbidden: "userBackups.reason.forbidden", policy: "userBackups.reason.policy", limit: "userBackups.reason.limit", busy: "userBackups.reason.busy", changed: "userBackups.reason.changed", invalid: "userBackups.invalid", expired: "userBackups.expired" } as const;
     setError(t(keys[code as keyof typeof keys] ?? (code === "disconnected" ? "backups.disconnected" : "backups.failed")));
   }, [t]);
   const refresh = useCallback(async () => {
@@ -124,7 +124,7 @@ function UserSchedulesPanel({ token, onOpenChange, returnFocus, disconnect }: Di
         {!overview.policy.enabled && <p role="status">{t("userBackups.reason.disabled")}</p>}
         {overview.maintenance && <p role="status">{t("userBackups.reason.busy")}</p>}
         {overview.policy.enabled && !overview.projects.length && <p role="status">{t("userBackups.reason.forbidden")}</p>}
-        {draft && <form className="grid gap-3 sm:grid-cols-2" onSubmit={event => { event.preventDefault(); void save({ action: "save", ...draft, idempotencyKey: uuid() }); }}>
+        {draft && <form className="grid gap-3 sm:grid-cols-2" onSubmit={event => { event.preventDefault(); void save({ action: "save", ...draft, idempotencyKey: userScheduleMutationKey(overview.mutationGeneration, draft.id, draft.version, uuid()) }); }}>
           <label className="grid gap-1 text-sm">{t("userBackups.project")}<select ref={focusForm} className="min-w-0 rounded border bg-background p-2" value={draft.configuration.projectId} onChange={event => update({ projectId: event.target.value })}>{overview.projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
           <label className="grid gap-1 text-sm">{t("userBackups.target")}<select className="min-w-0 rounded border bg-background p-2" value={draft.configuration.targetId} onChange={event => update({ targetId: event.target.value })}>{overview.targets.map(id => <option key={id} value={id}>{id}</option>)}</select></label>
           <label className="grid gap-1 text-sm">{t("userBackups.interval")}<input type="number" required min={overview.policy.minIntervalSeconds} max={30 * 86400} className="min-w-0 rounded border bg-background p-2" value={draft.configuration.intervalSeconds} onChange={event => update({ intervalSeconds: Number(event.target.value) })} /></label>
@@ -141,7 +141,7 @@ function UserSchedulesPanel({ token, onOpenChange, returnFocus, disconnect }: Di
           {schedule.reason && <p>{t(`userBackups.reason.${schedule.reason}`)}</p>}
           {schedule.lastResult?.reason && <p>{t(`userBackups.reason.${schedule.lastResult.reason}`)}</p>}
           <p>{t("backups.retentionState")}: {t(`backups.retention.${schedule.retention}`)}</p>
-          <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={pending || overview.maintenance} onClick={() => edit(schedule)}>{t("userBackups.edit")}</Button><Button variant="outline" disabled={pending || overview.maintenance} onClick={() => void save({ action: "save", id: schedule.id, version: schedule.version, configuration: { ...configuration(schedule), enabled: !schedule.enabled }, idempotencyKey: uuid() })}>{t(schedule.enabled ? "userBackups.disable" : "userBackups.enable")}</Button></div>
+          <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={pending || overview.maintenance} onClick={() => edit(schedule)}>{t("userBackups.edit")}</Button><Button variant="outline" disabled={pending || overview.maintenance} onClick={() => void save({ action: "save", id: schedule.id, version: schedule.version, configuration: { ...configuration(schedule), enabled: !schedule.enabled }, idempotencyKey: userScheduleMutationKey(overview.mutationGeneration, schedule.id, schedule.version, uuid()) })}>{t(schedule.enabled ? "userBackups.disable" : "userBackups.enable")}</Button></div>
         </li>)}</ul>
         {overview.artifacts.filter(value => value.artifactAvailable).map(value => <div key={value.executionId} className="flex flex-wrap items-center gap-2 text-sm"><span className="min-w-0 break-all">{date(value.dueAt)} · {value.executionId}</span><Button variant="outline" onClick={() => void download(value.executionId)}>{t("userBackups.download")}</Button></div>)}
       </>}

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { userScheduleMutationKey } from "@/shared/contracts/user-backups";
 import { BackupOperations, backupPolicySchema, UserSchedules, userBackupPolicySchema } from "../index";
 
 const root = process.argv[2]!, boundary = process.argv[3]!;
@@ -10,7 +11,8 @@ let now = Date.now();
 const backups = new BackupOperations(backupPolicySchema.parse({}), { databasePath: join(root, "state.sqlite3"), attachmentDirectory: join(root, "attachments"), applicationVersion: "test", source: { backup: async () => {} }, estimateBytes: () => 1, authorize: () => true, maintenance: () => false, clock: () => now });
 const policy = userBackupPolicySchema.parse({ enabled: true, scopes: ["knowledge-discussions"], projects: ["project"], targets: [{ id: "local", directory: join(root, "exports") }], minIntervalSeconds: 60 });
 const schedules = new UserSchedules(policy, backups, { authorize: () => {}, projectName: () => "Fixture", exportDiscussions: () => ({ project: { id: "project", name: "Fixture" }, threads: [], replies: [] }), clock: () => now });
-schedules.command(actor, { action: "save", id: randomUUID(), version: 0, idempotencyKey: "create", configuration: { projectId: "project", scope: "knowledge-discussions", targetId: "local", enabled: true, intervalSeconds: 60, retainCount: 1, retainDays: 1 } });
+const id = randomUUID();
+schedules.command(actor, { action: "save", id, version: 0, idempotencyKey: userScheduleMutationKey(schedules.overview(actor).mutationGeneration, id, 0, randomUUID()), configuration: { projectId: "project", scope: "knowledge-discussions", targetId: "local", enabled: true, intervalSeconds: 60, retainCount: 1, retainDays: 1 } });
 const rename = fs.renameSync, link = fs.linkSync, remove = fs.rmSync;
 const kill = () => process.kill(process.pid, "SIGKILL");
 fs.renameSync = (...args) => { rename(...args); if (boundary === "staged" && String(args[1]).endsWith(".partial")) kill(); };

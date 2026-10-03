@@ -1,10 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, linkSync, lstatSync, rmSync, statfsSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type { AuthenticatedPrincipal } from "@/server/modules/identity";
 import { privateDirectory, syncDirectory } from "@/server/private-storage";
-import { userScheduleCommandSchema, userScheduleInputSchema, type ScheduleReason, type UserExportResult, type UserSchedule, type UserScheduleCommand, type UserScheduleOverview } from "@/shared/contracts/user-backups";
+import { parseUserScheduleMutationKey, userScheduleCommandSchema, userScheduleInputSchema, type ScheduleReason, type UserExportResult, type UserSchedule, type UserScheduleCommand, type UserScheduleOverview } from "@/shared/contracts/user-backups";
 import { BackupOperations } from "./backup-operations";
 import { BackupError } from "./policy";
 import { readRecord, recordHash, writeRecord } from "./records";
@@ -15,7 +15,10 @@ const reasonSchema = z.enum(["disabled", "forbidden", "policy", "limit", "busy",
 const scheduleSchema = userScheduleInputSchema.extend({ id: z.uuid(), ownerId: z.string(), version: z.number().int().positive(), nextAt: z.number().nullable(), actor: actorSchema, restoreGeneration: z.string(), reason: reasonSchema.nullable(), retention: z.enum(["idle", "succeeded", "failed"]) }).strict();
 const executionSchema = z.object({ executionId: z.uuid(), configuration: scheduleSchema, dueAt: z.number(), deadline: z.number().nullable(), state: z.enum(["queued", "running", "succeeded", "failed", "interrupted", "denied"]), reason: reasonSchema.nullable(), finishedAt: z.string().nullable(), destination: z.string(), hash: z.string().nullable(), bytes: z.number().nonnegative() }).strict();
 const mutationSchema = z.object({ ownerId: z.string(), key: z.string(), hash: z.string(), response: scheduleSchema }).strict();
-const ledgerSchema = z.object({ format: z.literal(1), schedules: z.array(scheduleSchema).max(256), executions: z.array(executionSchema).max(2048), mutations: z.array(mutationSchema).max(1024) }).strict();
+// Parse/checksum legacy bytes before migration; defaults would change their checksum.
+const legacyLedgerSchema = z.object({ format: z.literal(1), schedules: z.array(scheduleSchema).max(256), executions: z.array(executionSchema).max(2048), mutations: z.array(mutationSchema).max(1024) }).strict();
+const ledgerSchema = legacyLedgerSchema.extend({ format: z.literal(2), mutationGeneration: z.string().regex(/^[a-f0-9]{32}$/) });
+const RECEIPTS_PER_SCHEDULE = 4;
 type Schedule = z.infer<typeof scheduleSchema>;
 type Execution = z.infer<typeof executionSchema>;
 const artifactSchema = z.object({ format: z.literal(1), source: z.literal("user-schedule"), ownerId: z.string(), scope: z.literal("knowledge-discussions"), projectId: z.string(), targetId: z.string(), scheduleId: z.uuid(), version: z.number(), executionId: z.uuid(), dueAt: z.string(), data: z.record(z.string(), z.unknown()) }).strict();
@@ -43,7 +46,9 @@ export class UserSchedules {
     Object.freeze(this.policy.targets); Object.freeze(this.policy.projects); Object.freeze(this.policy);
     this.now = deps.clock ?? Date.now;
     this.path = join(backups.recordDirectory, "user-schedules.json");
-    this.ledger = readRecord(this.path, ledgerSchema) ?? { format: 1, schedules: [], executions: [], mutations: [] };
+    const stored = readRecord(this.path, z.discriminatedUnion("format", [legacyLedgerSchema, ledgerSchema]));
+    this.ledger = stored?.format === 2 ? stored : { ...(stored ?? { schedules: [], executions: [], mutations: [] }), format: 2, mutationGeneration: randomBytes(16).toString("hex") };
+    this.compactMutations();
     for (const execution of this.ledger.executions) {
       if (execution.state !== "queued" && execution.state !== "running") continue;
       execution.state = "interrupted"; execution.reason = "interrupted"; execution.finishedAt = this.iso();
@@ -82,7 +87,7 @@ export class UserSchedules {
       try { this.deps.authorize(actor, id); const name = this.deps.projectName(id); return name ? [{ id, name }] : []; } catch { return []; }
     });
     const schedules = this.ledger.schedules.filter(value => value.ownerId === actor.principalId).map(value => this.publicSchedule(value, actor));
-    return { policy, projects: allowed, targets: policy.enabled && allowed.length ? targets.map(value => value.id) : [], schedules,
+    return { mutationGeneration: this.ledger.mutationGeneration, policy, projects: allowed, targets: policy.enabled && allowed.length ? targets.map(value => value.id) : [], schedules,
       artifacts: this.ledger.executions.filter(value => value.configuration.ownerId === actor.principalId && this.canRead(value.configuration, actor)).slice(-50).reverse().map(value => this.result(value)), maintenance: this.isBusy() };
   }
   command(actor: AuthenticatedPrincipal, input: UserScheduleCommand): UserSchedule | Record<string, unknown> {
@@ -97,7 +102,13 @@ export class UserSchedules {
     }
     const receipt = this.ledger.mutations.find(value => value.ownerId === actor.principalId && value.key === command.idempotencyKey);
     if (command.action === "status") {
-      if (!receipt) throw new UserBackupError("invalid", 404);
+      if (!receipt) {
+        const key = this.mutationKey(command.idempotencyKey);
+        const schedule = this.ledger.schedules.find(value => value.id === key.id);
+        if (schedule && schedule.ownerId !== actor.principalId) throw new UserBackupError("invalid", 404);
+        if (key.version < (schedule?.version ?? 0)) throw new UserBackupError("expired", 410);
+        throw new UserBackupError("invalid", 404);
+      }
       if (!this.canRead(receipt.response, actor)) throw new UserBackupError("forbidden", 403);
       return this.publicSchedule(receipt.response, actor);
     }
@@ -109,13 +120,38 @@ export class UserSchedules {
     this.admission();
     const existing = this.ledger.schedules.find(value => value.id === command.id);
     if (existing && existing.ownerId !== actor.principalId) throw new UserBackupError("forbidden", 403);
+    const key = this.mutationKey(command.idempotencyKey);
+    if (key.id !== command.id || key.version !== command.version) throw new UserBackupError("changed", 409);
+    if (key.version < (existing?.version ?? 0)) throw new UserBackupError("expired", 410);
     if ((existing?.version ?? 0) !== command.version) throw new UserBackupError("changed", 409);
-    if (this.ledger.mutations.length >= 1024 || (!existing && (this.ledger.schedules.length >= 256 || this.ledger.schedules.filter(value => value.ownerId === actor.principalId).length >= this.policy.maxSchedules))) throw new UserBackupError("limit", 409);
+    if (!existing && (this.ledger.schedules.length >= 256 || this.ledger.schedules.filter(value => value.ownerId === actor.principalId).length >= this.policy.maxSchedules)) throw new UserBackupError("limit", 409);
     const schedule: Schedule = { ...command.configuration, id: command.id, ownerId: actor.principalId, actor: { ...actor }, restoreGeneration: this.deps.restoreGeneration?.() ?? "", version: command.version + 1, nextAt: command.configuration.enabled ? this.now() + command.configuration.intervalSeconds * 1000 : null, reason: null, retention: "idle" };
     this.validate(schedule);
     if (existing) this.ledger.schedules[this.ledger.schedules.indexOf(existing)] = schedule; else this.ledger.schedules.push(schedule);
     this.ledger.mutations.push({ ownerId: actor.principalId, key: command.idempotencyKey, hash: recordHash(command), response: { ...schedule } });
+    this.compactMutations();
     this.save(); return this.publicSchedule(schedule, actor);
+  }
+  private mutationKey(value: string): { generation: string; id: string; version: number } {
+    const key = parseUserScheduleMutationKey(value);
+    if (!key || key.generation !== this.ledger.mutationGeneration) throw new UserBackupError("expired", 410);
+    return key;
+  }
+  private compactMutations(): void {
+    // Schedule versions are permanent watermarks. Never delete/reset them: forgotten
+    // keys bind to an already consumed version and cannot become new operations.
+    const schedules = new Map(this.ledger.schedules.map(value => [value.id, value]));
+    const counts = new Map<string, number>();
+    const keys = new Set<string>();
+    this.ledger.mutations = this.ledger.mutations.filter(value => {
+      const current = schedules.get(value.response.id);
+      const identity = JSON.stringify([value.ownerId, value.key]);
+      if (!current || current.ownerId !== value.ownerId || value.response.ownerId !== value.ownerId || value.response.version > current.version || keys.has(identity)) throw new Error("Inconsistent user schedule mutation ledger; preserve it for inspection.");
+      keys.add(identity); return true;
+    }).reverse().filter(value => {
+      const count = (counts.get(value.response.id) ?? 0) + 1;
+      counts.set(value.response.id, count); return count <= RECEIPTS_PER_SCHEDULE;
+    }).reverse();
   }
   start(): void { if (this.policy.enabled && !this.closed) { try { this.tick(); } catch { this.broken = true; } this.arm(); } }
   tick(): void {
@@ -203,7 +239,7 @@ export class UserSchedules {
   private result(execution: Execution): UserExportResult { return { executionId: execution.executionId, scheduleId: execution.configuration.id, version: execution.configuration.version, dueAt: new Date(execution.dueAt).toISOString(), state: execution.state, reason: execution.reason, finishedAt: execution.finishedAt, artifactAvailable: execution.state === "succeeded" && existsSync(execution.destination) }; }
   private finish(execution: Execution, state: Execution["state"], reason: ScheduleReason | null): void { execution.state = state; execution.reason = reason; execution.finishedAt = this.iso(); this.save(); }
   private target(schedule: Schedule): string { const target = this.policy.targets.find(value => value.id === schedule.targetId); if (!target) throw new UserBackupError("policy", 403); return target.directory; }
-  private reason(error: unknown): ScheduleReason { if (error instanceof UserBackupError && error.code !== "invalid") return error.code; if (error instanceof BackupError) return error.code === "backup_limit" ? "limit" : "busy"; return "failed"; }
+  private reason(error: unknown): ScheduleReason { if (error instanceof UserBackupError && error.code !== "invalid") return error.code === "expired" ? "changed" : error.code; if (error instanceof BackupError) return error.code === "backup_limit" ? "limit" : "busy"; return "failed"; }
   private iso(): string { return new Date(this.now()).toISOString(); }
   private isBusy(): boolean { try { this.admission(); return false; } catch { return true; } }
   private save(): void { try { writeRecord(this.path, this.ledger); } catch (error) { this.broken = true; throw error; } }

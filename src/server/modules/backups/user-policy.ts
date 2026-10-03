@@ -16,5 +16,5 @@ export const userBackupPolicySchema = z.object({
 });
 export type UserBackupPolicy = z.infer<typeof userBackupPolicySchema>;
 export class UserBackupError extends Error {
-  constructor(readonly code: "forbidden" | "policy" | "limit" | "busy" | "changed" | "invalid" | "failed", readonly status = 400) { super(code); }
+  constructor(readonly code: "forbidden" | "policy" | "limit" | "busy" | "changed" | "invalid" | "failed" | "expired", readonly status = 400) { super(code); }
 }
