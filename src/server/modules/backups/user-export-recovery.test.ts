@@ -37,8 +37,8 @@ it("operator reclaims expired interrupted publication, frees owner quota and pre
   const other = f.ledger().executions.find((value: typeof execution) => value.configuration.ownerId === "other");
   const otherBytes = readFileSync(other.destination);
   expect(readFileSync(execution.destination)).toEqual(original);
-  // Application seam is deliberately absent on the baseline.
-  const recovery = f.schedules as UserSchedules & { recover(actor: string, input: unknown): Promise<{ confirmation: string; state: string }> };
+  // The operator confirms the exact preview, retaining the original execution outcome.
+  const recovery = f.schedules as unknown as { recover(actor: string, input: unknown): Promise<{ confirmation: string; state: string }> };
   const preview = await recovery.recover("local-admin", { action: "preview", executionId: execution.executionId });
   const done = await recovery.recover("local-admin", { action: "cleanup", executionId: execution.executionId, confirmation: preview.confirmation });
   expect(done.state).toBe("completed"); expect(existsSync(execution.destination)).toBe(false);
