@@ -124,7 +124,11 @@ export class BackupOperations {
   /** CLI-only metadata; no catalog scan, manifest hydration, paths, identities or keys. */
   monitorMetadata(): BackupMonitorMetadata {
     const records = this.ledger.operations.filter(operation => this.policy.directory && operation.destination === join(this.policy.directory, operation.backupId));
-    const latest = records.at(-1), successful = records.findLast(operation => operation.state === "succeeded");
+    // Scheduled jobs can overtake older manual admissions. Completion, not array
+    // order, identifies the latest outcome; tied timestamps conservatively keep failure.
+    const failed = (operation: Operation) => operation.state === "failed" || operation.state === "interrupted";
+    const latest = records.filter(operation => operation.finishedAt !== null).reduce<Operation | undefined>((last, operation) => !last || operation.finishedAt! > last.finishedAt! || (operation.finishedAt === last.finishedAt && failed(operation) && !failed(last)) ? operation : last, undefined) ?? records.at(-1);
+    const successful = records.findLast(operation => operation.state === "succeeded");
     let dataAt = successful?.createdAt ?? null;
     let error: BackupMonitorMetadata["local"]["error"] = this.persistenceFailed ? "metadata_unavailable" : this.ledger.scheduleError ?? (this.ledger.retention === "failed" ? "retention_failed" : null);
     if (successful) {

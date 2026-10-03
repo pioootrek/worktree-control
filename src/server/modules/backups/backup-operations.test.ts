@@ -8,6 +8,7 @@ import { BackupOperations } from "./backup-operations";
 import { backupPolicySchema } from "./policy";
 import { recordHash } from "./records";
 import type { AuthenticatedPrincipal } from "@/server/modules/identity";
+import { evaluateBackupMonitor, parseBackupMonitorOptions } from "@/cli/backup-monitor";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -25,6 +26,22 @@ function fixture(options: Record<string, unknown> = {}) {
 }
 
 describe("service backup operations", () => {
+  it("reports a later manual failure when scheduled priority overtakes its older admission", async () => {
+    const f = fixture({ intervalSeconds: 60 });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.operations.enqueueExport("monitor-gate", 1, () => gate, () => release());
+    const backup = f.store.backup.bind(f.store);
+    let count = 0;
+    vi.spyOn(f.store, "backup").mockImplementation(async (...args) => { f.advance(1000); if (++count === 2) throw new Error("Manual backup failed."); return backup(...args); });
+    f.operations.create(f.actor, "older-manual"); f.advance(60_000); f.operations.tick();
+    release(); await f.operations.drain();
+    expect(f.operations.overview(f.actor).schedule.lastOperation?.state).toBe("succeeded");
+    expect(f.operations.status(f.actor, "older-manual").state).toBe("failed");
+    const metadata = f.operations.monitorMetadata();
+    expect(metadata.local).toMatchObject({ dataAt: "2026-10-01T00:01:00.000Z", lastAttempt: { dataAt: "2026-10-01T00:00:00.000Z", state: "failed", error: "backup_failed" } });
+    expect(evaluateBackupMonitor(metadata, parseBackupMonitorOptions(["--enabled"]), f.deps.clock())).toMatchObject({ severity: "critical", alerts: ["local_failed"] });
+  });
   it("projects bounded CLI metadata without scans and distinguishes missing recorded copies", async () => {
     const f = fixture({ intervalSeconds: 60 });
     const created = f.operations.create(f.actor, "monitor-copy"); await f.operations.drain();
