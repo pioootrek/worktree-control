@@ -634,6 +634,254 @@
         "}",
         " \u001b[32m✓\u001b[39m src/server/transports/user-backup-http.test.ts \u001b[2m(\u001b[22m\u001b[2m2 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 11\u001b[2mms\u001b[22m\u001b[39m"
       ]
+    },
+    {
+      "id": "b739e1a0-aab2-4d26-9dfb-edc6ae5fc0fe",
+      "presetId": "node:check",
+      "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+      "phase": "passed",
+      "source": {
+        "version": 1,
+        "scope": "git-observations",
+        "enqueue": {
+          "observedAt": "2026-10-03T10:47:56.152Z",
+          "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "preflight": {
+          "observedAt": "2026-10-03T10:47:56.310Z",
+          "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "finish": {
+          "observedAt": "2026-10-03T10:49:56.921Z",
+          "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "queueComparison": "match",
+        "executionComparison": "match",
+        "attribution": "observed_match",
+        "reasonCodes": [],
+        "processOutcome": "passed"
+      },
+      "logs": [
+        "✔ lifecycle arguments require an explicit non-root UID (1.481525ms)",
+        "✔ lifecycle reports redact browser and bearer credentials (1.37444ms)",
+        "✔ systemd definition must point at installed paths and omit builder paths (1.105492ms)",
+        "✔ resource benchmark uses local transport with the advertised browser origin (1.410982ms)",
+        "✔ CPU uses one-core process time and RSS uses the sample median (0.30482ms)",
+        "✔ growth compares identical running workloads, not the empty controller (0.429209ms)",
+        "✔ invalid measurements fail rather than becoming a passing zero (0.310449ms)",
+        "ℹ tests 7",
+        "ℹ suites 0",
+        "ℹ pass 7",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ todo 0",
+        "ℹ duration_ms 75.867032"
+      ]
+    },
+    {
+      "id": "38630531-c312-41b3-9019-f24fb20595f7",
+      "presetId": "node:build",
+      "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+      "phase": "passed",
+      "source": {
+        "version": 1,
+        "scope": "git-observations",
+        "enqueue": {
+          "observedAt": "2026-10-03T10:49:25.387Z",
+          "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "preflight": {
+          "observedAt": "2026-10-03T10:49:57.061Z",
+          "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "finish": {
+          "observedAt": "2026-10-03T10:50:06.381Z",
+          "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "queueComparison": "match",
+        "executionComparison": "match",
+        "attribution": "observed_match",
+        "reasonCodes": [],
+        "processOutcome": "passed"
+      },
+      "logs": [
+        "└ ○ /_not-found",
+        "○  (Static)  prerendered as static content",
+        "CLI Building entry: src/cli/backup-verifier.ts, src/cli/index.ts",
+        "CLI Using tsconfig: tsconfig.json",
+        "CLI tsup v8.5.1",
+        "CLI Target: node22",
+        "CLI Cleaning output folder",
+        "ESM Build start",
+        "ESM dist/cli/backup-verifier.js      632.00 B",
+        "ESM dist/cli/chunk-DYGSM5CN.js       16.62 KB",
+        "ESM dist/cli/chunk-QW22RJL3.js       112.01 KB",
+        "ESM dist/cli/mcp-runtime-42N5XTG6.js 29.55 KB",
+        "ESM dist/cli/index.js                493.06 KB",
+        "ESM dist/cli/chunk-XCHPRCGK.js       234.42 KB",
+        "ESM ⚡️ Build success in 90ms"
+      ]
+    },
+    {
+      "id": "289e9e71-6498-43c4-81dc-db7897e9d3ec",
+      "presetId": "node:test:integration",
+      "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+      "phase": "passed",
+      "source": {
+        "version": 1,
+        "scope": "git-observations",
+        "enqueue": {
+          "observedAt": "2026-10-03T10:51:05.662Z",
+          "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "preflight": {
+          "observedAt": "2026-10-03T10:51:05.809Z",
+          "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "finish": {
+          "observedAt": "2026-10-03T10:53:00.770Z",
+          "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "queueComparison": "match",
+        "executionComparison": "match",
+        "attribution": "observed_match",
+        "reasonCodes": [],
+        "processOutcome": "passed"
+      },
+      "logs": [
+        "     \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m manual backup through built CLI path flags preserves the old schema \u001b[33m 576\u001b[2mms\u001b[22m\u001b[39m",
+        "     \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m required backup failure stops the built startup before schema and authentication changes \u001b[33m 434\u001b[2mms\u001b[22m\u001b[39m",
+        "     \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m starts and stops an isolated migrated controller with pre-migration backup enabled=false \u001b[32m 300\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m built offline restore retains durable proof and rejects a corrupt journal before auth startup \u001b[33m 935\u001b[2mms\u001b[22m\u001b[39m",
+        " \u001b[32m✓\u001b[39m tests/integration/user-backups.test.ts \u001b[2m(\u001b[22m\u001b[2m2 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[33m 3127\u001b[2mms\u001b[22m\u001b[39m",
+        "     \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m defaults off and installation credentials cannot become a schedule owner \u001b[33m 600\u001b[2mms\u001b[22m\u001b[39m",
+        "     \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m exports through the shared executor across restart and revalidates after actual SQLite rollback \u001b[33m 2525\u001b[2mms\u001b[22m\u001b[39m",
+        " \u001b[32m✓\u001b[39m tests/integration/user-export-recovery.test.ts \u001b[2m(\u001b[22m\u001b[2m1 test\u001b[22m\u001b[2m)\u001b[22m\u001b[33m 3330\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m built CLI reclaims an expired publication through the active private admin channel and preserves replay after restart \u001b[33m 3328\u001b[2mms\u001b[22m\u001b[39m",
+        " \u001b[32m✓\u001b[39m tests/integration/multi-project-switching.test.ts \u001b[2m(\u001b[22m\u001b[2m1 test\u001b[22m\u001b[2m)\u001b[22m\u001b[33m 1921\u001b[2mms\u001b[22m\u001b[39m",
+        "     \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m switches one of three real Git projects without restarting the others or changing ports \u001b[33m 1920\u001b[2mms\u001b[22m\u001b[39m",
+        "\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m8 passed\u001b[39m\u001b[22m\u001b[90m (8)\u001b[39m",
+        "\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m33 passed\u001b[39m\u001b[22m\u001b[90m (33)\u001b[39m",
+        "\u001b[2m   Start at \u001b[22m 12:51:06",
+        "\u001b[2m   Duration \u001b[22m 113.89s\u001b[2m (transform 134ms, setup 0ms, import 1.34s, tests 111.49s, environment 1ms)\u001b[22m"
+      ]
+    },
+    {
+      "id": "d6cb113a-2da8-4dae-93b9-0ccab30eefbf",
+      "presetId": "node:test:ui:user-backups",
+      "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+      "phase": "passed",
+      "source": {
+        "version": 1,
+        "scope": "git-observations",
+        "enqueue": {
+          "observedAt": "2026-10-03T10:52:48.816Z",
+          "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "preflight": {
+          "observedAt": "2026-10-03T10:53:00.926Z",
+          "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "finish": {
+          "observedAt": "2026-10-03T10:53:37.845Z",
+          "head": "6f3db2f6a6bb82187ae472e8d39b0d18d9907cb4",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "queueComparison": "match",
+        "executionComparison": "match",
+        "attribution": "observed_match",
+        "reasonCodes": [],
+        "processOutcome": "passed"
+      },
+      "logs": [
+        "  ✓   4 tests/ui/user-backups.spec.ts:62:3 › expired key stays expired across refresh/retry and an explicit new request works in en (2.4s)",
+        "  ✓   5 tests/ui/user-backups.spec.ts:79:47 › layout 1440px in en (1.3s)",
+        "  ✓   6 tests/ui/user-backups.spec.ts:79:47 › layout 1366px in en (1.4s)",
+        "  ✓   7 tests/ui/user-backups.spec.ts:79:47 › layout 390px in en (969ms)",
+        "  ✓   8 tests/ui/user-backups.spec.ts:79:47 › layout 320px in en (922ms)",
+        "  ✓   9 tests/ui/user-backups.spec.ts:30:3 › create/edit/toggle, validation and keyboard in pl (2.5s)",
+        "  ✓  10 tests/ui/user-backups.spec.ts:49:59 › same-key retry after disconnect, missing receipt and reload in pl (3.1s)",
+        "  ✓  11 tests/ui/user-backups.spec.ts:49:59 › same-key retry after limit, missing receipt and reload in pl (3.1s)",
+        "  ✓  12 tests/ui/user-backups.spec.ts:62:3 › expired key stays expired across refresh/retry and an explicit new request works in pl (2.7s)",
+        "  ✓  13 tests/ui/user-backups.spec.ts:79:47 › layout 1440px in pl (1.8s)",
+        "  ✓  14 tests/ui/user-backups.spec.ts:79:47 › layout 1366px in pl (1.8s)",
+        "  ✓  15 tests/ui/user-backups.spec.ts:79:47 › layout 390px in pl (1.5s)",
+        "  ✓  16 tests/ui/user-backups.spec.ts:79:47 › layout 320px in pl (1.3s)",
+        "  ✓  17 tests/ui/user-backups.spec.ts:90:1 › installation session remains separate from a connected schedule credential (2.2s)",
+        "  17 passed (35.7s)"
+      ]
     }
   ]
 }
