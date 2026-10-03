@@ -1,4 +1,5 @@
 "use client";
+import { UserSchedulesDialog } from "@/features/backups/user-schedules-dialog";
 import { BackupsDialog } from "@/features/backups/backups-dialog";
 
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -41,7 +42,7 @@ export function Dashboard() {
     return () => { clearTimeout(timer); window.removeEventListener("popstate", sync); };
   }, []);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [systemDialog, setSystemDialog] = useState<"capacity" | "queue" | "mcp" | "backups" | null>(null);
+  const [systemDialog, setSystemDialog] = useState<"capacity" | "queue" | "mcp" | "backups" | "user-backups" | null>(null);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [systemOpen, setSystemOpen] = useState(false);
   const systemTrigger = useRef<HTMLButtonElement>(null);
@@ -99,6 +100,7 @@ export function Dashboard() {
                 {!loading && !accessRequired && <DropdownMenuLabel>{dashboardSummary(locale, runningCount, data.projects.length)}</DropdownMenuLabel>}
                 <DropdownMenuItem onSelect={() => setSystemDialog("capacity")}><Gauge aria-hidden />{t("capacity.openSettings")}<span className="ml-auto tabular-nums text-muted-foreground">{data.capacity.enabled ? `${data.capacity.used}/${data.capacity.limit}` : data.capacity.used}</span></DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => setSystemDialog("queue")}><TestTube2 aria-hidden />{t("tests.openSettings")}<span className="ml-auto tabular-nums text-muted-foreground">{data.testQueue.running}/{data.testQueue.limit}{data.testQueue.queued ? ` +${data.testQueue.queued}` : ""}</span></DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setSystemDialog("user-backups")}><Gauge aria-hidden />{t("userBackups.title")}</DropdownMenuItem>
                 {token.startsWith("wsi_") && <DropdownMenuItem onSelect={() => setSystemDialog("backups")}><Gauge aria-hidden />{t("backups.title")}</DropdownMenuItem>}
                 <DropdownMenuItem onSelect={() => setSystemDialog("mcp")}><Radio aria-hidden />{t("mcp.openStatus")}<span className="ml-auto text-muted-foreground">{t(`mcp.phase.${data.mcp.phase}`)}</span></DropdownMenuItem>
               </DropdownMenuContent>
@@ -115,6 +117,7 @@ export function Dashboard() {
           </div>
           {section !== "knowledge" && data.projects.length > 0 && <p className="w-full truncate px-2 pb-0.5 text-xs font-medium text-muted-foreground sm:hidden">{sectionLabel}</p>}
         </header>
+        {systemDialog === "user-backups" && <UserSchedulesDialog key={knowledgeToken} token={knowledgeToken} onOpenChange={next => setSystemDialog(next ? "user-backups" : null)} returnFocus={() => systemTrigger.current?.focus()} />}
         {systemDialog === "backups" && <BackupsDialog key={token} token={token} open onOpenChange={next => setSystemDialog(next ? "backups" : null)} returnFocus={() => systemTrigger.current?.focus()} />}
         <CapacityDialog status={data.capacity} mutate={mutate} setError={setError} open={systemDialog === "capacity"} onOpenChange={(next) => setSystemDialog(next ? "capacity" : null)} returnFocus={() => systemTrigger.current?.focus()} />
         <TestQueueDialog status={data.testQueue} mutate={mutate} setError={setError} open={systemDialog === "queue"} onOpenChange={(next) => setSystemDialog(next ? "queue" : null)} returnFocus={() => systemTrigger.current?.focus()} />

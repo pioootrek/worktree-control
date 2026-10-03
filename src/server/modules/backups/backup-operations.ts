@@ -50,6 +50,8 @@ export class BackupOperations {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
   private readonly actors = new Map<string, BackupActor>();
+  private readonly exports: Array<{ ownerId: string; execute: () => Promise<void>; interrupt: () => void; settled?: () => void }> = [];
+  private exportOwner: string | null = null;
   private readonly now: () => number;
   constructor(policy: BackupPolicy, private readonly deps: BackupDependencies) {
     this.policy = backupPolicySchema.parse(policy);
@@ -84,6 +86,14 @@ export class BackupOperations {
   assertAdmission(): void {
     if (this.closed || this.persistenceFailed || this.deps.maintenance()) throw new BackupError("backup_busy", 503);
   }
+  /** User exports share this executor and capacity; they never enter the test queue. */
+  enqueueExport(ownerId: string, ownerLimit: number, execute: () => Promise<void>, interrupt: () => void, settled?: () => void): void {
+    this.assertAdmission();
+    const backups = this.ledger.operations.filter(value => value.state === "queued" || value.state === "running").length;
+    if (backups + this.exports.length + (this.exportOwner ? 1 : 0) >= this.policy.queueLimit
+      || this.exports.filter(value => value.ownerId === ownerId).length + (this.exportOwner === ownerId ? 1 : 0) >= ownerLimit) throw new BackupError("backup_limit", 409);
+    this.exports.push({ ownerId, execute, interrupt, settled }); this.pump();
+  }
   overview(actor: BackupActor): BackupOverview {
     this.authorize(actor);
     const { directory, ...policy } = this.policy;
@@ -111,7 +121,7 @@ export class BackupOperations {
     if (actor === "scheduler" && (scheduledAt === null || scheduledAt <= (this.ledger.scheduledThrough ?? -1))) throw new BackupError("backup_invalid", 409);
     this.pruneScheduledHistory();
     const scheduled = actor === "scheduler";
-    if (this.ledger.operations.filter(operation => operation.scheduled === scheduled).length >= (scheduled ? SERVICE_HISTORY_LIMIT : MANUAL_HISTORY_LIMIT) || this.ledger.operations.filter(operation => operation.state === "queued" || operation.state === "running").length >= this.policy.queueLimit) throw new BackupError("backup_limit", 409);
+    if (this.ledger.operations.filter(operation => operation.scheduled === scheduled).length >= (scheduled ? SERVICE_HISTORY_LIMIT : MANUAL_HISTORY_LIMIT) || this.ledger.operations.filter(operation => operation.state === "queued" || operation.state === "running").length + this.exports.length + (this.exportOwner ? 1 : 0) >= this.policy.queueLimit) throw new BackupError("backup_limit", 409);
     const id = `backup-${randomUUID()}`;
     const operation: Operation = { operationId: randomUUID(), backupId: id, actorId: actorId(actor), key, state: "queued", createdAt: this.iso(), finishedAt: null, error: null, destination: destination ? resolve(destination) : join(this.policy.directory!, id), scheduled: actor === "scheduler", manifestHash: null };
     this.ledger.operations.push(operation);
@@ -144,12 +154,20 @@ export class BackupOperations {
   async drain(): Promise<void> { while (this.active) await this.active; }
   async close(): Promise<void> {
     this.closed = true; if (this.timer) clearTimeout(this.timer); this.timer = null;
+    for (const task of this.exports.splice(0)) task.interrupt();
     for (const operation of this.ledger.operations) if (operation.state === "queued") { operation.state = "interrupted"; operation.error = "backup_interrupted"; operation.finishedAt = this.iso(); }
     try { this.save(); } finally { await this.catalog.close(); await this.drain(); }
   }
   private pump(): void {
     if (this.active || this.closed || this.persistenceFailed) return;
-    const operation = this.ledger.operations.find(value => value.state === "queued"); if (!operation) return;
+    const operation = this.ledger.operations.find(value => value.state === "queued" && value.scheduled)
+      ?? this.ledger.operations.find(value => value.state === "queued");
+    if (!operation) {
+      const task = this.exports.shift(); if (!task) return;
+      this.exportOwner = task.ownerId;
+      this.active = Promise.resolve().then(task.execute).catch(() => { this.persistenceFailed = true; }).finally(() => { this.active = null; this.exportOwner = null; this.pump(); task.settled?.(); });
+      return;
+    }
     const actor = this.actors.get(operation.operationId);
     this.active = this.execute(operation, actor).finally(() => { this.active = null; this.actors.delete(operation.operationId); this.pump(); });
   }

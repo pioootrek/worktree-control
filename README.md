@@ -271,6 +271,125 @@ Data defaults to `~/.local/share/worktree-switcher`; runtime state and logs use
 `~/.local/state/worktree-switcher`. The controller respects `XDG_DATA_HOME` and
 `XDG_STATE_HOME`, and startup options can override these paths.
 
+## Optional user export schedules
+
+User schedules default to off, independently of installation backups. An
+operator enables only the supported scope and allowed project/target IDs:
+
+```sh
+worktree-switcher start --user-backup-enabled \
+  --user-backup-scopes knowledge-discussions \
+  --user-backup-projects <knowledge-project-id> \
+  --user-backup-target local=/private/user-exports \
+  --user-backup-min-interval-seconds 3600 --user-backup-max-schedules 4 \
+  --user-backup-max-bytes 67108864 --user-backup-timeout-seconds 30 \
+  --user-backup-queue-limit 2 --user-backup-retain-count 10 \
+  --user-backup-retain-days 30
+```
+
+`service install --refresh` preserves the installed user policy when no
+`--user-backup-*` flags are supplied. Supplying any user-policy flag replaces
+the whole user policy, so repeat all desired allowlists, targets and limits;
+omitting `--user-backup-enabled` in that explicit replacement disables it.
+An unreadable or unsupported installed definition refuses implicit refresh
+before changing the service; provide the complete policy explicitly after review.
+Repeat `--user-backup-target`
+for up to 16 private local targets; projects are a comma-separated allowlist.
+The only supported scope is current discussion text (`knowledge-discussions`).
+It excludes history, authorship, import sources, identities, credentials,
+attachments, tasks and memories. The existing full project transfer format is
+not exposed to schedules. Export content remains user-authored project data.
+
+Scoped owner/agent credentials with current `knowledge:read` and `knowledge:export`
+grants open **System → My export schedules**. The panel accepts a separate scoped
+credential when the dashboard uses an installation token. Its session changes
+neither the installation session nor service policy. They manage only their own records
+and download only authorized complete exports. Installation/open/legacy/worker
+identities cannot own a user schedule. Expired or revoked activation credentials
+block execution; edit with a current credential to reactivate. This version uses
+the existing principal types and does not add a SaaS account provider.
+
+Limits: minimum interval 60–2,592,000 seconds, schedules per principal 1–32,
+bytes per principal 1 MiB–1 GiB, cooperative timeout 1–300 seconds, pending jobs
+per principal 1–32, retention maximum 1–100 copies and 1–365 days. Defaults are
+shown above. The shared `--backup-queue-limit` (default four) also bounds all
+pending/running service backups and user exports. Only one executes at a time;
+queued service jobs have priority. A discussion export has at most 1000 threads,
+1000 replies and a complete JSON envelope smaller than 4 MiB. Oversize content
+is refused. Synchronous bounded phases can exceed the timeout before its next
+check; no successful publication occurs after a failed deadline check.
+
+Creating, enabling or editing increments the version and sets the next UTC
+instant to now plus the interval. Disabling clears that instant and keeps copies.
+An overdue schedule attempts only one slot, then advances to a future instant.
+Queued work of an old version fails. Retry a lost mutation with its original
+idempotency key; status failure for one request keeps the available panel visible.
+No HTTP operation modifies operator policy or grants restore authority.
+
+Checksummed private application records live beside the installation operation
+ledger, outside SQLite snapshots. This keeps configuration, versions, deadlines
+and receipt keys from rolling back during restore; transfer to a new host is
+outside this feature. There are at most 256 schedules, 2048 execution records
+and 1024 mutation receipts globally, also bounded by a 4 MiB record. Each schedule
+retains its last four receipts, so repeated edits cannot consume another
+schedule's history or prevent disabling at the receipt bound. Fetch
+`mutationGeneration` from the overview and construct fresh keys with
+`userScheduleMutationKey(generation, scheduleId, expectedVersion, nonce)`.
+Keep the original key for retries. Compacted keys return `expired` (410);
+durable versions prevent replay. Format-1 ledgers migrate automatically, retaining
+four receipts per schedule; unknown old opaque keys expire. Older controllers
+refuse the new format. Do not delete or reset the ledger to clear limits.
+A restore receipt changes the validation generation; even an admitted restore
+that later fails requires explicit revalidation. S4u rejects credentials issued
+before that restore boundary, including credentials resurrected by offline
+restore. Issue a fresh scoped credential and save the schedule again.
+
+Retention runs after success on an enabled current version. It removes only
+verified artifacts of that owner, schedule, project and target, preserves the
+newest and leaves installation/manual/pre-migration/recovery/unknown material
+untouched. Retention failure is visible. Disabled schedules perform no deletion.
+
+An operator can reclaim a complete user export, including staging left before
+publication, when its execution is `failed`, `interrupted` or `succeeded`,
+through the running controller's private admin socket:
+
+```bash
+worktree-switcher backup user-cleanup list
+worktree-switcher backup user-cleanup preview <execution-id>
+worktree-switcher backup user-cleanup cleanup <execution-id> <confirmation-id>
+```
+
+The list reads candidate metadata; preview validates one complete export and
+shows its original execution state. Cleanup may remove a successful copy,
+including the last one, only through this explicit operator confirmation.
+When retained successful copies fill an owner quota or the global execution
+history, this command releases capacity. Automatic retention still requires a
+new successful export and never discards the last copy to make space.
+Use the confirmation returned by preview. It binds the execution, configured
+target, checksum and file identity; a changed file needs inspection, not a new
+path argument. Cleanup checks the ledger and complete envelope, refuses active
+exports, unknown material, symlinks and unknown hardlinks, and removes a remaining
+staging alias only when it belongs to that same inode. A staging-only export
+requires a complete matching envelope and the same identity checks. The original execution
+outcome stays unchanged. This operation is unavailable to scoped or installation
+HTTP/MCP clients and does not open an offline database owner.
+
+A separate private recovery journal records intent before deletion. Unsettled
+cleanup remains charged to the original owner even if the file appears absent.
+After interruption or a filesystem error, repeat the same execution and
+confirmation IDs; if persistence was uncertain, restart the controller through
+its normal operator lifecycle first. Space is released only after directory
+synchronization and durable settlement. Replays never delete newly created
+material. The journal holds at most 2048 entries and 4 MiB, outside mutation
+history. Pending intents stay pinned; completed receipts follow the existing
+bounded execution history. An expired execution ID is refused and cannot start
+a second cleanup. Staging remains charged and keeps its execution record even
+when a timeout or crash occurred before publication was recorded. Final/staging
+hardlinks count once. Corrupt or unrecognized evidence requires separate
+inspection and is not deleted by this operation.
+
+Local exports require a surviving host and filesystem.
+
 ## Optional installation backups
 
 Automatic backups and browser create/restore actions default to off. Only the
@@ -293,8 +412,7 @@ of host process limits. A timed-out operation cannot publish a successful copy;
 synchronous filesystem work may take longer before reaching its next limit check.
 
 `--backup-before-migration --backup-dir <directory>` retains its independent,
-default-off migration gate. No user schedules, off-host transfer or attachment
-store garbage collection are included. Local copies require a surviving host
+default-off migration gate. No off-host transfer or attachment store garbage collection is included. Local copies require a surviving host
 and filesystem to be useful.
 
 ```sh

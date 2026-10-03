@@ -1,6 +1,7 @@
+import { handleUserBackupHttp } from "./transports/user-backup-http";
 import { handleBackupHttp } from "./transports/backup-http";
 import { createHttpServerCloser } from "./http-server-lifecycle";
-import { BackupError, type BackupOperations, type RestoreOperations } from "./modules/backups";
+import { BackupError, type BackupOperations, type RestoreOperations, type UserSchedules } from "./modules/backups";
 import { KnowledgeError, knowledgeFailure } from "./modules/knowledge";
 import { timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
@@ -392,6 +393,7 @@ export function createControllerServer(options: {
   publicOrigin?: string;
   backups?: BackupOperations;
   restores?: RestoreOperations;
+  userSchedules?: UserSchedules;
   maintenance?: () => boolean;
 }): ControllerServer {
   const readJson = async (request: IncomingMessage, limit?: number): Promise<unknown> => {
@@ -427,6 +429,11 @@ export function createControllerServer(options: {
     try {
       if (url.pathname.startsWith("/api/")) {
         response.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
+        if (url.pathname === "/api/user-backups" && options.userSchedules) {
+          if (!hasValidOrigin(request, options.publicOrigin)) { json(response, 403, { code: "forbidden" }); return; }
+          await handleUserBackupHttp(request, authenticateActor(request), options.userSchedules, readRequestJson, (status, body) => json(response, status, body));
+          return;
+        }
         if (url.pathname === "/api/backups" && options.backups && options.restores) {
           if (!hasValidOrigin(request, options.publicOrigin)) { json(response, 403, { code: "origin_forbidden", error: "origin_forbidden" }); return; }
           const runtime = authenticateRuntime(request);
