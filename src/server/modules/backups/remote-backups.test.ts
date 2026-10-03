@@ -177,7 +177,7 @@ describe("optional installation transfer", () => {
     vi.mocked(f.transport.upload).mockResolvedValueOnce({ progress: true, proofs: [proof], uploadAttempted: false, inventoryHash: "f".repeat(64) }).mockRejectedValueOnce(new RemoteBackupReconciliationError());
     const copy = f.operations.create("local-admin", "changed-inventory"); await f.operations.drain(); f.advance(); f.operations.remote.tick(); await f.operations.drain();
     expect(f.operations.remote.status().transfers[0]).toMatchObject({ state: "failed", error: "remote_inventory_changed", reconciliation: { passes: 2, classified: 1 } });
-    await f.operations.close(); const restarted = new BackupOperations(f.policy, f.deps);
+    await f.operations.close(); const restarted = new BackupOperations(backupPolicySchema.parse({ ...f.policy, intervalSeconds: null }), f.deps);
     try {
       restarted.start(); f.advance(); restarted.remote.tick(); await restarted.drain(); expect(f.transport.upload).toHaveBeenCalledTimes(2);
       vi.mocked(f.transport.upload).mockResolvedValue({ snapshotId: "c".repeat(64) });
