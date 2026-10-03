@@ -1,6 +1,6 @@
 ---
 audience: "people installing a verified Worktree Switcher trial tarball"
-last_reviewed: "2026-09-27"
+last_reviewed: "2026-10-03"
 source_of_truth: "trial artifact installation, first run, upgrade, and removal"
 status: "active"
 ---
@@ -32,12 +32,15 @@ SHA256SUMS
 provenance.json
 INSTALL.md
 package-smoke.mjs
+package-install.mjs
 package-lifecycle-trial.mjs
 ```
 
 Check that `provenance.json` names the expected version, full source commit,
 CI run, tarball digest, build toolchain, and verification targets. Then verify
-the bytes before installing:
+the bytes before installing. Keep `package-install.mjs` beside the delivered
+`package-smoke.mjs`, which imports it. The checksum manifest covers the tarball
+and the smoke, installer and lifecycle scripts:
 
 ```bash
 sha256sum --check SHA256SUMS
@@ -95,15 +98,37 @@ and [HTTPS guide](controller-https.md).
 
 ## Upgrade and recover
 
-Upgrading an installation that contains existing state is not supported by this
-trial. Worktree Switcher does not yet expose the consistent SQLite backup API or
-the tested recovery path required to make that operation safe. Do not replace the
-installed package or run a newer controller against the existing data directory.
+The controller provides full SQLite/attachment backup and recoverable restore.
+The installed-artifact acceptance uses an exact historical schema-24 package
+(`a727fd8ff01e141c6494615531e27e72a23f6320`) and the current package in separate
+production prefixes. It exercises migration to schema 28, representative process
+interruptions and recovery from disposable HTTPS storage after deleting the local
+fixture copies. This is isolated evidence; it does not identify your deployed
+version or establish off-host recovery targets for your data.
 
-Evaluate another candidate with a separate npm prefix and empty, explicitly
-selected data and state directories. Keep the existing service stopped while its
-ports are reused. The old-to-new migration, backup and rollback harness is a later
-acceptance gate; this guide will gain upgrade commands only after that gate passes.
+Before changing a real installation, identify its actual artifact and schema,
+verify private ownership/permissions, and rehearse with an isolated consistent
+copy. Historical service installations used `umask 0077`; a foreground installation
+created with `0022` may need an explicit ownership/permission review before the
+current controller accepts its data directory. Do not silently repair unknown
+or aliased paths.
+
+Backups are optional and configured only through operator CLI/service arguments.
+When `--backup-before-migration --backup-dir <private-directory>` is enabled,
+a failed required copy blocks migration. With backups off, a supported migration
+runs without a backup destination, but there is no backup-based rollback.
+For the selected backup profile, verify the recovery point before the upgrade,
+stop the sole owner in an agreed maintenance window, and preserve the previous
+artifact. Never run old code against the migrated database. After new writes,
+preserve and account for those changes before considering an older snapshot;
+recover old code with its matching snapshot in a separate directory.
+
+Offline full restore preserves snapshot credentials. Inspect and revoke stale
+sessions, agent tokens and grants before exposing the recovered installation.
+Online/catalog restore applies its separate credential invalidation fence.
+A real destination, recoverable keys, operator trial and rollout remain separate
+acceptance steps. The storage-safety plan and dated evidence under `docs/backlog/`
+record the isolated checks and the later operational and project-cutover procedure.
 
 ## Remove the trial
 

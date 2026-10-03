@@ -219,6 +219,11 @@
       "author": "agent:codex",
       "date": "2026-10-03",
       "text": "Recorded accepted S5c contract in storage-safety-s5c-contract-20261003.md: exact historical a727fd8 and candidate installed artifacts, real historical API data, default-off/enabled upgrade variants, representative fault boundaries, source-independent disposable HTTPS recovery, preserved post-upgrade writes and separate-directory old recovery. Reuse existing packaging/installation and explicit test driver; no host systemd or production data. Historical capability and artifact provenance must be explicit. S5c code starts only after S5b merge; no S5c result is claimed."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-03",
+      "text": "S5b PR #76 merged as 3e99b7b95055ae125749d54bfbebe9975d015cc6 from e9b7e6c. Offline repository rebind, preserved archived receipts/pins, explicit single reupload and bounded durable history reconciliation delivered. Focused58/check965+7/build and final HTTPS/installed acceptance passed with revision attribution; CI37137172368 all four jobs green. One n8n round:3 fixes,0 unresolved. Dated report/evidence preserve earlier failures and exact artifacts. S5c starts under its accepted installed-artifact contract; item remains open. Target host, keys and rollout separate; no production/service changes."
     }
   ],
   "priority": "next",
