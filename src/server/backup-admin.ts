@@ -1,10 +1,16 @@
 import { z } from "zod";
-import { BackupError, type BackupOperations, type RestoreOperations } from "./modules/backups";
+import { BackupError, type BackupOperations, type RestoreOperations, type UserSchedules } from "./modules/backups";
 import { backupCommandSchema } from "@/shared/contracts/backups";
 
 const inputSchema = z.object({ command: z.literal("backup"), operation: z.enum(["create", "now", "restore", "status", "list"]), destination: z.string().min(1).max(4096).optional(), idempotencyKey: z.string().min(1).max(256).optional(), backupId: z.string().optional() }).strict();
-export function backupAdminHandler(backups: BackupOperations, restores: RestoreOperations): (body: unknown) => unknown {
+export function backupAdminHandler(backups: BackupOperations, restores: RestoreOperations, schedules?: UserSchedules): (body: unknown) => unknown {
   return async body => {
+    if (body && typeof body === "object" && "command" in body && body.command === "user-export-recovery") {
+      if (!schedules) throw new BackupError("backup_invalid");
+      const { command, ...input } = body;
+      void command;
+      return schedules.recover("local-admin", input);
+    }
     const input = inputSchema.parse(body);
     if (input.operation === "list") return backups.overview("local-admin");
     if (input.operation === "status") {

@@ -50,7 +50,7 @@ export class BackupOperations {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
   private readonly actors = new Map<string, BackupActor>();
-  private readonly exports: Array<{ ownerId: string; execute: () => Promise<void>; interrupt: () => void }> = [];
+  private readonly exports: Array<{ ownerId: string; execute: () => Promise<void>; interrupt: () => void; settled?: () => void }> = [];
   private exportOwner: string | null = null;
   private readonly now: () => number;
   constructor(policy: BackupPolicy, private readonly deps: BackupDependencies) {
@@ -87,12 +87,12 @@ export class BackupOperations {
     if (this.closed || this.persistenceFailed || this.deps.maintenance()) throw new BackupError("backup_busy", 503);
   }
   /** User exports share this executor and capacity; they never enter the test queue. */
-  enqueueExport(ownerId: string, ownerLimit: number, execute: () => Promise<void>, interrupt: () => void): void {
+  enqueueExport(ownerId: string, ownerLimit: number, execute: () => Promise<void>, interrupt: () => void, settled?: () => void): void {
     this.assertAdmission();
     const backups = this.ledger.operations.filter(value => value.state === "queued" || value.state === "running").length;
     if (backups + this.exports.length + (this.exportOwner ? 1 : 0) >= this.policy.queueLimit
       || this.exports.filter(value => value.ownerId === ownerId).length + (this.exportOwner === ownerId ? 1 : 0) >= ownerLimit) throw new BackupError("backup_limit", 409);
-    this.exports.push({ ownerId, execute, interrupt }); this.pump();
+    this.exports.push({ ownerId, execute, interrupt, settled }); this.pump();
   }
   overview(actor: BackupActor): BackupOverview {
     this.authorize(actor);
@@ -165,7 +165,7 @@ export class BackupOperations {
     if (!operation) {
       const task = this.exports.shift(); if (!task) return;
       this.exportOwner = task.ownerId;
-      this.active = Promise.resolve().then(task.execute).catch(() => { this.persistenceFailed = true; }).finally(() => { this.active = null; this.exportOwner = null; this.pump(); });
+      this.active = Promise.resolve().then(task.execute).catch(() => { this.persistenceFailed = true; }).finally(() => { this.active = null; this.exportOwner = null; this.pump(); task.settled?.(); });
       return;
     }
     const actor = this.actors.get(operation.operationId);

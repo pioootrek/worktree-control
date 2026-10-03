@@ -341,6 +341,37 @@ Retention runs after success on an enabled current version. It removes only
 verified artifacts of that owner, schedule, project and target, preserves the
 newest and leaves installation/manual/pre-migration/recovery/unknown material
 untouched. Retention failure is visible. Disabled schedules perform no deletion.
+
+An operator can reclaim a complete user publication left `failed` or
+`interrupted` through the running controller's private admin socket:
+
+```bash
+worktree-switcher backup user-cleanup list
+worktree-switcher backup user-cleanup preview <execution-id>
+worktree-switcher backup user-cleanup cleanup <execution-id> <confirmation-id>
+```
+
+The list reads candidate metadata; preview validates one complete publication.
+Use the confirmation returned by preview. It binds the execution, configured
+target, checksum and file identity; a changed file needs inspection, not a new
+path argument. Cleanup checks the ledger and complete envelope, refuses active
+exports, unknown material, symlinks and unknown hardlinks, and removes a remaining
+staging alias only when it belongs to that same inode. The original execution
+stays failed/interrupted. This operation is unavailable to scoped or installation
+HTTP/MCP clients and does not open an offline database owner.
+
+A separate private recovery journal records intent before deletion. Unsettled
+cleanup remains charged to the original owner even if the file appears absent.
+After interruption or a filesystem error, repeat the same execution and
+confirmation IDs; if persistence was uncertain, restart the controller through
+its normal operator lifecycle first. Space is released only after directory
+synchronization and durable settlement. Replays never delete newly created
+material. The journal holds at most 2048 entries and 4 MiB, outside mutation
+history. Pending intents stay pinned; completed receipts follow the existing
+bounded execution history. An expired execution ID is refused and cannot start
+a second cleanup. Staging-only, corrupt or unrecognized evidence requires
+separate inspection and is not deleted by this operation.
+
 Local exports require a surviving host and filesystem.
 
 ## Optional installation backups

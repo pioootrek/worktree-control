@@ -13,6 +13,14 @@ import { cliCredential, OWNER_CREDENTIAL_REQUIRED, OWNER_CREDENTIAL_VARIABLES } 
 import { exportKnowledgeProject, importKnowledgeProject } from "@/server/modules/knowledge";
 
 export async function runBackupCommand(args: string[], paths: AppPaths, applicationVersion: string, write: (line:string)=>void=console.log, environment:Readonly<Record<string,string|undefined>>=process.env): Promise<void> {
+  if (args[0] === "user-cleanup") {
+    const [, action, executionId, confirmation, ...extra] = args;
+    const valid = (action === "list" && !executionId) || (action === "preview" && executionId && !confirmation) || (action === "cleanup" && executionId && confirmation);
+    if (!valid || extra.length) throw new Error("Usage: backup user-cleanup list | preview <execution-id> | cleanup <execution-id> <confirmation-id>");
+    // Recovery requires the running controller's target policy and existing singleton owner.
+    const result = await requestAdminSocket(paths.adminSocketPath, { command: "user-export-recovery", action, ...(executionId ? { executionId } : {}), ...(confirmation ? { confirmation } : {}) });
+    write(JSON.stringify(result, null, 2)); return;
+  }
   const keyIndex = args.indexOf("--idempotency-key");
   const key = keyIndex >= 0 ? args[keyIndex + 1] : randomUUID();
   if (!key || key.startsWith("--") || key.length > 256 || args.filter(value => value === "--idempotency-key").length > 1) throw new Error("Invalid backup idempotency key.");

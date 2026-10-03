@@ -311,9 +311,9 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
         logs.controller("authentication.policy_changed", { command, mode: authentication.mode() });
       },
     });
-    const backupHandler = backupAdminHandler(backups, restores);
+    const backupHandler = backupAdminHandler(backups, restores, userSchedules);
     adminSocket = await listenAdminSocket(paths.adminSocketPath, body => {
-      if (body && typeof body === "object" && "command" in body && body.command === "backup") return backupHandler(body);
+      if (body && typeof body === "object" && "command" in body && (body.command === "backup" || body.command === "user-export-recovery")) return backupHandler(body);
       if (maintenance) throw new Error("Controller is in maintenance.");
       return authenticationHandler(body);
     });
