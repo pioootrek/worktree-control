@@ -65,7 +65,7 @@ export class UserExportRecovery {
     this.checkRequest(input);
     const command = commandSchema.parse(input);
     if (command.action === "list") return this.executions().flatMap(value => {
-      if (value.state !== "failed" && value.state !== "interrupted") return [];
+      if (value.state !== "failed" && value.state !== "interrupted" && value.state !== "succeeded") return [];
       const entry = this.entry(value.executionId);
       if (entry?.phase === "completed") return [];
       try {
@@ -118,7 +118,7 @@ export class UserExportRecovery {
   private execution(id: string): Execution {
     const execution = this.executions().find(value => value.executionId === id);
     if (!execution) throw new UserBackupError("invalid", 404);
-    if (execution.state !== "failed" && execution.state !== "interrupted") throw new UserBackupError("changed", 409);
+    if (execution.state !== "failed" && execution.state !== "interrupted" && execution.state !== "succeeded") throw new UserBackupError("changed", 409);
     return execution;
   }
   private entry(id: string): Entry | undefined { return this.ledger.entries.find(value => value.executionId === id); }

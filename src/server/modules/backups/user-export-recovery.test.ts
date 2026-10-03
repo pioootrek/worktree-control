@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { z } from "zod";
 import { afterEach, expect, it, vi } from "vitest";
 import { BackupOperations, backupPolicySchema, UserSchedules, userBackupPolicySchema } from "./index";
-import { readRecord, writeRecord } from "./records";
+import { readRecord, recordHash, writeRecord } from "./records";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => { vi.restoreAllMocks(); syncBuiltinESMExports(); for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -103,7 +103,7 @@ it("rejects queued and running executions at admission, without waiting for them
   let running: Promise<unknown> | undefined;
   f.deps.exportDiscussions = () => { const id = f.ledger().executions.at(-1).executionId; running = preview(f, id).catch(error => error); return { body: "small" }; };
   f.advance(); f.schedules.tick(); await f.backups.drain(); expect(await running).toMatchObject({ code: "changed" });
-  await expect(preview(f, f.ledger().executions.at(-1).executionId)).rejects.toThrow("changed");
+  expect(await preview(f, f.ledger().executions.at(-1).executionId)).toMatchObject({ eligible: true, state: "succeeded" });
 });
 
 for (const field of ["ownerId", "scope", "projectId", "targetId", "scheduleId", "version", "executionId", "dueAt", "source", "checksum"]) it(`refuses a foreign or damaged ${field} in a historical publication`, async () => {
@@ -287,4 +287,47 @@ for (const kind of ["corrupt", "foreign", "hardlink", "symlink"]) it(`preserves 
   const bytes = readFileSync(staging);
   await expect(preview(f, execution.executionId)).rejects.toThrow();
   expect(readFileSync(staging)).toEqual(bytes);
+});
+
+it("lets the operator release succeeded copies at full owner quota without changing their outcome", async () => {
+  const f = fixture(); f.save(); f.advance(); f.schedules.tick(); await f.backups.drain();
+  const original = f.ledger().executions[0];
+  f.advance(); f.schedules.tick(); await f.backups.drain();
+  expect(f.schedules.overview(f.actor()).artifacts[0]).toMatchObject({ state: "failed", reason: "limit" });
+  const view = await preview(f, original.executionId);
+  expect(view).toMatchObject({ state: "succeeded", eligible: true });
+  expect((await reclaim(f, view)).state).toBe("completed");
+  expect(f.ledger().executions.find((value: { executionId: string }) => value.executionId === original.executionId)).toEqual(original);
+  f.restart(); expect((await reclaim(f, view)).state).toBe("completed");
+  f.advance(); f.schedules.tick(); await f.backups.drain();
+  expect(f.schedules.overview(f.actor()).artifacts[0].state).toBe("succeeded");
+});
+
+it("releases the global execution cap through confirmed cleanup of succeeded history", async () => {
+  const f = fixture(undefined, 32); f.save(); f.advance(); f.schedules.tick(); await f.backups.drain();
+  f.save("other");
+  const ledger = f.ledger(), original = ledger.executions[0];
+  const envelope = JSON.parse(readFileSync(original.destination, "utf8"));
+  // Model 2048 distinct retained publications, with complete matching envelopes.
+  for (let index = 1; index < 2048; index++) {
+    const executionId = randomUUID(), destination = join(f.root, "exports", `user-export-${executionId}.json`);
+    const payload = { ...envelope.payload, executionId };
+    const hash = recordHash(payload);
+    writeFileSync(destination, JSON.stringify({ payload, sha256: hash }), { mode: 0o600 });
+    ledger.executions.push({ ...original, executionId, destination, hash });
+  }
+  writeRecord(f.path, ledger); f.restart();
+  // Stop the filling schedule; disabling must keep its copies until explicit cleanup.
+  const schedule = f.schedules.overview(f.actor()).schedules[0];
+  f.schedules.command(f.actor(), { action: "save", id: schedule.id, version: schedule.version,
+    idempotencyKey: userScheduleMutationKey(f.schedules.overview(f.actor()).mutationGeneration, schedule.id, schedule.version, randomUUID()),
+    configuration: { projectId: schedule.projectId, scope: schedule.scope, targetId: schedule.targetId, enabled: false,
+      intervalSeconds: schedule.intervalSeconds, retainCount: schedule.retainCount, retainDays: schedule.retainDays } });
+  f.advance(); f.schedules.tick(); await f.backups.drain();
+  expect(f.schedules.overview(f.actor("other")).schedules[0].reason).toBe("limit");
+  expect(f.ledger().executions).toHaveLength(2048);
+  await reclaim(f, await preview(f, original.executionId));
+  f.advance(); f.schedules.tick(); await f.backups.drain();
+  expect(f.schedules.overview(f.actor("other")).artifacts[0].state).toBe("succeeded");
+  expect(f.ledger().executions).toHaveLength(2048);
 });

@@ -350,8 +350,8 @@ newest and leaves installation/manual/pre-migration/recovery/unknown material
 untouched. Retention failure is visible. Disabled schedules perform no deletion.
 
 An operator can reclaim a complete user export, including staging left before
-publication, when its execution is `failed` or
-`interrupted` through the running controller's private admin socket:
+publication, when its execution is `failed`, `interrupted` or `succeeded`,
+through the running controller's private admin socket:
 
 ```bash
 worktree-switcher backup user-cleanup list
@@ -359,14 +359,19 @@ worktree-switcher backup user-cleanup preview <execution-id>
 worktree-switcher backup user-cleanup cleanup <execution-id> <confirmation-id>
 ```
 
-The list reads candidate metadata; preview validates one complete export.
+The list reads candidate metadata; preview validates one complete export and
+shows its original execution state. Cleanup may remove a successful copy,
+including the last one, only through this explicit operator confirmation.
+When retained successful copies fill an owner quota or the global execution
+history, this command releases capacity. Automatic retention still requires a
+new successful export and never discards the last copy to make space.
 Use the confirmation returned by preview. It binds the execution, configured
 target, checksum and file identity; a changed file needs inspection, not a new
 path argument. Cleanup checks the ledger and complete envelope, refuses active
 exports, unknown material, symlinks and unknown hardlinks, and removes a remaining
 staging alias only when it belongs to that same inode. A staging-only export
 requires a complete matching envelope and the same identity checks. The original execution
-stays failed/interrupted. This operation is unavailable to scoped or installation
+outcome stays unchanged. This operation is unavailable to scoped or installation
 HTTP/MCP clients and does not open an offline database owner.
 
 A separate private recovery journal records intent before deletion. Unsettled
