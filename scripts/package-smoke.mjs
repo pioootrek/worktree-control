@@ -318,6 +318,10 @@ async function main() {
 
   const accessUrl = new URL(access.accessUrl);
   check(access.version === metadata.version, "Controller access record version does not match the installed package.");
+  await step("remote-backup-default-off", async () => {
+    const status = JSON.parse((await run(cliCommand, ["backup", "remote", "status", ...common], { cwd: root, env: runtimeEnv })).stdout);
+    check(status.enabled === false && status.pending === 0 && status.error === null && status.lastConfirmed === null && status.recovery === "not-measured", "Installed package unexpectedly enables remote backups.");
+  });
   check(accessUrl.origin === publicOrigin, "Packaged controller did not advertise the configured public origin.");
   check(access.publicDashboardEndpoint === publicOrigin, "Packaged controller did not record its public endpoint.");
   check(access.localDashboardEndpoint === `http://127.0.0.1:${dashboardPort}`, "Packaged controller did not record its local CLI endpoint.");

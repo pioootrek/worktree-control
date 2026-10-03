@@ -22,12 +22,12 @@ describe("operator-only remote startup policy", () => {
     expect(remoteBackupArguments(parsed).join(" ")).not.toContain("fixture-backend-password");
     expect(remoteBackupArguments(parsed).join(" ")).not.toContain("fixture-encryption-password");
   });
-  it.each([["--backup-remote-enabled"], ["--backup-remote-disabled", "--backup-remote-enabled"], ["--backup-remote-config", "secret"], ["--backup-remote-retry-seconds", "10"], ["--backup-remote-enabled", "yes"], ["--backup-remote-disabled", "--backup-remote-pending-limit", "1"]])("rejects malformed or ambiguous deployment policy %j", args => expect(() => parseRemoteBackupOptions(args)).toThrow());
+  it.each([["--backup-remote-enabled"], ["--backup-remote-disabled", "--backup-remote-enabled"], ["--backup-remote-config", "secret"], ["--backup-remote-retry-seconds", "10"], ["--backup-remote-enabled", "yes"], ["--backup-remote-disabled", "--backup-remote-pending-limit", "1"]])("rejects malformed or ambiguous deployment policy %j", (...args) => expect(() => parseRemoteBackupOptions(args)).toThrow());
   it("rejects unsafe targets and secret inputs without echoing paths or values", () => {
     const f = fixture();
     for (const repository of ["/local", "rest:http://unsafe/", "rest:https://user:secret@host/", "rest:https://host/?secret", "sftp:user@host:/repo"]) {
       const args = [...f.args]; args[args.indexOf("--backup-remote-repository") + 1] = repository;
-      try { parseRemoteBackupOptions(args); throw new Error("accepted"); } catch (error) { expect((error as Error).message).not.toContain(repository); expect((error as Error).message).not.toContain(f.root); }
+      expect(() => parseRemoteBackupOptions(args)).toThrow(/^Invalid remote backup configuration:/);
     }
     chmodSync(f.credentials, 0o644); expect(() => parseRemoteBackupOptions(f.args)).toThrow("Invalid remote backup configuration");
     chmodSync(f.credentials, 0o600); writeFileSync(f.key, Buffer.alloc(16385)); expect(() => parseRemoteBackupOptions(f.args)).toThrow();

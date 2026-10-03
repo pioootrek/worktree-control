@@ -392,6 +392,82 @@ Local exports require a surviving host and filesystem.
 
 ## Optional installation backups
 
+Encrypted transfer defaults to off and is independent of the local schedule.
+The first adapter uses an existing restic HTTPS REST repository. Provision the
+repository and preserve its password outside the source host before enabling
+transfer; Worktree Switcher never initializes, prunes or changes its keys.
+All policy comes from operator CLI arguments. Only credentials are read from
+private files: a restic repository password file and a JSON file containing
+`{"username":"...","password":"..."}` for the REST server. Keep both files
+in a private directory, owned by the controller user, mode `0600`, without
+symlink or hardlink aliases. The executable must be an absolute, trusted restic
+path. Obtain the repository's cryptographic ID with `restic cat config`.
+
+```sh
+worktree-switcher start --backup-dir /private/installation-copies \
+  --backup-remote-enabled --backup-remote-restic /usr/bin/restic \
+  --backup-remote-repository rest:https://backup.example.test/installation/ \
+  --backup-remote-repository-id <64-character-repository-id> \
+  --backup-remote-password-file /private/backup-secrets/repository-password \
+  --backup-remote-credentials-file /private/backup-secrets/rest-credentials.json \
+  --backup-remote-pending-limit 4 --backup-remote-attempt-limit 3 \
+  --backup-remote-retry-seconds 300 --backup-remote-timeout-seconds 300 \
+  --backup-remote-upload-kib-per-second 10240
+```
+
+Use `--backup-remote-ca-file <private-pem-file>` when an explicit CA is required;
+otherwise restic verifies HTTPS using system roots. Userinfo, query strings,
+HTTP and other backends are rejected. Repository/password commands and ambient
+restic credentials or proxy settings are not inherited. TLS and authenticated
+encryption are supplied by [restic](https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html).
+
+New successful installation backups created in the configured catalog are
+eligible while transfer is enabled. Explicit CLI destination copies, migration
+copies and scoped user exports are not automatically transferred. Every upload
+shares the existing single backup/export executor. A stable installation ID,
+backup ID, manifest hash and repository ID fence retries; confirmation reads
+back the authenticated manifest and checks the exact remote file inventory.
+An incomplete snapshot never counts as confirmation. No remote retention is
+performed; the repository owner must manage it separately.
+
+```sh
+worktree-switcher backup remote status
+worktree-switcher backup remote retry <backup-id> --generation <next-generation>
+```
+
+These commands require the running controller's private administrative socket.
+Status separates local success from remote confirmation and always labels
+recovery `not-measured`. Data age uses the conservative local admission time,
+not upload completion. Automatic attempts are bounded per round; an explicit
+retry increments the reported generation by one and admits a fresh bounded
+round. Repeating an accepted generation replays its status. Unknown final
+attempts after a crash first reconcile without authorizing a new upload.
+Pending/failed sources remain protected from local retention, including when
+transfer is disabled. Their limit rejects new catalog backups before copying;
+it never deletes pending data to make room. Local backups with an explicit
+destination remain available for operator rescue. Confirmed receipt history
+compacts only after the source and its durable service operation have retired,
+using the existing service replay fence; latest confirmation remains visible.
+
+`service install --refresh` preserves and revalidates installed local and remote
+policies when no flags for that policy are supplied. Explicit policy flags
+replace that whole policy. Use `--backup-remote-disabled` to disable transfer;
+this preserves retry material and makes no background connections or alarms.
+Remote policy/status is not available through dashboard, HTTP or MCP actions.
+
+To recover, use a trusted restic and separately held repository password/backend
+credentials to restore the full confirmed snapshot ID into an empty private
+directory (`restic restore <snapshot-id> --target <directory> --verify`). Run
+`worktree-switcher backup restore <directory> --data-dir <fresh-data-dir>
+--state-dir <fresh-state-dir>` with the controller stopped. The existing restore
+validates schema, integrity, references and attachments before publication.
+Check restored records and attachment bytes through authenticated clients,
+rotate credentials after an incident, and configure startup policy separately.
+Keep the source/current state before any rollback after new writes. A transfer
+receipt is not a recovery drill or a host-loss RPO/RTO guarantee: independent
+monitoring, operational key custody, representative recovery measurements and
+the old/new installed-artifact upgrade matrix remain pending acceptance work.
+
 Automatic backups and browser create/restore actions default to off. Only the
 installation operator selects policy, through `start` or `service install`
 arguments. A directory alone enables neither automation nor web actions.
