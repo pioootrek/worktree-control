@@ -214,6 +214,11 @@
       "author": "agent:codex",
       "date": "2026-10-03",
       "text": "S5a merged in PR #75 at 4bebff93956a2bd8a0ed664845f76fdc57850b3d from head94a5b4d. Optional default-off finite CLI backup monitor, bounded private metadata and safe unknown/exit3 invocation failures delivered. Managed focused36/check940+7/build/integration3/installedsmoke19 passed observed_match. CI37130460325 all4 green:940+7,HTTPS,36integration+2restic skips,166UI,3E2E,18-step smoke Node22/24 and lifecycle. CI artifact SHA2563d6bff931dd9163d835eedab15abf9c86fa21254a2c5bb7b43d9dd0af6f2e966 verified. n8n one actual model round after failed preflight:1fix,0backlog,0falsepositive,0unresolved. See dated report/evidence. Sole Sol6.1high worker now starts S5b from merged main; S5c follows. Parent stays open. No production or host changes; target/keys/rollout separate."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-03",
+      "text": "Recorded accepted S5c contract in storage-safety-s5c-contract-20261003.md: exact historical a727fd8 and candidate installed artifacts, real historical API data, default-off/enabled upgrade variants, representative fault boundaries, source-independent disposable HTTPS recovery, preserved post-upgrade writes and separate-directory old recovery. Reuse existing packaging/installation and explicit test driver; no host systemd or production data. Historical capability and artifact provenance must be explicit. S5c code starts only after S5b merge; no S5c result is claimed."
     }
   ],
   "priority": "next",
