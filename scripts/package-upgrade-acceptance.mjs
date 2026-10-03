@@ -30,7 +30,10 @@ function installation(packageRoot, base) {
   item.json = async (args, token) => JSON.parse(await item.cli(args, token));
   item.knowledge = (operation, input, token) => item.json(["knowledge", operation, "--json", JSON.stringify(input)], token);
   item.stop = async () => { const child = item.child; item.child = null; if (child) await closeFixtureChild(child); };
-  item.startArgs = async extra => ["start", "--service-mode", "--no-open", "--host", "127.0.0.1", "--port", String(await port()), "--mcp-port", String(await port()), "--web-root", join(packageRoot, "out"), ...extra, "--data-dir", item.data, "--state-dir", item.state];
+  item.startArgs = async extra => {
+    assert(Buffer.byteLength(join(item.state, "admin.sock")) <= 107, "Fixture admin socket path exceeds the Linux socket bound.");
+    return ["start", "--service-mode", "--no-open", "--host", "127.0.0.1", "--port", String(await port()), "--mcp-port", String(await port()), "--web-root", join(packageRoot, "out"), ...extra, "--data-dir", item.data, "--state-dir", item.state];
+  };
   item.start = async (extra = []) => {
     assert.equal(item.child, null); const args = await item.startArgs(extra); item.endpoint = `http://127.0.0.1:${args[args.indexOf("--port") + 1]}`;
     item.child = spawn(process.execPath, [item.cliPath, ...args], { env: environment, stdio: "ignore" });
