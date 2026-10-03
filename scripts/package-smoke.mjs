@@ -87,7 +87,12 @@ async function verifyInstalled(script, packageRoot, input = []) {
       clearTimeout(interruptedForce); process.off("SIGTERM", interrupt); process.off("SIGINT", interrupt);
       // A driver is responsible for graceful cleanup; reject any surviving group.
       if (process.platform !== "win32" && child.pid) { try { process.kill(-child.pid, 0); failed = true; stop("SIGKILL"); } catch (error) { if (error.code !== "ESRCH") failed = true; } }
-      if (failed || code !== 0) reject(new Error("Explicit installed verification driver failed or required forced cleanup."));
+      if (failed || code !== 0) {
+        // Only the explicit diagnostic protocol is public; discard raw child errors.
+        let phase = "";
+        try { const report = JSON.parse(output.trim()); if (report.errorCode === "fixture_failed" && /^[a-z0-9-]{1,100}$/.test(report.failureStep)) phase = ` Stage: ${report.failureStep}.`; } catch { /* Malformed output remains private. */ }
+        reject(new Error(`Explicit installed verification driver failed or required forced cleanup.${phase}`));
+      }
       else { try { accept({ driver: "explicit-local-repository-script", runtime: "installed-artifact", evidence: JSON.parse(output.trim()) }); } catch { reject(new Error("Installed verification driver did not return bounded JSON evidence.")); } }
     });
   });
