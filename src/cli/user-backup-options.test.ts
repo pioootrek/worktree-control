@@ -30,7 +30,7 @@ describe("user backup startup policy", () => {
     const calls: string[][] = [];
     const runner: ServiceCommandRunner = { run: (command, args) => { calls.push([command, ...args]); return { status: 0, stdout: "", stderr: "" }; } };
     try {
-      const manager = new UserServiceManager({ platform, homeDirectory: root, environment: {}, uid: 123, runner });
+      const manager = new UserServiceManager({ platform, homeDirectory: root, environment: { NODE_ENV: "test" }, uid: 123, runner });
       const target = join(root, 'exports 100% & "quotes" \\ local');
       const policy = parseUserBackupOptions(["--user-backup-enabled", "--user-backup-projects", "one,two", "--user-backup-scopes", "knowledge-discussions", "--user-backup-target", `local=${target}`, "--user-backup-min-interval-seconds", "120", "--user-backup-max-schedules", "3"]);
       const base = { host: "127.0.0.1", port: 3000, mcpPort: 4000, browseRoot: root, dataDirectory: root, stateDirectory: root, webRoot: root, noMcp: false, memoryWarningMiB: null };
