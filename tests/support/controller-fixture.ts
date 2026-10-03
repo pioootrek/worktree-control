@@ -103,7 +103,7 @@ async function createRepository(base: string, name: string, kind: FixtureProject
 export async function startControllerFixture(projectCount = 3, projectKinds: FixtureProjectKind[] = [], options: { backups?: boolean; userBackups?: boolean; startupArguments?: string[]; restoredInstallation?: { data: string; state: string; token: string }; artifact?: { cli: string; webRoot: string } } = {}): Promise<ControllerFixture> {
   const artifactCli = options.artifact?.cli ?? join(repositoryRoot, "dist/cli/index.js");
   const artifactWeb = options.artifact?.webRoot ?? join(repositoryRoot, "out");
-  const runtimeEnvironment = options.artifact ? { PATH: process.env.PATH, LANG: "C.UTF-8", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) } : process.env;
+  const runtimeEnvironment = options.artifact ? { PATH: process.env.PATH, LANG: "C.UTF-8", NODE_ENV: "production" as const, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) } : process.env;
   const base = await mkdtemp(join(tmpdir(), "worktree-switcher-integration-"));
   const data = options.restoredInstallation?.data ?? join(base, "data"), state = options.restoredInstallation?.state ?? join(base, "state");
   await Promise.all([mkdir(data, { mode: 0o700, recursive: true }), mkdir(state, { mode: 0o700, recursive: true })]);
