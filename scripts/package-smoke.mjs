@@ -415,7 +415,9 @@ async function main() {
   await stopController();
   await step("backup-monitor-controller-absent", async () => {
     let stopped;
-    try { await run(cliCommand, ["backup", "monitor", "--enabled", ...common], { cwd: root, env: runtimeEnv }); }
+    // The normal run helper deliberately redacts and discards failure payloads.
+    // This expected nonzero probe needs its structured stdout and exact exit code.
+    try { await exec(cliCommand, ["backup", "monitor", "--enabled", ...common], { cwd: root, env: runtimeEnv, encoding: "utf8", timeout: STEP_TIMEOUT, maxBuffer: 16 * 1024 }); }
     catch (error) { check(error.code === 3, "Stopped monitor returned the wrong exit code."); stopped = JSON.parse(error.stdout); }
     check(stopped?.severity === "unknown" && stopped.controller === "unavailable" && stopped.alerts[0] === "controller_unavailable", "Monitor certified an absent controller.");
   });
