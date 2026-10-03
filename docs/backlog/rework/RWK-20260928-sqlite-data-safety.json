@@ -209,11 +209,16 @@
       "author": "agent:codex",
       "date": "2026-10-03",
       "text": "Recorded the S5b implementation contract in storage-safety-s5b-contract-20261003.md: offline operator rebind under existing ownership, one atomic bounded ledger with archived proof/pins, explicit single-backup reupload, durable bounded partial-history continuations without automatic deletion. Root reviewed the worker proposal; code starts after PR #75 merges. Code and isolated fixtures only; host, keys and rollout remain separate. S5a review fix is still under verification; no S5a merge or S5b implementation outcome is claimed."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-03",
+      "text": "S5a merged in PR #75 at 4bebff93956a2bd8a0ed664845f76fdc57850b3d from head94a5b4d. Optional default-off finite CLI backup monitor, bounded private metadata and safe unknown/exit3 invocation failures delivered. Managed focused36/check940+7/build/integration3/installedsmoke19 passed observed_match. CI37130460325 all4 green:940+7,HTTPS,36integration+2restic skips,166UI,3E2E,18-step smoke Node22/24 and lifecycle. CI artifact SHA2563d6bff931dd9163d835eedab15abf9c86fa21254a2c5bb7b43d9dd0af6f2e966 verified. n8n one actual model round after failed preflight:1fix,0backlog,0falsepositive,0unresolved. See dated report/evidence. Sole Sol6.1high worker now starts S5b from merged main; S5c follows. Parent stays open. No production or host changes; target/keys/rollout separate."
     }
   ],
   "priority": "next",
   "problem": [
-    "Main includes SQLite ownership, durable migrations and attachments, recoverable restore, optional CLI operational backups, independent user exports and S4b encrypted restic HTTPS REST transfer through PRs #68–#74. S5 operational acceptance remains incomplete.",
+    "Main includes SQLite ownership, durable migrations and attachments, recoverable restore, optional CLI backups, independent user exports, encrypted restic transfer and finite independent monitor through PRs #68–#75. S5b repository migration and S5c installed-artifact recovery acceptance remain.",
     "Knowledge cutover needs verified backup operations, private file handling, exclusive database ownership and recorded failure/restore evidence. The existing K7a pilot does not prove these guarantees."
   ],
   "risk": {

@@ -1,0 +1,831 @@
+{
+  "pr": "https://github.com/pioootrek/worktree-switcher/pull/75",
+  "head": "94a5b4d53069c979e308792d41c62501c5cbe050",
+  "runtimeHead": "94a5b4d53069c979e308792d41c62501c5cbe050",
+  "runs": [
+    {
+      "id": "74ddf431-f080-434b-8580-544a8a8afefb",
+      "preset": "node:test:backup-monitor",
+      "head": "94a5b4d53069c979e308792d41c62501c5cbe050",
+      "phase": "passed",
+      "queuedAt": "2026-10-03T14:37:31.789Z",
+      "startedAt": "2026-10-03T14:37:31.961Z",
+      "finishedAt": "2026-10-03T14:37:36.290Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match",
+      "processOutcome": "passed"
+    },
+    {
+      "id": "0a7b1027-1c79-4ae4-aca1-e515cd655f2f",
+      "preset": "node:check",
+      "head": "94a5b4d53069c979e308792d41c62501c5cbe050",
+      "phase": "passed",
+      "queuedAt": "2026-10-03T14:40:28.939Z",
+      "startedAt": "2026-10-03T14:40:29.127Z",
+      "finishedAt": "2026-10-03T14:42:48.837Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match",
+      "processOutcome": "passed"
+    },
+    {
+      "id": "b524f466-2bd7-4b6f-b5a1-b5d4089d753d",
+      "preset": "node:build",
+      "head": "94a5b4d53069c979e308792d41c62501c5cbe050",
+      "phase": "passed",
+      "queuedAt": "2026-10-03T14:45:33.278Z",
+      "startedAt": "2026-10-03T14:45:33.461Z",
+      "finishedAt": "2026-10-03T14:45:42.544Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match",
+      "processOutcome": "passed"
+    },
+    {
+      "id": "0f46dbc5-8f49-4ce4-9336-3286c2c4d1cc",
+      "preset": "node:test:integration:backup-monitor",
+      "head": "94a5b4d53069c979e308792d41c62501c5cbe050",
+      "phase": "passed",
+      "queuedAt": "2026-10-03T14:46:45.783Z",
+      "startedAt": "2026-10-03T14:46:45.949Z",
+      "finishedAt": "2026-10-03T14:46:51.980Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match",
+      "processOutcome": "passed"
+    },
+    {
+      "id": "014edb3e-2949-4315-81d8-fa2aa4cf0197",
+      "preset": "node:test:package",
+      "head": "94a5b4d53069c979e308792d41c62501c5cbe050",
+      "phase": "passed",
+      "queuedAt": "2026-10-03T14:47:25.609Z",
+      "startedAt": "2026-10-03T14:47:25.757Z",
+      "finishedAt": "2026-10-03T14:48:11.643Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match",
+      "processOutcome": "passed"
+    }
+  ],
+  "artifact": {
+    "ok": true,
+    "package": "worktree-switcher@0.1.0-trial.1",
+    "tarball": "worktree-switcher-0.1.0-trial.1.tgz",
+    "sha256": "60fffba0258a49074a7eba285bdf54f5495567c049675d40d6ddd343e10f2600",
+    "bytes": 853953,
+    "archiveEntries": 54,
+    "node": "v24.19.0",
+    "npm": "11.17.0",
+    "platform": "linux-x64",
+    "install": {
+      "mode": "global-prefix",
+      "prefixContainsSpaces": true
+    },
+    "nativeSqlite": {
+      "load": "success",
+      "binary": "node_modules/better-sqlite3/prebuilds/linux-x64.node",
+      "provisioning": "packaged prebuilt"
+    },
+    "dependencies": {
+      "copies": 1381,
+      "uniquePackageVersions": 508,
+      "report": null
+    },
+    "steps": [
+      {
+        "name": "pack",
+        "ok": true,
+        "durationMs": 2695
+      },
+      {
+        "name": "archive-manifest",
+        "ok": true,
+        "durationMs": 14
+      },
+      {
+        "name": "archive-content-audit",
+        "ok": true,
+        "durationMs": 38
+      },
+      {
+        "name": "production-install",
+        "ok": true,
+        "durationMs": 22332
+      },
+      {
+        "name": "native-sqlite",
+        "ok": true,
+        "durationMs": 11
+      },
+      {
+        "name": "damaged-asset-rejected",
+        "ok": true,
+        "durationMs": 500
+      },
+      {
+        "name": "doctor",
+        "ok": true,
+        "durationMs": 253
+      },
+      {
+        "name": "offline-cli",
+        "ok": true,
+        "durationMs": 507
+      },
+      {
+        "name": "installation-token",
+        "ok": true,
+        "durationMs": 246
+      },
+      {
+        "name": "controller-readiness",
+        "ok": true,
+        "durationMs": 310
+      },
+      {
+        "name": "remote-backup-default-off",
+        "ok": true,
+        "durationMs": 198
+      },
+      {
+        "name": "backup-monitor-live",
+        "ok": true,
+        "durationMs": 378
+      },
+      {
+        "name": "backup-monitor-invalid-options",
+        "ok": true,
+        "durationMs": 380
+      },
+      {
+        "name": "packaged-assets",
+        "ok": true,
+        "durationMs": 70
+      },
+      {
+        "name": "live-cli-forwarding",
+        "ok": true,
+        "durationMs": 204
+      },
+      {
+        "name": "installation-backup-verifier",
+        "ok": true,
+        "durationMs": 596
+      },
+      {
+        "name": "mcp-runtime",
+        "ok": true,
+        "durationMs": 987
+      },
+      {
+        "name": "backup-monitor-controller-absent",
+        "ok": true,
+        "durationMs": 202
+      },
+      {
+        "name": "project-removal",
+        "ok": true,
+        "durationMs": 467
+      }
+    ],
+    "cleanup": "graceful",
+    "durationMs": 31643
+  },
+  "earlierRuns": [
+    {
+      "id": "ad1767cf-65fb-4386-8417-45de8521a084",
+      "head": "d460b64",
+      "result": "failed before tests: pnpm refused a node_modules symlink outside worktree; corrected with own frozen/offline dependency installation"
+    },
+    {
+      "id": "0cf91972-3331-43d6-a876-bc16c48fc2a9",
+      "head": "58cdcb4",
+      "result": "failed: 34 assertions passed but unhandled Node stream error from oversized response; fixed explicit reject + stream destruction without error emission"
+    },
+    {
+      "id": "6384808d-0d8f-414f-ab87-b8abb30383ee",
+      "head": "f32c228",
+      "result": "passed 34 focused tests before priority-order regression"
+    },
+    {
+      "id": "33ecb275-ac8e-426f-a514-f7c44e386550",
+      "head": "f32c228",
+      "result": "passed 938 unit +7 script tests before priority-order regression"
+    },
+    {
+      "id": "47d8267f-4f34-43ee-8b7d-64ad1435aa39",
+      "head": "875b1ca",
+      "result": "failed installed smoke: expected-negative harness used redacting helper that drops exit code/stdout; script-only fix c688d85"
+    }
+  ],
+  "review": {
+    "workflow": "n8n all",
+    "dispatchAttempts": 2,
+    "modelReviewRounds": 1,
+    "firstAttempt": "Failed before reviewer launch: owned gh auth preflight stalled and was terminated; no model review ran. Controlled retry completed.",
+    "outcomes": {
+      "fix": 1,
+      "backlog": 0,
+      "falsePositive": 0,
+      "unresolved": 0
+    },
+    "fixedThread": "https://github.com/pioootrek/worktree-switcher/pull/75#discussion_r4173539044",
+    "reply": "https://github.com/pioootrek/worktree-switcher/pull/75#discussion_r4173611065",
+    "claude": "One invalid invocation exit-code finding, fixed in 94a5b4d.",
+    "kimi": "No actionable issues; final head 94a5b4d.",
+    "codex": "No actionable issues; independently confirmed correction at 94a5b4d."
+  },
+  "limits": [
+    "No production DB/secrets read, deployment, service/guard changes or external production data transfer.",
+    "Recorded metadata is not a remote reachability or restore verification; hashes are not recomputed by monitor.",
+    "Local integration uses process stop, not physical disk/power-loss or real-host RPO/RTO evidence.",
+    "S5b repository migration/partial-history reconciliation and S5c installed upgrade/recovery + S6 runbook remain open. Owner explicitly selected software + isolated tests now, off-host target/key custody/rollout separately."
+  ],
+  "earlierVerifiedRuns": [
+    {
+      "id": "638d08b7-1616-4424-8854-e9e0455faab2",
+      "preset": "node:test:backup-monitor",
+      "head": "875b1ca397297033340189708c6c86c6a095e5de",
+      "phase": "passed",
+      "queuedAt": "2026-10-03T14:13:54.117Z",
+      "startedAt": "2026-10-03T14:13:54.277Z",
+      "finishedAt": "2026-10-03T14:13:58.378Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match",
+      "processOutcome": "passed"
+    },
+    {
+      "id": "92295dd6-cd37-4e39-83ae-0fa722c1a803",
+      "preset": "node:check",
+      "head": "875b1ca397297033340189708c6c86c6a095e5de",
+      "phase": "passed",
+      "queuedAt": "2026-10-03T14:14:48.358Z",
+      "startedAt": "2026-10-03T14:14:48.517Z",
+      "finishedAt": "2026-10-03T14:16:52.362Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match",
+      "processOutcome": "passed"
+    },
+    {
+      "id": "fd79a882-4078-45ff-b1ce-06d0be90dfd0",
+      "preset": "node:build",
+      "head": "875b1ca397297033340189708c6c86c6a095e5de",
+      "phase": "passed",
+      "queuedAt": "2026-10-03T14:17:56.318Z",
+      "startedAt": "2026-10-03T14:17:56.469Z",
+      "finishedAt": "2026-10-03T14:18:16.163Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match",
+      "processOutcome": "passed"
+    },
+    {
+      "id": "0f91d304-904f-4fc0-92e9-fd4c83c0ce3b",
+      "preset": "node:test:integration:backup-monitor",
+      "head": "875b1ca397297033340189708c6c86c6a095e5de",
+      "phase": "passed",
+      "queuedAt": "2026-10-03T14:19:43.377Z",
+      "startedAt": "2026-10-03T14:19:43.556Z",
+      "finishedAt": "2026-10-03T14:19:47.513Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match",
+      "processOutcome": "passed"
+    },
+    {
+      "id": "0bd2dc50-6b66-4c40-87d5-268c214c9500",
+      "preset": "node:test:package",
+      "head": "c688d853df79ccde1244331bf8f33c863fceb67b",
+      "phase": "passed",
+      "queuedAt": "2026-10-03T14:26:31.093Z",
+      "startedAt": "2026-10-03T14:26:31.255Z",
+      "finishedAt": "2026-10-03T14:27:16.271Z",
+      "exitCode": 0,
+      "signal": null,
+      "attribution": "observed_match",
+      "processOutcome": "passed"
+    }
+  ],
+  "earlierVerifiedArtifact": {
+    "ok": true,
+    "package": "worktree-switcher@0.1.0-trial.1",
+    "tarball": "worktree-switcher-0.1.0-trial.1.tgz",
+    "sha256": "5ab652984a06bf9fd466f5fb8024a38610f28d398064a8f4430f5a562d47ac78",
+    "bytes": 853737,
+    "archiveEntries": 54,
+    "node": "v24.19.0",
+    "npm": "11.17.0",
+    "platform": "linux-x64",
+    "install": {
+      "mode": "global-prefix",
+      "prefixContainsSpaces": true
+    },
+    "nativeSqlite": {
+      "load": "success",
+      "binary": "node_modules/better-sqlite3/prebuilds/linux-x64.node",
+      "provisioning": "packaged prebuilt"
+    },
+    "dependencies": {
+      "copies": 1381,
+      "uniquePackageVersions": 508,
+      "report": null
+    },
+    "steps": [
+      {
+        "name": "pack",
+        "ok": true,
+        "durationMs": 2608
+      },
+      {
+        "name": "archive-manifest",
+        "ok": true,
+        "durationMs": 14
+      },
+      {
+        "name": "archive-content-audit",
+        "ok": true,
+        "durationMs": 38
+      },
+      {
+        "name": "production-install",
+        "ok": true,
+        "durationMs": 21790
+      },
+      {
+        "name": "native-sqlite",
+        "ok": true,
+        "durationMs": 12
+      },
+      {
+        "name": "damaged-asset-rejected",
+        "ok": true,
+        "durationMs": 604
+      },
+      {
+        "name": "doctor",
+        "ok": true,
+        "durationMs": 259
+      },
+      {
+        "name": "offline-cli",
+        "ok": true,
+        "durationMs": 501
+      },
+      {
+        "name": "installation-token",
+        "ok": true,
+        "durationMs": 231
+      },
+      {
+        "name": "controller-readiness",
+        "ok": true,
+        "durationMs": 310
+      },
+      {
+        "name": "remote-backup-default-off",
+        "ok": true,
+        "durationMs": 214
+      },
+      {
+        "name": "backup-monitor-live",
+        "ok": true,
+        "durationMs": 393
+      },
+      {
+        "name": "packaged-assets",
+        "ok": true,
+        "durationMs": 79
+      },
+      {
+        "name": "live-cli-forwarding",
+        "ok": true,
+        "durationMs": 203
+      },
+      {
+        "name": "installation-backup-verifier",
+        "ok": true,
+        "durationMs": 598
+      },
+      {
+        "name": "mcp-runtime",
+        "ok": true,
+        "durationMs": 993
+      },
+      {
+        "name": "backup-monitor-controller-absent",
+        "ok": true,
+        "durationMs": 195
+      },
+      {
+        "name": "project-removal",
+        "ok": true,
+        "durationMs": 465
+      }
+    ],
+    "cleanup": "graceful",
+    "durationMs": 30759
+  },
+  "priorRuntimeHead": "875b1ca397297033340189708c6c86c6a095e5de",
+  "reviewFix": {
+    "thread": "PRRT_kwDOUINt8M6ooc2A",
+    "url": "https://github.com/pioootrek/worktree-switcher/pull/75#discussion_r4173539044",
+    "classification": "fix",
+    "change": "Monitor invocation intercepted before other policy parsers; invalid options/path arguments return safe JSON unknown/3/invalid_options, no raw args/path/error echo; real built and installed CLI regressions pass.",
+    "inlineReplyAndResolution": "root-owned; pending at worker handoff"
+  },
+  "nextScope": {
+    "approvedContract": "docs/backlog/notes/NOTE-20260913-knowledge-backlog-implementation/storage-safety-s5b-contract-20261003.md",
+    "s5b": "no code before PR75 merge; root refinements include persisted continuation budgets, expected own-upload inventory changes, authenticated complete mismatch only, compatible read limits and no restore from rebind helper"
+  },
+  "merged": {
+    "sha": "4bebff93956a2bd8a0ed664845f76fdc57850b3d",
+    "at": "2026-10-03T14:53:16Z"
+  },
+  "ci": {
+    "runId": "37130460325",
+    "allFourJobs": "success",
+    "unit": 940,
+    "script": 7,
+    "https": 1,
+    "integrationPassed": 36,
+    "integrationSkipped": 2,
+    "ui": 166,
+    "e2e": 3,
+    "provenance": {
+      "schemaVersion": 1,
+      "package": {
+        "name": "worktree-switcher",
+        "version": "0.1.0-trial.1",
+        "private": true
+      },
+      "source": {
+        "commit": "7098347162407af162c4c22c94e3d94ac1bd8efa",
+        "dirty": false
+      },
+      "artifact": {
+        "filename": "worktree-switcher-0.1.0-trial.1.tgz",
+        "sha256": "3d6bff931dd9163d835eedab15abf9c86fa21254a2c5bb7b43d9dd0af6f2e966",
+        "bytes": 853928
+      },
+      "build": {
+        "node": "v22.23.2",
+        "npm": "10.9.8",
+        "pnpm": "11.22.0"
+      },
+      "ci": {
+        "repository": "pioootrek/worktree-switcher",
+        "runId": "37130460325",
+        "runAttempt": "1",
+        "runUrl": "https://github.com/pioootrek/worktree-switcher/actions/runs/37130460325"
+      },
+      "verification": {
+        "status": "pending-package-smoke",
+        "targets": [
+          "ubuntu-24.04-linux-x64-node22.23.2",
+          "ubuntu-24.04-linux-x64-node24.21.0"
+        ]
+      },
+      "files": {
+        "checksum": "SHA256SUMS",
+        "installGuide": "INSTALL.md",
+        "smoke": "package-smoke.mjs",
+        "smokeSha256": "432a15f7ee811198a55543688236a68b1b3066bad7e055ebc212908d043fcb12",
+        "lifecycle": "package-lifecycle-trial.mjs",
+        "lifecycleSha256": "5d278e2c97ed003b87e65f1bfb8155a1ca51674ecc7c45dcf8ec174eb2980318"
+      }
+    },
+    "sourceParents": [
+      "e1e4f00ecccc34fc201130e53dbed321fb4bd044",
+      "94a5b4d53069c979e308792d41c62501c5cbe050"
+    ],
+    "audit": "Tarball checksum and both verification-script hashes match provenance; bundled CLI contains invalid_options correction. Packaging status pending-package-smoke is pack-time state; subsequent reports establish smoke success. Merge adds only docs beyond checked base.",
+    "reports": [
+      {
+        "name": "package-lifecycle-report.json",
+        "outcome": "passed",
+        "cleanup": {
+          "graceful": true,
+          "serviceAbsent": true,
+          "dataPreserved": true
+        },
+        "phases": [
+          {
+            "name": "install-candidate",
+            "startedAt": "2026-10-03T14:49:01.838Z",
+            "completedAt": "2026-10-03T14:49:23.792Z",
+            "outcome": "passed",
+            "evidence": {
+              "pid": 2387,
+              "installedVersion": "0.1.0-trial.1",
+              "nativeSqlite": "loaded",
+              "dashboard": {
+                "version": "0.1.0-trial.1",
+                "dashboardReachable": true,
+                "mcpRunning": true,
+                "accessRecordMode": "0600"
+              },
+              "definition": {
+                "requiredFragments": 8,
+                "builderPathsAbsent": true
+              },
+              "definitionMode": "0600",
+              "enabled": true
+            }
+          },
+          {
+            "name": "status-and-idempotent-install",
+            "startedAt": "2026-10-03T14:49:23.792Z",
+            "completedAt": "2026-10-03T14:49:24.429Z",
+            "outcome": "passed",
+            "evidence": {
+              "pidUnchanged": true,
+              "statusSafe": true,
+              "dashboard": {
+                "version": "0.1.0-trial.1",
+                "dashboardReachable": true,
+                "mcpRunning": true,
+                "accessRecordMode": "0600"
+              }
+            }
+          },
+          {
+            "name": "open-and-restart",
+            "startedAt": "2026-10-03T14:49:24.429Z",
+            "completedAt": "2026-10-03T14:49:25.300Z",
+            "outcome": "passed",
+            "evidence": {
+              "fakeBrowserUsed": true,
+              "pidChanged": true,
+              "pid": 2477
+            }
+          },
+          {
+            "name": "new-user-session",
+            "startedAt": "2026-10-03T14:49:25.300Z",
+            "completedAt": "2026-10-03T14:49:26.374Z",
+            "outcome": "passed",
+            "evidence": {
+              "managerRestarted": true,
+              "enabledServiceStarted": true,
+              "pidChanged": true
+            }
+          },
+          {
+            "name": "stop-and-repeated-install",
+            "startedAt": "2026-10-03T14:49:26.374Z",
+            "completedAt": "2026-10-03T14:49:27.565Z",
+            "outcome": "passed",
+            "evidence": {
+              "stopClean": true,
+              "repeatedInstallStartedService": true
+            }
+          },
+          {
+            "name": "uninstall-idempotently",
+            "startedAt": "2026-10-03T14:49:29.231Z",
+            "completedAt": "2026-10-03T14:49:30.285Z",
+            "outcome": "passed",
+            "evidence": {
+              "repeatedUninstallSafe": true,
+              "definitionAbsent": true,
+              "dataPreserved": true
+            }
+          }
+        ],
+        "negativeScenarios": [
+          {
+            "name": "foreground-singleton-owner",
+            "startedAt": "2026-10-03T14:49:27.565Z",
+            "completedAt": "2026-10-03T14:49:28.479Z",
+            "outcome": "passed",
+            "evidence": {
+              "ownerPreserved": true,
+              "serviceFailureRecorded": true,
+              "restarts": 0
+            }
+          },
+          {
+            "name": "occupied-dashboard-port",
+            "startedAt": "2026-10-03T14:49:28.479Z",
+            "completedAt": "2026-10-03T14:49:29.231Z",
+            "outcome": "passed",
+            "evidence": {
+              "unrelatedListenerPreserved": true,
+              "serviceFailureRecorded": true,
+              "restarts": 0
+            }
+          }
+        ],
+        "faults": []
+      },
+      {
+        "name": "portable-smoke-report-node-24.21.0.json",
+        "ok": true,
+        "sha256": "3d6bff931dd9163d835eedab15abf9c86fa21254a2c5bb7b43d9dd0af6f2e966",
+        "bytes": 853928,
+        "node": "v24.21.0",
+        "platform": "linux-x64",
+        "steps": [
+          {
+            "name": "archive-manifest",
+            "ok": true,
+            "durationMs": 18
+          },
+          {
+            "name": "archive-content-audit",
+            "ok": true,
+            "durationMs": 38
+          },
+          {
+            "name": "production-install",
+            "ok": true,
+            "durationMs": 20277
+          },
+          {
+            "name": "native-sqlite",
+            "ok": true,
+            "durationMs": 11
+          },
+          {
+            "name": "damaged-asset-rejected",
+            "ok": true,
+            "durationMs": 465
+          },
+          {
+            "name": "doctor",
+            "ok": true,
+            "durationMs": 188
+          },
+          {
+            "name": "offline-cli",
+            "ok": true,
+            "durationMs": 336
+          },
+          {
+            "name": "installation-token",
+            "ok": true,
+            "durationMs": 174
+          },
+          {
+            "name": "controller-readiness",
+            "ok": true,
+            "durationMs": 208
+          },
+          {
+            "name": "remote-backup-default-off",
+            "ok": true,
+            "durationMs": 141
+          },
+          {
+            "name": "backup-monitor-live",
+            "ok": true,
+            "durationMs": 279
+          },
+          {
+            "name": "backup-monitor-invalid-options",
+            "ok": true,
+            "durationMs": 264
+          },
+          {
+            "name": "packaged-assets",
+            "ok": true,
+            "durationMs": 46
+          },
+          {
+            "name": "live-cli-forwarding",
+            "ok": true,
+            "durationMs": 139
+          },
+          {
+            "name": "installation-backup-verifier",
+            "ok": true,
+            "durationMs": 398
+          },
+          {
+            "name": "mcp-runtime",
+            "ok": true,
+            "durationMs": 938
+          },
+          {
+            "name": "backup-monitor-controller-absent",
+            "ok": true,
+            "durationMs": 131
+          },
+          {
+            "name": "project-removal",
+            "ok": true,
+            "durationMs": 318
+          }
+        ],
+        "cleanup": "graceful",
+        "durationMs": 25218
+      },
+      {
+        "name": "portable-smoke-report-node-22.23.2.json",
+        "ok": true,
+        "sha256": "3d6bff931dd9163d835eedab15abf9c86fa21254a2c5bb7b43d9dd0af6f2e966",
+        "bytes": 853928,
+        "node": "v22.23.2",
+        "platform": "linux-x64",
+        "steps": [
+          {
+            "name": "archive-manifest",
+            "ok": true,
+            "durationMs": 23
+          },
+          {
+            "name": "archive-content-audit",
+            "ok": true,
+            "durationMs": 45
+          },
+          {
+            "name": "production-install",
+            "ok": true,
+            "durationMs": 22489
+          },
+          {
+            "name": "native-sqlite",
+            "ok": true,
+            "durationMs": 17
+          },
+          {
+            "name": "damaged-asset-rejected",
+            "ok": true,
+            "durationMs": 664
+          },
+          {
+            "name": "doctor",
+            "ok": true,
+            "durationMs": 232
+          },
+          {
+            "name": "offline-cli",
+            "ok": true,
+            "durationMs": 479
+          },
+          {
+            "name": "installation-token",
+            "ok": true,
+            "durationMs": 220
+          },
+          {
+            "name": "controller-readiness",
+            "ok": true,
+            "durationMs": 309
+          },
+          {
+            "name": "remote-backup-default-off",
+            "ok": true,
+            "durationMs": 181
+          },
+          {
+            "name": "backup-monitor-live",
+            "ok": true,
+            "durationMs": 352
+          },
+          {
+            "name": "backup-monitor-invalid-options",
+            "ok": true,
+            "durationMs": 337
+          },
+          {
+            "name": "packaged-assets",
+            "ok": true,
+            "durationMs": 76
+          },
+          {
+            "name": "live-cli-forwarding",
+            "ok": true,
+            "durationMs": 185
+          },
+          {
+            "name": "installation-backup-verifier",
+            "ok": true,
+            "durationMs": 540
+          },
+          {
+            "name": "mcp-runtime",
+            "ok": true,
+            "durationMs": 1385
+          },
+          {
+            "name": "backup-monitor-controller-absent",
+            "ok": true,
+            "durationMs": 180
+          },
+          {
+            "name": "project-removal",
+            "ok": true,
+            "durationMs": 447
+          }
+        ],
+        "cleanup": "graceful",
+        "durationMs": 29388
+      }
+    ]
+  }
+}

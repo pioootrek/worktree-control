@@ -1,7 +1,7 @@
 # Plan domknięcia bezpieczeństwa danych SQLite
 
-Aktualizacja: 2026-10-03. Status: S1–S3, S4a, S4u i S4b scalone;
-S5 pozostaje do wykonania.
+Aktualizacja: 2026-10-03. Status: S1–S3, S4a, S4u, S4b i S5a scalone;
+S5b i S5c pozostają do wykonania.
 Stan realizacji jest poniżej; pierwotna diagnoza zachowana jako punkt odniesienia.
 Zadanie: [RWK-20260928-sqlite-data-safety](../../rework/RWK-20260928-sqlite-data-safety.json).
 Kod sprawdzony przy tworzeniu planu: `6a9df6e0879b4b9ad69969b1cc4b5bd4264a363c`.
@@ -10,7 +10,7 @@ historycznym punktem odniesienia. Powiązane prace:
 [migracja wiedzy](implementation-plan.md) i
 [aktualizacja pakietu](../NOTE-20260908-portable-verification-plan/controller-package-trial.md).
 
-## Stan realizacji po scaleniu S4b — 2026-10-03
+## Stan realizacji po scaleniu S5a — 2026-10-03
 
 S1a/S2a, S1b/S2b, S3a i S3b są na `main` przez PR #68–#71.
 S3b zamknięto w `42859c9d34db15b060e2f553c5e75a55af8c1175` po poprawce mobilnego Escape i zielonym CI.
@@ -62,11 +62,19 @@ zawiera dowody, review n8n i zielone CI `37124183610` (921 Vitest + 7 skryptów,
 33 integracje, 166 UI, 3 E2E, smoke Node 22/24 i lifecycle). Dwa testy restic
 przeszły osobno w kolejce MCP; CI bez binariów fixture je pomija.
 
-S5 pozostaje otwarte: monitor zewnętrzny, wybór celu i przechowywania kluczy,
-operacyjne RPO/RTO, macierz aktualizacji zainstalowanych artefaktów, migracja
-do innego repozytorium i automatyczna obsługa częściowych migawek. Zadanie
-nadrzędne pozostaje otwarte. Nie wykonano wdrożenia produkcyjnego; backupy
-pozostają opcjonalne i domyślnie wyłączone.
+S5a scalono w [PR #75](https://github.com/pioootrek/worktree-switcher/pull/75)
+jako `4bebff93956a2bd8a0ed664845f76fdc57850b3d`. Opcjonalny monitor CLI odczytuje
+ograniczone metadane poza procesem kontrolera, rozróżnia wiek danych lokalnych
+oraz zdalnych i zwraca jednoznaczne kody błędów. [Raport S5a](storage-safety-s5a-report-20261003.md)
+zawiera końcowe testy, review i CI. Monitor nie potwierdza dostępności repozytorium
+ani zdolności odtworzenia na podstawie samych metadanych.
+
+S5b realizuje [kontrakt zmiany repozytorium i uzgadniania historii](storage-safety-s5b-contract-20261003.md).
+S5c obejmie aktualizację zainstalowanych artefaktów, izolowane awarie i recovery
+oraz procedurę S6. Docelowy host, klucze, wdrożenie monitora i powiadomień,
+rzeczywisty pomiar RPO/RTO i rollout pozostają osobnym etapem zgodnie z wyborem
+właściciela. Zadanie nadrzędne pozostaje otwarte. Backupy są opcjonalne i domyślnie
+wyłączone; produkcja nie została zmieniona.
 
 ## Historyczny punkt startowy — przed S1
 
