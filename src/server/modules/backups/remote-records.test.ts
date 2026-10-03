@@ -74,6 +74,11 @@ describe("atomic remote rebind evidence", () => {
     await expect(rebindRemoteBackup(f.input, async () => {})).rejects.toThrow("Unfinished restore");
     expect(getOwnedRestoreStatus(f.database)?.state).toBe("prepared");
     expect([readFileSync(f.database), readFileSync(journal), readFileSync(f.path)]).toEqual(before);
+    // Explicit ordinary recovery completes the fixture; completed journals must
+    // remain compatible with supported canonical parent aliases during rebind.
+    const recovered = acquireDatabaseOwnership(f.database); recovered.lock.release();
+    const alias = join(f.root, "alias"); symlinkSync(f.root, alias, "dir");
+    expect((await rebindRemoteBackup({ ...f.input, databasePath: join(alias, "state.sqlite3") }, async () => {})).generation).toBe(1);
   });
   it("does not repair an interrupted request alias before refusing offline rebind", async () => {
     const f = fixture(), store = new SqliteStateStore(f.database), backup = join(f.root, "copy");

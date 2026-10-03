@@ -68,18 +68,22 @@ async function verifyInstalled(script, packageRoot) {
   check(process.platform !== "win32", "Explicit installed verification requires POSIX process groups.");
   const path = resolve(script);
   check((await lstat(path)).isFile(), "Verification script must be a local regular file.");
-  const environment = { PATH: process.env.PATH, LANG: "C.UTF-8", ...Object.fromEntries(["WORKTREE_SWITCHER_TEST_RESTIC", "WORKTREE_SWITCHER_TEST_REST_SERVER"].flatMap(name => process.env[name] ? [[name, process.env[name]]] : [])) };
+  const environment = { PATH: process.env.PATH, LANG: "C.UTF-8", TMPDIR: root, ...Object.fromEntries(["WORKTREE_SWITCHER_TEST_RESTIC", "WORKTREE_SWITCHER_TEST_REST_SERVER"].flatMap(name => process.env[name] ? [[name, process.env[name]]] : [])) };
   return new Promise((accept, reject) => {
     const child = spawn(process.execPath, [path, packageRoot], { cwd: process.cwd(), env: environment, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
     let output = "", errors = "", failed = false;
     const stop = signal => { try { if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal); else child.kill(signal); } catch (error) { if (error.code !== "ESRCH") throw error; } };
     const timeout = setTimeout(() => { failed = true; stop("SIGTERM"); }, 300_000);
     const force = setTimeout(() => { failed = true; stop("SIGKILL"); }, 305_000);
+    let interruptedForce;
+    const interrupt = () => { failed = true; stop("SIGTERM"); interruptedForce ??= setTimeout(() => stop("SIGKILL"), 5_000); };
+    process.on("SIGTERM", interrupt); process.on("SIGINT", interrupt);
     child.stdout.on("data", value => { output += value.toString(); if (output.length > 1024 * 1024) { failed = true; stop("SIGKILL"); } });
     child.stderr.on("data", value => { errors += value.toString(); if (errors.length > 64 * 1024) { failed = true; stop("SIGKILL"); } });
     child.once("error", () => { failed = true; });
     child.once("close", code => {
       clearTimeout(timeout); clearTimeout(force);
+      clearTimeout(interruptedForce); process.off("SIGTERM", interrupt); process.off("SIGINT", interrupt);
       // A driver is responsible for graceful cleanup; reject any surviving group.
       if (process.platform !== "win32" && child.pid) { try { process.kill(-child.pid, 0); failed = true; stop("SIGKILL"); } catch (error) { if (error.code !== "ESRCH") failed = true; } }
       if (failed || code !== 0) reject(new Error("Explicit installed verification driver failed or required forced cleanup."));
