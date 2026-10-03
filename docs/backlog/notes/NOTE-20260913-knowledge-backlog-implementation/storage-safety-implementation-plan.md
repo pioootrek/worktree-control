@@ -544,7 +544,8 @@ main po poprzednim merge. Nie łączymy wszystkich kontraktów S5 w jeden PR.
 | S5b | Jawna zmiana repozytorium restic, zachowane poprzednie dowody i źródła; ograniczone uzgadnianie historii częściowych migawek | Nowy cel nie dziedziczy starych potwierdzeń; tylko jawnie wybrane kopie mogą zostać wysłane; historia ponad 32 kandydatów ma ograniczoną ścieżkę obsługi bez automatycznego kasowania |
 | S5c | Istniejące narzędzia dystrybucji rozszerzone o aktualizację starego i nowego zainstalowanego artefaktu, próby awarii i recovery; procedura S6 | Dokładne SHA i sumy pakietów, zachowane dane i dostęp, odtworzenie bez źródła, jawne ograniczenia i procedura po nowych zapisach |
 
-Prace kodowe i próby na izolowanych danych są autoryzowane. Rzeczywisty odbiór
+Właściciel potwierdził zakres 2026-10-03: teraz kod i izolowane testy;
+docelowy host, klucze i rollout osobno. Rzeczywisty odbiór
 poza hostem wymaga wskazania celu, konta, sposobu przechowywania kluczy,
 kanału powiadomień i profilu obciążenia. Te wybory nie blokują implementacji.
 Nie deklarować produkcyjnego RPO/RTO na podstawie małego fixture. Historyczny

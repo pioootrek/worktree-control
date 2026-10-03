@@ -199,6 +199,11 @@
       "author": "agent:codex",
       "date": "2026-10-03",
       "text": "Started one Sol6.1high worker from clean main4bb70ec. S5 split into sequential dependent PRs: S5a finite independent CLI monitor with bounded safe metadata and explicit disabled/unavailable/stale outcomes; S5b explicit repository migration/rebind preserving old proof/pending sources plus bounded partial-history reconciliation without automatic remote deletion; S5c reuse package tooling for exact installed old/new artifact populated upgrade/fault recovery and S6 runbook. All remain within the requested S5 work; each merges before the next branch starts. Real off-host target/key custody/notification/profile choices remain operational inputs; software and isolated fixtures proceed meanwhile. No production mutation or external transfer authorized by this note."
+    },
+    {
+      "author": "human:pioootrek",
+      "date": "2026-10-03",
+      "text": "Selected S5 scope explicitly: code and isolated tests now; target host, keys and rollout separately. No actual off-host recovery trial or production rollout is part of this implementation run."
     }
   ],
   "priority": "next",
