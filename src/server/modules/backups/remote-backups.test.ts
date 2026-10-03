@@ -198,4 +198,28 @@ describe("optional installation transfer", () => {
     finally { await restarted.close(); }
   });
 
+  it("holds remote evidence capacity across await while permitting duplicate identity reads", async () => {
+    const f = fixture(true, { pendingLimit: 2 }); vi.mocked(f.transport.upload).mockRejectedValue(new Error("old uncertain outcomes"));
+    const a = f.operations.create("local-admin", "first-old"), b = f.operations.create("local-admin", "second-old");
+    await f.operations.drain(); await f.operations.close();
+    rebindRemoteLedger(join(f.operations.recordDirectory, "remote.json"), "a".repeat(64), "c".repeat(64), 1);
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(f.transport.upload).mockImplementationOnce(async () => { await hold; return { snapshotId: "f".repeat(64) }; });
+    const restarted = new BackupOperations(backupPolicySchema.parse({ ...f.policy, intervalSeconds: null }), { ...f.deps, remoteTransport: { ...f.transport, destinationId: "c".repeat(64) } });
+    try {
+      restarted.remote.reupload(a.backupId);
+      const deadline = Date.now() + 10000;
+      while (vi.mocked(f.transport.upload).mock.calls.length < 3 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+      expect(f.transport.upload).toHaveBeenCalledTimes(3);
+      expect(restarted.remote.reupload(a.backupId).transfers).toHaveLength(1);
+      expect(() => restarted.remote.reupload(b.backupId)).toThrow("backup_busy");
+      expect(restarted.remote.status().transfers).toHaveLength(1);
+      release(); await restarted.drain();
+      restarted.remote.reupload(b.backupId); await restarted.drain();
+      expect(f.transport.upload).toHaveBeenCalledTimes(4);
+      expect(restarted.remote.status().archives[0].pinned).toBe(2);
+    } finally { release(); await restarted.close(); }
+  }, 20000);
+
 });

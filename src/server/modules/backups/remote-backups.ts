@@ -85,6 +85,9 @@ export class RemoteBackups {
     backupIdSchema.parse(backupId);
     if (!this.transport || this.closed || this.persistenceFailed || this.deps.maintenance()) throw new BackupError("backup_busy", 503);
     if (this.ledger!.receipts.some(receipt => receipt.backupId === backupId)) return this.status();
+    // Keep the running pass's proof/envelope reservation stable while it awaits
+    // external effects. Existing identity reads remain idempotent above.
+    if (this.queued) throw new BackupError("backup_busy", 409);
     const archived = this.ledger!.archives.flatMap(archive => archive.receipts).filter(receipt => receipt.backupId === backupId);
     const original = archived[0];
     if (!original || archived.some(receipt => receipt.manifestHash !== original.manifestHash || receipt.manifestSha256 !== original.manifestSha256 || receipt.dataAt !== original.dataAt)) throw new BackupError("backup_invalid");
