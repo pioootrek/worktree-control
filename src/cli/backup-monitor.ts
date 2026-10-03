@@ -40,20 +40,20 @@ export function evaluateBackupMonitor(metadata: BackupMonitorMetadata, options: 
   result.controller = "available"; result.metadata = metadata;
   const age = (value: string | null) => value === null ? null : Math.floor((now - Date.parse(value)) / 1000);
   result.ages = { localSeconds: age(metadata.local.dataAt), remoteSeconds: metadata.remote.enabled ? age(metadata.remote.dataAt) : null };
-  if (!options.enabled || !metadata.scheduleEnabled) return result;
+  if (!options.enabled || (!metadata.scheduleEnabled && !metadata.remote.enabled)) return result;
   result.severity = "healthy";
   // Future timestamps or a stale reply cannot certify healthy evidence.
-  const dates = [metadata.observedAt, metadata.local.dataAt, metadata.local.lastAttempt?.dataAt, metadata.remote.dataAt, metadata.remote.confirmedAt].filter((value): value is string => Boolean(value));
+  const dates = [metadata.observedAt, ...(metadata.scheduleEnabled ? [metadata.local.dataAt, metadata.local.lastAttempt?.dataAt] : []), ...(metadata.remote.enabled ? [metadata.remote.dataAt, metadata.remote.confirmedAt] : [])].filter((value): value is string => Boolean(value));
   if (dates.some(value => Date.parse(value) > now + 1000) || now - Date.parse(metadata.observedAt) > options.timeoutMs + 1000) {
     result.alerts.push("clock_invalid"); result.severity = "unknown"; result.exitCode = 3; return result;
   }
-  for (const scope of ["local", ...(metadata.remote.enabled ? ["remote"] : [])] as Array<"local" | "remote">) {
+  for (const scope of [...(metadata.scheduleEnabled ? ["local"] : []), ...(metadata.remote.enabled ? ["remote"] : [])] as Array<"local" | "remote">) {
     const seconds = scope === "local" ? result.ages.localSeconds : result.ages.remoteSeconds;
     if (seconds === null) result.alerts.push(`${scope}_missing`);
     else if (seconds >= options.criticalAfterSeconds) result.alerts.push(`${scope}_critical`);
     else if (seconds >= options.warnAfterSeconds) result.alerts.push(`${scope}_warning`);
   }
-  if (metadata.local.error || metadata.local.lastAttempt?.state === "failed" || metadata.local.lastAttempt?.state === "interrupted") result.alerts.push("local_failed");
+  if (metadata.scheduleEnabled && (metadata.local.error || metadata.local.lastAttempt?.state === "failed" || metadata.local.lastAttempt?.state === "interrupted")) result.alerts.push("local_failed");
   if (metadata.remote.enabled && metadata.remote.error) result.alerts.push("remote_failed");
   if (metadata.maintenance) result.alerts.push("maintenance");
   if (result.alerts.some(value => !value.endsWith("_warning") && value !== "maintenance")) { result.severity = "critical"; result.exitCode = 2; }

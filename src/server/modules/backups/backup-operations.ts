@@ -130,7 +130,7 @@ export class BackupOperations {
     if (successful) {
       try {
         const directory = lstatSync(successful.destination), manifest = lstatSync(join(successful.destination, "manifest.json")), database = lstatSync(join(successful.destination, "state.sqlite3"));
-        if (!directory.isDirectory() || !manifest.isFile() || !database.isFile()
+        if (!directory.isDirectory() || !manifest.isFile() || !database.isFile() || database.size === 0
           || [directory, manifest, database].some(stat => (stat.mode & 0o077) || (process.getuid && stat.uid !== process.getuid()))) throw new Error("Missing or unsafe recorded copy.");
       } catch { dataAt = null; error = "metadata_unavailable"; }
     }

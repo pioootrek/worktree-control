@@ -52,6 +52,12 @@ describe("finite backup monitor", () => {
     data.scheduleEnabled = false; data.local.dataAt = date(86400); data.local.error = "backup_failed";
     expect(evaluateBackupMonitor(data, enabled, now)).toMatchObject({ severity: "disabled", alerts: [], exitCode: 0 });
   });
+  it("monitors enabled manual remote transfer even when the local service schedule is off", () => {
+    const data = metadata(); data.scheduleEnabled = false; data.local.dataAt = null; data.remote.error = "remote_failed";
+    expect(evaluateBackupMonitor(data, enabled, now)).toMatchObject({ severity: "critical", alerts: ["remote_failed"] });
+    data.remote.error = null; data.remote.dataAt = date(3600);
+    expect(evaluateBackupMonitor(data, enabled, now)).toMatchObject({ severity: "critical", alerts: ["remote_critical"] });
+  });
   it("fails closed on clock anomalies and stale observations", () => {
     for (const value of [date(-60), date(60)]) { const data = metadata(); data.observedAt = value; expect(evaluateBackupMonitor(data, enabled, now)).toMatchObject({ severity: "unknown", alerts: ["clock_invalid"] }); }
     const data = metadata(); data.remote.dataAt = date(-60); expect(evaluateBackupMonitor(data, enabled, now).exitCode).toBe(3);

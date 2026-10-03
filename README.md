@@ -405,8 +405,10 @@ scanning backups, starting the controller or sending notifications. Configure an
 external scheduler and notification delivery separately. Exit codes are `0` for
 healthy or disabled, `1` for warning, `2` for critical and `3` for unknown.
 An enabled probe reports an absent, unreadable, incompatible or timed-out
-controller as unknown. An available controller with its service schedule off
-produces no stale-backup alerts; local-only scheduling produces no remote alerts.
+controller as unknown. An available controller with both service scheduling and
+remote transfer off produces no stale-backup alerts. Local-only scheduling
+produces no remote alerts; enabled remote transfer is monitored even when copies
+are created manually and the local service schedule is off.
 Thresholds belong to this CLI invocation and cannot modify service policy.
 
 Local and remote ages use the recorded snapshot creation request time, including

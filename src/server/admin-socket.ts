@@ -110,7 +110,7 @@ export function requestAdminSocket(path: string, body: unknown, timeoutMs = 15_0
     // A finite probe must also bound a server that keeps sending small chunks.
     const deadline = maxResponseBytes === undefined ? undefined : setTimeout(() => request.destroy(Object.assign(new Error("Admin request timed out."), { code: "admin_timeout" })), timeoutMs);
     request.once("close", () => { if (deadline) clearTimeout(deadline); });
-    request.on("timeout", () => request.destroy(new Error("Admin request timed out.")));
+    request.on("timeout", () => request.destroy(Object.assign(new Error("Admin request timed out."), maxResponseBytes === undefined ? {} : { code: "admin_timeout" })));
     request.on("error", reject);
     request.end(payload);
   });
