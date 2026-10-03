@@ -243,3 +243,32 @@ it("lists candidate metadata without reading artifact bodies or issuing a confir
   const view = await preview(f, execution.executionId); expect(view.confirmation).toMatch(/^[a-f0-9]{64}$/); await reclaim(f, view);
   expect(await f.schedules.recover("local-admin", { action: "list" })).toEqual([]);
 });
+
+it("charges timed-out staging across repeated attempts, history pruning and restart, then reclaims it explicitly", async () => {
+  const f = fixture(); f.save();
+  const rename = fs.renameSync;
+  vi.spyOn(fs, "renameSync").mockImplementation((...args) => {
+    rename(...args);
+    if (String(args[1]).endsWith(".partial")) f.advance(31_000);
+  }); syncBuiltinESMExports();
+  f.advance(); f.schedules.tick(); await f.backups.drain();
+  vi.restoreAllMocks(); syncBuiltinESMExports();
+  const execution = f.ledger().executions[0], staging = join(f.root, "exports", `.user-export-${execution.executionId}.partial`);
+  expect(execution).toMatchObject({ state: "failed", reason: "limit" });
+  expect(existsSync(staging)).toBe(true); expect(existsSync(execution.destination)).toBe(false);
+  const bytes = readFileSync(staging);
+  for (let attempt = 0; attempt < 55; attempt++) {
+    if (attempt === 2) f.restart();
+    f.advance(); f.schedules.tick(); await f.backups.drain();
+    expect(f.schedules.overview(f.actor()).artifacts[0]).toMatchObject({ state: "failed", reason: "limit" });
+  }
+  expect(f.ledger().executions.some((value: { executionId: string }) => value.executionId === execution.executionId)).toBe(true);
+  expect(fs.readdirSync(join(f.root, "exports"))).toEqual([`.user-export-${execution.executionId}.partial`]);
+  expect(readFileSync(staging)).toEqual(bytes);
+  expect(await f.schedules.recover("local-admin", { action: "list" })).toEqual([expect.objectContaining({ executionId: execution.executionId, requiresPreview: true })]);
+  const view = await preview(f, execution.executionId); expect(view.staging).toBe(true);
+  expect((await reclaim(f, view)).state).toBe("completed"); expect(existsSync(staging)).toBe(false);
+  f.restart(); expect((await reclaim(f, view)).state).toBe("completed");
+  f.advance(); f.schedules.tick(); await f.backups.drain();
+  expect(f.schedules.overview(f.actor()).artifacts[0].state).toBe("succeeded");
+});
