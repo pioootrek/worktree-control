@@ -13,6 +13,13 @@ import { cliCredential, OWNER_CREDENTIAL_REQUIRED, OWNER_CREDENTIAL_VARIABLES } 
 import { exportKnowledgeProject, importKnowledgeProject } from "@/server/modules/knowledge";
 
 export async function runBackupCommand(args: string[], paths: AppPaths, applicationVersion: string, write: (line:string)=>void=console.log, environment:Readonly<Record<string,string|undefined>>=process.env): Promise<void> {
+  if (args[0] === "remote") {
+    const [, action, backupId, flag, generation, ...extra] = args;
+    if (!((action === "status" && args.length === 2) || (action === "retry" && backupId && flag === "--generation" && generation && /^[0-9]+$/.test(generation) && Number.isSafeInteger(Number(generation)) && Number(generation) > 0)) || extra.length) throw new Error("Usage: backup remote status | retry <backup-id> --generation <next-generation>");
+    // Never open a second SQLite owner or infer a remote target from recovered DB data.
+    const result = await requestAdminSocket(paths.adminSocketPath, { command: "backup-remote", action, ...(backupId ? { backupId, generation: Number(generation) } : {}) });
+    write(JSON.stringify(result, null, 2)); return;
+  }
   if (args[0] === "user-cleanup") {
     const [, action, executionId, confirmation, ...extra] = args;
     const valid = (action === "list" && !executionId) || (action === "preview" && executionId && !confirmation) || (action === "cleanup" && executionId && confirmation);

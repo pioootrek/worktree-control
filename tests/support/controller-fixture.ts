@@ -100,18 +100,19 @@ async function createRepository(base: string, name: string, kind: FixtureProject
   return { main, alternate };
 }
 
-export async function startControllerFixture(projectCount = 3, projectKinds: FixtureProjectKind[] = [], options: { backups?: boolean; userBackups?: boolean } = {}): Promise<ControllerFixture> {
+export async function startControllerFixture(projectCount = 3, projectKinds: FixtureProjectKind[] = [], options: { backups?: boolean; userBackups?: boolean; startupArguments?: string[]; restoredInstallation?: { data: string; state: string; token: string } } = {}): Promise<ControllerFixture> {
   const base = await mkdtemp(join(tmpdir(), "worktree-switcher-integration-"));
-  const data = join(base, "data"), state = join(base, "state"); await Promise.all([mkdir(data, { mode: 0o700 }), mkdir(state, { mode: 0o700 })]);
+  const data = options.restoredInstallation?.data ?? join(base, "data"), state = options.restoredInstallation?.state ?? join(base, "state");
+  await Promise.all([mkdir(data, { mode: 0o700, recursive: true }), mkdir(state, { mode: 0o700, recursive: true })]);
   const kinds = Array.from({ length: projectCount }, (_, index) => projectKinds[index] ?? "node");
   const repositories = await Promise.all(Array.from({ length: projectCount }, (_, index) => createRepository(base, `project-${String.fromCharCode(97 + index)}`, kinds[index]!)));
   const ports = await Promise.all(Array.from({ length: projectCount + 2 }, () => freePort()));
   const controllerPort = ports.pop()!, mcpPort = ports.pop()!;
   let child: ChildProcess | undefined, endpoint = `http://127.0.0.1:${controllerPort}`, accessUrl = "", controllerOutput = "";
-  const generated = await exec(process.execPath, [join(repositoryRoot, "dist/cli/index.js"), "auth", "token", "generate"], {
+  const generated = options.restoredInstallation ? undefined : await exec(process.execPath, [join(repositoryRoot, "dist/cli/index.js"), "auth", "token", "generate"], {
     cwd: repositoryRoot, env: { ...process.env, WORKTREE_SWITCHER_DATA_DIR: data, WORKTREE_SWITCHER_STATE_DIR: state }, timeout: 30000,
   });
-  const token = (JSON.parse(generated.stdout) as { token: string }).token;
+  const token = options.restoredInstallation?.token ?? (JSON.parse(generated!.stdout) as { token: string }).token;
   let userBackupProjectId: string | undefined;
   if (options.userBackups) {
     const created = await exec(process.execPath, [join(repositoryRoot, "dist/cli/index.js"), "identity", "create-knowledge-project", "--name", "Scheduled discussions"], {
@@ -121,7 +122,7 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
   }
   const start = async () => {
     let output = "";
-    child = spawn(process.execPath, [join(repositoryRoot, "dist/cli/index.js"), "start", "--service-mode", "--host", "127.0.0.1", "--port", String(controllerPort), "--mcp-port", String(mcpPort), "--no-open", "--data-dir", data, "--state-dir", state, "--browse-root", base, "--web-root", join(repositoryRoot, "out"), ...(options.backups ? ["--backup-dir", join(base, "backups"), "--backup-ui-actions", "create,restore"] : []), ...(options.userBackups ? ["--user-backup-enabled", "--user-backup-scopes", "knowledge-discussions", "--user-backup-projects", userBackupProjectId!, "--user-backup-target", `local=${join(base, "user-exports")}`, "--user-backup-min-interval-seconds", "60"] : [])], { cwd: repositoryRoot, stdio: ["ignore", "pipe", "pipe"] });
+    child = spawn(process.execPath, [join(repositoryRoot, "dist/cli/index.js"), "start", "--service-mode", "--host", "127.0.0.1", "--port", String(controllerPort), "--mcp-port", String(mcpPort), "--no-open", "--data-dir", data, "--state-dir", state, "--browse-root", base, "--web-root", join(repositoryRoot, "out"), ...(options.backups ? ["--backup-dir", join(base, "backups"), "--backup-ui-actions", "create,restore"] : []), ...(options.userBackups ? ["--user-backup-enabled", "--user-backup-scopes", "knowledge-discussions", "--user-backup-projects", userBackupProjectId!, "--user-backup-target", `local=${join(base, "user-exports")}`, "--user-backup-min-interval-seconds", "60"] : []), ...(options.startupArguments ?? [])], { cwd: repositoryRoot, stdio: ["ignore", "pipe", "pipe"] });
     const capture = (chunk: Buffer) => { output += chunk.toString(); controllerOutput = (controllerOutput + chunk.toString()).slice(-8000); };
     child.stdout?.on("data", capture); child.stderr?.on("data", capture);
     const access = await waitFor(async () => { try { return JSON.parse(await readFile(join(state, "service-access.json"), "utf8")) as { accessUrl: string }; } catch { return null; } }, WAIT_MS, () => `Controller did not publish service access.\n${output}`);
