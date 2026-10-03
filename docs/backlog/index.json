@@ -63,6 +63,16 @@
     },
     {
       "area": "core",
+      "id": "FIX-20261003-abandoned-mcp-sessions",
+      "path": "fix/FIX-20261003-abandoned-mcp-sessions.json",
+      "priority": "next",
+      "risk_level": "high",
+      "status": "open",
+      "title": "Bound abandoned MCP sessions and stop stale reservation renewal safely",
+      "type": "fix"
+    },
+    {
+      "area": "core",
       "id": "RWK-20260905-service-ui-boundaries",
       "path": "rework/RWK-20260905-service-ui-boundaries.json",
       "priority": "next",
@@ -143,6 +153,28 @@
     }
   ],
   "notes": [
+    {
+      "author": "agent:codex",
+      "created": "2026-10-03",
+      "files": [
+        "findings.md"
+      ],
+      "id": "NOTE-20261003-mcp-process-multiplication",
+      "path": "notes/NOTE-20261003-mcp-process-multiplication",
+      "status": "active",
+      "tags": [
+        "architecture",
+        "deferred",
+        "mcp",
+        "memory",
+        "proxy",
+        "research",
+        "resources",
+        "reuse",
+        "supervision"
+      ],
+      "title": "MCP proxy and supervision analysis; custom implementation deferred pending reusable components"
+    },
     {
       "author": "agent:codex",
       "created": "2026-09-28",

@@ -1,0 +1,66 @@
+{
+  "area": "core",
+  "created": "2026-10-03",
+  "id": "FIX-20261003-abandoned-mcp-sessions",
+  "links": {
+    "related_ids": [
+      "NOTE-20261003-mcp-process-multiplication",
+      "FEAT-20260829-scoped-mcp-agent-tokens",
+      "NOTE-20260908-mcp-runtime-operations-plan"
+    ]
+  },
+  "notes": [
+    {
+      "author": "human:pioootrek",
+      "date": "2026-10-03",
+      "text": "Owner requested adding proper handling of abandoned inbound MCP sessions to the backlog. This is Switcher's own session/claim reliability work; the general MCP gateway and cross-client process supervisor remain deferred."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-03",
+      "text": "Inspection of source and installed release a727fd8 found an absolute eight-hour session lifetime and server-driven claim renewal. Transport/session close clears timers, but losing a TCP/SSE connection need not close the MCP session. A vanished client can therefore potentially leave renewal running until session expiry plus remaining claim TTL. This is a code-based failure-path finding, not a reproduced orphaned reservation. A read-only protocol probe initialized, listed tools and deleted only its own session."
+    }
+  ],
+  "priority": "next",
+  "problem": [
+    "Automatic server-side claim renewal is tied to retained MCP session lifetime rather than a documented, bounded client-liveness contract. Abrupt client or proxy loss can leave a reservation renewed after its owner has disappeared.",
+    "The inspected session-creation path has no explicit session admission bound or client-activity expiry. The absolute eight-hour timer is not an inactivity policy and can close a session while a legitimate operation is active.",
+    "Documentation that reservations expire when a client disappears does not describe the actual distinction between TCP/SSE disconnection, logical MCP session closure and claim expiry."
+  ],
+  "risk": {
+    "dimensions": [
+      "auth-rbac",
+      "process"
+    ],
+    "level": "high",
+    "rollback": "Keep changes confined to inbound MCP session admission, liveness and claim-renewal policy. Preserve reservation ownership and runtime state; never clean up by terminating external agent/proxy processes or managed development servers. Retain bounded expiry and explicit unknown outcomes if recovery cannot safely proceed."
+  },
+  "schema_version": 1,
+  "scope": [
+    "Define and implement logical-session liveness, reconnect grace and bounded abandonment handling for the supported MCP clients. Specify which authenticated client signals count as activity; server-generated renewal, proxy heartbeat and parent-process liveness alone must not prove that the owning agent remains active. Distinguish known closed, temporarily disconnected and unknown states.",
+    "Stop automatic claim renewal when its documented owner-liveness condition no longer holds. Define a measurable upper bound from lost qualifying client activity to reservation availability, including reconnect grace and remaining lease TTL. Preserve ownership checks and require a new session to acquire its own claim rather than inherit another session's authority.",
+    "Bound total sessions and any necessary per-credential admission without requiring new scoped tokens. Clean up failed initialization, explicit DELETE, abandoned sessions and controller shutdown idempotently, disposing timers, subscriptions, waiters and retained session data while accounting for operations still running.",
+    "Coordinate expiry with active calls and admission. Prevent new work on closing sessions, define bounded draining/cancellation behavior and preserve truthful operation outcomes. Sending cancellation is not proof of termination; an unknown write outcome must never trigger blind replay.",
+    "Keep reservation expiry/release separate from development-server lifecycle and the finite test queue. Session cleanup must not stop a managed server, terminate a shared client/proxy or silently cancel an accepted verification job merely because a caller disappeared.",
+    "Expose bounded diagnostics for active/disconnected/expired sessions, renewal decisions and cleanup reasons without credentials or raw lease tokens. Update docs/reservations-and-mcp.md and related operator guidance to match verified client-disappearance behavior. Reuse existing ownership, authentication and lifecycle services; do not implement a general MCP gateway or external-process supervisor."
+  ],
+  "source": "Owner instruction on 2026-10-03 following NOTE-20261003-mcp-process-multiplication; src/server/mcp-runtime.ts, src/server/mcp-http-server.ts and docs/reservations-and-mcp.md.",
+  "status": "open",
+  "title": "Bound abandoned MCP sessions and stop stale reservation renewal safely",
+  "type": "fix",
+  "validation": [
+    "Reproduce abrupt client/proxy loss without DELETE using an isolated controller and owned fixture clients; verify renewal stops and the reservation becomes available within the documented bound. Do not disrupt live operator sessions.",
+    "Exercise temporary SSE/TCP interruption, normal idle periods and reconnect within grace. Preserve valid session ownership and state; reconnect must not duplicate reservations or allow another credential/session to reuse them.",
+    "Cover explicit DELETE, failed initialization, repeated close, absolute lifetime expiry and controller restart. Verify session registries, renewal timers, subscriptions, waiters and operation counters return to their expected bounded baseline.",
+    "Race expiry and shutdown against claim acquisition, renewal, long-running calls and newly arriving requests. Reject stale mutations consistently and verify existing runtime coordination remains authoritative.",
+    "Simulate a completed write with a lost response and cancellation with uncertain completion. Verify recovery reports the actual known/unknown outcome and does not repeat a side effect.",
+    "Prove that abandoned-session cleanup leaves managed development servers running and preserves the finite test queue's own accepted-job lifecycle. Verify no unrelated process is selected by name, port or parent PID for termination.",
+    "Flood initialization to the configured bound, including one shared installation credential and several credentials. Refuse excess admission predictably, keep established work usable and verify cleanup restores capacity without unbounded retained memory.",
+    "Verify credential revocation and session-authentication binding alongside liveness changes. Diagnostics and documentation must distinguish socket count, logical session count and active operations without exposing secrets.",
+    "Run relevant MCP/claim/lifecycle tests and pnpm check through supported verification paths. Include a bounded repeated connect/disconnect/crash measurement and report which client behaviors were actually exercised."
+  ],
+  "value": [
+    "A disappeared agent cannot keep a project reserved indefinitely through server-driven renewal.",
+    "Switcher reclaims its own abandoned MCP state predictably while protecting active work and keeping development-server ownership intact."
+  ]
+}

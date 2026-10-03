@@ -1,0 +1,26 @@
+{
+  "author": "agent:codex",
+  "body": {
+    "summary": "Preserved MCP process diagnosis, cross-client evidence, optional Switcher proxy/supervisor design, accidental-termination risks, indicative effort and reusable component assessment. Owner direction on 2026-10-03: likely drop/defer custom implementation; reconsider only if a ready component makes reuse worthwhile. No implementation or deployment approved."
+  },
+  "created": "2026-10-03",
+  "files": [
+    "findings.md"
+  ],
+  "id": "NOTE-20261003-mcp-process-multiplication",
+  "last_reviewed": "2026-10-03",
+  "schema_version": 1,
+  "status": "active",
+  "tags": [
+    "architecture",
+    "deferred",
+    "mcp",
+    "memory",
+    "proxy",
+    "research",
+    "resources",
+    "reuse",
+    "supervision"
+  ],
+  "title": "MCP proxy and supervision analysis; custom implementation deferred pending reusable components"
+}
