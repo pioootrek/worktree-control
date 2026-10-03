@@ -189,6 +189,16 @@
       "author": "agent:codex",
       "date": "2026-10-03",
       "text": "S4b merged in PR #74 at 963b011aa2bc5b5c04b90a33dcb1005246173992 from head04f4d0112d9c3516ae14f25978afbdabccaf97dc. Sole coding worker gpt-6.1-sol high; root orchestrated, reviewed, documented and merged. Optional default-off CLI-only restic HTTPS transfer, bounded durable retries/receipts, protected pending local copies and source-independent fixture recovery delivered. Managed check920+7 at runtimehead6e2f72, final focused32/build/realHTTPS8/installedsmoke16 passed observed_match. CI37124183610 passed all4 jobs:921unit+7scripts,HTTPS,33integration,166UI,3E2E,installedsmoke15 each Node22/24 and lifecycle; two env-gated realrestic tests passed separately in managedqueue. Verified CIartifact SHA256583fe85592c850780eb52444b43d70621b0721f89660f63e22bb0cf98586113f. One n8n all dispatch:2fix,1backlog,1falsepositive,0unresolved; Codex no additional findings. Detailed dated S4b report/evidence preserve earlier failures and exact source attribution. S5 independent monitor, actual off-host/key custody/RPO-RTO, installed upgrade matrix, distinct repository migration and automatic partial-history recovery remain open. No production deploy/data transfer or host policy changes."
+    },
+    {
+      "author": "human:pioootrek",
+      "date": "2026-10-03",
+      "text": "Requested the same implementation, review and merge procedure for S5 after S4b closure. Prior direction persists: root orchestrates; only gpt-6.1-sol high codes; conserve credits."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-03",
+      "text": "Started one Sol6.1high worker from clean main4bb70ec. S5 split into sequential dependent PRs: S5a finite independent CLI monitor with bounded safe metadata and explicit disabled/unavailable/stale outcomes; S5b explicit repository migration/rebind preserving old proof/pending sources plus bounded partial-history reconciliation without automatic remote deletion; S5c reuse package tooling for exact installed old/new artifact populated upgrade/fault recovery and S6 runbook. All remain within the requested S5 work; each merges before the next branch starts. Real off-host target/key custody/notification/profile choices remain operational inputs; software and isolated fixtures proceed meanwhile. No production mutation or external transfer authorized by this note."
     }
   ],
   "priority": "next",

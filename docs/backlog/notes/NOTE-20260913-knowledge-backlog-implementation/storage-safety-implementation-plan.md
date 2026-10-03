@@ -531,6 +531,27 @@ zewnętrznej, jeśli użytkownik ją włączył.
 
 ## S5. Dowody odbioru
 
+### Kolejność implementacji S5
+
+Właściciel zlecił 2026-10-03 tę samą procedurę co dla S4b. Koduje jeden
+worker `gpt-6.1-sol` z reasoning `high`; root prowadzi zakres, odbiór,
+review n8n i scalenie. Każdy kolejny PR zaczyna się od zsynchronizowanego
+main po poprzednim merge. Nie łączymy wszystkich kontraktów S5 w jeden PR.
+
+| PR | Zakres | Warunek odbioru |
+| --- | --- | --- |
+| S5a | Skończone wywołanie CLI monitora poza kontrolerem; ograniczony odczyt bezpiecznych metadanych | Rozróżnia brak kontrolera i błędny odczyt od zdrowia; osobny wiek danych lokalnych i zdalnych, błędy prób; wyłączona polityka nie generuje alarmu zaległości |
+| S5b | Jawna zmiana repozytorium restic, zachowane poprzednie dowody i źródła; ograniczone uzgadnianie historii częściowych migawek | Nowy cel nie dziedziczy starych potwierdzeń; tylko jawnie wybrane kopie mogą zostać wysłane; historia ponad 32 kandydatów ma ograniczoną ścieżkę obsługi bez automatycznego kasowania |
+| S5c | Istniejące narzędzia dystrybucji rozszerzone o aktualizację starego i nowego zainstalowanego artefaktu, próby awarii i recovery; procedura S6 | Dokładne SHA i sumy pakietów, zachowane dane i dostęp, odtworzenie bez źródła, jawne ograniczenia i procedura po nowych zapisach |
+
+Prace kodowe i próby na izolowanych danych są autoryzowane. Rzeczywisty odbiór
+poza hostem wymaga wskazania celu, konta, sposobu przechowywania kluczy,
+kanału powiadomień i profilu obciążenia. Te wybory nie blokują implementacji.
+Nie deklarować produkcyjnego RPO/RTO na podstawie małego fixture. Historyczny
+commit `a727fd8ff01e141c6494615531e27e72a23f6320` może być bazą oznaczonego
+fixture aktualizacji; nie jest potwierdzeniem obecnej wersji produkcyjnej.
+
+
 Otwarty zakres operacyjny po review S4b (PR #74): przygotować jawny workflow
 zamiany repozytorium restic na inne, o nowym kryptograficznym ID. Zachować
 poprzednie potwierdzenia i źródła oczekujące na transfer; nie uznawać ich za
