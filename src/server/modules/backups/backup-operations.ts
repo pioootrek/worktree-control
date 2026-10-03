@@ -11,6 +11,8 @@ import { privateDirectory, syncDirectory } from "@/server/private-storage";
 import { BackupCatalog, manifestBytes } from "./catalog";
 import { BackupError, backupPolicySchema, type BackupPolicy } from "./policy";
 import { readRecord, recordHash, writeRecord } from "./records";
+import { RemoteBackups } from "./remote-backups";
+import type { RemoteBackupTransport } from "./remote-policy";
 
 const operationSchema = z.object({
   operationId: z.uuid(), backupId: z.string(), actorId: z.string(), key: backupKeySchema,
@@ -18,6 +20,7 @@ const operationSchema = z.object({
   createdAt: z.iso.datetime(), finishedAt: z.iso.datetime().nullable(),
   error: z.enum(["backup_failed", "backup_interrupted", "backup_limit"]).nullable(),
   destination: z.string(), scheduled: z.boolean(), manifestHash: z.string().nullable(),
+  remoteRequired: z.boolean().default(false),
 }).strict();
 type Operation = z.infer<typeof operationSchema>;
 const MANUAL_HISTORY_LIMIT = 1024;
@@ -34,6 +37,7 @@ export interface BackupDependencies {
   maintenance: () => boolean;
   manageSchedule?: boolean;
   clock?: () => number;
+  remoteTransport?: RemoteBackupTransport;
 }
 const publicOperation = ({ operationId, backupId, state, createdAt, finishedAt, error }: Operation): BackupOperation => ({ operationId, backupId, state, createdAt, finishedAt, error });
 const actorId = (actor: BackupActor) => typeof actor === "string" ? actor : `installation:${actor.credentialId}`;
@@ -43,6 +47,7 @@ export class BackupOperations {
   readonly policy: BackupPolicy;
   readonly catalog: BackupCatalog;
   readonly recordDirectory: string;
+  readonly remote: RemoteBackups;
   private readonly path: string;
   private ledger: Ledger;
   private persistenceFailed = false;
@@ -78,6 +83,13 @@ export class BackupOperations {
       this.ledger.intervalSeconds = this.policy.intervalSeconds;
     }
     this.save();
+    this.remote = new RemoteBackups(deps.remoteTransport, {
+      directory: this.policy.directory, recordDirectory: this.recordDirectory, catalog: this.catalog, now: this.now,
+      maintenance: deps.maintenance,
+      retired: backupId => !this.ledger.operations.some(operation => operation.backupId === backupId),
+      unrecorded: () => this.ledger.operations.filter(operation => operation.remoteRequired && operation.state === "succeeded" && !this.remote.hasReceipt(operation.backupId)).length,
+      enqueue: (execute, interrupt, settled) => this.enqueueExport("installation-transfer", 1, execute, interrupt, settled),
+    });
   }
   authorize(actor: BackupActor, action?: "create" | "restore"): void {
     if (typeof actor === "string") return;
@@ -117,13 +129,17 @@ export class BackupOperations {
     this.assertAdmission();
     if (!destination && !this.policy.directory) throw new BackupError("backup_invalid");
     if (destination && actor !== "local-admin") throw new BackupError("backup_forbidden", 403);
+    if (!destination && this.remote.enabled) {
+      const reserved = this.ledger.operations.filter(value => value.remoteRequired && !this.remote.hasReceipt(value.backupId) && (value.state === "queued" || value.state === "running" || value.state === "succeeded")).length;
+      this.remote.assertCapacity(reserved);
+    }
     const scheduledAt = actor === "scheduler" && /^service:[0-9]+$/.test(key) ? Number(key.slice(8)) : null;
     if (actor === "scheduler" && (scheduledAt === null || scheduledAt <= (this.ledger.scheduledThrough ?? -1))) throw new BackupError("backup_invalid", 409);
     this.pruneScheduledHistory();
     const scheduled = actor === "scheduler";
     if (this.ledger.operations.filter(operation => operation.scheduled === scheduled).length >= (scheduled ? SERVICE_HISTORY_LIMIT : MANUAL_HISTORY_LIMIT) || this.ledger.operations.filter(operation => operation.state === "queued" || operation.state === "running").length + this.exports.length + (this.exportOwner ? 1 : 0) >= this.policy.queueLimit) throw new BackupError("backup_limit", 409);
     const id = `backup-${randomUUID()}`;
-    const operation: Operation = { operationId: randomUUID(), backupId: id, actorId: actorId(actor), key, state: "queued", createdAt: this.iso(), finishedAt: null, error: null, destination: destination ? resolve(destination) : join(this.policy.directory!, id), scheduled: actor === "scheduler", manifestHash: null };
+    const operation: Operation = { operationId: randomUUID(), backupId: id, actorId: actorId(actor), key, state: "queued", createdAt: this.iso(), finishedAt: null, error: null, destination: destination ? resolve(destination) : join(this.policy.directory!, id), scheduled: actor === "scheduler", manifestHash: null, remoteRequired: !destination && this.remote.enabled };
     this.ledger.operations.push(operation);
     if (scheduledAt !== null) this.ledger.scheduledThrough = scheduledAt;
     try { this.save(); } catch {
@@ -139,7 +155,10 @@ export class BackupOperations {
     if (!operation) throw new BackupError("backup_invalid", 404);
     return publicOperation(operation);
   }
-  start(): void { if (this.deps.manageSchedule !== false && this.policy.intervalSeconds !== null && !this.closed) { try { this.tick(); } catch { this.ledger.scheduleError = "backup_failed"; } this.arm(); } }
+  start(): void {
+    this.reconcileRemote(); this.remote.start();
+    if (this.deps.manageSchedule !== false && this.policy.intervalSeconds !== null && !this.closed) { try { this.tick(); } catch { this.ledger.scheduleError = "backup_failed"; } this.arm(); }
+  }
   /** At most one overdue admission; advancing the deadline never depends on manual creation. */
   tick(): void {
     if (this.deps.manageSchedule === false || this.closed || this.deps.maintenance() || this.policy.intervalSeconds === null || this.ledger.nextAt === null || this.now() < this.ledger.nextAt) return;
@@ -156,7 +175,7 @@ export class BackupOperations {
     this.closed = true; if (this.timer) clearTimeout(this.timer); this.timer = null;
     for (const task of this.exports.splice(0)) task.interrupt();
     for (const operation of this.ledger.operations) if (operation.state === "queued") { operation.state = "interrupted"; operation.error = "backup_interrupted"; operation.finishedAt = this.iso(); }
-    try { this.save(); } finally { await this.catalog.close(); await this.drain(); }
+    try { this.save(); } finally { await this.remote.close(); await this.catalog.close(); await this.drain(); }
   }
   private pump(): void {
     if (this.active || this.closed || this.persistenceFailed) return;
@@ -187,6 +206,7 @@ export class BackupOperations {
     } catch (error) { operation.state = "failed"; operation.error = error instanceof BackupError && error.code === "backup_limit" ? "backup_limit" : "backup_failed"; }
     operation.finishedAt = this.iso();
     try { this.save(); } catch { operation.state = "failed"; operation.error = "backup_failed"; this.persistenceFailed = true; return; }
+    if (operation.state === "succeeded") { this.reconcileRemote(); this.remote.tick(); }
     if (operation.state === "succeeded" && operation.scheduled && this.policy.intervalSeconds !== null && !this.closed) {
       try { await this.retain(); this.ledger.retention = "succeeded"; }
       catch { this.ledger.retention = "failed"; }
@@ -211,6 +231,8 @@ export class BackupOperations {
   }
   private protectedIds(): Set<string> {
     const ids = protectedControllerRestoreBackupIds(this.deps.databasePath);
+    for (const id of this.remote.protectedIds()) ids.add(id);
+    for (const operation of this.ledger.operations) if (operation.remoteRequired && operation.state === "succeeded" && !this.remote.hasReceipt(operation.backupId)) ids.add(operation.backupId);
     const last = [...this.ledger.operations].reverse().find(value => value.state === "succeeded");
     const scheduled = [...this.ledger.operations].reverse().find(value => value.scheduled && value.state === "succeeded");
     if (last) ids.add(last.backupId);
@@ -219,6 +241,14 @@ export class BackupOperations {
   }
 
   private lastScheduled(): BackupOperation | null { const last = [...this.ledger.operations].reverse().find(value => value.scheduled); return last ? publicOperation(last) : null; }
+  private reconcileRemote(): void {
+    if (!this.remote.enabled) return;
+    for (const operation of this.ledger.operations) {
+      if (!operation.remoteRequired || operation.state !== "succeeded" || !operation.manifestHash || this.remote.hasReceipt(operation.backupId)) continue;
+      // Keep local success separate. An unsaved or invalid remote intent stays pinned.
+      try { this.remote.record(operation.backupId, operation.manifestHash, operation.createdAt); } catch { break; }
+    }
+  }
   private pruneScheduledHistory(): void {
     // The persisted high-water mark prevents replay after pruning old service deadlines.
     const recent = new Set(this.ledger.operations.slice(-50).map(value => value.operationId));

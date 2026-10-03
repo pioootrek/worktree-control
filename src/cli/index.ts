@@ -4,6 +4,8 @@ import { parseUserBackupOptions } from "./user-backup-options";
 import { UserSchedules, BackupOperations, RestoreOperations, recoverBackupHandoff, finishBackupHandoff, assertBackupHandoffCompleted } from "../server/modules/backups";
 import { backupAdminHandler } from "../server/backup-admin";
 import { parseBackupPolicyOptions, validateBackupPolicyDestination } from "./backup-policy-options";
+import { parseRemoteBackupOptions, resolveServiceRemoteBackupOptions } from "./remote-backup-options";
+import { ResticBackupTransport } from "../server/infrastructure/backups";
 import type { ControllerLock } from "../server/controller-lock";
 import { parseKnowledgeCommandArgs, runKnowledgeCommand } from "./knowledge-management";
 import { randomBytes } from "node:crypto";
@@ -32,7 +34,7 @@ import { openProjectGateway, runDoctorCommand, runProjectCommand } from "./proje
 import { controllerAccessToken, localDashboardEndpoint, publicDashboardEndpoint, readServiceAccess, removeServiceAccess, writeServiceAccess } from "./service-access";
 import { mcpConfigToken } from "./mcp-config";
 import { listenAdminSocket, type AdminSocketServer } from "../server/admin-socket";
-import { buildServiceStartArguments, resolveServiceUserBackupPolicy } from "./service-install";
+import { buildServiceStartArguments, resolveServiceUserBackupPolicy, resolveServiceBackupArguments } from "./service-install";
 import { UserServiceManager } from "./service-manager";
 import { ControlService } from "../server/control-service";
 import { acquireControllerLock } from "../server/controller-lock";
@@ -71,6 +73,8 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
   const backupPolicy = parseBackupPolicyOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
+  const remoteBackup = parseRemoteBackupOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
+  if (command === "start" && remoteBackup.loaded && !backupPolicy.directory) throw new Error("Remote backup transfer requires --backup-dir.");
   const userBackupPolicy = parseUserBackupOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
   const migrationBackup = parseMigrationBackupOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
   validateBackupPolicyDestination(backupPolicy);
@@ -175,6 +179,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       databasePath: paths.databasePath, attachmentDirectory: paths.knowledgeAttachmentDirectory, applicationVersion: packageJson.version,
       source: store, estimateBytes: () => store.backupEstimateBytes(),
       authorize: actor => authentication.isCurrentInstallationActor(actor), maintenance: () => maintenance,
+      remoteTransport: remoteBackup.loaded ? new ResticBackupTransport(remoteBackup.loaded) : undefined,
     });
   } catch (error) { await logs.close(); store.close(); controllerLock.release(); throw error; }
   const processes = new ProcessManager((projectId) => events.publish({ kinds: ["runtime"], projectIds: [projectId] }), logs, {
@@ -313,7 +318,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     });
     const backupHandler = backupAdminHandler(backups, restores, userSchedules);
     adminSocket = await listenAdminSocket(paths.adminSocketPath, body => {
-      if (body && typeof body === "object" && "command" in body && (body.command === "backup" || body.command === "user-export-recovery")) return backupHandler(body);
+      if (body && typeof body === "object" && "command" in body && (body.command === "backup" || body.command === "backup-remote" || body.command === "user-export-recovery")) return backupHandler(body);
       if (maintenance) throw new Error("Controller is in maintenance.");
       return authenticationHandler(body);
     });
@@ -387,9 +392,13 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
   const action = args[0] ?? "status";
   const manager = new UserServiceManager();
   if (action === "install") {
-    const migrationBackup = parseMigrationBackupOptions(args);
-    const backupPolicy = parseBackupPolicyOptions(args);
+    const backupArguments = resolveServiceBackupArguments(args, () => manager.readStartArguments());
+    const migrationBackup = parseMigrationBackupOptions(backupArguments);
+    const backupPolicy = parseBackupPolicyOptions(backupArguments);
+    validateBackupPolicyDestination(backupPolicy);
     const userBackupPolicy = resolveServiceUserBackupPolicy(args, () => manager.readStartArguments());
+    const remoteBackup = resolveServiceRemoteBackupOptions(args, () => manager.readStartArguments());
+    if (remoteBackup.loaded && !backupPolicy.directory) throw new Error("Remote backup transfer requires --backup-dir.");
     const entrypointPath = realpathSync(resolve(process.argv[1]));
     if (extname(entrypointPath) !== ".js") {
       throw new Error("Build Worktree Switcher first, then install the service with: node dist/cli/index.js service install");
@@ -418,7 +427,7 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
       memoryWarningMiB,
       publicOrigin,
       ...migrationBackup,
-      backupPolicy, userBackupPolicy,
+      backupPolicy, userBackupPolicy, remoteBackupOptions: remoteBackup,
     });
     const result = manager.install({
       nodePath: resolve(process.execPath),

@@ -5,6 +5,14 @@ import { backupCommandSchema } from "@/shared/contracts/backups";
 const inputSchema = z.object({ command: z.literal("backup"), operation: z.enum(["create", "now", "restore", "status", "list"]), destination: z.string().min(1).max(4096).optional(), idempotencyKey: z.string().min(1).max(256).optional(), backupId: z.string().optional() }).strict();
 export function backupAdminHandler(backups: BackupOperations, restores: RestoreOperations, schedules?: UserSchedules): (body: unknown) => unknown {
   return async body => {
+    if (body && typeof body === "object" && "command" in body && body.command === "backup-remote") {
+      const input = z.discriminatedUnion("action", [
+        z.object({ command: z.literal("backup-remote"), action: z.literal("status") }).strict(),
+        z.object({ command: z.literal("backup-remote"), action: z.literal("retry"), backupId: z.string(), generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }).strict(),
+      ]).parse(body);
+      // Only this OS-authenticated CLI socket handles remote administration.
+      return input.action === "status" ? backups.remote.status() : backups.remote.retry(input.backupId, input.generation);
+    }
     if (body && typeof body === "object" && "command" in body && body.command === "user-export-recovery") {
       if (!schedules) throw new BackupError("backup_invalid");
       const { command, ...input } = body;

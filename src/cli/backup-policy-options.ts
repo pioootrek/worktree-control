@@ -7,7 +7,7 @@ export function parseBackupPolicyOptions(args: string[], allowed = true): Backup
   const values: Record<string, unknown> = {}, seen = new Set<string>();
   for (let i = 0; i < args.length; i++) {
     const flag = args[i]!;
-    if (!flag.startsWith("--backup") || flag === "--backup-before-migration") continue;
+    if (!flag.startsWith("--backup") || flag === "--backup-before-migration" || flag.startsWith("--backup-remote")) continue;
     if (!allowed) throw new Error("Backup startup options apply only to start or service install.");
     if (flag !== "--backup-dir" && !BACKUP_OPERATION_FLAGS.includes(flag as typeof BACKUP_OPERATION_FLAGS[number])) throw new Error(`Unsupported backup option: ${flag.split("=")[0]}`);
     const value = args[++i];
