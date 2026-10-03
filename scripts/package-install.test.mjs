@@ -22,3 +22,7 @@ test("malformed driver output cannot enter public failure diagnostics", () => dr
 test("valid JSON with malformed diagnostic fields stays a bounded failure", () => driver('console.log(JSON.stringify({errorCode:"fixture_failed",failureStep:"wsi_PRIVATE secret/path",steps:{at:"PRIVATE"}})); process.exitCode=1', async (path, root) => {
   await assert.rejects(verifyInstalledDriver(path, root, [], root), error => error.message.includes('"outputKind":"fixture-error"') && error.message.includes('"lastCompletedStep":null') && !error.message.includes("PRIVATE") && !error.message.includes("secret/path"));
 }));
+
+test("reports the real HTTPS recovery failure phase without losing its case", () => driver('console.log(JSON.stringify({errorCode:"fixture_failed",failureStep:"source-deleted-HTTPS-restore-with-installed-runtime",steps:[{name:"delete-original-installations-and-local-copies"}],cleanup:{ok:true}})); process.exitCode=1', async (path, root) => {
+  await assert.rejects(verifyInstalledDriver(path, root, [], root), error => error.message.includes('"failureStep":"source-deleted-HTTPS-restore-with-installed-runtime"') && error.message.includes('"cleanup":"clean"'));
+}));
