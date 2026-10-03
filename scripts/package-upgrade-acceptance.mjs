@@ -130,7 +130,7 @@ async function killBoundary(item, point, args, backups) {
 
 try {
   const historicalProvenance = await verifyHistoricalArtifact(oldArtifact, oldProvenance);
-  root = await mkdtemp(join(tmpdir(), "wts-installed-upgrade-"));
+  root = await mkdtemp(join(tmpdir(), "wts-up-"));
   const prefix = join(root, "old prefix"); await mkdir(prefix);
   const oldRoot = await step("historical-production-install", async () => installProductionPrefix(oldArtifact, prefix, root, await productionInstallEnvironment(root), command));
   historicalNative = await step("historical-native-load", () => installedSqlite(oldRoot)); currentNative = await step("current-native-load", () => installedSqlite(currentRoot));
