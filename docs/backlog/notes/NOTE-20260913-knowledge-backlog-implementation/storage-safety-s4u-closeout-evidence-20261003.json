@@ -238,6 +238,402 @@
         "\u001b[2m   Start at \u001b[22m 12:36:47",
         "\u001b[2m   Duration \u001b[22m 17.98s\u001b[2m (transform 1.92s, setup 0ms, import 3.58s, tests 24.17s, environment 1ms)\u001b[22m"
       ]
+    },
+    {
+      "id": "a7a94062-94b4-4f9b-b993-60051f5d75a8",
+      "presetId": "node:check",
+      "head": "0d0e3cb6482ef0cb57eae22ffc0e265e24bf3f21",
+      "phase": "passed",
+      "source": {
+        "version": 1,
+        "scope": "git-observations",
+        "enqueue": {
+          "observedAt": "2026-10-03T10:37:12.424Z",
+          "head": "0d0e3cb6482ef0cb57eae22ffc0e265e24bf3f21",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "preflight": {
+          "observedAt": "2026-10-03T10:37:12.574Z",
+          "head": "0d0e3cb6482ef0cb57eae22ffc0e265e24bf3f21",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "finish": {
+          "observedAt": "2026-10-03T10:39:23.626Z",
+          "head": "0d0e3cb6482ef0cb57eae22ffc0e265e24bf3f21",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "queueComparison": "match",
+        "executionComparison": "match",
+        "attribution": "observed_match",
+        "reasonCodes": [],
+        "processOutcome": "passed"
+      },
+      "logs": [
+        "✔ lifecycle arguments require an explicit non-root UID (2.663501ms)",
+        "✔ lifecycle reports redact browser and bearer credentials (0.411778ms)",
+        "✔ systemd definition must point at installed paths and omit builder paths (0.950787ms)",
+        "✔ resource benchmark uses local transport with the advertised browser origin (1.642204ms)",
+        "✔ CPU uses one-core process time and RSS uses the sample median (0.423632ms)",
+        "✔ growth compares identical running workloads, not the empty controller (0.415499ms)",
+        "✔ invalid measurements fail rather than becoming a passing zero (0.348849ms)",
+        "ℹ tests 7",
+        "ℹ suites 0",
+        "ℹ pass 7",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ todo 0",
+        "ℹ duration_ms 92.254333"
+      ],
+      "timing": []
+    },
+    {
+      "id": "5bdaaf04-e1ec-4c23-8e9b-7ad74e285c5f",
+      "presetId": "node:build",
+      "head": "0d0e3cb6482ef0cb57eae22ffc0e265e24bf3f21",
+      "phase": "passed",
+      "source": {
+        "version": 1,
+        "scope": "git-observations",
+        "enqueue": {
+          "observedAt": "2026-10-03T10:39:50.422Z",
+          "head": "0d0e3cb6482ef0cb57eae22ffc0e265e24bf3f21",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "preflight": {
+          "observedAt": "2026-10-03T10:39:50.569Z",
+          "head": "0d0e3cb6482ef0cb57eae22ffc0e265e24bf3f21",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "finish": {
+          "observedAt": "2026-10-03T10:40:04.561Z",
+          "head": "0d0e3cb6482ef0cb57eae22ffc0e265e24bf3f21",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "queueComparison": "match",
+        "executionComparison": "match",
+        "attribution": "observed_match",
+        "reasonCodes": [],
+        "processOutcome": "passed"
+      },
+      "logs": [
+        "└ ○ /_not-found",
+        "○  (Static)  prerendered as static content",
+        "CLI Building entry: src/cli/backup-verifier.ts, src/cli/index.ts",
+        "CLI Using tsconfig: tsconfig.json",
+        "CLI tsup v8.5.1",
+        "CLI Target: node22",
+        "CLI Cleaning output folder",
+        "ESM Build start",
+        "ESM dist/cli/backup-verifier.js      632.00 B",
+        "ESM dist/cli/index.js                493.00 KB",
+        "ESM dist/cli/chunk-DYGSM5CN.js       16.62 KB",
+        "ESM dist/cli/mcp-runtime-42N5XTG6.js 29.55 KB",
+        "ESM dist/cli/chunk-QW22RJL3.js       112.01 KB",
+        "ESM dist/cli/chunk-XCHPRCGK.js       234.42 KB",
+        "ESM ⚡️ Build success in 95ms"
+      ],
+      "timing": []
+    },
+    {
+      "id": "00a17184-f2e1-43a1-afc1-e45a09eb021c",
+      "presetId": "node:test:user-backups",
+      "head": "f6ed795a7be72cdb39b9b3f30456f9e9c3f7ad9c",
+      "phase": "passed",
+      "source": {
+        "version": 1,
+        "scope": "git-observations",
+        "enqueue": {
+          "observedAt": "2026-10-03T10:42:03.066Z",
+          "head": "f6ed795a7be72cdb39b9b3f30456f9e9c3f7ad9c",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "preflight": {
+          "observedAt": "2026-10-03T10:42:03.226Z",
+          "head": "f6ed795a7be72cdb39b9b3f30456f9e9c3f7ad9c",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "finish": {
+          "observedAt": "2026-10-03T10:42:22.425Z",
+          "head": "f6ed795a7be72cdb39b9b3f30456f9e9c3f7ad9c",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "queueComparison": "match",
+        "executionComparison": "match",
+        "attribution": "observed_match",
+        "reasonCodes": [],
+        "processOutcome": "passed"
+      },
+      "logs": [
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at after-intent resumes without double settlement \u001b[33m 444\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at before-unlink resumes without double settlement \u001b[33m 463\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at after-unlink resumes without double settlement \u001b[33m 439\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at before-settle resumes without double settlement \u001b[33m 450\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at after-settle resumes without double settlement \u001b[33m 449\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at after-durable resumes without double settlement \u001b[33m 438\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m charges timed-out staging across repeated attempts, history pruning and restart, then reclaims it explicitly \u001b[33m 2059\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m preserves unsafe staging-only foreign during operator preview \u001b[33m 1565\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m preserves unsafe staging-only hardlink during operator preview \u001b[33m 1714\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m preserves unsafe staging-only symlink during operator preview \u001b[33m 1579\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m releases the global execution cap through confirmed cleanup of succeeded history \u001b[33m 826\u001b[2mms\u001b[22m\u001b[39m",
+        "\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m6 passed\u001b[39m\u001b[22m\u001b[90m (6)\u001b[39m",
+        "\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m108 passed\u001b[39m\u001b[22m\u001b[90m (108)\u001b[39m",
+        "\u001b[2m   Start at \u001b[22m 12:42:04",
+        "\u001b[2m   Duration \u001b[22m 18.16s\u001b[2m (transform 1.84s, setup 0ms, import 3.39s, tests 24.03s, environment 1ms)\u001b[22m"
+      ],
+      "timing": []
+    },
+    {
+      "id": "ba98270d-a360-4085-9d01-a4041a1ba48d",
+      "presetId": "node:check",
+      "head": "f6ed795a7be72cdb39b9b3f30456f9e9c3f7ad9c",
+      "phase": "passed",
+      "source": {
+        "version": 1,
+        "scope": "git-observations",
+        "enqueue": {
+          "observedAt": "2026-10-03T10:42:48.903Z",
+          "head": "f6ed795a7be72cdb39b9b3f30456f9e9c3f7ad9c",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "preflight": {
+          "observedAt": "2026-10-03T10:42:49.067Z",
+          "head": "f6ed795a7be72cdb39b9b3f30456f9e9c3f7ad9c",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "finish": {
+          "observedAt": "2026-10-03T10:44:49.369Z",
+          "head": "f6ed795a7be72cdb39b9b3f30456f9e9c3f7ad9c",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "queueComparison": "match",
+        "executionComparison": "match",
+        "attribution": "observed_match",
+        "reasonCodes": [],
+        "processOutcome": "passed"
+      },
+      "logs": [
+        "✔ lifecycle arguments require an explicit non-root UID (2.724106ms)",
+        "✔ lifecycle reports redact browser and bearer credentials (1.95072ms)",
+        "✔ systemd definition must point at installed paths and omit builder paths (1.099509ms)",
+        "✔ resource benchmark uses local transport with the advertised browser origin (1.463009ms)",
+        "✔ CPU uses one-core process time and RSS uses the sample median (0.306344ms)",
+        "✔ growth compares identical running workloads, not the empty controller (0.406247ms)",
+        "✔ invalid measurements fail rather than becoming a passing zero (0.312096ms)",
+        "ℹ tests 7",
+        "ℹ suites 0",
+        "ℹ pass 7",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ todo 0",
+        "ℹ duration_ms 85.97609"
+      ],
+      "timing": []
+    },
+    {
+      "id": "1ddb2ffd-5799-48ed-a492-e91b6a8d13de",
+      "presetId": "node:test:user-backups",
+      "head": "8e523bd831b5416b980dff92dcaa3d57564b76ca",
+      "phase": "passed",
+      "source": {
+        "version": 1,
+        "scope": "git-observations",
+        "enqueue": {
+          "observedAt": "2026-10-03T10:46:18.863Z",
+          "head": "8e523bd831b5416b980dff92dcaa3d57564b76ca",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "preflight": {
+          "observedAt": "2026-10-03T10:46:19.026Z",
+          "head": "8e523bd831b5416b980dff92dcaa3d57564b76ca",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "finish": {
+          "observedAt": "2026-10-03T10:46:39.085Z",
+          "head": "8e523bd831b5416b980dff92dcaa3d57564b76ca",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "queueComparison": "match",
+        "executionComparison": "match",
+        "attribution": "observed_match",
+        "reasonCodes": [],
+        "processOutcome": "passed"
+      },
+      "logs": [
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at after-intent resumes without double settlement \u001b[33m 450\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at before-unlink resumes without double settlement \u001b[33m 451\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at after-unlink resumes without double settlement \u001b[33m 471\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at before-settle resumes without double settlement \u001b[33m 449\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at after-settle resumes without double settlement \u001b[33m 458\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at after-durable resumes without double settlement \u001b[33m 427\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m charges timed-out staging across repeated attempts, history pruning and restart, then reclaims it explicitly \u001b[33m 2123\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m preserves unsafe staging-only foreign during operator preview \u001b[33m 1625\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m preserves unsafe staging-only hardlink during operator preview \u001b[33m 1685\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m preserves unsafe staging-only symlink during operator preview \u001b[33m 1571\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m releases the global execution cap through confirmed cleanup of succeeded history \u001b[33m 905\u001b[2mms\u001b[22m\u001b[39m",
+        "\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m6 passed\u001b[39m\u001b[22m\u001b[90m (6)\u001b[39m",
+        "\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m108 passed\u001b[39m\u001b[22m\u001b[90m (108)\u001b[39m",
+        "\u001b[2m   Start at \u001b[22m 12:46:19",
+        "\u001b[2m   Duration \u001b[22m 18.96s\u001b[2m (transform 2.31s, setup 0ms, import 4.21s, tests 24.87s, environment 1ms)\u001b[22m"
+      ],
+      "timing": [
+        "\u001b[22m\u001b[39m[DEBUG-pr73-recovery] {",
+        "  readMs: \u001b[33m43.453828000000385\u001b[39m,",
+        "  readCount: \u001b[33m12\u001b[39m,",
+        "  syncMs: \u001b[33m0.2972169999983407\u001b[39m,",
+        "  syncCount: \u001b[33m97\u001b[39m,",
+        "  totalMs: \u001b[33m4022.419302\u001b[39m",
+        "}",
+        " \u001b[32m✓\u001b[39m src/server/modules/backups/user-schedules.test.ts \u001b[2m(\u001b[22m\u001b[2m27 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[33m 4179\u001b[2mms\u001b[22m\u001b[39m"
+      ]
+    },
+    {
+      "id": "a05a87f6-c7ed-45a9-92f1-e09c2b4fc716",
+      "presetId": "node:test:user-backups",
+      "head": "a3e36259f17159f77855c5f4bbf84d7dafa3f1a9",
+      "phase": "passed",
+      "source": {
+        "version": 1,
+        "scope": "git-observations",
+        "enqueue": {
+          "observedAt": "2026-10-03T10:47:15.983Z",
+          "head": "a3e36259f17159f77855c5f4bbf84d7dafa3f1a9",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "preflight": {
+          "observedAt": "2026-10-03T10:47:16.138Z",
+          "head": "a3e36259f17159f77855c5f4bbf84d7dafa3f1a9",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "finish": {
+          "observedAt": "2026-10-03T10:47:24.439Z",
+          "head": "a3e36259f17159f77855c5f4bbf84d7dafa3f1a9",
+          "branch": "feat/sqlite-user-backup-schedules",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "queueComparison": "match",
+        "executionComparison": "match",
+        "attribution": "observed_match",
+        "reasonCodes": [],
+        "processOutcome": "passed"
+      },
+      "logs": [
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL during user export at unlinked, expired=true, never publishes an incomplete success \u001b[33m 400\u001b[2mms\u001b[22m\u001b[39m",
+        " \u001b[32m✓\u001b[39m src/server/modules/backups/user-export-recovery.test.ts \u001b[2m(\u001b[22m\u001b[2m47 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[33m 6456\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at before-intent resumes without double settlement \u001b[33m 576\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at after-intent resumes without double settlement \u001b[33m 521\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at before-unlink resumes without double settlement \u001b[33m 489\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at after-unlink resumes without double settlement \u001b[33m 428\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at before-settle resumes without double settlement \u001b[33m 430\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at after-settle resumes without double settlement \u001b[33m 416\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m SIGKILL cleanup at after-durable resumes without double settlement \u001b[33m 452\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m charges timed-out staging across repeated attempts, history pruning and restart, then reclaims it explicitly \u001b[33m 536\u001b[2mms\u001b[22m\u001b[39m",
+        "   \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m releases the global execution cap through confirmed cleanup of succeeded history \u001b[33m 892\u001b[2mms\u001b[22m\u001b[39m",
+        "\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m6 passed\u001b[39m\u001b[22m\u001b[90m (6)\u001b[39m",
+        "\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m108 passed\u001b[39m\u001b[22m\u001b[90m (108)\u001b[39m",
+        "\u001b[2m   Start at \u001b[22m 12:47:16",
+        "\u001b[2m   Duration \u001b[22m 7.31s\u001b[2m (transform 2.08s, setup 0ms, import 3.60s, tests 11.30s, environment 1ms)\u001b[22m"
+      ],
+      "timing": [
+        "\u001b[22m\u001b[39m[DEBUG-pr73-recovery] {",
+        "  readMs: \u001b[33m37.862170999999876\u001b[39m,",
+        "  readCount: \u001b[33m12\u001b[39m,",
+        "  syncMs: \u001b[33m0.2809069999991607\u001b[39m,",
+        "  syncCount: \u001b[33m97\u001b[39m,",
+        "  totalMs: \u001b[33m214.57008400000007\u001b[39m",
+        "}",
+        " \u001b[32m✓\u001b[39m src/server/transports/user-backup-http.test.ts \u001b[2m(\u001b[22m\u001b[2m2 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 11\u001b[2mms\u001b[22m\u001b[39m"
+      ]
     }
   ]
 }
