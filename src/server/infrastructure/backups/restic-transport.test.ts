@@ -69,6 +69,21 @@ describe("shell-free restic adapter", () => {
     const complete = await f.transport.upload(f.source); expect(complete.snapshotId).toBe("2".padStart(64, "0"));
     expect(f.state().snapshots).toHaveLength(2); expect(await f.transport.upload(f.source)).toEqual(complete); expect(f.state().snapshots).toHaveLength(2);
   });
+  it("fails closed beyond 32 candidates and reconciles after operator removal of only proven partials", async () => {
+    const f = fixture("partial"); await expect(f.transport.upload(f.source)).rejects.toThrow("remote_failed");
+    f.change("healthy"); const complete = await f.transport.upload(f.source);
+    const before = f.state(), partial = before.snapshots.find((snapshot: { partial: boolean }) => snapshot.partial);
+    const candidates = [...Array.from({ length: 33 }, (_, index) => ({ ...partial, id: String(index + 10).padStart(64, "0") })), before.snapshots.find((snapshot: { id: string }) => snapshot.id === complete.snapshotId)];
+    writeFileSync(join(f.root, "state.json"), JSON.stringify({ ...before, snapshots: candidates }));
+    await expect(f.transport.upload(f.source)).rejects.toThrow(/^remote_failed$/);
+    expect(f.state().calls.filter((call: { args: string[] }) => call.args.includes("backup"))).toHaveLength(2);
+    // The fixture's explicit partial marker stands for external restore/inventory proof.
+    // Keep the complete recovery point; the application never issues forget or prune.
+    writeFileSync(join(f.root, "state.json"), JSON.stringify({ ...f.state(), snapshots: candidates.filter(snapshot => !snapshot.partial) }));
+    expect(await f.transport.upload(f.source)).toEqual(complete);
+    expect(f.state().snapshots).toHaveLength(1);
+    expect(f.state().calls.filter((call: { args: string[] }) => call.args.includes("backup"))).toHaveLength(2);
+  });
   it("never authorizes a new snapshot during read-only final-attempt reconciliation", async () => {
     const f = fixture(); await expect(f.transport.upload(f.source, { reconcileOnly: true })).rejects.toThrow("remote_failed");
     expect(f.state().snapshots).toHaveLength(0);

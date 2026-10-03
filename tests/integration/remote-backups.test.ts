@@ -25,6 +25,9 @@ describe.skipIf(!realResticAvailable)("real restic HTTPS REST transfer and sourc
     const confirmed = await waitFor(async () => { const status = JSON.parse(await f.cli(["backup", "remote", "status"])) as RemoteBackupStatus; return status.lastConfirmed?.backupId === copy.backupId ? status : null; }, 30000, () => "Real HTTPS transfer did not confirm.");
     expect(confirmed.recovery).toBe("not-measured"); expect(confirmed.pending).toBe(0);
     expect(confirmed.lastConfirmed!.dataAt).toBe(copy.createdAt);
+    const remoteTree = (await r.run(["ls", "--json", confirmed.lastConfirmed!.snapshotId])).stdout.split("\n").filter(Boolean).map(line => JSON.parse(line) as { path?: string; type?: string });
+    const remoteFiles = remoteTree.filter(node => node.type === "file").map(node => node.path!).sort();
+    expect(remoteFiles).toContain("/manifest.json"); expect(remoteFiles).toContain("/state.sqlite3");
     await f.cli(["backup", "remote", "retry", copy.backupId, "--generation", "1"]);
     expect(JSON.parse((await r.run(["snapshots", "--json"])).stdout)).toHaveLength(1);
     await expect(r.run(["snapshots", "--json"], { ...r.environment, RESTIC_REST_PASSWORD: "incorrect" })).rejects.toThrow();
@@ -42,11 +45,12 @@ describe.skipIf(!realResticAvailable)("real restic HTTPS REST transfer and sourc
     const common = ["--data-dir", data, "--state-dir", state], environment = { ...process.env, WORKTREE_SWITCHER_TOKEN: token, WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: token };
     await exec(process.execPath, [cli, "backup", "restore", recovered, "--idempotency-key", "remote-recovery", ...common], { env: environment, timeout: 30000 });
     // Existing restore validates schema/integrity/FK/domain/attachments; fresh CLI validates restored access and records.
-    const tasks = JSON.parse((await exec(process.execPath, [cli, "knowledge", "tasks", "--json", JSON.stringify({ projectId: project.id }), ...common], { env: environment, timeout: 30000 })).stdout) as { items: Array<{ id: string }> };
+    controller = await startControllerFixture(0, [], { restoredInstallation: { data, state, token } });
+    const tasks = JSON.parse(await controller.cli(["knowledge", "tasks", "--json", JSON.stringify({ projectId: project.id })], { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: token })) as { items: Array<{ id: string }> };
     expect(tasks.items.map(item => item.id)).toContain(task.value.id);
-    const downloaded = JSON.parse((await exec(process.execPath, [cli, "knowledge", "attachment", "--json", JSON.stringify({ projectId: project.id, attachmentId: attachment.value.id }), ...common], { env: environment, timeout: 30000 })).stdout) as { dataBase64: string };
+    const downloaded = JSON.parse(await controller.cli(["knowledge", "attachment", "--json", JSON.stringify({ projectId: project.id, attachmentId: attachment.value.id })], { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: token })) as { dataBase64: string };
     expect(Buffer.from(downloaded.dataBase64, "base64").equals(bytes)).toBe(true);
-    console.log(JSON.stringify({ evidence: "isolated-https-rest-recovery", sourceInstallationDeleted: true, confirmedSnapshots: 1, recoveredTasks: 1, recoveredAttachments: 1, recoveryMs: Date.now() - recoveryStart, ...r.provenance }));
+    console.log(JSON.stringify({ evidence: "isolated-https-rest-recovery", sourceInstallationDeleted: true, confirmedSnapshots: 1, remoteFiles, recoveredTasks: 1, recoveredAttachments: 1, recoveryMs: Date.now() - recoveryStart, ...r.provenance }));
   });
   it("keeps local success through credential failure and retries one stable backup after restart", async () => {
     remote = await resticFixture(); const r = remote;

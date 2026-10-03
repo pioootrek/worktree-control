@@ -100,18 +100,19 @@ async function createRepository(base: string, name: string, kind: FixtureProject
   return { main, alternate };
 }
 
-export async function startControllerFixture(projectCount = 3, projectKinds: FixtureProjectKind[] = [], options: { backups?: boolean; userBackups?: boolean; startupArguments?: string[] } = {}): Promise<ControllerFixture> {
+export async function startControllerFixture(projectCount = 3, projectKinds: FixtureProjectKind[] = [], options: { backups?: boolean; userBackups?: boolean; startupArguments?: string[]; restoredInstallation?: { data: string; state: string; token: string } } = {}): Promise<ControllerFixture> {
   const base = await mkdtemp(join(tmpdir(), "worktree-switcher-integration-"));
-  const data = join(base, "data"), state = join(base, "state"); await Promise.all([mkdir(data, { mode: 0o700 }), mkdir(state, { mode: 0o700 })]);
+  const data = options.restoredInstallation?.data ?? join(base, "data"), state = options.restoredInstallation?.state ?? join(base, "state");
+  await Promise.all([mkdir(data, { mode: 0o700, recursive: true }), mkdir(state, { mode: 0o700, recursive: true })]);
   const kinds = Array.from({ length: projectCount }, (_, index) => projectKinds[index] ?? "node");
   const repositories = await Promise.all(Array.from({ length: projectCount }, (_, index) => createRepository(base, `project-${String.fromCharCode(97 + index)}`, kinds[index]!)));
   const ports = await Promise.all(Array.from({ length: projectCount + 2 }, () => freePort()));
   const controllerPort = ports.pop()!, mcpPort = ports.pop()!;
   let child: ChildProcess | undefined, endpoint = `http://127.0.0.1:${controllerPort}`, accessUrl = "", controllerOutput = "";
-  const generated = await exec(process.execPath, [join(repositoryRoot, "dist/cli/index.js"), "auth", "token", "generate"], {
+  const generated = options.restoredInstallation ? undefined : await exec(process.execPath, [join(repositoryRoot, "dist/cli/index.js"), "auth", "token", "generate"], {
     cwd: repositoryRoot, env: { ...process.env, WORKTREE_SWITCHER_DATA_DIR: data, WORKTREE_SWITCHER_STATE_DIR: state }, timeout: 30000,
   });
-  const token = (JSON.parse(generated.stdout) as { token: string }).token;
+  const token = options.restoredInstallation?.token ?? (JSON.parse(generated!.stdout) as { token: string }).token;
   let userBackupProjectId: string | undefined;
   if (options.userBackups) {
     const created = await exec(process.execPath, [join(repositoryRoot, "dist/cli/index.js"), "identity", "create-knowledge-project", "--name", "Scheduled discussions"], {

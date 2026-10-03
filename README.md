@@ -464,6 +464,36 @@ and explicit-destination local rescue backups. Pending sources stay pinned.
 Do not delete the remote ledger to retarget: an explicit repository migration
 and rebind workflow remains S5 work.
 
+Reconciliation admits at most 32 snapshots matching one backup's identity. More
+candidates fail closed as `remote_failed`, create no new remote snapshot, and
+leave the local source pinned. Automatic remote cleanup is not implemented.
+For operator recovery from this limit:
+
+1. Disable application transfer while inspecting the repository. Use separate
+   maintenance credentials; the application's append-only REST credentials must
+   not gain deletion permission. Preserve the pinned local source and ledger.
+2. With trusted restic and private repository/key/backend settings, list candidates
+   with `restic snapshots --json --tag wts-backup:<backup-id>`. Match installation
+   and manifest tags, record exact snapshot IDs, and retain every confirmed,
+   unknown or last recovery copy.
+3. Restore each candidate to its own empty private directory using
+   `restic restore <snapshot-id> --target <candidate-directory> --verify`.
+   Compare its manifest and all files, sizes and hashes with the pinned verified
+   local copy. Run `worktree-switcher backup restore <candidate-directory>
+   --data-dir <fresh-candidate-data> --state-dir <fresh-candidate-state>` for
+   full isolated validation. A failed restore alone is an unknown outcome, not
+   proof of an incomplete copy. Only independently proven missing/truncated or
+   mismatched expected contents classify a partial snapshot.
+4. After retaining a verified recovery point, maintenance credentials may run
+   `restic forget <proven-partial-snapshot-id>` for explicitly classified partials
+   only. Do not use `--prune`, automatic selection rules, or delete unknown/last
+   copies. If classification or a retained recovery point is unavailable, stop
+   and keep local rescue material. The application never runs `forget` or `prune`.
+5. Once at most 32 matching candidates remain, re-enable the same repository
+   policy and use `backup remote retry <backup-id> --generation <next-generation>`.
+   Reconciliation authenticates any retained complete point before a new upload.
+   Broader bounded automatic partial-history recovery remains S5 work.
+
 To recover, use a trusted restic and separately held repository password/backend
 credentials to restore the full confirmed snapshot ID into an empty private
 directory (`restic restore <snapshot-id> --target <directory> --verify`). Run
