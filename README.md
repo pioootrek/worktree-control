@@ -486,42 +486,59 @@ Remote policy/status is not available through dashboard, HTTP or MCP actions.
 
 The cryptographic repository ID fences receipts; changing the HTTPS hostname,
 port, path or trailing slash for that same repository preserves pending work.
-Replacing it with a different repository ID is not supported in this slice.
-If the original repository is lost, start with `--backup-remote-disabled` (or
-refresh the installed service with that flag) to continue controller operation
-and explicit-destination local rescue backups. Pending sources stay pinned.
-Do not delete the remote ledger to retarget: an explicit repository migration
-and rebind workflow remains S5 work.
+For a different repository ID, stop the controller and explicitly rebind:
 
-Reconciliation admits at most 32 snapshots matching one backup's identity. More
-candidates fail closed as `remote_failed`, create no new remote snapshot, and
-leave the local source pinned. Automatic remote cleanup is not implemented.
-For operator recovery from this limit:
+```sh
+worktree-switcher backup remote rebind --from <current-repository-id> \
+  --target-config /private/backup-secrets/new-restic.json --generation <next-generation>
+```
 
-1. Disable application transfer while inspecting the repository. Use separate
-   maintenance credentials; the application's append-only REST credentials must
-   not gain deletion permission. Preserve the pinned local source and ledger.
-2. With trusted restic and private repository/key/backend settings, list candidates
-   with `restic snapshots --json --tag wts-backup:<backup-id>`. Match installation
-   and manifest tags, record exact snapshot IDs, and retain every confirmed,
-   unknown or last recovery copy.
-3. Restore each candidate to its own empty private directory using
-   `restic restore <snapshot-id> --target <candidate-directory> --verify`.
-   Compare its manifest and all files, sizes and hashes with the pinned verified
-   local copy. Run `worktree-switcher backup restore <candidate-directory>
-   --data-dir <fresh-candidate-data> --state-dir <fresh-candidate-state>` for
-   full isolated validation. A failed restore alone is an unknown outcome, not
-   proof of an incomplete copy. Only independently proven missing/truncated or
-   mismatched expected contents classify a partial snapshot.
-4. After retaining a verified recovery point, maintenance credentials may run
-   `restic forget <proven-partial-snapshot-id>` for explicitly classified partials
-   only. Do not use `--prune`, automatic selection rules, or delete unknown/last
-   copies. If classification or a retained recovery point is unavailable, stop
-   and keep local rescue material. The application never runs `forget` or `prune`.
-5. Once at most 32 matching candidates remain, re-enable the same repository
-   policy and use `backup remote retry <backup-id> --generation <next-generation>`.
-   Reconciliation authenticates any retained complete point before a new upload.
-   Broader bounded automatic partial-history recovery remains S5 work.
+The private JSON uses the existing restic configuration fields: `executable`,
+`repository`, `repositoryId`, `passwordFile`, `credentialsFile`, optional `caFile`,
+`uploadKiBPerSecond` and `policy`. The command authenticates the target with a
+read-only repository check under the existing controller and canonical database
+owner locks. Unfinished restores refuse rebind without performing recovery.
+One atomic ledger publication archives all old receipts, confirmations and
+uncertain-source pins. The new target initially has no confirmed protection.
+Matching retries replay the accepted generation; stale or conflicting requests
+refuse. Rebind does not change startup arguments or service configuration: start
+with the new target policy separately. Never delete the ledger to retarget.
+
+At most four archived bindings and a 4MiB ledger are retained. Limits refuse
+new publication without dropping evidence. Private `backup remote status`
+separates active destination/generation/confirmation from archived receipt and
+pin counts. Historic receipts prevent automatic uploads of old copies. To
+select one archived source still present in the configured catalog:
+
+```sh
+worktree-switcher backup remote reupload <backup-id>
+```
+
+This requires the running controller's private administrative socket and verifies
+the archived manifest identity and original data age. Duplicate admission is
+idempotent; failed transfers require an explicit retry generation. Confirmation
+on the new target never releases an uncertain old-target pin. Disabled transfer
+preserves this material without making background connections.
+
+Reconciliation inventories at most 256 matching snapshots in 512KiB, then
+validates at most 32 new candidates per pass. Authenticated ID/tree proofs and
+budgets persist across restart and inventory reordering. Only a full successful
+authenticated mismatch proves a partial copy; errors, malformed or truncated
+output remain unknown and cannot authorize another write. Read output is bounded
+to 256MiB per pass and eight automatic passes (2GiB reserved total), preserving
+the per-command 8MiB manifest and 64MiB tree limits. Upload progress has a separate
+64MiB bound. Global proof limits are 256 per receipt and 1,024 across all bindings.
+Continuations share the existing executor and configured retry spacing.
+
+Changed inventory fails closed as `remote_inventory_changed` until an explicit
+`backup remote retry <backup-id> --generation <next-generation>` renews the
+inventory fence and budgets while retaining stable source identity and proofs.
+This also handles an uncertain upload that may already have created a snapshot:
+renewal authenticates the current inventory before any new write. Multiple
+complete candidates, unknown reads or exhausted capacity leave the source
+protected. The application never runs `forget`, `prune` or remote deletion.
+Keep local rescue material and use separately held maintenance credentials for
+any independent repository investigation; do not remove unknown or last copies.
 
 To recover, use a trusted restic and separately held repository password/backend
 credentials to restore the full confirmed snapshot ID into an empty private
