@@ -204,6 +204,11 @@
       "author": "human:pioootrek",
       "date": "2026-10-03",
       "text": "Selected S5 scope explicitly: code and isolated tests now; target host, keys and rollout separately. No actual off-host recovery trial or production rollout is part of this implementation run."
+    },
+    {
+      "author": "agent:codex",
+      "date": "2026-10-03",
+      "text": "Recorded the S5b implementation contract in storage-safety-s5b-contract-20261003.md: offline operator rebind under existing ownership, one atomic bounded ledger with archived proof/pins, explicit single-backup reupload, durable bounded partial-history continuations without automatic deletion. Root reviewed the worker proposal; code starts after PR #75 merges. Code and isolated fixtures only; host, keys and rollout remain separate. S5a review fix is still under verification; no S5a merge or S5b implementation outcome is claimed."
     }
   ],
   "priority": "next",
