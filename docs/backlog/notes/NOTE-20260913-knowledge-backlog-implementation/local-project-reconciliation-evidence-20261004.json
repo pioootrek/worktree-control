@@ -1,0 +1,406 @@
+{
+  "observed_at": "2026-10-04T09:50:56.882463+00:00",
+  "scope": "Local working files and authenticated production read capability; no live SQLite access",
+  "database_comparison": "unknown: configured legacy runtime credential rejected by knowledge HTTP API (401 invalid_credential)",
+  "candidate_checkouts": 48,
+  "unique_git_repositories": 8,
+  "canonical_source_repositories": [
+    {
+      "repository": "borrow-everything",
+      "path": "/home/pioootrek/development/borrow-everything",
+      "branch": "master",
+      "head": "b01134689688bd81623b50b4be02ccfe5fea8886",
+      "open_records": 10,
+      "done_records": 1,
+      "notes": 0,
+      "unique_record_ids": 11,
+      "record_counts_by_category": {
+        "feature": 6,
+        "rework": 2,
+        "security": 2,
+        "done": 1
+      },
+      "note_asset_files": 0,
+      "index_open_count": 10,
+      "index_note_count": 0,
+      "duplicate_ids": {},
+      "done_item_id_count": 0,
+      "duplicate_done_item_ids": {},
+      "file_read_errors": [],
+      "tracked_dirty": false,
+      "tracked_changed_count": 0,
+      "untracked_count": 0,
+      "current_backlog_dirty_paths": []
+    },
+    {
+      "repository": "llm-ops-hub",
+      "path": "/home/pioootrek/development/llm-ops-hub",
+      "branch": "main",
+      "head": "22afb656c74b2fde84cb92f1aefcf8b427697cc6",
+      "open_records": 2,
+      "done_records": 1,
+      "notes": 0,
+      "unique_record_ids": 3,
+      "record_counts_by_category": {
+        "feature": 2,
+        "done": 1
+      },
+      "note_asset_files": 0,
+      "index_open_count": 2,
+      "index_note_count": 0,
+      "duplicate_ids": {},
+      "done_item_id_count": 0,
+      "duplicate_done_item_ids": {},
+      "file_read_errors": [],
+      "tracked_dirty": false,
+      "tracked_changed_count": 0,
+      "untracked_count": 0,
+      "current_backlog_dirty_paths": []
+    },
+    {
+      "repository": "prosty-prawnik",
+      "path": "/home/pioootrek/development/prosty-prawnik",
+      "branch": "main",
+      "head": "c5d09bc21e1ae23f2662147e0a66b9c30a0c396f",
+      "open_records": 51,
+      "done_records": 4,
+      "notes": 6,
+      "unique_record_ids": 61,
+      "record_counts_by_category": {
+        "feature": 35,
+        "security": 16,
+        "done": 4,
+        "notes": 6
+      },
+      "note_asset_files": 15,
+      "index_open_count": 51,
+      "index_note_count": 6,
+      "duplicate_ids": {},
+      "done_item_id_count": 3,
+      "duplicate_done_item_ids": {},
+      "file_read_errors": [],
+      "tracked_dirty": true,
+      "tracked_changed_count": 1,
+      "untracked_count": 0,
+      "current_backlog_dirty_paths": []
+    },
+    {
+      "repository": "win-path-6",
+      "path": "/home/pioootrek/development/win-path-6",
+      "branch": "staging",
+      "head": "814ba95f1455763a7d10b3cfc0d0d3415fec10b3",
+      "open_records": 182,
+      "done_records": 340,
+      "notes": 47,
+      "unique_record_ids": 569,
+      "record_counts_by_category": {
+        "feature": 52,
+        "fix": 60,
+        "rework": 49,
+        "security": 21,
+        "done": 340,
+        "notes": 47
+      },
+      "note_asset_files": 888,
+      "index_open_count": 182,
+      "index_note_count": 47,
+      "duplicate_ids": {},
+      "done_item_id_count": 94,
+      "duplicate_done_item_ids": {},
+      "file_read_errors": [],
+      "tracked_dirty": true,
+      "tracked_changed_count": 2,
+      "untracked_count": 13,
+      "current_backlog_dirty_paths": [
+        "docs/backlog/index.json",
+        "docs/backlog/rework/RWK-20260916-sentry-observability.json",
+        "docs/backlog/done/DONE-20260930-worker-infrastructure.json",
+        "docs/backlog/notes/NOTE-20260930-worker-infrastructure/ci-worker.json",
+        "docs/backlog/notes/NOTE-20260930-worker-infrastructure/collector.yaml.txt",
+        "docs/backlog/notes/NOTE-20260930-worker-infrastructure/llm-worker.json",
+        "docs/backlog/notes/NOTE-20260930-worker-infrastructure/note.json",
+        "docs/backlog/notes/NOTE-20260930-worker-infrastructure/runbook.md",
+        "docs/backlog/notes/NOTE-20260930-worker-infrastructure/service-metrics.py.txt",
+        "docs/backlog/notes/NOTE-20260930-worker-infrastructure/service-metrics.tests.py.txt",
+        "docs/backlog/notes/NOTE-20260930-worker-infrastructure/sync-ingest-token.mjs.txt",
+        "docs/backlog/notes/NOTE-20260930-worker-infrastructure/verification.json",
+        "docs/backlog/notes/NOTE-20260930-worker-infrastructure/worker-otel.service.txt",
+        "docs/backlog/notes/NOTE-20260930-worker-infrastructure/worker-service-metrics.service.txt",
+        "docs/backlog/notes/NOTE-20260930-worker-infrastructure/workerobservability.slice.txt"
+      ]
+    },
+    {
+      "repository": "worktree-switcher",
+      "path": "/home/pioootrek/development/worktree-switcher",
+      "branch": "main",
+      "head": "f902b5842571008a56409100a78d80ea9762b5cc",
+      "open_records": 15,
+      "done_records": 21,
+      "notes": 20,
+      "unique_record_ids": 56,
+      "record_counts_by_category": {
+        "feature": 11,
+        "fix": 1,
+        "rework": 3,
+        "done": 21,
+        "notes": 20
+      },
+      "note_asset_files": 361,
+      "index_open_count": 15,
+      "index_note_count": 20,
+      "duplicate_ids": {},
+      "done_item_id_count": 19,
+      "duplicate_done_item_ids": {},
+      "file_read_errors": [],
+      "tracked_dirty": false,
+      "tracked_changed_count": 0,
+      "untracked_count": 1,
+      "current_backlog_dirty_paths": [
+        "docs/backlog/notes/NOTE-20260913-knowledge-backlog-implementation/local-project-reconciliation-20261004.md"
+      ]
+    }
+  ],
+  "selected_worktree_comparisons": [
+    {
+      "repository": "prosty-prawnik",
+      "canonical_path": "/home/pioootrek/development/prosty-prawnik",
+      "selected_path": "/home/pioootrek/.t3/worktrees/prosty-prawnik/t3code-71522313",
+      "selected_branch": "refs/heads/feature/client-inbox",
+      "selected_head": "674e1d2047f94b0b99499c7afb68254cd516aa17",
+      "selected_tracked_dirty": false,
+      "selected_untracked_count": 0,
+      "selected_counts": {
+        "feature": 37,
+        "security": 15,
+        "done": 10,
+        "notes": 7
+      },
+      "selected_unique_record_ids": 69,
+      "selected_note_asset_files": 17,
+      "added_ids": [
+        "DONE-20260916-case-documents",
+        "DONE-20260916-lawyer-handoff-data",
+        "DONE-20260916-personal-workspaces",
+        "DONE-20260917-client-inbox",
+        "DONE-20260917-handoff-form-retries",
+        "DONE-20260917-stage-6-staff-operations",
+        "FEAT-20260917-sol-differentiation",
+        "FEAT-20260917-stage-7-workflow-verification",
+        "NOTE-20260917-client-inbox-direction"
+      ],
+      "removed_ids": [
+        "SEC-20260910-lawyer-handoff-data"
+      ],
+      "changed_ids": [
+        "FEAT-20260910-q04-differentiation",
+        "FEAT-20260915-b2c-first-release",
+        "FEAT-20260915-shared-core-two-brands",
+        "SEC-20260910-case-access-design",
+        "SEC-20260915-b2b-organizational-memory"
+      ],
+      "added_count": 9,
+      "removed_count": 1,
+      "changed_count": 5,
+      "done_item_mapping": [
+        {
+          "done_id": "DONE-20260916-case-documents",
+          "item_id": "FEAT-20260916-case-documents"
+        },
+        {
+          "done_id": "DONE-20260916-lawyer-handoff-data",
+          "item_id": "SEC-20260910-lawyer-handoff-data"
+        },
+        {
+          "done_id": "DONE-20260916-personal-workspaces",
+          "item_id": "FEAT-20260916-personal-workspaces"
+        },
+        {
+          "done_id": "DONE-20260917-client-inbox",
+          "item_id": "FEAT-20260917-client-inbox"
+        },
+        {
+          "done_id": "DONE-20260917-handoff-form-retries",
+          "item_id": "FIX-20260916-handoff-form-retries"
+        },
+        {
+          "done_id": "DONE-20260917-stage-6-staff-operations",
+          "item_id": "FEAT-20260917-stage-6-staff-operations"
+        }
+      ]
+    },
+    {
+      "repository": "win-path-6",
+      "canonical_path": "/home/pioootrek/development/win-path-6",
+      "selected_path": "/home/pioootrek/development/.worktrees/win-path-6/se-forecast-integration",
+      "selected_branch": "refs/heads/se-forcast-management-rework",
+      "selected_head": "8365653ae086e43e0760e11a7b08daecedb2f9c4",
+      "selected_tracked_dirty": false,
+      "selected_untracked_count": 0,
+      "selected_counts": {
+        "feature": 51,
+        "fix": 66,
+        "rework": 49,
+        "security": 21,
+        "done": 348,
+        "notes": 46
+      },
+      "selected_unique_record_ids": 581,
+      "selected_note_asset_files": 1253,
+      "added_ids": [
+        "DONE-20260929-engagement-e05-polish",
+        "DONE-20260929-engagement-lifecycle-supersedes-pov-phase-controls",
+        "DONE-20260930-engagement-pr598-review",
+        "DONE-20260930-engagement-reporting-coverage",
+        "DONE-20261001-se-forecast-t01-fiscal-policy",
+        "DONE-20261001-se-forecast-t02c-customer-engagement",
+        "DONE-20261001-se-forecast-t02d-pov-evaluations",
+        "DONE-20261002-se-forecast-t03c-engagement-analysis",
+        "DONE-20261004-se-forecast-t02-salesforce",
+        "FIX-20260929-engagement-fk-deletion-order",
+        "FIX-20260929-kinde-dev-login-layout",
+        "FIX-20260929-staging-schema-before-runtime",
+        "FIX-20260930-kinde-dev-duplicate-orgs",
+        "FIX-20261001-db-lab-effective-target-bootstrap",
+        "FIX-20261002-a3-offline-temporary-cleanup"
+      ],
+      "removed_ids": [
+        "DONE-20260930-worker-infrastructure",
+        "FEAT-20260828-pov-lifecycle-status-transitions-ui",
+        "NOTE-20260930-worker-infrastructure"
+      ],
+      "changed_ids": [
+        "FEAT-20260702-salesforce-crm-sync",
+        "FEAT-20260921-technical-forecast",
+        "NOTE-20260921-technical-forecast-planning",
+        "RWK-20260916-sentry-observability"
+      ],
+      "added_count": 15,
+      "removed_count": 3,
+      "changed_count": 4,
+      "done_item_mapping": [
+        {
+          "done_id": "DONE-20260929-engagement-e05-polish",
+          "item_id": null
+        },
+        {
+          "done_id": "DONE-20260929-engagement-lifecycle-supersedes-pov-phase-controls",
+          "item_id": "FEAT-20260828-pov-lifecycle-status-transitions-ui"
+        },
+        {
+          "done_id": "DONE-20260930-engagement-pr598-review",
+          "item_id": null
+        },
+        {
+          "done_id": "DONE-20260930-engagement-reporting-coverage",
+          "item_id": null
+        },
+        {
+          "done_id": "DONE-20261001-se-forecast-t01-fiscal-policy",
+          "item_id": null
+        },
+        {
+          "done_id": "DONE-20261001-se-forecast-t02c-customer-engagement",
+          "item_id": null
+        },
+        {
+          "done_id": "DONE-20261001-se-forecast-t02d-pov-evaluations",
+          "item_id": null
+        },
+        {
+          "done_id": "DONE-20261002-se-forecast-t03c-engagement-analysis",
+          "item_id": null
+        },
+        {
+          "done_id": "DONE-20261004-se-forecast-t02-salesforce",
+          "item_id": null
+        }
+      ]
+    }
+  ],
+  "remote_ref_reads": [
+    {
+      "repository": "borrow-everything",
+      "ref": "refs/heads/master",
+      "local_head": "b01134689688bd81623b50b4be02ccfe5fea8886",
+      "remote_head": "b01134689688bd81623b50b4be02ccfe5fea8886",
+      "result": "read",
+      "matches_local_head": true
+    },
+    {
+      "repository": "llm-ops-hub",
+      "ref": "refs/heads/main",
+      "local_head": "22afb656c74b2fde84cb92f1aefcf8b427697cc6",
+      "remote_head": "4cc02da94169cdb556b714d836c22b51c9853e19",
+      "result": "read",
+      "matches_local_head": false
+    },
+    {
+      "repository": "prosty-prawnik",
+      "ref": "refs/heads/main",
+      "local_head": "c5d09bc21e1ae23f2662147e0a66b9c30a0c396f",
+      "remote_head": "a4c27a6fbdb9a273ecaf562b80f263cae9762f4d",
+      "result": "read",
+      "matches_local_head": false
+    },
+    {
+      "repository": "win-path-6",
+      "ref": "refs/heads/staging",
+      "local_head": "814ba95f1455763a7d10b3cfc0d0d3415fec10b3",
+      "remote_head": "814ba95f1455763a7d10b3cfc0d0d3415fec10b3",
+      "result": "read",
+      "matches_local_head": true
+    },
+    {
+      "repository": "worktree-switcher",
+      "ref": "refs/heads/main",
+      "local_head": "f902b5842571008a56409100a78d80ea9762b5cc",
+      "remote_head": "f902b5842571008a56409100a78d80ea9762b5cc",
+      "result": "read",
+      "matches_local_head": true
+    }
+  ],
+  "top_level_non_repository_directories": [
+    {
+      "path": "/home/pioootrek/development/.restore-crash-LEgsQM",
+      "symlink": false,
+      "classification": "container_or_non_git_directory"
+    },
+    {
+      "path": "/home/pioootrek/development/.worktree-switcher-test",
+      "symlink": false,
+      "classification": "container_or_non_git_directory"
+    },
+    {
+      "path": "/home/pioootrek/development/.worktrees",
+      "symlink": false,
+      "classification": "container_or_non_git_directory"
+    },
+    {
+      "path": "/home/pioootrek/development/dify-railway-trial",
+      "symlink": false,
+      "classification": "container_or_non_git_directory"
+    },
+    {
+      "path": "/home/pioootrek/development/dify-staging-deploy",
+      "symlink": false,
+      "classification": "container_or_non_git_directory"
+    },
+    {
+      "path": "/home/pioootrek/development/recovery",
+      "symlink": false,
+      "classification": "container_or_non_git_directory"
+    },
+    {
+      "path": "/home/pioootrek/development/worktree-switcher-worktrees",
+      "symlink": false,
+      "classification": "container_or_non_git_directory"
+    }
+  ],
+  "limits": [
+    "Discovery walks development tree to depth 7 and excludes dependency/build/Git internals.",
+    "Git-registered worktree paths are deduplicated by common Git directory, including paths outside development.",
+    "Working file snapshots are not atomic; concurrent agent edits can alter files during reads.",
+    "No remote fetch was performed; ls-remote observes ref SHA only, not remote backlog contents.",
+    "No production projects/import batches/knowledge items were inventoried because knowledge authentication failed."
+  ]
+}
