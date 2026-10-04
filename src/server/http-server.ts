@@ -3,6 +3,7 @@ import { handleBackupHttp } from "./transports/backup-http";
 import { createHttpServerCloser } from "./http-server-lifecycle";
 import { BackupError, type BackupOperations, type RestoreOperations, type UserSchedules } from "./modules/backups";
 import { KnowledgeError, knowledgeFailure } from "./modules/knowledge";
+import { knowledgeRequestLimit } from "@/shared/contracts/knowledge";
 import { timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -459,7 +460,7 @@ export function createControllerServer(options: {
           }
           try {
             let input: unknown;
-            try { input = await readJson(request, 14_100_000); }
+            try { input = await readJson(request, knowledgeRequestLimit("create_attachment")); }
             catch (error) { throw new KnowledgeError(error instanceof Error && error.message === "Żądanie jest zbyt duże." ? "limit_exceeded" : "invalid_request", "Invalid knowledge JSON request."); }
             json(response, 200, options.service.executeKnowledge(input, actor));
           } catch (error) {

@@ -5,10 +5,11 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { ControlService } from "./control-service";
 import { resolveControllerAuthentication, type ControllerAuthenticationDependencies } from "./modules/authentication";
 import type { ControllerAuthentication, IdentityService } from "./modules/identity";
+import { knowledgeRequestLimit } from "@/shared/contracts/knowledge";
 
 const BODY_LIMIT = 1024 * 1024;
-const ATTACHMENT_BODY_LIMIT = 14_100_000 + 16 * 1024;
-const MANIFEST_BODY_LIMIT = 4 * 1024 * 1024 + 16 * 1024;
+const ATTACHMENT_BODY_LIMIT = knowledgeRequestLimit("create_attachment") + 16 * 1024;
+const MANIFEST_BODY_LIMIT = knowledgeRequestLimit("check_attachment_batch") + 16 * 1024;
 
 interface McpRuntimeLike {
   handle(request: IncomingMessage, response: ServerResponse, authentication: ControllerAuthentication, body?: unknown): Promise<void>;

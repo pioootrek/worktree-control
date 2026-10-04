@@ -75,6 +75,33 @@ async function setup(clock?: () => string, limits?: import("@/shared/contracts/k
 }
 
 describe("real knowledge HTTP, MCP and CLI", () => {
+  it("preflights a whole manifest above 1 MiB consistently across transports", async () => {
+    const f = await setup(), projectId = f.project.id;
+    const task = (await f.call(0, "create_task", { projectId, title: "Manifest", description: "Manifest", idempotencyKey: "manifest-task" })).value.value;
+    const input = { projectId, recordKind: "task", recordId: task.id,
+      files: Array.from({ length: 5001 }, (_, index) => ({ filename: `${"proof".repeat(35)}-${index}.txt`, size: 1, sha256: "a".repeat(64) })) };
+    expect(Buffer.byteLength(JSON.stringify(input))).toBeGreaterThan(1024 * 1024);
+    const http = await (await f.http("check_attachment_batch", input)).json();
+    expect(http).toMatchObject({ incoming: { bytes: 5001, files: 5001 }, accepted: false, violations: [expect.objectContaining({ constraint: "projectFiles" })] });
+    expect((await f.call(0, "check_attachment_batch", input)).value).toEqual(http);
+    const lines: string[] = [];
+    await runKnowledgeCommand(["check_attachment_batch", "--json", JSON.stringify(input)], f.paths, { environment: { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: line => lines.push(line) });
+    expect(JSON.parse(lines[0])).toEqual(http);
+  });
+
+  it("admits one of two concurrent HTTP writes after non-reserving preflights and replays the winner", async () => {
+    const f = await setup(undefined, { fileBytes: 10, projectBytes: 10, projectFiles: 1 }), projectId = f.project.id;
+    const task = (await f.call(0, "create_task", { projectId, title: "Race", description: "Race", idempotencyKey: "race-task" })).value.value;
+    const uploads = ["left", "right"].map(key => ({ projectId, recordKind: "task", recordId: task.id, filename: `${key}.bin`, mediaType: "application/octet-stream", dataBase64: Buffer.alloc(10).toString("base64"), idempotencyKey: key }));
+    for (const upload of uploads) {
+      expect((await f.call(0, "check_attachment_batch", { projectId, recordKind: "task", recordId: task.id, files: [{ filename: upload.filename, size: 10, sha256: "a".repeat(64) }] })).value.accepted).toBe(true);
+    }
+    const responses = await Promise.all(uploads.map(upload => f.http("create_attachment", upload)));
+    expect(responses.map(response => response.status).sort()).toEqual([200, 413]);
+    const winner = responses.findIndex(response => response.status === 200);
+    expect((await (await f.http("create_attachment", uploads[winner])).json()).replayed).toBe(true);
+    expect((await f.call(1, "attachment_policy", { projectId })).value.used).toEqual({ bytes: 10, files: 1 });
+  });
   it("carries the advertised 10 MiB file boundary through MCP and rejects one extra decoded byte", async () => {
     const f = await setup(), projectId = f.project.id;
     const task = (await f.call(0, "create_task", { projectId, title: "Boundary", description: "Boundary", idempotencyKey: "boundary-task" })).value.value;

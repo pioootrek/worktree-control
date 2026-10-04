@@ -660,6 +660,7 @@ intended to remain complete and independent. See the [self-hosted and SaaS plan]
 | [Controller HTTPS](docs/controller-https.md) | Caddy, certificates and access from another device |
 | [Reservations and MCP](docs/reservations-and-mcp.md) | Claims, locks, client integration and permissions |
 | [Knowledge delivery](https://github.com/pioootrek/worktree-switcher/blob/main/docs/shared-project-memory-plan.md) | Discussions, backlog, memory, import and remaining migration work |
+| [Knowledge evidence](docs/knowledge-evidence.md) | Attachment policy, logical capacity, preflight and evidence bundles |
 | [Architecture](https://github.com/pioootrek/worktree-switcher/blob/main/docs/architecture.md) | Controller, persistence and module boundaries |
 | [UI standards](https://github.com/pioootrek/worktree-switcher/blob/main/docs/ui-standards.md) | Layout, readers, focus and interaction rules |
 | [Backlog workflow](https://github.com/pioootrek/worktree-switcher/blob/main/docs/backlog/AGENTS.md) | Current work in Knowledge; JSON records remain the import archive |
