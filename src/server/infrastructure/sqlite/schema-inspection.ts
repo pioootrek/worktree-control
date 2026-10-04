@@ -110,6 +110,9 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       if (version >= (columnVersions[`${table}.${column.name}`] ?? introduced) && !columns.some(x => x.name === column.name)) refuse();
     }
     const actualChecks = checks((database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql);
+    const historicalLease = table === "reservations" && actualChecks.includes(historicalLeaseCheck);
+    // A known historical expression must not hide additional, unknown CHECKs.
+    if (historicalLease && (actualChecks.length !== 2 || !actualChecks.includes("kindin('human','agent')"))) refuse("constraint in reservations: lease");
     for (let check of expected.checks) {
       if (table === "remote_principals" && version < 25) check = check.replace(",'installation'", "");
       if (table === "knowledge_history" && version < 25) check = check.replace(",'installation_token','none'", "");
@@ -120,7 +123,7 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       // Recognize that exact historical shape (and the lineage without a CHECK);
       // validate active lease metadata through the application invariant below.
       if (table === "reservations" && check.startsWith("(")
-        && (!actualChecks.some(x => x.startsWith("(")) || actualChecks.includes(historicalLeaseCheck))) continue;
+        && (!actualChecks.some(x => x.startsWith("(")) || historicalLease)) continue;
       // Migration 11 added this column without a CHECK in upgraded installations.
       if (table === "test_runs" && field === "environment_mode" && !actualChecks.some(x => x.startsWith(field))) continue;
       // Bootstrap may have supplied the latest constraint before this migration.

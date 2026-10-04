@@ -28,7 +28,7 @@ function raw(path: string, operation: (db: Database.Database) => void) {
   const db = new Database(path); try { operation(db); } finally { db.close(); }
 }
 function released(path: string) { expect(existsSync(`${path}.owner.lock`)).toBe(false); }
-function historicalLeaseFixture(constraint = "(kind = 'human' AND expires_at IS NULL) OR (kind = 'agent' AND expires_at IS NOT NULL)") {
+function historicalLeaseFixture(constraint = "(kind = 'human' AND expires_at IS NULL) OR (kind = 'agent' AND expires_at IS NOT NULL)", additionalCheck = "") {
   const f = fixture(24);
   raw(f.path, db => db.exec(`
     DROP TABLE reservations;
@@ -37,7 +37,7 @@ function historicalLeaseFixture(constraint = "(kind = 'human' AND expires_at IS 
       worktree_path TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('human', 'agent')),
       owner TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL, expires_at TEXT,
       released_at TEXT, released_by TEXT, maximum_expires_at TEXT, token_hash TEXT, idempotency_key TEXT,
-      CHECK(${constraint})
+      CHECK(${constraint})${additionalCheck ? `, CHECK(${additionalCheck})` : ""}
     );
     CREATE UNIQUE INDEX one_active_reservation_per_project ON reservations(project_id) WHERE released_at IS NULL;
     CREATE UNIQUE INDEX active_agent_idempotency_key ON reservations(owner,idempotency_key) WHERE released_at IS NULL AND kind='agent';
@@ -82,6 +82,13 @@ describe("durable SQLite initialization and migration", () => {
 
   it("refuses a different parenthesized lease constraint instead of recognizing it as historical", () => {
     const f = historicalLeaseFixture("(kind = 'human' AND expires_at IS NULL) OR (kind = 'agent' AND expires_at IS NULL)");
+    const before = readFileSync(f.path);
+    expect(() => new SqliteStateStore(f.path)).toThrow(/constraint in reservations: lease/);
+    expect(readFileSync(f.path)).toEqual(before); released(f.path);
+  });
+
+  it.each(["(owner <> 'blocked')", "owner <> 'blocked'"])("refuses historical expiry CHECK plus an additional unknown CHECK %s before migration", additionalCheck => {
+    const f = historicalLeaseFixture(undefined, additionalCheck);
     const before = readFileSync(f.path);
     expect(() => new SqliteStateStore(f.path)).toThrow(/constraint in reservations: lease/);
     expect(readFileSync(f.path)).toEqual(before); released(f.path);
