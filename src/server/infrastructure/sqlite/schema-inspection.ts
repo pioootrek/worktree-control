@@ -34,6 +34,7 @@ const columnVersions: Record<string, number> = {
   "test_runs.source_json": 12, "knowledge_import_sources.target_revision": 23,
   "knowledge_import_batches.authentication_method": 26,
 };
+const historicalLeaseCheck = "(kind='human'andexpires_atisnull)or(kind='agent'andexpires_atisnotnull)";
 interface TableShape { columns: Column[]; foreignKeys: ForeignKey[]; checks: string[]; uniqueKeys: string[] }
 function checks(sql: string): string[] {
   const result: string[] = [];
@@ -115,9 +116,11 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       if (table === "knowledge_history" && version < 20) check = check.replace(",'memory'", "").replace(",'approved','superseded'", "");
       const field = check.match(/^([a-z_]+?)(?:in\(|between|is|[<>=])/)?.[1];
       if (field && version < (columnVersions[`${table}.${field}`] ?? introduced)) continue;
-      // Migration 4 added lease columns without rebuilding this CHECK. Validate
-      // active leases as an application invariant for that historical lineage.
-      if (table === "reservations" && check.startsWith("(") && !actualChecks.some(x => x.startsWith("("))) continue;
+      // Migration 4 added lease columns without rebuilding the expiry-only CHECK.
+      // Recognize that exact historical shape (and the lineage without a CHECK);
+      // validate active lease metadata through the application invariant below.
+      if (table === "reservations" && check.startsWith("(")
+        && (!actualChecks.some(x => x.startsWith("(")) || actualChecks.includes(historicalLeaseCheck))) continue;
       // Migration 11 added this column without a CHECK in upgraded installations.
       if (table === "test_runs" && field === "environment_mode" && !actualChecks.some(x => x.startsWith(field))) continue;
       // Bootstrap may have supplied the latest constraint before this migration.

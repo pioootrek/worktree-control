@@ -28,8 +28,65 @@ function raw(path: string, operation: (db: Database.Database) => void) {
   const db = new Database(path); try { operation(db); } finally { db.close(); }
 }
 function released(path: string) { expect(existsSync(`${path}.owner.lock`)).toBe(false); }
+function historicalLeaseFixture(constraint = "(kind = 'human' AND expires_at IS NULL) OR (kind = 'agent' AND expires_at IS NOT NULL)") {
+  const f = fixture(24);
+  raw(f.path, db => db.exec(`
+    DROP TABLE reservations;
+    CREATE TABLE reservations (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      worktree_path TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('human', 'agent')),
+      owner TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL, expires_at TEXT,
+      released_at TEXT, released_by TEXT, maximum_expires_at TEXT, token_hash TEXT, idempotency_key TEXT,
+      CHECK(${constraint})
+    );
+    CREATE UNIQUE INDEX one_active_reservation_per_project ON reservations(project_id) WHERE released_at IS NULL;
+    CREATE UNIQUE INDEX active_agent_idempotency_key ON reservations(owner,idempotency_key) WHERE released_at IS NULL AND kind='agent';
+    INSERT INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at)
+      VALUES('kept','Kept','/code/kept',3214,'pnpm','["run","dev"]','/',45000,'now','now');
+  `));
+  return f;
+}
 
 describe("durable SQLite initialization and migration", () => {
+  it("upgrades and reopens the historical expiry-only lease constraint while preserving released lease history", () => {
+    const f = historicalLeaseFixture();
+    raw(f.path, db => db.exec(`
+      INSERT INTO reservations(id,project_id,worktree_path,kind,owner,created_at,expires_at,released_at)
+        VALUES('released','kept','/code/kept','agent','legacy-agent','now','later','released');
+      INSERT INTO reservations(id,project_id,worktree_path,kind,owner,created_at,expires_at,maximum_expires_at,token_hash,idempotency_key)
+        VALUES('active','kept','/code/kept','agent','agent','now','later','maximum',printf('%064d',0),'request');
+    `));
+    const store = new SqliteStateStore(f.path);
+    try { expect(store.schemaVersion()).toBe(28); expect(store.getProject("kept")?.name).toBe("Kept"); }
+    finally { store.close(); }
+    new SqliteStateStore(f.path).close();
+    raw(f.path, db => {
+      expect(db.prepare("SELECT id,released_at FROM reservations ORDER BY id").all()).toEqual([
+        { id: "active", released_at: null }, { id: "released", released_at: "released" },
+      ]);
+    });
+    released(f.path);
+  });
+
+  it.each(["maximum_expires_at", "token_hash", "idempotency_key"])("still rejects active historical leases missing %s before migration", field => {
+    const f = historicalLeaseFixture();
+    raw(f.path, db => db.exec(`
+      INSERT INTO reservations(id,project_id,worktree_path,kind,owner,created_at,expires_at,maximum_expires_at,token_hash,idempotency_key)
+        VALUES('invalid','kept','/code/kept','agent','agent','now','later','maximum',printf('%064d',0),'request');
+      UPDATE reservations SET ${field}=NULL WHERE id='invalid';
+    `));
+    const before = readFileSync(f.path);
+    expect(() => new SqliteStateStore(f.path)).toThrow(/application invariant failed \(active lease\)/);
+    expect(readFileSync(f.path)).toEqual(before); released(f.path);
+  });
+
+  it("refuses a different parenthesized lease constraint instead of recognizing it as historical", () => {
+    const f = historicalLeaseFixture("(kind = 'human' AND expires_at IS NULL) OR (kind = 'agent' AND expires_at IS NULL)");
+    const before = readFileSync(f.path);
+    expect(() => new SqliteStateStore(f.path)).toThrow(/constraint in reservations: lease/);
+    expect(readFileSync(f.path)).toEqual(before); released(f.path);
+  });
+
   it.each([undefined, 12, 24, 26] as const)("initializes/upgrades %s with verified FULL and honest provenance", version => {
     const f = fixture(version);
     const owned = new OwnedSqliteDatabase(f.path, true);
