@@ -259,3 +259,47 @@ odzyskiwania; początkowego raportu błędu nie nadpisano.
 Status końcowy: lokalna aktualizacja kontrolera, migracja schematu 24→28,
 konfiguracja odczytu wiedzy, backupy operacyjne i przywrócenie WinPath wykonane.
 Nie wykonano przełączenia źródła zapisu backlogów ani odzyskania poza hostem.
+
+## Korekta: jeden token do panelu i wiedzy
+
+Po aktualizacji właściciel przypomniał wymaganie jednego tokena do całego GUI.
+Migracja schematu zachowała historyczny tryb `legacy`, który osobno uwierzytelnia
+panel i wiedzę. Wydanie dodatkowej sesji właściciela oraz instrukcja dwóch
+logowań były błędną odpowiedzią operacyjną na to wymaganie. Kod aplikacji
+obsługuje już wspólny token instalacji; nie wymagał poprawki.
+
+Wygenerowano token instalacji przez obsługiwane CLI, zachowując sekret
+w prywatnym `~/.config/agent-config/worktree-switcher-installation/token`
+(0600, katalog 0700). Przy pustej kolejce i braku rezerwacji opublikowano
+zgodne poświadczenia lokalnego launchera MCP w `secrets.env` oraz
+`worktree-switcher.headers`, zachowując pozostałe wartości. Następnie
+`auth mode set token` przez lokalny kanał administracyjny przełączyło działający
+kontroler. PID 251771 pozostał ten sam; nie restartowano usługi ani WinPath.
+Trybu `open` nie używano.
+
+Odczyt przez publiczne HTTPS potwierdził HTTP 200 dla `/api/dashboard` oraz
+`/api/knowledge` z tym samym nowym tokenem i poprawną weryfikacją TLS.
+Potwierdzono również cztery projekty runtime przez MCP, dostęp instalacji
+do projektu wiedzy i zachowanie istniejącego agenta tylko do odczytu.
+Osobne poświadczenie agenta API nie stanowi dodatkowego logowania użytkownika
+GUI w trybie `token`.
+
+Prywatny raport zmiany: `installation-access-u9veajw3/status.json` w katalogu
+odzyskiwania. Zmiana trybu zamyka wcześniejsze sesje MCP. `mcp-remote` czyta
+plik nagłówków przy uruchomieniu, więc już działające bridge wymagają ponownego
+połączenia klienta; podmiana pliku sama nie aktualizuje ich pamięci.
+
+Rzeczywisty odbiór w izolowanej przeglądarce przez publiczne HTTPS przeszedł:
+dokładnie jedno wysłanie głównego formularza, przejście do Knowledge, wybór
+projektu, lista 20 widocznych rekordów, otwarcie rekordu i odświeżenie strony.
+Drugiego formularza nie było; nie wpisywano osobnego poświadczenia wiedzy.
+Przeglądarka użyła zaufanej lokalnej CA, bez ignorowania błędów HTTPS,
+i została zamknięta. Jednorazowy proces Chromium wymagał `--no-sandbox`
+w ograniczeniu do naszego origin; nie zmieniono polityki hosta. Narzędzie
+`certutil` dostarczono tylko do prywatnego katalogu testu, bez globalnej
+instalacji ani zmiany systemowego zaufania. Raport:
+`one-token-gui-8p17i4fg/gui-summary.json` w katalogu odzyskiwania.
+
+Aktualna instrukcja użytkownika: odświeżyć GUI i zalogować się tokenem
+z `~/.config/agent-config/worktree-switcher-installation/token`.
+Wcześniejsza instrukcja oddzielnych tokenów panelu i wiedzy jest nieaktualna.
