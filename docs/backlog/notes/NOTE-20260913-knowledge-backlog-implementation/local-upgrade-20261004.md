@@ -138,5 +138,124 @@ Nie wolno obchodzić walidatora ani zmieniać ręcznie schematu produkcji.
 Po przeglądzie i testach trzeba zbudować nowy przypisany do commitu artefakt
 i powtórzyć pełną próbę przed przełączeniem usługi.
 
-Status roboczy: kopia, odzyskanie dostępu i konfiguracja poświadczenia wykonane;
-aktualizacja produkcji czeka na usunięcie wykrytej niezgodności walidatora.
+## Poprawka historycznego schematu
+
+[PR #78](https://github.com/pioootrek/worktree-switcher/pull/78) scalono jako
+`1be609bda1a54b2385ba8e607224c876b8544b95`. Końcowy commit poprawki:
+`189e389c3c477209cecd4f970acea3e05b8c1686`.
+
+Minimalny syntetyczny fixture odtworzył odmowę bez danych produkcyjnych.
+Rozpoznawany jest dokładny historyczny zestaw dwóch CHECK; walidacja aktywnych
+rezerwacji pozostaje obowiązkowa. Review n8n (`all`) wskazało jedną trafną
+uwagę: znane ograniczenie nie może ukrywać dodatkowego, nieznanego CHECK.
+Dwa testy odtworzyły ten przypadek przed poprawką. Uwaga została naprawiona,
+wyjaśniona i zamknięta; ponowny odczyt wątków potwierdził brak otwartych uwag.
+
+Końcowy test w kolejce `5e085281-e5fa-4c27-8df6-016244457f15` na czystym
+commicie przeszedł z `observed_match`: lint, typy, 972 testy jednostkowe
+i 18 testów zasobów. Wcześniejsze wyniki nie zastępują tego odbioru.
+[CI 37201285579](https://github.com/pioootrek/worktree-switcher/actions/runs/37201285579)
+zakończyło wszystkie cztery zadania powodzeniem, w tym przeglądarkę,
+instalację pakietu na Node 22/24 i cykl życia usługi systemd.
+
+- Źródło artefaktu CI: `e54980ab5b32f1b41ed8fc317ead132923d606a2`, czyste.
+- Pełne porównanie drzewa tego commita ze scalonym `1be609b` nie wykazało różnic.
+- Pakiet: 859524 B; SHA256
+  `01c2861b309e7fb9ecb6066b6cfa43382409662cce7285ba2d0cb975b9dbe79b`.
+- Wszystkie cztery sumy manifestu poprawne; raport smoke Node 24 wskazuje
+  ten sam hash, działający prebuilt SQLite i poprawne zakończenie procesów.
+- Osobna instalacja:
+  `/home/pioootrek/.local/lib/worktree-switcher/releases/1be609b`.
+- SHA256 zainstalowanego CLI:
+  `0e2df447d6550f9c3a5494c27f5d8aff0edda6c7cb04357b57e24059e3c74770`.
+
+Po utworzeniu nowych poświadczeń wykonano starym CLI kolejną pełną kopię:
+`/home/pioootrek/wts-recovery-20261004-qtlq4_wi/post-credentials-old-backup-y9worh5p/backup`.
+Schemat 24, integrity OK, brak naruszeń FK, 152 załączniki (7092925 B).
+SHA256 bazy: `1b5fa5ad142d7952cbdef5977021af41050c3ca11d054e688c6a88622e7d0fab`.
+Wszystkie 287 obiektów kopii mają oczekiwane prawa 0700/0600.
+Po wykonaniu kopii uruchomiono tę samą starą usługę.
+
+Pierwsza próba nowego pakietu w `accepted-rehearsal-ugvv62_u` poprawnie
+zmigrowała kopię do schematu 28: integrity OK, brak naruszeń FK, wszystkie
+wcześniejsze wiersze 29 tabel zachowane, 152 obiekty załączników zgodne.
+Przewidziane przez migrację dodatki to principal instalacji i ustawienie
+kontrolera; nie usunięto ani nie zmieniono wcześniejszych wierszy.
+
+Pełne `doctor` zwróciło kod 1 z niezależnym problemem discovery Prostego
+Prawnika. Stary CLI przez działający stary kontroler zgłasza ten sam błąd.
+Odczyt MCP wykazał siedem nieistniejących worktree pod `/tmp`; ich `git status`
+zwraca 128. Nie usuwano wpisów Git ani nie zmieniano projektu, aby uzyskać
+zielony wynik. Szczegóły są w prywatnym `doctor-discovery-evidence.json`.
+Nie należy raportować pełnego `doctor` jako zaliczonego. Dalszy odbiór kopii
+oddziela istniejący błąd discovery od sprawdzeń bazy i API.
+
+## Odbiór kopii i przełączenie produkcji
+
+Końcowa próba na kopii zakończyła się powodzeniem. Dwa poprawnie zakończone
+cykle kontrolera zachowały wszystkie wcześniejsze wiersze; porównanie pomija
+wyłącznie oczekiwaną zmianę `principal_credentials.last_used_at` po odczytach.
+Każdy cykl sprawdził treść i rewizje 37 zadań, 17 wątków, 18 pamięci,
+85 odpowiedzi oraz pobrał i sprawdził 152 załączniki. Istniejące poświadczenia
+agenta i właściciela działały; zły token dawał 401, a zapis wiedzy i administracja
+właściciela tokenem agenta — 403. Dashboard i pięć zasobów statycznych zwróciły
+200. Nie wykonano osobnego klikanego przepływu przeglądarki na tej kopii.
+
+Skrypt próby wymagał dwóch korekt transportu: uruchomienia izolowanego
+kontrolera z `--service-mode --no-open` dla pliku gotowości oraz odczytu
+globalnej polityki backupu przez lokalne CLI. Sesja właściciela wiedzy
+i starszy token parowania nie mają uprawnień `installation_token`; odmowa
+HTTP była zgodna z kontraktem. Nie rozszerzano grantów ani nie zmieniano
+trybu uwierzytelniania. Wcześniejsze nieudane próby skryptu zachowano prywatnie.
+
+Produkcję przełączono na pakiet odpowiadający `1be609b`. Końcowy backup
+starej wersji znajduje się w:
+`/home/pioootrek/wts-recovery-20261004-qtlq4_wi/production-rollout-237qezea/final-old-backup`.
+Ma schemat 24, integrity OK, FK0 i 152 zweryfikowane załączniki; SHA256 bazy
+`003f42ee04398f5ffb654d668bc5cd165e26847ed500d5d0159b137e545d38bb`.
+
+Definicja usługi i rzeczywiste argumenty procesu wskazują nowy pakiet,
+z zachowaniem Node 24.19.0, portów, ścieżek danych/stanu i adresu publicznego.
+Zastosowano wyłącznie opisane wyżej cztery zmiany praw katalogów, bez rekursji.
+Limity systemd i mechanizmy ochrony hosta pozostały niezmienione. Kontroler
+po przełączeniu jest aktywny, PID 251771, licznik restartów 0.
+
+Uwierzytelniony odbiór produkcji ponownie potwierdził te same rekordy,
+treści, rewizje i pobranie 152 zgodnych załączników, zachowanie grantów,
+czterech projektów runtime oraz limitów serwerów 2 i testów 1.
+Nie wykonywano prób zapisu do wiedzy produkcyjnej.
+Automatyczne backupy, transfer zdalny, akcje GUI i harmonogramy użytkowników
+pozostają wyłączone; odczytano rzeczywistą politykę przez CLI i API.
+
+Nowa produkcja wykonała także backup online, operacja
+`035bd4ae-63b8-4c93-a121-0072c503f745` zakończona jako `succeeded`:
+`/home/pioootrek/wts-recovery-20261004-qtlq4_wi/production-rollout-237qezea/post-upgrade-backup`.
+Odczyt tej kopii potwierdził schemat 28, integrity OK i FK0. Hash bazy jest
+zgodny z manifestem:
+`f76bfc66877331119db920c8e7b098e6101af3e8d93e49edd7fc20ae80ff577e`.
+
+Raporty odbioru i operacji pozostają w prywatnych katalogach próby i odzyskiwania.
+Aktualizacja kontrolera i schematu nie jest przełączeniem lokalnych backlogów
+na zapis do bazy: pliki pozostają ich dotychczasowym źródłem. Rozliczenie
+różnic importu i niezacommitowanych zmian WinPath nadal wymaga osobnego kroku.
+
+Końcowa weryfikacja kopii nowej produkcji potwierdziła hashe i rozmiary
+wszystkich 152 obiektów oraz zachowanie wszystkich wcześniejszych wierszy
+29 tabel względem końcowego backupu starej wersji. Nie wykryto zmian treści
+wiedzy ani projektów. Prywatne wyniki: `post-upgrade-backup-verification.json`
+i `post-upgrade-preservation-summary.json` w katalogu operacji.
+
+WinPath przywrócono przez własny claim MCP na wcześniejszy worktree i port
+3000, po czym zwolniono claim. Pierwszy test HTTPS w Pythonie odrzucił
+istniejący łańcuch certyfikatów z powodu brakującego Authority Key Identifier;
+ten nieudany wynik zachowano. Niezależny standardowy `curl --cacert` z CA
+z konfiguracji, poprawnym SNI i `--resolve` zwrócił HTTP 200, kod 0 oraz
+`ssl_verify_result: 0`. Nie użyto `-k`, nie zmieniono certyfikatów ani polityk
+hosta. Świeży odczyt MCP potwierdził WinPath `running` na dokładnie wcześniejszym
+worktree, brak rezerwacji, pozostałe trzy projekty zatrzymane i pustą kolejkę.
+Raport: `winpath-restoration-6kb9ytiv/final-verification.json` w katalogu
+odzyskiwania; początkowego raportu błędu nie nadpisano.
+
+Status końcowy: lokalna aktualizacja kontrolera, migracja schematu 24→28,
+konfiguracja odczytu wiedzy, backupy operacyjne i przywrócenie WinPath wykonane.
+Nie wykonano przełączenia źródła zapisu backlogów ani odzyskania poza hostem.
