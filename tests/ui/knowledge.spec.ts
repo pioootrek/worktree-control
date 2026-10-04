@@ -89,7 +89,8 @@ test("attachment capacity shows WinPath logical usage, refresh, exceeded and den
   await page.evaluate(() => (window as unknown as { fixtureEvents: { emit: (type: string, value: unknown) => void } }).fixtureEvents.emit("knowledge-changed", { projectIds: ["knowledge-only"] }));
   await expect(page.getByText("Quota exceeded. New writes require a capacity check.", { exact: true })).toBeVisible();
   await selectLanguage(page);
-  await expect(page.getByText("Wykorzystanie załączników", { exact: true })).toBeVisible();
+  // Changing language bootstraps the existing dashboard and remounts its disclosures.
+  await page.getByText("Wykorzystanie załączników", { exact: true }).click();
   await expect(page.getByText("Przekroczona kwota. Nowe zapisy wymagają sprawdzenia pojemności.", { exact: true })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByText("Kwota logiczna liczy każdy rekord", { exact: false })).toBeVisible();
