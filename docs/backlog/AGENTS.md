@@ -13,10 +13,19 @@ and durable memory. This project identity is independent of the runtime
 project ID; do not create a second Knowledge project named `worktree-switcher`.
 
 Use service record IDs and current revisions returned by Knowledge. To locate
-an imported record, call `knowledge_search` with the project ID, its
-`legacyId` and `includeInactive: true`. Check provenance when the match is
-missing or ambiguous; do not recreate it from an old JSON entry. Archived Hub
-cards and JSON indexes do not reflect later Knowledge writes.
+an imported task, call `knowledge_search` with the project ID, `query` set to
+its legacy ID and `includeInactive: true`. An imported discussion can match
+that text: read it and use `knowledge_relations` with its `recordId` and
+`recordKind: "thread"` to find the related task. Read that task before writing.
+If text search finds no unique task, read the archived item's title and search
+`knowledge_tasks` by that title with `activeOnly: false`, following pagination
+and checking candidate descriptions. A legacy ID is not a service record ID.
+
+The `legacyId` search filter currently works for memories only, not tasks or
+discussions. Do not infer that an imported task is missing from an empty
+filtered search, or recreate it from the archive. Report an unresolved or
+ambiguous match before writing. Archived Hub cards and JSON indexes do not
+reflect later Knowledge writes.
 
 Create work with `knowledge_create_task`, stating the problem, expected
 outcome, scope, validation and risk. Pick open tasks by priority: `now`, then
