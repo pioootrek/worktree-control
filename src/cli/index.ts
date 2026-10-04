@@ -46,7 +46,7 @@ import { ProjectLifecycle } from "../server/modules/lifecycle";
 import { AuthenticationService } from "../server/modules/authentication";
 import { authenticationAdminHandler } from "../server/authentication-admin";
 import { IdentityService } from "../server/modules/identity";
-import { KnowledgeAttachmentService, loadAttachmentLimits, KnowledgeService } from "../server/modules/knowledge";
+import { KnowledgeAttachmentService, loadAttachmentLimits, KnowledgeService, KnowledgeError, knowledgeFailure } from "../server/modules/knowledge";
 import { createMcpControllerServer } from "../server/mcp-http-server";
 import { SystemGitWorktreeReader } from "../server/git-worktrees";
 import { createControllerServer } from "../server/http-server";
@@ -570,6 +570,6 @@ function findLanAddress(): string | null {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
+  console.error(error instanceof KnowledgeError ? JSON.stringify(knowledgeFailure(error).body) : error instanceof Error ? error.message : error);
   process.exitCode = 1;
 });

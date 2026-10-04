@@ -7,7 +7,7 @@ export const DEFAULT_ATTACHMENT_LIMITS: Readonly<KnowledgeAttachmentLimits> = Ob
 
 /** Upper bounds match the bounded upload transports and logical-transfer envelope. */
 export function attachmentLimits(input: { fileBytes: number; projectBytes: number; projectFiles?: number }): KnowledgeAttachmentLimits {
-  const limits = { ...input, projectFiles: input.projectFiles ?? DEFAULT_ATTACHMENT_LIMITS.projectFiles };
+  const limits = { ...input, projectFiles: input.projectFiles === undefined ? DEFAULT_ATTACHMENT_LIMITS.projectFiles : input.projectFiles };
   for (const [key, maximum] of Object.entries({ fileBytes: 10 * 1024 * 1024, projectBytes: 1024 * 1024 * 1024, projectFiles: 10000 })) {
     const value = limits[key as keyof KnowledgeAttachmentLimits];
     if (!Number.isSafeInteger(value) || value < 1 || value > maximum)

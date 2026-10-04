@@ -75,6 +75,15 @@ async function setup(clock?: () => string, limits?: import("@/shared/contracts/k
 }
 
 describe("real knowledge HTTP, MCP and CLI", () => {
+  it("carries the advertised 10 MiB file boundary through MCP and rejects one extra decoded byte", async () => {
+    const f = await setup(), projectId = f.project.id;
+    const task = (await f.call(0, "create_task", { projectId, title: "Boundary", description: "Boundary", idempotencyKey: "boundary-task" })).value.value;
+    const input = { projectId, recordKind: "task", recordId: task.id, filename: "boundary.bin", mediaType: "application/octet-stream", dataBase64: Buffer.alloc(10 * 1024 * 1024, 7).toString("base64"), idempotencyKey: "boundary" };
+    const saved = await f.call(0, "create_attachment", input);
+    expect(saved.result.isError).not.toBe(true); expect(saved.value.value.size).toBe(10 * 1024 * 1024);
+    expect((await f.call(0, "create_attachment", input)).value.replayed).toBe(true);
+    expect((await f.call(0, "create_attachment", { ...input, dataBase64: Buffer.alloc(10 * 1024 * 1024 + 1, 7).toString("base64"), idempotencyKey: "over-file" })).value).toMatchObject({ code: "limit_exceeded", details: { violations: [expect.objectContaining({ constraint: "fileBytes", incoming: 10 * 1024 * 1024 + 1 })] } });
+  }, 20000);
   it("shares capacity/preflight across HTTP, MCP and CLI, checks grants and documents preparation", async () => {
     const f = await setup(undefined, { fileBytes: 10, projectBytes: 10, projectFiles: 1 }), projectId = f.project.id;
     const task = (await (await f.http("create_task", { projectId, title: "Proof", description: "Proof", idempotencyKey: "proof-task" })).json()).value;

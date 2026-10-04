@@ -6,7 +6,7 @@ import { acquireControllerLock } from "../server/controller-lock";
 import { SqliteStateStore } from "../server/sqlite-store";
 import { authenticateOfflineActor } from "./offline-actor";
 import { cliCredential, KNOWLEDGE_CREDENTIAL_REQUIRED, KNOWLEDGE_CREDENTIAL_VARIABLES, OWNER_CREDENTIAL_REQUIRED, OWNER_CREDENTIAL_VARIABLES } from "./credentials";
-import { executeHubImport, planHubImport, loadAttachmentLimits, KnowledgeError, type HubImportPlanOptions, type HubImportPlan } from "../server/modules/knowledge";
+import { executeHubImport, planHubImport, loadAttachmentLimits, knowledgeFailure, KnowledgeError, type HubImportPlanOptions, type HubImportPlan } from "../server/modules/knowledge";
 
 function option(args: string[], name: string): string {
   const index = args.indexOf(name), value = index < 0 ? undefined : args[index + 1];
@@ -21,7 +21,7 @@ export function runHubImportPlanCommand(args: string[], write: (line: string) =>
   try {
     write(JSON.stringify(planner({ repository: option(args, "--repository"), commit: option(args, "--commit"), sourceId: option(args, "--source-id"), validatorRepository: option(args, "--validator-repository") }), null, 2));
   } catch (error) {
-    if (error instanceof KnowledgeError) throw new Error(`${error.code}: ${error.message}`);
+    if (error instanceof KnowledgeError) throw new Error(error.details ? JSON.stringify(knowledgeFailure(error).body) : `${error.code}: ${error.message}`);
     throw error;
   }
 }
