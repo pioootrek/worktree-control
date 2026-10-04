@@ -1,6 +1,6 @@
 ---
 audience: "contributors and coding agents"
-last_reviewed: "2026-09-27"
+last_reviewed: "2026-10-04"
 source_of_truth: "product intent and initial architecture of Worktree Switcher"
 status: "active"
 ---
@@ -41,8 +41,10 @@ servers.
 Shared human/agent memory, discussions, tasks, attachments and Hub import are
 implemented on `main`; see [shared project memory](shared-project-memory-plan.md)
 for delivered stages and remaining pilot/cutover work. Knowledge has a durable
-project identity independent of runtime ownership. The existing repository-backed
-backlog remains authoritative until an explicit, verified migration.
+project identity independent of runtime ownership. This repository's current
+work lives in Knowledge project `k7a-worktree-switcher`; the repository-backed
+records remain its import archive. Other projects follow their own explicit
+migration decisions; see [the workflow](backlog/AGENTS.md).
 The subsequent [agent coordination plan](agent-fleet-coordination-plan.md)
 adds assignments, messages, and evidence across sessions. Agent coordination
 and autonomous execution remain planned; delivered knowledge does not imply an

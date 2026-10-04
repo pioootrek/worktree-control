@@ -662,7 +662,7 @@ intended to remain complete and independent. See the [self-hosted and SaaS plan]
 | [Knowledge delivery](https://github.com/pioootrek/worktree-switcher/blob/main/docs/shared-project-memory-plan.md) | Discussions, backlog, memory, import and remaining migration work |
 | [Architecture](https://github.com/pioootrek/worktree-switcher/blob/main/docs/architecture.md) | Controller, persistence and module boundaries |
 | [UI standards](https://github.com/pioootrek/worktree-switcher/blob/main/docs/ui-standards.md) | Layout, readers, focus and interaction rules |
-| [Backlog](https://github.com/pioootrek/worktree-switcher/blob/main/docs/backlog/index.json) | Open work and implementation notes |
+| [Backlog workflow](https://github.com/pioootrek/worktree-switcher/blob/main/docs/backlog/AGENTS.md) | Current work in Knowledge; JSON records remain the import archive |
 
 ## Contributing and feedback
 

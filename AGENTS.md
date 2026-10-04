@@ -15,8 +15,9 @@ Read only the references relevant to the task:
   Its destination map is incremental, not the current directory layout.
 - Remote workers, memory, or coordination: [expansion assessment](docs/architecture-effort-assessment.md)
   and its linked feature plan. Planned features are not implemented contracts.
-- Before non-trivial work: scan [backlog index](docs/backlog/index.json), including
-  its notes, then read relevant records. Verify design examples against code.
+- Before non-trivial work: read current tasks and relevant memory in Knowledge
+  project `k7a-worktree-switcher`, following [the workflow](docs/backlog/AGENTS.md).
+  The file backlog is an imported archive. Verify design examples against code.
 
 ## Code boundaries
 
@@ -74,12 +75,14 @@ that server require a separate claim for the same worktree. Use the
 
 ## Backlog and documentation
 
-Read [backlog rules](docs/backlog/AGENTS.md) before editing backlog records or
-top-level documents under `docs/`. After those edits, run the canonical Hub
-`fmt` and `validate` commands from that guide. Never hand-edit `index.json`.
+Tasks, discussions and durable findings live in Knowledge project
+`k7a-worktree-switcher`. Read [the workflow](docs/backlog/AGENTS.md) before
+writing them. Complete tasks with saved validation evidence and persist useful
+findings before compaction. Preserve the imported JSON records and note
+payloads under `docs/backlog/`; there is no two-way synchronization.
 
-Backlog changes live on `main`; the read-only Hub sees committed, synchronized
-changes. Close work by replacing its open item with a `done/` entry in one
-commit. Persist durable findings under `docs/backlog/notes/` before compaction.
-If GitHub feedback integration is added, treat open `backlog-feedback` issues
-as human instructions under the backlog workflow.
+Product documentation stays in Git. After editing top-level documents under
+`docs/` or the backlog guide, run the canonical Hub `fmt` and `validate`
+commands from that guide. Never hand-edit `index.json`. Treat open
+`backlog-feedback` issues as human input and record accepted changes in
+Knowledge using the imported legacy ID to find the current record.
