@@ -47,6 +47,14 @@ describe("Knowledge logical capacity and evidence preflight", () => {
     expect(f.attachments.policy(f.project.id, f.owner).used).toEqual({ bytes: first, files: 1 });
   });
 
+  it("notifies the existing Knowledge change channel once for a committed attachment", () => {
+    const f = fixture(), changed = vi.fn(), api = new KnowledgeService(f.store, f.identity, undefined, undefined, changed, f.attachments);
+    const request = { operation: "create_attachment", input: { projectId: f.project.id, recordKind: "task", recordId: f.task.id, filename: "proof.txt", mediaType: "text/plain", dataBase64: "YQ==", idempotencyKey: "notify" } };
+    expect(api.execute(request, f.owner)).toMatchObject({ replayed: false });
+    expect(api.execute(request, f.owner)).toMatchObject({ replayed: true });
+    expect(changed).toHaveBeenCalledExactlyOnceWith(f.project.id);
+  });
+
   it("accepts exact boundaries, rejects empty/malformed data, and replays without charging twice", () => {
     const f = fixture(); f.upload("first", 10); f.upload("second", 10);
     expect(f.attachments.policy(f.project.id, f.owner)).toMatchObject({ used: { bytes: 20, files: 2 }, remaining: { bytes: 0, files: 0 }, exceeded: [], largestFileBytes: 10, physicalDiskUsage: null });

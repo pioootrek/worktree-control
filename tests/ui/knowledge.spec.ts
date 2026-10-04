@@ -86,7 +86,7 @@ test("attachment capacity shows WinPath logical usage, refresh, exceeded and den
   await expect(page.getByText("Logical quota counts each record", { exact: false })).toBeVisible();
   await page.screenshot({ path: "test-results/attachment-capacity-winpath.png", fullPage: true });
   used = { ...used, files: 5001 };
-  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.evaluate(() => (window as unknown as { fixtureEvents: { emit: (type: string, value: unknown) => void } }).fixtureEvents.emit("knowledge-changed", { projectIds: ["knowledge-only"] }));
   await expect(page.getByText("Quota exceeded. New writes require a capacity check.", { exact: true })).toBeVisible();
   await selectLanguage(page);
   await expect(page.getByText("Wykorzystanie załączników", { exact: true })).toBeVisible();
@@ -96,7 +96,7 @@ test("attachment capacity shows WinPath logical usage, refresh, exceeded and den
   denied = true;
   await page.getByRole("button", { name: "Odśwież", exact: true }).click();
   await expect(page.getByText("Brak uprawnienia do odczytu wykorzystania załączników.", { exact: true })).toBeVisible();
-  await expect(page.getByText("183", { exact: true })).toBeHidden();
+  await expect(page.getByText("Kwota logiczna liczy każdy rekord", { exact: false })).toBeHidden();
   expect(f.errors).toEqual([]);
 });
 

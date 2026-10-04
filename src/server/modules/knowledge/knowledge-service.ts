@@ -79,7 +79,7 @@ export class KnowledgeService {
       case "create_attachment": {
         const data = Buffer.from(request.input.dataBase64, "base64");
         if (data.toString("base64") !== request.input.dataBase64) throw new KnowledgeError("invalid_request", "Attachment requires canonical padded base64.");
-        return this.requireAttachments().upload(request.input.projectId, request.input.recordKind, request.input.recordId, { filename: request.input.filename, mediaType: request.input.mediaType, data, sha256: request.input.sha256, idempotencyKey: request.input.idempotencyKey }, actor);
+        return this.notify(request.input.projectId, this.requireAttachments().upload(request.input.projectId, request.input.recordKind, request.input.recordId, { filename: request.input.filename, mediaType: request.input.mediaType, data, sha256: request.input.sha256, idempotencyKey: request.input.idempotencyKey }, actor));
       }
       case "memories": case "memory": case "create_memory": case "update_memory":
       case "approve_memory": case "archive_memory": case "restore_memory": case "supersede_memory":
