@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 
 import type { AuthenticatedPrincipal, AuthenticationMethod, IdentityService } from "@/server/modules/identity";
 import { calculateHubImportPlanHash, planHubImport, type HubImportMapping, type HubImportPlan } from "./hub-import-plan";
+import type { KnowledgeAttachmentLimits } from "@/shared/contracts/knowledge-attachments";
+import { DEFAULT_ATTACHMENT_LIMITS, attachmentLimits, assertAttachmentCapacity } from "./attachment-policy";
 import { KnowledgeError } from "./knowledge-error";
 
 export type HubImportBatchStatus = "staging" | "published" | "failed";
@@ -39,7 +41,7 @@ export interface HubImportExecutionStore {
   getHubImport(batchId: string): HubImportBatch | null;
   resetHubImport(batchId: string, expectedTargetRevision: number | null, now: string): HubImportBatch;
   stageHubImportChunk(batchId: string, expectedCursor: number, mappings: HubImportMapping[], now: string): HubImportBatch;
-  publishHubImport(batchId: string, now: string, attachmentDirectory?: string): HubImportBatch;
+  publishHubImport(batchId: string, now: string, attachmentDirectory?: string, limits?: KnowledgeAttachmentLimits): HubImportBatch;
 }
 
 export interface ExecuteHubImportInput {
@@ -50,6 +52,7 @@ export interface ExecuteHubImportInput {
   chunkSize?: number;
   expectedTargetRevision?: number | null;
   attachmentDirectory?: string;
+  limits?: KnowledgeAttachmentLimits;
 }
 
 function validate(input: ExecuteHubImportInput): void {
@@ -82,14 +85,18 @@ export function executeHubImport(
     commit: plan.source.commit,
     sourceId: plan.source.sourceId,
     validatorRepository: plan.validator.repository,
+    limits: input.limits,
   }),
   readSourceFile: (plan: HubImportPlan, path: string) => Buffer = (plan,path) => {
     try{return execFileSync("git",["-C",plan.source.repository,"show",`${plan.source.commit}:${path}`],{encoding:null,maxBuffer:11*1024*1024});}
     catch{throw new KnowledgeError("invalid_request",`Unable to read approved import object: ${path}`);}
   },
 ): HubImportBatch {
-  validate(input);
   identity.requireOwnerSession(actor);
+  validate(input);
+  const limits = attachmentLimits(input.limits ?? DEFAULT_ATTACHMENT_LIMITS);
+  const files = input.plan.mappings.filter(item => item.targetKind === "attachment");
+  assertAttachmentCapacity(limits, { bytes: 0, files: 0 }, { bytes: files.reduce((sum, file) => sum + file.size, 0), files: files.length }, files.map(file => ({ filename: file.sourcePath, size: file.size })));
   const targetProjectId=input.targetProjectId.trim();
   const verified = verifyPlan(input.plan);
   if (verified.planId !== input.plan.planId || verified.planHash !== input.plan.planHash) throw new KnowledgeError("revision_conflict", "Import source no longer matches the approved plan.");
@@ -129,7 +136,7 @@ export function executeHubImport(
     return {...mapping,originalPayload:{fileName:mapping.sourcePath.split("/").at(-1),mediaType:"application/octet-stream",dataBase64:bytes.toString("base64")}};
   });
   if (mappings.length) batch = store.stageHubImportChunk(batch.id, batch.cursor, mappings, clock());
-  if (batch.cursor === batch.totalItems) batch = store.publishHubImport(batch.id, clock(),input.attachmentDirectory);
+  if (batch.cursor === batch.totalItems) batch = store.publishHubImport(batch.id, clock(),input.attachmentDirectory,limits);
   return batch;
 }
 

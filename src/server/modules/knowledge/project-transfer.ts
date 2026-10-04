@@ -3,6 +3,8 @@ import { constants, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, m
 import { basename, dirname, join, resolve, sep } from "node:path";
 import type { AuthenticatedPrincipal, IdentityService } from "@/server/modules/identity";
 import type { KnowledgeProjectExportManifest, KnowledgeProjectSnapshot } from "./contracts";
+import type { KnowledgeAttachmentLimits } from "@/shared/contracts/knowledge-attachments";
+import { DEFAULT_ATTACHMENT_LIMITS, assertAttachmentCapacity, attachmentLimits } from "./attachment-policy";
 import { KnowledgeError } from "./knowledge-error";
 import { publishKnowledgeAttachment } from "./durable-attachments";
 import { parseKnowledgeProjectExportManifest, parseKnowledgeProjectSnapshot } from "./project-transfer-schema";
@@ -12,7 +14,10 @@ interface TransferStore {
   exportKnowledgeProject(projectId: string): KnowledgeProjectSnapshot | null;
   importKnowledgeProject(snapshot: KnowledgeProjectSnapshot): void;
 }
-const MAX_FILES = 1000, MAX_FILE_BYTES = 10 * 1024 * 1024, MAX_BYTES = 100 * 1024 * 1024, MAX_DATA_BYTES = 64 * 1024 * 1024, MAX_MANIFEST_BYTES = 1024 * 1024;
+const MAX_FILE_BYTES = 10 * 1024 * 1024, MAX_DATA_BYTES = 64 * 1024 * 1024, MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
+function checkAttachments(snapshot: KnowledgeProjectSnapshot, limits: KnowledgeAttachmentLimits) {
+  assertAttachmentCapacity(limits, { bytes: 0, files: 0 }, { bytes: snapshot.attachments.reduce((sum, item) => sum + Number(item.size), 0), files: snapshot.attachments.length }, snapshot.attachments.map(item => ({ filename: String(item.filename), size: Number(item.size) })));
+}
 const hashData = (data: Uint8Array) => createHash("sha256").update(data).digest("hex");
 function safe(root: string, file: string): string {
   const target=resolve(root,file), base=resolve(root); if(!file||file.startsWith(sep)||target===base||!target.startsWith(base+sep)) throw new KnowledgeError("invalid_request","Export contains an unsafe path.");
@@ -40,25 +45,30 @@ function validateRelations(snapshot: KnowledgeProjectSnapshot): void {
 }
 
 export function exportKnowledgeProject(store: TransferStore, identity: Pick<IdentityService,"authorizeKnowledge">, projectId: string, destination: string,
-  attachmentDirectory: string, actor: AuthenticatedPrincipal, options: {applicationVersion:string;clock?:()=>string}): KnowledgeProjectExportManifest {
+  attachmentDirectory: string, actor: AuthenticatedPrincipal, options: {applicationVersion:string;clock?:()=>string;limits?:KnowledgeAttachmentLimits}): KnowledgeProjectExportManifest {
+  const limits = attachmentLimits(options.limits ?? DEFAULT_ATTACHMENT_LIMITS);
   identity.authorizeKnowledge(actor,projectId,"knowledge:export",{allowArchived:true}); identity.authorizeKnowledge(actor,projectId,"attachments:read",{allowArchived:true});
   if(existsSync(destination)) throw new KnowledgeError("invalid_request","Export destination already exists.");
   const snapshot=store.exportKnowledgeProject(projectId); if(!snapshot) throw new KnowledgeError("not_found","Knowledge project not found.");
-  if(snapshot.attachments.length>MAX_FILES||snapshot.attachments.some(item=>Number(item.size)>MAX_FILE_BYTES)||snapshot.attachments.reduce((sum,item)=>sum+Number(item.size),0)>MAX_BYTES) throw new KnowledgeError("limit_exceeded","Knowledge project exceeds attachment limits.");
+  checkAttachments(snapshot, limits);
   mkdirSync(dirname(destination),{recursive:true}); const staging=mkdtempSync(join(dirname(destination),`.${basename(destination)}.partial-`));
   try {
     const serialized=Buffer.from(canonical(snapshot)); const data={file:"project.json" as const,size:serialized.byteLength,sha256:hashData(serialized)};
+    if (data.size > MAX_DATA_BYTES) throw new KnowledgeError("limit_exceeded", "Knowledge project metadata exceeds 64 MiB transfer limit.");
     writeFileSync(join(staging,data.file),serialized,{mode:0o600});
     const unique=new Map<string,number>(); for(const row of snapshot.attachments){if(typeof row.sha256!=="string"||typeof row.size!=="number") throw new KnowledgeError("invalid_request","Invalid attachment metadata."); const previous=unique.get(row.sha256); if(previous!==undefined&&previous!==row.size) throw new KnowledgeError("invalid_request","Conflicting attachment metadata."); unique.set(row.sha256,row.size);}
-    if(unique.size>MAX_FILES||[...unique.values()].reduce((a,b)=>a+b,0)>MAX_BYTES) throw new KnowledgeError("limit_exceeded","Project export exceeds attachment limits.");
-    const attachments=[...unique].sort(([a],[b])=>a.localeCompare(b)).map(([sha256,size])=>{const file=join(sha256.slice(0,2),sha256), source=safe(attachmentDirectory,file), target=safe(join(staging,"attachments"),file); const bytes=readRegular(source); if(bytes.byteLength!==size||hashData(bytes)!==sha256) throw new KnowledgeError("invalid_request","Attachment integrity check failed."); mkdirSync(dirname(target),{recursive:true}); copyFileSync(source,target); return {file,size,sha256};});
+
+    const attachments=[...unique].sort(([a],[b])=>a.localeCompare(b)).map(([sha256,size])=>{const file=join(sha256.slice(0,2),sha256), source=safe(attachmentDirectory,file), target=safe(join(staging,"attachments"),file); const bytes=readRegular(source,limits.fileBytes); if(bytes.byteLength!==size||hashData(bytes)!==sha256) throw new KnowledgeError("invalid_request","Attachment integrity check failed."); mkdirSync(dirname(target),{recursive:true}); copyFileSync(source,target); return {file,size,sha256};});
     const counts=Object.fromEntries((["threads","replies","tasks","memories","relations","history","attachments","importSources"] as const).map(key=>[key,snapshot[key].length]));
     const manifest:KnowledgeProjectExportManifest={formatVersion:1,applicationVersion:options.applicationVersion,schemaVersion:store.schemaVersion(),createdAt:(options.clock??(()=>new Date().toISOString()))(),projectId,data,attachments,counts};
-    writeFileSync(join(staging,"manifest.json"),JSON.stringify(manifest,null,2),{mode:0o600}); renameSync(staging,destination); return manifest;
+    const manifestJson = JSON.stringify(manifest,null,2);
+    if (Buffer.byteLength(manifestJson) > MAX_MANIFEST_BYTES) throw new KnowledgeError("limit_exceeded", "Knowledge project manifest exceeds 4 MiB transfer limit.");
+    writeFileSync(join(staging,"manifest.json"),manifestJson,{mode:0o600}); renameSync(staging,destination); return manifest;
   } catch(error){rmSync(staging,{recursive:true,force:true}); throw error;}
 }
 
-export function importKnowledgeProject(store: TransferStore, identity: Pick<IdentityService,"requireOwnerSession">, source: string, attachmentDirectory: string, actor: AuthenticatedPrincipal): KnowledgeProjectExportManifest {
+export function importKnowledgeProject(store: TransferStore, identity: Pick<IdentityService,"requireOwnerSession">, source: string, attachmentDirectory: string, actor: AuthenticatedPrincipal, configuredLimits: KnowledgeAttachmentLimits = DEFAULT_ATTACHMENT_LIMITS): KnowledgeProjectExportManifest {
+  const limits = attachmentLimits(configuredLimits);
   identity.requireOwnerSession(actor);
   let manifest:KnowledgeProjectExportManifest; try { manifest=parseKnowledgeProjectExportManifest(JSON.parse(readRegular(safe(source,"manifest.json"),MAX_MANIFEST_BYTES).toString("utf8"))); } catch(error) { if(error instanceof KnowledgeError) throw error; throw new KnowledgeError("invalid_request","Invalid knowledge export manifest."); }
   if(manifest.formatVersion!==1||manifest.schemaVersion>store.schemaVersion()) throw new KnowledgeError("invalid_request","Unsupported knowledge export version.");
@@ -69,8 +79,8 @@ export function importKnowledgeProject(store: TransferStore, identity: Pick<Iden
   if(snapshot.project.status!=="active") throw new KnowledgeError("invalid_request","Archived knowledge projects cannot be imported.");
   const arrays=["threads","replies","tasks","memories","relations","history","attachments","importSources"] as const; for(const key of arrays) if(!Array.isArray(snapshot[key])||snapshot[key].length!==(manifest.counts[key]??0)) throw new KnowledgeError("invalid_request",`Knowledge export count mismatch: ${key}`);
   if(!Array.isArray(snapshot.requiredPrincipals)||snapshot.requiredPrincipals.some(id=>typeof id!=="string")) throw new KnowledgeError("invalid_request","Required principals are invalid."); validateRelations(snapshot);
-  if(snapshot.attachments.length>MAX_FILES||snapshot.attachments.some(item=>Number(item.size)>MAX_FILE_BYTES)||snapshot.attachments.reduce((sum,item)=>sum+Number(item.size),0)>MAX_BYTES) throw new KnowledgeError("limit_exceeded","Knowledge import exceeds attachment limits.");
-  if(!Array.isArray(manifest.attachments)||manifest.attachments.length>MAX_FILES||manifest.attachments.some(item=>!Number.isSafeInteger(item.size)||item.size<1||item.size>MAX_FILE_BYTES)) throw new KnowledgeError("limit_exceeded","Knowledge import object manifest exceeds attachment limits.");
+  checkAttachments(snapshot, limits);
+  if(!Array.isArray(manifest.attachments)||manifest.attachments.length>limits.projectFiles||manifest.attachments.some(item=>!Number.isSafeInteger(item.size)||item.size<1||item.size>limits.fileBytes)) throw new KnowledgeError("limit_exceeded","Knowledge import object manifest exceeds attachment limits.");
   const declared=new Map(manifest.attachments.map(item=>[item.sha256,item.size])); const referenced=new Map(snapshot.attachments.map(item=>[String(item.sha256),Number(item.size)])); if(canonical([...declared].sort())!==canonical([...referenced].sort())) throw new KnowledgeError("invalid_request","Attachment manifest does not match project metadata.");
   if (snapshot.attachments.some(item => declared.get(String(item.sha256)) !== Number(item.size)))
     throw new KnowledgeError("invalid_request", "Conflicting attachment metadata in project snapshot.");

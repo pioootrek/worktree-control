@@ -138,10 +138,10 @@ export class KnowledgeQueries implements KnowledgeStore {
     database.function("knowledge_import_trim", { deterministic: true }, value => typeof value === "string" ? value.trim() : null);
   }
 
-  saveAttachment(value: KnowledgeAttachment, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeAttachment> {
+  saveAttachment(value: KnowledgeAttachment, context: KnowledgeMutationContext, admit?: () => void): KnowledgeMutationResult<KnowledgeAttachment> {
     const { relativePath: _relativePath, ...stored } = value;
     void _relativePath;
-    return this.mutate("attachment.create", context, () => { this.database.prepare(`INSERT INTO knowledge_attachments
+    return this.mutate("attachment.create", context, () => { admit?.(); this.database.prepare(`INSERT INTO knowledge_attachments
       (id, project_id, record_kind, record_id, filename, media_type, size, sha256, created_by, created_at)
       VALUES (@id,@projectId,@recordKind,@recordId,@filename,@mediaType,@size,@sha256,@createdBy,@createdAt)`).run(stored); return stored; });
   }
@@ -212,6 +212,7 @@ export class KnowledgeQueries implements KnowledgeStore {
     return (this.database.prepare("SELECT coalesce(sum(size),0) total FROM knowledge_attachments WHERE project_id = ?").get(projectId) as { total: number }).total;
   }
   attachmentCountForProject(projectId: string): number { return (this.database.prepare("SELECT count(*) total FROM knowledge_attachments WHERE project_id=?").get(projectId) as {total:number}).total; }
+  attachmentLargestFileForProject(projectId: string): number { return (this.database.prepare("SELECT coalesce(max(size),0) total FROM knowledge_attachments WHERE project_id=?").get(projectId) as {total:number}).total; }
   attachmentTargetExists(projectId: string, kind: KnowledgeAttachment["recordKind"], id: string): boolean {
     const table={thread:"knowledge_threads",reply:"knowledge_replies",task:"knowledge_tasks",memory:"knowledge_memories"}[kind];
     return Boolean(this.database.prepare(`SELECT 1 FROM ${table} WHERE project_id=? AND id=?`).get(projectId,id));

@@ -67,6 +67,39 @@ async function mountKnowledge(page: Page, { withRuntimeProject = false }: { with
   return { ...fixture, records, replies, calls, setFailure: (value: boolean) => { failSave = value; }, loseNextResponse: () => { loseResponse = true; } };
 }
 
+test("attachment capacity shows WinPath logical usage, refresh, exceeded and denied states in EN/PL", async ({ page }) => {
+  const f = await mountKnowledge(page);
+  let used = { bytes: 183705590, files: 1300 }, denied = false;
+  await page.route("**/api/knowledge", async route => {
+    const { operation } = route.request().postDataJSON();
+    if (operation !== "attachment_policy") return route.fallback();
+    if (denied) return route.fulfill({ status: 403, json: { code: "knowledge_forbidden", error: "Denied" } });
+    return route.fulfill({ json: { projectId: "knowledge-only", limits: { fileBytes: 10485760, projectBytes: 536870912, projectFiles: 5000 },
+      used, largestFileBytes: 1755023, remaining: { bytes: Math.max(0, 536870912 - used.bytes), files: Math.max(0, 5000 - used.files) },
+      exceeded: used.files > 5000 ? [{ constraint: "projectFiles", unit: "records", used: used.files, limit: 5000, incoming: 0, remaining: 0 }] : [], accounting: "logical_attachment_records", physicalDiskUsage: null } });
+  });
+  const summary = page.getByText("Attachment capacity", { exact: true });
+  await summary.focus(); await page.keyboard.press("Enter");
+  await expect(page.getByText("183,705,590 / 536,870,912 B", { exact: true })).toBeVisible();
+  await expect(page.getByText("1,300 / 5,000", { exact: true })).toBeVisible();
+  await expect(page.getByText("Remaining: 353,165,322 B", { exact: true })).toBeVisible();
+  await expect(page.getByText("Logical quota counts each record", { exact: false })).toBeVisible();
+  await page.screenshot({ path: "test-results/attachment-capacity-winpath.png", fullPage: true });
+  used = { ...used, files: 5001 };
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByText("Quota exceeded. New writes require a capacity check.", { exact: true })).toBeVisible();
+  await selectLanguage(page);
+  await expect(page.getByText("Wykorzystanie załączników", { exact: true })).toBeVisible();
+  await expect(page.getByText("Przekroczona kwota. Nowe zapisy wymagają sprawdzenia pojemności.", { exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByText("Kwota logiczna liczy każdy rekord", { exact: false })).toBeVisible();
+  denied = true;
+  await page.getByRole("button", { name: "Odśwież", exact: true }).click();
+  await expect(page.getByText("Brak uprawnienia do odczytu wykorzystania załączników.", { exact: true })).toBeVisible();
+  await expect(page.getByText("183", { exact: true })).toBeHidden();
+  expect(f.errors).toEqual([]);
+});
+
 test("historical imported replies distinguish source attribution from the recording principal in EN and PL",async({page})=>{
   const f=await mountKnowledge(page);f.records.push({id:"historical-thread",projectId:"knowledge-only",title:"Imported discussion",body:"Context",revision:1,createdBy:"owner"});f.replies.push({id:"historical-reply",threadId:"historical-thread",body:"Historical comment",revision:1,createdBy:"import-owner",createdAt:"2026-09-29T10:00:00.000Z",historicalImport:{sourceAttribution:"verified",sourceAuthor:"Ada",sourceDate:"2026-09-13",sourceDateStatus:"valid",sourceOrder:"verified"}});
   await page.getByRole("tab",{name:"Discussions",exact:true}).click();await page.getByRole("button",{name:"Refresh",exact:true}).click();await page.getByRole("link",{name:"Imported discussion",exact:true}).click();

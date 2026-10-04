@@ -11,7 +11,7 @@ import { OwnedSqliteDatabase } from "@/server/infrastructure/sqlite";
 import { SqliteStateStore } from "@/server/sqlite-store";
 import { authenticateOfflineActor } from "./offline-actor";
 import { cliCredential, OWNER_CREDENTIAL_REQUIRED, OWNER_CREDENTIAL_VARIABLES } from "./credentials";
-import { exportKnowledgeProject, importKnowledgeProject } from "@/server/modules/knowledge";
+import { exportKnowledgeProject, importKnowledgeProject, loadAttachmentLimits } from "@/server/modules/knowledge";
 
 export async function runBackupCommand(args: string[], paths: AppPaths, applicationVersion: string, write: (line:string)=>void=console.log, environment:Readonly<Record<string,string|undefined>>=process.env): Promise<void> {
   if (args[0] === "remote") {
@@ -83,8 +83,8 @@ export async function runBackupCommand(args: string[], paths: AppPaths, applicat
     } else {
       const token=cliCredential(environment,OWNER_CREDENTIAL_VARIABLES);
       const store=new SqliteStateStore(paths.databasePath); try { const {identity,actor}=authenticateOfflineActor(store,token,OWNER_CREDENTIAL_REQUIRED);
-        const result=operation==="export-project"?exportKnowledgeProject(store,identity,input[0]!,input[1]!,paths.knowledgeAttachmentDirectory,actor,{applicationVersion})
-          :importKnowledgeProject(store,identity,input[0]!,paths.knowledgeAttachmentDirectory,actor); write(JSON.stringify(result,null,2));
+        const result=operation==="export-project"?exportKnowledgeProject(store,identity,input[0]!,input[1]!,paths.knowledgeAttachmentDirectory,actor,{applicationVersion,limits:loadAttachmentLimits(paths.dataDirectory)})
+          :importKnowledgeProject(store,identity,input[0]!,paths.knowledgeAttachmentDirectory,actor,loadAttachmentLimits(paths.dataDirectory)); write(JSON.stringify(result,null,2));
       } finally {store.close();}
     }
   } finally { lock.release(); }

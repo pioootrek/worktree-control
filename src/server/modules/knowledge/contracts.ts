@@ -42,11 +42,12 @@ export interface KnowledgeProjectExportManifest {
 }
 
 export interface KnowledgeStore {
-  saveAttachment(attachment: KnowledgeAttachment, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeAttachment>;
+  saveAttachment(attachment: KnowledgeAttachment, context: KnowledgeMutationContext, admit?: () => void): KnowledgeMutationResult<KnowledgeAttachment>;
   getAttachment(projectId: string, id: string): KnowledgeAttachment | null;
   listAttachments(projectId: string, recordKind: KnowledgeAttachment["recordKind"], recordId: string, limit: number, offset: number): KnowledgePage<KnowledgeAttachment>;
   attachmentBytesForProject(projectId: string): number;
   attachmentCountForProject(projectId: string): number;
+  attachmentLargestFileForProject(projectId: string): number;
   attachmentTargetExists(projectId: string, recordKind: KnowledgeAttachment["recordKind"], recordId: string): boolean;
   getMemory(projectId: string, id: string): KnowledgeMemory | null;
   getReply(projectId: string, id: string): KnowledgeReply | null;

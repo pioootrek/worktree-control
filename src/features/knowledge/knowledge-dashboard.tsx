@@ -1,6 +1,7 @@
 "use client";
 
 import { RecordAttachments } from "./record-attachments";
+import { AttachmentCapacity } from "./attachment-capacity";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -203,6 +204,7 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
           </div>}
         </form>
       </div>
+      {selection.projectId && <AttachmentCapacity key={`${identity.principal.id}:${selection.projectId}`} token={token} projectId={selection.projectId} refreshVersion={model.refreshVersion} />}
       {model.error && !editorReady && (!selection.recordId || detail) && <Alert variant="destructive"><AlertDescription>{t("knowledge.loadFailed")}</AlertDescription></Alert>}
       {model.loading && <p role="status">{t("knowledge.loading")}</p>}
       <Dialog open={editorReady} onOpenChange={open => { if (!open) close(); }}>
