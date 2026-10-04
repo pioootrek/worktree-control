@@ -412,6 +412,7 @@
       "author": "agent:codex",
       "created": "2026-09-13",
       "files": [
+        "borrow-pilot-20261004.md",
         "database-portability.md",
         "implementation-plan.md",
         "k0-baseline.json",
