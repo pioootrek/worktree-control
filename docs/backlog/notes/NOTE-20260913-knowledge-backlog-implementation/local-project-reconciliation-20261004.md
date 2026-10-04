@@ -4,8 +4,10 @@ Data inspekcji: 2026-10-04. Zakres zlecony przez właściciela: sprawdzić
 projekty w `~/development` przed aktualizacją kontrolera i przenoszeniem
 backlogów. Raport nie oznacza zgody na import ani przełączenia źródła zapisu.
 
-Status: inwentaryzacja plików wykonana; porównanie z bazą zablokowane przez
-brak odpowiedniego poświadczenia. Nie ustalono jeszcze różnic pliki/baza.
+Status pierwotnej inspekcji: inwentaryzacja plików wykonana; porównanie z bazą
+było zablokowane przez brak odpowiedniego poświadczenia. Po uzyskaniu zgody
+właściciela odzyskano dostęp i wykonano odczyt. Aktualny wynik oraz stan
+autoryzowanej migracji opisuje [raport operacyjny](local-upgrade-20261004.md).
 
 ## Obowiązujące instrukcje
 
