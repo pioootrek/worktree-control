@@ -1,6 +1,6 @@
 ---
 audience: "owner, contributors, and coding agents"
-last_reviewed: "2026-09-05"
+last_reviewed: "2026-10-04"
 source_of_truth: "shared project memory direction and phased delivery plan from the owner discussion on 2026-09-05"
 status: "active"
 ---
@@ -22,16 +22,20 @@ Switcher, reusing its project registry, controller, SQLite infrastructure,
 dashboard, and MCP integration. The core module is implemented on `main`,
 including threads/replies/tasks, revisioned memory and approval, search/context,
 attachments, backup/restore, logical project transfer and resumable Hub import.
-Track remaining acceptance and migration in
+Find current acceptance and migration work in Knowledge project
+`k7a-worktree-switcher`, using the legacy ID from the archived record
 [FEAT-20260905-shared-project-memory](backlog/feature/FEAT-20260905-shared-project-memory.json).
 
 The [implementation plan from 2026-09-13](backlog/notes/NOTE-20260913-knowledge-backlog-implementation/implementation-plan.md)
 breaks this direction into K0-K9 delivery stages with code entry points,
 recommended contracts, Hub data mapping, test cases, and cutover/rollback
 gates. Its current-status section distinguishes delivered K0–K6 work from
-K7 pilot/cutover acceptance and future K8/K9 instruction workflows. Pilot tooling
-exists, but its authentication setup needs review against token-mode defaults.
-This repository still uses its Git-backed backlog; no cutover is implied.
+K7 pilot/cutover acceptance and future K8/K9 instruction workflows. The local
+cutover uses token-mode access to runtime and Knowledge through one installation
+token. This repository now writes its backlog to Knowledge project
+`k7a-worktree-switcher`; existing Git records are its import archive. Follow
+[the current workflow](backlog/AGENTS.md) rather than the historical file-write
+instructions in imported plans.
 
 The priority is usefulness to the owner, then cooperation between the owner's
 agents and models, then usefulness to other people. Open source with optional
