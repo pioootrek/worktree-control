@@ -104,7 +104,7 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
   const artifactCli = options.artifact?.cli ?? join(repositoryRoot, "dist/cli/index.js");
   const artifactWeb = options.artifact?.webRoot ?? join(repositoryRoot, "out");
   const runtimeEnvironment = options.artifact ? { PATH: process.env.PATH, LANG: "C.UTF-8", NODE_ENV: "production" as const, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) } : process.env;
-  const base = await mkdtemp(join(tmpdir(), "worktree-switcher-integration-"));
+  const base = await mkdtemp(join(tmpdir(), "worktree-control-integration-"));
   const data = options.restoredInstallation?.data ?? join(base, "data"), state = options.restoredInstallation?.state ?? join(base, "state");
   await Promise.all([mkdir(data, { mode: 0o700, recursive: true }), mkdir(state, { mode: 0o700, recursive: true })]);
   const kinds = Array.from({ length: projectCount }, (_, index) => projectKinds[index] ?? "node");
@@ -113,13 +113,13 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
   const controllerPort = ports.pop()!, mcpPort = ports.pop()!;
   let child: ChildProcess | undefined, endpoint = `http://127.0.0.1:${controllerPort}`, accessUrl = "", controllerOutput = "";
   const generated = options.restoredInstallation ? undefined : await exec(process.execPath, [artifactCli, "auth", "token", "generate"], {
-    cwd: repositoryRoot, env: { ...runtimeEnvironment, WORKTREE_SWITCHER_DATA_DIR: data, WORKTREE_SWITCHER_STATE_DIR: state }, timeout: 30000,
+    cwd: repositoryRoot, env: { ...runtimeEnvironment, WORKTREE_CONTROL_DATA_DIR: data, WORKTREE_CONTROL_STATE_DIR: state }, timeout: 30000,
   });
   const token = options.restoredInstallation?.token ?? (JSON.parse(generated!.stdout) as { token: string }).token;
   let userBackupProjectId: string | undefined;
   if (options.userBackups) {
     const created = await exec(process.execPath, [artifactCli, "identity", "create-knowledge-project", "--name", "Scheduled discussions"], {
-      cwd: repositoryRoot, env: { ...runtimeEnvironment, WORKTREE_SWITCHER_TOKEN: token, WORKTREE_SWITCHER_DATA_DIR: data, WORKTREE_SWITCHER_STATE_DIR: state }, timeout: 30000,
+      cwd: repositoryRoot, env: { ...runtimeEnvironment, WORKTREE_CONTROL_TOKEN: token, WORKTREE_CONTROL_DATA_DIR: data, WORKTREE_CONTROL_STATE_DIR: state }, timeout: 30000,
     });
     userBackupProjectId = (JSON.parse(created.stdout) as { project: { id: string } }).project.id;
   }
@@ -139,7 +139,7 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
     finally { child = undefined; }
   };
   const requestResult = async <T>(path: string, init: RequestInit = {}): Promise<HttpResult<T>> => {
-    const response = await fetch(`${endpoint}${path}`, { ...init, headers: { "content-type": "application/json", origin: endpoint, "x-worktree-switcher-token": token, ...init.headers } });
+    const response = await fetch(`${endpoint}${path}`, { ...init, headers: { "content-type": "application/json", origin: endpoint, "x-worktree-control-token": token, ...init.headers } });
     return { status: response.status, ok: response.ok, body: await response.json() as T & { error?: string } };
   };
   const request = async <T>(path: string, init: RequestInit = {}): Promise<T> => { const result = await requestResult<T>(path, init); if (!result.ok) throw new Error(result.body.error ?? `HTTP ${result.status}`); return result.body; };
@@ -177,7 +177,7 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
       async cli(args, environment = {}, pathMode = "environment", currentDirectory = repositoryRoot) {
         const pathArgs = pathMode === "flags" ? ["--data-dir", data, "--state-dir", state] : [];
         const result = await exec(process.execPath, [artifactCli, ...args, ...pathArgs], {
-          cwd: currentDirectory, env: { ...runtimeEnvironment, WORKTREE_SWITCHER_TOKEN: token, ...environment, WORKTREE_SWITCHER_DATA_DIR: pathMode === "flags" ? undefined : data, WORKTREE_SWITCHER_STATE_DIR: pathMode === "flags" ? undefined : state }, timeout: 30000,
+          cwd: currentDirectory, env: { ...runtimeEnvironment, WORKTREE_CONTROL_TOKEN: token, ...environment, WORKTREE_CONTROL_DATA_DIR: pathMode === "flags" ? undefined : data, WORKTREE_CONTROL_STATE_DIR: pathMode === "flags" ? undefined : state }, timeout: 30000,
         });
         return result.stdout;
       },

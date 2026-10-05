@@ -18,7 +18,7 @@ async function fixture(options: {
   publicOrigin?: string;
   identity?: IdentityService;
 } = {}) {
-  const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-http-"));
+  const directory = mkdtempSync(join(tmpdir(), "worktree-control-http-"));
   directories.push(directory);
   mkdirSync(directory, { recursive: true });
   writeFileSync(join(directory, "index.html"), "<!doctype html><title>Switcher</title>");
@@ -107,7 +107,7 @@ describe("controller access boundary", () => {
     expect((await fetch(`${base}/api/dashboard`)).status).toBe(401);
 
     const response = await fetch(`${base}/api/dashboard`, {
-      headers: { "X-Worktree-Switcher-Token": "test-access-token" },
+      headers: { "X-Worktree-Control-Token": "test-access-token" },
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
@@ -125,6 +125,15 @@ describe("controller access boundary", () => {
       authentication: { mode: "legacy", listen: "0.0.0.0:0" },
     });
     expect(dashboard).toHaveBeenCalledOnce();
+  });
+
+  it("accepts the pre-rename token header during the transition and prefers the current one", async () => {
+    const { base } = await fixture();
+    expect((await fetch(`${base}/api/dashboard`, { headers: { "X-Worktree-Switcher-Token": "test-access-token" } })).status).toBe(200);
+    expect((await fetch(`${base}/api/dashboard`, { headers: { "X-Worktree-Switcher-Token": "wrong-token" } })).status).toBe(401);
+    expect((await fetch(`${base}/api/dashboard`, {
+      headers: { "X-Worktree-Control-Token": "wrong-token", "X-Worktree-Switcher-Token": "test-access-token" },
+    })).status).toBe(401);
   });
 
   it("exposes scoped identity without granting access to runtime APIs", async () => {
@@ -164,7 +173,7 @@ describe("controller access boundary", () => {
       headers: { Authorization: "Bearer scoped-token" },
     })).status).toBe(401);
     expect((await fetch(`${base}/api/identity`, {
-      headers: { "X-Worktree-Switcher-Token": "test-access-token" },
+      headers: { "X-Worktree-Control-Token": "test-access-token" },
     })).status).toBe(401);
     active = false;
     expect((await fetch(`${base}/api/identity`, {
@@ -209,7 +218,7 @@ describe("controller access boundary", () => {
     })).status).toBe(401);
     const response = await fetch(`${base}/api/identity/bootstrap`, {
       method: "POST",
-      headers: { "X-Worktree-Switcher-Token": "test-access-token", "Content-Type": "application/json" },
+      headers: { "X-Worktree-Control-Token": "test-access-token", "Content-Type": "application/json" },
       body: JSON.stringify({ label: "First owner", sessionLifetimeSeconds: 300 }),
     });
     expect(response.status).toBe(200);
@@ -225,7 +234,7 @@ describe("controller access boundary", () => {
 
     const response = await fetch(`${base}/api/identity/bootstrap`, {
       method: "POST",
-      headers: { "Accept-Language": "en", "X-Worktree-Switcher-Token": "test-access-token", "Content-Type": "application/json" },
+      headers: { "Accept-Language": "en", "X-Worktree-Control-Token": "test-access-token", "Content-Type": "application/json" },
       body: "{}",
     });
     expect(response.status).toBe(409);
@@ -241,19 +250,19 @@ describe("controller access boundary", () => {
     expect((await fetch(`${base}/api/dashboard`, {
       headers: {
         Origin: "https://attacker.invalid",
-        "X-Worktree-Switcher-Token": "test-access-token",
+        "X-Worktree-Control-Token": "test-access-token",
       },
     })).status).toBe(403);
     expect((await fetch(`${base}/api/events`, {
       headers: {
         Origin: "https://attacker.invalid",
-        "X-Worktree-Switcher-Token": "test-access-token",
+        "X-Worktree-Control-Token": "test-access-token",
       },
     })).status).toBe(403);
     expect((await fetch(`${base}/api/events`, {
       headers: {
         Origin: "null",
-        "X-Worktree-Switcher-Token": "test-access-token",
+        "X-Worktree-Control-Token": "test-access-token",
       },
     })).status).toBe(403);
 
@@ -261,7 +270,7 @@ describe("controller access boundary", () => {
     const response = await fetch(`${base}/api/events`, {
       headers: {
         Origin: "https://switcher.example.test",
-        "X-Worktree-Switcher-Token": "test-access-token",
+        "X-Worktree-Control-Token": "test-access-token",
       },
       signal: controller.signal,
     });
@@ -273,7 +282,7 @@ describe("controller access boundary", () => {
   it("serves lightweight runtime metrics without rediscovering worktrees", async () => {
     const { base, dashboard, runtimeMetrics } = await fixture();
     const response = await fetch(`${base}/api/metrics`, {
-      headers: { "X-Worktree-Switcher-Token": "test-access-token" },
+      headers: { "X-Worktree-Control-Token": "test-access-token" },
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ projects: [] });
@@ -284,7 +293,7 @@ describe("controller access boundary", () => {
   it("serves bounded authenticated live sections without invoking the full dashboard", async () => {
     const { base, dashboard, dashboardLive } = await fixture();
     const response = await fetch(`${base}/api/dashboard/live?project=project-1&section=runtime&section=controller`, {
-      headers: { "X-Worktree-Switcher-Token": "test-access-token" },
+      headers: { "X-Worktree-Control-Token": "test-access-token" },
     });
     expect(response.status).toBe(200);
     expect(dashboardLive).toHaveBeenCalledWith(["project-1"], ["runtime", "controller"]);
@@ -292,7 +301,7 @@ describe("controller access boundary", () => {
     expect((await response.json()).version).toMatchObject({ revision: 0 });
 
     const invalid = await fetch(`${base}/api/dashboard/live?section=metadata`, {
-      headers: { "X-Worktree-Switcher-Token": "test-access-token" },
+      headers: { "X-Worktree-Control-Token": "test-access-token" },
     });
     expect(invalid.status).toBe(400);
   });
@@ -302,13 +311,13 @@ describe("controller access boundary", () => {
     expect((await fetch(`${base}/api/projects/project-1/metadata/refresh`, { method: "POST", body: "{}" })).status).toBe(401);
     const foreign = await fetch(`${base}/api/projects/project-1/metadata/refresh`, {
       method: "POST",
-      headers: { Origin: "http://attacker.invalid", "Content-Type": "application/json", "X-Worktree-Switcher-Token": "test-access-token" },
+      headers: { Origin: "http://attacker.invalid", "Content-Type": "application/json", "X-Worktree-Control-Token": "test-access-token" },
       body: "{}",
     });
     expect(foreign.status).toBe(403);
     const response = await fetch(`${base}/api/projects/project-1/metadata/refresh`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Worktree-Switcher-Token": "test-access-token" },
+      headers: { "Content-Type": "application/json", "X-Worktree-Control-Token": "test-access-token" },
       body: "{}",
     });
     expect(response.status).toBe(200);
@@ -326,7 +335,7 @@ describe("controller access boundary", () => {
         "X-Forwarded-Host": "forged.example.test",
         "X-Forwarded-Proto": "https",
         "Content-Type": "application/json",
-        "X-Worktree-Switcher-Token": "test-access-token",
+        "X-Worktree-Control-Token": "test-access-token",
       },
       body: "{}",
     });
@@ -341,7 +350,7 @@ describe("controller access boundary", () => {
         "X-Forwarded-Host": "switcher.example.test",
         "X-Forwarded-Proto": "https",
         "Content-Type": "application/json",
-        "X-Worktree-Switcher-Token": "test-access-token",
+        "X-Worktree-Control-Token": "test-access-token",
       },
       body: "{}",
     });
@@ -363,7 +372,7 @@ describe("controller access boundary", () => {
       headers: {
         "Accept-Language": "en-US",
         "Content-Type": "application/json",
-        "X-Worktree-Switcher-Token": "test-access-token",
+        "X-Worktree-Control-Token": "test-access-token",
       },
       body: JSON.stringify({ name: "App", repositoryPath: "/tmp/app", port: 3000 }),
     });
@@ -375,7 +384,7 @@ describe("controller access boundary", () => {
     const { addProject, base } = await fixture();
     const response = await fetch(`${base}/api/projects`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Worktree-Switcher-Token": "test-access-token" },
+      headers: { "Content-Type": "application/json", "X-Worktree-Control-Token": "test-access-token" },
       body: JSON.stringify({ name: "API", repositoryPath: "/tmp/api", port: 8000, launchPreset: "django" }),
     });
     expect(response.status).toBe(201);
@@ -386,7 +395,7 @@ describe("controller access boundary", () => {
     const { base, removeProject } = await fixture();
     const response = await fetch(`${base}/api/projects/project-1`, {
       method: "DELETE",
-      headers: { "X-Worktree-Switcher-Token": "test-access-token" },
+      headers: { "X-Worktree-Control-Token": "test-access-token" },
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ project: { id: "project-1", name: "App" } });
@@ -396,7 +405,7 @@ describe("controller access boundary", () => {
   it("serves authenticated directory listings through the browser service", async () => {
     const { base, listDirectories } = await fixture();
     const response = await fetch(`${base}/api/directories?path=${encodeURIComponent("/home/test/code")}`, {
-      headers: { "X-Worktree-Switcher-Token": "test-access-token" },
+      headers: { "X-Worktree-Control-Token": "test-access-token" },
     });
 
     expect(response.status).toBe(200);
@@ -411,7 +420,7 @@ describe("controller access boundary", () => {
       headers: {
         "Content-Type": "application/json",
         Origin: "http://attacker.invalid",
-        "X-Worktree-Switcher-Token": "test-access-token",
+        "X-Worktree-Control-Token": "test-access-token",
       },
       body: JSON.stringify({ name: "App", repositoryPath: "/tmp/app", port: 3000 }),
     });
@@ -422,7 +431,7 @@ describe("controller access boundary", () => {
     const { base, setProjectTls } = await fixture();
     const response = await fetch(`${base}/api/projects/project-1/tls`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Worktree-Switcher-Token": "test-access-token" },
+      headers: { "Content-Type": "application/json", "X-Worktree-Control-Token": "test-access-token" },
       body: JSON.stringify({ mode: "custom", keyPath: "/certs/key.pem", certPath: "/certs/cert.pem", caPath: null }),
     });
     expect(response.status).toBe(200);
@@ -439,7 +448,7 @@ describe("controller access boundary", () => {
     const environment = { PLAYWRIGHT_E2E: "1", WINPATH_DEV_ROUTE_DELAY_MS: "0" };
     const response = await fetch(`${base}/api/projects/project-1/environment`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Worktree-Switcher-Token": "test-access-token" },
+      headers: { "Content-Type": "application/json", "X-Worktree-Control-Token": "test-access-token" },
       body: JSON.stringify({ environment }),
     });
     expect(response.status).toBe(200);
@@ -448,7 +457,7 @@ describe("controller access boundary", () => {
 
   it("saves, selects, and deletes named environment profiles", async () => {
     const { base, deleteEnvironmentProfile, saveEnvironmentProfile, selectEnvironmentProfile } = await fixture();
-    const headers = { "Content-Type": "application/json", "X-Worktree-Switcher-Token": "test-access-token" };
+    const headers = { "Content-Type": "application/json", "X-Worktree-Control-Token": "test-access-token" };
     expect((await fetch(`${base}/api/projects/project-1/environment-profiles`, {
       method: "POST", headers, body: JSON.stringify({ name: "e2e", environment: { PLAYWRIGHT_E2E: "1" }, restart: true }),
     })).status).toBe(200);
@@ -467,7 +476,7 @@ describe("controller access boundary", () => {
     const { base, setServerCapacity } = await fixture();
     const response = await fetch(`${base}/api/settings/capacity`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Worktree-Switcher-Token": "test-access-token" },
+      headers: { "Content-Type": "application/json", "X-Worktree-Control-Token": "test-access-token" },
       body: JSON.stringify({ enabled: true, limit: 2 }),
     });
     expect(response.status).toBe(200);
@@ -476,7 +485,7 @@ describe("controller access boundary", () => {
 
   it("updates the test limit and controls test runs", async () => {
     const { base, cancelTest, enqueueTest, setTestQueueLimit, testRun } = await fixture();
-    const headers = { "Content-Type": "application/json", "X-Worktree-Switcher-Token": "test-access-token" };
+    const headers = { "Content-Type": "application/json", "X-Worktree-Control-Token": "test-access-token" };
     expect((await fetch(`${base}/api/settings/test-queue`, {
       method: "POST", headers, body: JSON.stringify({ limit: 3 }),
     })).status).toBe(200);
@@ -498,7 +507,7 @@ describe("controller access boundary", () => {
 
   it("manages test environment profiles and preset assignments", async () => {
     const { base, assignTestPresetProfile, saveTestEnvironmentProfile, testEnvironmentProfiles } = await fixture();
-    const headers = { "Content-Type": "application/json", "X-Worktree-Switcher-Token": "test-access-token" };
+    const headers = { "Content-Type": "application/json", "X-Worktree-Control-Token": "test-access-token" };
 
     const listed = await fetch(`${base}/api/projects/project-1/test-environment-profiles`, { headers });
     expect(listed.status).toBe(200);
@@ -534,7 +543,7 @@ describe("controller access boundary", () => {
     const { base, refreshWorktreeStorage } = await fixture();
     const response = await fetch(`${base}/api/projects/project-1/storage/refresh`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Worktree-Switcher-Token": "test-access-token" },
+      headers: { "Content-Type": "application/json", "X-Worktree-Control-Token": "test-access-token" },
       body: JSON.stringify({ worktreePath: "/code/web-feature" }),
     });
     expect(response.status).toBe(202);
@@ -545,7 +554,7 @@ describe("controller access boundary", () => {
     const { base, deleteWorktreeCache } = await fixture();
     const response = await fetch(`${base}/api/projects/project-1/storage/cache`, {
       method: "DELETE",
-      headers: { "Content-Type": "application/json", "X-Worktree-Switcher-Token": "test-access-token" },
+      headers: { "Content-Type": "application/json", "X-Worktree-Control-Token": "test-access-token" },
       body: JSON.stringify({ worktreePath: "/code/web-feature", cache: "next" }),
     });
     expect(response.status).toBe(200);
@@ -553,7 +562,7 @@ describe("controller access boundary", () => {
 
     const rejected = await fetch(`${base}/api/projects/project-1/storage/cache`, {
       method: "DELETE",
-      headers: { "Content-Type": "application/json", "X-Worktree-Switcher-Token": "test-access-token" },
+      headers: { "Content-Type": "application/json", "X-Worktree-Control-Token": "test-access-token" },
       body: JSON.stringify({ worktreePath: "/code/web-feature", cache: "node_modules" }),
     });
     expect(rejected.status).toBe(400);

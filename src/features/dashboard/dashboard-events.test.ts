@@ -32,7 +32,7 @@ describe("dashboard event stream", () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       requests.push({
         url: String(input),
-        token: new Headers(init?.headers).get("X-Worktree-Switcher-Token"),
+        token: new Headers(init?.headers).get("X-Worktree-Control-Token"),
       });
       if (requests.length === 1) return eventResponse(["event: ready\ndata: {}\n\n"]);
       return new Response(new ReadableStream<Uint8Array>({ start(controller) { secondController = controller; } }), {

@@ -12,7 +12,7 @@ import { controllerAccessToken, writeServiceAccess, type ServiceAccessRecord } f
 
 const directories: string[] = [];
 function paths() {
-  const root = mkdtempSync(join(tmpdir(), "worktree-switcher-mcp-config-"));
+  const root = mkdtempSync(join(tmpdir(), "worktree-control-mcp-config-"));
   directories.push(root);
   return resolveAppPaths(join(root, "data"), join(root, "state"));
 }
@@ -33,6 +33,7 @@ describe("MCP configuration and controller access tokens", () => {
     await runAuthCommand(["token", "generate"], appPaths, { write: (line) => output.push(line) });
     const { token } = JSON.parse(output[0]!) as { token: string };
     expect(await mcpConfigToken(appPaths, { environment: {} })).toBe(INSTALLATION_TOKEN_PLACEHOLDER);
+    expect(await mcpConfigToken(appPaths, { environment: { WORKTREE_CONTROL_TOKEN: token } })).toBe(token);
     expect(await mcpConfigToken(appPaths, { environment: { WORKTREE_SWITCHER_TOKEN: token } })).toBe(token);
 
     await runAuthCommand(["mode", "set", "open"], appPaths, { write: () => undefined });
@@ -67,9 +68,11 @@ describe("MCP configuration and controller access tokens", () => {
     }
   });
 
-  it("prefers WORKTREE_SWITCHER_TOKEN over the pairing token of the access URL", () => {
+  it("prefers WORKTREE_CONTROL_TOKEN over the pairing token of the access URL", () => {
     expect(controllerAccessToken(record(), {})).toBe("pairing");
-    expect(controllerAccessToken(record(), { WORKTREE_SWITCHER_TOKEN: "wsi_x" })).toBe("wsi_x");
+    expect(controllerAccessToken(record(), { WORKTREE_CONTROL_TOKEN: "wsi_x" })).toBe("wsi_x");
+    expect(controllerAccessToken(record(), { WORKTREE_SWITCHER_TOKEN: "wsi_legacy" })).toBe("wsi_legacy");
+    expect(controllerAccessToken(record(), { WORKTREE_CONTROL_TOKEN: "wsi_x", WORKTREE_SWITCHER_TOKEN: "wsi_legacy" })).toBe("wsi_x");
     expect(controllerAccessToken(record({ accessUrl: "http://127.0.0.1:47831/" }), {})).toBeNull();
   });
 });

@@ -261,7 +261,7 @@ class ControllerProjectGateway implements ProjectGateway {
           headers: {
             "Accept-Language": this.locale,
             "Content-Type": "application/json",
-            ...(this.token ? { "X-Worktree-Switcher-Token": this.token } : {}),
+            ...(this.token ? { "X-Worktree-Control-Token": this.token } : {}),
             ...init.headers,
           },
           signal: AbortSignal.timeout(15_000),

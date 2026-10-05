@@ -24,16 +24,16 @@ test("lifecycle reports redact browser and bearer credentials", () => {
 test("systemd definition must point at installed paths and omit builder paths", () => {
   const expected = {
     nodePath: "/opt/node/bin/node",
-    entrypointPath: "/tmp/user prefix/lib/node_modules/worktree-switcher/dist/cli/index.js",
-    packageRoot: "/tmp/user prefix/lib/node_modules/worktree-switcher",
+    entrypointPath: "/tmp/user prefix/lib/node_modules/worktree-control/dist/cli/index.js",
+    packageRoot: "/tmp/user prefix/lib/node_modules/worktree-control",
     dataDirectory: "/tmp/data",
     stateDirectory: "/tmp/state",
-    webRoot: "/tmp/user prefix/lib/node_modules/worktree-switcher/out",
+    webRoot: "/tmp/user prefix/lib/node_modules/worktree-control/out",
     forbiddenPaths: ["/home/runner/work/repository"],
   };
   const definition = [
     `ExecStart="${expected.nodePath}" "${expected.entrypointPath}" "start" "--data-dir" "${expected.dataDirectory}" "--state-dir" "${expected.stateDirectory}" "--web-root" "${expected.webRoot}"`,
-    "WorkingDirectory=/tmp/user prefix/lib/node_modules/worktree-switcher",
+    "WorkingDirectory=/tmp/user prefix/lib/node_modules/worktree-control",
     "KillMode=control-group",
     "WantedBy=default.target",
   ].join("\n");

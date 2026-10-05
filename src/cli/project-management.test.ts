@@ -21,7 +21,7 @@ function temporaryDirectory(prefix: string): string {
 }
 
 function createNodeRepository(withDevScript = true): string {
-  const repository = temporaryDirectory("worktree-switcher-cli-repo-");
+  const repository = temporaryDirectory("worktree-control-cli-repo-");
   execFileSync("git", ["init", "--quiet", repository]);
   writeFileSync(join(repository, "package.json"), JSON.stringify({
     name: "fixture-app",
@@ -38,8 +38,8 @@ afterEach(() => {
 describe("project management CLI", () => {
   it("adds, lists, and removes a project through the offline control service", async () => {
     const repository = createNodeRepository();
-    const dataDirectory = temporaryDirectory("worktree-switcher-cli-data-");
-    const stateDirectory = temporaryDirectory("worktree-switcher-cli-state-");
+    const dataDirectory = temporaryDirectory("worktree-control-cli-data-");
+    const stateDirectory = temporaryDirectory("worktree-control-cli-state-");
     const paths = resolveAppPaths(dataDirectory, stateDirectory);
     const output: string[] = [];
     const gateway = await openProjectGateway(paths, "en");
@@ -72,11 +72,11 @@ describe("project management CLI", () => {
   });
 
   it("rejects invalid repositories and missing dev scripts without partial records", async () => {
-    const dataDirectory = temporaryDirectory("worktree-switcher-cli-invalid-data-");
-    const stateDirectory = temporaryDirectory("worktree-switcher-cli-invalid-state-");
+    const dataDirectory = temporaryDirectory("worktree-control-cli-invalid-data-");
+    const stateDirectory = temporaryDirectory("worktree-control-cli-invalid-state-");
     const gateway = await openProjectGateway(resolveAppPaths(dataDirectory, stateDirectory), "en");
     try {
-      const plainDirectory = temporaryDirectory("worktree-switcher-cli-plain-");
+      const plainDirectory = temporaryDirectory("worktree-control-cli-plain-");
       await expect(runProjectCommand(["add", plainDirectory, "--port", "3100"], gateway, "en"))
         .rejects.toThrow("repozytorium Git");
       await expect(runProjectCommand(["add", createNodeRepository(false), "--port", "3101"], gateway, "en"))
@@ -90,13 +90,13 @@ describe("project management CLI", () => {
   });
 
   it("reports a healthy fresh installation", async () => {
-    const dataDirectory = temporaryDirectory("worktree-switcher-cli-doctor-data-");
-    const stateDirectory = temporaryDirectory("worktree-switcher-cli-doctor-state-");
+    const dataDirectory = temporaryDirectory("worktree-control-cli-doctor-data-");
+    const stateDirectory = temporaryDirectory("worktree-control-cli-doctor-state-");
     const gateway = await openProjectGateway(resolveAppPaths(dataDirectory, stateDirectory), "en");
     const output: string[] = [];
     try {
       expect(await runDoctorCommand(gateway, "en", (line) => output.push(line))).toBe(true);
-      expect(output).toContain("Worktree Switcher is ready.");
+      expect(output).toContain("Worktree Control is ready.");
       expect(output.some((line) => line.includes("registered projects: 0"))).toBe(true);
     } finally {
       await gateway.close();
@@ -104,12 +104,12 @@ describe("project management CLI", () => {
   });
 
   it("routes project commands through a running controller access record", async () => {
-    const dataDirectory = temporaryDirectory("worktree-switcher-cli-online-data-");
-    const stateDirectory = temporaryDirectory("worktree-switcher-cli-online-state-");
+    const dataDirectory = temporaryDirectory("worktree-control-cli-online-data-");
+    const stateDirectory = temporaryDirectory("worktree-control-cli-online-state-");
     const paths = resolveAppPaths(dataDirectory, stateDirectory);
     const requests: Array<{ method: string | undefined; url: string | undefined; token: string | undefined }> = [];
     const server = createServer((request, response) => {
-      requests.push({ method: request.method, url: request.url, token: request.headers["x-worktree-switcher-token"] as string | undefined });
+      requests.push({ method: request.method, url: request.url, token: request.headers["x-worktree-control-token"] as string | undefined });
       response.setHeader("Content-Type", "application/json");
       if (request.method === "GET") {
         response.end(JSON.stringify({ projects: [], capacity: { enabled: false, limit: 2, used: 0, available: null, holders: [] } }));
@@ -151,8 +151,8 @@ describe("project management CLI", () => {
   });
 
   it("reports controller transport failures separately from invalid access records", async () => {
-    const dataDirectory = temporaryDirectory("worktree-switcher-cli-transport-data-");
-    const stateDirectory = temporaryDirectory("worktree-switcher-cli-transport-state-");
+    const dataDirectory = temporaryDirectory("worktree-control-cli-transport-data-");
+    const stateDirectory = temporaryDirectory("worktree-control-cli-transport-state-");
     const paths = resolveAppPaths(dataDirectory, stateDirectory);
     const server = createServer();
     await new Promise<void>((resolve, reject) => {
@@ -183,12 +183,12 @@ describe("project management CLI", () => {
   });
 
   it("reaches an open-mode controller without any credential", async () => {
-    const dataDirectory = temporaryDirectory("worktree-switcher-cli-open-data-");
-    const stateDirectory = temporaryDirectory("worktree-switcher-cli-open-state-");
+    const dataDirectory = temporaryDirectory("worktree-control-cli-open-data-");
+    const stateDirectory = temporaryDirectory("worktree-control-cli-open-state-");
     const paths = resolveAppPaths(dataDirectory, stateDirectory);
     const seen: Array<string | undefined> = [];
     const server = createServer((request, response) => {
-      seen.push(request.headers["x-worktree-switcher-token"] as string | undefined);
+      seen.push(request.headers["x-worktree-control-token"] as string | undefined);
       response.setHeader("Content-Type", "application/json");
       response.end(JSON.stringify({ projects: [] }));
     });
@@ -207,22 +207,22 @@ describe("project management CLI", () => {
       logDirectory: paths.logDirectory,
       authenticationMode: "open",
     });
-    const previous = process.env.WORKTREE_SWITCHER_TOKEN;
-    delete process.env.WORKTREE_SWITCHER_TOKEN;
+    const previous = process.env.WORKTREE_CONTROL_TOKEN;
+    delete process.env.WORKTREE_CONTROL_TOKEN;
     const gateway = await openProjectGateway(paths, "en");
     try {
       expect((await gateway.dashboard()).projects).toEqual([]);
       expect(seen).toEqual([undefined]);
     } finally {
       await gateway.close();
-      if (previous !== undefined) process.env.WORKTREE_SWITCHER_TOKEN = previous;
+      if (previous !== undefined) process.env.WORKTREE_CONTROL_TOKEN = previous;
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 
   it("asks for the installation token when a token-mode controller is running", async () => {
-    const dataDirectory = temporaryDirectory("worktree-switcher-cli-token-data-");
-    const stateDirectory = temporaryDirectory("worktree-switcher-cli-token-state-");
+    const dataDirectory = temporaryDirectory("worktree-control-cli-token-data-");
+    const stateDirectory = temporaryDirectory("worktree-control-cli-token-state-");
     const paths = resolveAppPaths(dataDirectory, stateDirectory);
     writeServiceAccess(paths.serviceAccessPath, {
       pid: process.pid,
@@ -234,18 +234,18 @@ describe("project management CLI", () => {
       logDirectory: paths.logDirectory,
       authenticationMode: "token",
     });
-    const previous = process.env.WORKTREE_SWITCHER_TOKEN;
-    delete process.env.WORKTREE_SWITCHER_TOKEN;
+    const previous = process.env.WORKTREE_CONTROL_TOKEN;
+    delete process.env.WORKTREE_CONTROL_TOKEN;
     try {
-      await expect(openProjectGateway(paths, "en")).rejects.toThrow("Set WORKTREE_SWITCHER_TOKEN");
+      await expect(openProjectGateway(paths, "en")).rejects.toThrow("Set WORKTREE_CONTROL_TOKEN");
     } finally {
-      if (previous !== undefined) process.env.WORKTREE_SWITCHER_TOKEN = previous;
+      if (previous !== undefined) process.env.WORKTREE_CONTROL_TOKEN = previous;
     }
   });
 
   it("refuses offline database access through a typed live-controller lock", async () => {
-    const dataDirectory = temporaryDirectory("worktree-switcher-cli-lock-data-");
-    const stateDirectory = temporaryDirectory("worktree-switcher-cli-lock-state-");
+    const dataDirectory = temporaryDirectory("worktree-control-cli-lock-data-");
+    const stateDirectory = temporaryDirectory("worktree-control-cli-lock-state-");
     const paths = resolveAppPaths(dataDirectory, stateDirectory);
     const lock = acquireControllerLock(paths.controllerLockPath);
     try {

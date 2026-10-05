@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 function fixture(options: DashboardQueryOptions = {}) {
-  const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-dashboard-query-"));
+  const directory = mkdtempSync(join(tmpdir(), "worktree-control-dashboard-query-"));
   directories.push(directory);
   const store = new SqliteStateStore(join(directory, "state.sqlite3"));
   const project = store.addProject({ name: "Web", repositoryPath: "/code/web", port: 3301, executable: "pnpm", args: ["run", "dev"] });

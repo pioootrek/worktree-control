@@ -1,4 +1,0 @@
-interface:
-  display_name: "Worktree Switcher"
-  short_description: "Coordinate dev servers across Git worktrees"
-  default_prompt: "Use $worktree-switcher to inspect and safely claim this repository dev server."

@@ -27,7 +27,7 @@ export function ProjectNavigation({ section, onSelect, projectName }: {
       <SidebarHeader className="h-14 justify-center border-b border-sidebar-border px-3 group-data-[collapsible=icon]:px-2">
         <div className="flex items-center gap-2 pr-3 text-foreground">
           <GitBranch className="size-5 shrink-0" aria-hidden />
-          <span className="truncate text-sm font-semibold group-data-[collapsible=icon]:hidden">Worktree Switcher</span>
+          <span className="truncate text-sm font-semibold group-data-[collapsible=icon]:hidden">Worktree Control</span>
         </div>
       </SidebarHeader>
       <SidebarContent>

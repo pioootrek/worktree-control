@@ -38,7 +38,7 @@ function worktreeOf(path: string): Worktree {
 
 /** Reproduces the WinPath report: a QA server profile selected while unit tests run. */
 function fixture() {
-  const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-test-env-"));
+  const directory = mkdtempSync(join(tmpdir(), "worktree-control-test-env-"));
   directories.push(directory);
   const store = new SqliteStateStore(join(directory, "state.sqlite3"));
   stores.push(store);
@@ -105,7 +105,7 @@ describe("test runs against a selected server profile", () => {
       environment: { DATABASE_PASSWORD: "top-secret" },
     });
 
-    const otherDirectory = mkdtempSync(join(tmpdir(), "worktree-switcher-test-env-other-"));
+    const otherDirectory = mkdtempSync(join(tmpdir(), "worktree-control-test-env-other-"));
     directories.push(otherDirectory);
     writeFileSync(join(otherDirectory, "package.json"), JSON.stringify({ name: "other", scripts: { dev: "node server.js" } }));
     (git.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([worktreeOf(otherDirectory)]);
@@ -168,12 +168,8 @@ describe("test runs against a selected server profile", () => {
     expect(child.names).toEqual([...new Set([
       ...Object.keys(systemEnvironment()),
       "NODE_ENV",
-      "WORKTREE_SWITCHER",
-      "WORKTREE_SWITCHER_PROJECT_ID",
-      "WORKTREE_SWITCHER_SERVER_PORT",
-      "WORKTREE_SWITCHER_SERVER_URL",
-      "WORKTREE_SWITCHER_TEST_PROFILE",
-      "WORKTREE_SWITCHER_WORKTREE_PATH",
+      ...["", "_PROJECT_ID", "_SERVER_PORT", "_SERVER_URL", "_TEST_PROFILE", "_WORKTREE_PATH"]
+        .flatMap((suffix) => [`WORKTREE_CONTROL${suffix}`, `WORKTREE_SWITCHER${suffix}`]),
     ])].sort());
     const stored = store.getTestRun(run.id)!;
     expect(stored.environmentMode).toBe("clean");

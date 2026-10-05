@@ -89,13 +89,16 @@ describe("installation token mode across transports", () => {
     const f = await setup();
     const dashboard = (headers: Record<string, string>) => fetch(`${f.base}/api/metrics`, { headers });
 
+    expect((await dashboard({ "X-Worktree-Control-Token": f.installationToken })).status).toBe(200);
+    // Pre-rename header name, accepted during the transition.
     expect((await dashboard({ "X-Worktree-Switcher-Token": f.installationToken })).status).toBe(200);
-    expect((await dashboard({ Authorization: `Bearer ${f.installationToken}` })).status).toBe(200);
     expect((await dashboard({ "X-Worktree-Switcher-Token": "pairing" })).status).toBe(401);
+    expect((await dashboard({ Authorization: `Bearer ${f.installationToken}` })).status).toBe(200);
+    expect((await dashboard({ "X-Worktree-Control-Token": "pairing" })).status).toBe(401);
     expect((await dashboard({ Authorization: `Bearer ${f.agentToken}` })).status).toBe(401);
-    expect((await dashboard({ "X-Worktree-Switcher-Token": `${f.installationToken.slice(0, -1)}${f.installationToken.endsWith("0") ? "1" : "0"}` })).status).toBe(401);
+    expect((await dashboard({ "X-Worktree-Control-Token": `${f.installationToken.slice(0, -1)}${f.installationToken.endsWith("0") ? "1" : "0"}` })).status).toBe(401);
     const bootstrap = await fetch(`${f.base}/api/identity/bootstrap`, {
-      method: "POST", headers: { "X-Worktree-Switcher-Token": "pairing", "Content-Type": "application/json" }, body: "{}",
+      method: "POST", headers: { "X-Worktree-Control-Token": "pairing", "Content-Type": "application/json" }, body: "{}",
     });
     expect(bootstrap.status).toBe(401);
   });
@@ -158,8 +161,8 @@ describe("installation token mode across transports", () => {
     const actor = f.authentication.authenticateInstallation(f.installationToken)!;
     const rotated = f.authentication.rotateToken("test").token;
 
-    expect((await fetch(`${f.base}/api/metrics`, { headers: { "X-Worktree-Switcher-Token": f.installationToken } })).status).toBe(401);
-    expect((await fetch(`${f.base}/api/metrics`, { headers: { "X-Worktree-Switcher-Token": rotated } })).status).toBe(200);
+    expect((await fetch(`${f.base}/api/metrics`, { headers: { "X-Worktree-Control-Token": f.installationToken } })).status).toBe(401);
+    expect((await fetch(`${f.base}/api/metrics`, { headers: { "X-Worktree-Control-Token": rotated } })).status).toBe(200);
     // Long-lived consumers such as SSE filters recheck the actor and lose knowledge access at once.
     expect(() => f.identity.authorizeKnowledge(actor, f.project.id, "knowledge:read")).toThrow("Nieprawidłowe lub nieaktywne poświadczenie.");
   });
@@ -216,20 +219,22 @@ describe("installation token mode across transports", () => {
     const create = (environment: Record<string, string>, key: string) => f.cli("knowledge", ["create_task", "--json", JSON.stringify({
       projectId: f.project.id, title: "Protected", description: "Token mode", idempotencyKey: key,
     })], environment);
-    await expect(create({}, "missing")).rejects.toThrow("WORKTREE_SWITCHER_KNOWLEDGE_TOKEN");
-    await expect(f.cli("identity", ["list-agents"])).rejects.toThrow("WORKTREE_SWITCHER_OWNER_TOKEN");
+    await expect(create({}, "missing")).rejects.toThrow("WORKTREE_CONTROL_KNOWLEDGE_TOKEN");
+    await expect(f.cli("identity", ["list-agents"])).rejects.toThrow("WORKTREE_CONTROL_OWNER_TOKEN");
     const forged = `${f.installationToken.slice(0, -1)}${f.installationToken.endsWith("0") ? "1" : "0"}`;
-    await expect(create({ WORKTREE_SWITCHER_TOKEN: forged }, "forged")).rejects.toThrow("invalid_credential");
-    await expect(f.cli("identity", ["list-agents"], { WORKTREE_SWITCHER_TOKEN: forged })).rejects.toThrow("A valid access token is required.");
+    await expect(create({ WORKTREE_CONTROL_TOKEN: forged }, "forged")).rejects.toThrow("invalid_credential");
+    await expect(f.cli("identity", ["list-agents"], { WORKTREE_CONTROL_TOKEN: forged })).rejects.toThrow("A valid access token is required.");
 
     // A read-only agent reads through the CLI but cannot write or administer identity.
-    const reader = { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: f.agentToken };
+    const reader = { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: f.agentToken };
     expect((await f.cli("knowledge", ["projects"], reader)).items).toEqual([expect.objectContaining({ id: f.project.id, writable: false })]);
     await expect(create(reader, "reader")).rejects.toThrow("knowledge_forbidden");
-    await expect(f.cli("identity", ["list-agents"], { WORKTREE_SWITCHER_OWNER_TOKEN: f.agentToken })).rejects.toThrow("sesji właściciela");
+    await expect(f.cli("identity", ["list-agents"], { WORKTREE_CONTROL_OWNER_TOKEN: f.agentToken })).rejects.toThrow("sesji właściciela");
 
-    const installation = { WORKTREE_SWITCHER_TOKEN: f.installationToken };
+    const installation = { WORKTREE_CONTROL_TOKEN: f.installationToken };
     expect((await f.cli("identity", ["list-agents"], installation)).principals).toEqual([expect.objectContaining({ id: f.agent.id })]);
+    // The pre-rename variable is still honored (with a deprecation warning on stderr).
+    expect((await f.cli("identity", ["list-agents"], { WORKTREE_SWITCHER_TOKEN: f.installationToken })).principals).toEqual([expect.objectContaining({ id: f.agent.id })]);
     await f.cli("identity", ["revoke-token", "--credential-id", f.agentCredential.id], installation);
     await expect(f.cli("knowledge", ["projects"], reader)).rejects.toThrow("invalid_credential");
     await create(installation, "installation");
@@ -239,7 +244,7 @@ describe("installation token mode across transports", () => {
     const f = await setup();
     const client = await f.mcpClient(f.installationToken);
     expect((await client.listTools()).tools.length).toBeGreaterThan(0);
-    const stream = await fetch(`${f.base}/api/events`, { headers: { "X-Worktree-Switcher-Token": f.installationToken } });
+    const stream = await fetch(`${f.base}/api/events`, { headers: { "X-Worktree-Control-Token": f.installationToken } });
     expect(stream.status).toBe(200);
     const reader = stream.body!.getReader();
     await reader.read();

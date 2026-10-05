@@ -4,7 +4,7 @@ import { openSystemDialog, selectLanguage } from "./shell-actions";
 import { parseUserScheduleMutationKey, type UserSchedule, type UserScheduleOverview } from "../../src/shared/contracts/user-backups";
 const token = `wts_00000000-0000-4000-8000-000000000001_${"a".repeat(64)}`;
 async function mount(page: Page) {
-  await page.addInitScript(token => sessionStorage.setItem("worktree-switcher-knowledge-token", token), token);
+  await page.addInitScript(token => sessionStorage.setItem("worktree-control-knowledge-token", token), token);
   const f = await mountDashboard(page);
   const schedules: UserSchedule[] = [], requests: Array<Record<string, unknown>> = [];
   let missing = false, disconnected = false, forbidden = false, limit = false, expire = false;
@@ -77,7 +77,7 @@ for (const locale of ["en", "pl"] as const) {
     expect(f.errors).toEqual([]);
   });
   for (const width of [1440, 1366, 390, 320]) test(`layout ${width}px in ${locale}`, async ({ page }, testInfo) => {
-    await page.addInitScript(theme => localStorage.setItem("worktree-switcher-theme", theme), width === 320 || width === 1366 ? "light" : "dark");
+    await page.addInitScript(theme => localStorage.setItem("worktree-control-theme", theme), width === 320 || width === 1366 ? "light" : "dark");
     await page.setViewportSize({ width, height: 650 }); await mount(page); if (locale === "pl") await selectLanguage(page);
     await openSystemDialog(page, "userBackups.title", locale); await page.getByRole("button", { name: add }).click();
     const dialog = page.getByRole("dialog"); await expect(dialog.getByRole("button", { name: save })).toBeVisible();

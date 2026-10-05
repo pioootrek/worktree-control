@@ -164,7 +164,7 @@ export function planHubImportAgainstValidator(options: HubImportPlanOptions, exp
   const snapshot = readCommit(repository, resolvedCommit, attachmentLimits(options.limits ?? DEFAULT_ATTACHMENT_LIMITS));
   const files = snapshot.files.sort((a, b) => compareCodePoints(a.path, b.path));
   if (!files.some(file => file.path === "docs/backlog/config.json")) throw new KnowledgeError("invalid_request", "Source commit has no docs/backlog/config.json.");
-  const temporary = mkdtempSync(join(tmpdir(), "worktree-switcher-hub-plan-"));
+  const temporary = mkdtempSync(join(tmpdir(), "worktree-control-hub-plan-"));
   let validatorValid = false; let diagnostics: string[] = [];
   try {
     execFileSync("git", ["init", "-q", temporary], { encoding: "utf8" });

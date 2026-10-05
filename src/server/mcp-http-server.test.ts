@@ -272,7 +272,7 @@ describe("MCP loopback server", () => {
     const transport = new StreamableHTTPClientTransport(endpoint, {
       requestInit: { headers: { Authorization: "Bearer mcp-test-token-with-enough-entropy" } },
     });
-    const client = new Client({ name: "worktree-switcher-test", version: "1.0.0" });
+    const client = new Client({ name: "worktree-control-test", version: "1.0.0" });
     await client.connect(transport);
     expect((await client.listTools()).tools.map(({ name }) => name)).toEqual([
       "list_projects",

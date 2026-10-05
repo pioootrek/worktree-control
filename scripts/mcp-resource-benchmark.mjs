@@ -51,7 +51,7 @@ function ipc(child, command, args) { const id = ++sequence; return new Promise((
 const content = result => { assert(!result.isError, 'Tool returned an error.'); return JSON.parse(result.content.find(p => p.type === 'text').text); };
 async function run(number) {
   const base = await mkdtemp(join(tmpdir(), 'wts-mcp-resources-')), data = join(base, 'data'), state = join(base, 'state'), repo = join(base, 'fixture');
-  const env = { ...process.env, WORKTREE_SWITCHER_DATA_DIR: data, WORKTREE_SWITCHER_STATE_DIR: state };
+  const env = { ...process.env, WORKTREE_CONTROL_DATA_DIR: data, WORKTREE_CONTROL_STATE_DIR: state };
   let token, p, m, app, endpoint;
   const result = { number, scenarios: [], cleanup: 'pending' }; report.runs.push(result);
   let controller, ownedClient, proxy, proxyClient; const directClients = [];
@@ -68,7 +68,7 @@ async function run(number) {
     for (const args of [['init', '-b', 'main'], ['add', '.'], ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-m', 'fixture']]) await exec('git', args, { cwd: repo });
     controller = launch(['--import', join(root, 'scripts/mcp-resource-probe.mjs'), cli, 'start', '--service-mode', '--host', '127.0.0.1', '--port', String(p), '--mcp-port', String(m), '--no-open', '--web-root', join(root, 'out'), '--browse-root', base], env);
     await wait(async () => { try { await diag(); return true; } catch { return false; } }, 'isolated admin listener');
-    const req = async (path, body) => { const r = await fetch(`http://127.0.0.1:${p}${path}`, { method: body ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json', 'x-worktree-switcher-token': token, Origin: `http://127.0.0.1:${p}` }, ...(body ? { body: JSON.stringify(body) } : {}) }); assert(r.ok); return r.json(); };
+    const req = async (path, body) => { const r = await fetch(`http://127.0.0.1:${p}${path}`, { method: body ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json', 'x-worktree-control-token': token, Origin: `http://127.0.0.1:${p}` }, ...(body ? { body: JSON.stringify(body) } : {}) }); assert(r.ok); return r.json(); };
     const projectId = (await req('/api/projects', { repositoryPath: repo, name: 'owned fixture', port: app, launchPreset: 'node' })).project.id;
     await delay(3000); await point('baseline');
     for (let i = 0; i < 3; i++) {

@@ -248,7 +248,7 @@ export class ProcessManager {
         runtime.error = null;
         runtime.failure = null;
         this.stopResourceMonitoring(runtime);
-        this.append(runtime, "process_stopped_by=worktree-switcher");
+        this.append(runtime, "process_stopped_by=worktree-control");
       } catch (error) {
         // Keep the group and PID, so capacity stays occupied and stop can be retried.
         this.markFailed(runtime, {

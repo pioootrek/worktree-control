@@ -20,7 +20,7 @@ afterEach(() => {
 
 describe("service access record", () => {
   it("stores the pairing URL owner-only and removes only the owning process record", () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-access-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-access-"));
     directories.push(directory);
     const path = join(directory, "state", "access.json");
     const record = {

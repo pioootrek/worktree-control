@@ -3,8 +3,11 @@ import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, 
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-export const SYSTEMD_UNIT_NAME = "worktree-switcher.service";
-export const LAUNCHD_LABEL = "dev.worktree-switcher.controller";
+export const SYSTEMD_UNIT_NAME = "worktree-control.service";
+export const LAUNCHD_LABEL = "dev.worktree-control.controller";
+/** Service names used before the 2026-10-05 rename; `install` migrates them and `uninstall` removes them. */
+export const LEGACY_SYSTEMD_UNIT_NAME = "worktree-switcher.service";
+export const LEGACY_LAUNCHD_LABEL = "dev.worktree-switcher.controller";
 
 export interface ServiceCommandResult {
   status: number;
@@ -37,6 +40,14 @@ export interface ServiceStatus {
   uptimeSeconds: number | null;
   residentMemoryBytes: number | null;
   cpuPercent: number | null;
+  /** Definition of a pre-rename service that is still installed, or null. */
+  legacyDefinitionPath: string | null;
+}
+
+export interface LegacyServiceRemoval {
+  definitionPath: string;
+  /** Whether the legacy service was running before it was stopped. */
+  wasActive: boolean;
 }
 
 export interface ServiceManagerOptions {
@@ -70,6 +81,7 @@ const defaultRunner: ServiceCommandRunner = {
 export class UserServiceManager {
   readonly kind: "systemd" | "launchd";
   readonly definitionPath: string;
+  readonly legacyDefinitionPath: string;
   private readonly runner: ServiceCommandRunner;
   private readonly uid: number;
 
@@ -83,21 +95,27 @@ export class UserServiceManager {
       this.kind = "systemd";
       const configHome = resolve(environment.XDG_CONFIG_HOME ?? join(home, ".config"));
       this.definitionPath = join(configHome, "systemd", "user", SYSTEMD_UNIT_NAME);
+      this.legacyDefinitionPath = join(configHome, "systemd", "user", LEGACY_SYSTEMD_UNIT_NAME);
     } else if (platform === "darwin") {
       this.kind = "launchd";
       this.definitionPath = join(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
+      this.legacyDefinitionPath = join(home, "Library", "LaunchAgents", `${LEGACY_LAUNCHD_LABEL}.plist`);
     } else {
       throw new Error("Persistent user service installation is supported on Linux and macOS only.");
     }
   }
 
-  /** Read our generated argument array without executing or evaluating the definition. */
+  /**
+   * Read our generated argument array without executing or evaluating the definition. Until the
+   * renamed service is installed, a legacy definition supplies the arguments to inherit.
+   */
   readStartArguments(): string[] | null {
+    const path = existsSync(this.definitionPath) || !existsSync(this.legacyDefinitionPath) ? this.definitionPath : this.legacyDefinitionPath;
     let stat;
-    try { stat = lstatSync(this.definitionPath); }
+    try { stat = lstatSync(path); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
     if (!stat.isFile() || stat.size > 256 * 1024) throw new Error("Installed service definition cannot be safely read; supply the complete user backup policy.");
-    const definition = readFileSync(this.definitionPath, "utf8");
+    const definition = readFileSync(path, "utf8");
     let command: string[];
     if (this.kind === "systemd") {
       const lines = definition.split(/\r?\n/).filter(line => line.startsWith("ExecStart="));
@@ -119,7 +137,13 @@ export class UserServiceManager {
     return command.slice(3);
   }
 
-  install(options: ServiceInstallOptions): { changed: boolean; definitionPath: string } {
+  /**
+   * Installs and starts the service. A legacy `worktree-switcher` service is stopped just before the
+   * new one starts, because both would claim the same ports and controller lock. After the new
+   * service has started, the legacy one is disabled and its definition removed. If the start fails,
+   * a legacy service that was running is started again and the error is rethrown.
+   */
+  install(options: ServiceInstallOptions): { changed: boolean; definitionPath: string; legacy: LegacyServiceRemoval | null } {
     const definition = this.kind === "systemd" ? renderSystemdUnit(options) : renderLaunchAgent(options);
     const previous = existsSync(this.definitionPath) ? readFileSync(this.definitionPath, "utf8") : null;
     if (previous !== null && previous !== definition && !options.refresh) {
@@ -127,25 +151,67 @@ export class UserServiceManager {
     }
     const changed = previous !== definition;
     if (changed) writeDefinition(this.definitionPath, definition);
+    const legacyInstalled = existsSync(this.legacyDefinitionPath);
+    let legacyWasActive = false;
 
     if (this.kind === "systemd") {
       this.requireSuccess("systemctl", ["--user", "daemon-reload"]);
       this.requireSuccess("systemctl", ["--user", "enable", SYSTEMD_UNIT_NAME]);
-      if (options.refresh && previous !== null) this.requireSuccess("systemctl", ["--user", "restart", SYSTEMD_UNIT_NAME]);
-      else this.requireSuccess("systemctl", ["--user", "start", SYSTEMD_UNIT_NAME]);
+      if (legacyInstalled) {
+        legacyWasActive = this.runner.run("systemctl", ["--user", "is-active", "--quiet", LEGACY_SYSTEMD_UNIT_NAME]).status === 0;
+        this.requireSuccess("systemctl", ["--user", "stop", LEGACY_SYSTEMD_UNIT_NAME]);
+      }
+      this.startWithLegacyRollback(legacyWasActive, () => {
+        if (options.refresh && previous !== null) this.requireSuccess("systemctl", ["--user", "restart", SYSTEMD_UNIT_NAME]);
+        else this.requireSuccess("systemctl", ["--user", "start", SYSTEMD_UNIT_NAME]);
+      });
+      if (legacyInstalled) {
+        this.requireSuccess("systemctl", ["--user", "disable", LEGACY_SYSTEMD_UNIT_NAME]);
+        rmSync(this.legacyDefinitionPath, { force: true });
+        this.requireSuccess("systemctl", ["--user", "daemon-reload"]);
+      }
     } else {
       const target = this.launchdTarget();
-      const loaded = this.runner.run("launchctl", ["print", `${target}/${LAUNCHD_LABEL}`]).status === 0;
-      if (loaded && changed) this.requireSuccess("launchctl", ["bootout", `${target}/${LAUNCHD_LABEL}`]);
-      if (!loaded || changed) this.requireSuccess("launchctl", ["bootstrap", target, this.definitionPath]);
-      this.requireSuccess("launchctl", ["enable", `${target}/${LAUNCHD_LABEL}`]);
-      if (!loaded || changed) this.requireSuccess("launchctl", ["kickstart", "-k", `${target}/${LAUNCHD_LABEL}`]);
+      const legacyTarget = `${target}/${LEGACY_LAUNCHD_LABEL}`;
+      if (legacyInstalled) {
+        legacyWasActive = this.runner.run("launchctl", ["print", legacyTarget]).status === 0;
+        if (legacyWasActive) this.requireSuccess("launchctl", ["bootout", legacyTarget]);
+      }
+      this.startWithLegacyRollback(legacyWasActive, () => {
+        const loaded = this.runner.run("launchctl", ["print", `${target}/${LAUNCHD_LABEL}`]).status === 0;
+        if (loaded && changed) this.requireSuccess("launchctl", ["bootout", `${target}/${LAUNCHD_LABEL}`]);
+        if (!loaded || changed) this.requireSuccess("launchctl", ["bootstrap", target, this.definitionPath]);
+        this.requireSuccess("launchctl", ["enable", `${target}/${LAUNCHD_LABEL}`]);
+        if (!loaded || changed) this.requireSuccess("launchctl", ["kickstart", "-k", `${target}/${LAUNCHD_LABEL}`]);
+      });
+      // bootout unloads the agent; removing its plist keeps it from loading at the next login.
+      if (legacyInstalled) rmSync(this.legacyDefinitionPath, { force: true });
     }
-    return { changed, definitionPath: this.definitionPath };
+    return {
+      changed,
+      definitionPath: this.definitionPath,
+      legacy: legacyInstalled ? { definitionPath: this.legacyDefinitionPath, wasActive: legacyWasActive } : null,
+    };
+  }
+
+  private startWithLegacyRollback(legacyWasActive: boolean, start: () => void): void {
+    try {
+      start();
+    } catch (error) {
+      if (legacyWasActive) {
+        if (this.kind === "systemd") this.runner.run("systemctl", ["--user", "start", LEGACY_SYSTEMD_UNIT_NAME]);
+        else {
+          const target = this.launchdTarget();
+          this.runner.run("launchctl", ["bootstrap", target, this.legacyDefinitionPath]);
+          this.runner.run("launchctl", ["kickstart", `${target}/${LEGACY_LAUNCHD_LABEL}`]);
+        }
+      }
+      throw error;
+    }
   }
 
   start(): void {
-    if (!existsSync(this.definitionPath)) throw new Error("The Worktree Switcher user service is not installed.");
+    if (!existsSync(this.definitionPath)) throw new Error("The Worktree Control user service is not installed.");
     if (this.kind === "systemd") this.requireSuccess("systemctl", ["--user", "start", SYSTEMD_UNIT_NAME]);
     else {
       const target = this.launchdTarget();
@@ -168,7 +234,7 @@ export class UserServiceManager {
   }
 
   restart(): void {
-    if (!existsSync(this.definitionPath)) throw new Error("The Worktree Switcher user service is not installed.");
+    if (!existsSync(this.definitionPath)) throw new Error("The Worktree Control user service is not installed.");
     if (this.kind === "systemd") this.requireSuccess("systemctl", ["--user", "restart", SYSTEMD_UNIT_NAME]);
     else {
       const target = this.launchdTarget();
@@ -183,21 +249,38 @@ export class UserServiceManager {
     }
   }
 
-  uninstall(): { removed: boolean; definitionPath: string } {
+  /** Removes the service and, when still present, the pre-rename legacy service. */
+  uninstall(): { removed: boolean; definitionPath: string; legacyDefinitionPath: string | null } {
     const installed = existsSync(this.definitionPath);
+    const legacyInstalled = existsSync(this.legacyDefinitionPath);
     if (this.kind === "systemd") {
       this.runner.run("systemctl", ["--user", "disable", "--now", SYSTEMD_UNIT_NAME]);
       if (installed) rmSync(this.definitionPath);
+      if (legacyInstalled) {
+        this.runner.run("systemctl", ["--user", "disable", "--now", LEGACY_SYSTEMD_UNIT_NAME]);
+        rmSync(this.legacyDefinitionPath, { force: true });
+      }
       this.requireSuccess("systemctl", ["--user", "daemon-reload"]);
     } else {
-      const target = `${this.launchdTarget()}/${LAUNCHD_LABEL}`;
+      const launchdTarget = this.launchdTarget();
+      const target = `${launchdTarget}/${LAUNCHD_LABEL}`;
       if (this.runner.run("launchctl", ["print", target]).status === 0) this.runner.run("launchctl", ["bootout", target]);
       if (installed) rmSync(this.definitionPath);
+      if (legacyInstalled) {
+        const legacyTarget = `${launchdTarget}/${LEGACY_LAUNCHD_LABEL}`;
+        if (this.runner.run("launchctl", ["print", legacyTarget]).status === 0) this.runner.run("launchctl", ["bootout", legacyTarget]);
+        rmSync(this.legacyDefinitionPath, { force: true });
+      }
     }
-    return { removed: installed, definitionPath: this.definitionPath };
+    return { removed: installed, definitionPath: this.definitionPath, legacyDefinitionPath: legacyInstalled ? this.legacyDefinitionPath : null };
   }
 
   status(): ServiceStatus {
+    const legacyDefinitionPath = existsSync(this.legacyDefinitionPath) ? this.legacyDefinitionPath : null;
+    return { ...this.currentStatus(), legacyDefinitionPath };
+  }
+
+  private currentStatus(): Omit<ServiceStatus, "legacyDefinitionPath"> {
     if (!existsSync(this.definitionPath)) return this.emptyStatus();
     if (this.kind === "systemd") {
       const result = this.runner.run("systemctl", [
@@ -238,7 +321,7 @@ export class UserServiceManager {
     };
   }
 
-  private emptyStatus(): ServiceStatus {
+  private emptyStatus(): Omit<ServiceStatus, "legacyDefinitionPath"> {
     return {
       platform: this.kind,
       installed: false,
@@ -282,7 +365,7 @@ export function renderSystemdUnit(options: ServiceInstallOptions): string {
     .map(systemdQuote)
     .join(" ");
   const servicePath = resolveServiceExecutablePath(options.nodePath);
-  return `[Unit]\nDescription=Worktree Switcher local control plane\nAfter=network.target\nStartLimitIntervalSec=60\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart=${command}\nWorkingDirectory=${systemdDirectivePath(options.workingDirectory)}\nEnvironment=NODE_ENV=production\nEnvironment=${systemdQuote(`PATH=${servicePath}`)}\nRestart=on-failure\nRestartSec=5\nKillMode=control-group\nTimeoutStopSec=15\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
+  return `[Unit]\nDescription=Worktree Control local control plane\nAfter=network.target\nStartLimitIntervalSec=60\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart=${command}\nWorkingDirectory=${systemdDirectivePath(options.workingDirectory)}\nEnvironment=NODE_ENV=production\nEnvironment=${systemdQuote(`PATH=${servicePath}`)}\nRestart=on-failure\nRestartSec=5\nKillMode=control-group\nTimeoutStopSec=15\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
 }
 
 export function renderLaunchAgent(options: ServiceInstallOptions): string {

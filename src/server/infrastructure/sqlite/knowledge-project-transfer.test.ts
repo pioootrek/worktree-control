@@ -57,7 +57,7 @@ describe("logical knowledge project transfer",()=>{
 
   it("exports a project through the offline owner CLI command",async()=>{
     const root=mkdtempSync(join(tmpdir(),"knowledge-export-cli-")); roots.push(root); const f=fixture(root),destination=join(root,"cli-export"),lines:string[]=[]; f.store.close();
-    await runBackupCommand(["export-project",f.project.id,destination],resolveAppPaths(root,join(root,"state")),"test",line=>lines.push(line),{WORKTREE_SWITCHER_OWNER_TOKEN:f.token});
+    await runBackupCommand(["export-project",f.project.id,destination],resolveAppPaths(root,join(root,"state")),"test",line=>lines.push(line),{WORKTREE_CONTROL_OWNER_TOKEN:f.token});
     expect(existsSync(join(destination,"manifest.json"))).toBe(true); expect(JSON.parse(lines[0]!)).toMatchObject({projectId:f.project.id,formatVersion:1});
   });
 

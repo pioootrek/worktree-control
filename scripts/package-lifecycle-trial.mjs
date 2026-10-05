@@ -13,7 +13,9 @@ const exec = promisify(execFile);
 const INSTALL_TIMEOUT = 300_000;
 const STEP_TIMEOUT = 45_000;
 const SESSION_TIMEOUT = 90_000;
-const UNIT_NAME = "worktree-switcher.service";
+const UNIT_NAME = "worktree-control.service";
+/** Pre-rename unit. `service install` would migrate it away, so the trial refuses to run beside it. */
+const LEGACY_UNIT_NAME = "worktree-switcher.service";
 const SECRET_MARKER = "package-lifecycle-secret-must-not-leak";
 
 export function redact(value) {
@@ -152,9 +154,9 @@ async function freePort() {
   });
 }
 
-async function systemdProperties(environment) {
+async function systemdProperties(environment, unit = UNIT_NAME) {
   const result = await runResult("systemctl", [
-    "--user", "show", UNIT_NAME,
+    "--user", "show", unit,
     "--property=LoadState", "--property=ActiveState", "--property=SubState",
     "--property=MainPID", "--property=NRestarts", "--property=ExecMainCode",
     "--property=ExecMainStatus", "--property=Result",
@@ -208,7 +210,7 @@ async function verifyDashboard(stateDirectory, expectedVersion, environment, tok
   check(access.authenticationMode === "token", "service does not run in token mode");
   check(new URL(access.accessUrl).hash === "", "service access record exposes a browser token");
   const response = await fetch(`${access.localDashboardEndpoint}/api/dashboard`, {
-    headers: { "X-Worktree-Switcher-Token": token },
+    headers: { "X-Worktree-Control-Token": token },
     signal: AbortSignal.timeout(2_000),
   });
   check(response.ok, `dashboard returned HTTP ${response.status}`);
@@ -325,7 +327,10 @@ async function main() {
       check(!existsSync(definitionPath), `service definition already exists: ${definitionPath}`);
       const loaded = await systemdProperties(process.env);
       check(loaded.LoadState === "not-found", `${UNIT_NAME} is already loaded by this user manager`);
-      return { emptyDirectories: 4, definitionAbsent: true, singletonAbsent: true };
+      check(!existsSync(join(dirname(definitionPath), LEGACY_UNIT_NAME)), `legacy service definition exists; the trial would migrate it: ${LEGACY_UNIT_NAME}`);
+      const legacy = await systemdProperties(process.env, LEGACY_UNIT_NAME);
+      check(legacy.LoadState === "not-found", `${LEGACY_UNIT_NAME} is loaded by this user manager; the trial would migrate it`);
+      return { emptyDirectories: 4, definitionAbsent: true, singletonAbsent: true, legacyAbsent: true };
     });
 
     let dashboardPort = await freePort();
@@ -335,7 +340,7 @@ async function main() {
     browserRecord = join(options.stateDirectory, "browser-opened");
     await mkdir(fakeBin, { recursive: true });
     const fakeBrowser = join(fakeBin, "xdg-open");
-    await writeFile(fakeBrowser, "#!/usr/bin/env node\nrequire('node:fs').writeFileSync(process.env.WORKTREE_SWITCHER_BROWSER_RECORD, process.argv[2]);\n", { mode: 0o700 });
+    await writeFile(fakeBrowser, "#!/usr/bin/env node\nrequire('node:fs').writeFileSync(process.env.WORKTREE_CONTROL_BROWSER_RECORD, process.argv[2]);\n", { mode: 0o700 });
     await chmod(fakeBrowser, 0o700);
     const forwardedNetwork = Object.fromEntries([
       "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
@@ -349,7 +354,7 @@ async function main() {
       DISPLAY: ":package-lifecycle-trial",
       XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
       DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS,
-      WORKTREE_SWITCHER_BROWSER_RECORD: browserRecord,
+      WORKTREE_CONTROL_BROWSER_RECORD: browserRecord,
       npm_config_cache: join(options.prefix, "npm-cache"),
       npm_config_userconfig: join(options.prefix, "empty-npmrc"),
       npm_config_globalconfig: join(options.prefix, "empty-global-npmrc"),
@@ -379,9 +384,9 @@ async function main() {
         env: serviceEnvironment,
         timeout: INSTALL_TIMEOUT,
       });
-      cli = join(options.prefix, "bin", "worktree-switcher");
+      cli = join(options.prefix, "bin", "worktree-control");
       check((await stat(cli)).isFile(), "installed CLI is missing");
-      const packageRoot = await realpath(join(options.prefix, "lib", "node_modules", "worktree-switcher"));
+      const packageRoot = await realpath(join(options.prefix, "lib", "node_modules", "worktree-control"));
       const metadata = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
       check(metadata.version === provenance.package.version, "installed package version does not match provenance");
       await run(process.execPath, ["-e", "require('better-sqlite3')"], { cwd: packageRoot, env: serviceEnvironment });

@@ -16,7 +16,7 @@ const OWNER_CREDENTIAL_ID = "00000000-0000-4000-8000-000000000001";
 const OWNER_TOKEN = `wts_${OWNER_CREDENTIAL_ID}_${"a".repeat(64)}`;
 
 function databasePath(): string {
-  const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-identity-"));
+  const directory = mkdtempSync(join(tmpdir(), "worktree-control-identity-"));
   directories.push(directory);
   return join(directory, "state.sqlite3");
 }

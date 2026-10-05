@@ -20,7 +20,7 @@ const SHA = "0123456789abcdef0123456789abcdef01234567";
 const directories: string[] = [];
 
 function databasePath(): string {
-  const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-remote-verification-"));
+  const directory = mkdtempSync(join(tmpdir(), "worktree-control-remote-verification-"));
   directories.push(directory);
   return join(directory, "state.sqlite3");
 }

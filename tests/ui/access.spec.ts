@@ -20,11 +20,11 @@ test("signs in with the installation token once for the dashboard and knowledge"
     return route.fulfill({ json: { items: [], nextOffset: null, total: 0, counts: { active: 0, now: 0, next: 0, blocked: 0, done: 0, all: 0 } } });
   });
 
-  await expect(page.getByRole("heading", { name: "Sign in to Worktree Switcher" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in to Worktree Control" })).toBeVisible();
   await page.getByLabel("Access token", { exact: true }).fill(`${INSTALLATION_TOKEN.slice(0, -1)}b`);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page.getByText("The token is invalid or has been rotated.", { exact: false })).toBeVisible();
-  expect(await page.evaluate(() => sessionStorage.getItem("worktree-switcher-token"))).toBeNull();
+  expect(await page.evaluate(() => sessionStorage.getItem("worktree-control-token"))).toBeNull();
 
   await page.getByLabel("Access token", { exact: true }).fill(INSTALLATION_TOKEN);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
@@ -39,8 +39,8 @@ test("signs in with the installation token once for the dashboard and knowledge"
   await openPreferences(page);
   await expect(page.getByRole("menuitem", { name: "Disconnect Knowledge access" })).toHaveCount(0);
   await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Sign in to Worktree Switcher" })).toBeVisible();
-  expect(await page.evaluate(() => [sessionStorage.getItem("worktree-switcher-token"), sessionStorage.getItem("worktree-switcher-knowledge-token")])).toEqual([null, null]);
+  await expect(page.getByRole("heading", { name: "Sign in to Worktree Control" })).toBeVisible();
+  expect(await page.evaluate(() => [sessionStorage.getItem("worktree-control-token"), sessionStorage.getItem("worktree-control-knowledge-token")])).toEqual([null, null]);
   expect(f.errors).toEqual([]);
 });
 
@@ -61,7 +61,7 @@ test("open mode needs no sign-in and shows that authentication is off", async ({
   });
 
   await expect(page.getByText("Open mode — no authentication (0.0.0.0:47831)")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Sign in to Worktree Switcher" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Sign in to Worktree Control" })).toHaveCount(0);
   await openPreferences(page);
   await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toHaveCount(0);
   await expect(page.getByRole("menuitem", { name: "Disconnect Knowledge access" })).toHaveCount(0);
@@ -75,11 +75,11 @@ test("open mode needs no sign-in and shows that authentication is off", async ({
   denied = false;
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect(page.getByLabel("Knowledge project", { exact: true })).toHaveValue("shared");
-  expect(await page.evaluate(() => sessionStorage.getItem("worktree-switcher-token"))).toBeNull();
+  expect(await page.evaluate(() => sessionStorage.getItem("worktree-control-token"))).toBeNull();
   expect(f.errors).toEqual([]);
 });
 
-test("rejected shared Knowledge access keeps the Switcher session and offers retry", async ({ page }) => {
+test("rejected shared Knowledge access keeps the Worktree Control session and offers retry", async ({ page }) => {
   const f = await mountDashboard(page, undefined, { accessToken: INSTALLATION_TOKEN, openWithToken: false });
   let denied = true;
   await page.route("**/api/identity", route => denied
@@ -95,9 +95,9 @@ test("rejected shared Knowledge access keeps the Switcher session and offers ret
   await page.getByLabel("Access token", { exact: true }).fill(INSTALLATION_TOKEN);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("button", { name: "Knowledge", exact: true }).click();
-  await expect(page.getByText("Knowledge rejected the current Switcher session.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Knowledge rejected the current Worktree Control session.", { exact: false })).toBeVisible();
   await expect(page.getByLabel("Knowledge credential", { exact: true })).toHaveCount(0);
-  expect(await page.evaluate(() => sessionStorage.getItem("worktree-switcher-token"))).toBe(INSTALLATION_TOKEN);
+  expect(await page.evaluate(() => sessionStorage.getItem("worktree-control-token"))).toBe(INSTALLATION_TOKEN);
   await openPreferences(page);
   await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Disconnect Knowledge access" })).toHaveCount(0);

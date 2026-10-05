@@ -155,7 +155,7 @@ async function run(number) {
     const requestEndpoints = controllerRequestEndpoints(access);
     async function request(path, body) {
       const response = await fetch(`${requestEndpoints.local}${path}`, { method: body ? "POST" : "GET", signal: AbortSignal.timeout(60_000),
-        headers: { "Content-Type": "application/json", Origin: requestEndpoints.origin, "X-Worktree-Switcher-Token": token }, body: body ? JSON.stringify(body) : undefined });
+        headers: { "Content-Type": "application/json", Origin: requestEndpoints.origin, "X-Worktree-Control-Token": token }, body: body ? JSON.stringify(body) : undefined });
       check(response.ok, `Controller request failed (${response.status}): ${path}`);
       return response.json();
     }

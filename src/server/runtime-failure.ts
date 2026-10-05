@@ -9,8 +9,8 @@ export function portInUseFailure(project: Project): RuntimeFailure {
   return {
     code: "port_in_use",
     title: `Port ${project.port} jest już używany`,
-    message: "Na tym porcie działa inny serwer. Worktree Switcher pozostawił go bez zmian.",
-    suggestion: "Zatrzymaj tamten serwer albo ustaw dla projektu inny port. Serwer zarządzany przez systemd trzeba podłączyć do Switchera zamiast uruchamiać drugi proces.",
+    message: "Na tym porcie działa inny serwer. Worktree Control pozostawił go bez zmian.",
+    suggestion: "Zatrzymaj tamten serwer albo ustaw dla projektu inny port. Serwer zarządzany przez systemd trzeba podłączyć do Worktree Control zamiast uruchamiać drugi proces.",
     technicalDetails: `tcp_port=${project.port} status=occupied launch=skipped`,
   };
 }

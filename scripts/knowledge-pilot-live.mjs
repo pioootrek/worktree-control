@@ -32,7 +32,7 @@ let page;
 /** Runs the public CLI against this pilot only; credentials are passed by environment, never as arguments. */
 function cli(args, credentials = {}) {
   const environment = { ...process.env };
-  for (const name of ["WORKTREE_SWITCHER_TOKEN", "WORKTREE_SWITCHER_OWNER_TOKEN", "WORKTREE_SWITCHER_KNOWLEDGE_TOKEN", "WORKTREE_SWITCHER_DATA_DIR", "WORKTREE_SWITCHER_STATE_DIR"]) delete environment[name];
+  for (const name of ["TOKEN", "OWNER_TOKEN", "KNOWLEDGE_TOKEN", "DATA_DIR", "STATE_DIR"].flatMap((suffix) => [`WORKTREE_CONTROL_${suffix}`, `WORKTREE_SWITCHER_${suffix}`])) delete environment[name];
   Object.assign(environment, credentials);
   const result = spawnSync(process.execPath, ["--import", "tsx", "src/cli/index.ts", ...args, "--data-dir", join(root, "data"), "--state-dir", join(root, "state")], { encoding: "utf8", env: environment, timeout: 60_000 });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
@@ -66,19 +66,19 @@ try {
   // Token mode rejects anonymous and wrong credentials on every transport before any write.
   const wrong = `wsi_${randomUUID()}_${"0".repeat(64)}`;
   assert.equal((await fetch(new URL("/api/dashboard", endpoint))).status, 401);
-  assert.equal((await fetch(new URL("/api/dashboard", endpoint), { headers: { "X-Worktree-Switcher-Token": wrong } })).status, 401);
-  assert.equal((await fetch(new URL("/api/dashboard", endpoint), { headers: { "X-Worktree-Switcher-Token": installation } })).status, 200);
+  assert.equal((await fetch(new URL("/api/dashboard", endpoint), { headers: { "X-Worktree-Control-Token": wrong } })).status, 401);
+  assert.equal((await fetch(new URL("/api/dashboard", endpoint), { headers: { "X-Worktree-Control-Token": installation } })).status, 200);
   for (const token of [null, wrong]) await assert.rejects(new Client({ name: "k7a-denied", version: "1" }).connect(new StreamableHTTPClientTransport(new URL(access.mcpEndpoint), token ? { requestInit: { headers: { Authorization: `Bearer ${token}` } } } : undefined)));
   const anonymous = cli(["knowledge", "tasks", "--json", JSON.stringify({ projectId, limit: 1 })]);
   assert.equal(anonymous.status, 1);
   assert.match(anonymous.stderr, /requires a credential/);
-  const wrongCredential = cli(["identity", "list-agents"], { WORKTREE_SWITCHER_TOKEN: wrong });
+  const wrongCredential = cli(["identity", "list-agents"], { WORKTREE_CONTROL_TOKEN: wrong });
   assert.equal(wrongCredential.status, 1);
   assert.match(wrongCredential.stderr, /A valid access token is required/);
   checks.push("token mode rejects missing and wrong credentials over HTTP, MCP and online CLI");
 
   // The owner provisions both agents through the online CLI with the installation token.
-  const owner = { WORKTREE_SWITCHER_TOKEN: installation };
+  const owner = { WORKTREE_CONTROL_TOKEN: installation };
   const agentTokens = [];
   for (let i = 0; i < 2; i++) {
     const { principal } = cliJson(["identity", "create-agent"], owner);
@@ -86,7 +86,7 @@ try {
     const issued = cliJson(["identity", "issue-agent-token", "--principal-id", principal.id, "--label", `K7a pilot ${run} agent ${i + 1}`], owner);
     agentTokens.push({ principalId: principal.id, token: issued.token });
   }
-  const cliTasks = cliJson(["knowledge", "tasks", "--json", JSON.stringify({ projectId, limit: 5 })], { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: agentTokens[0].token });
+  const cliTasks = cliJson(["knowledge", "tasks", "--json", JSON.stringify({ projectId, limit: 5 })], { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: agentTokens[0].token });
   assert.ok(cliTasks.items.length > 0);
   checks.push("online CLI provisions two scoped agents with the installation token; an agent token reads knowledge through CLI");
 
@@ -127,7 +127,7 @@ try {
   // The human signs in with the installation token through the real access form.
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.setDefaultTimeout(10000);
-  await page.addInitScript(() => localStorage.setItem("worktree-switcher-locale", "en"));
+  await page.addInitScript(() => localStorage.setItem("worktree-control-locale", "en"));
   await page.goto(new URL("/", endpoint).href);
   await page.getByLabel("Access token", { exact: true }).fill(wrong);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
@@ -185,13 +185,13 @@ try {
   const context = await mcp(nextSession, "task_context", { taskId: task.id });
   assert.ok(context.decisions.some(item => item.id === decision.value.id));
   assert.ok(context.openQuestions.some(item => item.id === question.value.id));
-  const cliContext = cliJson(["knowledge", "task_context", "--json", JSON.stringify({ projectId, taskId: task.id })], { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: agentTokens[1].token });
+  const cliContext = cliJson(["knowledge", "task_context", "--json", JSON.stringify({ projectId, taskId: task.id })], { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: agentTokens[1].token });
   assert.ok(cliContext.decisions.some(item => item.id === decision.value.id));
   assert.ok(cliContext.openQuestions.some(item => item.id === question.value.id));
   const laterPage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   try {
     laterPage.setDefaultTimeout(10000);
-    await laterPage.addInitScript(() => localStorage.setItem("worktree-switcher-locale", "en"));
+    await laterPage.addInitScript(() => localStorage.setItem("worktree-control-locale", "en"));
     await signInThroughForm(laterPage);
     await laterPage.goto(url.href);
     await laterPage.getByRole("heading", { name: decisionInput.title, exact: true }).waitFor();

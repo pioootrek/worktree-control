@@ -1,29 +1,31 @@
 ---
-name: worktree-switcher
-description: Use when a repository's development server or test queue is managed by Worktree Switcher, or when the user asks to inspect, claim, start, switch, or test a registered project through its MCP tools. Do not use for creating, deleting, or pruning Git worktrees.
+name: worktree-control
+description: Use when a repository's development server or test queue is managed by Worktree Control, or when the user asks to inspect, claim, start, switch, or test a registered project through its MCP tools. Do not use for creating, deleting, or pruning Git worktrees.
 ---
 
-# Worktree Switcher
+# Worktree Control
 
-Coordinate with the Worktree Switcher controller before touching a registered
+Coordinate with the Worktree Control controller before touching a registered
 project's development server. Keep the server on the intended worktree without
 disrupting another human or agent.
 
 ## Connect outside the repository
 
 This skill does not configure MCP. The user must add the URL and authorization
-header from `worktree-switcher config mcp` to the client's private MCP
-configuration.
+header from `worktree-control config mcp` to the client's private MCP
+configuration. Worktree Control was previously named Worktree Switcher, so an
+existing client may still list the same tools under a `worktree-switcher`
+server name; the tool names are unchanged.
 
 Never ask the user to put that output in `AGENTS.md`, `CLAUDE.md`, source files,
-logs, issues, or chat. If the Worktree Switcher tools are unavailable, say so
+logs, issues, or chat. If the Worktree Control tools are unavailable, say so
 and follow the repository's normal development instructions. Do not invent an
 endpoint or token.
 
 ## Check the controller without exposing credentials
 
 When the user asks why MCP is unavailable and the local CLI exists, you may run
-`worktree-switcher service status`. This is read-only and does not print the
+`worktree-control service status`. This is read-only and does not print the
 browser pairing token or MCP bearer token.
 
 Do not install, uninstall, stop, or restart the user service unless the user

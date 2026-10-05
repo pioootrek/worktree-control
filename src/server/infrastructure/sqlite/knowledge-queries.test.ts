@@ -12,7 +12,7 @@ const NOW = "2026-09-13T20:00:00.000Z";
 const directories: string[] = [];
 
 function setup(ids: string[] = []) {
-  const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-knowledge-"));
+  const directory = mkdtempSync(join(tmpdir(), "worktree-control-knowledge-"));
   directories.push(directory);
   const path = join(directory, "state.sqlite3");
   const store = new SqliteStateStore(path);

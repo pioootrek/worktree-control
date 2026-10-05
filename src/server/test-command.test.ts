@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 function fixture(): string {
-  const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-tests-"));
+  const directory = mkdtempSync(join(tmpdir(), "worktree-control-tests-"));
   directories.push(directory);
   return directory;
 }

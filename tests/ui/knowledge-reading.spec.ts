@@ -13,7 +13,7 @@ const memories = [
 ];
 
 async function mountReading(page: Page) {
-  await page.addInitScript(() => sessionStorage.setItem("worktree-switcher-knowledge-token", "reading-fixture"));
+  await page.addInitScript(() => sessionStorage.setItem("worktree-control-knowledge-token", "reading-fixture"));
   const data = dashboardFixture(); data.projects = [];
   const fixture = await mountDashboard(page, data);
   await page.route("**/api/identity", route => route.fulfill({ json: { principal: { id: "owner", kind: "owner" }, credential: { kind: "owner_session" } } }));

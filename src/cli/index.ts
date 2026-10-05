@@ -353,7 +353,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   writeCliLine(translate(locale, "cli.listening", { host, port }));
   if (serviceMode) {
     recordServiceAccess();
-    writeCliLine("Service access URL: worktree-switcher service url");
+    writeCliLine("Service access URL: worktree-control service url");
   } else {
     writeCliLine(translate(locale, "cli.accessLink", { url: advertisedAddress }));
   }
@@ -421,7 +421,7 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
     if (remoteBackup.loaded && !backupPolicy.directory) throw new Error("Remote backup transfer requires --backup-dir.");
     const entrypointPath = realpathSync(resolve(process.argv[1]));
     if (extname(entrypointPath) !== ".js") {
-      throw new Error("Build Worktree Switcher first, then install the service with: node dist/cli/index.js service install");
+      throw new Error("Build Worktree Control first, then install the service with: node dist/cli/index.js service install");
     }
     const defaultWebRoot = resolve(fileURLToPath(new URL("../../out", import.meta.url)));
     const webRoot = resolve(option("--web-root", args) ?? defaultWebRoot);
@@ -458,7 +458,10 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
       refresh: args.includes("--refresh"),
     });
     writeCliLine(`${result.changed ? "Installed" : "Service already up to date"}: ${result.definitionPath}`);
-    writeCliLine("The user service is enabled and started. Run worktree-switcher service status for details.");
+    if (result.legacy) {
+      writeCliLine(`Migrated the legacy worktree-switcher service: ${result.legacy.wasActive ? "stopped, " : ""}disabled and removed ${result.legacy.definitionPath}`);
+    }
+    writeCliLine("The user service is enabled and started. Run worktree-control service status for details.");
     if (manager.kind === "systemd") {
       writeCliLine("It starts with your user session. Pre-login startup requires administrator-approved loginctl enable-linger; this command never enables it.");
     }
@@ -474,6 +477,7 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
   else if (action === "uninstall") {
     const result = manager.uninstall();
     writeCliLine(`${result.removed ? "Removed" : "Service was not installed"}: ${result.definitionPath}`);
+    if (result.legacyDefinitionPath) writeCliLine(`Removed the legacy worktree-switcher service: ${result.legacyDefinitionPath}`);
     writeCliLine("Application data, credentials, and logs were preserved.");
     return;
   } else if (action === "url" || action === "open") {
@@ -495,6 +499,9 @@ async function printServiceStatus(manager: UserServiceManager, paths: ReturnType
   const currentAccess = access && status.pid === access.pid ? access : null;
   writeCliLine(`Service: ${status.installed ? status.state : "not installed"} (${status.platform})`);
   writeCliLine(`Definition: ${status.definitionPath}`);
+  if (status.legacyDefinitionPath) {
+    writeCliLine(`Warning: the legacy worktree-control service is still installed at ${status.legacyDefinitionPath}. Run worktree-control service install to migrate it, or service uninstall to remove it.`);
+  }
   if (status.pid) writeCliLine(`Controller PID: ${status.pid}`);
   if (status.uptimeSeconds !== null) writeCliLine(`Uptime: ${formatDuration(status.uptimeSeconds)}`);
   if (status.residentMemoryBytes !== null) writeCliLine(`Controller memory (RSS): ${formatBytes(status.residentMemoryBytes)}`);
@@ -506,12 +513,12 @@ async function printServiceStatus(manager: UserServiceManager, paths: ReturnType
     writeCliLine(`Dashboard: ${publicDashboardEndpoint(currentAccess)}`);
     if (currentAccess.mcpEndpoint) writeCliLine(`MCP: ${currentAccess.mcpEndpoint}`);
     writeCliLine(`Logs: ${currentAccess.logDirectory}`);
-    writeCliLine("Access URL: worktree-switcher service url");
+    writeCliLine("Access URL: worktree-control service url");
     try {
       const token = controllerAccessToken(currentAccess);
       if (token || currentAccess.authenticationMode === "open") {
         const response = await fetch(`${localDashboardEndpoint(currentAccess)}/api/dashboard`, {
-          headers: token ? { "X-Worktree-Switcher-Token": token } : {},
+          headers: token ? { "X-Worktree-Control-Token": token } : {},
           signal: AbortSignal.timeout(1_000),
         });
         if (response.ok) {

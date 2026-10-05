@@ -4,6 +4,7 @@ import { createHttpServerCloser } from "./http-server-lifecycle";
 import { BackupError, type BackupOperations, type RestoreOperations, type UserSchedules } from "./modules/backups";
 import { KnowledgeError, knowledgeFailure } from "./modules/knowledge";
 import { knowledgeRequestLimit } from "@/shared/contracts/knowledge";
+import { CONTROLLER_TOKEN_HEADER, LEGACY_CONTROLLER_TOKEN_HEADER } from "@/shared/controller-token";
 import { timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -298,9 +299,20 @@ export interface ControllerServer {
   close(): Promise<void>;
 }
 
+/**
+ * Dashboard token header. The pre-rename `x-worktree-switcher-token` is still accepted during the
+ * transition; the current name wins when a client sends both.
+ */
+function controllerTokenHeader(request: IncomingMessage): string | null {
+  for (const name of [CONTROLLER_TOKEN_HEADER, LEGACY_CONTROLLER_TOKEN_HEADER]) {
+    const header = request.headers[name.toLowerCase()];
+    if (typeof header === "string") return header;
+  }
+  return null;
+}
+
 function hasValidToken(request: IncomingMessage, expected: string): boolean {
-  const header = request.headers["x-worktree-switcher-token"];
-  const supplied = typeof header === "string" ? header : null;
+  const supplied = controllerTokenHeader(request);
   if (!supplied) return false;
   const actualBuffer = Buffer.from(supplied);
   const expectedBuffer = Buffer.from(expected);
@@ -406,9 +418,9 @@ export function createControllerServer(options: {
   const dependencies = { authentication: options.authentication, identity: options.identity };
   /** Dashboard and runtime API: the pairing token in legacy mode, the installation token in token mode. */
   const authenticateRuntime = (request: IncomingMessage): ControllerAuthentication | null => {
-    const header = request.headers["x-worktree-switcher-token"];
+    const header = controllerTokenHeader(request);
     const bearer = bearerToken(request);
-    const candidate = typeof header === "string" && header.startsWith("wsi_") ? header
+    const candidate = header?.startsWith("wsi_") ? header
       : bearer?.startsWith("wsi_") ? bearer : null;
     const result = resolveControllerAuthentication(dependencies, {
       bearer: candidate,

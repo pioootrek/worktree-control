@@ -48,7 +48,7 @@ export function CertificateFilePicker({
         cache: "no-store",
         headers: {
           "Accept-Language": locale,
-          "X-Worktree-Switcher-Token": token,
+          "X-Worktree-Control-Token": token,
         },
       });
       const body = await response.json() as DirectoryListing & { error?: string };

@@ -136,7 +136,7 @@ async function stopController() {
 }
 
 async function main() {
-  root = await mkdtemp(join(tmpdir(), "worktree-switcher-package-smoke-"));
+  root = await mkdtemp(join(tmpdir(), "worktree-control-package-smoke-"));
   const artifacts = join(root, "artifacts");
   const prefix = join(root, "user prefix");
   const fixture = join(root, "fixture");
@@ -167,7 +167,7 @@ async function main() {
       "package/dist/cli/index.js",
       "package/dist/cli/backup-verifier.js",
       "package/out/index.html",
-      "package/skills/worktree-switcher/SKILL.md",
+      "package/skills/worktree-control/SKILL.md",
       "package/docs/authentication.md",
       "package/docs/package-trial.md",
       "package/docs/user-service.md",
@@ -205,15 +205,17 @@ async function main() {
 
   const installEnv = await productionInstallEnvironment(root);
   const packageRoot = await step("production-install", () => installProductionPrefix(tarball, prefix, root, installEnv, run));
-  const cli = join(prefix, "bin", "worktree-switcher");
+  const cli = join(prefix, "bin", "worktree-control");
   check((await stat(cli)).isFile(), "Installed CLI is missing.");
   check((await realpath(cli)).startsWith(`${packageRoot}${sep}`), "Installed CLI does not resolve into the trial prefix.");
+  check(await realpath(join(prefix, "bin", "wtc")) === await realpath(cli), "Installed wtc alias does not resolve to the worktree-control CLI.");
+  check(!existsSync(join(prefix, "bin", "worktree-switcher")), "The package must not install a worktree-switcher command.");
   check((await stat(join(packageRoot, "docs", "controller-https.md"))).isFile(), "Installed HTTPS guide is missing.");
-  check((await stat(join(packageRoot, "skills", "worktree-switcher", "SKILL.md"))).isFile(), "Installed agent skill is missing.");
+  check((await stat(join(packageRoot, "skills", "worktree-control", "SKILL.md"))).isFile(), "Installed agent skill is missing.");
   const metadata = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
   check(metadata.private === true && /^0\./.test(metadata.version), "Trial package lost its private pre-1.0 identity.");
   const runtimeEnv = { PATH: `${join(prefix, "bin")}:${process.env.PATH}`, LANG: "C.UTF-8" };
-  const cliCommand = "worktree-switcher";
+  const cliCommand = "worktree-control";
   let nativeAddon;
   let nativeProvisioning;
   await step("native-sqlite", async () => {
@@ -331,12 +333,12 @@ async function main() {
     }
     const denied = await fetch(`http://127.0.0.1:${dashboardPort}/api/dashboard`);
     check(denied.status === 401, "Dashboard API accepted a missing token.");
-    const allowed = await fetch(`http://127.0.0.1:${dashboardPort}/api/dashboard`, { headers: { "X-Worktree-Switcher-Token": token } });
+    const allowed = await fetch(`http://127.0.0.1:${dashboardPort}/api/dashboard`, { headers: { "X-Worktree-Control-Token": token } });
     check(allowed.ok && (await allowed.json()).projects.length === 1, "Authenticated dashboard API failed.");
   });
 
   await step("live-cli-forwarding", async () => {
-    const listed = JSON.parse((await run(cliCommand, ["project", "list", "--json", ...common], { cwd: root, env: { ...runtimeEnv, WORKTREE_SWITCHER_TOKEN: token } })).stdout);
+    const listed = JSON.parse((await run(cliCommand, ["project", "list", "--json", ...common], { cwd: root, env: { ...runtimeEnv, WORKTREE_CONTROL_TOKEN: token } })).stdout);
     check(listed[0].id === project.id, "Live CLI did not forward to the singleton controller.");
   });
 
@@ -348,7 +350,7 @@ async function main() {
       return status;
     }, "Installed backup did not reach a terminal state");
     check(terminal.state === "succeeded" && terminal.operationId === accepted.operationId, "Installed backup failed.");
-    const response = await fetch(`http://127.0.0.1:${dashboardPort}/api/backups`, { method: "POST", headers: { "Content-Type": "application/json", Origin: publicOrigin, "X-Worktree-Switcher-Token": token }, body: JSON.stringify({ action: "preview", backupId: accepted.backupId }), signal: AbortSignal.timeout(STEP_TIMEOUT) });
+    const response = await fetch(`http://127.0.0.1:${dashboardPort}/api/backups`, { method: "POST", headers: { "Content-Type": "application/json", Origin: publicOrigin, "X-Worktree-Control-Token": token }, body: JSON.stringify({ action: "preview", backupId: accepted.backupId }), signal: AbortSignal.timeout(STEP_TIMEOUT) });
     const preview = await response.json();
     check(response.ok && preview.scope === "entire-installation" && preview.backup?.verification === "verified", "Installed verifier could not validate its backup clone.");
   });

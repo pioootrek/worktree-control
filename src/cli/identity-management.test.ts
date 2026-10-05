@@ -16,7 +16,7 @@ import { writeServiceAccess } from "./service-access";
 const directories: string[] = [];
 
 function paths() {
-  const root = mkdtempSync(join(tmpdir(), "worktree-switcher-identity-cli-"));
+  const root = mkdtempSync(join(tmpdir(), "worktree-control-identity-cli-"));
   directories.push(root);
   return resolveAppPaths(join(root, "data"), join(root, "state"));
 }
@@ -54,10 +54,10 @@ describe("identity management CLI", () => {
     const output: string[] = [];
     await runIdentityCommand(["create-knowledge-project", "--name", "Installation"], appPaths, {
       write: (line) => output.push(line),
-      environment: { WORKTREE_SWITCHER_TOKEN: token },
+      environment: { WORKTREE_CONTROL_TOKEN: token },
     });
     expect((JSON.parse(output[0]!) as { project: { name: string } }).project.name).toBe("Installation");
-    await expect(runIdentityCommand(["list-agents"], appPaths, { environment: {} })).rejects.toThrow("WORKTREE_SWITCHER_TOKEN");
+    await expect(runIdentityCommand(["list-agents"], appPaths, { environment: {} })).rejects.toThrow("WORKTREE_CONTROL_TOKEN");
   });
 
   it("administers identity offline in open mode without token variables and rejects again in token mode", async () => {
@@ -84,13 +84,13 @@ describe("identity management CLI", () => {
     }
 
     await runAuthCommand(["mode", "set", "token"], appPaths, { write: () => {} });
-    await expect(runIdentityCommand(["list-agents"], appPaths, { environment: {} })).rejects.toThrow("WORKTREE_SWITCHER_OWNER_TOKEN");
-    await expect(runIdentityCommand(["list-agents"], appPaths, { environment: { WORKTREE_SWITCHER_TOKEN: `${token}0` } })).rejects.toThrow("Nieprawidłowe lub nieaktywne");
-    await expect(runIdentityCommand(["list-agents"], appPaths, { environment: { WORKTREE_SWITCHER_OWNER_TOKEN: issued.token } })).rejects.toThrow("sesji właściciela");
-    await runIdentityCommand(["list-agents"], appPaths, { environment: { WORKTREE_SWITCHER_TOKEN: token }, write: (line) => output.push(line) });
+    await expect(runIdentityCommand(["list-agents"], appPaths, { environment: {} })).rejects.toThrow("WORKTREE_CONTROL_OWNER_TOKEN");
+    await expect(runIdentityCommand(["list-agents"], appPaths, { environment: { WORKTREE_CONTROL_TOKEN: `${token}0` } })).rejects.toThrow("Nieprawidłowe lub nieaktywne");
+    await expect(runIdentityCommand(["list-agents"], appPaths, { environment: { WORKTREE_CONTROL_OWNER_TOKEN: issued.token } })).rejects.toThrow("sesji właściciela");
+    await runIdentityCommand(["list-agents"], appPaths, { environment: { WORKTREE_CONTROL_TOKEN: token }, write: (line) => output.push(line) });
     expect(JSON.parse(output.pop()!)).toEqual({ principals: [expect.objectContaining({ id: agent.id })] });
     await runAuthCommand(["token", "rotate"], appPaths, { write: () => {} });
-    await expect(runIdentityCommand(["list-agents"], appPaths, { environment: { WORKTREE_SWITCHER_TOKEN: token } })).rejects.toThrow("Nieprawidłowe lub nieaktywne");
+    await expect(runIdentityCommand(["list-agents"], appPaths, { environment: { WORKTREE_CONTROL_TOKEN: token } })).rejects.toThrow("Nieprawidłowe lub nieaktywne");
   });
 
   it("respects the singleton lock instead of opening an offline database beside the controller", async () => {
@@ -113,7 +113,7 @@ describe("identity management CLI", () => {
     const recovery = JSON.parse(output.pop()!) as { principalId: string; token: string };
     expect(recovery.token).not.toBe(bootstrap.token);
 
-    const authenticated = { write, environment: { WORKTREE_SWITCHER_OWNER_TOKEN: recovery.token } };
+    const authenticated = { write, environment: { WORKTREE_CONTROL_OWNER_TOKEN: recovery.token } };
     await runIdentityCommand(["create-agent"], appPaths, authenticated);
     const agent = (JSON.parse(output.pop()!) as { principal: { id: string } }).principal;
     await runIdentityCommand(["create-knowledge-project", "--name", "Shared knowledge"], appPaths, authenticated);
@@ -179,7 +179,7 @@ describe("identity management CLI", () => {
     try {
       const output: string[] = [];
       await runIdentityCommand(["revoke-token", "--credential-id", "credential-1"], appPaths, {
-        environment: { WORKTREE_SWITCHER_OWNER_TOKEN: "owner-token" },
+        environment: { WORKTREE_CONTROL_OWNER_TOKEN: "owner-token" },
         write: (line) => output.push(line),
       });
       expect(JSON.parse(output[0]!)).toEqual({ revoked: true });
@@ -203,7 +203,7 @@ describe("identity management CLI", () => {
         requests.push({
           url: request.url,
           authorization: request.headers.authorization,
-          pairing: request.headers["x-worktree-switcher-token"] as string | undefined,
+          pairing: request.headers["x-worktree-control-token"] as string | undefined,
           body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
         });
         response.setHeader("Content-Type", "application/json");
@@ -230,7 +230,7 @@ describe("identity management CLI", () => {
       const output: string[] = [];
       await runIdentityCommand(["bootstrap-owner"], appPaths, { write: (line) => output.push(line) });
       await runIdentityCommand(["renew-owner", "--label", "Rotated"], appPaths, {
-        environment: { WORKTREE_SWITCHER_OWNER_TOKEN: "owner-token" },
+        environment: { WORKTREE_CONTROL_OWNER_TOKEN: "owner-token" },
         write: (line) => output.push(line),
       });
       expect(output).toHaveLength(2);

@@ -15,7 +15,7 @@ export interface ControllerLock {
 
 export class ControllerAlreadyRunningError extends Error {
   constructor(readonly pid: number) {
-    super(`Worktree Switcher is already running (PID ${pid}). Stop it before starting another controller.`);
+    super(`Worktree Control is already running (PID ${pid}). Stop it before starting another controller.`);
     this.name = "ControllerAlreadyRunningError";
   }
 }
@@ -81,7 +81,7 @@ function acquireLock(path: string): ControllerLock {
       }
     }
   }
-  throw new Error("Could not acquire the Worktree Switcher controller lock.");
+  throw new Error("Could not acquire the Worktree Control controller lock.");
 }
 
 function readLock(path: string): LockRecord | null {

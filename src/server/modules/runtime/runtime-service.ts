@@ -235,7 +235,7 @@ export class RuntimeService {
       const worktrees = await this.git.list(project.repositoryPath);
       const selected = this.lifecycle.resolveWorktree(project, worktrees);
       this.lifecycle.assertReservationAllows(projectId, selected.path, { owner: "local-user" });
-      if (project.launchPreset === "django") throw new Error("HTTPS zarządzany przez Switcher jest obecnie obsługiwany tylko dla Next.js.");
+      if (project.launchPreset === "django") throw new Error("HTTPS zarządzany przez Worktree Control jest obecnie obsługiwany tylko dla Next.js.");
       const command = this.commands.resolve(selected.path, project.port, project.launchPreset, input);
       this.store.updateProjectLaunch(projectId, {
         tlsMode: command.tls.mode,

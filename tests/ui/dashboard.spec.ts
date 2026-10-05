@@ -269,13 +269,37 @@ test("the global project switcher filters projects and persists the selection", 
   await expect(switcher).toContainText("Fixture API");
   await expect(page.locator('[data-project-id="api"]')).toBeVisible();
   await expect(page.locator('[data-project-id="web"]')).toBeHidden();
-  await expect.poll(() => page.evaluate(() => window.localStorage.getItem("worktree-switcher-project-selection"))).toBe(
+  await expect.poll(() => page.evaluate(() => window.localStorage.getItem("worktree-control-project-selection"))).toBe(
     JSON.stringify({ version: 1, projectId: "api" }),
   );
 
   await page.reload();
   await expect(switcher).toContainText("Fixture API");
   await expect(page.locator('[data-project-id="api"]')).toBeVisible();
+});
+
+test("preferences saved under pre-rename storage keys are read once and moved", async ({ page }) => {
+  const data = dashboardFixture();
+  const second = structuredClone(data.projects[0]);
+  second.project.id = "api";
+  second.project.name = "Fixture API";
+  second.project.repositoryPath = "/fixture/api";
+  data.projects.push(second);
+  await page.addInitScript(() => {
+    if (window.localStorage.getItem("worktree-control-project-selection")) return;
+    window.localStorage.setItem("worktree-switcher-project-selection", JSON.stringify({ version: 1, projectId: "api" }));
+    window.localStorage.setItem("worktree-switcher-theme", "light");
+  });
+  await mountDashboard(page, data);
+
+  await expect(page.getByRole("combobox", { name: translate("en", "projectSwitcher.label") })).toContainText("Fixture API");
+  await expect(page.locator("html")).not.toHaveClass(/\bdark\b/);
+  await expect.poll(() => page.evaluate(() => [
+    window.localStorage.getItem("worktree-control-project-selection"),
+    window.localStorage.getItem("worktree-control-theme"),
+    window.localStorage.getItem("worktree-switcher-project-selection"),
+    window.localStorage.getItem("worktree-switcher-theme"),
+  ])).toEqual([JSON.stringify({ version: 1, projectId: "api" }), "light", null, null]);
 });
 
 test("a failed refresh after project removal does not leave the stale card disabled", async ({ page }) => {
@@ -298,7 +322,7 @@ test("a failed refresh after project removal does not leave the stale card disab
 
 test("a stale persisted project id falls back to an available project", async ({ page }) => {
   await page.addInitScript(() => {
-    window.localStorage.setItem("worktree-switcher-project-selection", JSON.stringify({ version: 1, projectId: "removed-project" }));
+    window.localStorage.setItem("worktree-control-project-selection", JSON.stringify({ version: 1, projectId: "removed-project" }));
   });
   await mountDashboard(page);
 
