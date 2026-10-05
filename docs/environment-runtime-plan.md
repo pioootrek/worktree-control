@@ -1,7 +1,7 @@
 ---
 audience: "owner, contributors, and coding agents"
-last_reviewed: "2026-09-05"
-source_of_truth: "Secret Runtime proposal integration direction for Worktree Switcher"
+last_reviewed: "2026-10-05"
+source_of_truth: "Secret Runtime proposal integration direction for Worktree Control"
 status: "active"
 ---
 
@@ -10,9 +10,9 @@ status: "active"
 ## Scope and provenance
 
 Integrate the useful execution-facing part of the owner's Secret Runtime v2
-proposal into Switcher: environment profiles, required-input checks, scoped
+proposal into Worktree Control: environment profiles, required-input checks, scoped
 secret resolution, and delivery to approved processes. This is planned work,
-not a claim that Switcher already provides a vault or secret-reference broker.
+not a claim that Worktree Control already provides a vault or secret-reference broker.
 Existing literal profiles and separate test environments remain the baseline.
 
 The [source note](backlog/notes/NOTE-20260905-secret-runtime-proposal/integration-context.md)
@@ -45,7 +45,7 @@ application from writing secrets itself.
 
 ## Service and data boundary
 
-Reuse Switcher's existing process owner, clean test environment assembly,
+Reuse Worktree Control's existing process owner, clean test environment assembly,
 authorization services, and profile UI/API/MCP. A secret resolver is a separate
 interface behind those services; do not build a second process controller or
 replace SQLite merely because the source proposal chose PostgreSQL and Rust.
@@ -91,7 +91,7 @@ After scoped delivery is useful, consider an environment contract that declares
 required, optional, conditional, and forbidden variable names. Compare readiness
 without returning values and distinguish absence from provider unavailability.
 Reuse lessons from WinPath's audit as generic fixtures, not project-specific
-branches in Switcher.
+branches in Worktree Control.
 
 Version/expiry views, desired versus observed destination state, and explicit
 pinning may follow. Different environments normally have separately authorized

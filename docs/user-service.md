@@ -1,13 +1,13 @@
 ---
-audience: "people running Worktree Switcher on a development machine"
-last_reviewed: "2026-09-27"
+audience: "people running Worktree Control on a development machine"
+last_reviewed: "2026-10-05"
 source_of_truth: "user-service installation, operation, logs, and removal"
 status: "active"
 ---
 
-# Run Worktree Switcher as a user service
+# Run Worktree Control as a user service
 
-A terminal is useful while you evaluate Worktree Switcher. A user service is
+A terminal is useful while you evaluate Worktree Control. A user service is
 better once the controller becomes part of your daily setup. It survives a
 closed terminal, restarts after a crash, and keeps the dashboard and MCP
 listener available for the length of your login session.
@@ -24,11 +24,11 @@ add CPU and memory limits.
 
 Install and verify the trial package as described in the
 [package trial guide](package-trial.md), then stop any foreground Worktree
-Switcher process. The singleton lock does not let a service and a foreground
+Control process. The singleton lock does not let a service and a foreground
 controller share the same state directory.
 
 ```bash
-worktree-switcher doctor
+worktree-control doctor
 ```
 
 A new installation runs in `token` mode and refuses to start without an
@@ -36,7 +36,7 @@ installation token. Generate it once before installing the service and save it
 privately; see [authentication modes](authentication.md).
 
 ```bash
-worktree-switcher auth token generate
+worktree-control auth token generate
 ```
 
 The examples below use the executable installed into a user-owned npm prefix.
@@ -46,15 +46,15 @@ place after a successful build.
 ## Install the service
 
 ```bash
-worktree-switcher service install
+worktree-control service install
 ```
 
 Installation writes one user-owned definition and starts it immediately:
 
 | Platform | Definition |
 | --- | --- |
-| Linux | `$XDG_CONFIG_HOME/systemd/user/worktree-switcher.service`, or `~/.config/systemd/user/worktree-switcher.service` |
-| macOS | `~/Library/LaunchAgents/dev.worktree-switcher.controller.plist` |
+| Linux | `$XDG_CONFIG_HOME/systemd/user/worktree-control.service`, or `~/.config/systemd/user/worktree-control.service` |
+| macOS | `~/Library/LaunchAgents/dev.worktree-control.controller.plist` |
 
 The definition stores absolute paths to Node.js, the built CLI, dashboard
 assets, data, and runtime state. It also stores the chosen host and ports. Its
@@ -73,13 +73,13 @@ for an explicit refresh.
 options as `start`:
 
 ```bash
-worktree-switcher service install \
+worktree-control service install \
   --host 127.0.0.1 \
   --port 47831 \
   --mcp-port 47832 \
   --browse-root /home/me/development \
-  --data-dir /home/me/.local/share/worktree-switcher \
-  --state-dir /home/me/.local/state/worktree-switcher \
+  --data-dir /home/me/.local/share/worktree-control \
+  --state-dir /home/me/.local/state/worktree-control \
   --memory-warning-mib 1536
 ```
 
@@ -100,9 +100,9 @@ Commands that read the access record or MCP token do not parse the installed
 service definition. If you choose custom directories, pass the matching path:
 
 ```bash
-worktree-switcher service status --state-dir /home/me/.local/state/worktree-switcher
-worktree-switcher service open --state-dir /home/me/.local/state/worktree-switcher
-worktree-switcher config mcp --data-dir /home/me/.local/share/worktree-switcher
+worktree-control service status --state-dir /home/me/.local/state/worktree-control
+worktree-control service open --state-dir /home/me/.local/state/worktree-control
+worktree-control config mcp --data-dir /home/me/.local/share/worktree-control
 ```
 
 ## Open the dashboard
@@ -110,7 +110,7 @@ worktree-switcher config mcp --data-dir /home/me/.local/share/worktree-switcher
 Check the service first:
 
 ```bash
-worktree-switcher service status
+worktree-control service status
 ```
 
 Status reports the service state, definition path, controller PID, uptime,
@@ -125,14 +125,14 @@ show an explicit unsupported state.
 Open the dashboard:
 
 ```bash
-worktree-switcher service open
+worktree-control service open
 ```
 
 Sign in with the installation token. On a headless machine, print the address
 and open it on an allowed device:
 
 ```bash
-worktree-switcher service url
+worktree-control service url
 ```
 
 In `token` and `open` modes the address contains no secret. In `legacy` mode
@@ -143,9 +143,9 @@ with owner-only permissions and is removed during a clean stop.
 ## Start, stop, and restart
 
 ```bash
-worktree-switcher service start
-worktree-switcher service stop
-worktree-switcher service restart
+worktree-control service start
+worktree-control service stop
+worktree-control service restart
 ```
 
 A clean stop sends the controller `SIGTERM`. The controller closes MCP and the
@@ -162,25 +162,25 @@ caps the restart burst.
 Application logs use the user state directory on both platforms:
 
 ```text
-~/.local/state/worktree-switcher/logs/controller.log
-~/.local/state/worktree-switcher/logs/projects/<project-id>.log
+~/.local/state/worktree-control/logs/controller.log
+~/.local/state/worktree-control/logs/projects/<project-id>.log
 ```
 
 Linux also records service-manager output in the user journal:
 
 ```bash
-journalctl --user -u worktree-switcher.service
-journalctl --user -u worktree-switcher.service --since today
+journalctl --user -u worktree-control.service
+journalctl --user -u worktree-control.service --since today
 ```
 
 On macOS, LaunchAgent output uses:
 
 ```text
-~/.local/state/worktree-switcher/logs/service.stdout.log
-~/.local/state/worktree-switcher/logs/service.stderr.log
+~/.local/state/worktree-control/logs/service.stdout.log
+~/.local/state/worktree-control/logs/service.stderr.log
 ```
 
-Custom `--state-dir` values move these files. Worktree Switcher does not write
+Custom `--state-dir` values move these files. Worktree Control does not write
 to `/var/log`.
 
 The browser URL and bearer tokens should never appear in these logs. If you
@@ -200,8 +200,8 @@ installed build. Use it after deliberately changing its executable, Node.js,
 dashboard, network or directory paths, and repeat every non-default option:
 
 ```bash
-worktree-switcher service stop
-worktree-switcher service install --refresh --host 127.0.0.1
+worktree-control service stop
+worktree-control service install --refresh --host 127.0.0.1
 ```
 
 The explicit flag prevents a normal install from silently changing the existing
@@ -210,10 +210,55 @@ definition. It does not make a package or database upgrade safe.
 After refresh:
 
 ```bash
-worktree-switcher service status
+worktree-control service status
 ```
 
 Confirm the version, PID, endpoints, and log path.
+
+## Upgrading an existing installation
+
+Until 2026-10-05 this product was distributed as `worktree-switcher`. The rename
+changes no database schema, backup format, or MCP tool name, but the new build
+can still contain newer migrations than your installed one. Treat the move like
+any package upgrade and prepare it as described in
+[upgrade and recover](package-trial.md#upgrade-and-recover) first.
+
+1. Install the `worktree-control` package into its own user-owned prefix, for
+   example `$HOME/.local/worktree-control`, as in the
+   [package trial guide](package-trial.md). It provides the `worktree-control`
+   command and the short alias `wtc`, and no `worktree-switcher` command.
+2. Run `worktree-control service install` with the same options as the legacy
+   service, including any `--data-dir` and `--state-dir`. The command stops the
+   legacy `worktree-switcher.service` (or the `dev.worktree-switcher.controller`
+   LaunchAgent) just before starting the new service, because both use the same
+   ports and lock. Once the new service has started, it disables and removes the
+   legacy definition and prints what it did. If the new service fails to start,
+   a legacy service that was running is started again and keeps its definition.
+   `service status` warns while a legacy definition remains.
+3. Update your shell `PATH` and any symlinks you created, replacing the old
+   prefix (for example `$HOME/.local/worktree-switcher/bin`) and links to the
+   `worktree-switcher` executable with their `worktree-control` equivalents.
+4. Rename environment variables from `WORKTREE_SWITCHER_*` to
+   `WORKTREE_CONTROL_*`, for example `WORKTREE_CONTROL_TOKEN`,
+   `WORKTREE_CONTROL_OWNER_TOKEN`, `WORKTREE_CONTROL_KNOWLEDGE_TOKEN`,
+   `WORKTREE_CONTROL_DATA_DIR`, and `WORKTREE_CONTROL_STATE_DIR`. A legacy name is
+   still read when the new one is unset, with a one-line deprecation warning on
+   standard error. Test runs receive their metadata under both prefixes.
+5. Scripts that send the `X-Worktree-Switcher-Token` header keep working during
+   the transition; change them to `X-Worktree-Control-Token`.
+
+Data directories do not move. Directories passed explicitly, by option or
+environment variable, are used exactly as given. Without them, the controller
+uses `~/.local/share/worktree-control` and `~/.local/state/worktree-control`,
+except that it keeps using an existing `worktree-switcher` directory while the
+corresponding `worktree-control` directory does not exist, and prints a notice.
+Nothing is copied or moved automatically. The dashboard moves its saved theme,
+language, project selection, and session tokens to the new browser storage keys
+on first use.
+
+After the new service runs, remove the old package, for example with
+`npm uninstall --global --prefix "$HOME/.local/worktree-switcher" worktree-switcher`.
+On npm, `worktree-switcher` is an unrelated project; do not install it.
 
 ## Linux login sessions and linger
 
@@ -225,17 +270,18 @@ administrator can enable lingering for the account:
 sudo loginctl enable-linger <user>
 ```
 
-This changes host behavior. Worktree Switcher never runs that command for you.
+This changes host behavior. Worktree Control never runs that command for you.
 Most development machines do not need it.
 
 ## Remove the service
 
 ```bash
-worktree-switcher service uninstall
+worktree-control service uninstall
 ```
 
 Uninstall stops the controller, disables and removes its user-service
-definition, and reloads the service manager where needed. It preserves:
+definition, and reloads the service manager where needed. It also removes a
+remaining pre-rename `worktree-switcher` service definition. It preserves:
 
 - the SQLite database
 - the `legacy` MCP token, if present
@@ -249,7 +295,7 @@ Running uninstall again is safe. It reports that the service is not installed.
 ### Another controller is already running
 
 ```text
-Worktree Switcher is already running (PID ...)
+Worktree Control is already running (PID ...)
 ```
 
 Stop the foreground controller before starting the service, or stop the service
@@ -261,15 +307,15 @@ alive.
 On Linux:
 
 ```bash
-systemctl --user status worktree-switcher.service --no-pager
-journalctl --user -u worktree-switcher.service -n 100 --no-pager
-systemd-analyze --user verify ~/.config/systemd/user/worktree-switcher.service
+systemctl --user status worktree-control.service --no-pager
+journalctl --user -u worktree-control.service -n 100 --no-pager
+systemd-analyze --user verify ~/.config/systemd/user/worktree-control.service
 ```
 
 On macOS:
 
 ```bash
-launchctl print gui/$(id -u)/dev.worktree-switcher.controller
+launchctl print gui/$(id -u)/dev.worktree-control.controller
 ```
 
 Check whether Node.js and the built CLI still exist at the paths stored in the
@@ -283,17 +329,17 @@ only after the dashboard and MCP listeners start successfully.
 
 ### A configured port is already used
 
-Worktree Switcher will report the conflict and leave the unknown process alone.
+Worktree Control will report the conflict and leave the unknown process alone.
 Stop that process yourself or assign a different project port in the dashboard.
 
 ### A package manager is missing in service mode
 
 The installer records the directories containing supported package managers
 that are available in your current terminal. If you install or move `pnpm`,
-`npm`, `yarn`, or `bun` later, rebuild Worktree Switcher and refresh the service
+`npm`, `yarn`, or `bun` later, rebuild Worktree Control and refresh the service
 definition from a terminal where the command is available:
 
 ```bash
 command -v pnpm
-worktree-switcher service install --refresh
+worktree-control service install --refresh
 ```

@@ -1,6 +1,6 @@
 ---
 audience: "owner, contributors, and coding agents"
-last_reviewed: "2026-10-04"
+last_reviewed: "2026-10-05"
 source_of_truth: "shared project memory direction and phased delivery plan from the owner discussion on 2026-09-05"
 status: "active"
 ---
@@ -15,10 +15,10 @@ workflow. This supersedes the earlier PostgreSQL-first direction; see
 [the database decision](backlog/notes/NOTE-20260913-knowledge-backlog-implementation/database-portability.md).
 
 
-The owner wants Worktree Switcher to provide shared memory for humans and
+The owner wants Worktree Control to provide shared memory for humans and
 agents, a forum for exchanging information, and a backlog for findings that
 will not be addressed immediately. Build this as a cohesive module within
-Switcher, reusing its project registry, controller, SQLite infrastructure,
+Worktree Control, reusing its project registry, controller, SQLite infrastructure,
 dashboard, and MCP integration. The core module is implemented on `main`,
 including threads/replies/tasks, revisioned memory and approval, search/context,
 attachments, backup/restore, logical project transfer and resumable Hub import.
@@ -56,7 +56,7 @@ The first complete workflow is:
 2. The human asks the agent to save the plan or finding for the project.
 3. The agent records a concise account of the discussion, distinguishing
    agreed direction, proposals, evidence, and open questions.
-4. The human reads and replies in Switcher's web interface. Another agent
+4. The human reads and replies in Worktree Control's web interface. Another agent
    finds the same thread and adds evidence or a different conclusion.
 5. An actionable finding becomes a linked backlog task without duplicating
    the discussion. A settled conclusion can become a memory entry.
@@ -105,7 +105,7 @@ The module can link to a path and commit without taking ownership of that
 document. GitHub and Git are not required for everyday knowledge operations;
 repository links are optional context.
 
-## Module boundary inside Switcher
+## Module boundary inside Worktree Control
 
 The [environment runtime plan](environment-runtime-plan.md) covers configuration
 and secret delivery to workers. Knowledge records may link to safe profile/run
@@ -292,7 +292,7 @@ agreed. The ambition ranges from covering coffee to a useful side income;
 profitability remains unproven.
 
 Host knowledge, discussions, and backlog. Development processes, worktrees,
-and verification remain on customer-owned Switcher workers: laptops, servers,
+and verification remain on customer-owned Worktree Control workers: laptops, servers,
 or customer cloud VMs. The [remote verification plan](remote-verification-plan.md)
 defines outbound worker connections and the execution boundary. Local and remote agents
 can access the same chosen knowledge service; the host does not need shell
@@ -314,7 +314,7 @@ actual deployment and workload rather than assumed to scale unchanged.
 - Knowledge-project identity independent of runtime registration, including
   future projects without a local checkout and cross-project retrieval scope.
 - Hosted deployment topology, pricing, and packaging; whether the broader
-  product eventually needs a name beyond Worktree Switcher.
+  product eventually needs a name beyond Worktree Control.
 
 Do not expand the first slice into autonomous agent scheduling, a new chat
 client, vector search, paid model inference, bidirectional file sync, or

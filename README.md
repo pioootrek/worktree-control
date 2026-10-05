@@ -1,4 +1,4 @@
-# Worktree Switcher
+# Worktree Control
 
 **One dev port per project. Shared context for you and your coding agents.**
 
@@ -6,13 +6,13 @@ Switch a development server between Git worktrees without changing its port.
 Queue builds and tests, see which code they checked, and keep the tasks,
 discussions and decisions that the next session will need.
 
-Worktree Switcher runs on your machine with a browser dashboard, CLI and MCP
+Worktree Control runs on your machine with a browser dashboard, CLI and MCP
 server. It supports Node.js and Django projects, stores state in SQLite, and
 needs no hosted account. It is MIT licensed.
 
 [Try it locally](#quick-start) · [Connect your agent](#mcp-for-coding-agents) · [Project knowledge](#keep-project-context-between-sessions) · [Documentation](#documentation)
 
-![Worktrees dashboard with example projects, branches, reservations and server actions](https://raw.githubusercontent.com/pioootrek/worktree-switcher/main/.github/assets/dashboard.png)
+![Worktrees dashboard with example projects, branches, reservations and server actions](https://raw.githubusercontent.com/pioootrek/worktree-control/main/.github/assets/dashboard.png)
 
 *Screenshots show the current dashboard with fictional demo data. The interface supports English and Polish, dark and light themes, and mobile layouts.*
 
@@ -26,7 +26,7 @@ Your frontend can run `feature/checkout` on port 3000 while the API stays on
 - Inspect the branch, local changes, server state and logs before taking action.
 - Check worktree disk usage and remove a stopped, unlocked Next.js worktree's `.next` cache with confirmation.
 
-Use your existing editor and Git tools to create worktrees. Switcher discovers
+Use your existing editor and Git tools to create worktrees. Worktree Control discovers
 them. Humans and agents must use its controller for ownership rules to apply;
 it cannot prevent an unrelated terminal from starting another process.
 
@@ -36,7 +36,7 @@ Run a discovered test, lint, typecheck or build preset against a specific
 worktree. A shared queue limits concurrent checks and allows at most one active
 run per worktree. Submitting a test does not move or reserve the dev server.
 
-![Tests dashboard showing verification results and the source evidence for a run](https://raw.githubusercontent.com/pioootrek/worktree-switcher/main/.github/assets/tests.png)
+![Tests dashboard showing verification results and the source evidence for a run](https://raw.githubusercontent.com/pioootrek/worktree-control/main/.github/assets/tests.png)
 
 A passing command and a result that applies to your current code are separate
 things. Tests shows the command outcome, Git observations around the run, current
@@ -52,7 +52,7 @@ MCP and CLI. It works without a running dev server or a Git repository.
 - **Discussions:** keep findings, questions and replies together. Turn an agreed next step into a task.
 - **Memory:** retain decisions and notes with sources, revision history and explicit approval.
 
-![Knowledge backlog with a task description and links to related work](https://raw.githubusercontent.com/pioootrek/worktree-switcher/main/.github/assets/knowledge.png)
+![Knowledge backlog with a task description and links to related work](https://raw.githubusercontent.com/pioootrek/worktree-control/main/.github/assets/knowledge.png)
 
 Follow named links between records, search titles and content, and jump to the
 reply that matched. Open attached documents in the reader. A task's **Next
@@ -62,7 +62,7 @@ you can export that context as Markdown or JSON.
 <details>
 <summary>See the Memory reader</summary>
 
-![Memory reader showing an approved project decision](https://raw.githubusercontent.com/pioootrek/worktree-switcher/main/.github/assets/memory.png)
+![Memory reader showing an approved project decision](https://raw.githubusercontent.com/pioootrek/worktree-control/main/.github/assets/memory.png)
 
 </details>
 
@@ -71,23 +71,29 @@ read in the dashboard but are not yet included in search.
 
 Hub import, attachments, backup and project transfer are implemented. An existing
 Hub project still needs a reviewed migration and a clear choice of where future
-writes belong. See the [knowledge delivery plan](https://github.com/pioootrek/worktree-switcher/blob/main/docs/shared-project-memory-plan.md).
+writes belong. See the [knowledge delivery plan](https://github.com/pioootrek/worktree-control/blob/main/docs/shared-project-memory-plan.md).
 
 ## Quick start
 
-Worktree Switcher is a **working prototype**. There is no npm registry release.
-Use a source build below, or follow the [verified tarball trial guide](docs/package-trial.md)
-for `0.1.0-trial.1`. The CLI and data model may change. Linux x64 is the primary
-verified platform.
+**Status:** the local controller is in daily use by its author. Linux x64 is
+verified; macOS and Windows are unverified. Worktree Control is not on npm yet;
+publication is a separate step by the owner. Use a source build below, or follow
+the [verified tarball trial guide](docs/package-trial.md) for `0.1.0-trial.1`.
+The CLI and data model may change.
+
+The product was named Worktree Switcher until 2026-10-05. The installed command
+is `worktree-control`, with the short alias `wtc`. The `worktree-switcher`
+package on npm is an unrelated project. To move an existing installation, see
+[upgrading an existing installation](docs/user-service.md#upgrading-an-existing-installation).
 
 Install [Node.js 22 or newer](https://nodejs.org/), Git, and the
 [pnpm](https://pnpm.io/installation) version declared in
-[`package.json`](https://github.com/pioootrek/worktree-switcher/blob/main/package.json)
+[`package.json`](https://github.com/pioootrek/worktree-control/blob/main/package.json)
 (currently `11.22.0`), then:
 
 ```bash
-git clone https://github.com/pioootrek/worktree-switcher.git
-cd worktree-switcher
+git clone https://github.com/pioootrek/worktree-control.git
+cd worktree-control
 pnpm install --frozen-lockfile
 pnpm build
 node dist/cli/index.js auth token generate
@@ -134,7 +140,7 @@ node dist/cli/index.js config mcp
 ```
 
 In token mode, this prints a bearer-token placeholder. Supply the installation
-token privately in your client's configuration, or set `WORKTREE_SWITCHER_TOKEN`
+token privately in your client's configuration, or set `WORKTREE_CONTROL_TOKEN`
 before running the command to include it in the output. Do not commit that output.
 
 For a managed dev server:
@@ -154,20 +160,20 @@ Use the exact path returned by `list_worktrees`. Reuse the idempotency key when
 retrying the same submission. Claims expire and belong to the creating MCP
 session; an agent cannot force-release someone else's reservation.
 
-The [bundled agent skill](https://github.com/pioootrek/worktree-switcher/blob/main/skills/worktree-switcher/SKILL.md)
+The [bundled agent skill](https://github.com/pioootrek/worktree-control/blob/main/skills/worktree-control/SKILL.md)
 teaches this workflow. For Codex, install it from the checkout:
 
 ```bash
 codex_skill_dir="${CODEX_HOME:-$HOME/.codex}/skills"
 mkdir -p "$codex_skill_dir"
-cp -R skills/worktree-switcher "$codex_skill_dir/"
+cp -R skills/worktree-control "$codex_skill_dir/"
 ```
 
 Restart the agent session and configure MCP separately. In the managed project's
 agent instructions, add:
 
 ```md
-Use the worktree-switcher skill and MCP tools before starting or switching this
+Use the worktree-control skill and MCP tools before starting or switching this
 project's development server. Honor existing claims. Use its managed test queue
 for available verification presets.
 ```
@@ -179,7 +185,7 @@ for you to read in the dashboard without editing repository files.
 <details>
 <summary>Use project knowledge from the CLI</summary>
 
-In token mode, set `WORKTREE_SWITCHER_TOKEN` privately before running these
+In token mode, set `WORKTREE_CONTROL_TOKEN` privately before running these
 commands. The installation token grants full access. Scoped agent credentials
 and legacy owner sessions use their explicit project grants; see
 [authentication](docs/authentication.md).
@@ -231,7 +237,7 @@ and revisions, not a model-generated summary, and are not project backups.
 
 ## Supported projects
 
-| Project | How Switcher starts it |
+| Project | How Worktree Control starts it |
 | --- | --- |
 | Node.js | Detects pnpm, npm, Yarn or Bun and the project's `dev` script |
 | Next.js | Passes the configured `PORT`; supports optional development HTTPS |
@@ -259,7 +265,7 @@ Keep the controller on loopback behind Caddy and configure `--public-url`.
 The dashboard proxy does not expose the loopback MCP listener. A managed
 Next.js app's development HTTPS is a separate project setting.
 
-Switcher executes project code under your OS user. Use trusted repositories and
+Worktree Control executes project code under your OS user. Use trusted repositories and
 clients; process ownership and preset validation are not a sandbox.
 
 - `token` mode requires the installation token for browser, API, MCP and online CLI access.
@@ -267,9 +273,11 @@ clients; process ownership and preset validation are not a sandbox.
 - The controller stops only process trees it owns, never an unknown process on an occupied port.
 - Literal environment values are stored in SQLite. Keep secrets out of those profiles; worker-side secret references remain planned.
 
-Data defaults to `~/.local/share/worktree-switcher`; runtime state and logs use
-`~/.local/state/worktree-switcher`. The controller respects `XDG_DATA_HOME` and
-`XDG_STATE_HOME`, and startup options can override these paths.
+Data defaults to `~/.local/share/worktree-control`; runtime state and logs use
+`~/.local/state/worktree-control`. The controller respects `XDG_DATA_HOME` and
+`XDG_STATE_HOME`, and startup options can override these paths. Without explicit
+paths, an existing pre-rename `worktree-switcher` directory is used while the
+corresponding `worktree-control` directory does not exist; data is never moved.
 
 ## Optional user export schedules
 
@@ -277,7 +285,7 @@ User schedules default to off, independently of installation backups. An
 operator enables only the supported scope and allowed project/target IDs:
 
 ```sh
-worktree-switcher start --user-backup-enabled \
+worktree-control start --user-backup-enabled \
   --user-backup-scopes knowledge-discussions \
   --user-backup-projects <knowledge-project-id> \
   --user-backup-target local=/private/user-exports \
@@ -354,9 +362,9 @@ publication, when its execution is `failed`, `interrupted` or `succeeded`,
 through the running controller's private admin socket:
 
 ```bash
-worktree-switcher backup user-cleanup list
-worktree-switcher backup user-cleanup preview <execution-id>
-worktree-switcher backup user-cleanup cleanup <execution-id> <confirmation-id>
+worktree-control backup user-cleanup list
+worktree-control backup user-cleanup preview <execution-id>
+worktree-control backup user-cleanup cleanup <execution-id> <confirmation-id>
 ```
 
 The list reads candidate metadata; preview validates one complete export and
@@ -395,8 +403,8 @@ Local exports require a surviving host and filesystem.
 The independent monitor runs once in a separate CLI process:
 
 ```bash
-worktree-switcher backup monitor                         # disabled, no probe or alerts
-worktree-switcher backup monitor --enabled \
+worktree-control backup monitor                         # disabled, no probe or alerts
+worktree-control backup monitor --enabled \
   --warn-after-seconds 2700 --critical-after-seconds 3600 --timeout-ms 5000
 ```
 
@@ -424,7 +432,7 @@ it does not rehash copies, contact the remote repository, or prove restoration.
 Encrypted transfer defaults to off and is independent of the local schedule.
 The first adapter uses an existing restic HTTPS REST repository. Provision the
 repository and preserve its password outside the source host before enabling
-transfer; Worktree Switcher never initializes, prunes or changes its keys.
+transfer; Worktree Control never initializes, prunes or changes its keys.
 All policy comes from operator CLI arguments. Only credentials are read from
 private files: a restic repository password file and a JSON file containing
 `{"username":"...","password":"..."}` for the REST server. Keep both files
@@ -433,7 +441,7 @@ symlink or hardlink aliases. The executable must be an absolute, trusted restic
 path. Obtain the repository's cryptographic ID with `restic cat config`.
 
 ```sh
-worktree-switcher start --backup-dir /private/installation-copies \
+worktree-control start --backup-dir /private/installation-copies \
   --backup-remote-enabled --backup-remote-restic /usr/bin/restic \
   --backup-remote-repository rest:https://backup.example.test/installation/ \
   --backup-remote-repository-id <64-character-repository-id> \
@@ -460,8 +468,8 @@ An incomplete snapshot never counts as confirmation. No remote retention is
 performed; the repository owner must manage it separately.
 
 ```sh
-worktree-switcher backup remote status
-worktree-switcher backup remote retry <backup-id> --generation <next-generation>
+worktree-control backup remote status
+worktree-control backup remote retry <backup-id> --generation <next-generation>
 ```
 
 These commands require the running controller's private administrative socket.
@@ -489,7 +497,7 @@ port, path or trailing slash for that same repository preserves pending work.
 For a different repository ID, stop the controller and explicitly rebind:
 
 ```sh
-worktree-switcher backup remote rebind --from <current-destination-id> \
+worktree-control backup remote rebind --from <current-destination-id> \
   --target-config /private/backup-secrets/new-restic.json --generation <next-generation>
 ```
 
@@ -520,7 +528,7 @@ pin counts. Historic receipts prevent automatic uploads of old copies. To
 select one archived source still present in the configured catalog:
 
 ```sh
-worktree-switcher backup remote reupload <backup-id>
+worktree-control backup remote reupload <backup-id>
 ```
 
 This requires the running controller's private administrative socket and verifies
@@ -554,7 +562,7 @@ any independent repository investigation; do not remove unknown or last copies.
 To recover, use a trusted restic and separately held repository password/backend
 credentials to restore the full confirmed snapshot ID into an empty private
 directory (`restic restore <snapshot-id> --target <directory> --verify`). Run
-`worktree-switcher backup restore <directory> --data-dir <fresh-data-dir>
+`worktree-control backup restore <directory> --data-dir <fresh-data-dir>
 --state-dir <fresh-state-dir>` with the controller stopped. The existing restore
 validates schema, integrity, references and attachments before publication.
 Check restored records and attachment bytes through authenticated clients,
@@ -569,7 +577,7 @@ installation operator selects policy, through `start` or `service install`
 arguments. A directory alone enables neither automation nor web actions.
 
 ```sh
-worktree-switcher start --backup-dir /private/installation-copies \
+worktree-control start --backup-dir /private/installation-copies \
   --backup-interval-seconds 1800 --backup-retain-count 30 \
   --backup-retain-days 30 --backup-max-bytes 17179869184 \
   --backup-timeout-seconds 300 --backup-queue-limit 4 \
@@ -590,12 +598,12 @@ separately as described above. Local copies require a surviving host and
 filesystem to be useful.
 
 ```sh
-worktree-switcher backup now --idempotency-key operator-request-1
-worktree-switcher backup status --idempotency-key operator-request-1
-worktree-switcher backup list
-worktree-switcher backup create /private/manual-copy --idempotency-key manual-1
-worktree-switcher backup restore backup-<uuid> --idempotency-key restore-1
-worktree-switcher backup status backup-<uuid> --idempotency-key restore-1
+worktree-control backup now --idempotency-key operator-request-1
+worktree-control backup status --idempotency-key operator-request-1
+worktree-control backup list
+worktree-control backup create /private/manual-copy --idempotency-key manual-1
+worktree-control backup restore backup-<uuid> --idempotency-key restore-1
+worktree-control backup status backup-<uuid> --idempotency-key restore-1
 ```
 
 Online CLI administration uses the existing owner-only Unix socket. A missing
@@ -644,11 +652,11 @@ Local server switching, verification and shared knowledge are available on
 push a commit, ask a customer-owned worker to check that exact SHA, and read the
 result in your existing client. Authorization, persistence and workspace
 foundations are merged; connected-worker dispatch and the complete remote
-workflow are not yet available. See the [remote verification plan](https://github.com/pioootrek/worktree-switcher/blob/main/docs/remote-verification-plan.md).
+workflow are not yet available. See the [remote verification plan](https://github.com/pioootrek/worktree-control/blob/main/docs/remote-verification-plan.md).
 
 Optional account login, agent-fleet coordination and maintainer-operated hosting
 are planned. There is no hosted signup or pricing offer today. Self-hosting is
-intended to remain complete and independent. See the [self-hosted and SaaS plan](https://github.com/pioootrek/worktree-switcher/blob/main/docs/backlog/notes/NOTE-20260909-self-hosted-saas-plan/implementation-plan.md).
+intended to remain complete and independent. See the [self-hosted and SaaS plan](https://github.com/pioootrek/worktree-control/blob/main/docs/backlog/notes/NOTE-20260909-self-hosted-saas-plan/implementation-plan.md).
 
 ## Documentation
 
@@ -659,19 +667,19 @@ intended to remain complete and independent. See the [self-hosted and SaaS plan]
 | [Package trial](docs/package-trial.md) | Verified tarball, checksums and user-prefix installation |
 | [Controller HTTPS](docs/controller-https.md) | Caddy, certificates and access from another device |
 | [Reservations and MCP](docs/reservations-and-mcp.md) | Claims, locks, client integration and permissions |
-| [Knowledge delivery](https://github.com/pioootrek/worktree-switcher/blob/main/docs/shared-project-memory-plan.md) | Discussions, backlog, memory, import and remaining migration work |
+| [Knowledge delivery](https://github.com/pioootrek/worktree-control/blob/main/docs/shared-project-memory-plan.md) | Discussions, backlog, memory, import and remaining migration work |
 | [Knowledge evidence](docs/knowledge-evidence.md) | Attachment policy, logical capacity, preflight and evidence bundles |
-| [Architecture](https://github.com/pioootrek/worktree-switcher/blob/main/docs/architecture.md) | Controller, persistence and module boundaries |
-| [UI standards](https://github.com/pioootrek/worktree-switcher/blob/main/docs/ui-standards.md) | Layout, readers, focus and interaction rules |
-| [Backlog workflow](https://github.com/pioootrek/worktree-switcher/blob/main/docs/backlog/AGENTS.md) | Current work in Knowledge; JSON records remain the import archive |
+| [Architecture](https://github.com/pioootrek/worktree-control/blob/main/docs/architecture.md) | Controller, persistence and module boundaries |
+| [UI standards](https://github.com/pioootrek/worktree-control/blob/main/docs/ui-standards.md) | Layout, readers, focus and interaction rules |
+| [Backlog workflow](https://github.com/pioootrek/worktree-control/blob/main/docs/backlog/AGENTS.md) | Current work in Knowledge; JSON records remain the import archive |
 
 ## Contributing and feedback
 
-Try one repository with your usual coding client. [Open an issue](https://github.com/pioootrek/worktree-switcher/issues/new)
+Try one repository with your usual coding client. [Open an issue](https://github.com/pioootrek/worktree-control/issues/new)
 with your OS, framework, MCP client and the step that helped or got in the way.
 Leave out tokens, private access links and secrets.
 
-Read [AGENTS.md](https://github.com/pioootrek/worktree-switcher/blob/main/AGENTS.md)
+Read [AGENTS.md](https://github.com/pioootrek/worktree-control/blob/main/AGENTS.md)
 for development and resource rules. The usual source checks are:
 
 ```bash
@@ -683,7 +691,7 @@ pnpm smoke:package
 
 Browser tests exercise the exported UI with a fixture API. CI also covers the
 real controller, HTTPS, E2E flows and the installed package. Use the managed test
-queue when this repository is registered in Switcher.
+queue when this repository is registered in Worktree Control.
 
 ## Installed upgrade and recovery acceptance
 
@@ -696,11 +704,11 @@ produce its tarball and `provenance.json`. Configure these explicit local inputs
 in the registered project's clean test environment profile:
 
 ```text
-WORKTREE_SWITCHER_TEST_OLD_ARTIFACT=<historical-tarball>
-WORKTREE_SWITCHER_TEST_OLD_PROVENANCE=<historical-provenance.json>
-WORKTREE_SWITCHER_TEST_RESTIC=<local-restic-executable>
-WORKTREE_SWITCHER_TEST_REST_SERVER=<local-rest-server-executable>
-WORKTREE_SWITCHER_TEST_UPGRADE_REPORT=<new-local-report-file>  # optional
+WORKTREE_CONTROL_TEST_OLD_ARTIFACT=<historical-tarball>
+WORKTREE_CONTROL_TEST_OLD_PROVENANCE=<historical-provenance.json>
+WORKTREE_CONTROL_TEST_RESTIC=<local-restic-executable>
+WORKTREE_CONTROL_TEST_REST_SERVER=<local-rest-server-executable>
+WORKTREE_CONTROL_TEST_UPGRADE_REPORT=<new-local-report-file>  # optional
 ```
 
 Run the discovered build and `test:package:upgrade` presets sequentially through
@@ -722,8 +730,8 @@ Inspect the owner and permissions of your own directories before rollout;
 permission changes require an explicit operator decision. The historical API
 supports `derived_from` through `task_from_thread`, with owner-only approval
 permission; arbitrary `create_relation` is outside its capabilities. Historical
-backup commands use `WORKTREE_SWITCHER_DATA_DIR` and
-`WORKTREE_SWITCHER_STATE_DIR`, since that release does not strip path flags from
+backup commands use `WORKTREE_CONTROL_DATA_DIR` and
+`WORKTREE_CONTROL_STATE_DIR`, since that release does not strip path flags from
 strict backup arguments.
 
 Account for writes made after upgrade before historical recovery. Restore the

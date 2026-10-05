@@ -1,6 +1,6 @@
 # Third-party notices
 
-Worktree Switcher uses third-party packages installed through pnpm. Those
+Worktree Control uses third-party packages installed through pnpm. Those
 packages keep their own copyright notices and license files in their package
 directories. See [the dependency license review](docs/dependency-licenses.md)
 for the reviewed production dependency set.

@@ -1,6 +1,6 @@
 ---
 audience: "owner, contributors, and coding agents"
-last_reviewed: "2026-09-11"
+last_reviewed: "2026-10-05"
 source_of_truth: "remote verification and worker direction from the owner discussion on 2026-09-05"
 status: "active"
 ---
@@ -62,7 +62,7 @@ from test failure.
 | Component | Responsibility |
 | --- | --- |
 | Self-hosted or optional SaaS control plane | Authorize requests, persist dispatch/run state, expose status and results |
-| Customer-owned Switcher worker | Fetch approved code, prepare workspaces, enforce local policy, execute presets, report evidence |
+| Customer-owned Worktree Control worker | Fetch approved code, prepare workspaces, enforce local policy, execute presets, report evidence |
 | Existing LLM client | Request checks, read results, edit code, decide the next action |
 | Optional knowledge module | Link runs to tasks, discussions, playbooks, and reviews |
 

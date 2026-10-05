@@ -1,6 +1,6 @@
 ---
-audience: "people running Worktree Switcher and choosing how callers authenticate"
-last_reviewed: "2026-09-27"
+audience: "people running Worktree Control and choosing how callers authenticate"
+last_reviewed: "2026-10-05"
 source_of_truth: "authentication modes, the auth CLI, and migration from legacy access"
 status: "active"
 ---
@@ -25,10 +25,10 @@ refuses to start; it never falls back to another mode.
 ## The `auth` command
 
 ```bash
-worktree-switcher auth status
-worktree-switcher auth token generate
-worktree-switcher auth token rotate
-worktree-switcher auth mode set <open|token|better-auth>
+worktree-control auth status
+worktree-control auth token generate
+worktree-control auth token rotate
+worktree-control auth mode set <open|token|better-auth>
 ```
 
 When the controller is stopped, the command opens the database under the
@@ -53,13 +53,19 @@ refuses to start until you run `auth token generate`.
 - **Browser:** the dashboard asks for the token and keeps it for the browser
   tab's session. **Sign out** forgets it. `service open` and `service url` open
   the dashboard without a secret.
-- **CLI against a running controller:** export `WORKTREE_SWITCHER_TOKEN`.
+- **CLI against a running controller:** export `WORKTREE_CONTROL_TOKEN`.
   Offline `project` and `auth` commands need no token.
 - **Knowledge and identity administration:** `identity`, `knowledge` and
-  `backup` project commands accept `WORKTREE_SWITCHER_TOKEN` when no owner or
+  `backup` project commands accept `WORKTREE_CONTROL_TOKEN` when no owner or
   knowledge token is set. The installation token acts as the owner.
 - **MCP:** send `Authorization: Bearer <token>`. `config mcp` prints a
-  placeholder, or the real token when `WORKTREE_SWITCHER_TOKEN` is set.
+  placeholder, or the real token when `WORKTREE_CONTROL_TOKEN` is set.
+
+Before the 2026-10-05 rename these variables were named `WORKTREE_SWITCHER_*`
+and the dashboard header `X-Worktree-Switcher-Token`. The CLI still reads a
+legacy variable when its `WORKTREE_CONTROL_*` name is unset and prints a
+deprecation warning; the controller still accepts the legacy header. Move
+scripts to the new names.
 
 ## Use open mode
 
@@ -68,7 +74,7 @@ with the controller bound to loopback. The dashboard shows a red **open mode**
 badge and the controller prints its listening address on start.
 
 ```bash
-worktree-switcher auth mode set open
+worktree-control auth mode set open
 ```
 
 ### CLI in open mode
@@ -88,18 +94,18 @@ their grants.
 ## Move a legacy installation to token mode
 
 1. Stop the controller and take a backup:
-   `worktree-switcher service stop`, then
-   `worktree-switcher backup create <directory>`, then
-   `worktree-switcher service start`.
+   `worktree-control service stop`, then
+   `worktree-control backup create <directory>`, then
+   `worktree-control service start`.
 2. Generate the token and save it privately:
-   `worktree-switcher auth token generate`. Token mode cannot be selected
+   `worktree-control auth token generate`. Token mode cannot be selected
    without it.
-3. Switch the mode: `worktree-switcher auth mode set token`. The pairing link
+3. Switch the mode: `worktree-control auth mode set token`. The pairing link
    and `mcp-token` stop working immediately.
 4. Sign in to the dashboard with the token in each browser.
 5. Replace the bearer token in every MCP client with the installation token.
    Agents that use scoped `wts_` tokens need no change.
-6. Export `WORKTREE_SWITCHER_TOKEN` where you run online CLI commands.
+6. Export `WORKTREE_CONTROL_TOKEN` where you run online CLI commands.
 
 If a client still fails, run `auth status` to confirm the mode and the token
 prefix. Rotate the token if it may have leaked.
@@ -125,6 +131,6 @@ New installations differ from earlier releases:
   creates the installation token.
 - The controller prints no pairing link. `service open` and `service url` show
   the sign-in page.
-- `config mcp` prints a token placeholder unless `WORKTREE_SWITCHER_TOKEN` is
+- `config mcp` prints a token placeholder unless `WORKTREE_CONTROL_TOKEN` is
   set.
-- Online CLI commands need `WORKTREE_SWITCHER_TOKEN`.
+- Online CLI commands need `WORKTREE_CONTROL_TOKEN`.

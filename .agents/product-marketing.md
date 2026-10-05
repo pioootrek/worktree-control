@@ -5,7 +5,7 @@ Last updated: 2026-09-11
 
 ## Product and audience
 
-Worktree Switcher coordinates development servers and finite verification across
+Worktree Control coordinates development servers and finite verification across
 Git worktrees for developers and their MCP-capable coding agents. The current
 product is an MIT-licensed, source-installed local controller with a browser
 panel, CLI, MCP tools and SQLite. Node.js and Django are supported. Primary users

@@ -12,7 +12,7 @@ implemented settings. The installation's production configuration is unchanged.
 
 ## Local administrative read
 
-Run `worktree-switcher mcp diagnostics` against a running controller. For an
+Run `worktree-control mcp diagnostics` against a running controller. For an
 isolated instance, supply `--data-dir PATH --state-dir PATH`, or use the existing
 path environment variables. The CLI sends the exact `mcp-diagnostics` command
 to the existing owner-only Unix socket (0700 directory, 0600 socket). It never
