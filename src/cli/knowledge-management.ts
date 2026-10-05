@@ -1,12 +1,12 @@
 import { readFileSync, statSync } from "node:fs";
 import type { AppPaths } from "../server/paths";
-import { knowledgeSchemas, type KnowledgeOperation, type KnowledgeFailure } from "../shared/contracts/knowledge";
+import { knowledgeSchemas, knowledgeRequestLimit, type KnowledgeOperation, type KnowledgeFailure } from "../shared/contracts/knowledge";
 import { localDashboardEndpoint, readServiceAccess } from "./service-access";
 import { acquireControllerLock } from "../server/controller-lock";
 import { SqliteStateStore } from "../server/sqlite-store";
 import { authenticateOfflineActor } from "./offline-actor";
 import { cliCredential, KNOWLEDGE_CREDENTIAL_REQUIRED, KNOWLEDGE_CREDENTIAL_VARIABLES, OWNER_CREDENTIAL_REQUIRED, OWNER_CREDENTIAL_VARIABLES } from "./credentials";
-import { executeHubImport, planHubImport, KnowledgeError, type HubImportPlanOptions, type HubImportPlan } from "../server/modules/knowledge";
+import { executeHubImport, planHubImport, loadAttachmentLimits, knowledgeFailure, KnowledgeError, type HubImportPlanOptions, type HubImportPlan } from "../server/modules/knowledge";
 
 function option(args: string[], name: string): string {
   const index = args.indexOf(name), value = index < 0 ? undefined : args[index + 1];
@@ -21,7 +21,7 @@ export function runHubImportPlanCommand(args: string[], write: (line: string) =>
   try {
     write(JSON.stringify(planner({ repository: option(args, "--repository"), commit: option(args, "--commit"), sourceId: option(args, "--source-id"), validatorRepository: option(args, "--validator-repository") }), null, 2));
   } catch (error) {
-    if (error instanceof KnowledgeError) throw new Error(`${error.code}: ${error.message}`);
+    if (error instanceof KnowledgeError) throw new Error(error.details ? JSON.stringify(knowledgeFailure(error).body) : `${error.code}: ${error.message}`);
     throw error;
   }
 }
@@ -43,7 +43,7 @@ export function runHubImportExecuteCommand(args: string[], paths: AppPaths, depe
   if(expectedTargetRevision!==undefined&&(!Number.isInteger(expectedTargetRevision)||expectedTargetRevision<1)) throw new Error("invalid_request: Expected target revision must be positive.");
   const lock=acquireControllerLock(paths.controllerLockPath);
   try{const store=new SqliteStateStore(paths.databasePath);try{const {identity,actor}=authenticateOfflineActor(store,token,OWNER_CREDENTIAL_REQUIRED);
-    const result=executeHubImport(store,identity,actor,{plan,targetProjectId:option(args,"--target-id"),targetProjectName:option(args,"--target-name"),batchId:args.includes("--batch-id")?option(args,"--batch-id"):undefined,chunkSize,expectedTargetRevision,attachmentDirectory:paths.knowledgeAttachmentDirectory},undefined,dependencies.verifyPlan);
+    const result=executeHubImport(store,identity,actor,{plan,targetProjectId:option(args,"--target-id"),targetProjectName:option(args,"--target-name"),batchId:args.includes("--batch-id")?option(args,"--batch-id"):undefined,chunkSize,expectedTargetRevision,attachmentDirectory:paths.knowledgeAttachmentDirectory,limits:loadAttachmentLimits(paths.dataDirectory)},undefined,dependencies.verifyPlan);
     (dependencies.write??console.log)(JSON.stringify(result,null,2));
   }finally{store.close();}}finally{lock.release();}
 }
@@ -70,7 +70,7 @@ export async function runKnowledgeCommand(args: string[], paths: AppPaths, depen
   write?: (line: string) => void;
   environment?: Readonly<Record<string, string | undefined>>;
 } = {}): Promise<void> {
-  if (args[0] === "plan-import") { runHubImportPlanCommand(args, dependencies.write); return; }
+  if (args[0] === "plan-import") { runHubImportPlanCommand(args, dependencies.write, options => planHubImport({ ...options, limits: loadAttachmentLimits(paths.dataDirectory) })); return; }
   if (args[0] === "execute-import") { runHubImportExecuteCommand(args, paths, dependencies); return; }
   const operation = args[0];
   if (!operation || !Object.hasOwn(knowledgeSchemas, operation)) throw new Error(`Usage: knowledge <${Object.keys(knowledgeSchemas).join("|")}> [--json '<input> ' | --input-file <path>]`);
@@ -85,7 +85,7 @@ export async function runKnowledgeCommand(args: string[], paths: AppPaths, depen
   const parsed = knowledgeSchemas[operation as KnowledgeOperation].safeParse(input);
   if (!parsed.success) throw new Error("invalid_request: Invalid knowledge input.");
   const body = JSON.stringify({ operation, input: parsed.data });
-  if (Buffer.byteLength(body) > (operation === "create_attachment" ? 14_100_000 : 65536)) throw new Error("limit_exceeded: Knowledge request exceeds its operation limit.");
+  if (Buffer.byteLength(body) > knowledgeRequestLimit(operation)) throw new Error("limit_exceeded: Knowledge request exceeds its operation limit.");
   // Without a credential the controller's active mode decides: open mode acts anonymously.
   const token = cliCredential(dependencies.environment ?? process.env, KNOWLEDGE_CREDENTIAL_VARIABLES);
   const access = readServiceAccess(paths.serviceAccessPath);

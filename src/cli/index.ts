@@ -46,7 +46,7 @@ import { ProjectLifecycle } from "../server/modules/lifecycle";
 import { AuthenticationService } from "../server/modules/authentication";
 import { authenticationAdminHandler } from "../server/authentication-admin";
 import { IdentityService } from "../server/modules/identity";
-import { KnowledgeAttachmentService, KnowledgeService } from "../server/modules/knowledge";
+import { KnowledgeAttachmentService, loadAttachmentLimits, KnowledgeService, KnowledgeError, knowledgeFailure } from "../server/modules/knowledge";
 import { createMcpControllerServer } from "../server/mcp-http-server";
 import { SystemGitWorktreeReader } from "../server/git-worktrees";
 import { createControllerServer } from "../server/http-server";
@@ -157,6 +157,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   if (!existsSync(webRoot)) throw new Error(translate(locale, "cli.missingPanel", { path: webRoot }));
 
   const memoryWarningMiB = optionalPositiveNumber(option("--memory-warning-mib"), "Memory warning threshold");
+  const knowledgeLimits = loadAttachmentLimits(paths.dataDirectory);
   const controllerLock = retainedLock ?? acquireControllerLock(paths.controllerLockPath);
   let maintenance = false;
 
@@ -213,7 +214,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       exportDiscussions: (projectId, maxBytes) => store.exportUserDiscussions(projectId, maxBytes),
     });
   } catch (error) { userSchedules?.close(); await backups.close(); await logs.close(); store.close(); controllerLock.release(); throw error; }
-  const attachments = new KnowledgeAttachmentService(store, identity, paths.knowledgeAttachmentDirectory);
+  const attachments = new KnowledgeAttachmentService(store, identity, paths.knowledgeAttachmentDirectory, knowledgeLimits);
   const knowledge = new KnowledgeService(store, identity, undefined, undefined, events.publishKnowledge, attachments);
   const service = new ControlService(store, new SystemGitWorktreeReader(), processes, logs, undefined, storage, undefined, undefined, tests, lifecycle, knowledge);
   const restores = new RestoreOperations(backups, paths.databasePath, paths.knowledgeAttachmentDirectory, {
@@ -569,6 +570,6 @@ function findLanAddress(): string | null {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
+  console.error(error instanceof KnowledgeError ? JSON.stringify(knowledgeFailure(error).body) : error instanceof Error ? error.message : error);
   process.exitCode = 1;
 });

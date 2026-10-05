@@ -1,7 +1,7 @@
 import { snapshotAttachments } from "./schema-inspection";
 import type { KnowledgeTaskPage, KnowledgeReplyPage, KnowledgeRelationDestination } from "@/shared/contracts/knowledge";
 import type { KnowledgeMemory, KnowledgeSearchHit, KnowledgeSearchOptions } from "@/shared/contracts/knowledge-memory";
-import type { KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
+import type { KnowledgeAttachmentLimits, KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
 import type { KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
 import type { PendingTestRun, ProjectRegistration, ReservationRequest, StateStore, TestRunStatusRecord, WorktreeStorageSample } from "@/server/state-store";
 import type { Project, Reservation, ServerCapacitySettings, TestEnvironmentProfile, TestQueueSettings, TestRun, TestRunPhase, WorktreeStorageSnapshot } from "@/shared/contracts";
@@ -30,7 +30,7 @@ import type {
 } from "@/server/modules/identity";
 import type { AuthenticationPolicy, AuthenticationStore } from "@/server/modules/authentication";
 import type { HubImportBatch, HubImportExecutionStore, HubImportMapping, KnowledgeHistoryEntry, KnowledgeMutationContext, KnowledgeMutationResult, KnowledgePage, KnowledgeProjectSnapshot, KnowledgeRelation, KnowledgeReply, KnowledgeRuntimeLinkResult, KnowledgeStore, KnowledgeTask, KnowledgeThread } from "@/server/modules/knowledge";
-import { KnowledgeError, publishKnowledgeAttachment } from "@/server/modules/knowledge";
+import { KnowledgeError, publishKnowledgeAttachment, DEFAULT_ATTACHMENT_LIMITS, assertAttachmentCapacity } from "@/server/modules/knowledge";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
@@ -97,11 +97,16 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     };
   }
 
+  findHubImport(input: Parameters<HubImportExecutionStore["findHubImport"]>[0]): HubImportBatch | null {
+    const row = this.database.prepare("SELECT * FROM knowledge_import_batches WHERE id = ? OR (source_id = ? AND source_commit = ? AND plan_hash = ? AND target_project_id = ?)")
+      .get(input.id, input.sourceId, input.sourceCommit, input.planHash, input.targetProjectId) as Record<string, unknown> | undefined;
+    return row ? this.mapHubImportBatch(row) : null;
+  }
+
   beginHubImport(input: Omit<HubImportBatch, "status" | "cursor" | "createdAt" | "updatedAt" | "publishedAt" | "error" | "authenticationMethod"> & {authenticationMethod: AuthenticationMethod}, now: string): HubImportBatch {
     return this.database.transaction(() => {
-      const existing = this.database.prepare("SELECT * FROM knowledge_import_batches WHERE id = ? OR (source_id = ? AND source_commit = ? AND plan_hash = ? AND target_project_id = ?)")
-        .get(input.id, input.sourceId, input.sourceCommit, input.planHash, input.targetProjectId) as Record<string, unknown> | undefined;
-      if (existing) return this.mapHubImportBatch(existing);
+      const existing = this.findHubImport(input);
+      if (existing) return existing;
       const target=this.database.prepare("SELECT name,revision FROM knowledge_projects WHERE id = ?").get(input.targetProjectId) as {name:string;revision:number}|undefined;
       if(input.expectedTargetRevision===null ? Boolean(target) : !target||target.revision!==input.expectedTargetRevision||target.name!==input.targetProjectName) throw new KnowledgeError("revision_conflict", "Import target revision or identity changed.");
       this.database.prepare(`INSERT INTO knowledge_import_batches
@@ -139,7 +144,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     }).immediate();
   }
 
-  publishHubImport(batchId: string, now: string, attachmentDirectory?: string): HubImportBatch {
+  publishHubImport(batchId: string, now: string, attachmentDirectory?: string, limits: KnowledgeAttachmentLimits = DEFAULT_ATTACHMENT_LIMITS): HubImportBatch {
     try{return this.database.transaction(() => {
       const batch=this.getHubImport(batchId); if(!batch) throw new KnowledgeError("not_found","Import batch not found.");
       if(batch.status==="published") return batch;
@@ -156,6 +161,15 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
         this.database.prepare("INSERT INTO knowledge_project_grants(principal_id,project_id,permissions_json,revoked_at) VALUES (?,?,?,NULL)").run(batch.actorPrincipalId,batch.targetProjectId,JSON.stringify(["attachments:read","attachments:write","knowledge:approve","knowledge:export","knowledge:import","knowledge:read","knowledge:write"]));
       }else this.database.prepare("UPDATE knowledge_projects SET revision=revision+1,updated_at=? WHERE id=? AND revision=?").run(now,batch.targetProjectId,batch.expectedTargetRevision);
       const stable=(kind:string,mapping:HubImportMapping)=>createHash("sha256").update(`${batch.targetProjectId}\0${batch.sourceId}\0${mapping.sourcePath}\0${kind}`).digest("hex").slice(0,32);
+      // Evaluate the final logical records, including replaced imports, under the publication transaction.
+      const incomingAttachments = mappings.filter(mapping => mapping.targetKind === "attachment");
+      let replacedBytes = 0, replacedFiles = 0;
+      for (const mapping of incomingAttachments) {
+        const previous = this.database.prepare("SELECT size FROM knowledge_attachments WHERE project_id=? AND id=?").get(batch.targetProjectId, stable("attachment", mapping)) as { size: number } | undefined;
+        if (previous) { replacedBytes += previous.size; replacedFiles++; }
+      }
+      assertAttachmentCapacity(limits, { bytes: this.attachmentBytesForProject(batch.targetProjectId) - replacedBytes, files: this.attachmentCountForProject(batch.targetProjectId) - replacedFiles },
+        { bytes: incomingAttachments.reduce((sum, mapping) => sum + mapping.size, 0), files: incomingAttachments.length }, incomingAttachments.map(mapping => ({ filename: mapping.sourcePath, size: mapping.size })));
       const assertImportTargetUnmodified=(mapping:HubImportMapping,targetKind:"task"|"memory",targetId:string,provenanceKind:string=targetKind)=>{
         const sourceId=stable("source",mapping),table=targetKind==="task"?"knowledge_tasks":"knowledge_memories";
         const current=this.database.prepare(`SELECT revision FROM ${table} WHERE id = ? AND project_id = ?`).get(targetId,batch.targetProjectId) as {revision:number}|undefined;
@@ -754,11 +768,12 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   searchKnowledge(projectId: string, limit: number, offset: number, options: KnowledgeSearchOptions): KnowledgePage<KnowledgeSearchHit> {
     return this.knowledge.searchKnowledge(projectId, limit, offset, options);
   }
-  saveAttachment(value: KnowledgeAttachment, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeAttachment> { return this.knowledge.saveAttachment(value, context); }
+  saveAttachment(value: KnowledgeAttachment, context: KnowledgeMutationContext, admit?: () => void): KnowledgeMutationResult<KnowledgeAttachment> { return this.knowledge.saveAttachment(value, context, admit); }
   getAttachment(projectId: string, id: string): KnowledgeAttachment | null { return this.knowledge.getAttachment(projectId, id); }
   listAttachments(projectId: string, recordKind: KnowledgeAttachment["recordKind"], recordId: string, limit: number, offset: number): KnowledgePage<KnowledgeAttachment> { return this.knowledge.listAttachments(projectId, recordKind, recordId,limit,offset); }
   attachmentBytesForProject(projectId: string): number { return this.knowledge.attachmentBytesForProject(projectId); }
   attachmentCountForProject(projectId: string): number { return this.knowledge.attachmentCountForProject(projectId); }
+  attachmentLargestFileForProject(projectId: string): number { return this.knowledge.attachmentLargestFileForProject(projectId); }
   attachmentTargetExists(projectId: string, kind: KnowledgeAttachment["recordKind"], id: string): boolean { return this.knowledge.attachmentTargetExists(projectId,kind,id); }
 
   listKnowledgeProjects(principalId: string | null, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary> {

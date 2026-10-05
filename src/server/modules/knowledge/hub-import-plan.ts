@@ -4,12 +4,13 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 
+import type { KnowledgeAttachmentLimits } from "@/shared/contracts/knowledge-attachments";
+import { DEFAULT_ATTACHMENT_LIMITS, attachmentLimits, assertAttachmentCapacity } from "./attachment-policy";
 import { KnowledgeError } from "./knowledge-error";
 
 export const PINNED_HUB_VALIDATOR_COMMIT = "22afb656c74b2fde84cb92f1aefcf8b427697cc6";
-const MAX_FILES = 5_000;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
-const MAX_TOTAL_BYTES = 200 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 1088 * 1024 * 1024;
 const ITEM_DIRECTORIES = new Set(["feature", "fix", "rework", "security"]);
 const DERIVED_NAMES = new Set(["index.json"]);
 const OVERRIDES = new Set(["schema.json", "done-schema.json", "note-schema.json", "docs-header-schema.json"]);
@@ -20,6 +21,7 @@ original=hub.item_files;hub.item_files=lambda source:[path for path in original(
 raise SystemExit(hub.main())`;
 
 export interface HubImportPlanOptions {
+  limits?: KnowledgeAttachmentLimits;
   repository: string;
   commit: string;
   sourceId: string;
@@ -89,7 +91,7 @@ function safeConfiguredRoot(value: unknown, name: string): string | null {
   }
   return value.replace(/^\.\//, "").replace(/\/$/, "") || ".";
 }
-function readCommit(repository: string, commit: string): { files: SourceFile[]; docsRoot: string | null; instructionsRoot: string | null } {
+function readCommit(repository: string, commit: string, limits: KnowledgeAttachmentLimits): { files: SourceFile[]; docsRoot: string | null; instructionsRoot: string | null } {
   const configBytes = git(repository, ["show", `${commit}:docs/backlog/config.json`], "buffer") as Buffer;
   let config: Record<string, unknown>;
   try {
@@ -105,13 +107,13 @@ function readCommit(repository: string, commit: string): { files: SourceFile[]; 
     const inRoot = (root: string | null) => root === "." || Boolean(root && (path === root || path.startsWith(`${root}/`)));
     return path.startsWith("docs/backlog/") || inRoot(docsRoot) || (inRoot(instructionsRoot) && ["AGENTS.md", "CLAUDE.md"].includes(path.split("/").at(-1)!));
   });
-  if (selected.length > MAX_FILES) throw new KnowledgeError("limit_exceeded", "Hub source contains too many files.");
+  if (selected.length > limits.projectFiles + 5000) throw new KnowledgeError("limit_exceeded", "Hub source contains too many files.");
   const paths = selected.map(entry => {
     const match = /^(\d+)\s+blob\s+[a-f0-9]+\t(.+)$/.exec(entry);
     if (!match || match[1] === "120000") throw new KnowledgeError("invalid_request", "Hub source contains an unsupported Git entry.");
     return match[2]!;
   });
-  const result = spawnSync("git", ["-C", repository, "cat-file", "--batch"], { input: paths.map(path => `${commit}:${path}\n`).join(""), encoding: null, maxBuffer: MAX_TOTAL_BYTES + 4 * 1024 * 1024 });
+  const result = spawnSync("git", ["-C", repository, "cat-file", "--batch"], { input: paths.map(path => `${commit}:${path}\n`).join(""), encoding: null, maxBuffer: limits.projectBytes + 68 * 1024 * 1024 });
   if (result.error || result.status !== 0 || !result.stdout) throw new KnowledgeError("invalid_request", "Unable to read the requested Git source.");
   const output = result.stdout as Buffer; let offset = 0; let total = 0;
   const files = paths.map(path => {
@@ -120,7 +122,7 @@ function readCommit(repository: string, commit: string): { files: SourceFile[]; 
     if (!Number.isSafeInteger(size) || size < 0 || size > MAX_FILE_BYTES) throw new KnowledgeError("limit_exceeded", "Hub source exceeds import planning limits.");
     offset = newline + 1; const bytes = output.subarray(offset, offset + size); offset += size + 1;
     total += bytes.byteLength;
-    if (bytes.byteLength > MAX_FILE_BYTES || total > MAX_TOTAL_BYTES) throw new KnowledgeError("limit_exceeded", "Hub source exceeds import planning limits.");
+    if (bytes.byteLength > MAX_FILE_BYTES || total > limits.projectBytes + 64 * 1024 * 1024) throw new KnowledgeError("limit_exceeded", "Hub source exceeds import planning limits.");
     return { path, bytes: Buffer.from(bytes) };
   });
   return { files, docsRoot, instructionsRoot };
@@ -159,7 +161,7 @@ export function planHubImportAgainstValidator(options: HubImportPlanOptions, exp
   const resolvedCommit = String(git(repository, ["rev-parse", "--verify", `${options.commit}^{commit}`])).trim();
   if (resolvedCommit !== options.commit) throw new KnowledgeError("invalid_request", "Import source commit could not be resolved exactly.");
   const trusted = verifyValidator(options.validatorRepository, expectedValidatorCommit);
-  const snapshot = readCommit(repository, resolvedCommit);
+  const snapshot = readCommit(repository, resolvedCommit, attachmentLimits(options.limits ?? DEFAULT_ATTACHMENT_LIMITS));
   const files = snapshot.files.sort((a, b) => compareCodePoints(a.path, b.path));
   if (!files.some(file => file.path === "docs/backlog/config.json")) throw new KnowledgeError("invalid_request", "Source commit has no docs/backlog/config.json.");
   const temporary = mkdtempSync(join(tmpdir(), "worktree-switcher-hub-plan-"));
@@ -267,6 +269,8 @@ export function planHubImportAgainstValidator(options: HubImportPlanOptions, exp
     mappings, missing, conflicts, unresolvedRelations,
     guarantees: { dataWritten: false as const, sourceReadFromCommit: true as const, importedRepositoryScriptsExecuted: false as const },
   };
+  const attachmentMappings = mappings.filter(item => item.targetKind === "attachment");
+  assertAttachmentCapacity(attachmentLimits(options.limits ?? DEFAULT_ATTACHMENT_LIMITS), { bytes: 0, files: 0 }, { bytes: attachmentMappings.reduce((sum, item) => sum + item.size, 0), files: attachmentMappings.length }, attachmentMappings.map(item => ({ filename: item.sourcePath, size: item.size })));
   const provisional = { ...base, planId: "", planHash: "" };
   const planHash = calculateHubImportPlanHash(provisional);
   return { ...base, planId: `hub:${sourceId}:${resolvedCommit}:${planHash.slice(0, 16)}`, planHash };

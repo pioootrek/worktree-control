@@ -1,5 +1,5 @@
 import type { KnowledgeTaskPage } from "@/shared/contracts/knowledge";
-import { knowledgeSchemas, type KnowledgeRequest, type KnowledgeFilters, type KnowledgeRelationView } from "@/shared/contracts/knowledge";
+import { knowledgeSchemas, knowledgeRequestLimit, type KnowledgeRequest, type KnowledgeFilters, type KnowledgeRelationView } from "@/shared/contracts/knowledge";
 import { createHash, randomUUID } from "node:crypto";
 
 import type { AuthenticatedPrincipal, IdentityService, KnowledgeProject } from "@/server/modules/identity";
@@ -62,7 +62,7 @@ export class KnowledgeService {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new KnowledgeError("invalid_request", "Invalid knowledge request.");
     const envelope = value as Record<string, unknown>;
     if (Object.keys(envelope).some(key => key !== "operation" && key !== "input") || typeof envelope.operation !== "string" || !Object.hasOwn(knowledgeSchemas, envelope.operation)) throw new KnowledgeError("invalid_request", "Invalid knowledge operation.");
-    const requestLimit = envelope.operation === "create_attachment" ? 14_100_000 : 65536;
+    const requestLimit = knowledgeRequestLimit(envelope.operation);
     if (Buffer.byteLength(JSON.stringify(value), "utf8") > requestLimit) throw new KnowledgeError("limit_exceeded", "Knowledge request exceeds its operation limit.");
     const parsed = knowledgeSchemas[envelope.operation as keyof typeof knowledgeSchemas].safeParse(envelope.input);
     if (!parsed.success) throw new KnowledgeError("invalid_request", "Invalid knowledge input.");
@@ -72,9 +72,15 @@ export class KnowledgeService {
 
   private dispatch(request: KnowledgeRequest, actor: AuthenticatedPrincipal) {
     switch (request.operation) {
+      case "attachment_policy": return this.requireAttachments().policy(request.input.projectId, actor);
+      case "check_attachment_batch": return this.requireAttachments().checkBatch(request.input.projectId, request.input.recordKind, request.input.recordId, request.input.files, actor, request.input.evidence);
       case "attachments": return this.requireAttachments().list(request.input.projectId, request.input.recordKind, request.input.recordId, actor,request.input.limit,request.input.offset);
       case "attachment": { const result = this.requireAttachments().download(request.input.projectId, request.input.attachmentId, actor); return { attachment: result.attachment, disposition: result.disposition, dataBase64: Buffer.from(result.data).toString("base64") }; }
-      case "create_attachment": return this.requireAttachments().upload(request.input.projectId, request.input.recordKind, request.input.recordId, { filename: request.input.filename, mediaType: request.input.mediaType, data: Buffer.from(request.input.dataBase64, "base64"), sha256: request.input.sha256, idempotencyKey: request.input.idempotencyKey }, actor);
+      case "create_attachment": {
+        const data = Buffer.from(request.input.dataBase64, "base64");
+        if (data.toString("base64") !== request.input.dataBase64) throw new KnowledgeError("invalid_request", "Attachment requires canonical padded base64.");
+        return this.notify(request.input.projectId, this.requireAttachments().upload(request.input.projectId, request.input.recordKind, request.input.recordId, { filename: request.input.filename, mediaType: request.input.mediaType, data, sha256: request.input.sha256, idempotencyKey: request.input.idempotencyKey }, actor));
+      }
       case "memories": case "memory": case "create_memory": case "update_memory":
       case "approve_memory": case "archive_memory": case "restore_memory": case "supersede_memory":
       case "search": case "task_context": case "export_context": case "check_context_export":

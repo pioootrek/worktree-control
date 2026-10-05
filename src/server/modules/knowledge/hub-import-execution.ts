@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 
 import type { AuthenticatedPrincipal, AuthenticationMethod, IdentityService } from "@/server/modules/identity";
 import { calculateHubImportPlanHash, planHubImport, type HubImportMapping, type HubImportPlan } from "./hub-import-plan";
+import type { KnowledgeAttachmentLimits } from "@/shared/contracts/knowledge-attachments";
+import { DEFAULT_ATTACHMENT_LIMITS, attachmentLimits, assertAttachmentCapacity } from "./attachment-policy";
 import { KnowledgeError } from "./knowledge-error";
 
 export type HubImportBatchStatus = "staging" | "published" | "failed";
@@ -35,11 +37,12 @@ type NewHubImportBatch = Omit<HubImportBatch, "status" | "cursor" | "createdAt" 
 };
 
 export interface HubImportExecutionStore {
+  findHubImport(input: Pick<NewHubImportBatch, "id" | "sourceId" | "sourceCommit" | "planHash" | "targetProjectId">): HubImportBatch | null;
   beginHubImport(input: NewHubImportBatch, now: string): HubImportBatch;
   getHubImport(batchId: string): HubImportBatch | null;
   resetHubImport(batchId: string, expectedTargetRevision: number | null, now: string): HubImportBatch;
   stageHubImportChunk(batchId: string, expectedCursor: number, mappings: HubImportMapping[], now: string): HubImportBatch;
-  publishHubImport(batchId: string, now: string, attachmentDirectory?: string): HubImportBatch;
+  publishHubImport(batchId: string, now: string, attachmentDirectory?: string, limits?: KnowledgeAttachmentLimits): HubImportBatch;
 }
 
 export interface ExecuteHubImportInput {
@@ -50,6 +53,17 @@ export interface ExecuteHubImportInput {
   chunkSize?: number;
   expectedTargetRevision?: number | null;
   attachmentDirectory?: string;
+  limits?: KnowledgeAttachmentLimits;
+}
+
+function assertBatchIdentity(batch: HubImportBatch, requested: NewHubImportBatch): void {
+  // A retry can use a different current credential; the batch keeps its creation method.
+  if (batch.planId !== requested.planId || batch.planHash !== requested.planHash || batch.sourceId !== requested.sourceId
+    || batch.sourceRepository !== requested.sourceRepository || batch.sourceCommit !== requested.sourceCommit
+    || batch.targetProjectId !== requested.targetProjectId || batch.targetProjectName !== requested.targetProjectName
+    || batch.actorPrincipalId !== requested.actorPrincipalId || batch.totalItems !== requested.totalItems) {
+    throw new KnowledgeError("revision_conflict", "Stored import batch does not match the supplied plan.");
+  }
 }
 
 function validate(input: ExecuteHubImportInput): void {
@@ -82,20 +96,19 @@ export function executeHubImport(
     commit: plan.source.commit,
     sourceId: plan.source.sourceId,
     validatorRepository: plan.validator.repository,
+    limits: input.limits,
   }),
   readSourceFile: (plan: HubImportPlan, path: string) => Buffer = (plan,path) => {
     try{return execFileSync("git",["-C",plan.source.repository,"show",`${plan.source.commit}:${path}`],{encoding:null,maxBuffer:11*1024*1024});}
     catch{throw new KnowledgeError("invalid_request",`Unable to read approved import object: ${path}`);}
   },
 ): HubImportBatch {
-  validate(input);
   identity.requireOwnerSession(actor);
+  validate(input);
+  const limits = attachmentLimits(input.limits ?? DEFAULT_ATTACHMENT_LIMITS);
   const targetProjectId=input.targetProjectId.trim();
-  const verified = verifyPlan(input.plan);
-  if (verified.planId !== input.plan.planId || verified.planHash !== input.plan.planHash) throw new KnowledgeError("revision_conflict", "Import source no longer matches the approved plan.");
-  const now = clock();
   const stableId = `hub-import:${createHash("sha256").update(`${input.plan.planId}\0${targetProjectId}`).digest("hex").slice(0, 24)}`;
-  let batch = store.beginHubImport({
+  const requested: NewHubImportBatch = {
     id: input.batchId ?? stableId,
     planId: input.plan.planId,
     planHash: input.plan.planHash,
@@ -108,12 +121,20 @@ export function executeHubImport(
     actorPrincipalId: actor.principalId,
     authenticationMethod: actor.authenticationMethod,
     totalItems: input.plan.mappings.length,
-  }, now);
-  // A retry can use a different current credential; the batch keeps its creation method.
-  if (batch.planId !== input.plan.planId || batch.planHash !== input.plan.planHash || batch.sourceId !== input.plan.source.sourceId || batch.sourceRepository !== input.plan.source.repository || batch.sourceCommit !== input.plan.source.commit
-    || batch.targetProjectId !== targetProjectId || batch.targetProjectName !== input.targetProjectName.trim() || batch.actorPrincipalId !== actor.principalId || batch.totalItems !== input.plan.mappings.length) {
-    throw new KnowledgeError("revision_conflict", "Stored import batch does not match the supplied plan.");
+  };
+  // A published replay has no admission or source effects. Look up the same identity as beginHubImport.
+  const existing = store.findHubImport(requested);
+  if (existing?.status === "published") {
+    assertBatchIdentity(existing, requested);
+    if (existing.expectedTargetRevision !== requested.expectedTargetRevision) throw new KnowledgeError("revision_conflict", "Stored import batch does not match the supplied plan.");
+    return existing;
   }
+  const files = input.plan.mappings.filter(item => item.targetKind === "attachment");
+  assertAttachmentCapacity(limits, { bytes: 0, files: 0 }, { bytes: files.reduce((sum, file) => sum + file.size, 0), files: files.length }, files.map(file => ({ filename: file.sourcePath, size: file.size })));
+  const verified = verifyPlan(input.plan);
+  if (verified.planId !== input.plan.planId || verified.planHash !== input.plan.planHash) throw new KnowledgeError("revision_conflict", "Import source no longer matches the approved plan.");
+  let batch = store.beginHubImport(requested, clock());
+  assertBatchIdentity(batch, requested);
   const expectedTargetRevision=input.expectedTargetRevision ?? null;
   if (batch.status === "published") {
     if(batch.expectedTargetRevision!==expectedTargetRevision) throw new KnowledgeError("revision_conflict", "Stored import batch does not match the supplied plan.");
@@ -129,7 +150,7 @@ export function executeHubImport(
     return {...mapping,originalPayload:{fileName:mapping.sourcePath.split("/").at(-1),mediaType:"application/octet-stream",dataBase64:bytes.toString("base64")}};
   });
   if (mappings.length) batch = store.stageHubImportChunk(batch.id, batch.cursor, mappings, clock());
-  if (batch.cursor === batch.totalItems) batch = store.publishHubImport(batch.id, clock(),input.attachmentDirectory);
+  if (batch.cursor === batch.totalItems) batch = store.publishHubImport(batch.id, clock(),input.attachmentDirectory,limits);
   return batch;
 }
 

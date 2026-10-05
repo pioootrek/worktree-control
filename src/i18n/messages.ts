@@ -2,6 +2,18 @@ export type Locale = "pl" | "en";
 export type TranslationValues = Record<string, string | number>;
 
 const pl = {
+  "attachmentCapacity.title": "Wykorzystanie załączników",
+  "attachmentCapacity.file": "Limit jednego pliku",
+  "attachmentCapacity.bytes": "Bajty projektu",
+  "attachmentCapacity.records": "Rekordy załączników",
+  "attachmentCapacity.recordsUnit": "rekordów",
+  "attachmentCapacity.usage": "{used} / {limit}",
+  "attachmentCapacity.remaining": "Pozostało: {value}",
+  "attachmentCapacity.accounting": "Kwota logiczna liczy każdy rekord i jego bajty, także wspólne hashe i zarchiwizowane treści. Nie jest pomiarem zajętości ani wolnego miejsca na dysku.",
+  "attachmentCapacity.exceeded": "Przekroczona kwota. Nowe zapisy wymagają sprawdzenia pojemności.",
+  "attachmentCapacity.within": "W granicach kwoty projektu. Zapis ponownie sprawdza pojemność.",
+  "attachmentCapacity.denied": "Brak uprawnienia do odczytu wykorzystania załączników.",
+
   "userBackups.credential": "Poświadczenie zakresowe",
   "userBackups.credentialHelp": "Podaj sesję właściciela lub token agenta. Ta sesja dotyczy tylko własnych harmonogramów i nie zmienia sesji instalacji.",
   "userBackups.connect": "Połącz harmonogramy",
@@ -892,6 +904,18 @@ const pl = {
 } as const;
 
 const en: Record<keyof typeof pl, string> = {
+  "attachmentCapacity.title": "Attachment capacity",
+  "attachmentCapacity.file": "Single file limit",
+  "attachmentCapacity.bytes": "Project bytes",
+  "attachmentCapacity.records": "Attachment records",
+  "attachmentCapacity.recordsUnit": "records",
+  "attachmentCapacity.usage": "{used} / {limit}",
+  "attachmentCapacity.remaining": "Remaining: {value}",
+  "attachmentCapacity.accounting": "Logical quota counts each record and its bytes, including shared hashes and archived content. It does not measure occupied or free disk space.",
+  "attachmentCapacity.exceeded": "Quota exceeded. New writes require a capacity check.",
+  "attachmentCapacity.within": "Within project quota. Writes recheck capacity.",
+  "attachmentCapacity.denied": "Attachment usage read permission is required.",
+
   "userBackups.credential": "Scoped credential",
   "userBackups.credentialHelp": "Enter an owner session or agent token. This session is only for your schedules and leaves the installation session unchanged.",
   "userBackups.connect": "Connect schedules",

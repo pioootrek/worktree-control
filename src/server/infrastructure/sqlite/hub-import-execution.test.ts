@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { IdentityService } from "@/server/modules/identity";
 import { AuthenticationService } from "@/server/modules/authentication";
@@ -26,6 +26,82 @@ function fixture(){const root=mkdtempSync(join(tmpdir(),"hub-import-execution-")
 const execute=(store:SqliteStateStore,identity:IdentityService,owner:ReturnType<IdentityService["authenticateBearer"]>,input:Parameters<typeof executeHubImport>[3])=>executeHubImport(store,identity,owner,input,()=>NOW,plan=>plan);
 
 describe("K6b Hub import execution",()=>{
+  it("shares attachment admission with upload/export and rechecks accumulated usage at publication", () => {
+    const f = fixture(), directory = join(f.root, "attachments"), bytes = Buffer.from("proof");
+    const note = mapping("docs/backlog/notes/N/note.json", "note", "memory", { id: "N", title: "Proof", body: "Proof" });
+    const attachment = mapping("docs/backlog/notes/N/proof.txt", "attachment", "attachment", {});
+    attachment.size = bytes.byteLength; attachment.sourceSha256 = createHash("sha256").update(bytes).digest("hex");
+    const source = plan([note, attachment]), limits = { fileBytes: 5, projectBytes: 5, projectFiles: 1 };
+    const run = (value: HubImportPlan, expectedTargetRevision?: number, policy = limits) => executeHubImport(f.store, f.identity, f.owner,
+      { plan: value, targetProjectId: "quota", targetProjectName: "Quota", attachmentDirectory: directory, expectedTargetRevision, limits: policy }, () => NOW, value => value, () => bytes);
+    expect(() => run(source, undefined, { fileBytes: 4, projectBytes: 4, projectFiles: 1 })).toThrowError(expect.objectContaining({ code: "limit_exceeded" }));
+    expect(run(source).status).toBe("published"); expect(run(source).status).toBe("published");
+    const secondAttachment = { ...attachment, sourcePath: "docs/backlog/notes/N/second.txt" }, second = atCommit(plan([note, attachment, secondAttachment]), "f".repeat(40));
+    expect(() => run(second, 1)).toThrowError(expect.objectContaining({ details: expect.objectContaining({ violations: expect.arrayContaining([expect.objectContaining({ constraint: "projectBytes" }), expect.objectContaining({ constraint: "projectFiles" })]) }) }));
+    // A source which fits by itself must also include attachments retained from older imports.
+    const third = atCommit(plan([note, secondAttachment]), "b".repeat(40));
+    expect(() => run(third, 1)).toThrowError(expect.objectContaining({ code: "limit_exceeded" }));
+    expect(f.store.attachmentBytesForProject("quota")).toBe(5); expect(f.store.getKnowledgeProject("quota")?.revision).toBe(1);
+    expect(run(atCommit(source, "c".repeat(40)), 1).status).toBe("published");
+    expect(f.store.attachmentCountForProject("quota")).toBe(1); f.store.close();
+  });
+  it.each([
+    { fileBytes: 4, projectBytes: 10, projectFiles: 2 },
+    { fileBytes: 5, projectBytes: 5, projectFiles: 2 },
+    { fileBytes: 5, projectBytes: 10, projectFiles: 1 },
+    { fileBytes: 4, projectBytes: 5, projectFiles: 1 },
+  ])("replays published imports after lowering policy to %j without source or write effects", limits => {
+    const f = fixture(), bytes = Buffer.from("proof"), directory = join(f.root, "attachments");
+    const note = mapping("docs/backlog/notes/N/note.json", "note", "memory", { id: "N", title: "Proof", body: "Proof" });
+    const attachment = { ...mapping("docs/backlog/notes/N/proof.txt", "attachment", "attachment", {}), size: bytes.byteLength, sourceSha256: createHash("sha256").update(bytes).digest("hex") };
+    const source = plan([note, attachment, { ...attachment, sourcePath: "docs/backlog/notes/N/second.txt" }]);
+    const input = { plan: source, targetProjectId: "replay", targetProjectName: "Replay", batchId: "custom-batch", attachmentDirectory: directory };
+    const published = executeHubImport(f.store, f.identity, f.owner, input, () => NOW, value => value, () => bytes);
+    const before = f.store.exportKnowledgeProject("replay"), begin = vi.spyOn(f.store, "beginHubImport");
+    const verify = vi.fn(() => { throw new Error("Source unavailable or rejected by the new policy"); }), read = vi.fn();
+    const run = (patch: Partial<typeof input> & { limits?: typeof limits; expectedTargetRevision?: number } = {}, actor = f.owner) => executeHubImport(f.store, f.identity, actor, { ...input, limits, ...patch }, () => NOW, verify, read);
+    expect(run()).toEqual(published);
+    // Deduplication also uses source/commit/hash/target, including a retry without the original custom batch ID.
+    expect(run({ batchId: undefined })).toEqual(published);
+    expect(run({ batchId: "different-batch" })).toEqual(published);
+    for (const patch of [{ targetProjectName: "Changed" }, { targetProjectId: "other" }, { expectedTargetRevision: 1 }, { plan: atCommit(source, "f".repeat(40)) }]) {
+      expect(() => run(patch)).toThrowError(expect.objectContaining({ code: "revision_conflict" }));
+    }
+    expect(() => run({ plan: { ...source, planHash: "0".repeat(64) } })).toThrowError(expect.objectContaining({ code: "revision_conflict" }));
+    f.identity.revokeCredential(f.owner.credentialId, f.owner);
+    expect(() => run()).toThrowError(expect.objectContaining({ code: "invalid_credential" }));
+    expect(verify).not.toHaveBeenCalled(); expect(read).not.toHaveBeenCalled(); expect(begin).not.toHaveBeenCalled();
+    expect(f.store.exportKnowledgeProject("replay")).toEqual(before);
+    expect(f.store.getHubImport("different-batch")).toBeNull();
+    f.store.close();
+  });
+
+  it("still admits and verifies new, staging and failed imports under the current policy", () => {
+    const f = fixture(), bytes = Buffer.from("proof"), directory = join(f.root, "attachments");
+    const note = mapping("docs/backlog/notes/N/note.json", "note", "memory", { id: "N", title: "Proof", body: "Proof" });
+    const attachment = { ...mapping("docs/backlog/notes/N/proof.txt", "attachment", "attachment", {}), size: bytes.byteLength, sourceSha256: createHash("sha256").update(bytes).digest("hex") };
+    const input = { plan: plan([note, attachment]), targetProjectId: "pending", targetProjectName: "Pending", batchId: "pending-batch", attachmentDirectory: directory, chunkSize: 1 };
+    const low = { fileBytes: 4, projectBytes: 4, projectFiles: 1 }, verify = vi.fn((value: HubImportPlan) => value);
+    const run = (limits = { fileBytes: 5, projectBytes: 5, projectFiles: 1 }) => executeHubImport(f.store, f.identity, f.owner, { ...input, limits }, () => NOW, verify, () => bytes);
+    expect(() => run(low)).toThrowError(expect.objectContaining({ code: "limit_exceeded" }));
+    expect(f.store.getHubImport(input.batchId)).toBeNull();
+    expect(run()).toMatchObject({ status: "staging", cursor: 1 });
+    verify.mockClear();
+    expect(() => run(low)).toThrowError(expect.objectContaining({ code: "limit_exceeded" }));
+    expect(f.store.getHubImport(input.batchId)).toMatchObject({ status: "staging", cursor: 1 });
+    verify.mockImplementationOnce(() => { throw new Error("Source unavailable"); });
+    expect(run).toThrow("Source unavailable");
+    const outside = join(f.root, "outside"); mkdirSync(directory); mkdirSync(outside);
+    symlinkSync(outside, join(directory, attachment.sourceSha256.slice(0, 2)));
+    expect(run).toThrow();
+    expect(f.store.getHubImport(input.batchId)).toMatchObject({ status: "failed", cursor: 2 });
+    expect(() => run(low)).toThrowError(expect.objectContaining({ code: "limit_exceeded" }));
+    expect(f.store.getHubImport(input.batchId)).toMatchObject({ status: "failed", cursor: 2 });
+    verify.mockImplementationOnce(() => { throw new Error("Source unavailable"); });
+    expect(run).toThrow("Source unavailable");
+    expect(f.store.getKnowledgeProject("pending")).toBeNull(); f.store.close();
+  });
+
   it("upgrades schema 26 preserving the target provenance index",()=>{
     const f=fixture(),path=join(f.root,"state.sqlite3");f.store.close();
     const legacy=new Database(path);stripMigrationProvenance(legacy); legacy.exec("DROP INDEX knowledge_import_sources_target; DELETE FROM schema_migrations WHERE version >= 27");legacy.close();

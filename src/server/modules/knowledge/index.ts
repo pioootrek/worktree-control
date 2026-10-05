@@ -3,6 +3,8 @@ export type { KnowledgeErrorCode, KnowledgeWriteOptions } from "./knowledge-serv
 export type * from "./contracts";
 export { knowledgeFailure } from "./knowledge-failure";
 export { KnowledgeAttachmentService } from "./attachment-service";
+export { DEFAULT_ATTACHMENT_LIMITS, attachmentLimits, attachmentViolations, assertAttachmentCapacity } from "./attachment-policy";
+export { loadAttachmentLimits } from "./attachment-policy-config";
 export type { KnowledgeProjectSnapshot } from "./contracts";
 export { exportKnowledgeProject, importKnowledgeProject } from "./project-transfer";
 export { PINNED_HUB_VALIDATOR_COMMIT, calculateHubImportPlanHash, planHubImport } from "./hub-import-plan";

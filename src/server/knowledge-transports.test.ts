@@ -22,7 +22,7 @@ import type { KnowledgeTask, KnowledgeThread, KnowledgePage } from "@/shared/con
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
-async function setup(clock?: () => string) {
+async function setup(clock?: () => string, limits?: import("@/shared/contracts/knowledge-attachments").KnowledgeAttachmentLimits) {
   const directory = mkdtempSync(join(tmpdir(), "knowledge-transports-"));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   writeFileSync(join(directory, "index.html"), "<title>Knowledge</title>");
@@ -44,7 +44,7 @@ async function setup(clock?: () => string) {
   }
   const events = new EventStream();
   cleanups.push(() => events.close());
-  const attachmentDirectory=join(directory,"attachments"); const attachmentService=new KnowledgeAttachmentService(store,identity,attachmentDirectory);
+  const attachmentDirectory=join(directory,"attachments"); const attachmentService=new KnowledgeAttachmentService(store,identity,attachmentDirectory,limits);
   const knowledge = new KnowledgeService(store, identity, undefined, undefined, events.publishKnowledge,attachmentService);
   const git = { list: vi.fn(() => { throw new Error("Knowledge must not scan Git"); }) };
   const processes = new ProcessManager();
@@ -75,6 +75,76 @@ async function setup(clock?: () => string) {
 }
 
 describe("real knowledge HTTP, MCP and CLI", () => {
+  it("preflights a whole manifest above 1 MiB consistently across transports", async () => {
+    const f = await setup(), projectId = f.project.id;
+    const task = (await f.call(0, "create_task", { projectId, title: "Manifest", description: "Manifest", idempotencyKey: "manifest-task" })).value.value;
+    const input = { projectId, recordKind: "task", recordId: task.id,
+      files: Array.from({ length: 5001 }, (_, index) => ({ filename: `${"proof".repeat(35)}-${index}.txt`, size: 1, sha256: "a".repeat(64) })) };
+    expect(Buffer.byteLength(JSON.stringify(input))).toBeGreaterThan(1024 * 1024);
+    const http = await (await f.http("check_attachment_batch", input)).json();
+    expect(http).toMatchObject({ incoming: { bytes: 5001, files: 5001 }, accepted: false, violations: [expect.objectContaining({ constraint: "projectFiles" })] });
+    expect((await f.call(0, "check_attachment_batch", input)).value).toEqual(http);
+    const lines: string[] = [];
+    await runKnowledgeCommand(["check_attachment_batch", "--json", JSON.stringify(input)], f.paths, { environment: { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: line => lines.push(line) });
+    expect(JSON.parse(lines[0])).toEqual(http);
+  });
+
+  it("admits one of two concurrent HTTP writes after non-reserving preflights and replays the winner", async () => {
+    const f = await setup(undefined, { fileBytes: 10, projectBytes: 10, projectFiles: 1 }), projectId = f.project.id;
+    const task = (await f.call(0, "create_task", { projectId, title: "Race", description: "Race", idempotencyKey: "race-task" })).value.value;
+    const uploads = ["left", "right"].map(key => ({ projectId, recordKind: "task", recordId: task.id, filename: `${key}.bin`, mediaType: "application/octet-stream", dataBase64: Buffer.alloc(10).toString("base64"), idempotencyKey: key }));
+    for (const upload of uploads) {
+      expect((await f.call(0, "check_attachment_batch", { projectId, recordKind: "task", recordId: task.id, files: [{ filename: upload.filename, size: 10, sha256: "a".repeat(64) }] })).value.accepted).toBe(true);
+    }
+    const responses = await Promise.all(uploads.map(upload => f.http("create_attachment", upload)));
+    expect(responses.map(response => response.status).sort()).toEqual([200, 413]);
+    const winner = responses.findIndex(response => response.status === 200);
+    expect((await (await f.http("create_attachment", uploads[winner])).json()).replayed).toBe(true);
+    expect((await f.call(1, "attachment_policy", { projectId })).value.used).toEqual({ bytes: 10, files: 1 });
+  });
+  it("carries the advertised 10 MiB file boundary through MCP and rejects one extra decoded byte", async () => {
+    const f = await setup(), projectId = f.project.id;
+    const task = (await f.call(0, "create_task", { projectId, title: "Boundary", description: "Boundary", idempotencyKey: "boundary-task" })).value.value;
+    const input = { projectId, recordKind: "task", recordId: task.id, filename: "boundary.bin", mediaType: "application/octet-stream", dataBase64: Buffer.alloc(10 * 1024 * 1024, 7).toString("base64"), idempotencyKey: "boundary" };
+    const saved = await f.call(0, "create_attachment", input);
+    expect(saved.result.isError).not.toBe(true); expect(saved.value.value.size).toBe(10 * 1024 * 1024);
+    expect((await f.call(0, "create_attachment", input)).value.replayed).toBe(true);
+    expect((await f.call(0, "create_attachment", { ...input, dataBase64: Buffer.alloc(10 * 1024 * 1024 + 1, 7).toString("base64"), idempotencyKey: "over-file" })).value).toMatchObject({ code: "limit_exceeded", details: { violations: [expect.objectContaining({ constraint: "fileBytes", incoming: 10 * 1024 * 1024 + 1 })] } });
+  }, 20000);
+  it("shares capacity/preflight across HTTP, MCP and CLI, checks grants and documents preparation", async () => {
+    const f = await setup(undefined, { fileBytes: 10, projectBytes: 10, projectFiles: 1 }), projectId = f.project.id;
+    const task = (await (await f.http("create_task", { projectId, title: "Proof", description: "Proof", idempotencyKey: "proof-task" })).json()).value;
+    const policy = await (await f.http("attachment_policy", { projectId })).json();
+    expect((await f.call(0, "attachment_policy", { projectId })).value).toEqual(policy);
+    const lines: string[] = [];
+    await runKnowledgeCommand(["attachment_policy", "--json", JSON.stringify({ projectId })], f.paths, { environment: { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: line => lines.push(line) });
+    expect(JSON.parse(lines[0])).toEqual(policy);
+    const input = { projectId, recordKind: "task", recordId: task.id, files: [{ filename: "proof.txt", size: 1, sha256: "a".repeat(64) }] };
+    const checked = await (await f.http("check_attachment_batch", input)).json();
+    expect((await f.call(1, "check_attachment_batch", input)).value).toEqual(checked);
+    await runKnowledgeCommand(["check_attachment_batch", "--json", JSON.stringify(input)], f.paths, { environment: { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: line => lines.push(line) });
+    expect(JSON.parse(lines[1])).toEqual(checked);
+    const exceeded = { ...input, files: [{ ...input.files[0], size: policy.limits.projectBytes + 1 }] };
+    expect((await f.call(0, "check_attachment_batch", exceeded)).value).toMatchObject({ accepted: false, violations: [expect.objectContaining({ constraint: "fileBytes" }), expect.objectContaining({ constraint: "projectBytes" })] });
+    expect((await f.http("attachment_policy", { projectId: f.privateProject.id }, f.agentTokens[0])).status).toBe(403);
+    const tools = (await f.clients[0].listTools()).tools;
+    expect(tools.find(tool => tool.name === "knowledge_create_attachment")?.description).toContain("canonical padded RFC 4648 base64");
+    expect(tools.find(tool => tool.name === "knowledge_check_attachment_batch")?.annotations?.readOnlyHint).toBe(true);
+    const empty = { projectId, recordKind: "task", recordId: task.id, filename: "empty", mediaType: "text/plain", dataBase64: "", idempotencyKey: "empty" };
+    expect((await f.call(0, "create_attachment", empty)).value.code).toBe("invalid_request");
+    expect((await f.http("create_attachment", empty)).status).toBe(400);
+    const upload = { ...empty, filename: "proof", dataBase64: Buffer.alloc(10).toString("base64"), idempotencyKey: "proof" };
+    expect((await f.http("create_attachment", upload)).status).toBe(200);
+    const rejected = { ...upload, idempotencyKey: "over" };
+    const response = await f.http("create_attachment", rejected), failure = await response.json();
+    expect(response.status).toBe(413);
+    expect((await f.call(0, "create_attachment", rejected)).value).toEqual(failure);
+    await expect(runKnowledgeCommand(["create_attachment", "--json", JSON.stringify(rejected)], f.paths, { environment: { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: f.agentTokens[0] } })).rejects.toThrow(JSON.stringify(failure));
+    expect(failure.details.violations.map((item: { constraint: string }) => item.constraint)).toEqual(["projectBytes", "projectFiles"]);
+    f.identity.revokeKnowledgeGrant(f.agents[0], projectId, f.owner);
+    expect((await f.call(0, "attachment_policy", { projectId })).value.code).toBe("knowledge_forbidden");
+    expect((await f.call(0, "check_attachment_batch", input)).value.code).toBe("knowledge_forbidden");
+  });
   it("accepts a bounded attachment through real HTTP and CLI transports", async () => {
     const f=await setup(); const taskResponse=await f.http("create_task",{projectId:f.project.id,title:"Target",description:"Target",idempotencyKey:"target"});
     const task=(await taskResponse.json() as {value:{id:string}}).value;

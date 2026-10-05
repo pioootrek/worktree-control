@@ -164,6 +164,13 @@ const query = z.string().trim().max(200).optional();
 export const knowledgeStatus = z.enum(["open", "in_progress", "blocked", "done", "archived"]);
 export const knowledgePriority = z.enum(["now", "next", "later"]);
 const record = { ...project, recordId: id, recordKind: z.enum(["thread", "reply", "task", "memory"]) };
+const filename = z.string().min(1).max(255).refine(value => value !== "." && value !== ".." && !/[/\\\u0000-\u001f\u007f]/.test(value));
+const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
+export const knowledgeEvidenceSchema = z.strictObject({
+  setId: id, taskId: id, commit: z.string().regex(/^[a-f0-9]{40}([a-f0-9]{24})?$/),
+  command: z.string().trim().min(1).max(4096), result: z.enum(["passed", "failed", "interrupted", "inconclusive"]),
+  executedAt: z.string().datetime({ offset: true }), scope: z.string().trim().min(1).max(4096),
+});
 
 /** One validated application contract for HTTP, MCP and CLI. */
 export const knowledgeSchemas = {
@@ -187,11 +194,21 @@ export const knowledgeSchemas = {
   restore_project: z.strictObject({ ...project, ...write, ...revision }),
   link_runtime: z.strictObject({ ...project, ...write, ...revision, runtimeProjectId: id.nullable() }),
   attachments: z.strictObject({ ...record, ...page }),
+  attachment_policy: z.strictObject({ ...project }),
+  check_attachment_batch: z.strictObject({ ...record, files: z.array(z.strictObject({
+    filename, size: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), sha256,
+    mediaType: z.string().min(1).max(255).optional(), idempotencyKey: write.idempotencyKey.optional(),
+  }).refine(file => !file.idempotencyKey || !!file.mediaType)).min(1).max(10000), evidence: knowledgeEvidenceSchema.optional() }),
   attachment: z.strictObject({ ...project, attachmentId: id }),
-  create_attachment: z.strictObject({ ...record, ...write, filename: z.string().min(1).max(255), mediaType: z.string().min(1).max(255),
-    dataBase64: z.string().max(14_000_000), sha256: z.string().regex(/^[a-f0-9]{64}$/).optional() }),
+  create_attachment: z.strictObject({ ...record, ...write, filename, mediaType: z.string().min(1).max(255),
+    dataBase64: z.string().max(14_000_000).regex(/^[A-Za-z0-9+/]*={0,2}$/), sha256: sha256.optional() }),
 };
 export type KnowledgeOperation = keyof typeof knowledgeSchemas;
 export type KnowledgeInput<K extends KnowledgeOperation> = z.infer<(typeof knowledgeSchemas)[K]>;
 export type KnowledgeRequest = { [K in KnowledgeOperation]: { operation: K; input: KnowledgeInput<K> } }[KnowledgeOperation];
-export interface KnowledgeFailure { code: string; error: string; currentRevision?: number }
+export interface KnowledgeFailure { code: string; error: string; currentRevision?: number;
+  details?: { violations: import("./knowledge-attachments").KnowledgeLimitViolation[]; recovery: string } }
+
+export function knowledgeRequestLimit(operation: string): number {
+  return operation === "create_attachment" ? 14_100_000 : operation === "check_attachment_batch" ? 4 * 1024 * 1024 : 65536;
+}
