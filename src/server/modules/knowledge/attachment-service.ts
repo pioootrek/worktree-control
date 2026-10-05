@@ -78,7 +78,9 @@ export class KnowledgeAttachmentService {
       incoming.bytes += file.size; incoming.files++; pending.push(file);
       if (!Number.isSafeInteger(incoming.bytes)) throw new KnowledgeError("invalid_request", "Manifest byte total is not a safe integer.");
     }
-    const policy = this.policy(projectId, actor), violations = attachmentViolations(this.limits, policy.used, incoming, pending);
+    const policy = this.policy(projectId, actor);
+    // Verified replays add no records; existing overages remain visible in policy.exceeded.
+    const violations = incoming.files ? attachmentViolations(this.limits, policy.used, incoming, pending) : [];
     return { policy, incoming, violations, accepted: violations.length === 0, replayedFiles, reservesCapacity: false, atomicUpload: false, ...(evidence ? { evidence } : {}) };
   }
 

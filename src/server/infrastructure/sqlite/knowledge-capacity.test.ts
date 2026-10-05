@@ -80,6 +80,31 @@ describe("Knowledge logical capacity and evidence preflight", () => {
     expect(() => check([f.entry("x", 1), f.entry("x", 1)])).toThrowError(expect.objectContaining({ code: "invalid_request" }));
   });
 
+  it.each([
+    [{ fileBytes: 5, projectBytes: 20, projectFiles: 2 }, ["fileBytes"], ["fileBytes", "projectBytes", "projectFiles"]],
+    [{ fileBytes: 10, projectBytes: 12, projectFiles: 2 }, ["projectBytes"], ["projectBytes", "projectFiles"]],
+    [{ fileBytes: 10, projectBytes: 20, projectFiles: 1 }, ["projectFiles"], ["projectBytes", "projectFiles"]],
+    [{ fileBytes: 5, projectBytes: 12, projectFiles: 1 }, ["projectBytes", "projectFiles", "fileBytes"], ["fileBytes", "projectBytes", "projectFiles"]],
+  ] as const)("accepts only verified replays after lowering policy to %j", (limits, exceeded, incomingViolations) => {
+    const f = fixture(), first = f.upload("a", 10).value, second = f.upload("b", 10).value;
+    const lower = new KnowledgeAttachmentService(f.store, f.identity, f.directory, limits);
+    const check = (files: ReturnType<typeof f.entry>[]) => lower.checkBatch(f.project.id, "task", f.task.id, files, f.owner);
+    const replay = check([f.entry("a", 10), f.entry("b", 10)]);
+    expect(replay).toMatchObject({ accepted: true, incoming: { bytes: 0, files: 0 }, violations: [], replayedFiles: ["a.bin", "b.bin"], reservesCapacity: false });
+    expect(replay.policy.exceeded.map(item => item.constraint)).toEqual(exceeded);
+    expect(lower.upload(f.project.id, "task", f.task.id, { filename: "a.bin", mediaType: "application/octet-stream", data: Buffer.alloc(10, 1), idempotencyKey: "a" }, f.owner)).toEqual({ value: first, replayed: true });
+    const mixed = check([f.entry("a", 10), f.entry("new", 10)]);
+    expect(mixed).toMatchObject({ accepted: false, incoming: { bytes: 10, files: 1 }, replayedFiles: ["a.bin"] });
+    expect(mixed.violations.map(item => item.constraint)).toEqual(incomingViolations);
+    expect(() => check([{ ...f.entry("a", 10), size: 9 }])).toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    expect(() => check([f.entry("a", 9)])).toThrowError(expect.objectContaining({ code: "idempotency_conflict" }));
+    expect(f.store.listAttachments(f.project.id, "task", f.task.id, 25, 0).items).toEqual(expect.arrayContaining([first, second]));
+    expect(lower.policy(f.project.id, f.owner).used).toEqual({ bytes: 20, files: 2 });
+    f.identity.revokeKnowledgeGrant(f.owner.principalId, f.project.id, f.owner);
+    expect(() => check([f.entry("a", 10)])).toThrowError(expect.objectContaining({ code: "knowledge_forbidden" }));
+    expect(() => lower.upload(f.project.id, "task", f.task.id, { filename: "a.bin", mediaType: "application/octet-stream", data: Buffer.alloc(10, 1), idempotencyKey: "a" }, f.owner)).toThrowError(expect.objectContaining({ code: "knowledge_forbidden" }));
+  });
+
   it("serializes competing services and retries, and checks admission inside the metadata transaction", async () => {
     const f = fixture({ fileBytes: 10, projectBytes: 10, projectFiles: 1 });
     const other = new KnowledgeAttachmentService(f.store, f.identity, f.directory, { fileBytes: 10, projectBytes: 10, projectFiles: 1 });

@@ -1,6 +1,6 @@
 ---
 audience: "operators and agents preparing Knowledge evidence"
-last_reviewed: "2026-10-04"
+last_reviewed: "2026-10-05"
 source_of_truth: "Knowledge attachment admission and evidence preparation contract"
 status: "active"
 ---
@@ -24,7 +24,10 @@ unreferenced objects. Removing worktrees or archiving tasks frees no quota.
 Existing attachments, history and links are preserved without migration.
 Reads and downloads remain authorized even above the configured limits or on
 archived projects. New writes and transfers must fit the policy; an identical
-committed upload retry does not charge again. Lowering policy does not delete
+committed upload retry does not charge again. A matching published Hub import
+retry returns its saved result after current authorization and identity checks,
+without replanning the source or admitting new data. New, staging and failed
+imports still validate the source and current policy. Lowering policy does not delete
 data. A project above policy can use full-controller backup, or an operator
 can review the supported installation policy before a logical export.
 Deletion and retention are separate planned stages and are not implemented here.
@@ -74,6 +77,8 @@ A preflight manifest contains 1–10000 entries, unique `filename`, positive
 integer `size` in decoded bytes and lowercase 64-character `sha256`. Requests
 are bounded to 4 MiB. With both `mediaType` and `idempotencyKey`, preflight can
 exclude an identical committed retry for the same actor, project and target.
+An entirely replayed set is accepted even above current policy; existing
+overages remain in `policy.exceeded`. Mixed sets must admit all new files.
 It rejects conflicting keys or declared sizes inconsistent with saved content.
 The manifest declares content; it cannot verify bytes that have not arrived.
 

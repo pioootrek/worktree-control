@@ -97,11 +97,16 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     };
   }
 
+  findHubImport(input: Parameters<HubImportExecutionStore["findHubImport"]>[0]): HubImportBatch | null {
+    const row = this.database.prepare("SELECT * FROM knowledge_import_batches WHERE id = ? OR (source_id = ? AND source_commit = ? AND plan_hash = ? AND target_project_id = ?)")
+      .get(input.id, input.sourceId, input.sourceCommit, input.planHash, input.targetProjectId) as Record<string, unknown> | undefined;
+    return row ? this.mapHubImportBatch(row) : null;
+  }
+
   beginHubImport(input: Omit<HubImportBatch, "status" | "cursor" | "createdAt" | "updatedAt" | "publishedAt" | "error" | "authenticationMethod"> & {authenticationMethod: AuthenticationMethod}, now: string): HubImportBatch {
     return this.database.transaction(() => {
-      const existing = this.database.prepare("SELECT * FROM knowledge_import_batches WHERE id = ? OR (source_id = ? AND source_commit = ? AND plan_hash = ? AND target_project_id = ?)")
-        .get(input.id, input.sourceId, input.sourceCommit, input.planHash, input.targetProjectId) as Record<string, unknown> | undefined;
-      if (existing) return this.mapHubImportBatch(existing);
+      const existing = this.findHubImport(input);
+      if (existing) return existing;
       const target=this.database.prepare("SELECT name,revision FROM knowledge_projects WHERE id = ?").get(input.targetProjectId) as {name:string;revision:number}|undefined;
       if(input.expectedTargetRevision===null ? Boolean(target) : !target||target.revision!==input.expectedTargetRevision||target.name!==input.targetProjectName) throw new KnowledgeError("revision_conflict", "Import target revision or identity changed.");
       this.database.prepare(`INSERT INTO knowledge_import_batches
