@@ -112,7 +112,7 @@ describe("GitCommandAdmission", () => {
 
 describe("SystemGitWorktreeReader.observe", () => {
   it("records bounded clean and dirty status evidence without paths", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-source-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-source-"));
     try {
       execFileSync("git", ["init", "-q", "-b", "main", directory]);
       execFileSync("git", ["-C", directory, "config", "user.email", "test@example.invalid"]);

@@ -19,7 +19,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Worktree Switcher",
+  title: "Worktree Control",
   description: "A local control plane for worktree-backed development servers.",
 };
 

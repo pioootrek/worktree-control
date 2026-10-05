@@ -11,7 +11,7 @@ describe("service install arguments", () => {
       browseRoot: "/srv/projects",
       dataDirectory: "/srv/data",
       stateDirectory: "/srv/state",
-      webRoot: "/opt/worktree-switcher/out",
+      webRoot: "/opt/worktree-control/out",
       noMcp: false,
       memoryWarningMiB: null,
       publicOrigin: "https://switcher.example.test",
@@ -23,7 +23,7 @@ describe("service install arguments", () => {
       "--browse-root", "/srv/projects",
       "--data-dir", "/srv/data",
       "--state-dir", "/srv/state",
-      "--web-root", "/opt/worktree-switcher/out",
+      "--web-root", "/opt/worktree-control/out",
       "--public-url", "https://switcher.example.test",
     ]);
   });

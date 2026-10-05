@@ -19,7 +19,7 @@ afterEach(() => {
 });
 describe("DirectoryBrowser", () => {
   it("returns only directories and provides bounded parent navigation", async () => {
-    const root = temporaryDirectory("worktree-switcher-browser-");
+    const root = temporaryDirectory("worktree-control-browser-");
     mkdirSync(join(root, "beta"));
     mkdirSync(join(root, "Alpha"));
     const browser = new DirectoryBrowser(root);
@@ -34,8 +34,8 @@ describe("DirectoryBrowser", () => {
   });
 
   it("rejects direct and symlinked paths outside the configured root", async () => {
-    const root = temporaryDirectory("worktree-switcher-browser-root-");
-    const outside = temporaryDirectory("worktree-switcher-browser-outside-");
+    const root = temporaryDirectory("worktree-control-browser-root-");
+    const outside = temporaryDirectory("worktree-control-browser-outside-");
     symlinkSync(outside, join(root, "escape"));
     const browser = new DirectoryBrowser(root);
 
@@ -44,7 +44,7 @@ describe("DirectoryBrowser", () => {
   });
 
   it("lists only certificate-related files when explicitly requested", async () => {
-    const root = temporaryDirectory("worktree-switcher-browser-certs-");
+    const root = temporaryDirectory("worktree-control-browser-certs-");
     writeFileSync(join(root, "dev-key.pem"), "key");
     writeFileSync(join(root, "dev.crt"), "cert");
     writeFileSync(join(root, "notes.txt"), "ignore");

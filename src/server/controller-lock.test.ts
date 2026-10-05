@@ -14,7 +14,7 @@ afterEach(() => {
 
 describe("acquireControllerLock", () => {
   it("rejects another live controller and releases only its own lock", () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-lock-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-lock-"));
     directories.push(directory);
     const path = join(directory, "state", "controller.lock");
     const lock = acquireControllerLock(path);
@@ -27,7 +27,7 @@ describe("acquireControllerLock", () => {
   });
 
   it("preserves an incomplete lock until it can be inspected", () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-lock-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-lock-"));
     directories.push(directory);
     const path = join(directory, "controller.lock");
     writeFileSync(path, "not-json");
@@ -37,7 +37,7 @@ describe("acquireControllerLock", () => {
   });
 
   it("replaces a complete lock only after its owner is gone", () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-lock-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-lock-"));
     directories.push(directory);
     const path = join(directory,"controller.lock");
     writeFileSync(path, JSON.stringify({pid:2147483647,token:"stale",startedAt:"now"}));

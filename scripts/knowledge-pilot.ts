@@ -32,8 +32,8 @@ save("pilot.json", { implementation, sourceDirty, repository: resolve(repository
 const pathArgs = ["--data-dir", join(root, "data"), "--state-dir", join(root, "state")];
 const cli = (args: string[], token?: string) => {
   const environment = { ...process.env };
-  for (const name of ["WORKTREE_SWITCHER_TOKEN", "WORKTREE_SWITCHER_OWNER_TOKEN", "WORKTREE_SWITCHER_KNOWLEDGE_TOKEN", "WORKTREE_SWITCHER_DATA_DIR", "WORKTREE_SWITCHER_STATE_DIR"]) delete environment[name];
-  if (token) environment.WORKTREE_SWITCHER_TOKEN = token;
+  for (const name of ["TOKEN", "OWNER_TOKEN", "KNOWLEDGE_TOKEN", "DATA_DIR", "STATE_DIR"].flatMap((suffix) => [`WORKTREE_CONTROL_${suffix}`, `WORKTREE_SWITCHER_${suffix}`])) delete environment[name];
+  if (token) environment.WORKTREE_CONTROL_TOKEN = token;
   const result = spawnSync(process.execPath, ["--import", "tsx", "src/cli/index.ts", ...args, ...pathArgs], { encoding: "utf8", env: environment, timeout: 60_000 });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 };

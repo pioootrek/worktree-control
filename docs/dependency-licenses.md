@@ -1,6 +1,6 @@
 ---
 audience: "maintainers preparing public source and package releases"
-last_reviewed: "2026-09-28"
+last_reviewed: "2026-10-05"
 source_of_truth: "production dependency license review"
 status: "active"
 ---
@@ -45,7 +45,7 @@ Three transitive entries need explicit attention during package releases:
   and is not copied into this repository.
 - `argparse@2.0.1` uses the Python-2.0 license.
 
-No reviewed license prevents Worktree Switcher itself from using the MIT
+No reviewed license prevents Worktree Control itself from using the MIT
 license. Published dependency packages must keep their upstream license files,
 and release archives must keep `LICENSE` and `THIRD_PARTY_NOTICES.md`.
 

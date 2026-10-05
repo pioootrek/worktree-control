@@ -15,7 +15,7 @@ import { SqliteStateStore } from "./index";
 const directories: string[] = [];
 
 function createStore() {
-  const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-store-"));
+  const directory = mkdtempSync(join(tmpdir(), "worktree-control-store-"));
   directories.push(directory);
   return new SqliteStateStore(join(directory, "state.sqlite3"));
 }
@@ -133,7 +133,7 @@ describe("SqliteStateStore", () => {
   });
 
   it("migrates legacy test runs to explicit unknown source evidence and replays migration 12", () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-source-migration-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-source-migration-"));
     directories.push(directory);
     const databasePath = join(directory, "state.sqlite3");
     const store = new SqliteStateStore(databasePath);
@@ -165,7 +165,7 @@ describe("SqliteStateStore", () => {
   });
 
   it("removes a project, releases its port, and preserves a controller audit event", () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-store-remove-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-store-remove-"));
     directories.push(directory);
     const databasePath = join(directory, "state.sqlite3");
     const store = new SqliteStateStore(databasePath);
@@ -252,7 +252,7 @@ describe("SqliteStateStore", () => {
   });
 
   it("migrates the legacy pnpm command that passed --port after a separator", () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-store-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-store-"));
     directories.push(directory);
     const databasePath = join(directory, "state.sqlite3");
     const store = new SqliteStateStore(databasePath);
@@ -290,7 +290,7 @@ describe("SqliteStateStore", () => {
   });
 
   it("persists project environment profiles without values in audit details", () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-store-env-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-store-env-"));
     directories.push(directory);
     const databasePath = join(directory, "state.sqlite3");
     const store = new SqliteStateStore(databasePath);
@@ -313,7 +313,7 @@ describe("SqliteStateStore", () => {
   });
 
   it("does not overwrite profiles when replaying migration 9 against an existing column", () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-store-env-replay-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-store-env-replay-"));
     directories.push(directory);
     const databasePath = join(directory, "state.sqlite3");
     const store = new SqliteStateStore(databasePath);
@@ -375,7 +375,7 @@ describe("SqliteStateStore", () => {
   });
 
   it("adds TLS columns to a version 2 database", () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-store-v2-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-store-v2-"));
     directories.push(directory);
     const databasePath = join(directory, "state.sqlite3");
     const database = new Database(databasePath);
@@ -397,7 +397,7 @@ describe("SqliteStateStore", () => {
   });
 
   it("adds agent lease columns to a version 3 database", () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-store-v3-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-store-v3-"));
     directories.push(directory);
     const databasePath = join(directory, "state.sqlite3");
     const database = new Database(databasePath);

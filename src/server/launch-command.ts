@@ -90,7 +90,7 @@ function canonicalFile(path: string | null, label: string, required: boolean): s
 function resolveTls(packageJson: PackageJson, input: NextTlsConfiguration): NextTlsConfiguration {
   const packages = { ...packageJson.dependencies, ...packageJson.devDependencies };
   if (input.mode !== "off" && !("next" in packages)) {
-    throw new Error("HTTPS zarządzany przez Switcher jest obecnie obsługiwany tylko dla Next.js.");
+    throw new Error("HTTPS zarządzany przez Worktree Control jest obecnie obsługiwany tylko dla Next.js.");
   }
   if (input.mode !== "custom") return { mode: input.mode, keyPath: null, certPath: null, caPath: null };
   return {
@@ -145,7 +145,7 @@ export class ProjectLaunchCommandResolver implements LaunchCommandResolver {
 
     if (resolvedPreset === "django") {
       if (!hasDjango) throw new Error("Nie znaleziono manage.py w katalogu głównym worktree.");
-      if (tlsInput.mode !== "off") throw new Error("HTTPS zarządzany przez Switcher jest obecnie obsługiwany tylko dla Next.js.");
+      if (tlsInput.mode !== "off") throw new Error("HTTPS zarządzany przez Worktree Control jest obecnie obsługiwany tylko dla Next.js.");
       return {
         preset: "django",
         executable: djangoPython(worktreePath),

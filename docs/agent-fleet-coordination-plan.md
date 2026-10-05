@@ -1,6 +1,6 @@
 ---
 audience: "owner, contributors, and coding agents"
-last_reviewed: "2026-09-05"
+last_reviewed: "2026-10-05"
 source_of_truth: "planned agent coordination scope from the owner discussion on 2026-09-05"
 status: "active"
 ---
@@ -184,7 +184,7 @@ A completion or interruption handoff records:
 - What was not verified and which uncertainties remain.
 - Preserved partial work, remaining steps, and the next useful action.
 
-Link existing Switcher test records instead of copying their output as agent
+Link existing Worktree Control test records instead of copying their output as agent
 assertions. Preserve dirty-state limitations. Link reviews to the exact patch
 or revision examined; later edits expose that the review covers an older
 version. Different models agreeing is not independent execution evidence.
@@ -263,7 +263,7 @@ managed servers.
 - Which fleet functions belong in a later hosted offering and what access they
   require; no commercial pricing or fleet scale promise is agreed.
 
-This work broadens Switcher toward an operations hub with runtime, knowledge,
+This work broadens Worktree Control toward an operations hub with runtime, knowledge,
 and coordination modules. Keep those responsibilities separate in code while
 sharing stable project identity and service contracts. A possible future name
 change does not block the owner's first useful coordination workflow.

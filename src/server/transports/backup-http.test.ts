@@ -24,7 +24,7 @@ async function fixture(actions: Array<"create" | "restore"> = []) {
   await new Promise<void>(resolve => server.server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.server.address() as AddressInfo).port}`;
   cleanups.push(() => rmSync(root, { recursive: true, force: true }), () => store.close(), () => backups.close(), () => server.close());
-  const request = (method = "GET", body?: unknown, credential = token, origin = base) => fetch(`${base}/api/backups`, { method, headers: { "X-Worktree-Switcher-Token": credential, "Content-Type": "application/json", origin }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const request = (method = "GET", body?: unknown, credential = token, origin = base) => fetch(`${base}/api/backups`, { method, headers: { "X-Worktree-Control-Token": credential, "Content-Type": "application/json", origin }, ...(body ? { body: JSON.stringify(body) } : {}) });
   return { root, store, auth, identity, token, request, backups, restart, base };
 }
 it("denies actions by default and refuses all attempts to edit service policy or supply paths", async () => {
@@ -106,7 +106,7 @@ it("launches durable restore even when the client disconnects during validation"
   const verify = f.backups.catalog.verifyAsync.bind(f.backups.catalog);
   const validation = vi.spyOn(f.backups.catalog, "verifyAsync").mockImplementation(async id => { await gate; return verify(id); });
   const abort = new AbortController();
-  const pending = fetch(`${f.base}/api/backups`, { method: "POST", signal: abort.signal, headers: { "X-Worktree-Switcher-Token": f.token, origin: f.base, "Content-Type": "application/json" }, body: JSON.stringify({ action: "restore", backupId: created.backupId, idempotencyKey: "lost-during-validation", confirmation: "replace-entire-installation" }) }).catch(error => error);
+  const pending = fetch(`${f.base}/api/backups`, { method: "POST", signal: abort.signal, headers: { "X-Worktree-Control-Token": f.token, origin: f.base, "Content-Type": "application/json" }, body: JSON.stringify({ action: "restore", backupId: created.backupId, idempotencyKey: "lost-during-validation", confirmation: "replace-entire-installation" }) }).catch(error => error);
   await vi.waitFor(() => expect(validation).toHaveBeenCalledOnce());
   abort.abort(); await pending; release();
   await vi.waitFor(() => expect(f.restart).toHaveBeenCalledOnce(), { timeout: 3000 });

@@ -20,7 +20,7 @@ afterEach(() => {
 
 describe("FileLogWriter", () => {
   it("stores controller and project output in separate files", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-logs-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-logs-"));
     directories.push(directory);
     const logs = new FileLogWriter(directory);
     logs.controller("project.switch", { projectId: "project-1" });

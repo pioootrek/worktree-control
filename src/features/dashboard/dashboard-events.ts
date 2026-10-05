@@ -93,7 +93,7 @@ export function connectDashboardEvents(options: {
           headers: {
             Accept: "text/event-stream",
             ...(options.knowledgeToken ? { Authorization: `Bearer ${options.knowledgeToken}` } : {}),
-            "X-Worktree-Switcher-Token": options.token,
+            "X-Worktree-Control-Token": options.token,
           },
           signal: controller.signal,
         });

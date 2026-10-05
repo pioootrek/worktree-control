@@ -2,9 +2,12 @@
 
 import { createContext, type ReactNode, useCallback, useContext, useMemo, useSyncExternalStore } from "react";
 
+import { readStoredValue, storageKey, writeStoredValue } from "@/lib/browser-storage";
+
 export const ALL_PROJECTS = "__all_projects__";
 
-const STORAGE_KEY = "worktree-switcher-project-selection";
+const STORAGE_NAME = "project-selection";
+const STORAGE_KEY = storageKey(STORAGE_NAME);
 const STORAGE_VERSION = 1;
 
 interface StoredProjectSelection {
@@ -18,7 +21,7 @@ interface ProjectSelectionContextValue {
 }
 
 const ProjectSelectionContext = createContext<ProjectSelectionContextValue | null>(null);
-const SELECTION_EVENT = "worktree-switcher-project-selection-change";
+const SELECTION_EVENT = "worktree-control-project-selection-change";
 
 function readSelection(value: string | null): string | null {
   if (!value) return null;
@@ -40,7 +43,7 @@ function subscribe(notify: () => void) {
   };
 }
 
-const getSnapshot = () => readSelection(window.localStorage.getItem(STORAGE_KEY));
+const getSnapshot = () => readSelection(readStoredValue(window.localStorage, STORAGE_NAME));
 const getServerSnapshot = () => null;
 
 export function ProjectSelectionProvider({ children }: { children: ReactNode }) {
@@ -48,7 +51,7 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
 
   const selectProject = useCallback((projectId: string) => {
     const stored: StoredProjectSelection = { version: STORAGE_VERSION, projectId };
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
+    writeStoredValue(window.localStorage, STORAGE_NAME, JSON.stringify(stored));
     window.dispatchEvent(new Event(SELECTION_EVENT));
   }, []);
 

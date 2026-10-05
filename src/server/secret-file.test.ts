@@ -14,7 +14,7 @@ afterEach(() => {
 
 describe("loadOrCreateSecret", () => {
   it("creates one persistent owner-only secret", () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-secret-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-secret-"));
     directories.push(directory);
     const path = join(directory, "nested", "token");
     const first = loadOrCreateSecret(path);

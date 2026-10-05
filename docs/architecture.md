@@ -1,6 +1,6 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-09-27"
+last_reviewed: "2026-10-05"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
@@ -9,7 +9,7 @@ status: "active"
 
 ## Runtime shape
 
-Worktree Switcher ships as one long-lived Node.js process. Next.js is a build
+Worktree Control ships as one long-lived Node.js process. Next.js is a build
 tool for the App Router UI, configured with `output: "export"`; its generated
 HTML, CSS, and JavaScript are package assets served by the controller. There is
 no `next start` process and no server rendering at runtime.
@@ -109,7 +109,7 @@ and external services remain outside this source-attribution guarantee.
 
 ## Resource policy
 
-Managed development applications have priority over Worktree Switcher. The
+Managed development applications have priority over Worktree Control. The
 controller must be event-driven and have bounded memory use:
 
 - no recursive filesystem watcher over managed repositories;
@@ -193,11 +193,19 @@ backup are different recovery operations; neither changes the authoritative
 write location of an existing Hub project automatically.
 
 On Linux the database lives at
-`$XDG_DATA_HOME/worktree-switcher/state.sqlite3`, falling back to
-`~/.local/share/worktree-switcher/state.sqlite3`. Logs live below
-`$XDG_STATE_HOME/worktree-switcher/`, falling back to
-`~/.local/state/worktree-switcher/`. The same environment variables and
+`$XDG_DATA_HOME/worktree-control/state.sqlite3`, falling back to
+`~/.local/share/worktree-control/state.sqlite3`. Logs live below
+`$XDG_STATE_HOME/worktree-control/`, falling back to
+`~/.local/state/worktree-control/`. The same environment variables and
 fallback directories are used on the supported macOS build.
+`WORKTREE_CONTROL_DATA_DIR` and `WORKTREE_CONTROL_STATE_DIR` override them.
+
+Installations from before the 2026-10-05 rename used `worktree-switcher`
+directory names. When no directory flag or variable is given, the new default
+directory does not exist, and the corresponding `worktree-switcher` directory
+does, the controller keeps using the legacy directory and prints a one-line
+notice. It never moves or copies data. Legacy `WORKTREE_SWITCHER_*` variables
+are still read, with a deprecation warning, when the new name is unset.
 
 The controller opens one database connection, enables foreign keys and WAL,
 uses prepared statements, and runs numbered migrations before accepting
@@ -310,28 +318,29 @@ the active policy when no token variable is present, including open mode.
 
 ## CLI and package
 
-The public npm package is `worktree-switcher` with one `bin` entry of the same
-name. The package has not been published yet. The built executable currently
-supports:
+The npm package is `worktree-control`, with the `worktree-control` executable
+and the short alias `wtc`. It does not install a `worktree-switcher` command:
+that npm name belongs to an unrelated project. The package has not been
+published yet. The built executable currently supports:
 
 ```text
-worktree-switcher [start] [--no-open]
-worktree-switcher auth status
-worktree-switcher auth token generate|rotate
-worktree-switcher auth mode set open|token|better-auth
-worktree-switcher config path
-worktree-switcher config mcp
-worktree-switcher project add <path> [--name <name>] [--port <port>] [--preset auto|node|django]
-worktree-switcher project list [--json]
-worktree-switcher project remove <id>
-worktree-switcher doctor
-worktree-switcher service install [--refresh]
-worktree-switcher service status|start|stop|restart|open|url|uninstall
+worktree-control [start] [--no-open]
+worktree-control auth status
+worktree-control auth token generate|rotate
+worktree-control auth mode set open|token|better-auth
+worktree-control config path
+worktree-control config mcp
+worktree-control project add <path> [--name <name>] [--port <port>] [--preset auto|node|django]
+worktree-control project list [--json]
+worktree-control project remove <id>
+worktree-control doctor
+worktree-control service install [--refresh]
+worktree-control service status|start|stop|restart|open|url|uninstall
 ```
 
 Project mutations share `ControlService` with HTTP and MCP. When the user
 service is running, project CLI commands use its owner-only access record and
-HTTP API. Token mode requires `WORKTREE_SWITCHER_TOKEN`; open mode does not.
+HTTP API. Token mode requires `WORKTREE_CONTROL_TOKEN`; open mode does not.
 When no controller owns the state, the CLI acquires the same
 singleton lock before opening SQLite. A foreground controller without a safe
 access record causes a clear refusal instead of concurrent database access.
@@ -348,8 +357,18 @@ node dist/cli/index.js service install
 
 Foreground mode is the evaluation and diagnostic path. The recommended daily
 setup is an explicit user-service installation. Linux uses
-`~/.config/systemd/user/worktree-switcher.service`; macOS uses
-`~/Library/LaunchAgents/dev.worktree-switcher.controller.plist`.
+`~/.config/systemd/user/worktree-control.service`; macOS uses
+`~/Library/LaunchAgents/dev.worktree-control.controller.plist`.
+`service install` migrates a pre-rename `worktree-switcher.service` or
+`dev.worktree-switcher.controller` definition: it copies the legacy unit's
+systemd drop-ins to the new unit, stops the legacy service just before starting
+the new one (both use the same ports and lock), waits until the new main
+process stays up without restarts for a few seconds (bounded to 30 s), and only
+then enables the new service and disables and removes the legacy definition. A
+failed start or health check rolls back: the new definition, its copied
+drop-ins and enabled state are removed (or a previous definition restored), and
+a legacy service that was running is started again. `service status` warns
+about a remaining legacy definition, and `service uninstall` removes it.
 
 The generated definition contains absolute executable, dashboard, data, and
 state paths. Its environment has `NODE_ENV=production` and a controlled `PATH`
@@ -382,7 +401,7 @@ processes that happen to occupy configured project ports remain untouched.
 Upgrade refresh is explicit:
 
 ```bash
-worktree-switcher service install --refresh
+worktree-control service install --refresh
 ```
 
 Without `--refresh`, installation refuses to replace a definition that points

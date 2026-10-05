@@ -80,10 +80,10 @@ describe("knowledge execute-import CLI authentication", () => {
     database.close();
 
     await runAuthCommand(["mode", "set", "token"], paths, { write: () => {} });
-    expect(() => runHubImportExecuteCommand(args(file, "missing"), paths, { environment: {}, verifyPlan })).toThrow("WORKTREE_SWITCHER_OWNER_TOKEN");
-    expect(() => runHubImportExecuteCommand(args(file, "invalid"), paths, { environment: { WORKTREE_SWITCHER_TOKEN: `${token}0` }, verifyPlan })).toThrow("Nieprawidłowe lub nieaktywne");
+    expect(() => runHubImportExecuteCommand(args(file, "missing"), paths, { environment: {}, verifyPlan })).toThrow("WORKTREE_CONTROL_OWNER_TOKEN");
+    expect(() => runHubImportExecuteCommand(args(file, "invalid"), paths, { environment: { WORKTREE_CONTROL_TOKEN: `${token}0` }, verifyPlan })).toThrow("Nieprawidłowe lub nieaktywne");
     const tokenOutput: string[] = [];
-    runHubImportExecuteCommand(args(file, "token"), paths, { environment: { WORKTREE_SWITCHER_TOKEN: token }, verifyPlan, write: line => tokenOutput.push(line) });
+    runHubImportExecuteCommand(args(file, "token"), paths, { environment: { WORKTREE_CONTROL_TOKEN: token }, verifyPlan, write: line => tokenOutput.push(line) });
     expect(JSON.parse(tokenOutput[0]!)).toMatchObject({ actorPrincipalId: "installation", authenticationMethod: "installation_token" });
   });
 });

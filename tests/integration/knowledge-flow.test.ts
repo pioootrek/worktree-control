@@ -28,7 +28,7 @@ describe("built knowledge controller and CLI", () => {
       expect((await mcp.call<KnowledgePage<KnowledgeThread>>("knowledge_threads", { projectId: project.id })).items).toHaveLength(1);
     } finally { await mcp.close(); }
     const args = ["knowledge", "task_from_thread", "--json", JSON.stringify({ projectId: project.id, threadId: thread.id, title: "Fix", description: "Acceptance", idempotencyKey: "cli-task" })];
-    const environment = { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: agent.token };
+    const environment = { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: agent.token };
     const projects = JSON.parse(await fixture.cli(["knowledge", "projects"], environment, "flags")) as KnowledgePage<{ id: string }>;
     expect(projects.items.map(item => item.id)).toEqual([project.id]);
     const first = JSON.parse(await fixture.cli(args, environment, "flags")) as KnowledgeMutationResult<{ task: KnowledgeTask }>;
@@ -71,7 +71,7 @@ describe("built knowledge controller and CLI", () => {
       expect(context.scope).toBe(task.description);
       expect(context.decisions.map(item => item.id)).toEqual([decision.id]);
       expect(context.openQuestions.map(item => item.title)).toEqual(["How long to retain history?"]);
-      const environment = { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: tokens[2] };
+      const environment = { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: tokens[2] };
       const exported = JSON.parse(await fixture.cli(["knowledge", "export_context", "--json", JSON.stringify({ projectId: project.id, taskId: task.id, format: "json" })], environment)) as KnowledgeExport;
       expect(exported.fingerprint).toBe(context.fingerprint);
       const replacement = (await http<KnowledgeMutationResult<KnowledgeMemory>>("create_memory", { projectId: project.id, title: "New storage decision", body: "An explicit replacement", category: "decision", tags: [], legacyId: null, sources: [{ kind: "task", id: task.id, revision: 1 }], idempotencyKey: "replacement" })).value;
@@ -89,7 +89,7 @@ describe("built knowledge controller and CLI", () => {
     fixture = await startControllerFixture(0);
     const token = fixture.installationToken;
     const { project } = await fixture.request<{ project: { id: string } }>("/api/identity/admin", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ action: "create-knowledge-project", name: "Durable files" }) });
-    const environment = { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: token };
+    const environment = { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: token };
     const task = JSON.parse(await fixture.cli(["knowledge", "create_task", "--json", JSON.stringify({ projectId: project.id, title: "Evidence", description: "Durable bytes", idempotencyKey: "task" })], environment)) as KnowledgeMutationResult<KnowledgeTask>;
     const bytes = Buffer.from("built CLI attachment"), sha256 = createHash("sha256").update(bytes).digest("hex");
     const input = { projectId: project.id, recordKind: "task", recordId: task.value.id, filename: "proof.txt", mediaType: "text/plain", dataBase64: bytes.toString("base64"), sha256, idempotencyKey: "attachment" };

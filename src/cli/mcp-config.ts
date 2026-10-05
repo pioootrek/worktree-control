@@ -5,8 +5,9 @@ import { AuthenticationService } from "../server/modules/authentication";
 import { loadOrCreateSecret } from "../server/secret-file";
 import { SqliteStateStore } from "../server/sqlite-store";
 import { readServiceAccess } from "./service-access";
+import { readProductEnvironment } from "../server/product-environment";
 
-export const INSTALLATION_TOKEN_PLACEHOLDER = "<installation token: worktree-switcher auth token rotate>";
+export const INSTALLATION_TOKEN_PLACEHOLDER = "<installation token: worktree-control auth token rotate>";
 
 export interface McpConfigDependencies {
   environment?: Readonly<Record<string, string | undefined>>;
@@ -46,11 +47,11 @@ async function currentMode(paths: AppPaths, dependencies: McpConfigDependencies)
 
 /**
  * Bearer for `config mcp`, or null when open mode needs none. The raw installation token is never
- * stored, so token mode uses WORKTREE_SWITCHER_TOKEN or prints a placeholder, never the mcp-token.
+ * stored, so token mode uses WORKTREE_CONTROL_TOKEN or prints a placeholder, never the mcp-token.
  */
 export async function mcpConfigToken(paths: AppPaths, dependencies: McpConfigDependencies = {}): Promise<string | null> {
   const environment = dependencies.environment ?? process.env;
-  const supplied = environment.WORKTREE_SWITCHER_TOKEN;
+  const supplied = readProductEnvironment(environment, "WORKTREE_CONTROL_TOKEN");
   if (supplied?.startsWith("wsi_")) return supplied;
   const mode = await currentMode(paths, dependencies);
   if (mode === "open") return null;

@@ -77,7 +77,7 @@ async function createCertificateAuthority(directory: string): Promise<{ certific
   const key = join(directory, "fixture-ca.key");
   await execFileAsync("openssl", [
     "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
-    "-keyout", key, "-out", certificate, "-days", "2", "-sha256", "-subj", "/CN=Worktree Switcher HTTPS Fixture CA",
+    "-keyout", key, "-out", certificate, "-days", "2", "-sha256", "-subj", "/CN=Worktree Control HTTPS Fixture CA",
   ]);
   return { certificate, key };
 }
@@ -117,6 +117,7 @@ function caddyfile(options: {
   auto_https disable_redirects
   log default {
     format filter {
+      request>headers>X-Worktree-Control-Token delete
       request>headers>X-Worktree-Switcher-Token delete
     }
   }
@@ -127,6 +128,7 @@ https://switcher.localhost:${options.publicPort} {
   log {
     output file ${options.accessLog}
     format filter {
+      request>headers>X-Worktree-Control-Token delete
       request>headers>X-Worktree-Switcher-Token delete
     }
   }
@@ -155,7 +157,7 @@ async function secureRequest(options: {
       ca: options.ca,
       headers: {
         Host: `switcher.localhost:${options.port}`,
-        ...(options.token ? { "X-Worktree-Switcher-Token": options.token } : {}),
+        ...(options.token ? { "X-Worktree-Control-Token": options.token } : {}),
         ...(options.origin ? { Origin: options.origin } : {}),
         ...(options.body ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(options.body) } : {}),
       },
@@ -189,7 +191,7 @@ async function firstEvent(options: { port: number; ca: Buffer; token: string; or
         Accept: "text/event-stream",
         Host: `switcher.localhost:${options.port}`,
         Origin: options.origin,
-        "X-Worktree-Switcher-Token": options.token,
+        "X-Worktree-Control-Token": options.token,
       },
     }, (response) => {
       let frame = "";
@@ -216,7 +218,7 @@ describe("controller HTTPS through Caddy", () => {
   beforeAll(async () => {
     const version = await execFileAsync(caddyBinary, ["version"]);
     expect(version.stdout.trim()).toMatch(/^v2\.11\.3(?:\s|$)/);
-    directory = await mkdtemp(join(tmpdir(), "worktree-switcher-https-"));
+    directory = await mkdtemp(join(tmpdir(), "worktree-control-https-"));
   });
 
   afterAll(async () => {
@@ -306,7 +308,7 @@ describe("controller HTTPS through Caddy", () => {
     const caContents = await readFile(ca.certificate);
     const landing = await secureRequest({ port: publicPort, ca: caContents, path: `/?marker=${syntheticMarker}` });
     expect(landing.status).toBe(200);
-    expect(landing.body).toContain("Worktree Switcher");
+    expect(landing.body).toContain("Worktree Control");
 
     const dashboard = await secureRequest({ port: publicPort, ca: caContents, path: "/api/dashboard", token, origin: publicOrigin });
     expect(dashboard.status).toBe(200);
@@ -334,14 +336,14 @@ describe("controller HTTPS through Caddy", () => {
 
     const cli = await execFileAsync(process.execPath, [
       join(repositoryRoot, "dist/cli/index.js"), "project", "list", "--json", "--data-dir", data, "--state-dir", state,
-    ], { env: { ...controlledEnvironment, WORKTREE_SWITCHER_TOKEN: token } });
+    ], { env: { ...controlledEnvironment, WORKTREE_CONTROL_TOKEN: token } });
     expect(JSON.parse(cli.stdout)).toEqual([]);
 
     await expect(secureRequest({ port: publicPort, ca: caContents, servername: "wrong.localhost" })).rejects.toThrow();
     await expect(secureRequest({ port: publicPort })).rejects.toThrow();
     const plaintext = await fetch(`http://127.0.0.1:${publicPort}/`);
     expect(plaintext.status).toBe(400);
-    expect(await plaintext.text()).not.toContain("Worktree Switcher");
+    expect(await plaintext.text()).not.toContain("Worktree Control");
 
     const firstFingerprint = dashboard.fingerprint;
     await stopProcess(caddy);
@@ -385,7 +387,7 @@ describe("controller HTTPS through Caddy", () => {
     await expect(secureRequest({ port: publicPort, ca: caContents })).rejects.toThrow();
     const expiredPlaintext = await fetch(`http://127.0.0.1:${publicPort}/`);
     expect(expiredPlaintext.status).toBe(400);
-    expect(await expiredPlaintext.text()).not.toContain("Worktree Switcher");
+    expect(await expiredPlaintext.text()).not.toContain("Worktree Control");
     await stopProcess(caddy);
     caddy = null;
     await startCaddy(backendPort, replacementCertificate);

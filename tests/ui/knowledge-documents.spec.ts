@@ -22,7 +22,7 @@ const files = [
 ];
 
 async function mountDocuments(page: Page) {
-  await page.addInitScript(() => sessionStorage.setItem("worktree-switcher-knowledge-token", "knowledge-fixture"));
+  await page.addInitScript(() => sessionStorage.setItem("worktree-control-knowledge-token", "knowledge-fixture"));
   const data = dashboardFixture(); data.projects = [];
   const fixture = await mountDashboard(page, data);
   const requests: Array<{ operation: string; input: Record<string, unknown>; token: string }> = [];

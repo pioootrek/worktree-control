@@ -1,9 +1,9 @@
-# Worktree Switcher repository guide
+# Worktree Control repository guide
 
 ## Project and reference routing
 
-Worktree Switcher is a local-first control plane with one managed server and
-stable configured port per project. Keep it independent of supervised repos.
+Worktree Control (named Worktree Switcher until 2026-10-05) is a local-first
+control plane with one managed server and stable configured port per project. Keep it independent of supervised repos.
 Preserve the single Node.js controller, statically exported Next.js dashboard,
 and local SQLite adapter.
 
@@ -71,7 +71,8 @@ queue tools are unavailable, use supported finite commands within host limits.
 
 Queued tests do not claim, start, or switch a development server. Tests needing
 that server require a separate claim for the same worktree. Use the
-`worktree-switcher` skill and MCP for managed development-server lifecycle.
+`worktree-control` skill (installed as `worktree-switcher` where shared skills
+predate the rename) and MCP for managed development-server lifecycle.
 
 ## Backlog and documentation
 

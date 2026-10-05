@@ -141,7 +141,7 @@ jobs:
           TARBALL=$(node -p 'require("./portable-artifact/provenance.json").artifact.filename')
           SHA256=$(node -p 'require("./portable-artifact/provenance.json").artifact.sha256')
           USER_ID=$(id -u)
-          TRIAL_ROOT="$RUNNER_TEMP/worktree-switcher lifecycle trial"
+          TRIAL_ROOT="$RUNNER_TEMP/worktree-control lifecycle trial"
           mkdir -p -m 700 "$TRIAL_ROOT" "$TRIAL_ROOT/prefix" "$TRIAL_ROOT/data" "$TRIAL_ROOT/state" "$TRIAL_ROOT/projects"
           READY="$TRIAL_ROOT/session-ready"
           CONTINUE="$TRIAL_ROOT/session-continue"

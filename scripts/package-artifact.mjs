@@ -10,6 +10,7 @@ export async function verifyHistoricalArtifact(tarball, provenancePath) {
   const provenance = JSON.parse(await readFile(provenancePath, "utf8"));
   const sha256 = createHash("sha256").update(await readFile(tarball)).digest("hex");
   if (provenance.schemaVersion !== 1 || provenance.source?.commit !== HISTORICAL_COMMIT || provenance.source?.dirty !== false
+    // Historical artifacts were packed before the rename, so their package name stays `worktree-switcher`.
     || provenance.package?.name !== "worktree-switcher" || provenance.package?.version !== "0.1.0-trial.1" || provenance.package?.private !== true
     || provenance.artifact?.filename !== basename(tarball) || provenance.artifact?.sha256 !== sha256 || provenance.artifact?.bytes !== archive.size)
     throw new Error("Historical artifact checksum or exact-source provenance mismatch.");

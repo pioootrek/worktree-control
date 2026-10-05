@@ -9,7 +9,7 @@ import { ProjectLaunchCommandResolver } from "./launch-command";
 const directories: string[] = [];
 
 function fixture(packageJson: object, lockfile?: string, angular = false): string {
-  const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-command-"));
+  const directory = mkdtempSync(join(tmpdir(), "worktree-control-command-"));
   directories.push(directory);
   writeFileSync(join(directory, "package.json"), JSON.stringify(packageJson));
   if (lockfile) writeFileSync(join(directory, lockfile), "");
@@ -153,7 +153,7 @@ describe("ProjectLaunchCommandResolver", () => {
   });
 
   it("runs Django with a worktree-local .venv interpreter", () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-command-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-command-"));
     directories.push(directory);
     writeFileSync(join(directory, "manage.py"), "#!/usr/bin/env python3\n");
     const venv = join(directory, ".venv", "bin");
@@ -170,7 +170,7 @@ describe("ProjectLaunchCommandResolver", () => {
   });
 
   it("falls back to venv and then python3 for Django", () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-command-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-command-"));
     directories.push(directory);
     writeFileSync(join(directory, "manage.py"), "");
     expect(new ProjectLaunchCommandResolver().resolve(directory, 8001, "django").executable).toBe("python3");

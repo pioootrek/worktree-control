@@ -3,10 +3,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import { installProductionPrefix, productionInstallEnvironment, verifyInstalledDriver } from "./package-install.mjs";
+import { installProductionPrefix, productionInstallEnvironment, scriptEnvironment, verifyInstalledDriver } from "./package-install.mjs";
 import { verifyHistoricalArtifact, verifyTrialFiles } from "./package-artifact.mjs";
 const exec = promisify(execFile);
-const oldArtifact = process.env.WORKTREE_SWITCHER_TEST_OLD_ARTIFACT, oldProvenance = process.env.WORKTREE_SWITCHER_TEST_OLD_PROVENANCE;
+const oldArtifact = scriptEnvironment("WORKTREE_CONTROL_TEST_OLD_ARTIFACT"), oldProvenance = scriptEnvironment("WORKTREE_CONTROL_TEST_OLD_PROVENANCE");
 const historical = await verifyHistoricalArtifact(oldArtifact, oldProvenance);
 const root = await mkdtemp(join(tmpdir(), "wts-upgrade-trial-"));
 try {
@@ -24,7 +24,7 @@ try {
     const result = await exec(process.execPath, [join(output, provenance.files.smoke), "--tarball", join(output, provenance.artifact.filename), "--sha256", provenance.artifact.sha256, "--verification-script", "scripts/package-upgrade-driver.mjs", "--verification-old-artifact", oldArtifact, "--verification-old-provenance", oldProvenance], { timeout: 600000, maxBuffer: 2 * 1024 * 1024 });
     report = { mode: "full-installed-smoke-and-upgrade", currentProvenance: provenance, historicalProvenance: historical, installedAcceptance: JSON.parse(result.stdout) };
   }
-  const reportPath = process.env.WORKTREE_SWITCHER_TEST_UPGRADE_REPORT;
+  const reportPath = scriptEnvironment("WORKTREE_CONTROL_TEST_UPGRADE_REPORT");
   if (reportPath) await writeFile(reportPath, JSON.stringify(report, null, 2), { flag: "wx", mode: 0o600 });
   const evidence = report.installedAcceptance.additionalVerification?.evidence ?? report.installedAcceptance.evidence;
   console.log(JSON.stringify({ mode: report.mode, current: provenance.source, artifact: provenance.artifact, historical: historical.source, historicalArtifact: historical.artifact,

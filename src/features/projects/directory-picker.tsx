@@ -42,7 +42,7 @@ export function DirectoryPicker({ token, value, onChange }: DirectoryPickerProps
         cache: "no-store",
         headers: {
           "Accept-Language": locale,
-          "X-Worktree-Switcher-Token": token,
+          "X-Worktree-Control-Token": token,
         },
       });
       setListing(await parseListing(response, t("http.error", { status: response.status })));

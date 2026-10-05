@@ -25,7 +25,7 @@ afterEach(() => {
 describe("ControlService dashboard projection", () => {
   it("keeps noisy dashboard reads cached but refreshes detailed agent snapshots", async () => {
     vi.useFakeTimers();
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-dashboard-amplification-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-dashboard-amplification-"));
     directories.push(directory);
     const store = new SqliteStateStore(join(directory, "state.sqlite3"));
     const projects = Array.from({ length: 2 }, (_, index) => store.addProject({

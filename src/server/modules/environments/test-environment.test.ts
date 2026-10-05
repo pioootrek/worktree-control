@@ -43,7 +43,9 @@ describe("resolveTestEnvironment", () => {
     expect(resolved.environment.NODE_ENV).toBe("test");
     expect(resolved.mode).toBe("clean");
     expect(resolved.inheritedServerProfile).toBeNull();
-    expect(resolved.variableNames).toContain("WORKTREE_SWITCHER_SERVER_URL");
+    expect(resolved.environment.WORKTREE_CONTROL_SERVER_URL).toBe("http://127.0.0.1:3400");
+    // The pre-rename name stays available to existing project scripts.
+    expect(resolved.environment.WORKTREE_SWITCHER_SERVER_URL).toBe("http://127.0.0.1:3400");
   });
 
   it("inherits a named server profile only when the policy says so", () => {

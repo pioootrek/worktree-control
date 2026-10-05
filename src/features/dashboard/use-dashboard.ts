@@ -4,6 +4,7 @@ import { EMPTY_RESOURCES } from "@/features/runtime/defaults";
 
 import { parseResponse } from "@/features/control-client";
 import { useI18n } from "@/i18n/provider";
+import { readStoredValue, removeStoredValue, writeStoredValue } from "@/lib/browser-storage";
 import type {
   ControllerDashboardResponse,
   DashboardChangeEvent,
@@ -23,8 +24,8 @@ interface PendingRefresh {
 }
 
 const emptyPending = (): PendingRefresh => ({ bootstrap: false, projectIds: new Set(), sections: new Set() });
-const ACCESS_TOKEN_KEY = "worktree-switcher-token";
-const KNOWLEDGE_TOKEN_KEY = "worktree-switcher-knowledge-token";
+const ACCESS_TOKEN_KEY = "token";
+const KNOWLEDGE_TOKEN_KEY = "knowledge-token";
 
 /** Placeholder credential in open mode, where the controller ignores credentials entirely. */
 export const OPEN_ACCESS = "open-mode";
@@ -51,8 +52,8 @@ export function useDashboard() {
   const [knowledgeSessionVersion, setKnowledgeSessionVersion] = useState(0);
   const [knowledgeChange, setKnowledgeChange] = useState({ version: 0, projectIds: [] as string[] });
   const changeKnowledgeToken = useCallback((value: string) => {
-    if (value) window.sessionStorage.setItem(KNOWLEDGE_TOKEN_KEY, value);
-    else window.sessionStorage.removeItem(KNOWLEDGE_TOKEN_KEY);
+    if (value) writeStoredValue(window.sessionStorage, KNOWLEDGE_TOKEN_KEY, value);
+    else removeStoredValue(window.sessionStorage, KNOWLEDGE_TOKEN_KEY);
     setKnowledgeToken(value);
     setKnowledgeSessionVersion(current => current + 1);
   }, []);
@@ -83,13 +84,13 @@ export function useDashboard() {
             const response = await fetch("/api/dashboard", {
               cache: "no-store",
               signal: controller.signal,
-              headers: { "Accept-Language": locale, "X-Worktree-Switcher-Token": accessToken },
+              headers: { "Accept-Language": locale, "X-Worktree-Control-Token": accessToken },
             });
             if (response.status === 401) {
               if (generation.current !== activeGeneration) return;
               // A rotated or mistyped token cannot recover by retrying; ask for the current one.
               generation.current += 1;
-              window.sessionStorage.removeItem(ACCESS_TOKEN_KEY);
+              removeStoredValue(window.sessionStorage, ACCESS_TOKEN_KEY);
               setToken("");
               setAccessRequired("invalid");
               return;
@@ -119,7 +120,7 @@ export function useDashboard() {
             const response = await fetch(`/api/dashboard/live?${query}`, {
               cache: "no-store",
               signal: controller.signal,
-              headers: { "Accept-Language": locale, "X-Worktree-Switcher-Token": accessToken },
+              headers: { "Accept-Language": locale, "X-Worktree-Control-Token": accessToken },
             });
             const live = await parseResponse<DashboardLiveResponse>(response, t("http.error", { status: response.status }));
             if (generation.current !== activeGeneration) return;
@@ -176,7 +177,7 @@ export function useDashboard() {
     const accessToken = value.trim();
     if (!accessToken) return;
     resetRequests();
-    if (persist) window.sessionStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
+    if (persist) writeStoredValue(window.sessionStorage, ACCESS_TOKEN_KEY, accessToken);
     setAccessRequired(null);
     setLoading(true);
     setToken(accessToken);
@@ -185,8 +186,8 @@ export function useDashboard() {
 
   const signOut = useCallback(() => {
     resetRequests();
-    window.sessionStorage.removeItem(ACCESS_TOKEN_KEY);
-    window.sessionStorage.removeItem(KNOWLEDGE_TOKEN_KEY);
+    removeStoredValue(window.sessionStorage, ACCESS_TOKEN_KEY);
+    removeStoredValue(window.sessionStorage, KNOWLEDGE_TOKEN_KEY);
     setToken("");
     setKnowledgeToken("");
     setKnowledgeSessionVersion(current => current + 1);
@@ -197,9 +198,9 @@ export function useDashboard() {
     const probe = new AbortController();
     const initialRefresh = window.setTimeout(() => {
       const fragment = new URLSearchParams(window.location.hash.slice(1));
-      const accessToken = fragment.get("token") ?? window.sessionStorage.getItem(ACCESS_TOKEN_KEY);
+      const accessToken = fragment.get("token") ?? readStoredValue(window.sessionStorage, ACCESS_TOKEN_KEY);
       if (window.location.hash) window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-      setKnowledgeToken(window.sessionStorage.getItem(KNOWLEDGE_TOKEN_KEY) ?? "");
+      setKnowledgeToken(readStoredValue(window.sessionStorage, KNOWLEDGE_TOKEN_KEY) ?? "");
       if (accessToken) {
         signIn(accessToken);
         return;
@@ -289,7 +290,7 @@ export function useDashboard() {
     setNotice(null);
     const response = await fetch(path, {
       method,
-      headers: { "Accept-Language": locale, "Content-Type": "application/json", "X-Worktree-Switcher-Token": token },
+      headers: { "Accept-Language": locale, "Content-Type": "application/json", "X-Worktree-Control-Token": token },
       body: JSON.stringify(body),
     });
     await parseResponse(response, t("http.error", { status: response.status }));
@@ -320,7 +321,7 @@ export function useDashboard() {
         const response = await fetch("/api/metrics", {
           cache: "no-store",
           signal: controller.signal,
-          headers: { "X-Worktree-Switcher-Token": token },
+          headers: { "X-Worktree-Control-Token": token },
         });
         const body = await parseResponse<RuntimeMetricsResponse>(response, t("http.error", { status: response.status }));
         if (cancelled) return;

@@ -19,7 +19,7 @@ afterEach(() => {
 
 describe("ControlService agent claims", () => {
   it("claims and starts a worktree while blocking human runtime operations", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-agent-service-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-agent-service-"));
     directories.push(directory);
     const store = new SqliteStateStore(join(directory, "state.sqlite3"));
     const project = store.addProject({
@@ -94,7 +94,7 @@ describe("ControlService agent claims", () => {
   });
 
   it("starts, restarts, and stops only the exact active agent claim", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-claimed-runtime-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-claimed-runtime-"));
     directories.push(directory);
     const store = new SqliteStateStore(join(directory, "state.sqlite3"));
     const project = store.addProject({ name: "Web", repositoryPath: "/code/web", port: 3220, executable: "pnpm", args: ["run", "dev"] });
@@ -151,7 +151,7 @@ describe("ControlService agent claims", () => {
   });
 
   it("keeps the claim and returns an explicit error when server startup fails", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-agent-failure-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-agent-failure-"));
     directories.push(directory);
     const store = new SqliteStateStore(join(directory, "state.sqlite3"));
     const project = store.addProject({
@@ -211,7 +211,7 @@ describe("ControlService agent claims", () => {
   });
 
   it("serializes an active-profile restart with concurrent operations", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-profile-restart-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-profile-restart-"));
     directories.push(directory);
     const store = new SqliteStateStore(join(directory, "state.sqlite3"));
     const project = store.addProject({
@@ -275,7 +275,7 @@ describe("ControlService agent claims", () => {
   });
 
   it("resolves the launch command for the selected worktree before every start", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-launch-resolution-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-launch-resolution-"));
     directories.push(directory);
     const store = new SqliteStateStore(join(directory, "state.sqlite3"));
     const project = store.addProject({

@@ -1,13 +1,13 @@
 ---
 audience: "self-hosters exposing the dashboard through HTTPS"
-last_reviewed: "2026-09-27"
+last_reviewed: "2026-10-05"
 source_of_truth: "supported Caddy reverse-proxy transport for the local controller"
 status: "active"
 ---
 
 # Protect the controller with HTTPS
 
-Worktree Switcher supports one reverse-proxy deployment: Caddy terminates TLS
+Worktree Control supports one reverse-proxy deployment: Caddy terminates TLS
 and forwards to a controller listening only on loopback. The controller keeps
 MCP and CLI access local, advertises the configured HTTPS browser origin, and
 checks browser `Origin` against that value. It does not trust `Forwarded` or
@@ -22,7 +22,7 @@ buffering option is required.
 
 ## Required boundaries
 
-- Start Worktree Switcher with `--host 127.0.0.1`. The CLI rejects
+- Start Worktree Control with `--host 127.0.0.1`. The CLI rejects
   `--public-url` with a non-loopback backend.
 - Use a dedicated HTTPS origin at `/`. `--public-url` rejects HTTP,
   credentials, query strings, fragments, and non-root paths.
@@ -37,15 +37,18 @@ buffering option is required.
 ## Caddyfile logging guard
 
 The dashboard sends its access token (the installation token, or the pairing
-token in `legacy` mode) in the `X-Worktree-Switcher-Token` request header. Caddy's default redaction covers
-standard authorization headers, but this product-specific header must be
-removed from both runtime diagnostics and access logs. Keep both filters below.
+token in `legacy` mode) in the `X-Worktree-Control-Token` request header. During
+the rename transition the controller also accepts the previous
+`X-Worktree-Switcher-Token` header from older clients. Caddy's default redaction
+covers standard authorization headers, but both product-specific headers must be
+removed from runtime diagnostics and access logs. Keep both filters below.
 The controller does not accept an access token in an SSE query string.
 
 ```caddyfile
 {
 	log default {
 		format filter {
+			request>headers>X-Worktree-Control-Token delete
 			request>headers>X-Worktree-Switcher-Token delete
 		}
 	}
@@ -53,13 +56,14 @@ The controller does not accept an access token in an SSE query string.
 
 (switcher_access_log) {
 	log {
-		output file /var/log/caddy/worktree-switcher-access.log {
+		output file /var/log/caddy/worktree-control-access.log {
 			mode 0600
 			roll_size 10MiB
 			roll_keep 5
 			roll_keep_for 168h
 		}
 		format filter {
+			request>headers>X-Worktree-Control-Token delete
 			request>headers>X-Worktree-Switcher-Token delete
 		}
 	}
@@ -92,7 +96,7 @@ root certificate—not its private key—in the trust store of every browser/cli
 that opens the dashboard. Browsers with separate trust stores may require a
 separate import.
 
-For a fresh Switcher service:
+For a fresh Worktree Control service:
 
 ```bash
 node dist/cli/index.js service install \
@@ -100,8 +104,8 @@ node dist/cli/index.js service install \
   --public-url https://switcher.home.arpa
 ```
 
-Then verify `worktree-switcher service status`, open the address printed by
-`worktree-switcher service url` on a device that trusts the CA, and sign in with
+Then verify `worktree-control service status`, open the address printed by
+`worktree-control service url` on a device that trusts the CA, and sign in with
 the installation token. In `legacy` mode that URL contains the private pairing
 token. Never place a token or pairing URL in shared logs or documentation.
 
@@ -119,7 +123,7 @@ switcher.example.com {
 ```
 
 Caddy enables HTTPS and certificate renewal for a qualifying public hostname.
-Configure Switcher with the same canonical origin:
+Configure Worktree Control with the same canonical origin:
 
 ```bash
 node dist/cli/index.js service install \
@@ -135,7 +139,7 @@ the dashboard to arbitrary users.
 ## Upgrade, certificate replacement, and rollback
 
 First validate and start the proxy. Then explicitly refresh an existing
-Switcher service, repeating every non-default option already stored in its
+Worktree Control service, repeating every non-default option already stored in its
 definition:
 
 ```bash
@@ -158,7 +162,7 @@ If Caddy is unavailable, local CLI commands continue through the private access
 record even though the public dashboard is unavailable.
 
 Rollback is also explicit: restore the preceding validated Caddy configuration,
-then refresh Switcher with the former `--host` and other complete options while
+then refresh Worktree Control with the former `--host` and other complete options while
 omitting `--public-url`. Do not leave a loopback controller advertised as HTTPS,
 or expose its plaintext port as an accidental fallback.
 

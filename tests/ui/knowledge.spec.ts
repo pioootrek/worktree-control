@@ -8,7 +8,7 @@ async function disconnectKnowledge(page: Page) {
 }
 
 async function mountKnowledge(page: Page, { withRuntimeProject = false }: { withRuntimeProject?: boolean } = {}) {
-  await page.addInitScript(() => sessionStorage.setItem("worktree-switcher-knowledge-token", "knowledge-fixture"));
+  await page.addInitScript(() => sessionStorage.setItem("worktree-control-knowledge-token", "knowledge-fixture"));
   const data = dashboardFixture();
   if (!withRuntimeProject) data.projects = [];
   const fixture = await mountDashboard(page, data);
@@ -488,7 +488,7 @@ test("knowledge sign-in changes only the shared stream credential, not runtime b
   await disconnectKnowledge(page);
   await expect.poll(events).toEqual({ active: 1, opened: 2, token: "" });
   expect(dashboardReads).toBe(1);
-  expect(await page.evaluate(() => sessionStorage.getItem("worktree-switcher-token"))).toBe("ui-fixture-token");
+  expect(await page.evaluate(() => sessionStorage.getItem("worktree-control-token"))).toBe("ui-fixture-token");
   await page.getByRole("button", { name: "Worktrees", exact: true }).click();
   await expect(page.getByText("Fixture Web").first()).toBeVisible();
   await page.getByRole("button", { name: "Knowledge", exact: true }).click();

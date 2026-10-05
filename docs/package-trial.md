@@ -1,13 +1,13 @@
 ---
-audience: "people installing a verified Worktree Switcher trial tarball"
-last_reviewed: "2026-10-03"
+audience: "people installing a verified Worktree Control trial tarball"
+last_reviewed: "2026-10-05"
 source_of_truth: "trial artifact installation, first run, upgrade, and removal"
 status: "active"
 ---
 
 # Install the local controller trial
 
-The `0.1.0-trial.1` artifact installs the complete local Worktree Switcher
+The `0.1.0-trial.1` artifact installs the complete local Worktree Control
 controller: CLI, browser dashboard, MCP endpoint, SQLite state, user-service
 commands, and the bundled agent skill. It is not a remote worker and does not
 need a hosted account. The package remains private in the npm manifest and is
@@ -27,7 +27,7 @@ distributed as an explicitly downloaded tarball, not through the npm registry.
 The download set contains:
 
 ```text
-worktree-switcher-0.1.0-trial.1.tgz
+worktree-control-0.1.0-trial.1.tgz
 SHA256SUMS
 provenance.json
 INSTALL.md
@@ -52,12 +52,12 @@ Use a writable, user-owned prefix. The example intentionally does not alter
 the system npm prefix:
 
 ```bash
-mkdir -p "$HOME/.local/worktree-switcher"
+mkdir -p "$HOME/.local/worktree-control"
 npm install --global \
-  --prefix "$HOME/.local/worktree-switcher" \
-  ./worktree-switcher-0.1.0-trial.1.tgz
-export PATH="$HOME/.local/worktree-switcher/bin:$PATH"
-worktree-switcher doctor
+  --prefix "$HOME/.local/worktree-control" \
+  ./worktree-control-0.1.0-trial.1.tgz
+export PATH="$HOME/.local/worktree-control/bin:$PATH"
+worktree-control doctor
 ```
 
 Persist the `PATH` addition in the startup file for your shell. Installation
@@ -70,13 +70,13 @@ and save it in a password manager; the controller refuses to start without it.
 See [authentication modes](authentication.md).
 
 ```bash
-worktree-switcher auth token generate
+worktree-control auth token generate
 ```
 
 To run without a service manager:
 
 ```bash
-worktree-switcher start --host 127.0.0.1
+worktree-control start --host 127.0.0.1
 ```
 
 Open the printed address and sign in with the installation token. Keep the
@@ -87,9 +87,9 @@ token out of logs and issues. Stop it with `Ctrl-C` before installing the backgr
 On a Linux desktop with a systemd user manager:
 
 ```bash
-worktree-switcher service install --host 127.0.0.1
-worktree-switcher service status
-worktree-switcher service open
+worktree-control service install --host 127.0.0.1
+worktree-control service status
+worktree-control service open
 ```
 
 `service open` opens the dashboard sign-in page. For custom ports, directories, or a
@@ -97,6 +97,10 @@ public HTTPS origin, follow the bundled [user-service guide](user-service.md)
 and [HTTPS guide](controller-https.md).
 
 ## Upgrade and recover
+
+Moving from a pre-rename `worktree-switcher` trial package to `worktree-control`
+also renames the executable, user service, and environment variables. Follow
+[upgrading an existing installation](user-service.md#upgrading-an-existing-installation).
 
 The controller provides full SQLite/attachment backup and recoverable restore.
 The installed-artifact acceptance uses an exact historical schema-24 package
@@ -135,8 +139,8 @@ record the isolated checks and the later operational and project-cutover procedu
 Remove the service definition before removing its executable:
 
 ```bash
-worktree-switcher service uninstall
-npm uninstall --global --prefix "$HOME/.local/worktree-switcher" worktree-switcher
+worktree-control service uninstall
+npm uninstall --global --prefix "$HOME/.local/worktree-control" worktree-control
 ```
 
 This preserves repositories, the SQLite database, MCP credential, configuration,

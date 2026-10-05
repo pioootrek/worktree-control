@@ -139,7 +139,7 @@ async function bootstrapThroughController(
   if (!token) throw new Error("The running controller access record has no pairing token.");
   const response = await fetch(`${endpoint.replace(/\/$/, "")}/api/identity/bootstrap`, {
     method: "POST",
-    headers: { "X-Worktree-Switcher-Token": token, "Content-Type": "application/json" },
+    headers: { "X-Worktree-Control-Token": token, "Content-Type": "application/json" },
     body: JSON.stringify(sessionInput(args)),
     signal: AbortSignal.timeout(15_000),
   });

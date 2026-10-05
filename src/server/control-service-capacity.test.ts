@@ -27,7 +27,7 @@ function stoppedRuntime(): RuntimeSnapshot {
 }
 
 function fixture(count = 3, onStart: (project: Project) => Promise<void> = async () => undefined) {
-  const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-capacity-"));
+  const directory = mkdtempSync(join(tmpdir(), "worktree-control-capacity-"));
   directories.push(directory);
   const store = new SqliteStateStore(join(directory, "state.sqlite3"));
   const projects = Array.from({ length: count }, (_, index) => store.addProject({

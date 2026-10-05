@@ -1,6 +1,8 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
+import { readProductEnvironment } from "../server/product-environment";
+
 export interface ServiceAccessRecord {
   pid: number;
   startedAt: string;
@@ -45,14 +47,15 @@ export function readServiceAccess(path: string): ServiceAccessRecord | null {
 }
 
 /**
- * Token for CLI calls to the running controller: WORKTREE_SWITCHER_TOKEN (the installation token
+ * Token for CLI calls to the running controller: WORKTREE_CONTROL_TOKEN (the installation token
  * in token mode) or, in legacy mode, the pairing token embedded in the access URL.
  */
 export function controllerAccessToken(
   record: ServiceAccessRecord,
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): string | null {
-  if (environment.WORKTREE_SWITCHER_TOKEN) return environment.WORKTREE_SWITCHER_TOKEN;
+  const supplied = readProductEnvironment(environment, "WORKTREE_CONTROL_TOKEN");
+  if (supplied) return supplied;
   try {
     return new URLSearchParams(new URL(record.accessUrl).hash.slice(1)).get("token");
   } catch {

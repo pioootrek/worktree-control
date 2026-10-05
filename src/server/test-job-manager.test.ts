@@ -32,7 +32,7 @@ afterEach(async () => {
 });
 
 function fixture() {
-  const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-test-queue-"));
+  const directory = mkdtempSync(join(tmpdir(), "worktree-control-test-queue-"));
   directories.push(directory);
   const store = new SqliteStateStore(join(directory, "state.sqlite3"));
   const project = store.addProject({ name: "App", repositoryPath: directory, port: 3210, executable: "node", args: [] });

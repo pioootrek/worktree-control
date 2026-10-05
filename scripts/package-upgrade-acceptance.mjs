@@ -23,10 +23,14 @@ const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 async function step(name, fn) { stage = name; const start = Date.now(); const value = await fn(); steps.push({ name, durationMs: Date.now() - start, ok: true }); return value; }
 async function command(file, args, options = {}) { return exec(file, args, { env: environment, timeout: 30000, maxBuffer: 1024 * 1024, ...options }); }
 async function port() { const server = createServer(); return new Promise((accept, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => { const number = server.address().port; server.close(error => error ? reject(error) : accept(number)); }); }); }
+/** The historical installation reads only `WORKTREE_SWITCHER_*`; the current one prefers `WORKTREE_CONTROL_*`. */
+function productEnvironment(values) {
+  return Object.fromEntries(Object.entries(values).flatMap(([suffix, value]) => [[`WORKTREE_CONTROL_${suffix}`, value], [`WORKTREE_SWITCHER_${suffix}`, value]]));
+}
 function installation(packageRoot, base) {
   const item = { packageRoot, base, data: join(base, "data"), state: join(base, "state"), child: null, endpoint: null };
   item.database = join(item.data, "state.sqlite3"); item.cliPath = join(packageRoot, "dist/cli/index.js");
-  item.cli = async (args, token = ownerToken) => (await command(process.execPath, [item.cliPath, ...args], { env: { ...environment, WORKTREE_SWITCHER_DATA_DIR: item.data, WORKTREE_SWITCHER_STATE_DIR: item.state, ...(token ? { WORKTREE_SWITCHER_OWNER_TOKEN: token, WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: token } : {}) } })).stdout;
+  item.cli = async (args, token = ownerToken) => (await command(process.execPath, [item.cliPath, ...args], { env: { ...environment, ...productEnvironment({ DATA_DIR: item.data, STATE_DIR: item.state, ...(token ? { OWNER_TOKEN: token, KNOWLEDGE_TOKEN: token } : {}) }) } })).stdout;
   item.json = async (args, token) => JSON.parse(await item.cli(args, token));
   item.knowledge = (operation, input, token) => item.json(["knowledge", operation, "--json", JSON.stringify(input)], token);
   item.stop = async () => { const child = item.child; item.child = null; if (child) await closeFixtureChild(child); };
@@ -132,7 +136,7 @@ try {
   const historicalProvenance = await verifyHistoricalArtifact(oldArtifact, oldProvenance);
   root = await mkdtemp(join(tmpdir(), "wts-up-"));
   const prefix = join(root, "old prefix"); await mkdir(prefix);
-  const oldRoot = await step("historical-production-install", async () => installProductionPrefix(oldArtifact, prefix, root, await productionInstallEnvironment(root), command));
+  const oldRoot = await step("historical-production-install", async () => installProductionPrefix(oldArtifact, prefix, root, await productionInstallEnvironment(root), command, "worktree-switcher"));
   historicalNative = await step("historical-native-load", () => installedSqlite(oldRoot)); currentNative = await step("current-native-load", () => installedSqlite(currentRoot));
   const source = join(root, "source"), historical = installation(oldRoot, join(source, "historical"));
   await step("historical-seed-and-tenant-denial", () => seedHistorical(historical));

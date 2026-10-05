@@ -1,10 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-export const SYSTEMD_UNIT_NAME = "worktree-switcher.service";
-export const LAUNCHD_LABEL = "dev.worktree-switcher.controller";
+export const SYSTEMD_UNIT_NAME = "worktree-control.service";
+export const LAUNCHD_LABEL = "dev.worktree-control.controller";
+/** Service names used before the 2026-10-05 rename; `install` migrates them and `uninstall` removes them. */
+export const LEGACY_SYSTEMD_UNIT_NAME = "worktree-switcher.service";
+export const LEGACY_LAUNCHD_LABEL = "dev.worktree-switcher.controller";
 
 export interface ServiceCommandResult {
   status: number;
@@ -37,7 +40,48 @@ export interface ServiceStatus {
   uptimeSeconds: number | null;
   residentMemoryBytes: number | null;
   cpuPercent: number | null;
+  /** Definition of a pre-rename service that is still installed, or null. */
+  legacyDefinitionPath: string | null;
 }
+
+export interface LegacyServiceRemoval {
+  definitionPath: string;
+  /** Whether the legacy service was running before it was stopped. */
+  wasActive: boolean;
+  /** systemd drop-in files copied from the legacy unit's `.d` directory to the new unit's. */
+  migratedDropIns: string[];
+  /**
+   * Legacy drop-in directory left in place because it holds files that could not be migrated
+   * verbatim (a differing file already exists for the new unit, or an entry is not a `.conf` file).
+   */
+  retainedDropInDirectory: string | null;
+}
+
+interface InstallState {
+  previous: string | null;
+  changed: boolean;
+  currentWasActive: boolean;
+  legacyWasActive: boolean;
+  copiedDropIns: string[];
+  createdDropInDirectory: string | null;
+  retainedDropInDirectory: string | null;
+}
+
+export interface ServiceClock {
+  now(): number;
+  sleep(milliseconds: number): void;
+}
+
+/** Bounds of the post-start health check in `install`. */
+export interface ServiceHealthPolicy {
+  /** Give up and roll back after this long. */
+  timeoutMs: number;
+  /** The same main process must keep running, without restarts, for this long. */
+  stableMs: number;
+  intervalMs: number;
+}
+
+export const DEFAULT_SERVICE_HEALTH: ServiceHealthPolicy = { timeoutMs: 30_000, stableMs: 5_000, intervalMs: 500 };
 
 export interface ServiceManagerOptions {
   platform?: NodeJS.Platform;
@@ -45,7 +89,15 @@ export interface ServiceManagerOptions {
   uid?: number;
   environment?: NodeJS.ProcessEnv;
   runner?: ServiceCommandRunner;
+  clock?: ServiceClock;
+  health?: Partial<ServiceHealthPolicy>;
 }
+
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+const defaultClock: ServiceClock = {
+  now: () => Date.now(),
+  sleep: (milliseconds) => { Atomics.wait(sleepCell, 0, 0, milliseconds); },
+};
 
 const defaultRunner: ServiceCommandRunner = {
   run(command, args) {
@@ -70,7 +122,10 @@ const defaultRunner: ServiceCommandRunner = {
 export class UserServiceManager {
   readonly kind: "systemd" | "launchd";
   readonly definitionPath: string;
+  readonly legacyDefinitionPath: string;
   private readonly runner: ServiceCommandRunner;
+  private readonly clock: ServiceClock;
+  private readonly health: ServiceHealthPolicy;
   private readonly uid: number;
 
   constructor(options: ServiceManagerOptions = {}) {
@@ -78,26 +133,34 @@ export class UserServiceManager {
     const home = resolve(options.homeDirectory ?? homedir());
     const environment = options.environment ?? process.env;
     this.runner = options.runner ?? defaultRunner;
+    this.clock = options.clock ?? defaultClock;
+    this.health = { ...DEFAULT_SERVICE_HEALTH, ...options.health };
     this.uid = options.uid ?? process.getuid?.() ?? -1;
     if (platform === "linux") {
       this.kind = "systemd";
       const configHome = resolve(environment.XDG_CONFIG_HOME ?? join(home, ".config"));
       this.definitionPath = join(configHome, "systemd", "user", SYSTEMD_UNIT_NAME);
+      this.legacyDefinitionPath = join(configHome, "systemd", "user", LEGACY_SYSTEMD_UNIT_NAME);
     } else if (platform === "darwin") {
       this.kind = "launchd";
       this.definitionPath = join(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
+      this.legacyDefinitionPath = join(home, "Library", "LaunchAgents", `${LEGACY_LAUNCHD_LABEL}.plist`);
     } else {
       throw new Error("Persistent user service installation is supported on Linux and macOS only.");
     }
   }
 
-  /** Read our generated argument array without executing or evaluating the definition. */
+  /**
+   * Read our generated argument array without executing or evaluating the definition. Until the
+   * renamed service is installed, a legacy definition supplies the arguments to inherit.
+   */
   readStartArguments(): string[] | null {
+    const path = existsSync(this.definitionPath) || !existsSync(this.legacyDefinitionPath) ? this.definitionPath : this.legacyDefinitionPath;
     let stat;
-    try { stat = lstatSync(this.definitionPath); }
+    try { stat = lstatSync(path); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
     if (!stat.isFile() || stat.size > 256 * 1024) throw new Error("Installed service definition cannot be safely read; supply the complete user backup policy.");
-    const definition = readFileSync(this.definitionPath, "utf8");
+    const definition = readFileSync(path, "utf8");
     let command: string[];
     if (this.kind === "systemd") {
       const lines = definition.split(/\r?\n/).filter(line => line.startsWith("ExecStart="));
@@ -119,33 +182,226 @@ export class UserServiceManager {
     return command.slice(3);
   }
 
-  install(options: ServiceInstallOptions): { changed: boolean; definitionPath: string } {
+  /**
+   * Installs the service and enables it only after a verified healthy start. A legacy
+   * `worktree-switcher` service is stopped just before the new one starts, because both would claim
+   * the same ports and controller lock, and is disabled and removed only after the health check
+   * passes. systemd drop-ins of the legacy unit are copied to the new unit first, so limits keep
+   * applying. If the start or health check fails, the new service is stopped, its previous
+   * definition and enabled state are restored (or the new definition, copied drop-ins and enabled
+   * state removed), a legacy service that was running is started again, and the error is rethrown.
+   */
+  install(options: ServiceInstallOptions): { changed: boolean; definitionPath: string; legacy: LegacyServiceRemoval | null } {
     const definition = this.kind === "systemd" ? renderSystemdUnit(options) : renderLaunchAgent(options);
     const previous = existsSync(this.definitionPath) ? readFileSync(this.definitionPath, "utf8") : null;
     if (previous !== null && previous !== definition && !options.refresh) {
       throw new Error(`The service definition is outdated. Review the installed path and run service install --refresh: ${this.definitionPath}`);
     }
     const changed = previous !== definition;
-    if (changed) writeDefinition(this.definitionPath, definition);
+    const legacyInstalled = existsSync(this.legacyDefinitionPath);
+    const state: InstallState = {
+      previous, changed, currentWasActive: false, legacyWasActive: false,
+      copiedDropIns: [], createdDropInDirectory: null, retainedDropInDirectory: null,
+    };
 
     if (this.kind === "systemd") {
-      this.requireSuccess("systemctl", ["--user", "daemon-reload"]);
-      this.requireSuccess("systemctl", ["--user", "enable", SYSTEMD_UNIT_NAME]);
-      if (options.refresh && previous !== null) this.requireSuccess("systemctl", ["--user", "restart", SYSTEMD_UNIT_NAME]);
-      else this.requireSuccess("systemctl", ["--user", "start", SYSTEMD_UNIT_NAME]);
+      if (previous !== null) state.currentWasActive = this.systemdActive(SYSTEMD_UNIT_NAME);
+      if (changed) writeDefinition(this.definitionPath, definition);
+      this.withRollback(state, () => {
+        if (legacyInstalled) this.migrateDropIns(state);
+        this.requireSuccess("systemctl", ["--user", "daemon-reload"]);
+        if (legacyInstalled) {
+          state.legacyWasActive = this.systemdActive(LEGACY_SYSTEMD_UNIT_NAME);
+          this.requireSuccess("systemctl", ["--user", "stop", LEGACY_SYSTEMD_UNIT_NAME]);
+        }
+        if (options.refresh && previous !== null) this.requireSuccess("systemctl", ["--user", "restart", SYSTEMD_UNIT_NAME]);
+        else this.requireSuccess("systemctl", ["--user", "start", SYSTEMD_UNIT_NAME]);
+        this.waitUntilHealthy();
+        this.requireSuccess("systemctl", ["--user", "enable", SYSTEMD_UNIT_NAME]);
+      });
+      if (legacyInstalled) {
+        this.requireSuccess("systemctl", ["--user", "disable", LEGACY_SYSTEMD_UNIT_NAME]);
+        rmSync(this.legacyDefinitionPath, { force: true });
+        if (state.retainedDropInDirectory === null) rmSync(`${this.legacyDefinitionPath}.d`, { recursive: true, force: true });
+        this.requireSuccess("systemctl", ["--user", "daemon-reload"]);
+      }
     } else {
       const target = this.launchdTarget();
-      const loaded = this.runner.run("launchctl", ["print", `${target}/${LAUNCHD_LABEL}`]).status === 0;
-      if (loaded && changed) this.requireSuccess("launchctl", ["bootout", `${target}/${LAUNCHD_LABEL}`]);
-      if (!loaded || changed) this.requireSuccess("launchctl", ["bootstrap", target, this.definitionPath]);
-      this.requireSuccess("launchctl", ["enable", `${target}/${LAUNCHD_LABEL}`]);
-      if (!loaded || changed) this.requireSuccess("launchctl", ["kickstart", "-k", `${target}/${LAUNCHD_LABEL}`]);
+      const serviceTarget = `${target}/${LAUNCHD_LABEL}`;
+      const legacyTarget = `${target}/${LEGACY_LAUNCHD_LABEL}`;
+      state.currentWasActive = this.runner.run("launchctl", ["print", serviceTarget]).status === 0;
+      if (changed) writeDefinition(this.definitionPath, definition);
+      this.withRollback(state, () => {
+        if (legacyInstalled) {
+          state.legacyWasActive = this.runner.run("launchctl", ["print", legacyTarget]).status === 0;
+          if (state.legacyWasActive) this.requireSuccess("launchctl", ["bootout", legacyTarget]);
+        }
+        const loaded = state.currentWasActive;
+        if (loaded && changed) this.requireSuccess("launchctl", ["bootout", serviceTarget]);
+        if (!loaded || changed) this.requireSuccess("launchctl", ["bootstrap", target, this.definitionPath]);
+        // A disabled override would block kickstart, so clear it before the health check.
+        this.requireSuccess("launchctl", ["enable", serviceTarget]);
+        if (!loaded || changed) this.requireSuccess("launchctl", ["kickstart", "-k", serviceTarget]);
+        this.waitUntilHealthy();
+      });
+      // bootout unloads the agent; removing its plist keeps it from loading at the next login.
+      if (legacyInstalled) rmSync(this.legacyDefinitionPath, { force: true });
     }
-    return { changed, definitionPath: this.definitionPath };
+    return {
+      changed,
+      definitionPath: this.definitionPath,
+      legacy: legacyInstalled
+        ? {
+          definitionPath: this.legacyDefinitionPath,
+          wasActive: state.legacyWasActive,
+          migratedDropIns: state.copiedDropIns,
+          retainedDropInDirectory: state.retainedDropInDirectory,
+        }
+        : null,
+    };
+  }
+
+  /**
+   * Copies `worktree-switcher.service.d/*.conf` into the new unit's drop-in directory before the
+   * daemon reload, so `MemoryMax`, sandbox settings and similar overrides keep applying. A file that
+   * already exists for the new unit with the same contents counts as migrated; a differing one is
+   * never overwritten. The legacy directory is retained whenever any entry could not be migrated.
+   */
+  private migrateDropIns(state: InstallState): void {
+    const source = `${this.legacyDefinitionPath}.d`;
+    if (!existsSync(source) || !statSync(source).isDirectory()) return;
+    const target = `${this.definitionPath}.d`;
+    const entries = readdirSync(source, { withFileTypes: true });
+    let retained = false;
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const from = join(source, entry.name);
+      const to = join(target, entry.name);
+      if (!entry.isFile() || !entry.name.endsWith(".conf")) {
+        retained = true;
+        continue;
+      }
+      const contents = readFileSync(from);
+      if (existsSync(to)) {
+        if (!readFileSync(to).equals(contents)) retained = true;
+        continue;
+      }
+      if (!existsSync(target)) {
+        mkdirSync(target, { recursive: true, mode: 0o700 });
+        state.createdDropInDirectory = target;
+      }
+      writeFileSync(to, contents, { mode: statSync(from).mode & 0o777 });
+      state.copiedDropIns.push(to);
+    }
+    if (retained) state.retainedDropInDirectory = source;
+  }
+
+  /** Runs the start sequence; on failure restores the previous service state before rethrowing. */
+  private withRollback(state: InstallState, start: () => void): void {
+    try {
+      start();
+    } catch (error) {
+      // Best-effort restoration: report the original failure, not a secondary cleanup error.
+      if (this.kind === "systemd") {
+        this.runner.run("systemctl", ["--user", "stop", SYSTEMD_UNIT_NAME]);
+        if (state.previous === null) {
+          this.runner.run("systemctl", ["--user", "disable", SYSTEMD_UNIT_NAME]);
+          rmSync(this.definitionPath, { force: true });
+        } else if (state.changed) {
+          writeDefinition(this.definitionPath, state.previous);
+        }
+        for (const path of state.copiedDropIns) rmSync(path, { force: true });
+        if (state.createdDropInDirectory) {
+          try {
+            rmdirSync(state.createdDropInDirectory);
+          } catch {
+            // Not empty or already gone: leave it for the operator.
+          }
+        }
+        this.runner.run("systemctl", ["--user", "daemon-reload"]);
+        if (state.previous !== null && state.currentWasActive) this.runner.run("systemctl", ["--user", "start", SYSTEMD_UNIT_NAME]);
+        if (state.legacyWasActive) this.runner.run("systemctl", ["--user", "start", LEGACY_SYSTEMD_UNIT_NAME]);
+      } else {
+        const target = this.launchdTarget();
+        const serviceTarget = `${target}/${LAUNCHD_LABEL}`;
+        this.runner.run("launchctl", ["bootout", serviceTarget]);
+        if (state.previous === null) {
+          this.runner.run("launchctl", ["disable", serviceTarget]);
+          rmSync(this.definitionPath, { force: true });
+        } else {
+          if (state.changed) writeDefinition(this.definitionPath, state.previous);
+          if (state.currentWasActive) {
+            this.runner.run("launchctl", ["bootstrap", target, this.definitionPath]);
+            this.runner.run("launchctl", ["kickstart", serviceTarget]);
+          }
+        }
+        if (state.legacyWasActive) {
+          this.runner.run("launchctl", ["bootstrap", target, this.legacyDefinitionPath]);
+          this.runner.run("launchctl", ["kickstart", `${target}/${LEGACY_LAUNCHD_LABEL}`]);
+        }
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Waits until the started service keeps one main process running, without automatic restarts,
+   * for `healthStableMs`. A crash, restart or timeout throws so the caller rolls back.
+   */
+  private waitUntilHealthy(): void {
+    const deadline = this.clock.now() + this.health.timeoutMs;
+    let baseline: { pid: number; restarts: number; since: number } | null = null;
+    for (;;) {
+      const sample = this.healthSample();
+      const now = this.clock.now();
+      // A Type=simple unit is active/running as soon as start returns, so any other first state
+      // means the controller already exited; launchd may report a spawn state first.
+      if (sample.failed || (!sample.running && this.kind === "systemd")) {
+        throw new Error(`The new service failed to start (${sample.state}). Check its logs before retrying.`);
+      }
+      if (sample.running && sample.pid !== null) {
+        if (baseline && (baseline.pid !== sample.pid || (sample.restarts !== null && sample.restarts !== baseline.restarts))) {
+          throw new Error(`The new service restarted while starting (${sample.state}). Check its logs before retrying.`);
+        }
+        baseline ??= { pid: sample.pid, restarts: sample.restarts ?? 0, since: now };
+        if (now - baseline.since >= this.health.stableMs) return;
+      } else if (baseline) {
+        throw new Error(`The new service stopped while starting (${sample.state}). Check its logs before retrying.`);
+      }
+      if (now >= deadline) throw new Error(`The new service did not become healthy within ${Math.round(this.health.timeoutMs / 1000)} seconds (${sample.state}).`);
+      this.clock.sleep(this.health.intervalMs);
+    }
+  }
+
+  private healthSample(): { running: boolean; failed: boolean; pid: number | null; restarts: number | null; state: string } {
+    if (this.kind === "systemd") {
+      const result = this.runner.run("systemctl", ["--user", "show", SYSTEMD_UNIT_NAME, "--property=ActiveState", "--property=SubState", "--property=MainPID", "--property=NRestarts"]);
+      const values = Object.fromEntries(result.stdout.split(/\r?\n/).map((line) => line.split("=", 2)).filter(([key]) => key));
+      const state = [values.ActiveState, values.SubState].filter(Boolean).join("/") || "unknown";
+      return {
+        running: result.status === 0 && values.ActiveState === "active" && values.SubState === "running",
+        failed: values.ActiveState === "failed",
+        pid: positiveInteger(values.MainPID),
+        restarts: nonNegativeInteger(values.NRestarts),
+        state,
+      };
+    }
+    const result = this.runner.run("launchctl", ["print", `${this.launchdTarget()}/${LAUNCHD_LABEL}`]);
+    const state = result.stdout.match(/\bstate\s*=\s*([^\n]+)/)?.[1]?.trim() ?? (result.status === 0 ? "loaded" : "not loaded");
+    return {
+      running: result.status === 0 && state === "running",
+      failed: result.status !== 0,
+      pid: positiveInteger(result.stdout.match(/\bpid\s*=\s*(\d+)/)?.[1]),
+      restarts: nonNegativeInteger(result.stdout.match(/\bruns\s*=\s*(\d+)/)?.[1]),
+      state,
+    };
+  }
+
+  private systemdActive(unit: string): boolean {
+    return this.runner.run("systemctl", ["--user", "is-active", "--quiet", unit]).status === 0;
   }
 
   start(): void {
-    if (!existsSync(this.definitionPath)) throw new Error("The Worktree Switcher user service is not installed.");
+    if (!existsSync(this.definitionPath)) throw new Error("The Worktree Control user service is not installed.");
     if (this.kind === "systemd") this.requireSuccess("systemctl", ["--user", "start", SYSTEMD_UNIT_NAME]);
     else {
       const target = this.launchdTarget();
@@ -168,7 +424,7 @@ export class UserServiceManager {
   }
 
   restart(): void {
-    if (!existsSync(this.definitionPath)) throw new Error("The Worktree Switcher user service is not installed.");
+    if (!existsSync(this.definitionPath)) throw new Error("The Worktree Control user service is not installed.");
     if (this.kind === "systemd") this.requireSuccess("systemctl", ["--user", "restart", SYSTEMD_UNIT_NAME]);
     else {
       const target = this.launchdTarget();
@@ -183,21 +439,38 @@ export class UserServiceManager {
     }
   }
 
-  uninstall(): { removed: boolean; definitionPath: string } {
+  /** Removes the service and, when still present, the pre-rename legacy service. */
+  uninstall(): { removed: boolean; definitionPath: string; legacyDefinitionPath: string | null } {
     const installed = existsSync(this.definitionPath);
+    const legacyInstalled = existsSync(this.legacyDefinitionPath);
     if (this.kind === "systemd") {
       this.runner.run("systemctl", ["--user", "disable", "--now", SYSTEMD_UNIT_NAME]);
       if (installed) rmSync(this.definitionPath);
+      if (legacyInstalled) {
+        this.runner.run("systemctl", ["--user", "disable", "--now", LEGACY_SYSTEMD_UNIT_NAME]);
+        rmSync(this.legacyDefinitionPath, { force: true });
+      }
       this.requireSuccess("systemctl", ["--user", "daemon-reload"]);
     } else {
-      const target = `${this.launchdTarget()}/${LAUNCHD_LABEL}`;
+      const launchdTarget = this.launchdTarget();
+      const target = `${launchdTarget}/${LAUNCHD_LABEL}`;
       if (this.runner.run("launchctl", ["print", target]).status === 0) this.runner.run("launchctl", ["bootout", target]);
       if (installed) rmSync(this.definitionPath);
+      if (legacyInstalled) {
+        const legacyTarget = `${launchdTarget}/${LEGACY_LAUNCHD_LABEL}`;
+        if (this.runner.run("launchctl", ["print", legacyTarget]).status === 0) this.runner.run("launchctl", ["bootout", legacyTarget]);
+        rmSync(this.legacyDefinitionPath, { force: true });
+      }
     }
-    return { removed: installed, definitionPath: this.definitionPath };
+    return { removed: installed, definitionPath: this.definitionPath, legacyDefinitionPath: legacyInstalled ? this.legacyDefinitionPath : null };
   }
 
   status(): ServiceStatus {
+    const legacyDefinitionPath = existsSync(this.legacyDefinitionPath) ? this.legacyDefinitionPath : null;
+    return { ...this.currentStatus(), legacyDefinitionPath };
+  }
+
+  private currentStatus(): Omit<ServiceStatus, "legacyDefinitionPath"> {
     if (!existsSync(this.definitionPath)) return this.emptyStatus();
     if (this.kind === "systemd") {
       const result = this.runner.run("systemctl", [
@@ -238,7 +511,7 @@ export class UserServiceManager {
     };
   }
 
-  private emptyStatus(): ServiceStatus {
+  private emptyStatus(): Omit<ServiceStatus, "legacyDefinitionPath"> {
     return {
       platform: this.kind,
       installed: false,
@@ -282,7 +555,7 @@ export function renderSystemdUnit(options: ServiceInstallOptions): string {
     .map(systemdQuote)
     .join(" ");
   const servicePath = resolveServiceExecutablePath(options.nodePath);
-  return `[Unit]\nDescription=Worktree Switcher local control plane\nAfter=network.target\nStartLimitIntervalSec=60\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart=${command}\nWorkingDirectory=${systemdDirectivePath(options.workingDirectory)}\nEnvironment=NODE_ENV=production\nEnvironment=${systemdQuote(`PATH=${servicePath}`)}\nRestart=on-failure\nRestartSec=5\nKillMode=control-group\nTimeoutStopSec=15\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
+  return `[Unit]\nDescription=Worktree Control local control plane\nAfter=network.target\nStartLimitIntervalSec=60\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart=${command}\nWorkingDirectory=${systemdDirectivePath(options.workingDirectory)}\nEnvironment=NODE_ENV=production\nEnvironment=${systemdQuote(`PATH=${servicePath}`)}\nRestart=on-failure\nRestartSec=5\nKillMode=control-group\nTimeoutStopSec=15\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
 }
 
 export function renderLaunchAgent(options: ServiceInstallOptions): string {
@@ -347,4 +620,9 @@ function positiveInteger(value: string | undefined): number | null {
 function nonNegativeInteger(value: string | undefined): number | null {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+/** Status warning for a pre-rename service definition that is still installed. */
+export function legacyServiceWarning(definitionPath: string): string {
+  return `Warning: the legacy worktree-switcher service is still installed at ${definitionPath}. Run worktree-control service install to migrate it, or service uninstall to remove it.`;
 }

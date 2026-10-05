@@ -15,7 +15,7 @@ import { authenticateOfflineActor } from "./offline-actor";
 const directories: string[] = [];
 
 function paths() {
-  const root = mkdtempSync(join(tmpdir(), "worktree-switcher-auth-cli-"));
+  const root = mkdtempSync(join(tmpdir(), "worktree-control-auth-cli-"));
   directories.push(root);
   return resolveAppPaths(join(root, "data"), join(root, "state"));
 }

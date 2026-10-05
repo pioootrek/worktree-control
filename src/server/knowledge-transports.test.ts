@@ -85,7 +85,7 @@ describe("real knowledge HTTP, MCP and CLI", () => {
     expect(http).toMatchObject({ incoming: { bytes: 5001, files: 5001 }, accepted: false, violations: [expect.objectContaining({ constraint: "projectFiles" })] });
     expect((await f.call(0, "check_attachment_batch", input)).value).toEqual(http);
     const lines: string[] = [];
-    await runKnowledgeCommand(["check_attachment_batch", "--json", JSON.stringify(input)], f.paths, { environment: { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: line => lines.push(line) });
+    await runKnowledgeCommand(["check_attachment_batch", "--json", JSON.stringify(input)], f.paths, { environment: { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: line => lines.push(line) });
     expect(JSON.parse(lines[0])).toEqual(http);
   });
 
@@ -117,12 +117,12 @@ describe("real knowledge HTTP, MCP and CLI", () => {
     const policy = await (await f.http("attachment_policy", { projectId })).json();
     expect((await f.call(0, "attachment_policy", { projectId })).value).toEqual(policy);
     const lines: string[] = [];
-    await runKnowledgeCommand(["attachment_policy", "--json", JSON.stringify({ projectId })], f.paths, { environment: { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: line => lines.push(line) });
+    await runKnowledgeCommand(["attachment_policy", "--json", JSON.stringify({ projectId })], f.paths, { environment: { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: line => lines.push(line) });
     expect(JSON.parse(lines[0])).toEqual(policy);
     const input = { projectId, recordKind: "task", recordId: task.id, files: [{ filename: "proof.txt", size: 1, sha256: "a".repeat(64) }] };
     const checked = await (await f.http("check_attachment_batch", input)).json();
     expect((await f.call(1, "check_attachment_batch", input)).value).toEqual(checked);
-    await runKnowledgeCommand(["check_attachment_batch", "--json", JSON.stringify(input)], f.paths, { environment: { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: line => lines.push(line) });
+    await runKnowledgeCommand(["check_attachment_batch", "--json", JSON.stringify(input)], f.paths, { environment: { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: line => lines.push(line) });
     expect(JSON.parse(lines[1])).toEqual(checked);
     const exceeded = { ...input, files: [{ ...input.files[0], size: policy.limits.projectBytes + 1 }] };
     expect((await f.call(0, "check_attachment_batch", exceeded)).value).toMatchObject({ accepted: false, violations: [expect.objectContaining({ constraint: "fileBytes" }), expect.objectContaining({ constraint: "projectBytes" })] });
@@ -139,7 +139,7 @@ describe("real knowledge HTTP, MCP and CLI", () => {
     const response = await f.http("create_attachment", rejected), failure = await response.json();
     expect(response.status).toBe(413);
     expect((await f.call(0, "create_attachment", rejected)).value).toEqual(failure);
-    await expect(runKnowledgeCommand(["create_attachment", "--json", JSON.stringify(rejected)], f.paths, { environment: { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: f.agentTokens[0] } })).rejects.toThrow(JSON.stringify(failure));
+    await expect(runKnowledgeCommand(["create_attachment", "--json", JSON.stringify(rejected)], f.paths, { environment: { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: f.agentTokens[0] } })).rejects.toThrow(JSON.stringify(failure));
     expect(failure.details.violations.map((item: { constraint: string }) => item.constraint)).toEqual(["projectBytes", "projectFiles"]);
     f.identity.revokeKnowledgeGrant(f.agents[0], projectId, f.owner);
     expect((await f.call(0, "attachment_policy", { projectId })).value.code).toBe("knowledge_forbidden");
@@ -150,7 +150,7 @@ describe("real knowledge HTTP, MCP and CLI", () => {
     const task=(await taskResponse.json() as {value:{id:string}}).value;
     const input={projectId:f.project.id,recordKind:"task",recordId:task.id,filename:"evidence.bin",mediaType:"application/octet-stream",dataBase64:Buffer.alloc(64*1024,7).toString("base64"),idempotencyKey:"http-file"};
     const uploaded=await f.http("create_attachment",input); expect(uploaded.status).toBe(200);
-    await runKnowledgeCommand(["create_attachment","--json",JSON.stringify({...input,idempotencyKey:"cli-file",filename:"cli.bin"})],f.paths,{environment:{WORKTREE_SWITCHER_KNOWLEDGE_TOKEN:f.agentTokens[0]},write:()=>{}});
+    await runKnowledgeCommand(["create_attachment","--json",JSON.stringify({...input,idempotencyKey:"cli-file",filename:"cli.bin"})],f.paths,{environment:{WORKTREE_CONTROL_KNOWLEDGE_TOKEN:f.agentTokens[0]},write:()=>{}});
   });
   it.each(["grant", "credential", "expiry"] as const)("filters SSE with current %s state without recording passive credential usage", async kind => {
     let now = "2026-01-01T12:00:00.000Z";
@@ -160,7 +160,7 @@ describe("real knowledge HTTP, MCP and CLI", () => {
     const eventToken = eventCredential.token;
     const used = vi.spyOn(f.store, "recordCredentialUsed");
     const abort = new AbortController();
-    const response = await fetch(`${f.base}/api/events`, { headers: { "X-Worktree-Switcher-Token": "pairing", Authorization: `Bearer ${eventToken}` }, signal: abort.signal });
+    const response = await fetch(`${f.base}/api/events`, { headers: { "X-Worktree-Control-Token": "pairing", Authorization: `Bearer ${eventToken}` }, signal: abort.signal });
     expect(response.status).toBe(200);
     expect(used.mock.calls.filter(([id]) => id === eventCredential.credential.id)).toHaveLength(1);
     used.mockClear();
@@ -204,9 +204,9 @@ describe("real knowledge HTTP, MCP and CLI", () => {
     const retry = await f.call(1, "task_from_thread", input);
     expect(retry.value).toEqual({ ...first.value, replayed: true });
     const lines: string[] = [];
-    await runKnowledgeCommand(["tasks", "--json", JSON.stringify({ projectId })], f.paths, { environment: { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: line => lines.push(line) });
+    await runKnowledgeCommand(["tasks", "--json", JSON.stringify({ projectId })], f.paths, { environment: { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: line => lines.push(line) });
     expect((JSON.parse(lines[0]) as KnowledgePage<KnowledgeTask>).items).toHaveLength(1);
-    await runKnowledgeCommand(["create_reply", "--json", JSON.stringify({ projectId, threadId: created.value.id, body: "CLI confirms", idempotencyKey: "cli" })], f.paths, { environment: { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: f.agentTokens[1] }, write: () => undefined });
+    await runKnowledgeCommand(["create_reply", "--json", JSON.stringify({ projectId, threadId: created.value.id, body: "CLI confirms", idempotencyKey: "cli" })], f.paths, { environment: { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: f.agentTokens[1] }, write: () => undefined });
     expect((await (await f.http("replies", { projectId, threadId: created.value.id })).json()).items).toHaveLength(2);
     const relation = await f.call(0, "relations", { projectId, recordKind: "task", recordId: first.value.value.task.id });
     expect(relation.value.items[0].targetId).toBe(created.value.id);
@@ -235,6 +235,6 @@ describe("real knowledge HTTP, MCP and CLI", () => {
     const replay = await f.call(0, "create_task", input);
     expect(replay.result.isError).toBe(true); expect(replay.value.code).toBe("knowledge_forbidden");
     expect((await f.call(0, "projects", {})).value.items).toEqual([]);
-    await expect(runKnowledgeCommand(["tasks", "--json", JSON.stringify({ projectId })], f.paths, { environment: { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: () => undefined })).rejects.toThrow("knowledge_forbidden");
+    await expect(runKnowledgeCommand(["tasks", "--json", JSON.stringify({ projectId })], f.paths, { environment: { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: () => undefined })).rejects.toThrow("knowledge_forbidden");
   });
 });

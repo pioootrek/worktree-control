@@ -3,11 +3,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useI18n } from "@/i18n/provider";
+import { readStoredValue, writeStoredValue } from "@/lib/browser-storage";
 import type { BackupCommand, BackupOperation, BackupOverview, RestoreOperation, RestorePreview } from "@/shared/contracts/backups";
 import { backupCommandSchema } from "@/shared/contracts/backups";
 import { BackupClientError, backupRequest } from "./backup-client";
 
-const STORAGE_KEY = "worktree-switcher-backup-request";
+const STORAGE_NAME = "backup-request";
 // The local dashboard also supports HTTP, where randomUUID is unavailable.
 const requestKey = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), byte => byte.toString(16).padStart(2, "0")).join("");
 /** Explicit refresh uses no additional polling or dashboard event subscription. */
@@ -59,7 +60,7 @@ export function BackupsDialog({ token, open, onOpenChange, returnFocus }: { toke
     if (!open) return;
     const current = ++generation.current;
     try {
-      const value = window.sessionStorage.getItem(STORAGE_KEY);
+      const value = readStoredValue(window.sessionStorage, STORAGE_NAME);
       const stored = value ? JSON.parse(value) : null;
       const parsed = stored?.credential === token.slice(0, 40) ? backupCommandSchema.safeParse(stored.input) : null;
       saved.current = parsed?.success ? parsed.data : null;
@@ -73,7 +74,7 @@ export function BackupsDialog({ token, open, onOpenChange, returnFocus }: { toke
     busy.current = true; setPending(true); setError(null);
     const current = generation.current;
     try {
-      if (retain) { saved.current = input; setRetry(input); window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ credential: token.slice(0, 40), input })); }
+      if (retain) { saved.current = input; setRetry(input); writeStoredValue(window.sessionStorage, STORAGE_NAME, JSON.stringify({ credential: token.slice(0, 40), input })); }
       if (input.action === "preview") {
         const data = await backupRequest<RestorePreview>(token, input);
         if (generation.current === current) { setPreview(data); setConfirmed(false); }

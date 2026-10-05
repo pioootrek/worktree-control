@@ -6,11 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { closeFixtureChild, waitFor } from "./controller-fixture";
+import { readProductEnvironment } from "../../src/server/product-environment";
 const exec = promisify(execFile);
-export const realResticAvailable = Boolean(process.env.WORKTREE_SWITCHER_TEST_RESTIC && process.env.WORKTREE_SWITCHER_TEST_REST_SERVER);
+export const realResticAvailable = Boolean(readProductEnvironment(process.env, "WORKTREE_CONTROL_TEST_RESTIC") && readProductEnvironment(process.env, "WORKTREE_CONTROL_TEST_REST_SERVER"));
 /** Operator-supplied verified official fixture binaries; never install or contact a production repository. */
 export async function resticFixture() {
-  const restic = process.env.WORKTREE_SWITCHER_TEST_RESTIC!, server = process.env.WORKTREE_SWITCHER_TEST_REST_SERVER!;
+  const restic = readProductEnvironment(process.env, "WORKTREE_CONTROL_TEST_RESTIC")!, server = readProductEnvironment(process.env, "WORKTREE_CONTROL_TEST_REST_SERVER")!;
   const root = await mkdtemp(join(tmpdir(), "wts-restic-fixture-")), key = join(root, "password"), credentials = join(root, "credentials.json"), cert = join(root, "cert.pem"), tlsKey = join(root, "tls-key.pem"), repositoryRoot = join(root, "repository");
   let child: ChildProcess | undefined;
   try {

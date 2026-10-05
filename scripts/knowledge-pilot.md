@@ -18,12 +18,12 @@ public CLI (`auth token generate`) and stores it only in the pilot directory as
 `installation-token` (mode 0600). The token authenticates:
 
 - the browser, entered through the real access form (never in a URL);
-- the online and offline CLI, through `WORKTREE_SWITCHER_TOKEN`;
+- the online and offline CLI, through `WORKTREE_CONTROL_TOKEN`;
 - identity administration, which creates two scoped agents.
 
 Each agent authenticates to MCP and CLI with its own agent token. The scripts
 pass credentials only through headers, pipes and child environments, remove
-inherited Worktree Switcher credential and path variables from child processes,
+inherited Worktree Control credential and path variables from child processes,
 and never print a token. They run with `umask 077`; the pilot directory is
 created with mode 0700.
 
@@ -76,12 +76,12 @@ remain available separately from import provenance.
 
 ## Managed GUI, CLI and two MCP clients
 
-Build through the registered project's Worktree Switcher test queue. Select a
+Build through the registered project's Worktree Control test queue. Select a
 development environment profile containing:
 
 ```text
-WORKTREE_SWITCHER_PILOT_ROOT=/absolute/new/private/pilot-directory
-WORKTREE_SWITCHER_PILOT_MCP_PORT=<available distinct MCP port>
+WORKTREE_CONTROL_PILOT_ROOT=/absolute/new/private/pilot-directory
+WORKTREE_CONTROL_PILOT_MCP_PORT=<available distinct MCP port>
 ```
 
 Claim the exact pilot worktree through MCP. `pnpm dev` uses the controller-assigned

@@ -29,7 +29,7 @@ const threadRelations = [
 ];
 
 async function mountNavigation(page: Page) {
-  await page.addInitScript(() => sessionStorage.setItem("worktree-switcher-knowledge-token", "navigation-fixture"));
+  await page.addInitScript(() => sessionStorage.setItem("worktree-control-knowledge-token", "navigation-fixture"));
   const data = dashboardFixture(); data.projects = [];
   const calls: Array<{ operation: string; input: Record<string, unknown> }> = [];
   const fixture = await mountDashboard(page, data);

@@ -22,7 +22,7 @@ afterEach(() => {
 
 describe("ControlService worktree storage", () => {
   it("queues only paths discovered for the registered repository", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-storage-service-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-storage-service-"));
     directories.push(directory);
     const store = new SqliteStateStore(join(directory, "state.sqlite3"));
     const project = store.addProject({ name: "Web", repositoryPath: "/code/web", port: 3301, executable: "pnpm", args: ["run", "dev"] });
@@ -80,7 +80,7 @@ describe("ControlService worktree storage", () => {
 
   it("blocks runtime, reservation, test admission, and explicit storage refresh until deferred deletion finishes", async () => {
     for (const conflict of ["start", "reserve", "enqueue", "refresh"] as const) {
-      const directory = mkdtempSync(join(tmpdir(), `worktree-switcher-cache-${conflict}-`));
+      const directory = mkdtempSync(join(tmpdir(), `worktree-control-cache-${conflict}-`));
       directories.push(directory);
       const store = new SqliteStateStore(join(directory, "state.sqlite3"));
       const project = store.addProject({ name: "Web", repositoryPath: "/code/web", port: 3301, executable: "pnpm", args: ["run", "dev"] });
@@ -152,7 +152,7 @@ describe("ControlService worktree storage", () => {
   });
 
   it("releases serialization after cleaner failure so a waiting operation can proceed", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-cache-failure-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-cache-failure-"));
     directories.push(directory);
     const store = new SqliteStateStore(join(directory, "state.sqlite3"));
     const project = store.addProject({ name: "Web", repositoryPath: "/code/web", port: 3301, executable: "pnpm", args: [] });
@@ -173,7 +173,7 @@ describe("ControlService worktree storage", () => {
   });
 
   it("stops owned processes while draining accepted work and closes persistence last", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-cache-shutdown-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-cache-shutdown-"));
     directories.push(directory);
     const store = new SqliteStateStore(join(directory, "state.sqlite3"));
     const project = store.addProject({ name: "Web", repositoryPath: "/code/web", port: 3301, executable: "pnpm", args: [] });
@@ -209,7 +209,7 @@ describe("ControlService worktree storage", () => {
   });
 
   it("blocks real automatic storage admission for the worktree during deletion", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-cache-scan-"));
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-cache-scan-"));
     directories.push(directory);
     const store = new SqliteStateStore(join(directory, "state.sqlite3"));
     const project = store.addProject({ name: "Web", repositoryPath: "/code/web", port: 3301, executable: "pnpm", args: [] });

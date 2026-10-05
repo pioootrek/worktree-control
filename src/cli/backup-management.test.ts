@@ -42,7 +42,7 @@ it("exports and imports a logical project in open mode without token variables a
   database.close();
 
   await runAuthCommand(["mode","set","token"],source,{write:()=>{}});
-  await expect(runBackupCommand(["export-project",projectId,join(root,"missing")],source,"test",()=>{},{})).rejects.toThrow("WORKTREE_SWITCHER_OWNER_TOKEN");
-  await expect(runBackupCommand(["export-project",projectId,join(root,"invalid")],source,"test",()=>{},{WORKTREE_SWITCHER_TOKEN:`${token}0`})).rejects.toThrow("Nieprawidłowe lub nieaktywne");
-  await runBackupCommand(["export-project",projectId,join(root,"token")],source,"test",()=>{},{WORKTREE_SWITCHER_TOKEN:token});
+  await expect(runBackupCommand(["export-project",projectId,join(root,"missing")],source,"test",()=>{},{})).rejects.toThrow("WORKTREE_CONTROL_OWNER_TOKEN");
+  await expect(runBackupCommand(["export-project",projectId,join(root,"invalid")],source,"test",()=>{},{WORKTREE_CONTROL_TOKEN:`${token}0`})).rejects.toThrow("Nieprawidłowe lub nieaktywne");
+  await runBackupCommand(["export-project",projectId,join(root,"token")],source,"test",()=>{},{WORKTREE_CONTROL_TOKEN:token});
 });

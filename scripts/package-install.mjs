@@ -14,9 +14,10 @@ export async function productionInstallEnvironment(root, environment = process.e
   await Promise.all([writeFile(env.npm_config_userconfig, ""), writeFile(env.npm_config_globalconfig, "")]);
   return env;
 }
-export async function installProductionPrefix(tarball, prefix, root, env, run) {
+/** `packageName` is `worktree-switcher` only for historical artifacts packed before the rename. */
+export async function installProductionPrefix(tarball, prefix, root, env, run, packageName = "worktree-control") {
   await run("npm", ["install", "--global", "--prefix", prefix, "--omit=dev", "--no-audit", "--no-fund", tarball], { cwd: root, env, timeout: 300_000 });
-  return join(prefix, "lib", "node_modules", "worktree-switcher");
+  return join(prefix, "lib", "node_modules", packageName);
 }
 export async function installedSqlite(packageRoot) {
   const sqliteRoot = join(packageRoot, "node_modules", "better-sqlite3");
@@ -29,6 +30,15 @@ export async function installedSqlite(packageRoot) {
 
 function check(value, message) { if (!value) throw new Error(message); }
 
+/** Reads a `WORKTREE_CONTROL_*` script variable, falling back to its deprecated `WORKTREE_SWITCHER_*` name. */
+export function scriptEnvironment(name, environment = process.env) {
+  if (environment[name] !== undefined) return environment[name];
+  const legacy = name.replace(/^WORKTREE_CONTROL_/, "WORKTREE_SWITCHER_");
+  if (environment[legacy] === undefined) return undefined;
+  process.stderr.write(`Warning: ${legacy} is deprecated; set ${name} instead.\n`);
+  return environment[legacy];
+}
+
 // Trusted local operator argument only; never discover a driver from an artifact
 // or remote metadata. A separate owned process group bounds all fixture children.
 export async function verifyInstalledDriver(script, packageRoot, input = [], root) {
@@ -36,7 +46,7 @@ export async function verifyInstalledDriver(script, packageRoot, input = [], roo
   check(process.platform !== "win32", "Explicit installed verification requires POSIX process groups.");
   const path = resolve(script);
   check((await lstat(path)).isFile(), "Verification script must be a local regular file.");
-  const environment = { PATH: process.env.PATH, LANG: "C.UTF-8", TMPDIR: root, ...Object.fromEntries(["WORKTREE_SWITCHER_TEST_RESTIC", "WORKTREE_SWITCHER_TEST_REST_SERVER"].flatMap(name => process.env[name] ? [[name, process.env[name]]] : [])) };
+  const environment = { PATH: process.env.PATH, LANG: "C.UTF-8", TMPDIR: root, ...Object.fromEntries(["WORKTREE_CONTROL_TEST_RESTIC", "WORKTREE_CONTROL_TEST_REST_SERVER"].flatMap(name => { const value = scriptEnvironment(name); return value ? [[name, value]] : []; })) };
   return new Promise((accept, reject) => {
     const child = spawn(process.execPath, [path, packageRoot, ...input], { cwd: process.cwd(), env: environment, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
     let output = "", errors = "", forcedReason = null;

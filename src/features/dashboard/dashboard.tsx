@@ -167,7 +167,7 @@ export function Dashboard() {
         )}
         </div>
         <footer className="flex min-h-14 items-center justify-end border-t border-border px-4 text-xs text-muted-foreground sm:px-7 lg:px-8">
-          Worktree Switcher
+          Worktree Control
         </footer>
       </main>
     </SidebarProvider>

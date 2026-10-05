@@ -13,7 +13,7 @@ const directories: string[] = [];
 const NOW = "2026-09-26T12:00:00.000Z";
 
 function databasePath(): string {
-  const directory = mkdtempSync(join(tmpdir(), "worktree-switcher-authentication-"));
+  const directory = mkdtempSync(join(tmpdir(), "worktree-control-authentication-"));
   directories.push(directory);
   return join(directory, "state.sqlite3");
 }

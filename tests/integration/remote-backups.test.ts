@@ -18,9 +18,9 @@ describe.skipIf(!realResticAvailable)("real restic HTTPS REST transfer and sourc
     remote = await resticFixture(); controller = await startControllerFixture(0, [], { backups: true, startupArguments: remote.startupArguments });
     const f = controller, r = remote, token = f.installationToken;
     const { project } = await f.request<{ project: { id: string } }>("/api/identity/admin", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ action: "create-knowledge-project", name: "Remote recovery" }) });
-    const task = JSON.parse(await f.cli(["knowledge", "create_task", "--json", JSON.stringify({ projectId: project.id, title: "Recovered task", description: "Remote source-independent data", idempotencyKey: "task" })], { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: token })) as { value: { id: string } };
+    const task = JSON.parse(await f.cli(["knowledge", "create_task", "--json", JSON.stringify({ projectId: project.id, title: "Recovered task", description: "Remote source-independent data", idempotencyKey: "task" })], { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: token })) as { value: { id: string } };
     const bytes = Buffer.from("remote fixture attachment bytes"), sha256 = createHash("sha256").update(bytes).digest("hex");
-    const attachment = JSON.parse(await f.cli(["knowledge", "create_attachment", "--json", JSON.stringify({ projectId: project.id, recordKind: "task", recordId: task.value.id, filename: "proof.txt", mediaType: "text/plain", dataBase64: bytes.toString("base64"), sha256, idempotencyKey: "attachment" })], { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: token })) as { value: { id: string } };
+    const attachment = JSON.parse(await f.cli(["knowledge", "create_attachment", "--json", JSON.stringify({ projectId: project.id, recordKind: "task", recordId: task.value.id, filename: "proof.txt", mediaType: "text/plain", dataBase64: bytes.toString("base64"), sha256, idempotencyKey: "attachment" })], { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: token })) as { value: { id: string } };
     const copy = JSON.parse(await f.cli(["backup", "now", "--idempotency-key", "off-host-fixture"])) as BackupOperation;
     const confirmed = await waitFor(async () => { const status = JSON.parse(await f.cli(["backup", "remote", "status"])) as RemoteBackupStatus; return status.lastConfirmed?.backupId === copy.backupId ? status : null; }, 30000, () => "Real HTTPS transfer did not confirm.");
     expect(confirmed.recovery).toBe("not-measured"); expect(confirmed.pending).toBe(0);
@@ -42,13 +42,13 @@ describe.skipIf(!realResticAvailable)("real restic HTTPS REST transfer and sourc
     const manifest = JSON.parse(await readFile(join(recovered, "manifest.json"), "utf8")) as { attachments: Array<{ file: string }> };
     expect(manifest.attachments).toHaveLength(1); expect((await readFile(join(recovered, "attachments", manifest.attachments[0].file))).equals(bytes)).toBe(true);
     const data = join(r.root, "fresh-data"), state = join(r.root, "fresh-state");
-    const common = ["--data-dir", data, "--state-dir", state], environment = { ...process.env, WORKTREE_SWITCHER_TOKEN: token, WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: token };
+    const common = ["--data-dir", data, "--state-dir", state], environment = { ...process.env, WORKTREE_CONTROL_TOKEN: token, WORKTREE_CONTROL_KNOWLEDGE_TOKEN: token };
     await exec(process.execPath, [cli, "backup", "restore", recovered, "--idempotency-key", "remote-recovery", ...common], { env: environment, timeout: 30000 });
     // Existing restore validates schema/integrity/FK/domain/attachments; fresh CLI validates restored access and records.
     controller = await startControllerFixture(0, [], { restoredInstallation: { data, state, token } });
-    const tasks = JSON.parse(await controller.cli(["knowledge", "tasks", "--json", JSON.stringify({ projectId: project.id })], { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: token })) as { items: Array<{ id: string }> };
+    const tasks = JSON.parse(await controller.cli(["knowledge", "tasks", "--json", JSON.stringify({ projectId: project.id })], { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: token })) as { items: Array<{ id: string }> };
     expect(tasks.items.map(item => item.id)).toContain(task.value.id);
-    const downloaded = JSON.parse(await controller.cli(["knowledge", "attachment", "--json", JSON.stringify({ projectId: project.id, attachmentId: attachment.value.id })], { WORKTREE_SWITCHER_KNOWLEDGE_TOKEN: token })) as { dataBase64: string };
+    const downloaded = JSON.parse(await controller.cli(["knowledge", "attachment", "--json", JSON.stringify({ projectId: project.id, attachmentId: attachment.value.id })], { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: token })) as { dataBase64: string };
     expect(Buffer.from(downloaded.dataBase64, "base64").equals(bytes)).toBe(true);
     console.log(JSON.stringify({ evidence: "isolated-https-rest-recovery", sourceInstallationDeleted: true, confirmedSnapshots: 1, remoteFiles, recoveredTasks: 1, recoveredAttachments: 1, recoveryMs: Date.now() - recoveryStart, ...r.provenance }));
   });

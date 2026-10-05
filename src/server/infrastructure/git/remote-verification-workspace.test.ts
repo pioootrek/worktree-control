@@ -31,7 +31,7 @@ function fixture(): {
   worker: string;
   workspaceRoot: string;
 } {
-  const root = mkdtempSync(join(tmpdir(), "worktree-switcher-remote-workspace-"));
+  const root = mkdtempSync(join(tmpdir(), "worktree-control-remote-workspace-"));
   directories.push(root);
   const remote = join(root, "remote.git");
   const seed = join(root, "seed");

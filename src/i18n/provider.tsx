@@ -2,6 +2,8 @@
 
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
 
+import { readStoredValue, writeStoredValue } from "@/lib/browser-storage";
+
 import { localeFrom, type Locale, translate } from "./messages";
 
 interface I18nContextValue {
@@ -17,7 +19,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      const saved = window.localStorage.getItem("worktree-switcher-locale");
+      const saved = readStoredValue(window.localStorage, "locale");
       const detected = saved ? localeFrom(saved) : "en";
       setLocaleState(detected);
       document.documentElement.lang = detected;
@@ -30,7 +32,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     setLocale(next) {
       setLocaleState(next);
       document.documentElement.lang = next;
-      window.localStorage.setItem("worktree-switcher-locale", next);
+      writeStoredValue(window.localStorage, "locale", next);
     },
     t: (key, values) => translate(locale, key, values),
   }), [locale]);

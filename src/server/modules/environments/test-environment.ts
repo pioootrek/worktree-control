@@ -68,16 +68,24 @@ export function resolveTestEnvironment(input: TestEnvironmentInput): ResolvedTes
   };
 }
 
+/**
+ * Metadata for the test process under `WORKTREE_CONTROL*` names. The same values are also set under
+ * the pre-rename `WORKTREE_SWITCHER*` names so existing project scripts keep working.
+ */
 function controllerMetadata(project: Project, worktree: Worktree, profile: TestEnvironmentProfile): Record<string, string> {
   const scheme = project.tlsMode === "off" ? "http" : "https";
-  return {
-    WORKTREE_SWITCHER: "1",
-    WORKTREE_SWITCHER_PROJECT_ID: project.id,
-    WORKTREE_SWITCHER_TEST_PROFILE: profile.name,
-    WORKTREE_SWITCHER_WORKTREE_PATH: worktree.path,
-    WORKTREE_SWITCHER_SERVER_PORT: String(project.port),
-    WORKTREE_SWITCHER_SERVER_URL: `${scheme}://127.0.0.1:${project.port}`,
+  const values: Record<string, string> = {
+    "": "1",
+    _PROJECT_ID: project.id,
+    _TEST_PROFILE: profile.name,
+    _WORKTREE_PATH: worktree.path,
+    _SERVER_PORT: String(project.port),
+    _SERVER_URL: `${scheme}://127.0.0.1:${project.port}`,
   };
+  return Object.fromEntries(Object.entries(values).flatMap(([suffix, value]) => [
+    [`WORKTREE_CONTROL${suffix}`, value],
+    [`WORKTREE_SWITCHER${suffix}`, value],
+  ]));
 }
 
 export const BUILT_IN_TEST_PROFILES: TestEnvironmentProfile[] = [

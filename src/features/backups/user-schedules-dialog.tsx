@@ -3,9 +3,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useI18n } from "@/i18n/provider";
+import { readStoredValue, removeStoredValue, writeStoredValue } from "@/lib/browser-storage";
 import { userScheduleMutationKey, userScheduleCommandSchema, type UserSchedule, type UserScheduleCommand, type UserScheduleInput, type UserScheduleOverview } from "@/shared/contracts/user-backups";
 
-const storageKey = "worktree-switcher-user-schedule-request";
+const requestStorageName = "user-schedule-request";
+const tokenStorageName = "user-schedule-token";
 function uuid(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16)); bytes[6] = (bytes[6]! & 15) | 64; bytes[8] = (bytes[8]! & 63) | 128;
   const hex = Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
@@ -26,15 +28,15 @@ export function UserSchedulesDialog({ token: initialToken, onOpenChange, returnF
   useEffect(() => {
     if (initialToken.startsWith("wts_")) return;
     const frame = requestAnimationFrame(() => {
-      try { const stored = sessionStorage.getItem("worktree-switcher-user-schedule-token"); if (stored?.startsWith("wts_")) setToken(stored); } catch { /* A credential can still be supplied without persistence. */ }
+      try { const stored = readStoredValue(sessionStorage, tokenStorageName); if (stored?.startsWith("wts_")) setToken(stored); } catch { /* A credential can still be supplied without persistence. */ }
     });
     return () => cancelAnimationFrame(frame);
   }, [initialToken]);
-  const disconnect = () => { try { sessionStorage.removeItem("worktree-switcher-user-schedule-token"); } catch {} setToken(""); setDraftToken(""); };
+  const disconnect = () => { try { removeStoredValue(sessionStorage, tokenStorageName); } catch {} setToken(""); setDraftToken(""); };
   if (token) return <UserSchedulesPanel key={token} token={token} onOpenChange={onOpenChange} returnFocus={returnFocus} disconnect={disconnect} />;
   return <Dialog open onOpenChange={onOpenChange}><DialogContent closeLabel={t("common.close")} className="max-h-[90dvh] overflow-y-auto" onCloseAutoFocus={event => { event.preventDefault(); returnFocus(); }}>
     <DialogHeader><DialogTitle>{t("userBackups.title")}</DialogTitle><DialogDescription>{t("userBackups.credentialHelp")}</DialogDescription></DialogHeader>
-    <form className="grid gap-3" onSubmit={event => { event.preventDefault(); const value = draftToken.trim(); if (!value) return; try { sessionStorage.setItem("worktree-switcher-user-schedule-token", value); } catch {} setToken(value); setDraftToken(""); }}>
+    <form className="grid gap-3" onSubmit={event => { event.preventDefault(); const value = draftToken.trim(); if (!value) return; try { writeStoredValue(sessionStorage, tokenStorageName, value); } catch {} setToken(value); setDraftToken(""); }}>
       <label className="grid gap-1 text-sm">{t("userBackups.credential")}<input type="password" autoComplete="off" required value={draftToken} onChange={event => setDraftToken(event.target.value)} className="min-w-0 rounded border bg-background p-2" /></label>
       <Button type="submit">{t("userBackups.connect")}</Button>
     </form>
@@ -78,7 +80,7 @@ function UserSchedulesPanel({ token, onOpenChange, returnFocus, disconnect }: Di
   useEffect(() => {
     alive.current = true;
     try {
-      const stored = JSON.parse(sessionStorage.getItem(storageKey) ?? "null");
+      const stored = JSON.parse(readStoredValue(sessionStorage, requestStorageName) ?? "null");
       const parsed = stored?.credential === token.slice(0, 40) ? userScheduleCommandSchema.safeParse(stored.input) : null;
       saved.current = parsed?.success && parsed.data.action === "save" ? parsed.data : null;
       setRetry(saved.current);
@@ -90,7 +92,7 @@ function UserSchedulesPanel({ token, onOpenChange, returnFocus, disconnect }: Di
     try {
       const parsed = userScheduleCommandSchema.safeParse(input); if (!parsed.success) throw new RequestError("invalid", 400);
       saved.current = input; setRetry(input);
-      sessionStorage.setItem(storageKey, JSON.stringify({ credential: token.slice(0, 40), input }));
+      writeStoredValue(sessionStorage, requestStorageName, JSON.stringify({ credential: token.slice(0, 40), input }));
       await request(token, input);
       if (alive.current) { setDraft(null); await refresh(); }
     } catch (cause) { if (alive.current) report(cause); }

@@ -2,6 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/provider";
+import { readStoredValue, writeStoredValue } from "@/lib/browser-storage";
 import { Moon, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -11,11 +12,11 @@ export function useTheme() {
     const next = !dark;
     setDark(next);
     document.documentElement.classList.toggle("dark", next);
-    localStorage.setItem("worktree-switcher-theme", next ? "dark" : "light");
+    writeStoredValue(localStorage, "theme", next ? "dark" : "light");
   };
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      const saved = localStorage.getItem("worktree-switcher-theme");
+      const saved = readStoredValue(localStorage, "theme");
       const next = saved !== "light";
       document.documentElement.classList.toggle("dark", next);
       setDark(next);

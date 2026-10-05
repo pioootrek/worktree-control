@@ -66,7 +66,7 @@ export function McpStatusDialog({ status, open, onOpenChange, returnFocus }: { s
           <div className="space-y-2">
             <Label>{t("mcp.clientConfig")}</Label>
             <div className="rounded-md border bg-muted/50 px-3 py-2 font-mono text-xs text-muted-foreground">
-              worktree-switcher config mcp
+              worktree-control config mcp
             </div>
             <p className="text-xs text-muted-foreground">{t("mcp.securityHint")}</p>
           </div>

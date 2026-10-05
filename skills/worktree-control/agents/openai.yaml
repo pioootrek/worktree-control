@@ -1,0 +1,4 @@
+interface:
+  display_name: "Worktree Control"
+  short_description: "Coordinate dev servers across Git worktrees"
+  default_prompt: "Use $worktree-control to inspect and safely claim this repository dev server."

@@ -258,7 +258,7 @@ export class McpRuntime {
   }
 
   private createProtocolServer(session: McpSession): McpServer {
-    const server = new McpServer({ name: "worktree-switcher", version: packageJson.version });
+    const server = new McpServer({ name: "worktree-control", version: packageJson.version });
     const setRequestHandler = server.server.setRequestHandler.bind(server.server);
     server.server.setRequestHandler = (schema, handler) => setRequestHandler(schema, async (request, extra) => {
       this.diagnostics.change(session.observation, "operations", 1);
@@ -296,6 +296,8 @@ export class McpRuntime {
       reservation,
     }));
 
+    // Resource URIs are a stable client contract like tool names, so they keep the
+    // `worktree-switcher://` scheme from before the product rename.
     server.registerResource(
       "projects",
       "worktree-switcher://projects",

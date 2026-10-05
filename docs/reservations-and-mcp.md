@@ -90,7 +90,7 @@ separate `acquire` followed by `switch` would leave a race between the calls.
 If switching fails, the result reports both the failed runtime transition and
 whether the lease remains held so recovery is unambiguous.
 
-Reservation guarantees apply only to Worktree Switcher operations. They cannot
+Reservation guarantees apply only to Worktree Control operations. They cannot
 prevent a human from killing a process or changing files outside the tool, so
 status reconciliation must continue to report external changes.
 
@@ -110,7 +110,7 @@ It runs inside the existing controller, so connecting an agent does not create
 another persistent Node.js process. The MCP SDK is loaded lazily on first use.
 In `token` mode the endpoint requires the installation token as a bearer token;
 `legacy` installations use a persistent token stored in an owner-only file, and
-`open` mode requires none. `worktree-switcher config mcp` prints the client
+`open` mode requires none. `worktree-control config mcp` prints the client
 configuration on explicit request. See [authentication modes](authentication.md). A future stdio command may act as a compatibility proxy for clients
 without Streamable HTTP support.
 
@@ -123,6 +123,9 @@ worktree-switcher://tests/queue
 worktree-switcher://projects/{projectId}/status
 worktree-switcher://projects/{projectId}/worktrees
 ```
+
+These URIs, like the tool names, are a stable client contract. They keep the
+`worktree-switcher://` scheme from before the 2026-10-05 product rename.
 
 Initial MCP tools:
 

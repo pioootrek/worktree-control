@@ -73,7 +73,7 @@ export async function mountDashboard(
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.href);
       if (url.pathname !== "/api/events") return nativeFetch(input, init);
       events.lastUrl = `${url.pathname}${url.search}`;
-      events.lastToken = new Headers(init?.headers).get("X-Worktree-Switcher-Token") ?? "";
+      events.lastToken = new Headers(init?.headers).get("X-Worktree-Control-Token") ?? "";
       events.lastKnowledgeToken = new Headers(init?.headers).get("Authorization") ?? "";
       if (!openMode && events.lastToken !== accessToken) return new Response("Unauthorized", { status: 401 });
       let streamController: ReadableStreamDefaultController<Uint8Array>;
@@ -115,7 +115,7 @@ export async function mountDashboard(
     if (url.origin !== "http://switcher.test") return route.abort();
     if (url.pathname.startsWith("/api/")) {
       const request = route.request();
-      if (!openMode && request.headers()["x-worktree-switcher-token"] !== accessToken) {
+      if (!openMode && request.headers()["x-worktree-control-token"] !== accessToken) {
         return route.fulfill({ status: 401, json: { error: "Missing fixture session" } });
       }
       if (request.method() === "GET") {
