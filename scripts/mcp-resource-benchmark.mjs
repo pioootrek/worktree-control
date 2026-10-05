@@ -28,7 +28,7 @@ assert.equal(process.platform, 'linux');
 const hz = Number((await exec('getconf', ['CLK_TCK'])).stdout.trim());
 const pageSize = Number((await exec('getconf', ['PAGESIZE'])).stdout.trim());
 const report = { schemaVersion: 1, startedAt: new Date().toISOString(), sourceCommit: (await exec('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
-  node: process.version, kernel: release(), cpuModel: cpus()[0]?.model, cpuCount: cpus().length, proxyVersion: proxyPackage.version, proxyEntrySha256, hz, pageSize, runs: [], cleanup: 'pending' };
+  node: process.version, kernel: release(), cpuModel: cpus()[0]?.model, cpuCount: cpus().length, proxyVersion: proxyPackage.version, proxyEntrySha256, buildFingerprint: (await readFile(join(root, 'dist/build-source.sha256'), 'utf8')).trim(), cliSha256: createHash('sha256').update(await readFile(cli)).digest('hex'), benchmarkSha256: createHash('sha256').update(await readFile(import.meta.filename)).digest('hex'), hz, pageSize, runs: [], cleanup: 'pending' };
 async function port() { const s = createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const p = s.address().port; await new Promise(r => s.close(r)); return p; }
 async function wait(read, label, ms = 15000) { const until = Date.now() + ms; while (Date.now() < until) { const r = await read(); if (r) return r; await delay(50); } throw new Error(`Timed out: ${label}`); }
 async function processSample(pid) {
@@ -40,10 +40,10 @@ async function measure(pid, seconds = 3, each = async () => {}) {
   for (let i = 0; i < seconds; i++) { await each(); await delay(1000); samples.push(await processSample(pid)); }
   const a = samples[0], b = samples.at(-1);
   assert.equal(a.startTicks, b.startTicks, 'Owned process identity changed.');
-  return { rssBytes: samples.map(s => s.rssBytes), cpuPercent: (b.cpuTicks - a.cpuTicks) / hz / ((b.at - a.at) / 1000) * 100, seconds: (b.at - a.at) / 1000 };
+  return { samples, rssBytes: samples.map(s => s.rssBytes), cpuPercent: (b.cpuTicks - a.cpuTicks) / hz / ((b.at - a.at) / 1000) * 100, seconds: (b.at - a.at) / 1000 };
 }
 function launch(args, env = process.env) { const child = spawn(process.execPath, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] }); child.stdout.resume(); child.stderr.resume(); return child; }
-async function stop(child, signal = 'SIGTERM') { if (child.exitCode !== null || child.signalCode !== null) return; child.kill(signal); await wait(() => child.exitCode !== null || child.signalCode !== null, 'owned child exit'); if (signal === 'SIGTERM') assert.equal(child.exitCode, 0, 'Fixture shutdown failed.'); }
+async function stop(child, signal = 'SIGTERM') { if (child.exitCode !== null || child.signalCode !== null) throw new Error("Owned fixture exited before its requested stop; measurement failed."); child.kill(signal); await wait(() => child.exitCode !== null || child.signalCode !== null, 'owned child exit'); if (signal === 'SIGTERM') assert.equal(child.exitCode, 0, 'Fixture shutdown failed.'); }
 let sequence = 0;
 function loopSample(child) { const id = ++sequence; return new Promise((accept, reject) => { const timer = setTimeout(() => { child.off('message', listener); reject(new Error('Event loop probe timeout')); }, 3000); const listener = msg => { if (msg.id === id) { clearTimeout(timer); child.off('message', listener); accept(msg.eventLoop); } }; child.on('message', listener); child.send({ id, kind: 'mcp-resource-sample' }); }); }
 function ipc(child, command, args) { const id = ++sequence; return new Promise((accept, reject) => { const timer = setTimeout(() => end(new Error('Fixture IPC timeout.')), 25000); const onmessage = msg => { if (msg.id === id) end(msg.error ? new Error(msg.error) : null, msg.result); }; const end = (error, value) => { clearTimeout(timer); child.off('message', onmessage); if (error) reject(error); else accept(value); }; child.on('message', onmessage); child.send({ id, command, args }); }); }
@@ -114,8 +114,10 @@ async function run(number) {
     for (const { c } of directClients) await c.close().catch(() => {});
     await proxyClient?.close().catch(() => {});
     if (ownedClient) await stop(ownedClient, 'SIGKILL');
-    if (controller) await stop(controller);
-    await rm(base, { recursive: true, force: true });
+    try { if (controller) await stop(controller); }
+    finally {
+      if (!controller || controller.exitCode !== null || controller.signalCode !== null) await rm(base, { recursive: true, force: true });
+    }
   }
 }
 try {

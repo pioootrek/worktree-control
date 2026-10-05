@@ -451,6 +451,7 @@ describe("bounded MCP diagnostics", () => {
   it("observes protocol calls and distinguishes transport disconnect from DELETE", async () => {
     const { controller, client, transport, endpoint } = await setup();
     await client.listTools();
+    await expect.poll(async () => (await controller.diagnosticsSnapshot() as { sseResponses: number }).sseResponses).toBe(1);
     const before = await controller.diagnosticsSnapshot() as { sessions: Array<{ lastClientRequestAt: string | null }> };
     expect(before.sessions[0].lastClientRequestAt).not.toBeNull();
     expect(JSON.stringify(before)).not.toContain(transport.sessionId);

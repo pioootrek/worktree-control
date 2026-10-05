@@ -188,7 +188,9 @@ export class McpRuntime {
     };
     response.once("finish", end); response.once("close", end);
     await session.transport.handleRequest(request, response, body);
-    if (!ended && String(response.getHeader("content-type")).startsWith("text/event-stream")) {
+    // SDK GET success is the standalone SSE stream. Hono writes headers directly
+    // with writeHead(), so getHeader() cannot reliably observe its Content-Type.
+    if (!ended && request.method === "GET" && response.statusCode === 200) {
       sse = true; this.diagnostics.change(session.observation, "sseResponses", 1);
     }
   }
