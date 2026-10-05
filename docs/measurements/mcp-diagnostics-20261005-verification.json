@@ -1,0 +1,240 @@
+{
+  "schemaVersion": 1,
+  "setId": "mcp-diagnostics-20261005",
+  "taskId": "48284853d99c88ae756dfb967a93e5de",
+  "commit": "866a049a29dfe507da054643d2946b351fe02f1d",
+  "scope": "Clean code/driver 866a049; four supported queued checks and three sequential isolated resource measurements. Subsequent changes only save documentation/evidence. No production or expiry/admission changes.",
+  "runs": [
+    {
+      "runId": "79aa30c1-0e15-46cd-b78f-d250d8c98a1b",
+      "presetId": "node:test:mcp-diagnostics",
+      "commit": "866a049a29dfe507da054643d2946b351fe02f1d",
+      "result": "passed",
+      "startedAt": "2026-10-05T08:32:24.424Z",
+      "finishedAt": "2026-10-05T08:32:30.660Z",
+      "source": {
+        "version": 1,
+        "scope": "git-observations",
+        "enqueue": {
+          "observedAt": "2026-10-05T08:32:24.311Z",
+          "head": "866a049a29dfe507da054643d2946b351fe02f1d",
+          "branch": "feat/mcp-resource-diagnostics",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "preflight": {
+          "observedAt": "2026-10-05T08:32:24.384Z",
+          "head": "866a049a29dfe507da054643d2946b351fe02f1d",
+          "branch": "feat/mcp-resource-diagnostics",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "finish": {
+          "observedAt": "2026-10-05T08:32:30.684Z",
+          "head": "866a049a29dfe507da054643d2946b351fe02f1d",
+          "branch": "feat/mcp-resource-diagnostics",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "queueComparison": "match",
+        "executionComparison": "match",
+        "attribution": "observed_match",
+        "reasonCodes": [],
+        "processOutcome": "passed"
+      },
+      "validationSummary": [
+        " Test Files  4 passed (4)",
+        "      Tests  23 passed (23)"
+      ]
+    },
+    {
+      "runId": "f8771a89-6302-4d55-a963-79d169e93f82",
+      "presetId": "node:check",
+      "commit": "866a049a29dfe507da054643d2946b351fe02f1d",
+      "result": "passed",
+      "startedAt": "2026-10-05T08:32:57.415Z",
+      "finishedAt": "2026-10-05T08:35:13.959Z",
+      "source": {
+        "version": 1,
+        "scope": "git-observations",
+        "enqueue": {
+          "observedAt": "2026-10-05T08:32:57.304Z",
+          "head": "866a049a29dfe507da054643d2946b351fe02f1d",
+          "branch": "feat/mcp-resource-diagnostics",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "preflight": {
+          "observedAt": "2026-10-05T08:32:57.376Z",
+          "head": "866a049a29dfe507da054643d2946b351fe02f1d",
+          "branch": "feat/mcp-resource-diagnostics",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "finish": {
+          "observedAt": "2026-10-05T08:35:13.987Z",
+          "head": "866a049a29dfe507da054643d2946b351fe02f1d",
+          "branch": "feat/mcp-resource-diagnostics",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "queueComparison": "match",
+        "executionComparison": "match",
+        "attribution": "observed_match",
+        "reasonCodes": [],
+        "processOutcome": "passed"
+      },
+      "validationSummary": [
+        " Test Files  104 passed (104)",
+        "      Tests  1006 passed (1006)",
+        "\u2139 tests 18",
+        "\u2139 pass 18",
+        "\u2139 fail 0"
+      ]
+    },
+    {
+      "runId": "6d8a619f-a711-4309-b450-157406b15f11",
+      "presetId": "node:build",
+      "commit": "866a049a29dfe507da054643d2946b351fe02f1d",
+      "result": "passed",
+      "startedAt": "2026-10-05T08:36:11.851Z",
+      "finishedAt": "2026-10-05T08:36:20.652Z",
+      "source": {
+        "version": 1,
+        "scope": "git-observations",
+        "enqueue": {
+          "observedAt": "2026-10-05T08:36:11.738Z",
+          "head": "866a049a29dfe507da054643d2946b351fe02f1d",
+          "branch": "feat/mcp-resource-diagnostics",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "preflight": {
+          "observedAt": "2026-10-05T08:36:11.816Z",
+          "head": "866a049a29dfe507da054643d2946b351fe02f1d",
+          "branch": "feat/mcp-resource-diagnostics",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "finish": {
+          "observedAt": "2026-10-05T08:36:20.680Z",
+          "head": "866a049a29dfe507da054643d2946b351fe02f1d",
+          "branch": "feat/mcp-resource-diagnostics",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "queueComparison": "match",
+        "executionComparison": "match",
+        "attribution": "observed_match",
+        "reasonCodes": [],
+        "processOutcome": "passed"
+      },
+      "validationSummary": [
+        "ESM \u26a1\ufe0f Build success in 112ms"
+      ]
+    },
+    {
+      "runId": "225a51f0-9168-4d88-b200-c056ad0b2cd3",
+      "presetId": "node:test:integration:mcp-diagnostics",
+      "commit": "866a049a29dfe507da054643d2946b351fe02f1d",
+      "result": "passed",
+      "startedAt": "2026-10-05T08:37:55.424Z",
+      "finishedAt": "2026-10-05T08:38:02.066Z",
+      "source": {
+        "version": 1,
+        "scope": "git-observations",
+        "enqueue": {
+          "observedAt": "2026-10-05T08:37:55.311Z",
+          "head": "866a049a29dfe507da054643d2946b351fe02f1d",
+          "branch": "feat/mcp-resource-diagnostics",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "preflight": {
+          "observedAt": "2026-10-05T08:37:55.386Z",
+          "head": "866a049a29dfe507da054643d2946b351fe02f1d",
+          "branch": "feat/mcp-resource-diagnostics",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "finish": {
+          "observedAt": "2026-10-05T08:38:02.093Z",
+          "head": "866a049a29dfe507da054643d2946b351fe02f1d",
+          "branch": "feat/mcp-resource-diagnostics",
+          "dirty": false,
+          "statusDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "statusEntries": 0,
+          "complete": true,
+          "errorCode": null
+        },
+        "queueComparison": "match",
+        "executionComparison": "match",
+        "attribution": "observed_match",
+        "reasonCodes": [],
+        "processOutcome": "passed"
+      },
+      "validationSummary": [
+        " Test Files  1 passed (1)",
+        "      Tests  1 passed (1)"
+      ]
+    }
+  ],
+  "corrections": [
+    {
+      "kind": "fixture-setup",
+      "result": "failed",
+      "cause": "private data directory mode; failed before controller startup; fixed in 7ca7ce0; empty fixture removed"
+    },
+    {
+      "kind": "intermediate-check",
+      "runId": "e8519f6a-61ca-4604-b1e5-0e429dc60515",
+      "commit": "7f6bf6765bbe96dab4ef7360e96e3b5b0e3e0b76",
+      "result": "failed",
+      "cause": "SSE counted after streaming handler completion; header-emission observer fix covered by final test"
+    }
+  ],
+  "command": "Queued test:mcp-diagnostics, check, build, test:integration:mcp-diagnostics; pnpm bench:mcp-resources REPORT 3 PINNED_PROXY_ENTRY",
+  "result": "passed",
+  "executedAt": "2026-10-05T08:38:11.629Z",
+  "manifest": [
+    {
+      "filename": "mcp-diagnostics-20261005-resources.json",
+      "size": 260792,
+      "sha256": "9bda50883824de52ec1269a200cca12e5195e2d6459df255c1dc832166658826",
+      "mediaType": "application/json"
+    }
+  ]
+}

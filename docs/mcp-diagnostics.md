@@ -28,7 +28,7 @@ handler. The read has no lifecycle effects, including during maintenance.
 | --- | --- |
 | `connections` | Physical open sockets on the dedicated MCP listener, including idle keep-alive and unauthenticated connections. Neither agent count nor logical session count. |
 | `logicalSessions`, `initializingSessions`, `drainingSessions` | Initialized registry entries, not-yet-initialized observations, and closed entries whose accepted handlers/responses have not settled. |
-| `openResponses`, `sseResponses` | Authenticated session-bound HTTP responses still open; SSE is counted when the transport exposes its response headers. HTTP POST with JSON response also consumes a response. |
+| `openResponses`, `sseResponses` | Authenticated session-bound HTTP responses still open; SSE is counted when the transport emits successful GET response headers. HTTP POST with JSON response also consumes a response. |
 | `operations` | Executing registered protocol handlers (tools, resource reads/lists, etc.), excluding SDK bootstrap initialize/ping handlers. Count remains until `finally`, including a handler ignoring cancellation after close. |
 | `runtimeRetryEntries` | Existing global retry-ledger occupancy, including completed receipts. Its existing bounds are 64/session and 512/global; it is not a running-call counter. |
 | `claims`, `renewalTimers`, `lifetimeTimers` | Session-held claim/renewal handles and actual controller-owned timers. Persisted reservations can outlive these handles and must be inspected through existing project status. |
@@ -94,6 +94,78 @@ The report also compares the same controller's idle CPU/RSS with one diagnostic
 read per second and microbenchmarks 10,000 observation updates plus 1,000
 32-session reads/serializations. These measure marginal update/read cost;
 short-window RSS differences alone are not a causal memory-leak result.
+
+## Recorded measurements — 2026-10-05
+
+The [raw resource report](measurements/mcp-diagnostics-20261005-resources.json)
+and [queued verification evidence](measurements/mcp-diagnostics-20261005-verification.json)
+refer to clean code/driver commit `866a049a29dfe507da054643d2946b351fe02f1d`.
+All three sequential runs passed and confirmed owned controller/client exit
+and temporary-state cleanup. Node v24.19.0, Linux 7.0.0-34-generic,
+Intel i5-10600T (six logical CPUs), CLK_TCK 100; this describes the measurement
+host, not a portable resource requirement. The pinned proxy was `mcp-remote`
+0.8.2. Its entry hash and source/build/CLI/driver hashes are in the raw report.
+
+Ranges below combine all three runs. CPU is percent of **one logical core**
+in the scenario's three-second window; it excludes earlier initialization
+bursts. RSS is `/proc` resident memory, in MiB (1,048,576 bytes). Client/proxy
+RSS is measured separately from the controller. This was a small sequential
+workload on a shared host, with no production traffic or saturation test.
+
+| Scenario | Observation | Recovered / remaining resources and timing | Controller RSS / CPU |
+| --- | --- | --- | --- |
+| Baseline | Zero sessions, sockets, calls, waiters and session timers. | Controller alone; first diagnostic CPU sample is unknown. | 108.27–108.44 MiB / 0% |
+| Three connect / DELETE cycles | Each connect: one logical session, one SSE, one lifetime timer; up to three sockets. | DELETE observed session/SSE/timer counts return to zero in 2.84–9.33 ms request-to-read latency; two idle keep-alive sockets can remain. This is counter recovery, not proof of GC. | First connect 123.11–123.89 MiB / 0%; after third DELETE 136.57–138.52 MiB / 0% |
+| Transport interruption / same-session reconnect | Sockets and open responses 1 → 0; logical session and lifetime timer remain one. Reconnect still has one session. | Transport resources recover at the next read; no logical cleanup is expected. Reconnected SDK fixture uses POST without reopening SSE. | 137.07–139.14 MiB / 0–0.33% |
+| 20-second operation | One call, waiter, waiter timer, target and shared sampler while waiting. | All five counters return to zero after 20.007–20.008 s; logical session/lifetime timer remain. | 138.36–139.64 MiB / 0–0.33% |
+| Owned client disappears without DELETE | Confirmed child exit; sockets zero, but session, claim handle, renewal timer and lifetime timer remain one. After 12 s one renewal; after 35.08 s three renewals and reservation still held beyond its original 30 s TTL. | Client RSS zero; no session/renewal recovery in the observed interval. Last client request timestamp does not advance with renewal. | At 35 s: 164.73–169.50 MiB / 3.66%; renewal/work during the window is included. |
+| Explicit DELETE after abandonment | Session/claim/timer counters zero; persisted lease retains its remaining TTL. | Reservation available 28.899–28.918 s after DELETE. Fixture server stays running and its accepted five-second test passes in every run. | 171.87–172.59 MiB / 0–0.33% |
+| Pinned proxy connect / exit | One owned proxy process creates **two** logical sessions/SSE streams in this fixture. Its confirmed exit closes all sockets/responses. | Proxy RSS zero after exit; two sessions and two lifetime timers remain until fixture controller shutdown. The cause of the two sessions is not established here. | 171.90–172.59 MiB / 0–1.33% across connect/exit windows |
+
+The owned SDK client consumed 103.09–106.66 MiB and 1.00–1.33% CPU in
+its connected window. The separate proxy consumed 115.20–116.26 MiB and
+0–0.33% CPU. These values are not part of controller RSS/CPU. Ending a logical
+session is not evidence that a proxy process released its memory.
+
+At the end of the workload, controller RSS did not return to the cold baseline.
+The sequence also loaded the SDK, runtime/test workflows and retained proxy
+sessions. Without a matched warmed baseline and GC/allocator analysis, the
+RSS change cannot be attributed to a leak or to diagnostic storage. The report
+preserves individual samples and process start identities for follow-up.
+
+### Diagnostic overhead and verification
+
+10,000 client-message/start/finish observation sequences took 8.67 ms wall time and 9.97 ms CPU
+(about 0.87 microseconds wall time/sequence). 1,000 snapshot plus serialization
+reads with 32 session details took 37.36 ms (about 37.36 microseconds/read);
+the sampled response was 14,321 bytes. This response size is not a proven
+worst case. Detail/history caps and the CLI's 64 KiB limit remain authoritative.
+The administrative socket read has no background polling; process samples
+are cached for five seconds.
+
+One read per second in five-second windows produced controller CPU pairs
+idle → polled of 0.599 → 0.798%, 0.999 → 0.599%, and 0.599 → 0.798%.
+RSS stayed equal within each pair (171.90–172.59 MiB across runs).
+Differences of −0.400 to +0.199 percentage points are at the short-window
+CLK_TCK resolution and are not evidence of zero cost or a causal CPU saving.
+The measurement-only histogram used 100 ms resolution; its roughly 100 ms
+samples include that interval and must not be reported as 100 ms controller lag.
+
+Supported queue checks on the same clean code passed: focused MCP/status tests
+(23), `pnpm check` (1,006 Vitest tests plus 18 script tests), build, and the built
+local administrative CLI integration (one test). The saved evidence records
+run IDs, timestamps and matching enqueue/preflight/finish source observations.
+A preliminary fixture setup failed before controller startup; an intermediate
+SSE regression/check failed. Both were corrected; neither is passing evidence.
+The final report supersedes preliminary resource reports. Dashboard code/flows
+were not changed; the actual CLI and MCP transport were exercised instead.
+
+Limits below respond to observed retained session/renewal handles and the
+separate proxy cost, but these small measurements do not calibrate 64-session
+capacity. A 20-second wait does not validate multi-minute calls, eight-hour
+expiry, full-body memory pressure, expiry/write races or lost-write recovery.
+Those remain isolated acceptance work for the enforcement PR. Initializing
+requests and unconfirmed draining work must consume its limits as well.
 
 ## Proposed second PR contract
 
