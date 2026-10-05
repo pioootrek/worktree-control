@@ -50,16 +50,18 @@ function ipc(child, command, args) { const id = ++sequence; return new Promise((
 const content = result => { assert(!result.isError, 'Tool returned an error.'); return JSON.parse(result.content.find(p => p.type === 'text').text); };
 async function run(number) {
   const base = await mkdtemp(join(tmpdir(), 'wts-mcp-resources-')), data = join(base, 'data'), state = join(base, 'state'), repo = join(base, 'fixture');
-  await mkdir(repo); await mkdir(data); await mkdir(state); const p = await port(), m = await port(), app = await port();
   const env = { ...process.env, WORKTREE_SWITCHER_DATA_DIR: data, WORKTREE_SWITCHER_STATE_DIR: state };
-  const token = JSON.parse((await exec(process.execPath, [cli, 'auth', 'token', 'generate'], { env })).stdout).token;
+  let token, p, m, app, endpoint;
   const result = { number, scenarios: [], cleanup: 'pending' }; report.runs.push(result);
   let controller, ownedClient, proxy, proxyClient; const directClients = [];
   const diag = () => requestAdminSocket(join(state, 'admin.sock'), { command: 'mcp-diagnostics' }, 5000, 64 * 1024);
-  const endpoint = new URL(`http://127.0.0.1:${m}/mcp`);
+
   async function direct() { const t = new StreamableHTTPClientTransport(endpoint, { requestInit: { headers: { Authorization: `Bearer ${token}` } } }); const c = new Client({ name: 'measurement', version: '1' }); await c.connect(t); directClients.push({ c, t }); return { c, t }; }
   async function point(name, extra = {}) { const snapshot = await diag(); assert(!JSON.stringify(snapshot).includes(token)); result.scenarios.push({ name, snapshot, controller: { ...await measure(controller.pid), eventLoop: await loopSample(controller) }, ...extra }); console.log(`Run ${number}: ${name}`); return snapshot; }
   try {
+    await mkdir(repo); await mkdir(data, { mode: 0o700 }); await mkdir(state, { mode: 0o700 });
+    p = await port(); m = await port(); app = await port(); endpoint = new URL(`http://127.0.0.1:${m}/mcp`);
+    token = JSON.parse((await exec(process.execPath, [cli, 'auth', 'token', 'generate'], { env })).stdout).token;
     await writeFile(join(repo, 'package.json'), JSON.stringify({ scripts: { dev: 'node server.mjs', test: 'node -e "setTimeout(()=>{},5000)"' } }));
     await writeFile(join(repo, 'server.mjs'), 'import {createServer} from "node:http"; createServer((q,s)=>s.end("ok")).listen(Number(process.env.PORT),"127.0.0.1");');
     for (const args of [['init', '-b', 'main'], ['add', '.'], ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-m', 'fixture']]) await exec('git', args, { cwd: repo });
