@@ -1,4 +1,5 @@
 import { registerKnowledgeTools } from "./transports/mcp/knowledge-tools";
+import { McpDiagnostics, type McpSessionObservation, type McpCloseReason } from "./mcp-diagnostics";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -22,6 +23,8 @@ interface ClaimSecret {
 }
 
 interface McpSession {
+  observation: McpSessionObservation;
+  closeReason: McpCloseReason;
   authentication: ControllerAuthentication;
   authenticationKey: string;
   owner: string;
@@ -92,6 +95,7 @@ export class McpRuntime {
     private readonly service: ControlService,
     private readonly diagnostic: (message: string, details?: Record<string, unknown>) => void = () => undefined,
     private readonly identity?: Pick<IdentityService, "describeIdentity">,
+    private readonly diagnostics = new McpDiagnostics(),
   ) {}
 
   async handle(
@@ -105,8 +109,16 @@ export class McpRuntime {
 
     if (!session && request.method === "POST" && !sessionId && isInitializeRequest(body)) {
       session = this.createSession(authentication);
-      await session.server.connect(session.transport);
-      await session.transport.handleRequest(request, response, body);
+      try {
+        await session.server.connect(session.transport);
+        this.observeMessages(session);
+        await this.handleTransport(session, request, response, body);
+        if (!session.transport.sessionId) { session.closeReason = "initialization-failed"; await session.server.close(); }
+      } catch (error) {
+        session.closeReason = "initialization-failed";
+        await session.server.close();
+        throw error;
+      }
       return;
     }
     if (!session) {
@@ -131,17 +143,53 @@ export class McpRuntime {
       }));
       return;
     }
-    await session.transport.handleRequest(request, response, body);
+    await this.handleTransport(session, request, response, body);
   }
 
-  async close(): Promise<void> {
+  async close(reason: McpCloseReason = "controller-shutdown"): Promise<void> {
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
     for (const session of sessions) {
+      session.closeReason = reason;
       this.clearTimers(session);
       this.disposeRuntimeOperations(session);
     }
     await Promise.allSettled(sessions.map((session) => session.server.close()));
+  }
+
+  diagnosticsSnapshot() {
+    const snapshot = this.diagnostics.snapshot();
+    const owners = new Map<number, string>();
+    for (const session of this.sessions.values()) { owners.set(session.observation.label, session.owner); if (owners.size === 32) break; }
+    return { ...snapshot, runtimeRetryEntries: this.runtimeOperationCount, sessions: snapshot.sessions.map(entry => ({
+      ...entry, statusWaits: owners.has(entry.label) ? this.service.statusWaitDiagnostics?.(owners.get(entry.label)) ?? null : null,
+    })) };
+  }
+
+  private observeMessages(session: McpSession): void {
+    const onmessage = session.transport.onmessage;
+    session.transport.onmessage = (message, extra) => {
+      this.diagnostics.clientMessage(session.observation, "method" in message && ["tools/call", "tools/list", "resources/read", "resources/list", "resources/templates/list", "prompts/get", "prompts/list"].includes(message.method));
+      onmessage?.(message, extra);
+    };
+  }
+
+  private async handleTransport(session: McpSession, request: IncomingMessage, response: ServerResponse, body?: unknown): Promise<void> {
+    this.diagnostics.change(session.observation, "openResponses", 1);
+    let ended = false, sse = false;
+    const end = () => {
+      if (ended) return;
+      ended = true;
+      response.off("finish", end); response.off("close", end);
+      this.diagnostics.change(session.observation, "openResponses", -1);
+      if (sse) this.diagnostics.change(session.observation, "sseResponses", -1);
+      session.observation.lastTransportEndedAt = new Date().toISOString();
+    };
+    response.once("finish", end); response.once("close", end);
+    await session.transport.handleRequest(request, response, body);
+    if (!ended && String(response.getHeader("content-type")).startsWith("text/event-stream")) {
+      sse = true; this.diagnostics.change(session.observation, "sseResponses", 1);
+    }
   }
 
   private authenticationKey(authentication: ControllerAuthentication): string {
@@ -151,6 +199,8 @@ export class McpRuntime {
 
   private createSession(authentication: ControllerAuthentication): McpSession {
     const session: McpSession = {
+      observation: this.diagnostics.create(),
+      closeReason: "transport-close",
       authentication,
       authenticationKey: this.authenticationKey(authentication),
       owner: "",
@@ -165,28 +215,38 @@ export class McpRuntime {
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: randomUUID,
       enableJsonResponse: true,
+      onsessionclosed: () => { session.closeReason = "client-delete"; },
       onsessioninitialized: (sessionId) => {
         session.owner = `agent:mcp:${sessionId}`;
         this.sessions.set(sessionId, session);
+        this.diagnostics.initialize(session.observation);
         this.diagnostic("mcp.session_started", { sessionId });
       },
     });
     session.transport = transport;
     session.server = this.createProtocolServer(session);
-    session.lifetimeTimer = setTimeout(() => void session.server.close(), 8 * 60 * 60_000);
+    session.lifetimeTimer = setTimeout(() => { session.closeReason = "absolute-lifetime"; void session.server.close(); }, 8 * 60 * 60_000);
+    this.diagnostics.change(session.observation, "lifetimeTimers", 1);
     session.lifetimeTimer.unref();
     transport.onclose = () => {
       const sessionId = transport.sessionId;
       if (sessionId) this.sessions.delete(sessionId);
       this.clearTimers(session);
       this.disposeRuntimeOperations(session);
-      this.diagnostic("mcp.session_closed", { sessionId });
+      this.diagnostics.close(session.observation, session.closeReason);
+      this.diagnostic("mcp.session_closed", { sessionId, reason: session.closeReason });
     };
     return session;
   }
 
   private createProtocolServer(session: McpSession): McpServer {
     const server = new McpServer({ name: "worktree-switcher", version: packageJson.version });
+    const setRequestHandler = server.server.setRequestHandler.bind(server.server);
+    server.server.setRequestHandler = (schema, handler) => setRequestHandler(schema, async (request, extra) => {
+      this.diagnostics.change(session.observation, "operations", 1);
+      try { return await handler(request, extra); }
+      finally { this.diagnostics.change(session.observation, "operations", -1); }
+    });
     if (session.authentication.kind !== "legacy") {
       const actor = session.authentication.actor;
       registerKnowledgeTools(server, this.service, actor);
@@ -489,6 +549,9 @@ export class McpRuntime {
         ttlSeconds: ttlSeconds ?? 1800,
         timer: null,
       };
+      if (!session.claims.has(result.reservation.id)) this.diagnostics.change(session.observation, "claims", 1);
+      const previous = session.claims.get(result.reservation.id);
+      if (previous?.timer) { clearTimeout(previous.timer); this.diagnostics.change(session.observation, "renewalTimers", -1); }
       session.claims.set(result.reservation.id, claim);
       this.scheduleRenewal(session, claim);
       if (responseMode === "compact") return jsonContent({
@@ -551,8 +614,9 @@ export class McpRuntime {
     }, async ({ projectId, reservationId }) => {
       const claim = this.requireClaim(session, projectId, reservationId);
       await english(() => this.service.releaseAgentClaim(projectId, reservationId, owner(), claim.token));
-      if (claim.timer) clearTimeout(claim.timer);
+      if (claim.timer) { clearTimeout(claim.timer); claim.timer = null; this.diagnostics.change(session.observation, "renewalTimers", -1); }
       session.claims.delete(reservationId);
+      this.diagnostics.change(session.observation, "claims", -1);
       return jsonContent({ released: true, projectId, reservationId });
     });
     return server;
@@ -615,14 +679,20 @@ export class McpRuntime {
   }
 
   private scheduleRenewal(session: McpSession, claim: ClaimSecret): void {
-    if (claim.timer) clearTimeout(claim.timer);
+    if (claim.timer) { clearTimeout(claim.timer); this.diagnostics.change(session.observation, "renewalTimers", -1); }
     const delay = Math.max(10_000, Math.min(10 * 60_000, Math.floor(claim.ttlSeconds * 1000 / 3)));
+    this.diagnostics.change(session.observation, "renewalTimers", 1);
     claim.timer = setTimeout(() => {
+      claim.timer = null;
+      this.diagnostics.change(session.observation, "renewalTimers", -1);
       try {
         this.service.renewAgentClaim(claim.projectId, claim.reservationId, session.owner, claim.token, claim.ttlSeconds);
+        this.diagnostics.renewed(session.observation, true);
         this.scheduleRenewal(session, claim);
       } catch (error) {
         session.claims.delete(claim.reservationId);
+        this.diagnostics.change(session.observation, "claims", -1);
+        this.diagnostics.renewed(session.observation, false);
         this.diagnostic("mcp.claim_auto_renew_failed", {
           projectId: claim.projectId,
           reservationId: claim.reservationId,
@@ -634,7 +704,8 @@ export class McpRuntime {
   }
 
   private clearTimers(session: McpSession): void {
-    if (session.lifetimeTimer) clearTimeout(session.lifetimeTimer);
-    for (const claim of session.claims.values()) if (claim.timer) clearTimeout(claim.timer);
+    if (session.lifetimeTimer) { clearTimeout(session.lifetimeTimer); session.lifetimeTimer = null; this.diagnostics.change(session.observation, "lifetimeTimers", -1); }
+    for (const claim of session.claims.values()) if (claim.timer) { clearTimeout(claim.timer); claim.timer = null; this.diagnostics.change(session.observation, "renewalTimers", -1); }
+    this.diagnostics.change(session.observation, "claims", -session.observation.claims);
   }
 }

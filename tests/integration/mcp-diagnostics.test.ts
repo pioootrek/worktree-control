@@ -1,0 +1,20 @@
+import { afterEach, expect, it } from "vitest";
+import { startControllerFixture, type ControllerFixture } from "../support/controller-fixture";
+let fixture: ControllerFixture | undefined;
+afterEach(async () => { await fixture?.close(); fixture = undefined; });
+it("reads bounded MCP observations through the built local admin CLI and reports absence", async () => {
+  fixture = await startControllerFixture(0);
+  const before = JSON.parse(await fixture.cli(["mcp", "diagnostics"]));
+  expect(before.mcp).toMatchObject({ logicalSessions: 0, operations: 0, lifetimeTimers: 0, controllerProcess: { cpuPercent: null } });
+  const client = await fixture.mcp();
+  await client.call("list_projects");
+  const after = JSON.parse(await fixture.cli(["mcp", "diagnostics"], {}, "flags"));
+  expect(after.mcp).toMatchObject({ logicalSessions: 1, operations: 0, lifetimeTimers: 1, sessions: [{ agentState: "unknown", lastClientRequestAt: expect.any(String) }] });
+  expect(Buffer.byteLength(JSON.stringify(after))).toBeLessThan(64 * 1024);
+  expect(JSON.stringify(after)).not.toContain(fixture.installationToken);
+  expect((await fixture.requestResult("/api/mcp-diagnostics")).status).toBe(404);
+  await client.close();
+  expect(JSON.parse(await fixture.cli(["mcp", "diagnostics"])).mcp.logicalSessions).toBe(1);
+  await fixture.stop();
+  await expect(fixture.cli(["mcp", "diagnostics"])).rejects.toThrow();
+});

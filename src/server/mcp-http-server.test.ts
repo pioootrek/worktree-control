@@ -436,3 +436,42 @@ describe("MCP loopback server", () => {
     await client.close();
   });
 });
+
+describe("bounded MCP diagnostics", () => {
+  async function setup(service: Partial<ControlService> = {}) {
+    const controller = createMcpControllerServer({ service: service as ControlService, port: 0, accessToken: "diagnostics-test-secret" });
+    controllers.push(controller);
+    await new Promise<void>(resolve => controller.server.listen(0, "127.0.0.1", resolve));
+    const endpoint = new URL(`http://127.0.0.1:${(controller.server.address() as AddressInfo).port}/mcp`);
+    const transport = new StreamableHTTPClientTransport(endpoint, { requestInit: { headers: { Authorization: "Bearer diagnostics-test-secret" } } });
+    const client = new Client({ name: "owned-fixture", version: "1" });
+    await client.connect(transport);
+    return { controller, client, transport, endpoint };
+  }
+  it("observes protocol calls and distinguishes transport disconnect from DELETE", async () => {
+    const { controller, client, transport, endpoint } = await setup();
+    await client.listTools();
+    const before = await controller.diagnosticsSnapshot() as { sessions: Array<{ lastClientRequestAt: string | null }> };
+    expect(before.sessions[0].lastClientRequestAt).not.toBeNull();
+    expect(JSON.stringify(before)).not.toContain(transport.sessionId);
+    expect(JSON.stringify(before)).not.toContain("diagnostics-test-secret");
+    await client.close();
+    await expect.poll(async () => (await controller.diagnosticsSnapshot() as { openResponses: number }).openResponses).toBe(0);
+    expect(await controller.diagnosticsSnapshot()).toMatchObject({ logicalSessions: 1, lifetimeTimers: 1, operations: 0, sessions: [{ agentState: "unknown", transportState: "no-open-response" }] });
+    const deleted = await fetch(endpoint, { method: "DELETE", headers: { Authorization: "Bearer diagnostics-test-secret", "Mcp-Session-Id": transport.sessionId! } });
+    expect(deleted.status).toBe(200);
+    expect(await controller.diagnosticsSnapshot()).toMatchObject({ logicalSessions: 0, lifetimeTimers: 0, operations: 0, closeReasons: { "client-delete": 1 } });
+  });
+  it("keeps a handler counted after closure until its actual completion", async () => {
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const { controller, client } = await setup({ projectSummaries: async () => { await pending; return []; } } as unknown as Partial<ControlService>);
+    const call = client.callTool({ name: "list_projects", arguments: {} }).catch(() => undefined);
+    await expect.poll(async () => (await controller.diagnosticsSnapshot() as { operations: number }).operations).toBe(1);
+    await controller.closeSessions();
+    expect(await controller.diagnosticsSnapshot()).toMatchObject({ logicalSessions: 0, operations: 1, drainingSessions: 1, closeReasons: { "authentication-policy": 1 } });
+    finish();
+    await expect.poll(async () => (await controller.diagnosticsSnapshot() as { operations: number }).operations).toBe(0);
+    await client.close(); await call;
+  });
+});

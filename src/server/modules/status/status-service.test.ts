@@ -202,3 +202,16 @@ describe("StatusService", () => {
     service.close();
   });
 });
+
+it("reports owned waiter timers and the shared sampler until settlement", async () => {
+  const { service } = fixture();
+  const current = service.project(project.id, "session");
+  const abort = new AbortController();
+  const waiting = service.wait({ kind: "project", id: project.id }, current.cursor, "session", 20000, abort.signal);
+  expect(service.diagnostics()).toEqual({ waiters: 1, targets: 1, samplerTimers: 1, waiterTimers: 1 });
+  expect(service.diagnostics("another-session").waiters).toBe(0);
+  abort.abort();
+  await expect(waiting).rejects.toThrow("STATUS_WAIT_CANCELLED");
+  expect(service.diagnostics()).toEqual({ waiters: 0, targets: 0, samplerTimers: 0, waiterTimers: 0 });
+  service.close();
+});

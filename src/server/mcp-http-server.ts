@@ -1,3 +1,4 @@
+import { McpDiagnostics, type McpCloseReason } from "./mcp-diagnostics";
 import { timingSafeEqual } from "node:crypto";
 import { createHttpServerCloser } from "./http-server-lifecycle";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -13,13 +14,15 @@ const MANIFEST_BODY_LIMIT = knowledgeRequestLimit("check_attachment_batch") + 16
 
 interface McpRuntimeLike {
   handle(request: IncomingMessage, response: ServerResponse, authentication: ControllerAuthentication, body?: unknown): Promise<void>;
-  close(): Promise<void>;
+  close(reason?: McpCloseReason): Promise<void>;
+  diagnosticsSnapshot(): unknown;
 }
 
 export interface McpControllerServer {
   server: Server;
   /** Ends every MCP session so clients must reconnect under the current authentication policy. */
   closeSessions(): Promise<void>;
+  diagnosticsSnapshot(): Promise<unknown>;
   close(): Promise<void>;
 }
 
@@ -89,12 +92,14 @@ export function createMcpControllerServer(options: {
   authentication?: ControllerAuthenticationDependencies["authentication"];
   onDiagnostic?: (message: string, details?: Record<string, unknown>) => void;
 }): McpControllerServer {
+  const diagnostics = new McpDiagnostics();
   let runtimePromise: Promise<McpRuntimeLike> | null = null;
   const runtime = () => {
     runtimePromise ??= import("./mcp-runtime").then(({ McpRuntime }) => new McpRuntime(
       options.service,
       options.onDiagnostic,
       options.identity,
+      diagnostics,
     ));
     return runtimePromise;
   };
@@ -124,11 +129,18 @@ export function createMcpControllerServer(options: {
     })();
   });
 
+  server.on("connection", socket => {
+    diagnostics.connection(1);
+    socket.once("close", () => diagnostics.connection(-1));
+  });
   const closeServer = createHttpServerCloser(server);
   return {
     server,
+    async diagnosticsSnapshot() {
+      return runtimePromise ? (await runtimePromise).diagnosticsSnapshot() : { ...diagnostics.snapshot(), runtimeRetryEntries: 0 };
+    },
     async closeSessions() {
-      if (runtimePromise) await (await runtimePromise).close();
+      if (runtimePromise) await (await runtimePromise).close("authentication-policy");
     },
     async close() {
       if (runtimePromise) await (await runtimePromise).close();
