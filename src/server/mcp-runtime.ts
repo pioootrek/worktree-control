@@ -559,6 +559,12 @@ export class McpRuntime {
         ttlSeconds,
         owner: owner(),
       }, existingToken, responseMode !== "compact"));
+      if (session.closed) {
+        // The accepted operation may have completed, but this closed session
+        // cannot retain its secret or acquire a new renewal resource. Preserve
+        // the resulting lease's TTL and the project's independent lifecycle.
+        throw new Error("The MCP session closed after claim acquisition. The reservation may remain until its TTL expires; automatic renewal was not started.");
+      }
       session.idempotencyTokens.set(idempotencyScope, result.leaseToken);
       const claim: ClaimSecret = {
         projectId,
@@ -633,8 +639,7 @@ export class McpRuntime {
       const claim = this.requireClaim(session, projectId, reservationId);
       await english(() => this.service.releaseAgentClaim(projectId, reservationId, owner(), claim.token));
       if (claim.timer) { clearTimeout(claim.timer); claim.timer = null; this.diagnostics.change(session.observation, "renewalTimers", -1); }
-      session.claims.delete(reservationId);
-      this.diagnostics.change(session.observation, "claims", -1);
+      if (session.claims.delete(reservationId)) this.diagnostics.change(session.observation, "claims", -1);
       return jsonContent({ released: true, projectId, reservationId });
     });
     return server;
@@ -697,6 +702,7 @@ export class McpRuntime {
   }
 
   private scheduleRenewal(session: McpSession, claim: ClaimSecret): void {
+    if (session.closed || session.claims.get(claim.reservationId) !== claim) return;
     if (claim.timer) { clearTimeout(claim.timer); this.diagnostics.change(session.observation, "renewalTimers", -1); }
     const delay = Math.max(10_000, Math.min(10 * 60_000, Math.floor(claim.ttlSeconds * 1000 / 3)));
     this.diagnostics.change(session.observation, "renewalTimers", 1);
@@ -708,8 +714,9 @@ export class McpRuntime {
         this.diagnostics.renewed(session.observation, true);
         this.scheduleRenewal(session, claim);
       } catch (error) {
-        session.claims.delete(claim.reservationId);
-        this.diagnostics.change(session.observation, "claims", -1);
+        if (session.claims.get(claim.reservationId) === claim && session.claims.delete(claim.reservationId)) {
+          this.diagnostics.change(session.observation, "claims", -1);
+        }
         this.diagnostics.renewed(session.observation, false);
         this.diagnostic("mcp.claim_auto_renew_failed", {
           projectId: claim.projectId,
@@ -725,5 +732,7 @@ export class McpRuntime {
     if (session.lifetimeTimer) { clearTimeout(session.lifetimeTimer); session.lifetimeTimer = null; this.diagnostics.change(session.observation, "lifetimeTimers", -1); }
     for (const claim of session.claims.values()) if (claim.timer) { clearTimeout(claim.timer); claim.timer = null; this.diagnostics.change(session.observation, "renewalTimers", -1); }
     this.diagnostics.change(session.observation, "claims", -session.observation.claims);
+    session.claims.clear();
+    session.idempotencyTokens.clear();
   }
 }

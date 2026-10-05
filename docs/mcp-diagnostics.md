@@ -32,7 +32,7 @@ handler. The read has no lifecycle effects, including during maintenance.
 | `operations` | Executing registered protocol handlers (tools, resource reads/lists, etc.), excluding SDK bootstrap initialize/ping handlers. Count remains until `finally`, including a handler ignoring cancellation after close. |
 | `runtimeRetryEntries` | Existing global retry-ledger occupancy, including completed receipts. Its existing bounds are 64/session and 512/global; it is not a running-call counter. |
 | `claims`, `renewalTimers`, `lifetimeTimers` | Session-held claim/renewal handles and actual controller-owned timers. Persisted reservations can outlive these handles and must be inspected through existing project status. |
-| `statusWaits` | Actual application waiters, waiter timers, targets and the shared sampling timer. The per-session waiter count is an owner-key lookup; closed/draining session attribution can be unknown. Global counts remain available. |
+| `statusWaits` | Per-session entries contain only owned waiters and waiter timers, using an owner-key lookup. Targets and the single shared sampling timer appear only in the global administrative `statusWaits` object. Closed/draining session attribution can be unknown; global counts remain available. |
 | `resourceSubscriptions` | Zero: this adapter registers no resource subscription handlers. SDK internal stream maps/keep-alive timers have no public inspection API and are explicitly `unknown`. |
 | `lastClientMessageAt` | Last validated JSON-RPC message delivered by the transport after authentication and session binding; includes protocol housekeeping. |
 | `lastClientRequestAt` | Last application-shaped tool/resource/prompt request delivered by the transport; it can still fail application validation. An observation, not proof of agent liveness or a renewal authorization. |
@@ -166,6 +166,16 @@ capacity. A 20-second wait does not validate multi-minute calls, eight-hour
 expiry, full-body memory pressure, expiry/write races or lost-write recovery.
 Those remain isolated acceptance work for the enforcement PR. Initializing
 requests and unconfirmed draining work must consume its limits as well.
+
+Review follow-up corrected per-session attribution: the preserved historical
+raw report's nested `targets` and `samplerTimers` mirror global counts and must
+not be interpreted or summed as session-owned resources. The current read
+omits those nested fields; global measurements above are unaffected. Focused
+transport regressions additionally cover acquisition/explicit renewal/release
+settling after session closure and rejected initialization cleanup. A claim
+acquisition completing after closure does not retain its secret or start an
+automatic timer; the persisted lease keeps its remaining TTL. This is cleanup
+of an already closed session, not a new inactivity or admission policy.
 
 ## Proposed second PR contract
 

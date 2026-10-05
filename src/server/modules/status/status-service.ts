@@ -219,7 +219,11 @@ export class StatusService {
   }
 
   diagnostics(sessionKey?: string) {
-    const waiters = sessionKey === undefined ? this.waiterCount() : this.sessionCounts.get(sessionKey) ?? 0;
+    if (sessionKey !== undefined) {
+      const waiters = this.sessionCounts.get(sessionKey) ?? 0;
+      return { waiters, waiterTimers: waiters };
+    }
+    const waiters = this.waiterCount();
     return { waiters, waiterTimers: waiters, targets: this.targets.size, samplerTimers: this.timer ? 1 : 0 };
   }
 
