@@ -497,6 +497,8 @@ describe("bounded MCP diagnostics", () => {
     if (reason === "delete") await transport.terminateSession();
     else await controller.closeSessions();
     expect(await controller.diagnosticsSnapshot()).toMatchObject({ logicalSessions: 0, drainingSessions: 1, operations: 1, claims: 0, renewalTimers: 0, lifetimeTimers: 0 });
+    await client.close(); await call;
+    await expect.poll(async () => (await controller.diagnosticsSnapshot() as { openResponses: number }).openResponses).toBe(0);
     const timers = vi.spyOn(globalThis, "setTimeout");
     try {
       finish();
@@ -531,10 +533,16 @@ describe("bounded MCP diagnostics", () => {
     await expect.poll(() => operation.mock.calls.length).toBe(1);
     await controller.closeSessions();
     expect(await controller.diagnosticsSnapshot()).toMatchObject({ claims: 0, renewalTimers: 0, operations: 1 });
-    finish();
-    await expect.poll(async () => (await controller.diagnosticsSnapshot() as { operations: number }).operations).toBe(0);
-    expect(await controller.diagnosticsSnapshot()).toMatchObject({ claims: 0, renewalTimers: 0, lifetimeTimers: 0, drainingSessions: 0, sessions: [] });
-    await client.close(); await call;
+    try {
+      await client.close(); await call;
+      await expect.poll(async () => (await controller.diagnosticsSnapshot() as { openResponses: number }).openResponses).toBe(0);
+      finish();
+      await expect.poll(async () => (await controller.diagnosticsSnapshot() as { operations: number }).operations).toBe(0);
+      expect(await controller.diagnosticsSnapshot()).toMatchObject({ claims: 0, renewalTimers: 0, lifetimeTimers: 0, drainingSessions: 0, sessions: [] });
+    } finally {
+      finish();
+      await client.close(); await call;
+    }
   });
   it("cleans a rejected initialize exactly once even before a session ID is assigned", async () => {
     const { controller, endpoint } = await listen();
