@@ -177,6 +177,13 @@ acquisition completing after closure does not retain its secret or start an
 automatic timer; the persisted lease keeps its remaining TTL. This is cleanup
 of an already closed session, not a new inactivity or admission policy.
 
+Follow-up [queued verification evidence](measurements/mcp-diagnostics-review-20261005-verification.json)
+records a clean `263bd8a` full check (1,011 Vitest and 21 script tests), build
+and built CLI integration. The script regressions include actual owned-child
+early exit: controller/state teardown still runs while failure is preserved;
+state is retained if controller termination is unconfirmed. Historical resource
+measurements above were not repeated or relabeled as this newer revision.
+
 ## Proposed second PR contract
 
 All values in this section are proposals, pending its bounded acceptance tests.
