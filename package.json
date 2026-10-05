@@ -44,6 +44,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "prepublishOnly": "node -e \"console.error('Refusing npm publish from a checkout: it would pack unverified local dist/out without the fingerprint, clean-tree, checksum and provenance checks. Publish the CI tarball instead; see docs/package-trial.md (Publish a release).'); process.exit(1)\"",
     "build": "next build && tsup src/cli/index.ts src/cli/backup-verifier.ts --format esm --platform node --target node22 --clean --out-dir dist/cli && node scripts/build-fingerprint.mjs --write",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:resources",
     "dev": "node scripts/dev-controller.mjs",

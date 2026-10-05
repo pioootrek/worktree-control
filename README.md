@@ -193,12 +193,14 @@ session; an agent cannot force-release someone else's reservation.
 
 The [bundled agent skill](https://github.com/pioootrek/worktree-control/blob/main/skills/worktree-control/SKILL.md)
 teaches this workflow. It is included in the npm package. For Codex, copy it
-from the installed package (or from `skills/worktree-control` in a checkout):
+from the installed package, found through the `worktree-control` command so a
+user-owned `--prefix` works too (or copy `skills/worktree-control` from a checkout):
 
 ```bash
 codex_skill_dir="${CODEX_HOME:-$HOME/.codex}/skills"
 mkdir -p "$codex_skill_dir"
-cp -R "$(npm root --global)/worktree-control/skills/worktree-control" "$codex_skill_dir/"
+package_dir="$(dirname "$(dirname "$(dirname "$(readlink -f "$(command -v worktree-control)")")")")"
+cp -R "$package_dir/skills/worktree-control" "$codex_skill_dir/"
 ```
 
 Restart the agent session and configure MCP separately. In the managed project's

@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { HISTORICAL_COMMIT, verifyHistoricalArtifact, verifyTrialFiles } from "./package-artifact.mjs";
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -40,11 +41,13 @@ test("checks the imported installer companion and checksum manifest before execu
   await writeFile(join(f.root, files.installer), "tampered executable helper"); await assert.rejects(verifyTrialFiles(f.root, provenance), /companion/);
 }));
 test("current manifest is a publishable pre-1.0 worktree-control package whose file list stays on the allowlist", async () => {
-  const root = new URL("..", import.meta.url).pathname;
+  const root = fileURLToPath(new URL("..", import.meta.url));
   const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
   assert.equal(manifest.name, "worktree-control");
   assert.match(manifest.version, /^0\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
   assert.notEqual(manifest.private, true, "a private manifest cannot be published");
+  assert.match(manifest.scripts?.prepublishOnly ?? "", /process\.exit\(1\)/, "publishing from a checkout must be refused by prepublishOnly");
+  await assert.rejects(promisify(execFile)("npm", ["run", "--silent", "prepublishOnly"], { cwd: root }), error => /Refusing npm publish from a checkout/.test(error.stderr));
   const { stdout } = await promisify(execFile)("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: root, maxBuffer: 8 * 1024 * 1024 });
   const files = JSON.parse(stdout)[0].files.map(file => file.path);
   for (const required of ["package.json", "CHANGELOG.md", "LICENSE", "README.md", "skills/worktree-control/SKILL.md"]) assert(files.includes(required), `missing ${required}`);

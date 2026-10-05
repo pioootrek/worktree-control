@@ -162,3 +162,21 @@ npm uninstall --global --prefix "$HOME/.local/worktree-control" worktree-control
 This preserves repositories, the SQLite database, MCP credential, configuration,
 and logs. Full data deletion is a separate, explicit operation. See
 [reservations and MCP](reservations-and-mcp.md) before connecting an MCP client.
+
+## Publish a release
+
+Maintainers publish the CI-built tarball, not a checkout. Download the
+`portable-package` artifact of the `Verify` run on the release commit on `main`,
+run `sha256sum --check SHA256SUMS`, confirm `provenance.json` names the expected
+package, version, full commit, `"dirty": false` and tarball digest, then run:
+
+```bash
+npm publish ./worktree-control-<version>.tgz --access public
+npm view worktree-control version
+```
+
+`package.json` has a `prepublishOnly` script that always fails. It stops
+`npm publish` run from a checkout, which would pack unverified local `dist/` and
+`out/` without the fingerprint, clean-tree, checksum and provenance steps. npm
+does not run lifecycle scripts when publishing a tarball, so the command above is
+unaffected.
