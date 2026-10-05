@@ -219,8 +219,8 @@ export class StatusService {
   }
 
   diagnostics(sessionKey?: string) {
-    return { waiters: sessionKey === undefined ? this.waiterCount() : this.sessionCounts.get(sessionKey) ?? 0,
-      targets: this.targets.size, samplerTimers: this.timer ? 1 : 0, waiterTimers: this.waiterCount() };
+    const waiters = sessionKey === undefined ? this.waiterCount() : this.sessionCounts.get(sessionKey) ?? 0;
+    return { waiters, waiterTimers: waiters, targets: this.targets.size, samplerTimers: this.timer ? 1 : 0 };
   }
 
   close(): void {

@@ -113,10 +113,11 @@ export class McpRuntime {
         await session.server.connect(session.transport);
         this.observeMessages(session);
         await this.handleTransport(session, request, response, body);
-        if (!session.transport.sessionId) { session.closeReason = "initialization-failed"; await session.server.close(); }
+        if (!session.transport.sessionId) { session.closeReason = "initialization-failed"; await session.server.close(); this.cleanupSession(session); }
       } catch (error) {
         session.closeReason = "initialization-failed";
         await session.server.close();
+        this.cleanupSession(session);
         throw error;
       }
       return;
@@ -229,14 +230,19 @@ export class McpRuntime {
     this.diagnostics.change(session.observation, "lifetimeTimers", 1);
     session.lifetimeTimer.unref();
     transport.onclose = () => {
-      const sessionId = transport.sessionId;
-      if (sessionId) this.sessions.delete(sessionId);
-      this.clearTimers(session);
-      this.disposeRuntimeOperations(session);
-      this.diagnostics.close(session.observation, session.closeReason);
-      this.diagnostic("mcp.session_closed", { sessionId, reason: session.closeReason });
+      this.cleanupSession(session);
     };
     return session;
+  }
+
+  private cleanupSession(session: McpSession): void {
+    if (session.observation.closed) return;
+    const sessionId = session.transport.sessionId;
+    if (sessionId) this.sessions.delete(sessionId);
+    this.clearTimers(session);
+    this.disposeRuntimeOperations(session);
+    this.diagnostics.close(session.observation, session.closeReason);
+    this.diagnostic("mcp.session_closed", { sessionId, reason: session.closeReason });
   }
 
   private createProtocolServer(session: McpSession): McpServer {
