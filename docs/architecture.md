@@ -360,11 +360,15 @@ setup is an explicit user-service installation. Linux uses
 `~/.config/systemd/user/worktree-control.service`; macOS uses
 `~/Library/LaunchAgents/dev.worktree-control.controller.plist`.
 `service install` migrates a pre-rename `worktree-switcher.service` or
-`dev.worktree-switcher.controller` definition: it stops the legacy service just
-before starting the new one (both use the same ports and lock), then disables
-and removes the legacy definition. A failed start restarts a legacy service
-that was running. `service status` warns about a remaining legacy definition,
-and `service uninstall` removes it.
+`dev.worktree-switcher.controller` definition: it copies the legacy unit's
+systemd drop-ins to the new unit, stops the legacy service just before starting
+the new one (both use the same ports and lock), waits until the new main
+process stays up without restarts for a few seconds (bounded to 30 s), and only
+then enables the new service and disables and removes the legacy definition. A
+failed start or health check rolls back: the new definition, its copied
+drop-ins and enabled state are removed (or a previous definition restored), and
+a legacy service that was running is started again. `service status` warns
+about a remaining legacy definition, and `service uninstall` removes it.
 
 The generated definition contains absolute executable, dashboard, data, and
 state paths. Its environment has `NODE_ENV=production` and a controlled `PATH`

@@ -231,10 +231,17 @@ any package upgrade and prepare it as described in
    service, including any `--data-dir` and `--state-dir`. The command stops the
    legacy `worktree-switcher.service` (or the `dev.worktree-switcher.controller`
    LaunchAgent) just before starting the new service, because both use the same
-   ports and lock. Once the new service has started, it disables and removes the
-   legacy definition and prints what it did. If the new service fails to start,
-   a legacy service that was running is started again and keeps its definition.
-   `service status` warns while a legacy definition remains.
+   ports and lock. Legacy systemd drop-ins (`worktree-switcher.service.d/*.conf`)
+   are copied to `worktree-control.service.d/` first, so memory limits and
+   sandbox settings keep applying; a drop-in that already exists for the new
+   unit with different contents is never overwritten, and the legacy directory
+   is then kept for review. The command waits until the new service keeps one
+   main process running without restarts (at most 30 seconds), then enables it,
+   disables and removes the legacy definition, and prints what it did. If the
+   new service fails to start or stay up, the new definition and copied drop-ins
+   are removed again, a legacy service that was running is started again and
+   keeps its definition. `service status` warns while a legacy definition
+   remains.
 3. Update your shell `PATH` and any symlinks you created, replacing the old
    prefix (for example `$HOME/.local/worktree-switcher/bin`) and links to the
    `worktree-switcher` executable with their `worktree-control` equivalents.

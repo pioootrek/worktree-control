@@ -28,9 +28,11 @@ describe("user backup startup policy", () => {
   it.each(["linux", "darwin"] as const)("refresh preserves enabled installed policy and escaped targets on %s", platform => {
     const root = mkdtempSync(join(tmpdir(), "user-policy-refresh-"));
     const calls: string[][] = [];
-    const runner: ServiceCommandRunner = { run: (command, args) => { calls.push([command, ...args]); return { status: 0, stdout: "", stderr: "" }; } };
+    // The health check needs a running main process; the fake managers report one.
+    const healthy = (args: string[]) => args[1] === "show" ? "ActiveState=active\nSubState=running\nMainPID=42\nNRestarts=0\n" : args[0] === "print" ? "state = running\npid = 42\n" : "";
+    const runner: ServiceCommandRunner = { run: (command, args) => { calls.push([command, ...args]); return { status: 0, stdout: healthy(args), stderr: "" }; } };
     try {
-      const manager = new UserServiceManager({ platform, homeDirectory: root, environment: { NODE_ENV: "test" }, uid: 123, runner });
+      const manager = new UserServiceManager({ platform, homeDirectory: root, environment: { NODE_ENV: "test" }, uid: 123, runner, health: { stableMs: 0 } });
       const target = join(root, 'exports 100% & "quotes" \\ local');
       const policy = parseUserBackupOptions(["--user-backup-enabled", "--user-backup-projects", "one,two", "--user-backup-scopes", "knowledge-discussions", "--user-backup-target", `local=${target}`, "--user-backup-min-interval-seconds", "120", "--user-backup-max-schedules", "3"]);
       const base = { host: "127.0.0.1", port: 3000, mcpPort: 4000, browseRoot: root, dataDirectory: root, stateDirectory: root, webRoot: root, noMcp: false, memoryWarningMiB: null };

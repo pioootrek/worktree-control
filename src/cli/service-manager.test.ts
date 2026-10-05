@@ -1,10 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { renderLaunchAgent, renderSystemdUnit, resolveServiceExecutablePath, type ServiceCommandRunner, UserServiceManager } from "./service-manager";
+import { legacyServiceWarning, renderLaunchAgent, renderSystemdUnit, resolveServiceExecutablePath, type ServiceClock, type ServiceCommandRunner, type ServiceHealthPolicy, UserServiceManager } from "./service-manager";
 
 const directories: string[] = [];
 const installOptions = {
@@ -62,18 +62,59 @@ describe("user service definitions", () => {
   });
 });
 
+/** Deterministic clock: `sleep` advances time instead of blocking. */
+function fakeClock(): ServiceClock & { readonly elapsed: number } {
+  let now = 1_000_000;
+  return {
+    get elapsed() { return now - 1_000_000; },
+    now: () => now,
+    sleep: (milliseconds) => { now += milliseconds; },
+  };
+}
+
+const running = "ActiveState=active\nSubState=running\nMainPID=42\nNRestarts=0\n";
+
+interface LinuxOptions {
+  legacy?: boolean;
+  current?: boolean;
+  fail?: (args: string[]) => boolean;
+  /** Output of `systemctl show` for each poll, last entry repeated. */
+  show?: string[];
+  health?: Partial<ServiceHealthPolicy>;
+}
+
+function linuxHome(options: LinuxOptions = {}) {
+  const home = mkdtempSync(join(tmpdir(), "worktree-control-service-"));
+  directories.push(home);
+  const calls: string[][] = [];
+  let polls = 0;
+  const runner: ServiceCommandRunner = {
+    run(command, args) {
+      calls.push([command, ...args]);
+      if (options.fail?.(args)) return { status: 1, stdout: "", stderr: "failed" };
+      if (args[1] === "show") {
+        const outputs = options.show ?? [running];
+        return { status: 0, stdout: outputs[Math.min(polls++, outputs.length - 1)], stderr: "" };
+      }
+      return { status: 0, stdout: "", stderr: "" };
+    },
+  };
+  const clock = fakeClock();
+  const manager = new UserServiceManager({
+    platform: "linux", homeDirectory: home, environment: { NODE_ENV: "test" }, runner, clock,
+    health: { stableMs: 0, ...options.health },
+  });
+  mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
+  if (options.legacy) writeFileSync(manager.legacyDefinitionPath, legacyUnit);
+  if (options.current) writeFileSync(manager.definitionPath, "unit");
+  return { home, calls, manager, clock };
+}
+
+const legacyUnit = 'ExecStart="/old/node" "/old/dist/cli/index.js" "start" "--data-dir" "/home/me/.local/share/worktree-switcher" "--backup-dir" "/backups"\n';
+
 describe("UserServiceManager", () => {
   it("installs idempotently and requires refresh when the executable changes", () => {
-    const home = mkdtempSync(join(tmpdir(), "worktree-control-service-"));
-    directories.push(home);
-    const calls: string[][] = [];
-    const runner: ServiceCommandRunner = {
-      run(command, args) {
-        calls.push([command, ...args]);
-        return { status: 0, stdout: "", stderr: "" };
-      },
-    };
-    const manager = new UserServiceManager({ platform: "linux", homeDirectory: home, environment: { NODE_ENV: "test" }, runner });
+    const { calls, manager } = linuxHome();
 
     expect(manager.install(installOptions).changed).toBe(true);
     expect(manager.install(installOptions).changed).toBe(false);
@@ -81,6 +122,53 @@ describe("UserServiceManager", () => {
     expect(manager.install({ ...installOptions, nodePath: "/new/node", refresh: true }).changed).toBe(true);
     expect(readFileSync(manager.definitionPath, "utf8")).toContain('ExecStart="/new/node"');
     expect(calls).toContainEqual(["systemctl", "--user", "restart", "worktree-control.service"]);
+  });
+
+  it("enables the unit only after the started service stays healthy", () => {
+    const { calls, manager, clock } = linuxHome({ health: { stableMs: 5_000, intervalMs: 500, timeoutMs: 30_000 } });
+
+    manager.install(installOptions);
+
+    const names = calls.map((call) => call[2]);
+    expect(names.indexOf("start")).toBeLessThan(names.indexOf("show"));
+    expect(names.lastIndexOf("show")).toBeLessThan(names.indexOf("enable"));
+    expect(calls.filter((call) => call[2] === "show")).toHaveLength(11);
+    expect(clock.elapsed).toBe(5_000);
+  });
+
+  it("rolls back a first install whose service exits right after start", () => {
+    const { calls, manager } = linuxHome({ show: ["ActiveState=activating\nSubState=auto-restart\nMainPID=0\nNRestarts=1\n"] });
+
+    expect(() => manager.install(installOptions)).toThrow("failed to start (activating/auto-restart)");
+
+    expect(existsSync(manager.definitionPath)).toBe(false);
+    expect(calls).not.toContainEqual(["systemctl", "--user", "enable", "worktree-control.service"]);
+    expect(calls.slice(-3)).toEqual([
+      ["systemctl", "--user", "stop", "worktree-control.service"],
+      ["systemctl", "--user", "disable", "worktree-control.service"],
+      ["systemctl", "--user", "daemon-reload"],
+    ]);
+  });
+
+  it("rolls back when the main process changes while waiting for stability", () => {
+    const { manager } = linuxHome({ health: { stableMs: 5_000 }, show: [running, running.replace("MainPID=42", "MainPID=43")] });
+
+    expect(() => manager.install(installOptions)).toThrow("restarted while starting");
+    expect(existsSync(manager.definitionPath)).toBe(false);
+  });
+
+  it("restores the previous definition and restarts it when a refresh fails", () => {
+    const { calls, manager } = linuxHome({ current: true, fail: (args) => args[1] === "restart" });
+
+    expect(() => manager.install({ ...installOptions, refresh: true })).toThrow("systemctl --user restart worktree-control.service failed");
+
+    expect(readFileSync(manager.definitionPath, "utf8")).toBe("unit");
+    expect(calls.slice(-3)).toEqual([
+      ["systemctl", "--user", "stop", "worktree-control.service"],
+      ["systemctl", "--user", "daemon-reload"],
+      ["systemctl", "--user", "start", "worktree-control.service"],
+    ]);
+    expect(calls).not.toContainEqual(["systemctl", "--user", "disable", "worktree-control.service"]);
   });
 
   it("reports manager state plus lightweight process resource use", () => {
@@ -107,29 +195,16 @@ describe("UserServiceManager", () => {
       legacyDefinitionPath: null,
     });
   });
+
+  it("names the pre-rename service in the status warning", () => {
+    const warning = legacyServiceWarning("/home/me/.config/systemd/user/worktree-switcher.service");
+    expect(warning).toContain("legacy worktree-switcher service is still installed at /home/me/.config/systemd/user/worktree-switcher.service");
+    expect(warning).not.toContain("legacy worktree-control");
+    expect(warning).toContain("worktree-control service install");
+  });
 });
 
-describe("legacy worktree-control service migration", () => {
-  const legacyUnit = 'ExecStart="/old/node" "/old/dist/cli/index.js" "start" "--data-dir" "/home/me/.local/share/worktree-switcher" "--backup-dir" "/backups"\n';
-
-  function linuxHome(options: { legacy?: boolean; current?: boolean; fail?: (args: string[]) => boolean } = {}) {
-    const home = mkdtempSync(join(tmpdir(), "worktree-control-service-"));
-    directories.push(home);
-    const calls: string[][] = [];
-    const runner: ServiceCommandRunner = {
-      run(command, args) {
-        calls.push([command, ...args]);
-        if (options.fail?.(args)) return { status: 1, stdout: "", stderr: "failed" };
-        return { status: 0, stdout: "", stderr: "" };
-      },
-    };
-    const manager = new UserServiceManager({ platform: "linux", homeDirectory: home, environment: { NODE_ENV: "test" }, runner });
-    mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
-    if (options.legacy) writeFileSync(manager.legacyDefinitionPath, legacyUnit);
-    if (options.current) writeFileSync(manager.definitionPath, "unit");
-    return { home, calls, manager };
-  }
-
+describe("legacy worktree-switcher service migration", () => {
   it("uses the renamed unit and records where the legacy unit lives", () => {
     const { home, manager } = linuxHome();
     expect(manager.definitionPath).toBe(join(home, ".config", "systemd", "user", "worktree-control.service"));
@@ -137,20 +212,21 @@ describe("legacy worktree-control service migration", () => {
     expect(renderSystemdUnit(installOptions)).toContain("Description=Worktree Control local control plane");
   });
 
-  it("stops the legacy unit before starting the new one, then disables and removes it", () => {
+  it("stops the legacy unit before starting the new one, then enables, disables and removes after the health check", () => {
     const { calls, manager } = linuxHome({ legacy: true });
 
     const result = manager.install(installOptions);
 
-    expect(result.legacy).toEqual({ definitionPath: manager.legacyDefinitionPath, wasActive: true });
+    expect(result.legacy).toEqual({ definitionPath: manager.legacyDefinitionPath, wasActive: true, migratedDropIns: [], retainedDropInDirectory: null });
     expect(existsSync(manager.legacyDefinitionPath)).toBe(false);
     expect(existsSync(manager.definitionPath)).toBe(true);
     expect(calls).toEqual([
       ["systemctl", "--user", "daemon-reload"],
-      ["systemctl", "--user", "enable", "worktree-control.service"],
       ["systemctl", "--user", "is-active", "--quiet", "worktree-switcher.service"],
       ["systemctl", "--user", "stop", "worktree-switcher.service"],
       ["systemctl", "--user", "start", "worktree-control.service"],
+      ["systemctl", "--user", "show", "worktree-control.service", "--property=ActiveState", "--property=SubState", "--property=MainPID", "--property=NRestarts"],
+      ["systemctl", "--user", "enable", "worktree-control.service"],
       ["systemctl", "--user", "disable", "worktree-switcher.service"],
       ["systemctl", "--user", "daemon-reload"],
     ]);
@@ -162,6 +238,24 @@ describe("legacy worktree-control service migration", () => {
     expect(() => manager.install(installOptions)).toThrow("systemctl --user start worktree-control.service failed");
 
     expect(existsSync(manager.legacyDefinitionPath)).toBe(true);
+    expect(existsSync(manager.definitionPath)).toBe(false);
+    expect(calls.slice(-4)).toEqual([
+      ["systemctl", "--user", "stop", "worktree-control.service"],
+      ["systemctl", "--user", "disable", "worktree-control.service"],
+      ["systemctl", "--user", "daemon-reload"],
+      ["systemctl", "--user", "start", "worktree-switcher.service"],
+    ]);
+    expect(calls).not.toContainEqual(["systemctl", "--user", "enable", "worktree-control.service"]);
+    expect(calls).not.toContainEqual(["systemctl", "--user", "disable", "worktree-switcher.service"]);
+  });
+
+  it("keeps the legacy unit when the new service crashes after a successful start command", () => {
+    const { calls, manager } = linuxHome({ legacy: true, show: ["ActiveState=failed\nSubState=failed\nMainPID=0\nNRestarts=5\n"] });
+
+    expect(() => manager.install(installOptions)).toThrow("failed to start (failed/failed)");
+
+    expect(existsSync(manager.legacyDefinitionPath)).toBe(true);
+    expect(existsSync(manager.definitionPath)).toBe(false);
     expect(calls.at(-1)).toEqual(["systemctl", "--user", "start", "worktree-switcher.service"]);
     expect(calls).not.toContainEqual(["systemctl", "--user", "disable", "worktree-switcher.service"]);
   });
@@ -180,6 +274,53 @@ describe("legacy worktree-control service migration", () => {
     const { calls, manager } = linuxHome();
     expect(manager.install(installOptions).legacy).toBeNull();
     expect(calls.flat()).not.toContain("worktree-switcher.service");
+  });
+
+  it("copies legacy drop-ins to the new unit before the daemon reload and removes the legacy directory", () => {
+    const { calls, manager } = linuxHome({ legacy: true });
+    const legacyDropIns = `${manager.legacyDefinitionPath}.d`;
+    mkdirSync(legacyDropIns);
+    writeFileSync(join(legacyDropIns, "override.conf"), "[Service]\nMemoryMax=512M\n", { mode: 0o640 });
+    const target = join(`${manager.definitionPath}.d`, "override.conf");
+
+    const result = manager.install(installOptions);
+
+    expect(result.legacy).toMatchObject({ migratedDropIns: [target], retainedDropInDirectory: null });
+    expect(readFileSync(target, "utf8")).toBe("[Service]\nMemoryMax=512M\n");
+    expect(statSync(target).mode & 0o777).toBe(0o640);
+    expect(existsSync(legacyDropIns)).toBe(false);
+    expect(calls[0]).toEqual(["systemctl", "--user", "daemon-reload"]);
+  });
+
+  it("removes copied drop-ins again when the migration rolls back", () => {
+    const { manager } = linuxHome({ legacy: true, fail: (args) => args[1] === "start" && args[2] === "worktree-control.service" });
+    const legacyDropIns = `${manager.legacyDefinitionPath}.d`;
+    mkdirSync(legacyDropIns);
+    writeFileSync(join(legacyDropIns, "override.conf"), "[Service]\nMemoryMax=512M\n");
+
+    expect(() => manager.install(installOptions)).toThrow();
+
+    expect(existsSync(`${manager.definitionPath}.d`)).toBe(false);
+    expect(readFileSync(join(legacyDropIns, "override.conf"), "utf8")).toBe("[Service]\nMemoryMax=512M\n");
+  });
+
+  it("never overwrites a differing drop-in of the new unit and keeps the legacy directory for review", () => {
+    const { manager } = linuxHome({ legacy: true });
+    const legacyDropIns = `${manager.legacyDefinitionPath}.d`;
+    const newDropIns = `${manager.definitionPath}.d`;
+    mkdirSync(legacyDropIns);
+    mkdirSync(newDropIns);
+    writeFileSync(join(legacyDropIns, "override.conf"), "[Service]\nMemoryMax=512M\n");
+    writeFileSync(join(legacyDropIns, "same.conf"), "[Service]\nNice=10\n");
+    writeFileSync(join(newDropIns, "override.conf"), "[Service]\nMemoryMax=1G\n");
+    writeFileSync(join(newDropIns, "same.conf"), "[Service]\nNice=10\n");
+
+    const result = manager.install(installOptions);
+
+    expect(result.legacy).toMatchObject({ migratedDropIns: [], retainedDropInDirectory: legacyDropIns });
+    expect(readFileSync(join(newDropIns, "override.conf"), "utf8")).toBe("[Service]\nMemoryMax=1G\n");
+    expect(existsSync(join(legacyDropIns, "override.conf"))).toBe(true);
+    expect(existsSync(manager.legacyDefinitionPath)).toBe(false);
   });
 
   it("inherits start arguments from the legacy unit until the new unit exists", () => {
@@ -205,32 +346,60 @@ describe("legacy worktree-control service migration", () => {
     expect(calls).toContainEqual(["systemctl", "--user", "disable", "--now", "worktree-switcher.service"]);
   });
 
-  it("boots out and removes a legacy LaunchAgent before bootstrapping the new one", () => {
+  function darwinHome(options: { newAgentState?: string } = {}) {
     const home = mkdtempSync(join(tmpdir(), "worktree-control-service-"));
     directories.push(home);
     const calls: string[][] = [];
+    let newAgentLoaded = false;
     const runner: ServiceCommandRunner = {
       run(command, args) {
         calls.push([command, ...args]);
-        // Only the legacy agent is loaded.
-        const loaded = args[0] !== "print" || args[1] === "gui/501/dev.worktree-switcher.controller";
-        return { status: loaded ? 0 : 1, stdout: "", stderr: "" };
+        if (args[0] === "bootstrap" && args[2].endsWith("dev.worktree-control.controller.plist")) newAgentLoaded = true;
+        if (args[0] === "bootout" && args[1] === "gui/501/dev.worktree-control.controller") newAgentLoaded = false;
+        if (args[0] !== "print") return { status: 0, stdout: "", stderr: "" };
+        // Only the legacy agent is loaded before the migration; the new one appears after bootstrap.
+        if (args[1] === "gui/501/dev.worktree-switcher.controller") return { status: 0, stdout: "state = running\npid = 11\n", stderr: "" };
+        if (newAgentLoaded) return { status: 0, stdout: `state = ${options.newAgentState ?? "running"}\npid = 77\nruns = 1\n`, stderr: "" };
+        return { status: 1, stdout: "", stderr: "Could not find service" };
       },
     };
-    const manager = new UserServiceManager({ platform: "darwin", homeDirectory: home, uid: 501, runner });
-    expect(manager.definitionPath).toBe(join(home, "Library", "LaunchAgents", "dev.worktree-control.controller.plist"));
+    const clock = fakeClock();
+    const manager = new UserServiceManager({ platform: "darwin", homeDirectory: home, uid: 501, runner, clock, health: { stableMs: 0 } });
     mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
     writeFileSync(manager.legacyDefinitionPath, "plist");
+    return { calls, manager, clock };
+  }
 
-    expect(manager.install(installOptions).legacy).toEqual({ definitionPath: manager.legacyDefinitionPath, wasActive: true });
+  it("boots out and removes a legacy LaunchAgent before bootstrapping the new one", () => {
+    const { calls, manager } = darwinHome();
+    expect(manager.definitionPath).toBe(join(manager.legacyDefinitionPath, "..", "dev.worktree-control.controller.plist"));
+
+    expect(manager.install(installOptions).legacy).toEqual({ definitionPath: manager.legacyDefinitionPath, wasActive: true, migratedDropIns: [], retainedDropInDirectory: null });
 
     expect(existsSync(manager.legacyDefinitionPath)).toBe(false);
     expect(calls.slice(0, 3)).toEqual([
+      ["launchctl", "print", "gui/501/dev.worktree-control.controller"],
       ["launchctl", "print", "gui/501/dev.worktree-switcher.controller"],
       ["launchctl", "bootout", "gui/501/dev.worktree-switcher.controller"],
-      ["launchctl", "print", "gui/501/dev.worktree-control.controller"],
     ]);
     expect(calls).toContainEqual(["launchctl", "bootstrap", "gui/501", manager.definitionPath]);
+    expect(calls.at(-1)).toEqual(["launchctl", "print", "gui/501/dev.worktree-control.controller"]);
     expect(readFileSync(manager.definitionPath, "utf8")).toContain("<string>dev.worktree-control.controller</string>");
+  });
+
+  it("restores the legacy LaunchAgent when the new one never reaches the running state", () => {
+    const { calls, manager, clock } = darwinHome({ newAgentState: "waiting" });
+
+    expect(() => manager.install(installOptions)).toThrow("did not become healthy within 30 seconds (waiting)");
+
+    expect(clock.elapsed).toBeGreaterThanOrEqual(30_000);
+    expect(existsSync(manager.legacyDefinitionPath)).toBe(true);
+    expect(existsSync(manager.definitionPath)).toBe(false);
+    expect(calls.slice(-4)).toEqual([
+      ["launchctl", "bootout", "gui/501/dev.worktree-control.controller"],
+      ["launchctl", "disable", "gui/501/dev.worktree-control.controller"],
+      ["launchctl", "bootstrap", "gui/501", manager.legacyDefinitionPath],
+      ["launchctl", "kickstart", "gui/501/dev.worktree-switcher.controller"],
+    ]);
   });
 });

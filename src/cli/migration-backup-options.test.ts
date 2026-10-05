@@ -27,10 +27,11 @@ describe("migration backup startup options",()=>{
   });
   it("carries validated flags into a privately isolated service installation without calling the host manager",()=>{
     const root=mkdtempSync(join(tmpdir(),"backup-service-install-"));
-    const runner:ServiceCommandRunner={run:()=>({status:0,stdout:"",stderr:""})};
+    // The health check needs a running main process; the fake manager reports one.
+    const runner:ServiceCommandRunner={run:(_command,args)=>({status:0,stdout:args[1]==="show"?"ActiveState=active\nSubState=running\nMainPID=42\nNRestarts=0\n":"",stderr:""})};
     try {
       const startArguments=buildServiceStartArguments({...base,...parseMigrationBackupOptions(["service","install","--backup-before-migration","--backup-dir",join(root,"copies")])});
-      const manager=new UserServiceManager({platform:"linux",homeDirectory:root,environment:{NODE_ENV:"test"},runner});
+      const manager=new UserServiceManager({platform:"linux",homeDirectory:root,environment:{NODE_ENV:"test"},runner,health:{stableMs:0}});
       mkdirSync(join(root,"state","logs"),{recursive:true});
       const installed=manager.install({nodePath:process.execPath,entrypointPath:join(root,"isolated.js"),workingDirectory:root,startArguments,stateDirectory:join(root,"state"),refresh:false});
       const definition=readFileSync(installed.definitionPath,"utf8");

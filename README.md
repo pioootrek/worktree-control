@@ -730,9 +730,10 @@ Inspect the owner and permissions of your own directories before rollout;
 permission changes require an explicit operator decision. The historical API
 supports `derived_from` through `task_from_thread`, with owner-only approval
 permission; arbitrary `create_relation` is outside its capabilities. Historical
-backup commands use `WORKTREE_CONTROL_DATA_DIR` and
-`WORKTREE_CONTROL_STATE_DIR`, since that release does not strip path flags from
-strict backup arguments.
+backup commands use `WORKTREE_SWITCHER_DATA_DIR` and
+`WORKTREE_SWITCHER_STATE_DIR`, since that release predates the rename and does
+not strip path flags from strict backup arguments; it ignores the
+`WORKTREE_CONTROL_*` names.
 
 Account for writes made after upgrade before historical recovery. Restore the
 old snapshot into a separate private directory and run old code there; never

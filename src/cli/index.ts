@@ -37,7 +37,7 @@ import { mcpConfigToken } from "./mcp-config";
 import { mcpDiagnosticsAdminHandler } from "../server/mcp-diagnostics-admin";
 import { requestAdminSocket, listenAdminSocket, type AdminSocketServer } from "../server/admin-socket";
 import { buildServiceStartArguments, resolveServiceUserBackupPolicy, resolveServiceBackupArguments } from "./service-install";
-import { UserServiceManager } from "./service-manager";
+import { legacyServiceWarning, UserServiceManager } from "./service-manager";
 import { ControlService } from "../server/control-service";
 import { acquireControllerLock } from "../server/controller-lock";
 import { DirectoryBrowser } from "../server/directory-browser";
@@ -460,6 +460,10 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
     writeCliLine(`${result.changed ? "Installed" : "Service already up to date"}: ${result.definitionPath}`);
     if (result.legacy) {
       writeCliLine(`Migrated the legacy worktree-switcher service: ${result.legacy.wasActive ? "stopped, " : ""}disabled and removed ${result.legacy.definitionPath}`);
+      for (const path of result.legacy.migratedDropIns) writeCliLine(`Copied legacy systemd drop-in to ${path}`);
+      if (result.legacy.retainedDropInDirectory) {
+        writeCliLine(`Warning: kept ${result.legacy.retainedDropInDirectory} because some entries could not be migrated verbatim. Review it against ${result.definitionPath}.d and remove it afterwards.`);
+      }
     }
     writeCliLine("The user service is enabled and started. Run worktree-control service status for details.");
     if (manager.kind === "systemd") {
@@ -500,7 +504,7 @@ async function printServiceStatus(manager: UserServiceManager, paths: ReturnType
   writeCliLine(`Service: ${status.installed ? status.state : "not installed"} (${status.platform})`);
   writeCliLine(`Definition: ${status.definitionPath}`);
   if (status.legacyDefinitionPath) {
-    writeCliLine(`Warning: the legacy worktree-control service is still installed at ${status.legacyDefinitionPath}. Run worktree-control service install to migrate it, or service uninstall to remove it.`);
+    writeCliLine(legacyServiceWarning(status.legacyDefinitionPath));
   }
   if (status.pid) writeCliLine(`Controller PID: ${status.pid}`);
   if (status.uptimeSeconds !== null) writeCliLine(`Uptime: ${formatDuration(status.uptimeSeconds)}`);
