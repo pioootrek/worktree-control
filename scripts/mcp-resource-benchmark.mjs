@@ -129,7 +129,7 @@ try {
   const eventsMs = performance.now() - start, eventsCpu = process.cpuUsage(cpu);
   const readStart = performance.now(); let bytes = 0;
   for (let i = 0; i < 1000; i++) bytes = Buffer.byteLength(JSON.stringify(d.snapshot()));
-  report.overhead = { events: 10000, eventsMs, eventsCpuMicros: eventsCpu.user + eventsCpu.system, reads: 1000, readAndSerializeMs: performance.now() - readStart, maxDetailResponseBytes: bytes };
+  report.overhead = { events: 10000, eventsMs, eventsCpuMicros: eventsCpu.user + eventsCpu.system, reads: 1000, readAndSerializeMs: performance.now() - readStart, sampled32SessionResponseBytes: bytes };
   report.cleanup = 'passed'; report.result = 'passed';
 } catch (error) { report.result = 'failed'; report.error = error.message; process.exitCode = 1; }
 await mkdir(resolve(reportPath, '..'), { recursive: true }); await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n');

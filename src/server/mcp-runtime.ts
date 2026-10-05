@@ -182,17 +182,27 @@ export class McpRuntime {
       if (ended) return;
       ended = true;
       response.off("finish", end); response.off("close", end);
+      if (response.writeHead === observeHead) response.writeHead = writeHead;
       this.diagnostics.change(session.observation, "openResponses", -1);
       if (sse) this.diagnostics.change(session.observation, "sseResponses", -1);
       session.observation.lastTransportEndedAt = new Date().toISOString();
     };
+    // The SDK/Hono handler remains pending for a streaming body. Observe the
+    // public HTTP header write, rather than awaiting that handler or inspecting
+    // SDK internals. Successful SDK GET is its standalone SSE transport.
+    const writeHead = response.writeHead;
+    const observeHead: typeof response.writeHead = function (this: ServerResponse, ...args: [number, ...unknown[]]) {
+      const result = Reflect.apply(writeHead, this, args);
+      if (!ended && !sse && request.method === "GET" && args[0] === 200) {
+        sse = true;
+        diagnostics.change(session.observation, "sseResponses", 1);
+      }
+      return result;
+    };
+    const diagnostics = this.diagnostics;
+    response.writeHead = observeHead;
     response.once("finish", end); response.once("close", end);
     await session.transport.handleRequest(request, response, body);
-    // SDK GET success is the standalone SSE stream. Hono writes headers directly
-    // with writeHead(), so getHeader() cannot reliably observe its Content-Type.
-    if (!ended && request.method === "GET" && response.statusCode === 200) {
-      sse = true; this.diagnostics.change(session.observation, "sseResponses", 1);
-    }
   }
 
   private authenticationKey(authentication: ControllerAuthentication): string {
