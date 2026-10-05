@@ -233,6 +233,8 @@ export class ControlService {
     return this.statusQueries.logs(projectId, limit);
   }
 
+  statusWaitDiagnostics(owner?: string) { return this.statusQueries.diagnostics(owner); }
+
   waitForStatusChange(input: { projectId?: string; runId?: string; cursor: string; timeoutMs?: number }, owner: string, signal?: AbortSignal) {
     const target = input.projectId ? { kind: "project" as const, id: input.projectId } : { kind: "run" as const, id: input.runId! };
     return this.statusQueries.wait(target, input.cursor, owner, input.timeoutMs, signal);

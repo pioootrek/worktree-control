@@ -34,7 +34,8 @@ import { pairingUrl } from "./pairing-url";
 import { openProjectGateway, runDoctorCommand, runProjectCommand } from "./project-management";
 import { controllerAccessToken, localDashboardEndpoint, publicDashboardEndpoint, readServiceAccess, removeServiceAccess, writeServiceAccess } from "./service-access";
 import { mcpConfigToken } from "./mcp-config";
-import { listenAdminSocket, type AdminSocketServer } from "../server/admin-socket";
+import { mcpDiagnosticsAdminHandler } from "../server/mcp-diagnostics-admin";
+import { requestAdminSocket, listenAdminSocket, type AdminSocketServer } from "../server/admin-socket";
 import { buildServiceStartArguments, resolveServiceUserBackupPolicy, resolveServiceBackupArguments } from "./service-install";
 import { UserServiceManager } from "./service-manager";
 import { ControlService } from "../server/control-service";
@@ -88,6 +89,12 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     ? resolveAppPaths(knowledgeArgs.dataDir, knowledgeArgs.stateDir)
     : resolveAppPaths(option("--data-dir"), option("--state-dir"));
   if (["knowledge", "auth", "identity", "backup", "project", "doctor"].includes(command) || (command === "config" && process.argv[3] === "mcp")) assertBackupHandoffCompleted(paths.databasePath);
+  if (command === "mcp" && process.argv[3] === "diagnostics") {
+    if (withoutPathOptions(process.argv.slice(4)).length) throw new Error("Usage: mcp diagnostics [--data-dir PATH] [--state-dir PATH]");
+    const result = await requestAdminSocket(paths.adminSocketPath, { command: "mcp-diagnostics" }, 5000, 64 * 1024);
+    writeCliLine(JSON.stringify(result, null, 2));
+    return;
+  }
   if (command === "service") {
     await handleServiceCommand(process.argv.slice(3), paths);
     return;
@@ -323,8 +330,15 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       },
     });
     const backupHandler = backupAdminHandler(backups, restores, userSchedules);
+    const mcpDiagnosticsHandler = mcpDiagnosticsAdminHandler(async () => ({
+      mcp: mcp ? await mcp.diagnosticsSnapshot() : null, status: mcp ? "enabled" : "disabled",
+      statusWaits: service.statusWaitDiagnostics(),
+    }));
     adminSocket = await listenAdminSocket(paths.adminSocketPath, body => {
       if (body && typeof body === "object" && "command" in body && (body.command === "backup" || body.command === "backup-remote" || body.command === "backup-monitor" || body.command === "user-export-recovery")) return backupHandler(body);
+      if (body && typeof body === "object" && "command" in body && body.command === "mcp-diagnostics") {
+        return mcpDiagnosticsHandler(body);
+      }
       if (maintenance) throw new Error("Controller is in maintenance.");
       return authenticationHandler(body);
     });

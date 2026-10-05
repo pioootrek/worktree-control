@@ -436,3 +436,130 @@ describe("MCP loopback server", () => {
     await client.close();
   });
 });
+
+describe("bounded MCP diagnostics", () => {
+  async function listen(service: Partial<ControlService> = {}) {
+    const controller = createMcpControllerServer({ service: service as ControlService, port: 0, accessToken: "diagnostics-test-secret" });
+    controllers.push(controller);
+    await new Promise<void>(resolve => controller.server.listen(0, "127.0.0.1", resolve));
+    const endpoint = new URL(`http://127.0.0.1:${(controller.server.address() as AddressInfo).port}/mcp`);
+    return { controller, endpoint };
+  }
+  async function setup(service: Partial<ControlService> = {}) {
+    const { controller, endpoint } = await listen(service);
+    const transport = new StreamableHTTPClientTransport(endpoint, { requestInit: { headers: { Authorization: "Bearer diagnostics-test-secret" } } });
+    const client = new Client({ name: "owned-fixture", version: "1" });
+    await client.connect(transport);
+    return { controller, client, transport, endpoint };
+  }
+  it("observes protocol calls and distinguishes transport disconnect from DELETE", async () => {
+    const { controller, client, transport, endpoint } = await setup();
+    await client.listTools();
+    await expect.poll(async () => (await controller.diagnosticsSnapshot() as { sseResponses: number }).sseResponses).toBe(1);
+    const before = await controller.diagnosticsSnapshot() as { sessions: Array<{ lastClientRequestAt: string | null }> };
+    expect(before.sessions[0].lastClientRequestAt).not.toBeNull();
+    expect(JSON.stringify(before)).not.toContain(transport.sessionId);
+    expect(JSON.stringify(before)).not.toContain("diagnostics-test-secret");
+    await client.close();
+    await expect.poll(async () => (await controller.diagnosticsSnapshot() as { openResponses: number }).openResponses).toBe(0);
+    expect(await controller.diagnosticsSnapshot()).toMatchObject({ logicalSessions: 1, lifetimeTimers: 1, operations: 0, sessions: [{ agentState: "unknown", transportState: "no-open-response" }] });
+    const deleted = await fetch(endpoint, { method: "DELETE", headers: { Authorization: "Bearer diagnostics-test-secret", "Mcp-Session-Id": transport.sessionId! } });
+    expect(deleted.status).toBe(200);
+    expect(await controller.diagnosticsSnapshot()).toMatchObject({ logicalSessions: 0, lifetimeTimers: 0, operations: 0, closeReasons: { "client-delete": 1 } });
+  });
+  it("keeps a handler counted after closure until its actual completion", async () => {
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const { controller, client } = await setup({ projectSummaries: async () => { await pending; return []; } } as unknown as Partial<ControlService>);
+    const call = client.callTool({ name: "list_projects", arguments: {} }).catch(() => undefined);
+    await expect.poll(async () => (await controller.diagnosticsSnapshot() as { operations: number }).operations).toBe(1);
+    await controller.closeSessions();
+    expect(await controller.diagnosticsSnapshot()).toMatchObject({ logicalSessions: 0, operations: 1, drainingSessions: 1, closeReasons: { "authentication-policy": 1 } });
+    finish();
+    await expect.poll(async () => (await controller.diagnosticsSnapshot() as { operations: number }).operations).toBe(0);
+    await client.close(); await call;
+  });
+  it.each(["delete", "policy"] as const)("does not retain or renew a claim that finishes after %s closes its session", async (reason) => {
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const reservation = { id: reservationId, projectId, worktreePath: "/code/web" } as Reservation;
+    const claimProject = vi.fn(async () => {
+      await pending;
+      return { reservation, leaseToken: "owned-late-claim-secret", snapshot: { ...snapshot, reservation }, operationError: null, operationErrorCode: null };
+    });
+    const renewAgentClaim = vi.fn();
+    const releaseAgentClaim = vi.fn();
+    const { controller, client, transport } = await setup({ claimProject, renewAgentClaim, releaseAgentClaim });
+    const call = client.callTool({ name: "claim_project", arguments: {
+      projectId, worktreePath: "/code/web", reason: "owned race fixture", idempotencyKey: "late-claim", ttlSeconds: 30,
+    } }).catch(() => undefined);
+    await expect.poll(() => claimProject.mock.calls.length).toBe(1);
+    if (reason === "delete") await transport.terminateSession();
+    else await controller.closeSessions();
+    expect(await controller.diagnosticsSnapshot()).toMatchObject({ logicalSessions: 0, drainingSessions: 1, operations: 1, claims: 0, renewalTimers: 0, lifetimeTimers: 0 });
+    await client.close(); await call;
+    await expect.poll(async () => (await controller.diagnosticsSnapshot() as { openResponses: number }).openResponses).toBe(0);
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    try {
+      finish();
+      await expect.poll(async () => (await controller.diagnosticsSnapshot() as { operations: number }).operations).toBe(0);
+      expect(await controller.diagnosticsSnapshot()).toMatchObject({ logicalSessions: 0, drainingSessions: 0, claims: 0, renewalTimers: 0, lifetimeTimers: 0, sessions: [], automaticRenewals: 0, automaticRenewalFailures: 0 });
+      expect(timers.mock.calls.filter(([, delay]) => delay === 10000)).toEqual([]);
+      expect(renewAgentClaim).not.toHaveBeenCalled();
+      // Preserve the accepted mutation and remaining lease TTL, never replay or
+      // release it as an incidental side effect of session cleanup.
+      expect(releaseAgentClaim).not.toHaveBeenCalled();
+      expect(claimProject).toHaveBeenCalledOnce();
+    } finally {
+      timers.mockRestore();
+      finish();
+      await client.close(); await call;
+    }
+  });
+  it.each(["renew_project_claim", "release_project_claim"] as const)("keeps gauges balanced when %s settles after session close", async name => {
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const reservation = { id: reservationId, projectId, worktreePath: "/code/web" } as Reservation;
+    const operation = vi.fn(async () => { await pending; return reservation; });
+    const service = {
+      claimProject: vi.fn(async () => ({ reservation, leaseToken: "owned-settlement-secret", snapshot: { ...snapshot, reservation }, operationError: null, operationErrorCode: null })),
+      renewAgentClaim: name === "renew_project_claim" ? operation : vi.fn(),
+      releaseAgentClaim: name === "release_project_claim" ? operation : vi.fn(),
+    } as unknown as Partial<ControlService>;
+    const { controller, client } = await setup(service);
+    await client.callTool({ name: "claim_project", arguments: { projectId, worktreePath: "/code/web", reason: "owned race fixture", idempotencyKey: "claim", ttlSeconds: 30 } });
+    expect(await controller.diagnosticsSnapshot()).toMatchObject({ claims: 1, renewalTimers: 1 });
+    const call = client.callTool({ name, arguments: { projectId, reservationId } }).catch(() => undefined);
+    await expect.poll(() => operation.mock.calls.length).toBe(1);
+    await controller.closeSessions();
+    expect(await controller.diagnosticsSnapshot()).toMatchObject({ claims: 0, renewalTimers: 0, operations: 1 });
+    try {
+      await client.close(); await call;
+      await expect.poll(async () => (await controller.diagnosticsSnapshot() as { openResponses: number }).openResponses).toBe(0);
+      finish();
+      await expect.poll(async () => (await controller.diagnosticsSnapshot() as { operations: number }).operations).toBe(0);
+      expect(await controller.diagnosticsSnapshot()).toMatchObject({ claims: 0, renewalTimers: 0, lifetimeTimers: 0, drainingSessions: 0, sessions: [] });
+    } finally {
+      finish();
+      await client.close(); await call;
+    }
+  });
+  it("cleans a rejected initialize exactly once even before a session ID is assigned", async () => {
+    const { controller, endpoint } = await listen();
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { Authorization: "Bearer diagnostics-test-secret", "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "owned-rejected-fixture", version: "1" } } }),
+    });
+    // A valid initialize envelope with an invalid Accept header reaches the
+    // runtime's create/failed-init path, then is rejected by the real SDK.
+    expect(response.status).toBe(406);
+    expect(response.headers.get("mcp-session-id")).toBeNull();
+    await response.text();
+    await expect.poll(async () => (await controller.diagnosticsSnapshot() as { initializingSessions: number }).initializingSessions).toBe(0);
+    expect(await controller.diagnosticsSnapshot()).toMatchObject({ initializingSessions: 0, logicalSessions: 0, drainingSessions: 0, openResponses: 0, lifetimeTimers: 0, sessions: [], closeReasons: { "initialization-failed": 1 } });
+    await controller.closeSessions();
+    await controller.close();
+    expect(await controller.diagnosticsSnapshot()).toMatchObject({ closeReasons: { "initialization-failed": 1, "controller-shutdown": 0, "authentication-policy": 0 }, lifetimeTimers: 0 });
+  });
+});

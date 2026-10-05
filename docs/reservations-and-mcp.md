@@ -1,6 +1,6 @@
 ---
 audience: "product owner and contributors discussing agent coordination"
-last_reviewed: "2026-09-27"
+last_reviewed: "2026-10-05"
 source_of_truth: "implemented reservation and local MCP integration design"
 status: "active"
 ---
@@ -52,8 +52,20 @@ with the same idempotency key returns the existing lease instead of creating a
 second one.
 
 Human locks may be indefinite. Agent leases default to 30 minutes, renew every
-10 minutes while their bridge remains alive, have an 8-hour maximum lifetime,
-and expire automatically if the client disappears. Agents can renew or release
+10 minutes while their logical MCP session is retained, and have an 8-hour
+maximum lifetime. Shorter requested TTLs renew after one third of their TTL,
+with a ten-second minimum interval. TCP/SSE loss and SDK client `close()` do
+not necessarily close the logical session or stop automatic renewal. Explicit
+session DELETE, authentication-policy closure, the absolute eight-hour session
+timer and controller shutdown clear its renewal timers. A claim that finishes
+acquisition after logical closure never starts automatic
+renewal or retains its lease secret in the closed session. The accepted runtime
+operation is not replayed or undone; its persisted lease keeps its remaining
+TTL. A remaining persisted lease then expires at its recorded expiry; session
+closure does not release it.
+There is currently no client-inactivity policy or session-admission bound.
+See [MCP diagnostics and measurement](mcp-diagnostics.md) for the separate
+observations and proposed next-stage contract. Agents can renew or release
 only leases for which they hold the token. A human can force-release any
 reservation through an explicit UI or CLI action; that action is audited and
 is not exposed as a normal LLM tool.
@@ -192,7 +204,7 @@ within 16 KiB.
 cursor. It samples compact state only while waiters exist, every second, with a
 10-second default and 20-second maximum. Limits are 128 global waiters, four per
 MCP session, and 64 targets. Timeout returns no repeated snapshot and includes
-retry advice; cancellation, session disconnect, and shutdown dispose the waiter
+retry advice; cancellation, logical session closure, and shutdown dispose the waiter
 without mutating claims, runtimes, or tests.
 
 If controller-wide server capacity is exhausted, a new claim remains held but

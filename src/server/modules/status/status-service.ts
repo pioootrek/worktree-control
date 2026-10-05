@@ -218,6 +218,15 @@ export class StatusService {
     });
   }
 
+  diagnostics(sessionKey?: string) {
+    if (sessionKey !== undefined) {
+      const waiters = this.sessionCounts.get(sessionKey) ?? 0;
+      return { waiters, waiterTimers: waiters };
+    }
+    const waiters = this.waiterCount();
+    return { waiters, waiterTimers: waiters, targets: this.targets.size, samplerTimers: this.timer ? 1 : 0 };
+  }
+
   close(): void {
     this.closed = true;
     for (const [key, group] of this.targets) for (const waiter of group.waiters) {
