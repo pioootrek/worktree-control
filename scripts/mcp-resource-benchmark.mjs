@@ -14,6 +14,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { requestAdminSocket } from '../src/server/admin-socket.ts';
 import { McpDiagnostics } from '../src/server/mcp-diagnostics.ts';
+import { cleanupResourceFixture } from './mcp-resource-cleanup.mjs';
 const exec = promisify(execFile), root = resolve(import.meta.dirname, '..');
 const cli = join(root, 'dist/cli/index.js');
 const reportPath = process.argv[2] ?? join(root, 'test-results/mcp-resources.json');
@@ -111,13 +112,16 @@ async function run(number) {
     result.polled = await measure(controller.pid, 5, diag);
     await stop(controller); controller = undefined; result.cleanup = 'owned controller and clients exited; temporary state removed';
   } finally {
-    for (const { c } of directClients) await c.close().catch(() => {});
-    await proxyClient?.close().catch(() => {});
-    if (ownedClient) await stop(ownedClient, 'SIGKILL');
-    try { if (controller) await stop(controller); }
-    finally {
-      if (!controller || controller.exitCode !== null || controller.signalCode !== null) await rm(base, { recursive: true, force: true });
-    }
+    await cleanupResourceFixture({
+      controller,
+      cleanupClients: async () => {
+        for (const { c } of directClients) await c.close().catch(() => {});
+        await proxyClient?.close().catch(() => {});
+        if (ownedClient) await stop(ownedClient, 'SIGKILL');
+      },
+      stopController: stop,
+      removeState: () => rm(base, { recursive: true, force: true }),
+    });
   }
 }
 try {
