@@ -109,9 +109,10 @@ The npm package `worktree-switcher` by YitFei
 ([github.com/YitFei/worktree-switcher](https://github.com/YitFei/worktree-switcher))
 is a different, unrelated project. It is a Windows-only command-line tool
 (`wts`), published on 2026-10-05, and its documentation cites this repository as
-the origin of the core idea. As far as the maintainers know, the two projects
-share no code. This project targets Linux (macOS unverified), is published as
-`worktree-control`, and installs the commands `worktree-control` and `wtc`.
+the origin of the core idea. It is not a fork of this repository and was written
+independently; this project has not reviewed its code. This project targets
+Linux (macOS unverified), is published as `worktree-control`, and installs the
+commands `worktree-control` and `wtc`.
 
 ### Build from source
 
