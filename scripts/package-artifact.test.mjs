@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { HISTORICAL_COMMIT, verifyHistoricalArtifact, verifyTrialFiles } from "./package-artifact.mjs";
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 async function fixture(fn) {
@@ -37,3 +39,16 @@ test("checks the imported installer companion and checksum manifest before execu
   await writeFile(join(f.root, "SHA256SUMS"), sums); await verifyTrialFiles(f.root, provenance);
   await writeFile(join(f.root, files.installer), "tampered executable helper"); await assert.rejects(verifyTrialFiles(f.root, provenance), /companion/);
 }));
+test("current manifest is a publishable pre-1.0 worktree-control package whose file list stays on the allowlist", async () => {
+  const root = new URL("..", import.meta.url).pathname;
+  const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  assert.equal(manifest.name, "worktree-control");
+  assert.match(manifest.version, /^0\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+  assert.notEqual(manifest.private, true, "a private manifest cannot be published");
+  const { stdout } = await promisify(execFile)("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: root, maxBuffer: 8 * 1024 * 1024 });
+  const files = JSON.parse(stdout)[0].files.map(file => file.path);
+  for (const required of ["package.json", "CHANGELOG.md", "LICENSE", "README.md", "skills/worktree-control/SKILL.md"]) assert(files.includes(required), `missing ${required}`);
+  const allowed = /^(?:package\.json|CHANGELOG\.md|LICENSE|README\.md|THIRD_PARTY_NOTICES\.md|dist\/cli\/|out\/|skills\/|docs\/(?:authentication|controller-https|dependency-licenses|package-trial|user-service|reservations-and-mcp|knowledge-evidence)\.md$)/;
+  assert.deepEqual(files.filter(file => !allowed.test(file)), []);
+  assert.deepEqual(files.filter(file => /(?:^|\/)(?:site|tests?|\.claude|\.github|src|scripts|measurements|node_modules|\.env[^/]*|state\.sqlite3[^/]*|[^/]*\.log)(?:\/|$)/.test(file)), []);
+});

@@ -75,19 +75,47 @@ writes belong. See the [knowledge delivery plan](https://github.com/pioootrek/wo
 
 ## Quick start
 
-**Status:** the local controller is in daily use by its author. Linux x64 is
-verified; macOS and Windows are unverified. Worktree Control is not on npm yet;
-publication is a separate step by the owner. Use a source build below, or follow
-the [verified tarball trial guide](docs/package-trial.md) for `0.1.0-trial.1`.
-The CLI and data model may change.
+**Status:** pre-1.0 (`0.1.0`). The local controller is in daily use by its
+author. Linux x64 is verified; macOS and Windows are unverified. The CLI and
+data model may change; see the [changelog](CHANGELOG.md).
 
-The product was named Worktree Switcher until 2026-10-05. The installed command
-is `worktree-control`, with the short alias `wtc`. The `worktree-switcher`
-package on npm is an unrelated project. To move an existing installation, see
+Install [Node.js 22 or newer](https://nodejs.org/) and Git, then install and
+start the controller. Installing takes one command; a new installation refuses
+to start until you generate its token once:
+
+```bash
+npm install --global worktree-control
+worktree-control auth token generate
+worktree-control start --host 127.0.0.1
+```
+
+Save the token printed by `auth token generate`; it is shown once. Open the
+controller's printed address and sign in with that token. To keep the controller
+running after you close the terminal, stop it and run
+`worktree-control service install --host 127.0.0.1` instead of `start`; see
+[Run it in the background](#run-it-in-the-background). A global install into the
+system npm prefix may need elevated rights. The
+[installation guide](docs/package-trial.md) shows a user-owned prefix and how to
+install a checksum-verified tarball from CI instead of the registry.
+
+The installed commands are `worktree-control` and the short alias `wtc`. The
+product was named Worktree Switcher until 2026-10-05. To move an existing
+installation, see
 [upgrading an existing installation](docs/user-service.md#upgrading-an-existing-installation).
 
-Install [Node.js 22 or newer](https://nodejs.org/), Git, and the
-[pnpm](https://pnpm.io/installation) version declared in
+### Not the `worktree-switcher` package on npm
+
+The npm package `worktree-switcher` by YitFei
+([github.com/YitFei/worktree-switcher](https://github.com/YitFei/worktree-switcher))
+is a different, unrelated project. It is a Windows-only command-line tool
+(`wts`), published on 2026-10-05, and its documentation cites this repository as
+the origin of the core idea. As far as the maintainers know, the two projects
+share no code. This project targets Linux (macOS unverified), is published as
+`worktree-control`, and installs the commands `worktree-control` and `wtc`.
+
+### Build from source
+
+Install the [pnpm](https://pnpm.io/installation) version declared in
 [`package.json`](https://github.com/pioootrek/worktree-control/blob/main/package.json)
 (currently `11.22.0`), then:
 
@@ -100,8 +128,10 @@ node dist/cli/index.js auth token generate
 node dist/cli/index.js start --host 127.0.0.1
 ```
 
-Save the token printed by `auth token generate`; it is shown once. Open the
-controller's printed address and sign in with that token.
+Other commands in this README that begin with `node dist/cli/index.js` run from
+a source build. With the npm package, use `worktree-control` in their place.
+
+### Add a project
 
 1. Select **Add project**, choose a local Git repository and assign a port.
 2. Choose a discovered worktree and select **Start**.
@@ -118,12 +148,12 @@ before changing modes or credentials.
 
 ### Run it in the background
 
-Stop the foreground controller first. From the built checkout:
+Stop the foreground controller first, then:
 
 ```bash
-node dist/cli/index.js service install --host 127.0.0.1
-node dist/cli/index.js service status
-node dist/cli/index.js service open
+worktree-control service install --host 127.0.0.1
+worktree-control service status
+worktree-control service open
 ```
 
 The installer uses a Linux systemd user service or a macOS LaunchAgent. It needs
@@ -136,7 +166,7 @@ Keep your existing MCP-capable editor or coding client. Get the connection
 configuration from:
 
 ```bash
-node dist/cli/index.js config mcp
+worktree-control config mcp
 ```
 
 In token mode, this prints a bearer-token placeholder. Supply the installation
@@ -161,12 +191,13 @@ retrying the same submission. Claims expire and belong to the creating MCP
 session; an agent cannot force-release someone else's reservation.
 
 The [bundled agent skill](https://github.com/pioootrek/worktree-control/blob/main/skills/worktree-control/SKILL.md)
-teaches this workflow. For Codex, install it from the checkout:
+teaches this workflow. It is included in the npm package. For Codex, copy it
+from the installed package (or from `skills/worktree-control` in a checkout):
 
 ```bash
 codex_skill_dir="${CODEX_HOME:-$HOME/.codex}/skills"
 mkdir -p "$codex_skill_dir"
-cp -R skills/worktree-control "$codex_skill_dir/"
+cp -R "$(npm root --global)/worktree-control/skills/worktree-control" "$codex_skill_dir/"
 ```
 
 Restart the agent session and configure MCP separately. In the managed project's
@@ -664,7 +695,8 @@ intended to remain complete and independent. See the [self-hosted and SaaS plan]
 | --- | --- |
 | [Authentication](docs/authentication.md) | Tokens, open mode, rotation and upgrades |
 | [User service](docs/user-service.md) | Installation, lifecycle, logs and removal |
-| [Package trial](docs/package-trial.md) | Verified tarball, checksums and user-prefix installation |
+| [Installation](docs/package-trial.md) | npm install, verified tarball, checksums and user-prefix installation |
+| [Changelog](CHANGELOG.md) | Release notes, the rename from worktree-switcher, platform status and known limitations |
 | [Controller HTTPS](docs/controller-https.md) | Caddy, certificates and access from another device |
 | [Reservations and MCP](docs/reservations-and-mcp.md) | Claims, locks, client integration and permissions |
 | [Knowledge delivery](https://github.com/pioootrek/worktree-control/blob/main/docs/shared-project-memory-plan.md) | Discussions, backlog, memory, import and remaining migration work |

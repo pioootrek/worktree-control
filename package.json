@@ -1,7 +1,6 @@
 {
   "name": "worktree-control",
-  "version": "0.1.0-trial.1",
-  "private": true,
+  "version": "0.1.0",
   "description": "Local control plane that moves development servers between Git worktrees on stable ports",
   "keywords": [
     "git",
@@ -36,6 +35,7 @@
     "docs/user-service.md",
     "docs/reservations-and-mcp.md",
     "docs/knowledge-evidence.md",
+    "CHANGELOG.md",
     "LICENSE",
     "README.md",
     "THIRD_PARTY_NOTICES.md"
