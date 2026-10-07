@@ -49,11 +49,12 @@ it("orders bounded details by claims, open responses and recent activity, and re
   d.change(entries[3]!, "claims", 1);
   d.change(entries[5]!, "renewalTimers", 1);
   d.change(entries[1]!, "openResponses", 1);
+  d.change(entries[0]!, "operations", 1);
   d.renewalSkipped(entries[3]!);
   d.refused();
   const snapshot = d.snapshot();
-  // Claim holders and renewal timers (most recent first), then open responses, then recent activity.
-  expect(snapshot.sessions.map(entry => entry.label)).toEqual([6, 4, 2, ...Array.from({ length: 29 }, (_, index) => 40 - index)]);
+  // Claim holders and renewal timers (most recent first), then open responses or running operations, then recent activity.
+  expect(snapshot.sessions.map(entry => entry.label)).toEqual([6, 4, 2, 1, ...Array.from({ length: 28 }, (_, index) => 40 - index)]);
   expect(snapshot).toMatchObject({ truncated: 8, omittedSessions: 8, renewalsSkippedByPolicy: 1, closeReasons: { "admission-refused": 1 }, logicalSessions: 40 });
   expect(snapshot.sessions[1]).toMatchObject({ renewalsSkippedByPolicy: 1, lastQualifyingActivityAt: "2026-10-07T12:03:00.000Z" });
 });

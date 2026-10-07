@@ -50,8 +50,8 @@ No credential IDs, raw MCP session IDs, lease tokens, client names, request
 bodies or arbitrary error labels enter the snapshot. Session labels are local
 sequence numbers with no authority. Every event changes fixed counters in O(1).
 Reads return at most 32 session details, ordered with claim holders and
-renewal timers first, then sessions with open responses, then the most recent
-activity; `truncated` (also `omittedSessions`) counts the rest. Retained
+renewal timers first, then sessions with open responses or running operations,
+then the most recent activity; `truncated` (also `omittedSessions`) counts the rest. Retained
 observations are bounded by session admission. Recent closures keep at most 64
 entries for 15 minutes, pruned on reads. Aggregate counts remain exact. Closed
 observations are released when their tracked work settles.

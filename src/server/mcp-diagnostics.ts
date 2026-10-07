@@ -29,10 +29,10 @@ export interface McpSessionObservation {
 }
 const zero = () => ({ openResponses: 0, sseResponses: 0, operations: 0, claims: 0, renewalTimers: 0, lifetimeTimers: 0, drainTimers: 0 });
 const lastActivity = (entry: McpSessionObservation) => entry.lastQualifyingActivityAt ?? entry.lastClientMessageAt ?? entry.createdAt;
-/** Claim holders and renewal timers first, then open responses, then most recent activity. */
+/** Claim holders and renewal timers first, then open responses or running operations, then most recent activity. */
 function detailOrder(left: McpSessionObservation, right: McpSessionObservation): number {
   const claim = (entry: McpSessionObservation) => entry.claims > 0 || entry.renewalTimers > 0 ? 0 : 1;
-  const open = (entry: McpSessionObservation) => entry.openResponses > 0 ? 0 : 1;
+  const open = (entry: McpSessionObservation) => entry.openResponses > 0 || entry.operations > 0 ? 0 : 1;
   return claim(left) - claim(right) || open(left) - open(right) || lastActivity(right).localeCompare(lastActivity(left)) || left.label - right.label;
 }
 export class McpDiagnostics {
@@ -112,7 +112,7 @@ export class McpDiagnostics {
       resourceSubscriptions: 0, sdkInternalResources: "unknown", clientProcesses: "unknown", proxyProcesses: "unknown",
       automaticRenewals: this.automaticRenewals, automaticRenewalFailures: this.automaticRenewalFailures, renewalsSkippedByPolicy: this.renewalsSkippedByPolicy,
       closeReasons: { ...this.reasons }, recentClosures: [...this.recent], sessions, truncated, omittedSessions: truncated,
-      sessionOrder: "claim holders and renewal timers, then open responses, then most recent activity",
+      sessionOrder: "claim holders and renewal timers, then open responses or running operations, then most recent activity",
       controllerProcess: this.sampledProcess, processSampleAgeMs: now - this.sampledAt, processSampleIntervalMs: 5000,
       claimScope: "session-held renewal handles; persisted reservations may outlive them",
       operationScope: "registered protocol handlers excluding initialize and ping" };
