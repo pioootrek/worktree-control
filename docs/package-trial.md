@@ -1,17 +1,33 @@
 ---
-audience: "people installing a verified Worktree Control trial tarball"
+audience: "people installing Worktree Control from the npm registry or a verified tarball"
 last_reviewed: "2026-10-05"
 source_of_truth: "trial artifact installation, first run, upgrade, and removal"
 status: "active"
 ---
 
-# Install the local controller trial
+# Install the local controller
 
-The `0.1.0-trial.1` artifact installs the complete local Worktree Control
-controller: CLI, browser dashboard, MCP endpoint, SQLite state, user-service
-commands, and the bundled agent skill. It is not a remote worker and does not
-need a hosted account. The package remains private in the npm manifest and is
-distributed as an explicitly downloaded tarball, not through the npm registry.
+The `0.1.0` package installs the complete local Worktree Control controller:
+CLI, browser dashboard, MCP endpoint, SQLite state, user-service commands, and
+the bundled agent skill. It is not a remote worker and does not need a hosted
+account. The same bytes are available as a CI-built tarball with checksums and
+provenance, which is the path to use when you want to verify the artifact before
+installing, or before the registry copy exists. Publication to the npm registry
+is a separate owner action; the registry copy is the CI tarball, not a rebuild.
+
+## Install from the npm registry
+
+```bash
+npm install --global worktree-control
+worktree-control doctor
+```
+
+A global install into the system prefix may need elevated rights. To stay
+without `sudo`, use the user-owned prefix shown below with `npm install --global
+--prefix "$HOME/.local/worktree-control" worktree-control`. Then continue with
+the token and service steps under [Install without sudo](#install-without-sudo).
+The registry package is named `worktree-control`; the unrelated `worktree-switcher`
+package on npm is a different project.
 
 ## Requirements and verified scope
 
@@ -27,7 +43,7 @@ distributed as an explicitly downloaded tarball, not through the npm registry.
 The download set contains:
 
 ```text
-worktree-control-0.1.0-trial.1.tgz
+worktree-control-0.1.0.tgz
 SHA256SUMS
 provenance.json
 INSTALL.md
@@ -55,7 +71,7 @@ the system npm prefix:
 mkdir -p "$HOME/.local/worktree-control"
 npm install --global \
   --prefix "$HOME/.local/worktree-control" \
-  ./worktree-control-0.1.0-trial.1.tgz
+  ./worktree-control-0.1.0.tgz
 export PATH="$HOME/.local/worktree-control/bin:$PATH"
 worktree-control doctor
 ```
@@ -134,7 +150,7 @@ A real destination, recoverable keys, operator trial and rollout remain separate
 acceptance steps. The storage-safety plan and dated evidence under `docs/backlog/`
 record the isolated checks and the later operational and project-cutover procedure.
 
-## Remove the trial
+## Remove the installation
 
 Remove the service definition before removing its executable:
 
@@ -146,3 +162,21 @@ npm uninstall --global --prefix "$HOME/.local/worktree-control" worktree-control
 This preserves repositories, the SQLite database, MCP credential, configuration,
 and logs. Full data deletion is a separate, explicit operation. See
 [reservations and MCP](reservations-and-mcp.md) before connecting an MCP client.
+
+## Publish a release
+
+Maintainers publish the CI-built tarball, not a checkout. Download the
+`portable-package` artifact of the `Verify` run on the release commit on `main`,
+run `sha256sum --check SHA256SUMS`, confirm `provenance.json` names the expected
+package, version, full commit, `"dirty": false` and tarball digest, then run:
+
+```bash
+npm publish ./worktree-control-<version>.tgz --access public
+npm view worktree-control version
+```
+
+`package.json` has a `prepublishOnly` script that always fails. It stops
+`npm publish` run from a checkout, which would pack unverified local `dist/` and
+`out/` without the fingerprint, clean-tree, checksum and provenance steps. npm
+does not run lifecycle scripts when publishing a tarball, so the command above is
+unaffected.

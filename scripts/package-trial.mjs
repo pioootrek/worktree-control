@@ -29,9 +29,10 @@ async function digest(path) {
 async function main() {
   await run(process.execPath, ["scripts/build-fingerprint.mjs", "--check"]);
   const metadata = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8"));
-  if (metadata.private !== true) throw new Error("Trial packaging requires package.json to remain private.");
-  if (!/^0\.\d+\.\d+-[0-9A-Za-z.-]+$/.test(metadata.version)) {
-    throw new Error("Trial packaging requires an explicit pre-1.0 prerelease version.");
+  if (metadata.name !== "worktree-control") throw new Error("Packaging requires the worktree-control package name.");
+  // A manifest marked private cannot be published; unmarked, publication stays a separate owner action.
+  if (!/^0\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(metadata.version)) {
+    throw new Error("Packaging requires an explicit pre-1.0 version, with or without a prerelease suffix.");
   }
 
   const dirty = (await run("git", ["status", "--porcelain", "--untracked-files=all"])).stdout.trim() !== "";
@@ -74,7 +75,7 @@ async function main() {
   const verificationTargets = argumentsFor("--verification-target");
   const provenance = {
     schemaVersion: 1,
-    package: { name: metadata.name, version: metadata.version, private: metadata.private },
+    package: { name: metadata.name, version: metadata.version, private: metadata.private === true },
     source: { commit, dirty },
     artifact: {
       filename: packed[0].filename,

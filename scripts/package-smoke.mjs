@@ -171,6 +171,7 @@ async function main() {
       "package/docs/authentication.md",
       "package/docs/package-trial.md",
       "package/docs/user-service.md",
+      "package/CHANGELOG.md",
       "package/LICENSE",
       "package/README.md",
       "package/THIRD_PARTY_NOTICES.md",
@@ -213,7 +214,7 @@ async function main() {
   check((await stat(join(packageRoot, "docs", "controller-https.md"))).isFile(), "Installed HTTPS guide is missing.");
   check((await stat(join(packageRoot, "skills", "worktree-control", "SKILL.md"))).isFile(), "Installed agent skill is missing.");
   const metadata = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
-  check(metadata.private === true && /^0\./.test(metadata.version), "Trial package lost its private pre-1.0 identity.");
+  check(metadata.name === "worktree-control" && /^0\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(metadata.version), "Package lost its worktree-control pre-1.0 identity.");
   const runtimeEnv = { PATH: `${join(prefix, "bin")}:${process.env.PATH}`, LANG: "C.UTF-8" };
   const cliCommand = "worktree-control";
   let nativeAddon;

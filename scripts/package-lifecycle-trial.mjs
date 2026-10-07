@@ -308,7 +308,7 @@ async function main() {
       check((await stat(options.candidate)).size === parsed.artifact?.bytes, "provenance size does not match candidate");
       check(/^[a-f0-9]{40}$/.test(parsed.source?.commit), "provenance does not contain a full source commit");
       check(!process.env.GITHUB_SHA || parsed.source.commit === process.env.GITHUB_SHA, "provenance source commit does not match the CI commit");
-      check(parsed.package?.private === true && /^0\.\d+\.\d+-/.test(parsed.package?.version), "candidate is not a private pre-1.0 trial package");
+      check(parsed.package?.name === "worktree-control" && /^0\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(parsed.package?.version), "candidate is not a worktree-control pre-1.0 package");
       return parsed;
     });
     report.candidate = {
