@@ -105,6 +105,29 @@ describe("MCP session governor", () => {
     expect(expire).toHaveBeenCalledExactlyOnceWith("abandoned-transport");
   });
 
+  it("starts grace at the first SSE interruption, not at initialize or discovery completion", () => {
+    const { clock, governor } = setup();
+    const session = admitted(governor, "legacy");
+    const expire = vi.fn();
+    session.start(expire);
+    session.openResponse().close(); // initialize POST completes before SSE opens
+    const stream = session.openResponse();
+    stream.markStream();
+    session.openResponse().close(); // discovery is not qualifying activity
+    clock.advance(10 * MINUTE);
+    stream.close();
+    expect(session.deadline).toEqual({ at: clock.now() + MINUTE, reason: "abandoned-transport" });
+    clock.advance(30_000);
+    const reconnect = session.openResponse();
+    reconnect.markStream();
+    clock.advance(10_000);
+    reconnect.close();
+    clock.advance(19_999);
+    expect(expire).not.toHaveBeenCalled();
+    clock.advance(1);
+    expect(expire).toHaveBeenCalledExactlyOnceWith("abandoned-transport");
+  });
+
   it("keeps a reconnected session within grace and lets activity move the deadline later", () => {
     const { clock, governor } = setup();
     const session = admitted(governor, "legacy");

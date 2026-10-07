@@ -2,6 +2,8 @@ import type { AddressInfo } from "node:net";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import * as serverTransport from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ClaimedRuntimeReceipt, Reservation } from "@/shared/contracts";
@@ -9,6 +11,11 @@ import type { ControlService } from "../../control-service";
 import { createMcpControllerServer, type McpControllerServer } from "../../mcp-http-server";
 import type { McpSessionLimits } from "../../modules/mcp-sessions";
 import { ManualMcpClock } from "../../modules/mcp-sessions/manual-clock";
+
+// Wrap the native ESM exports so a test can inject a constructor failure.
+vi.mock("@modelcontextprotocol/sdk/server/streamableHttp.js", async importOriginal => ({
+  ...await importOriginal<typeof import("@modelcontextprotocol/sdk/server/streamableHttp.js")>(),
+}));
 
 // Owned fixtures only: an in-process loopback listener on an ephemeral port,
 // SDK clients created by this file and a mocked application service. No
@@ -183,6 +190,32 @@ describe("claim renewal policy", () => {
 });
 
 describe("abandoned session cleanup", () => {
+  it("allows reconnect after a discovery-only stream first disconnects long after initialize", async () => {
+    const { endpoint, clock, snapshot } = await listen(fixtureService());
+    const initialized = await initialize(endpoint);
+    const sessionId = initialized.headers.get("mcp-session-id")!;
+    await initialized.text();
+    await poll(async () => (await snapshot()).openResponses).toBe(0);
+    const stream = await openStream(endpoint, sessionId);
+    await poll(async () => (await snapshot()).sseResponses).toBe(1);
+    clock.advance(10 * MINUTE);
+    stream.close();
+    await poll(async () => (await snapshot()).openResponses).toBe(0);
+    clock.advance(30_000);
+    expect((await snapshot()).logicalSessions).toBe(1);
+    const reconnected = await openStream(endpoint, sessionId);
+    expect(reconnected.status).toBe(200);
+    await poll(async () => (await snapshot()).sseResponses).toBe(1);
+    clock.advance(10_000);
+    reconnected.close();
+    await poll(async () => (await snapshot()).openResponses).toBe(0);
+    clock.advance(19_999);
+    expect((await snapshot()).logicalSessions).toBe(1);
+    clock.advance(1);
+    await poll(async () => (await snapshot()).admission.admittedSessions).toBe(0);
+    expect(await snapshot()).toMatchObject({ ...baseline, closeReasons: { "abandoned-transport": 1 } });
+  });
+
   it("keeps a session and its claim across a reconnect within grace", async () => {
     const service = fixtureService();
     const { endpoint, clock, snapshot } = await listen(service);
@@ -348,6 +381,35 @@ describe("draining", () => {
 });
 
 describe("session admission", () => {
+  it.each(["transport construction", "tool registration"] as const)("restores admission and diagnostics after failed %s", async (stage) => {
+    const { controller, endpoint, clock, snapshot } = await listen(fixtureService(), { maxSessions: 1, maxSessionsPerCredential: 1 });
+    const failure = () => { throw new Error("owned initialization failure"); };
+    const injected = stage === "transport construction"
+      ? vi.spyOn(serverTransport, "StreamableHTTPServerTransport").mockImplementation(class {
+        constructor() { failure(); }
+      } as typeof serverTransport.StreamableHTTPServerTransport)
+      : vi.spyOn(McpServer.prototype, "registerTool").mockImplementation(failure);
+    try {
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const response = await initialize(endpoint);
+        expect(response.status).toBe(500);
+        await response.text();
+        expect(await snapshot()).toMatchObject({ ...baseline, closeReasons: { "initialization-failed": attempt, "admission-refused": 0 } });
+        expect(clock.pendingTimers).toBe(0);
+      }
+    } finally {
+      injected.mockRestore();
+    }
+    const recovered = await connect(endpoint);
+    expect((await recovered.client.callTool({ name: "get_server_capacity", arguments: {} })).isError).toBeFalsy();
+    await recovered.transport.terminateSession();
+    await poll(async () => (await snapshot()).admission.admittedSessions).toBe(0);
+    await controller.closeSessions();
+    await controller.closeSessions();
+    expect(await snapshot()).toMatchObject({ ...baseline, closeReasons: { "initialization-failed": 2, "client-delete": 1 } });
+    expect(clock.pendingTimers).toBe(0);
+  });
+
   it("refuses excess initialize predictably for one shared credential and restores capacity after cleanup", async () => {
     const service = fixtureService();
     const { endpoint, snapshot } = await listen(service, { maxSessions: 4, maxSessionsPerCredential: 2 });

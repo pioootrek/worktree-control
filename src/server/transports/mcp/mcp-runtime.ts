@@ -140,16 +140,21 @@ export class McpRuntime {
         }));
         return;
       }
-      session = this.createSession(authentication, admission.session);
       try {
+        session = this.createSession(authentication, admission.session);
         await session.server.connect(session.transport);
         this.observeMessages(session);
         await this.handleTransport(session, request, response, body, true);
         if (!session.transport.sessionId) { session.closeReason = "initialization-failed"; await session.server.close(); this.cleanupSession(session); }
       } catch (error) {
-        session.closeReason = "initialization-failed";
-        await session.server.close();
-        this.cleanupSession(session);
+        if (session) {
+          session.closeReason = "initialization-failed";
+          try { await session.server.close(); }
+          finally { this.cleanupSession(session); }
+        } else {
+          // Construction failed before a transport owned this admission slot.
+          admission.session.markClosed();
+        }
         throw error;
       }
       return;
@@ -265,47 +270,55 @@ export class McpRuntime {
   }
 
   private createSession(authentication: ControllerAuthentication, governed: GovernedMcpSession): McpSession {
-    const session: McpSession = {
-      observation: this.diagnostics.create(),
-      closeReason: "transport-close",
-      authentication,
-      authenticationKey: this.authenticationKey(authentication),
-      owner: "",
-      server: null as unknown as McpServer,
-      transport: null as unknown as StreamableHTTPServerTransport,
-      claims: new Map(),
-      idempotencyTokens: new Map(),
-      runtimeOperations: new Map(),
-      governed,
-      closing: false,
-      closed: false,
-      cleanedUp: false,
-      closeAnnounced: false,
-      pendingCalls: new Map(),
-    };
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: randomUUID,
-      enableJsonResponse: true,
-      onsessionclosed: () => { if (!session.closing) session.closeReason = "client-delete"; },
-      onsessioninitialized: (sessionId) => {
-        session.owner = `agent:mcp:${sessionId}`;
-        this.sessions.set(sessionId, session);
-        this.diagnostics.initialize(session.observation);
-        this.diagnostic("mcp.session_started", { sessionId });
-      },
-    });
-    session.transport = transport;
-    session.server = this.createProtocolServer(session);
-    // One deadline timer per session covers absolute lifetime and idle policy;
-    // the diagnostics keep reporting it as the session's lifetime timer.
-    governed.start(
-      reason => this.beginClose(session, reason),
-      (kind, delta) => this.diagnostics.change(session.observation, kind === "deadline" ? "lifetimeTimers" : "drainTimers", delta),
-    );
-    transport.onclose = () => {
-      this.cleanupSession(session);
-    };
-    return session;
+    const observation = this.diagnostics.create();
+    try {
+      const session: McpSession = {
+        observation,
+        closeReason: "transport-close",
+        authentication,
+        authenticationKey: this.authenticationKey(authentication),
+        owner: "",
+        server: null as unknown as McpServer,
+        transport: null as unknown as StreamableHTTPServerTransport,
+        claims: new Map(),
+        idempotencyTokens: new Map(),
+        runtimeOperations: new Map(),
+        governed,
+        closing: false,
+        closed: false,
+        cleanedUp: false,
+        closeAnnounced: false,
+        pendingCalls: new Map(),
+      };
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: randomUUID,
+        enableJsonResponse: true,
+        onsessionclosed: () => { if (!session.closing) session.closeReason = "client-delete"; },
+        onsessioninitialized: (sessionId) => {
+          session.owner = `agent:mcp:${sessionId}`;
+          this.sessions.set(sessionId, session);
+          this.diagnostics.initialize(session.observation);
+          this.diagnostic("mcp.session_started", { sessionId });
+        },
+      });
+      session.transport = transport;
+      session.server = this.createProtocolServer(session);
+      // One deadline timer per session covers absolute lifetime and idle policy;
+      // the diagnostics keep reporting it as the session's lifetime timer.
+      governed.start(
+        reason => this.beginClose(session, reason),
+        (kind, delta) => this.diagnostics.change(session.observation, kind === "deadline" ? "lifetimeTimers" : "drainTimers", delta),
+      );
+      transport.onclose = () => {
+        this.cleanupSession(session);
+      };
+      return session;
+    } catch (error) {
+      // Nothing has connected yet. Do not retain a partially constructed
+      // session's observation; the caller releases its admission and timers.
+      this.diagnostics.close(observation, "initialization-failed");
+      throw error;
+    }
   }
 
   /**

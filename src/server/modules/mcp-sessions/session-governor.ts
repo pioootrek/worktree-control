@@ -134,7 +134,7 @@ export class GovernedMcpSession {
   activity(): boolean {
     const now = this.clock.now();
     this.liveness.lastQualifyingActivityAt = now;
-    this.liveness.interruptedAt = this.liveness.openResponses === 0 ? now : null;
+    this.liveness.interruptedAt = this.liveness.streamObserved && this.liveness.openResponses === 0 ? now : null;
     const resumed = this.renewalStoppedByPolicy;
     this.renewalStoppedByPolicy = false;
     return resumed && this.current === "open";
@@ -180,7 +180,10 @@ export class GovernedMcpSession {
         closed = true;
         this.liveness.openResponses -= 1;
         if (!stream) this.requestResponses -= 1;
-        if (this.liveness.openResponses === 0 && this.liveness.interruptedAt === null) this.liveness.interruptedAt = this.clock.now();
+        // A completed initialize/request-only POST is not an SSE interruption.
+        if (this.liveness.streamObserved && this.liveness.openResponses === 0 && this.liveness.interruptedAt === null) {
+          this.liveness.interruptedAt = this.clock.now();
+        }
         this.arm();
         this.settle();
       },
