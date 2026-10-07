@@ -42,3 +42,19 @@ it("validates the exact local admin read and rejects extra fields without readin
   expect(read).not.toHaveBeenCalled();
   expect(await handler({ command: "mcp-diagnostics" })).toEqual({ mcp: null });
 });
+it("orders bounded details by claims, open responses and recent activity, and reports truncation", () => {
+  const d = new McpDiagnostics();
+  const entries = Array.from({ length: 40 }, () => d.create());
+  entries.forEach((entry, index) => { d.initialize(entry); d.qualifyingActivity(entry, new Date(Date.UTC(2026, 9, 7, 12, index)).toISOString()); });
+  d.change(entries[3]!, "claims", 1);
+  d.change(entries[5]!, "renewalTimers", 1);
+  d.change(entries[1]!, "openResponses", 1);
+  d.change(entries[0]!, "operations", 1);
+  d.renewalSkipped(entries[3]!);
+  d.refused();
+  const snapshot = d.snapshot();
+  // Claim holders and renewal timers (most recent first), then open responses or running operations, then recent activity.
+  expect(snapshot.sessions.map(entry => entry.label)).toEqual([6, 4, 2, 1, ...Array.from({ length: 28 }, (_, index) => 40 - index)]);
+  expect(snapshot).toMatchObject({ truncated: 8, omittedSessions: 8, renewalsSkippedByPolicy: 1, closeReasons: { "admission-refused": 1 }, logicalSessions: 40 });
+  expect(snapshot.sessions[1]).toMatchObject({ renewalsSkippedByPolicy: 1, lastQualifyingActivityAt: "2026-10-07T12:03:00.000Z" });
+});

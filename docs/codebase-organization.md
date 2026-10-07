@@ -1,6 +1,6 @@
 ---
 audience: "contributors and coding agents extracting or adding modules"
-last_reviewed: "2026-09-27"
+last_reviewed: "2026-10-07"
 source_of_truth: "incremental module organization and dependency rules"
 status: "active"
 ---
@@ -23,7 +23,7 @@ are not a claim that the directory migration is complete.
 | Pages, layouts, dashboard composition | `src/app/`, `src/features/dashboard/`, feature compositions in `src/features/<area>/` | Keep new feature UI, hooks, and API clients with their area |
 | Reusable UI controls | `src/components/ui/` | Keep here; feature-specific composition stays with its feature |
 | Application operations | `src/server/modules/` (including lifecycle, runtime, verification, identity, authentication and knowledge), remaining operations in `src/server/control-service.ts` | Extract the next touched workflow behind the existing facade |
-| HTTP and MCP adapters | `src/server/http-server.ts`, `src/server/mcp-*.ts`, extracted knowledge handlers under `src/server/transports/` | Move the next touched route/tool family under `src/server/transports/` |
+| HTTP and MCP adapters | `src/server/http-server.ts`, `src/server/mcp-http-server.ts`, `src/server/mcp-diagnostics*.ts`; the MCP session runtime and knowledge tools under `src/server/transports/mcp/`; other extracted handlers under `src/server/transports/` | Move the next touched route/tool family under `src/server/transports/` |
 | Persistence, Git, OS processes, file logs | SQLite under `src/server/infrastructure/sqlite/`; other adapters under `src/server/` | `src/server/infrastructure/<adapter>/` |
 | Controller construction and lifecycle wiring | `src/cli/index.ts` | `src/server/bootstrap/`; command parsing and CLI output stay in `src/cli/` |
 | Browser-safe API types and schemas | `src/shared/contracts.ts` | `src/shared/contracts/<area>.ts` |

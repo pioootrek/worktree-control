@@ -4,6 +4,7 @@ import { remoteBackupArguments, type RemoteBackupOptions } from "./remote-backup
 import { userBackupPolicySchema, type UserBackupPolicy } from "@/server/modules/backups";
 import { backupPolicySchema, type BackupPolicy } from "@/server/modules/backups";
 import { resolve } from "node:path";
+import { mcpSessionArguments, type McpSessionOptions } from "./mcp-session-options";
 export interface ServiceStartArgumentsOptions {
   host: string;
   port: number;
@@ -15,6 +16,7 @@ export interface ServiceStartArgumentsOptions {
   noMcp: boolean;
   memoryWarningMiB: number | null;
   publicOrigin?: string;
+  mcpSessionOptions?: McpSessionOptions;
   backupBeforeMigration?: boolean;
   backupDirectory?: string;
   backupPolicy?: BackupPolicy;
@@ -50,6 +52,7 @@ export function buildServiceStartArguments(options: ServiceStartArgumentsOptions
   if (options.noMcp) arguments_.push("--no-mcp");
   if (options.memoryWarningMiB !== null) arguments_.push("--memory-warning-mib", String(options.memoryWarningMiB));
   if (options.publicOrigin) arguments_.push("--public-url", options.publicOrigin);
+  if (options.mcpSessionOptions) arguments_.push(...mcpSessionArguments(options.mcpSessionOptions));
   if (options.backupDirectory) arguments_.push("--backup-dir", options.backupDirectory);
   if (options.backupBeforeMigration) arguments_.push("--backup-before-migration");
   if (policy) arguments_.push(...backupPolicyArguments(policy));

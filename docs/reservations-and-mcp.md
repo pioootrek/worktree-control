@@ -1,6 +1,6 @@
 ---
 audience: "product owner and contributors discussing agent coordination"
-last_reviewed: "2026-10-05"
+last_reviewed: "2026-10-07"
 source_of_truth: "implemented reservation and local MCP integration design"
 status: "active"
 ---
@@ -51,24 +51,20 @@ is required to renew or release an agent lease. Repeating an acquire request
 with the same idempotency key returns the existing lease instead of creating a
 second one.
 
-Human locks may be indefinite. Agent leases default to 30 minutes, renew every
-10 minutes while their logical MCP session is retained, and have an 8-hour
-maximum lifetime. Shorter requested TTLs renew after one third of their TTL,
-with a ten-second minimum interval. TCP/SSE loss and SDK client `close()` do
-not necessarily close the logical session or stop automatic renewal. Explicit
-session DELETE, authentication-policy closure, the absolute eight-hour session
-timer and controller shutdown clear its renewal timers. A claim that finishes
-acquisition after logical closure never starts automatic
-renewal or retains its lease secret in the closed session. The accepted runtime
-operation is not replayed or undone; its persisted lease keeps its remaining
-TTL. A remaining persisted lease then expires at its recorded expiry; session
-closure does not release it.
-There is currently no client-inactivity policy or session-admission bound.
-See [MCP diagnostics and measurement](mcp-diagnostics.md) for the separate
-observations and proposed next-stage contract. Agents can renew or release
-only leases for which they hold the token. A human can force-release any
-reservation through an explicit UI or CLI action; that action is audited and
-is not exposed as a normal LLM tool.
+Human locks may be indefinite. Agent leases default to 30 minutes and have an
+8-hour maximum lifetime. The server renews a lease automatically every 10
+minutes (one third of a shorter TTL, at least every ten seconds), but only while
+the owning MCP session showed qualifying client activity within the claim
+renewal idle limit (15 minutes by default). After that, renewal stops and the
+lease expires with its remaining TTL. See
+[session liveness, cleanup and admission](#session-liveness-cleanup-and-admission).
+A claim that finishes acquisition after its session began closing never starts
+automatic renewal or retains its lease secret in that session. The accepted
+runtime operation is not replayed or undone; its persisted lease keeps its
+remaining TTL. Session closure never releases a lease early.
+Agents can renew or release only leases for which they hold the token. A human
+can force-release any reservation through an explicit UI or CLI action; that
+action is audited and is not exposed as a normal LLM tool.
 
 A reservation is pinned to one worktree. Its owner may restart that worktree;
 other actors cannot switch, stop, or restart the reserved project. Stopping the
@@ -248,6 +244,93 @@ from the profile: detected unit scripts default to `test`, while build, lint,
 and typecheck presets run without a runtime mode. Test-profile tools return
 variable names without values, and `get_test_run` reports the policy that was
 applied to a finished run.
+
+## Session liveness, cleanup and admission
+
+Three things are separate and end independently:
+
+1. **TCP/SSE disconnect.** A socket or the standalone SSE stream closes, for
+   example on a network blip or proxy exit. This alone does not close the
+   logical session; the client may reconnect with the same session ID.
+2. **Logical session closure.** The controller forgets the session ID, its
+   claim handles and its lease secrets. A later request with that ID gets
+   `404 MCP session not found` and the client must initialize a new session.
+3. **Claim expiry.** The persisted reservation ends at its recorded
+   `expiresAt` or on explicit release. Session closure never releases it early,
+   and a new session never inherits it.
+
+**Qualifying activity** is an authenticated tool call (`tools/call`) or
+resource read (`resources/read`) handled by the session, stamped when it starts
+and when it settles. Initialize, `tools/list` and other listing, ping, SSE
+(re)connects, server output and server-generated renewals do not count.
+A call is evidence of authorized use, not proof that an agent is alive.
+
+| Limit | Default | Option for `start` and `service install` |
+| --- | --- | --- |
+| Claim renewal idle limit | 15 min | `--mcp-claim-renewal-idle-minutes` |
+| Interrupted-transport session idle limit | 15 min | `--mcp-session-idle-minutes` |
+| Open-transport session idle limit | 60 min | `--mcp-open-session-idle-minutes` |
+| Reconnect grace after an interruption | 60 s | `--mcp-reconnect-grace-seconds` |
+| Cooperative drain on policy close | 120 s | `--mcp-drain-seconds` |
+| Logical sessions, global | 64 | `--mcp-max-sessions` |
+| Logical sessions per credential | 32 | `--mcp-max-sessions-per-credential` |
+| Absolute session lifetime | 8 h | fixed |
+
+**Renewal.** A renewal tick extends the lease only if the last qualifying
+activity is younger than the claim renewal idle limit. Otherwise the session
+keeps the claim handle but stops renewing (`stopped-idle` in diagnostics); a
+later qualifying call resumes renewal immediately if the lease has not expired.
+`renew_project_claim` is itself qualifying activity. Without a further call,
+the worst case from the last real call to availability for other agents is the
+renewal idle limit plus the remaining TTL: **15 + 30 = 45 minutes** with the
+defaults, instead of up to the 8-hour lease maximum. Session closure does not
+change this bound; neither does draining, the proxy's existence or another
+session's traffic.
+
+**Cleanup.** A session's transport is *interrupted* when it once had an SSE
+stream and now has no open response; it is *open* while any session-bound
+response is open; it is *request-only* if it never opened an SSE stream.
+
+- Interrupted and never active: closed one 60-second reconnect grace after the
+  first interruption (`abandoned-transport`). The grace is anchored to the first
+  interruption since the last qualifying activity, so repeated reconnects do
+  not extend it.
+- Interrupted with activity: closed once the last qualifying activity is older
+  than 15 minutes, and not before the grace has passed (`abandoned-transport`).
+- Open or request-only: closed after 60 minutes without qualifying activity
+  (`idle-expired`). The longer budget reflects measured idle gaps of up to
+  62 minutes while a stream stayed open.
+- Every session still closes at its absolute 8-hour lifetime.
+
+A policy close stops admission of new work at once (new requests get `404`,
+calls already queued in the protocol get an error), stops renewal and disposes
+claim handles, then drains accepted calls for up to 120 seconds. A call that
+completes inside the drain returns its real result. A call still pending after
+the drain gets `503` with outcome `unknown`; the operation itself keeps running,
+stays counted, and is never replayed. Inspect status before retrying it.
+Explicit DELETE, authentication-policy changes and controller shutdown close
+immediately as before. Closing a session never stops a managed server, never
+cancels an accepted test job and never terminates a client or proxy process.
+
+**Admission.** At most 64 logical sessions globally and 32 per credential
+(including the shared installation credential) are admitted, counting sessions
+that are still initializing and closed sessions whose accepted work has not
+settled. An excess initialize request gets `503` with a `Retry-After` header and
+error data `{ reason: "admission-refused", scope: "global" | "credential" }`;
+established sessions keep working. Capacity returns as sessions are cleaned up.
+With cleanup active, a replay of 43 hours of production samples peaks at about
+20 retained sessions against 21 physical connections, below both bounds.
+See [MCP diagnostics and measurement](mcp-diagnostics.md).
+
+**Agents.** Long work without MCP calls (editing, local builds) must make a
+qualifying call, for example `renew_project_claim` or
+`get_project_status_compact`, at least every 30 minutes. Some renewal tick
+always falls within 10 minutes of the last call, so the lease runs for at least
+30 minutes after it, and a later call resumes renewal immediately. A call every
+15 minutes keeps automatic renewal running without a pause. Without any call the
+claim lapses after at most 45 minutes and another agent may take the project.
+If the MCP transport also stays disconnected for more than 15 minutes, the
+session itself closes; a client then starts a new session and must claim again.
 
 ## Security and audit
 

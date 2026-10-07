@@ -96,15 +96,28 @@ and should be followed by a current status read.
 
 ## Renew and release
 
-The MCP session renews its claims automatically. Use `renew_project_claim` only
-when the workflow needs an explicit extension.
+The MCP session renews its claims automatically only while you keep using it.
+Any tool call or resource read counts; listing tools, reconnecting and server
+renewals do not. Renewal stops 15 minutes after your last call, and the claim
+then expires with its remaining TTL (at most 30 minutes).
+
+During long work without MCP calls, such as editing or a local build, call
+`renew_project_claim` (or another tool such as `get_project_status_compact`) at
+least every 30 minutes; every 15 minutes keeps renewal continuous. Otherwise
+the claim lapses after at most 45 minutes and another agent may take the
+project. Before relying on the server again after a long pause, check that the
+claim is still yours with `get_project_status_compact`.
 
 Call `release_project_claim` when the task no longer needs exclusive control.
 Release does not stop the development server.
 
 Claims belong to the MCP session that created them. If that session is lost, a
-new session cannot renew or release the old claim. Report the stale claim and
-let it expire, or ask the user to review it in the dashboard.
+new session cannot renew or release the old claim. A session whose connection
+stays down for more than 15 minutes after your last call, or that stays idle for
+60 minutes, is closed by the controller; then claim again from the new session.
+Report a stale claim and let it expire, or ask the user to review it in the
+dashboard. The controller may refuse a new session when too many are open; close
+unused MCP clients rather than retrying in a loop.
 
 ## Run finite verification through the queue
 
