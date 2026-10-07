@@ -9,4 +9,6 @@ if (process.argv[3] === "future") {
   database.exec("INSERT INTO schema_migrations(version,applied_at) VALUES(29,'future')");
 }
 process.send?.({ committed: true });
-setInterval(() => {}, 1000);
+// Keep the connection reachable from the live timer. An unreferenced better-sqlite3 handle is closed by
+// garbage collection, which checkpoints and removes the WAL before the parent can kill this process.
+setInterval(() => { if (!database.open) process.exit(1); }, 1000);
