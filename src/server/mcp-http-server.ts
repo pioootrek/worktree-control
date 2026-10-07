@@ -95,7 +95,7 @@ export function createMcpControllerServer(options: {
   const diagnostics = new McpDiagnostics();
   let runtimePromise: Promise<McpRuntimeLike> | null = null;
   const runtime = () => {
-    runtimePromise ??= import("./mcp-runtime").then(({ McpRuntime }) => new McpRuntime(
+    runtimePromise ??= import("./transports/mcp/mcp-runtime").then(({ McpRuntime }) => new McpRuntime(
       options.service,
       options.onDiagnostic,
       options.identity,

@@ -1,5 +1,5 @@
-import { registerKnowledgeTools } from "./transports/mcp/knowledge-tools";
-import { McpDiagnostics, type McpSessionObservation, type McpCloseReason } from "./mcp-diagnostics";
+import { registerKnowledgeTools } from "./knowledge-tools";
+import { McpDiagnostics, type McpSessionObservation, type McpCloseReason } from "../../mcp-diagnostics";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -8,11 +8,11 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
 
-import packageJson from "../../package.json";
+import packageJson from "../../../../package.json";
 import type { ClaimedRuntimeAction, ClaimedRuntimeReceipt, ProjectSnapshot } from "@/shared/contracts";
-import { localizeServerMessage } from "../i18n/server-errors";
-import type { ControlService } from "./control-service";
-import type { ControllerAuthentication, IdentityService } from "./modules/identity";
+import { localizeServerMessage } from "../../../i18n/server-errors";
+import type { ControlService } from "../../control-service";
+import type { ControllerAuthentication, IdentityService } from "../../modules/identity";
 
 interface ClaimSecret {
   projectId: string;
