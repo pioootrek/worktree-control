@@ -15,6 +15,8 @@ import { ManualMcpClock } from "../../modules/mcp-sessions/manual-clock";
 // production controller, data directory, session or claim is touched.
 
 const MINUTE = 60_000;
+/** Real sockets settle asynchronously; allow for a CPU-limited verification runner. */
+const poll = <T>(read: () => T | Promise<T>) => expect.poll(read, { timeout: 10_000, interval: 20 });
 const token = "session-policy-fixture-secret";
 const projectId = "09ca1e75-1f7a-4bb5-a607-a0af3a785260";
 const reservationId = "a3a76c68-c531-4dc8-838a-88416746a581";
@@ -114,18 +116,18 @@ describe("claim renewal policy", () => {
     const service = fixtureService();
     const { endpoint, clock, snapshot } = await listen(service);
     const { client } = await connect(endpoint);
-    await expect.poll(async () => (await snapshot()).sseResponses).toBe(1);
+    await poll(async () => (await snapshot()).sseResponses).toBe(1);
     await client.callTool({ name: "claim_project", arguments: claimArguments });
     expect(await snapshot()).toMatchObject({ claims: 1, renewalTimers: 1 });
 
     await client.close(); // the process vanishes: no DELETE
-    await expect.poll(async () => (await snapshot()).openResponses).toBe(0);
+    await poll(async () => (await snapshot()).openResponses).toBe(0);
     clock.advance(10 * MINUTE);
     expect(service.renewAgentClaim).toHaveBeenCalledOnce(); // still within the 15-minute idle limit
     expect((await snapshot()).sessions[0]).toMatchObject({ transportPhase: "interrupted", renewalPolicyState: "renewing", closeDueReason: "abandoned-transport" });
 
     clock.advance(5 * MINUTE);
-    await expect.poll(async () => (await snapshot()).logicalSessions).toBe(0);
+    await poll(async () => (await snapshot()).logicalSessions).toBe(0);
     expect(await snapshot()).toMatchObject({ ...baseline, closeReasons: { "abandoned-transport": 1 } });
     clock.advance(8 * 60 * MINUTE);
     // No later renewal, no early release: the lease keeps its remaining TTL.
@@ -138,7 +140,7 @@ describe("claim renewal policy", () => {
     const service = fixtureService();
     const { endpoint, clock, snapshot } = await listen(service);
     const { client } = await connect(endpoint);
-    await expect.poll(async () => (await snapshot()).sseResponses).toBe(1);
+    await poll(async () => (await snapshot()).sseResponses).toBe(1);
     await client.callTool({ name: "claim_project", arguments: claimArguments });
     clock.advance(10 * MINUTE);
     clock.advance(10 * MINUTE);
@@ -154,7 +156,7 @@ describe("claim renewal policy", () => {
 
     // An open SSE stream alone does not keep the session: 60 idle minutes close it.
     clock.advance(60 * MINUTE);
-    await expect.poll(async () => (await snapshot()).admission.admittedSessions).toBe(0);
+    await poll(async () => (await snapshot()).admission.admittedSessions).toBe(0);
     expect(await snapshot()).toMatchObject({ ...baseline, renewalsSkippedByPolicy: 2, closeReasons: { "idle-expired": 1 } });
     expect(service.renewAgentClaim).toHaveBeenCalledTimes(3);
     expect(service.releaseAgentClaim).not.toHaveBeenCalled();
@@ -164,10 +166,10 @@ describe("claim renewal policy", () => {
     const service = fixtureService();
     const { endpoint, clock, snapshot } = await listen(service);
     const holder = await connect(endpoint);
-    await expect.poll(async () => (await snapshot()).sseResponses).toBe(1);
+    await poll(async () => (await snapshot()).sseResponses).toBe(1);
     await holder.client.callTool({ name: "claim_project", arguments: claimArguments });
     await connect(endpoint); // a second, never-used session with its own open stream
-    await expect.poll(async () => (await snapshot()).sseResponses).toBe(2);
+    await poll(async () => (await snapshot()).sseResponses).toBe(2);
     for (let gap = 0; gap < 4; gap += 1) {
       clock.advance(14 * MINUTE);
       await holder.client.callTool({ name: "get_server_capacity", arguments: {} });
@@ -185,11 +187,11 @@ describe("abandoned session cleanup", () => {
     const service = fixtureService();
     const { endpoint, clock, snapshot } = await listen(service);
     const { client, transport } = await connect(endpoint);
-    await expect.poll(async () => (await snapshot()).sseResponses).toBe(1);
+    await poll(async () => (await snapshot()).sseResponses).toBe(1);
     await client.callTool({ name: "claim_project", arguments: claimArguments });
     const sessionId = transport.sessionId!;
     await client.close();
-    await expect.poll(async () => (await snapshot()).openResponses).toBe(0);
+    await poll(async () => (await snapshot()).openResponses).toBe(0);
     clock.advance(30_000);
     const stream = await openStream(endpoint, sessionId);
     expect(stream.status).toBe(200);
@@ -206,20 +208,20 @@ describe("abandoned session cleanup", () => {
     const { endpoint, clock, snapshot } = await listen(fixtureService());
     const { client, transport } = await connect(endpoint);
     await client.listTools(); // discovery does not count as activity
-    await expect.poll(async () => (await snapshot()).sseResponses).toBe(1);
+    await poll(async () => (await snapshot()).sseResponses).toBe(1);
     const sessionId = transport.sessionId!;
     await client.close();
-    await expect.poll(async () => (await snapshot()).openResponses).toBe(0);
+    await poll(async () => (await snapshot()).openResponses).toBe(0);
     clock.advance(30_000);
     const stream = await openStream(endpoint, sessionId);
-    await expect.poll(async () => (await snapshot()).sseResponses).toBe(1);
+    await poll(async () => (await snapshot()).sseResponses).toBe(1);
     clock.advance(10_000);
     stream.close();
-    await expect.poll(async () => (await snapshot()).openResponses).toBe(0);
+    await poll(async () => (await snapshot()).openResponses).toBe(0);
     clock.advance(19_999);
     expect((await snapshot()).logicalSessions).toBe(1);
     clock.advance(1);
-    await expect.poll(async () => (await snapshot()).logicalSessions).toBe(0);
+    await poll(async () => (await snapshot()).logicalSessions).toBe(0);
     expect(await snapshot()).toMatchObject({ ...baseline, closeReasons: { "abandoned-transport": 1 } });
   });
 
@@ -230,7 +232,7 @@ describe("abandoned session cleanup", () => {
     const deleted = await connect(endpoint);
     await deleted.client.callTool({ name: "claim_project", arguments: claimArguments });
     await deleted.transport.terminateSession();
-    await expect.poll(async () => (await snapshot()).logicalSessions).toBe(0);
+    await poll(async () => (await snapshot()).logicalSessions).toBe(0);
     expect(await snapshot()).toMatchObject({ ...baseline, closeReasons: { "client-delete": 1 } });
 
     const rejected = await fetch(endpoint, {
@@ -240,22 +242,22 @@ describe("abandoned session cleanup", () => {
     });
     expect(rejected.status).toBe(406);
     await rejected.text();
-    await expect.poll(async () => (await snapshot()).admission.admittedSessions).toBe(0);
+    await poll(async () => (await snapshot()).admission.admittedSessions).toBe(0);
 
     await connect(endpoint);
     await connect(endpoint);
     await controller.closeSessions();
     await controller.closeSessions();
-    await expect.poll(async () => (await snapshot()).admission.admittedSessions).toBe(0);
+    await poll(async () => (await snapshot()).admission.admittedSessions).toBe(0);
 
     const aged = await connect(endpoint);
-    await expect.poll(async () => (await snapshot()).sseResponses).toBe(1);
+    await poll(async () => (await snapshot()).sseResponses).toBe(1);
     for (let hour = 0; hour < 8; hour += 1) {
       clock.advance(59 * MINUTE);
       if (hour < 7) await aged.client.callTool({ name: "get_server_capacity", arguments: {} });
     }
     clock.advance(8 * MINUTE);
-    await expect.poll(async () => (await snapshot()).logicalSessions).toBe(0);
+    await poll(async () => (await snapshot()).logicalSessions).toBe(0);
 
     const last = await connect(endpoint);
     await last.client.callTool({ name: "claim_project", arguments: claimArguments });
@@ -278,7 +280,7 @@ describe("draining", () => {
     const { client, transport } = await connect(endpoint);
     await client.callTool({ name: "claim_project", arguments: claimArguments });
     const call = client.callTool({ name: "restart_project", arguments: { projectId, reservationId, idempotencyKey: "restart-1" } });
-    await expect.poll(async () => (await snapshot()).operations).toBe(1);
+    await poll(async () => (await snapshot()).operations).toBe(1);
 
     clock.advance(60 * MINUTE);
     expect(await snapshot()).toMatchObject({ logicalSessions: 0, drainingSessions: 1, operations: 1, drainTimers: 1, claims: 0, renewalTimers: 0, closeReasons: { "idle-expired": 1 } });
@@ -293,7 +295,7 @@ describe("draining", () => {
     finish.resolve();
     const result = await call as { content: Array<{ text: string }> };
     expect(JSON.parse(result.content[0]!.text)).toMatchObject({ outcome: "completed", replayed: false, action: "restart" });
-    await expect.poll(async () => (await snapshot()).admission.admittedSessions).toBe(0);
+    await poll(async () => (await snapshot()).admission.admittedSessions).toBe(0);
     expect(await snapshot()).toMatchObject(baseline);
     expect(service.operateClaimedRuntime).toHaveBeenCalledOnce();
   });
@@ -307,7 +309,7 @@ describe("draining", () => {
     const call = client.callTool({ name: "start_project", arguments: { projectId, reservationId, idempotencyKey: "start-1" } }).then(
       value => ({ value }), (error: unknown) => ({ error: String(error) }),
     );
-    await expect.poll(async () => (await snapshot()).operations).toBe(1);
+    await poll(async () => (await snapshot()).operations).toBe(1);
     clock.advance(60 * MINUTE);
     clock.advance(120_000);
     expect(await call).toMatchObject({ error: expect.stringContaining("outcome is unknown") });
@@ -315,7 +317,7 @@ describe("draining", () => {
     expect(await snapshot()).toMatchObject({ logicalSessions: 0, drainingSessions: 1, operations: 1, runtimeRetryEntries: 1, admission: { admittedSessions: 1 } });
 
     finish.resolve();
-    await expect.poll(async () => (await snapshot()).operations).toBe(0);
+    await poll(async () => (await snapshot()).operations).toBe(0);
     expect(await snapshot()).toMatchObject(baseline);
     const retry = await connect(endpoint);
     const replay = await retry.client.callTool({ name: "start_project", arguments: { projectId, reservationId, idempotencyKey: "start-1" } });
@@ -338,7 +340,7 @@ describe("draining", () => {
     clock.advance(61 * MINUTE);
     await connect(endpoint);
     await controller.closeSessions();
-    await expect.poll(async () => (await snapshot()).admission.admittedSessions).toBe(0);
+    await poll(async () => (await snapshot()).admission.admittedSessions).toBe(0);
     expect(await snapshot()).toMatchObject({ closeReasons: { "abandoned-transport": 1, "idle-expired": 1, "authentication-policy": 1 } });
     for (const method of ["stopProject", "cancelTest", "releaseAgentClaim"] as const) expect(service[method]).not.toHaveBeenCalled();
     expect(service.enqueueTest).toHaveBeenCalledOnce();
@@ -360,7 +362,7 @@ describe("session admission", () => {
     expect(await snapshot()).toMatchObject({ logicalSessions: 2, initializingSessions: 0, admission: { admittedSessions: 2 }, closeReasons: { "admission-refused": 1 } });
 
     await first.transport.terminateSession();
-    await expect.poll(async () => (await snapshot()).admission.admittedSessions).toBe(1);
+    await poll(async () => (await snapshot()).admission.admittedSessions).toBe(1);
     await connect(endpoint);
     expect(await snapshot()).toMatchObject({ logicalSessions: 2, closeReasons: { "admission-refused": 1 } });
   });
@@ -383,7 +385,7 @@ describe("session admission", () => {
     expect(global.status).toBe(503);
     expect(await global.json()).toMatchObject({ error: { data: { scope: "global", limit: 3 } } });
     await a.transport.terminateSession();
-    await expect.poll(async () => (await snapshot()).admission.admittedSessions).toBe(2);
+    await poll(async () => (await snapshot()).admission.admittedSessions).toBe(2);
     await connect(endpoint, { bearer: "scoped-c" });
     expect(await snapshot()).toMatchObject({ logicalSessions: 3, admission: { credentials: 3 }, closeReasons: { "admission-refused": 2 } });
   });
@@ -395,17 +397,17 @@ describe("session admission", () => {
     const busy = await connect(endpoint);
     await connect(endpoint);
     const held = busy.client.callTool({ name: "get_server_capacity", arguments: {} });
-    await expect.poll(async () => (await snapshot()).operations).toBe(1);
+    await poll(async () => (await snapshot()).operations).toBe(1);
     clock.advance(60 * MINUTE);
     // The idle session closes completely; the busy one drains its accepted call
     // and still holds an admission slot.
-    await expect.poll(async () => (await snapshot()).admission.admittedSessions).toBe(1);
+    await poll(async () => (await snapshot()).admission.admittedSessions).toBe(1);
     expect(await snapshot()).toMatchObject({ logicalSessions: 0, drainingSessions: 1, operations: 1 });
     await connect(endpoint);
     expect((await initialize(endpoint)).status).toBe(503);
     finish.resolve();
     expect((await held).isError).toBeFalsy();
-    await expect.poll(async () => (await snapshot()).admission.admittedSessions).toBe(1);
+    await poll(async () => (await snapshot()).admission.admittedSessions).toBe(1);
     await connect(endpoint);
     expect(await snapshot()).toMatchObject({ logicalSessions: 2, closeReasons: { "admission-refused": 1, "idle-expired": 2 } });
   });
@@ -415,16 +417,16 @@ describe("session admission", () => {
     const { endpoint, clock, snapshot } = await listen(service, { maxSessions: 8, maxSessionsPerCredential: 8 });
     for (let cycle = 0; cycle < 24; cycle += 1) {
       const { client, transport } = await connect(endpoint);
-      await expect.poll(async () => (await snapshot()).sseResponses).toBe(1);
+      await poll(async () => (await snapshot()).sseResponses).toBe(1);
       if (cycle % 3 !== 2) await client.callTool({ name: "claim_project", arguments: { ...claimArguments, idempotencyKey: `claim-${cycle}` } });
       if (cycle % 3 === 0) await transport.terminateSession();
       await client.close(); // otherwise an abrupt exit without DELETE
-      await expect.poll(async () => (await snapshot()).openResponses).toBe(0);
+      await poll(async () => (await snapshot()).openResponses).toBe(0);
       clock.advance(5 * MINUTE);
       expect((await snapshot()).admission.admittedSessions).toBeLessThanOrEqual(4);
     }
     clock.advance(16 * MINUTE);
-    await expect.poll(async () => (await snapshot()).admission.admittedSessions).toBe(0);
+    await poll(async () => (await snapshot()).admission.admittedSessions).toBe(0);
     const final = await snapshot();
     expect(final).toMatchObject(baseline);
     expect(final.closeReasons).toMatchObject({ "client-delete": 8, "abandoned-transport": 16, "admission-refused": 0 });

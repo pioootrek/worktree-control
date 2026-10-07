@@ -20,6 +20,8 @@ import { SqliteStateStore } from "../../sqlite-store";
 // clients and a manual clock that also drives Date for lease expiry.
 
 const MINUTE = 60_000;
+/** Real sockets settle asynchronously; allow for a CPU-limited verification runner. */
+const poll = <T>(read: () => T | Promise<T>) => expect.poll(read, { timeout: 10_000, interval: 20 });
 const token = "session-lease-fixture-secret";
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -73,12 +75,12 @@ describe("session cleanup and persisted leases", () => {
     await first.close(); // abrupt client loss without DELETE
 
     const second = await connect();
-    await expect.poll(async () => (await snapshot()).openResponses).toBe(1); // the second client's stream
+    await poll(async () => (await snapshot()).openResponses).toBe(1); // the second client's stream
     expect((await claim(second, "early")).isError).toBe(true);
 
     clock.advance(10 * MINUTE); // one server renewal while the first session was recently active
     clock.advance(5 * MINUTE);
-    await expect.poll(async () => (await snapshot()).closeReasons["abandoned-transport"]).toBe(1);
+    await poll(async () => (await snapshot()).closeReasons["abandoned-transport"]).toBe(1);
     expect(store.getActiveReservation(project.id)).toMatchObject({ id: firstReservation.id, expiresAt: "2026-10-07T12:40:00.000Z" });
 
     clock.advance(24 * MINUTE + 59_000);
