@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Worktree Control: one dev port per project, shared context for you and your coding agents</title>
+  <meta name="description" content="Worktree Control switches a development server between Git worktrees without changing its port, queues tests with source evidence, and keeps tasks, discussions and decisions for humans and coding agents. Local-first and MIT licensed.">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0a0d0a">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="#top" aria-label="Worktree Control, top of page">
+        <svg class="brand-mark" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+          <circle cx="6" cy="5" r="2.25"/><circle cx="6" cy="19" r="2.25"/><circle cx="18" cy="7" r="2.25"/>
+          <path d="M6 7.25v9.5M18 9.25c0 4-4.5 4.25-10.25 7.5"/>
+        </svg>
+        <span>Worktree Control</span>
+      </a>
+      <nav aria-label="Primary">
+        <ul class="nav-list">
+          <li><a href="#capabilities">Capabilities</a></li>
+          <li><a href="#status">Status</a></li>
+          <li><a href="#install">Install</a></li>
+          <li><a href="#agents">Agents</a></li>
+          <li><a href="https://github.com/pioootrek/worktree-control">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <div class="wrap">
+        <p class="eyebrow">Local control plane for Git worktrees</p>
+        <h1 id="hero-title">Worktree Control</h1>
+        <p class="promise">One dev port per project. Shared context for you and your coding agents.</p>
+        <p class="lede">
+          Switch a development server between Git worktrees without changing its port.
+          Queue builds and tests, see which code they checked, and keep the tasks,
+          discussions and decisions that the next session will need.
+        </p>
+        <div class="actions">
+          <a class="button button-primary" href="#install">Install</a>
+          <a class="button" href="https://github.com/pioootrek/worktree-control">View the repository</a>
+        </div>
+        <ul class="facts" aria-label="At a glance">
+          <li>Runs on your machine</li>
+          <li>Browser dashboard, CLI and MCP server</li>
+          <li>Node.js and Django projects</li>
+          <li>SQLite state, no hosted account</li>
+          <li>MIT licensed</li>
+        </ul>
+        <figure class="shot shot-hero">
+          <img src="assets/dashboard.png" width="1440" height="900"
+               alt="Worktrees dashboard listing example projects Storefront, Orders API and Documentation with their branches. Storefront feature/checkout is ready; other worktrees are stopped, one project is reserved, and each row offers Start, Open or Switch here.">
+          <figcaption>Worktrees dashboard with fictional demo data. Screenshots were captured before the 2026-10-05 rename from Worktree Switcher.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="section" id="capabilities" aria-labelledby="capabilities-title">
+      <div class="wrap">
+        <h2 id="capabilities-title">What it does</h2>
+        <p class="section-intro">Three things that set it apart from running servers by hand.</p>
+
+        <article class="feature" aria-labelledby="feature-ports">
+          <div class="feature-text">
+            <p class="feature-index" aria-hidden="true">01</p>
+            <h3 id="feature-ports">One managed server and stable port per project</h3>
+            <p>
+              Your frontend can run <code>feature/checkout</code> on port 3000 while the API
+              stays on <code>main</code> at port 4000. Switching one project leaves the others alone.
+            </p>
+            <ul>
+              <li>Pin a worktree with a human lock while you use it.</li>
+              <li>An agent claims a project, starts or switches its server, and releases the claim when it finishes. Release leaves the server running.</li>
+              <li>Claims expire and belong to the MCP session that created them; an agent cannot force-release someone else's reservation.</li>
+              <li>The controller stops only process trees it owns, never an unknown process on an occupied port.</li>
+            </ul>
+            <p class="note">
+              Humans and agents must use the controller for ownership rules to apply; it cannot
+              prevent an unrelated terminal from starting another process.
+            </p>
+          </div>
+        </article>
+
+        <article class="feature feature-with-shot" aria-labelledby="feature-tests">
+          <div class="feature-text">
+            <p class="feature-index" aria-hidden="true">02</p>
+            <h3 id="feature-tests">A finite test queue with revision-bound evidence</h3>
+            <p>
+              Run a discovered test, lint, typecheck or build preset against a specific worktree.
+              A shared queue limits concurrent checks and allows at most one active run per
+              worktree. Submitting a test does not move or reserve the dev server.
+            </p>
+            <p>
+              A passing command and a result that applies to your current code are separate
+              things. Tests shows the command outcome, Git observations around the run, current
+              relevance and output. Dirty or changed source stays visible.
+            </p>
+            <p class="note">
+              Local checks use the worktree's files, including uncommitted edits; they are not
+              immutable snapshots.
+            </p>
+          </div>
+          <figure class="shot">
+            <img src="assets/tests.png" width="1440" height="900" loading="lazy" decoding="async"
+                 alt="Tests dashboard with counters for running, queued, failed and possibly outdated results, and a table of runs showing project, preset, worktree with the HEAD commit when queued, pass or fail result, and whether the source still matches the current commit.">
+            <figcaption>Tests view: command result and source evidence for each run.</figcaption>
+          </figure>
+        </article>
+
+        <article class="feature feature-with-shot" aria-labelledby="feature-knowledge">
+          <div class="feature-text">
+            <p class="feature-index" aria-hidden="true">03</p>
+            <h3 id="feature-knowledge">Knowledge shared by humans and agents</h3>
+            <p>
+              Knowledge gives humans and agents the same project records through the dashboard,
+              MCP and CLI. It works without a running dev server or a Git repository.
+            </p>
+            <ul>
+              <li><strong>Backlog:</strong> capture a task, set its priority and status, and link the discussion that led to it.</li>
+              <li><strong>Discussions:</strong> keep findings, questions and replies together. Turn an agreed next step into a task.</li>
+              <li><strong>Memory:</strong> retain decisions and notes with sources, revision history and explicit approval.</li>
+            </ul>
+            <p>
+              A task's <em>Next session context</em> collects linked memory and source revisions
+              for a handoff; you can export it as Markdown or JSON.
+            </p>
+          </div>
+          <figure class="shot">
+            <img src="assets/knowledge.png" width="1440" height="900" loading="lazy" decoding="async"
+                 alt="Knowledge backlog for an example Storefront project: a list of three tasks with status and priority, and the selected task Finish checkout handoff open in a reader with its author, revision, description, Next session context button, attachments and related records.">
+            <figcaption>Knowledge backlog with a task, its context and related records.</figcaption>
+          </figure>
+        </article>
+      </div>
+    </section>
+
+    <section class="section section-alt" id="status" aria-labelledby="status-title">
+      <div class="wrap">
+        <h2 id="status-title">Honest status</h2>
+        <dl class="status-grid">
+          <div class="status-item status-ok">
+            <dt>Linux x64</dt>
+            <dd>Verified. The local controller is in daily use by its author.</dd>
+          </div>
+          <div class="status-item status-unknown">
+            <dt>macOS</dt>
+            <dd>Unverified. Process metrics are unavailable and the service lifecycle still needs real-host verification.</dd>
+          </div>
+          <div class="status-item status-unknown">
+            <dt>Windows</dt>
+            <dd>Unverified. Process-tree and service management are unsupported.</dd>
+          </div>
+          <div class="status-item">
+            <dt>Scope</dt>
+            <dd>Local-first and single-user: one controller on your machine, state in SQLite, no hosted account.</dd>
+          </div>
+        </dl>
+        <p class="note">
+          The CLI and data model may change. Worktree Control executes project code under your OS
+          user; use trusted repositories and clients. Process ownership and preset validation are
+          not a sandbox.
+        </p>
+      </div>
+    </section>
+
+    <section class="section" id="install" aria-labelledby="install-title">
+      <div class="wrap">
+        <h2 id="install-title">Install</h2>
+        <p class="release-note" role="note">
+          <strong>The first public npm release is in preparation.</strong>
+          Until it is published, follow the
+          <a href="https://github.com/pioootrek/worktree-control#quick-start">source build quick start</a>
+          or the <a href="https://github.com/pioootrek/worktree-control/blob/main/docs/package-trial.md">verified tarball trial guide</a>.
+        </p>
+        <p>
+          Requires <a href="https://nodejs.org/">Node.js 22 or newer</a> and Git. Install the
+          package, then generate the installation token:
+        </p>
+        <pre class="code" tabindex="0" aria-label="Install commands"><code><span class="prompt" aria-hidden="true">$ </span>npm install -g worktree-control@0.1.0
+<span class="prompt" aria-hidden="true">$ </span>worktree-control auth token generate</code></pre>
+        <p>
+          Until 0.1.0 is on npm, the first command fails with a "no matching version" error. The
+          <a href="https://github.com/pioootrek/worktree-control#quick-start">source build in the README</a>
+          and the <a href="https://github.com/pioootrek/worktree-control/blob/main/docs/package-trial.md">tarball trial in docs/package-trial.md</a>
+          are the install paths that work today.
+        </p>
+        <p>
+          Save the printed token; it is shown once. Start the controller on loopback, open the
+          printed address and sign in with that token:
+        </p>
+        <pre class="code" tabindex="0" aria-label="Start command"><code><span class="prompt" aria-hidden="true">$ </span>worktree-control start --host 127.0.0.1</code></pre>
+        <p>
+          The command is also available as <code>wtc</code>. The dashboard listens on port
+          <code>47831</code> and MCP on loopback port <code>47832</code>. To run it in the
+          background, see the
+          <a href="https://github.com/pioootrek/worktree-control/blob/main/docs/user-service.md">user-service guide</a>.
+        </p>
+        <p class="note">
+          The <code>worktree-switcher</code> package on npm is an unrelated project.
+        </p>
+      </div>
+    </section>
+
+    <section class="section section-alt" id="agents" aria-labelledby="agents-title">
+      <div class="wrap">
+        <h2 id="agents-title">Connect your coding agent</h2>
+        <p>
+          Keep your existing MCP-capable editor or coding client. Print the connection
+          configuration with:
+        </p>
+        <pre class="code" tabindex="0" aria-label="MCP configuration command"><code><span class="prompt" aria-hidden="true">$ </span>worktree-control config mcp</code></pre>
+        <p>
+          In token mode it prints a bearer-token placeholder. Supply the token privately in your
+          client's configuration and do not commit it. The bundled agent skill teaches the
+          claim, switch and test workflow.
+        </p>
+        <ul class="link-list">
+          <li><a href="https://github.com/pioootrek/worktree-control#mcp-for-coding-agents">MCP setup in the README</a></li>
+          <li><a href="https://github.com/pioootrek/worktree-control/blob/main/docs/reservations-and-mcp.md">Reservations and MCP reference</a></li>
+          <li><a href="https://github.com/pioootrek/worktree-control/blob/main/skills/worktree-control/SKILL.md">Bundled agent skill</a></li>
+          <li><a href="https://github.com/pioootrek/worktree-control/blob/main/docs/authentication.md">Authentication modes</a></li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-inner">
+      <p>
+        Worktree Control is open source under the
+        <a href="https://github.com/pioootrek/worktree-control/blob/main/LICENSE">MIT License</a>.
+      </p>
+      <ul class="footer-links">
+        <li><a href="https://github.com/pioootrek/worktree-control">Repository</a></li>
+        <li><a href="https://github.com/pioootrek/worktree-control#documentation">Documentation</a></li>
+        <li><a href="https://github.com/pioootrek/worktree-control/issues">Issues</a></li>
+      </ul>
+    </div>
+  </footer>
+</body>
+</html>
