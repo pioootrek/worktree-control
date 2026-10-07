@@ -91,6 +91,12 @@ an existing definition.
 `--memory-warning-mib` adds a visual warning when one managed process group
 reaches the configured aggregate resident-memory threshold. It reports only;
 the controller never terminates a server because of this threshold.
+The `--mcp-*` session options (`--mcp-claim-renewal-idle-minutes`,
+`--mcp-session-idle-minutes`, `--mcp-open-session-idle-minutes`,
+`--mcp-reconnect-grace-seconds`, `--mcp-drain-seconds`, `--mcp-max-sessions`
+and `--mcp-max-sessions-per-credential`) override the MCP session limits
+described in [session liveness, cleanup and admission](reservations-and-mcp.md#session-liveness-cleanup-and-admission).
+Only explicitly passed values are written into the definition.
 
 The values become part of the service definition. Repeat them when you later
 run `service install --refresh`, otherwise the omitted values return to their

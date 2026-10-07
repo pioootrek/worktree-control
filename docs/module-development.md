@@ -1,6 +1,6 @@
 ---
 audience: "contributors developing and testing application modules"
-last_reviewed: "2026-09-27"
+last_reviewed: "2026-10-07"
 source_of_truth: "implemented module entry points and focused verification workflow"
 status: "active"
 ---
@@ -24,6 +24,7 @@ modules still share the facade's lifecycle dependencies.
 | Remote verification admission, identity storage, and exact-commit workspaces | `src/server/modules/remote-verification/`, `src/server/infrastructure/sqlite/remote-verification-queries.ts`, and `src/server/infrastructure/git/remote-verification-workspace.ts` | None until a transport slice is implemented | `pnpm test src/server/modules/remote-verification src/server/infrastructure/sqlite src/server/infrastructure/git` |
 | Installation authentication and live administration | `src/server/modules/authentication/`, `src/server/admin-socket.ts`, `src/cli/auth-management.ts` | Dashboard access form and shared session | `pnpm test src/server/modules/authentication src/server/installation-token-transports.test.ts src/cli/auth-management.test.ts` |
 | Knowledge identity, content and recovery | `src/server/modules/identity/`, `src/server/modules/knowledge/`, SQLite knowledge helpers and extracted transports | `src/features/knowledge/` | `pnpm test src/server/modules/identity src/server/infrastructure/sqlite src/server/knowledge-transports.test.ts`; built integration and knowledge UI suites |
+| MCP session admission, idle cleanup and claim renewal policy | `src/server/modules/mcp-sessions/`, wired by `src/server/transports/mcp/mcp-runtime.ts` | None | `pnpm test src/server/modules/mcp-sessions src/server/transports/mcp src/server/mcp-http-server.test.ts src/server/mcp-diagnostics.test.ts` |
 | Schema upgrade | `src/server/infrastructure/sqlite/migrations.ts` | None | `pnpm test src/server/infrastructure/sqlite` |
 | Session, event subscription, dashboard refresh | `src/features/dashboard/use-dashboard.ts` | `src/features/dashboard/dashboard.tsx` | `pnpm build` followed by `pnpm test:ui` |
 | Dashboard read projection and Git refresh admission | `src/server/modules/dashboard/` and `src/server/git-worktrees.ts` | `src/features/dashboard/use-dashboard.ts` | `pnpm test src/server/modules/dashboard src/server/control-service-dashboard.test.ts src/server/events.test.ts` |

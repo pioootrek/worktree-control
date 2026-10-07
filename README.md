@@ -189,7 +189,9 @@ list_test_presets → run_test → get_test_run_status → get_test_run
 
 Use the exact path returned by `list_worktrees`. Reuse the idempotency key when
 retrying the same submission. Claims expire and belong to the creating MCP
-session; an agent cannot force-release someone else's reservation.
+session; an agent cannot force-release someone else's reservation. Automatic
+renewal stops 15 minutes after the session's last tool call, so a claim lapses
+at most 45 minutes after an agent stops using MCP.
 
 The [bundled agent skill](https://github.com/pioootrek/worktree-control/blob/main/skills/worktree-control/SKILL.md)
 teaches this workflow. It is included in the npm package. For Codex, copy it

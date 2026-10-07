@@ -1,14 +1,16 @@
 ---
 audience: "operators and contributors measuring MCP resources"
-last_reviewed: "2026-10-05"
-source_of_truth: "implemented diagnostic read and proposed follow-up policy"
+last_reviewed: "2026-10-07"
+source_of_truth: "implemented diagnostic read, session policy observations and measurements"
 status: "active"
 ---
 
 # MCP observations and repeatable measurement
 
-This slice observes the existing controller. Proposed limits below are not
-implemented settings. The installation's production configuration is unchanged.
+The diagnostic read observes the controller. Session admission, idle cleanup and
+claim renewal policy are implemented in the `mcp-sessions` application module and
+described in [session liveness, cleanup and admission](reservations-and-mcp.md#session-liveness-cleanup-and-admission);
+this read reports their outcomes and never decides them.
 
 ## Local administrative read
 
@@ -31,24 +33,28 @@ handler. The read has no lifecycle effects, including during maintenance.
 | `openResponses`, `sseResponses` | Authenticated session-bound HTTP responses still open; SSE is counted when the transport emits successful GET response headers. HTTP POST with JSON response also consumes a response. |
 | `operations` | Executing registered protocol handlers (tools, resource reads/lists, etc.), excluding SDK bootstrap initialize/ping handlers. Count remains until `finally`, including a handler ignoring cancellation after close. |
 | `runtimeRetryEntries` | Existing global retry-ledger occupancy, including completed receipts. Its existing bounds are 64/session and 512/global; it is not a running-call counter. |
-| `claims`, `renewalTimers`, `lifetimeTimers` | Session-held claim/renewal handles and actual controller-owned timers. Persisted reservations can outlive these handles and must be inspected through existing project status. |
+| `claims`, `renewalTimers`, `lifetimeTimers`, `drainTimers` | Session-held claim/renewal handles and actual controller-owned timers. `lifetimeTimers` is each open session's single deadline timer (absolute lifetime and idle policy); `drainTimers` exist only while a policy close drains accepted calls. Persisted reservations can outlive these handles and must be inspected through existing project status. |
 | `statusWaits` | Per-session entries contain only owned waiters and waiter timers, using an owner-key lookup. Targets and the single shared sampling timer appear only in the global administrative `statusWaits` object. Closed/draining session attribution can be unknown; global counts remain available. |
 | `resourceSubscriptions` | Zero: this adapter registers no resource subscription handlers. SDK internal stream maps/keep-alive timers have no public inspection API and are explicitly `unknown`. |
 | `lastClientMessageAt` | Last validated JSON-RPC message delivered by the transport after authentication and session binding; includes protocol housekeeping. |
-| `lastClientRequestAt` | Last application-shaped tool/resource/prompt request delivered by the transport; it can still fail application validation. An observation, not proof of agent liveness or a renewal authorization. |
+| `lastClientRequestAt` | Last application-shaped tool/resource/prompt request delivered by the transport, including listing; it can still fail application validation. An observation only. |
+| `lastQualifyingActivityAt` | Last authenticated `tools/call` or `resources/read` started or settled by the session. The only input to the idle and renewal policy. |
+| `state`, `transportPhase`, `closeDueAt`, `closeDueReason` | Per session: `open`, `draining` or `closed`; transport `open`, `interrupted` (an SSE stream existed, no response is open), `request-only` (never streamed) or `closed`; and the deadline at which the policy would close it if nothing changes. |
+| `renewalPolicyState`, `renewalsSkippedByPolicy` | Per session `none` (no claim), `renewing` or `stopped-idle`; the global and per-session counts of renewal ticks skipped because the client was idle. A skipped renewal never releases the lease. |
+| `admission`, `policy` | Admitted sessions (including initializing and draining ones), number of distinct credentials and the largest per-credential count, the configured bounds and limits in seconds. No credential identifiers. |
 | `lastAutomaticRenewalAt`, renewal success/failure totals | Server-generated renewal, recorded separately; never advances client activity. |
 | `agentState`, client/proxy process fields | `unknown`: an HTTP server cannot prove an agent/process is alive behind a proxy. `no-open-response` is an observed transport state, not an inactive-agent classification. |
-| Close reasons | Client DELETE, absolute lifetime, authentication policy, controller shutdown, failed initialization and otherwise transport close. Cancellation is not recorded as successful termination. |
+| Close reasons | Client DELETE, absolute lifetime, authentication policy, controller shutdown, failed initialization, `idle-expired`, `abandoned-transport`, `admission-refused` (a refused initialize; no session is created) and otherwise transport close. Cancellation is not recorded as successful termination. |
 
 No credential IDs, raw MCP session IDs, lease tokens, client names, request
 bodies or arbitrary error labels enter the snapshot. Session labels are local
 sequence numbers with no authority. Every event changes fixed counters in O(1).
-Reads inspect at most 32 session details and 64 recent closures, with an omitted
-count. Recent closure retention is 15 minutes, pruned on reads; the ring is
-always capped at 64 even without reads. Aggregate counts remain exact. Live
-observations share the existing session lifetime, and closed observations are
-released when their tracked work settles. This is not a new session-retention
-bound; admission/expiry remains the next PR.
+Reads return at most 32 session details, ordered with claim holders and
+renewal timers first, then sessions with open responses, then the most recent
+activity; `truncated` (also `omittedSessions`) counts the rest. Retained
+observations are bounded by session admission. Recent closures keep at most 64
+entries for 15 minutes, pruned on reads. Aggregate counts remain exact. Closed
+observations are released when their tracked work settles.
 
 There is no new background sampler or production histogram. Process CPU/RAM is
 sampled on demand at most once per five seconds, with a timestamp and age. The
@@ -160,12 +166,10 @@ SSE regression/check failed. Both were corrected; neither is passing evidence.
 The final report supersedes preliminary resource reports. Dashboard code/flows
 were not changed; the actual CLI and MCP transport were exercised instead.
 
-Limits below respond to observed retained session/renewal handles and the
-separate proxy cost, but these small measurements do not calibrate 64-session
-capacity. A 20-second wait does not validate multi-minute calls, eight-hour
-expiry, full-body memory pressure, expiry/write races or lost-write recovery.
-Those remain isolated acceptance work for the enforcement PR. Initializing
-requests and unconfirmed draining work must consume its limits as well.
+These small measurements do not calibrate 64-session capacity, and a 20-second
+wait does not validate multi-minute calls or full-body memory pressure. Expiry
+races, lost-write responses, eight-hour expiry and admission were covered later
+by the acceptance tests listed under the implemented session contract below.
 
 Review follow-up corrected per-session attribution: the preserved historical
 raw report's nested `targets` and `samplerTimers` mirror global counts and must
@@ -184,49 +188,46 @@ early exit: controller/state teardown still runs while failure is preserved;
 state is retained if controller termination is unconfirmed. Historical resource
 measurements above were not repeated or relabeled as this newer revision.
 
-## Proposed second PR contract
+## Implemented session contract — 2026-10-07
 
-All values in this section are proposals, pending its bounded acceptance tests.
+Production sampling of `mcp diagnostics` every two minutes for 43 hours
+(2026-10-05 11:15 to 2026-10-07 06:34 UTC, 1,301 samples) showed:
 
-- Admit at most 64 logical sessions globally and 32 per credential, including
-  the shared installation credential. Count initializing and draining work
-  against capacity too. Use predictable refusal without disturbing established
-  callers. No new token scope is needed.
-- Admit at most 32 application calls globally and four per session, including
-  waits. Keep the existing status-wait limits (128/global, four/session,
-  64 targets) and retry-ledger limits as additional ceilings. Existing accepted
-  verification jobs consume their own queue, not MCP call capacity.
-- Qualifying activity is an authenticated, session-bound application request
-  admitted after schema/authorization validation: a tool call or resource read.
-  Discovery/listing, initialize, GET/SSE open, ping, proxy heartbeat, server
-  output/progress, automatic renewal and parent-process existence do not extend
-  owner activity. Requests remain evidence of authorized use, not proof of
-  human or agent presence. Document compatibility for clients that only list.
-- Start with a 15-minute idle budget and a 60-second reconnect grace after a
-  positively observed interruption of an established transport. A completed
-  normal JSON POST is not such an interruption. The idle deadline remains
-  authoritative even with an open SSE stream. Unknown/disconnected/closing
-  states remain distinct. A same-authentication reconnect may resume within
-  grace, but never grants another session ownership.
-- At idle deadline plus at most 60 seconds of grace, close new MCP admission
-  and stop renewal, regardless of a still-running call. Drain accepted handlers
-  for up to 120 seconds, signal cancellation where supported, and keep actual
-  work counted after that bound if termination is unconfirmed. Never claim a
-  canceled write failed or replay it blindly; return/recover a truthful
-  completed/failed/unknown outcome. A long operation must not be terminated
-  solely because it passed the idle budget. Define lease requirements for
-  continuing runtime mutations under the existing lifecycle coordination.
-- Without explicit client release, the upper bound from last qualifying
-  activity to reservation availability is **15 min + 60 s + remaining TTL
-  (at most 30 min) = 46 min**. Grace cannot extend this deadline repeatedly.
-  The existing eight-hour reservation maximum may shorten it. Do not tie this
-  bound to draining duration, proxy existence or a new session's traffic.
-- Session cleanup must dispose session-owned resources idempotently without
-  stopping the project server, canceling an accepted test or killing a proxy.
-  Keep initializing failures, explicit DELETE, policy close, absolute lifetime,
-  shutdown, expiry races and lost-write responses in its acceptance matrix.
+- logical sessions peaked at 208 while physical connections peaked at 21;
+- 539 sessions closed, every one by the 8-hour absolute lifetime and none by
+  client DELETE or transport close;
+- 51 % of the sessions visible in detail never sent a request: `mcp-remote`
+  opens an unused twin session per proxy process;
+- one agent session held a WinPath claim for 376 minutes, with 37 automatic
+  renewals after its last client request and its transport long gone;
+- inter-request gaps in active sessions were p50 2.5, p95 12.6 and max
+  61.9 minutes; in the claim-holding session p95 6.5 and max 10 minutes.
 
-These are starting safety ceilings, not measured maximum capacity. The first
-slice measures small legitimate workloads and retained abandonment; the next
-PR must validate admission/refusal and per-credential fairness only on isolated
-fixtures before treating these values as a supported contract.
+The defaults follow from these numbers: renewal stops 15 minutes after the last
+qualifying call (above the claim-holding p95 and max), interrupted sessions
+close after 15 minutes, sessions with an open stream keep 60 minutes because a
+62-minute gap was observed, and never-used twins whose stream ended close after
+one minute. Replaying all samples through these rules (open streams counted
+exactly from the global gauge, other retained sessions extrapolated from the
+visible details) gives a retained-session peak of about 20 (p95 16), below the
+64-session global and 32-per-credential bounds even if every agent shares the
+installation credential. The bounds were therefore kept.
+
+Acceptance tests use owned SDK clients, an in-process loopback listener and a
+manual clock (`src/server/transports/mcp/mcp-session-policy.test.ts`,
+`mcp-session-lease.test.ts` and `src/server/modules/mcp-sessions`). The lease
+test uses the real application service and SQLite reservations: after abrupt
+loss the lease expired 40 minutes after the last call, another session was
+refused until then and then acquired its own reservation, and the fake managed
+server kept running. A 24-cycle connect/claim/DELETE-or-crash run returned all
+session, timer, claim, operation and admission counters to zero.
+
+A bounded check with the pinned `mcp-remote` 0.8.2 fixture against an isolated
+listener confirmed the twin: two sessions, one never active. When the twin
+reached its 60-minute open budget it closed as `idle-expired`; the proxy
+process stayed alive and its next tool call succeeded. This was a one-off
+scratch run, not a committed test or a change to `bench:mcp-resources`, and it
+does not establish the behavior of other proxy versions, Codex, Claude Code or
+T3 clients. The production effect of the new limits on idle gaps longer than
+15 minutes with an interrupted transport is still to be measured after
+deployment.
