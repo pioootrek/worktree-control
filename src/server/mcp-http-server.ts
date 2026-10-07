@@ -7,6 +7,7 @@ import type { ControlService } from "./control-service";
 import { resolveControllerAuthentication, type ControllerAuthenticationDependencies } from "./modules/authentication";
 import type { ControllerAuthentication, IdentityService } from "./modules/identity";
 import { knowledgeRequestLimit } from "@/shared/contracts/knowledge";
+import { McpSessionGovernor, type McpSessionClock, type McpSessionLimits } from "./modules/mcp-sessions";
 
 const BODY_LIMIT = 1024 * 1024;
 const ATTACHMENT_BODY_LIMIT = knowledgeRequestLimit("create_attachment") + 16 * 1024;
@@ -91,8 +92,13 @@ export function createMcpControllerServer(options: {
   identity?: Pick<IdentityService, "authenticateBearer" | "describeIdentity">;
   authentication?: ControllerAuthenticationDependencies["authentication"];
   onDiagnostic?: (message: string, details?: Record<string, unknown>) => void;
+  /** Session admission, idle and renewal limits; defaults apply to omitted values. */
+  sessionLimits?: Partial<McpSessionLimits>;
+  /** Timer port for session policy; tests supply a manual clock. */
+  sessionClock?: McpSessionClock;
 }): McpControllerServer {
   const diagnostics = new McpDiagnostics();
+  const governor = new McpSessionGovernor(options.sessionLimits, options.sessionClock);
   let runtimePromise: Promise<McpRuntimeLike> | null = null;
   const runtime = () => {
     runtimePromise ??= import("./transports/mcp/mcp-runtime").then(({ McpRuntime }) => new McpRuntime(
@@ -100,6 +106,7 @@ export function createMcpControllerServer(options: {
       options.onDiagnostic,
       options.identity,
       diagnostics,
+      governor,
     ));
     return runtimePromise;
   };
@@ -137,7 +144,7 @@ export function createMcpControllerServer(options: {
   return {
     server,
     async diagnosticsSnapshot() {
-      return runtimePromise ? (await runtimePromise).diagnosticsSnapshot() : { ...diagnostics.snapshot(), runtimeRetryEntries: 0 };
+      return runtimePromise ? (await runtimePromise).diagnosticsSnapshot() : { ...diagnostics.snapshot(), runtimeRetryEntries: 0, ...governor.describe() };
     },
     async closeSessions() {
       if (runtimePromise) await (await runtimePromise).close("authentication-policy");

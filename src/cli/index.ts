@@ -56,6 +56,7 @@ import { ProcessManager } from "../server/process-manager";
 import { loadOrCreateSecret } from "../server/secret-file";
 import { openControllerStore } from "../server/controller-storage";
 import { parseMigrationBackupOptions } from "./migration-backup-options";
+import { mcpSessionLimits, parseMcpSessionOptions } from "./mcp-session-options";
 import { WorktreeStorageManager } from "../server/worktree-storage";
 import { TestJobManager } from "../server/test-job-manager";
 
@@ -83,6 +84,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   if (command === "start" && remoteBackup.loaded && !backupPolicy.directory) throw new Error("Remote backup transfer requires --backup-dir.");
   const userBackupPolicy = parseUserBackupOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
   const migrationBackup = parseMigrationBackupOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
+  const mcpSessionOptions = parseMcpSessionOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
   validateBackupPolicyDestination(backupPolicy);
   const knowledgeArgs = command === "knowledge" ? parseKnowledgeCommandArgs(process.argv.slice(3)) : undefined;
   const paths = knowledgeArgs
@@ -242,6 +244,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     service,
     port: mcpPort,
     accessToken: loadOrCreateSecret(paths.mcpTokenPath),
+    sessionLimits: mcpSessionLimits(mcpSessionOptions),
     identity,
     authentication: {
       mode: () => maintenance ? "better-auth" : authentication.mode(),
@@ -446,6 +449,7 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
       noMcp: args.includes("--no-mcp"),
       memoryWarningMiB,
       publicOrigin,
+      mcpSessionOptions: parseMcpSessionOptions(args),
       ...migrationBackup,
       backupPolicy, userBackupPolicy, remoteBackupOptions: remoteBackup,
     });

@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { ErrorCode, McpError, isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
 
 import packageJson from "../../../../package.json";
@@ -13,13 +13,14 @@ import type { ClaimedRuntimeAction, ClaimedRuntimeReceipt, ProjectSnapshot } fro
 import { localizeServerMessage } from "../../../i18n/server-errors";
 import type { ControlService } from "../../control-service";
 import type { ControllerAuthentication, IdentityService } from "../../modules/identity";
+import { McpSessionGovernor, type GovernedMcpSession, type McpPolicyCloseReason, type McpTimer } from "../../modules/mcp-sessions";
 
 interface ClaimSecret {
   projectId: string;
   reservationId: string;
   token: string;
   ttlSeconds: number;
-  timer: NodeJS.Timeout | null;
+  timer: McpTimer | null;
 }
 
 interface McpSession {
@@ -32,9 +33,17 @@ interface McpSession {
   transport: StreamableHTTPServerTransport;
   claims: Map<string, ClaimSecret>;
   idempotencyTokens: Map<string, string>;
-  lifetimeTimer: NodeJS.Timeout | null;
   runtimeOperations: Map<string, RuntimeOperationEntry>;
+  /** Admission, liveness and drain policy owned by the mcp-sessions module. */
+  governed: GovernedMcpSession;
+  /** No new work: set when a policy close begins draining or the session closes. */
+  closing: boolean;
+  /** Final disposal ran; late settlements release their own resources. */
   closed: boolean;
+  cleanedUp: boolean;
+  closeAnnounced: boolean;
+  /** Call responses still awaiting the SDK; answered with an unknown outcome if the session closes first. */
+  pendingCalls: Map<ServerResponse, unknown>;
 }
 
 interface RuntimeOperationEntry {
@@ -89,6 +98,8 @@ function agentSnapshot(snapshot: ProjectSnapshot) {
 
 export class McpRuntime {
   private readonly sessions = new Map<string, McpSession>();
+  /** Sessions removed from routing that still drain accepted calls. */
+  private readonly draining = new Set<McpSession>();
   private runtimeOperationCount = 0;
 
   constructor(
@@ -96,7 +107,10 @@ export class McpRuntime {
     private readonly diagnostic: (message: string, details?: Record<string, unknown>) => void = () => undefined,
     private readonly identity?: Pick<IdentityService, "describeIdentity">,
     private readonly diagnostics = new McpDiagnostics(),
+    private readonly governor = new McpSessionGovernor(),
   ) {}
+
+  private get clock() { return this.governor.clock; }
 
   async handle(
     request: IncomingMessage,
@@ -108,11 +122,29 @@ export class McpRuntime {
     let session = sessionId ? this.sessions.get(sessionId) : undefined;
 
     if (!session && request.method === "POST" && !sessionId && isInitializeRequest(body)) {
-      session = this.createSession(authentication);
+      const admission = this.governor.admit(this.authenticationKey(authentication));
+      if (!admission.admitted) {
+        // Predictable refusal: established sessions are untouched and no
+        // session state, timer or transport is created for this request.
+        this.diagnostics.refused();
+        this.diagnostic("mcp.session_refused", { reason: "admission-refused", scope: admission.scope, limit: admission.limit });
+        response.writeHead(503, { "Content-Type": "application/json; charset=utf-8", "Retry-After": "60" });
+        response.end(JSON.stringify({
+          jsonrpc: "2.0",
+          error: {
+            code: -32000,
+            message: `MCP session limit reached (${admission.scope === "global" ? "controller" : "per-credential"} limit ${admission.limit}). Existing sessions keep working; close unused MCP clients or retry later.`,
+            data: { reason: "admission-refused", scope: admission.scope, limit: admission.limit },
+          },
+          id: (body as { id?: string | number }).id ?? null,
+        }));
+        return;
+      }
+      session = this.createSession(authentication, admission.session);
       try {
         await session.server.connect(session.transport);
         this.observeMessages(session);
-        await this.handleTransport(session, request, response, body);
+        await this.handleTransport(session, request, response, body, true);
         if (!session.transport.sessionId) { session.closeReason = "initialization-failed"; await session.server.close(); this.cleanupSession(session); }
       } catch (error) {
         session.closeReason = "initialization-failed";
@@ -147,11 +179,13 @@ export class McpRuntime {
     await this.handleTransport(session, request, response, body);
   }
 
+  /** Immediate close for controller shutdown and authentication policy; draining sessions keep their policy reason. */
   async close(reason: McpCloseReason = "controller-shutdown"): Promise<void> {
-    const sessions = [...this.sessions.values()];
+    const sessions = [...this.sessions.values(), ...this.draining];
     this.sessions.clear();
     for (const session of sessions) {
-      session.closeReason = reason;
+      if (!session.closing) session.closeReason = reason;
+      session.closing = true;
       this.clearTimers(session);
       this.disposeRuntimeOperations(session);
     }
@@ -160,11 +194,26 @@ export class McpRuntime {
 
   diagnosticsSnapshot() {
     const snapshot = this.diagnostics.snapshot();
-    const owners = new Map<number, string>();
-    for (const session of this.sessions.values()) { owners.set(session.observation.label, session.owner); if (owners.size === 32) break; }
-    return { ...snapshot, runtimeRetryEntries: this.runtimeOperationCount, sessions: snapshot.sessions.map(entry => ({
-      ...entry, statusWaits: owners.has(entry.label) ? this.service.statusWaitDiagnostics?.(owners.get(entry.label)) ?? null : null,
-    })) };
+    const live = new Map<number, McpSession>();
+    for (const session of [...this.sessions.values(), ...this.draining]) live.set(session.observation.label, session);
+    return {
+      ...snapshot,
+      runtimeRetryEntries: this.runtimeOperationCount,
+      ...this.governor.describe(),
+      sessions: snapshot.sessions.map(entry => {
+        const session = live.get(entry.label);
+        const deadline = session?.governed.deadline ?? null;
+        return {
+          ...entry,
+          state: session ? session.governed.state : "closed",
+          transportPhase: session && !session.closing ? session.governed.transport : "closed",
+          renewalPolicyState: !session || session.claims.size === 0 ? "none" : session.governed.renewalStopped ? "stopped-idle" : "renewing",
+          closeDueAt: deadline ? new Date(deadline.at).toISOString() : null,
+          closeDueReason: deadline?.reason ?? null,
+          statusWaits: session && !session.closing ? this.service.statusWaitDiagnostics?.(session.owner) ?? null : null,
+        };
+      }),
+    };
   }
 
   private observeMessages(session: McpSession): void {
@@ -175,17 +224,21 @@ export class McpRuntime {
     };
   }
 
-  private async handleTransport(session: McpSession, request: IncomingMessage, response: ServerResponse, body?: unknown): Promise<void> {
+  private async handleTransport(session: McpSession, request: IncomingMessage, response: ServerResponse, body?: unknown, initialize = false): Promise<void> {
     this.diagnostics.change(session.observation, "openResponses", 1);
+    const governed = session.governed.openResponse();
+    if (request.method === "POST" && !initialize) session.pendingCalls.set(response, body && typeof body === "object" && "id" in body ? body.id : null);
     let ended = false, sse = false;
     const end = () => {
       if (ended) return;
       ended = true;
+      session.pendingCalls.delete(response);
       response.off("finish", end); response.off("close", end);
       if (response.writeHead === observeHead) response.writeHead = writeHead;
       this.diagnostics.change(session.observation, "openResponses", -1);
       if (sse) this.diagnostics.change(session.observation, "sseResponses", -1);
-      session.observation.lastTransportEndedAt = new Date().toISOString();
+      session.observation.lastTransportEndedAt = new Date(this.clock.now()).toISOString();
+      governed.close();
     };
     // The SDK/Hono handler remains pending for a streaming body. Observe the
     // public HTTP header write, rather than awaiting that handler or inspecting
@@ -196,6 +249,7 @@ export class McpRuntime {
       if (!ended && !sse && request.method === "GET" && args[0] === 200) {
         sse = true;
         diagnostics.change(session.observation, "sseResponses", 1);
+        governed.markStream();
       }
       return result;
     };
@@ -210,7 +264,7 @@ export class McpRuntime {
     return `${authentication.kind}:${authentication.actor.credentialId}`;
   }
 
-  private createSession(authentication: ControllerAuthentication): McpSession {
+  private createSession(authentication: ControllerAuthentication, governed: GovernedMcpSession): McpSession {
     const session: McpSession = {
       observation: this.diagnostics.create(),
       closeReason: "transport-close",
@@ -221,14 +275,18 @@ export class McpRuntime {
       transport: null as unknown as StreamableHTTPServerTransport,
       claims: new Map(),
       idempotencyTokens: new Map(),
-      lifetimeTimer: null,
       runtimeOperations: new Map(),
+      governed,
+      closing: false,
       closed: false,
+      cleanedUp: false,
+      closeAnnounced: false,
+      pendingCalls: new Map(),
     };
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: randomUUID,
       enableJsonResponse: true,
-      onsessionclosed: () => { session.closeReason = "client-delete"; },
+      onsessionclosed: () => { if (!session.closing) session.closeReason = "client-delete"; },
       onsessioninitialized: (sessionId) => {
         session.owner = `agent:mcp:${sessionId}`;
         this.sessions.set(sessionId, session);
@@ -238,32 +296,107 @@ export class McpRuntime {
     });
     session.transport = transport;
     session.server = this.createProtocolServer(session);
-    session.lifetimeTimer = setTimeout(() => { session.closeReason = "absolute-lifetime"; void session.server.close(); }, 8 * 60 * 60_000);
-    this.diagnostics.change(session.observation, "lifetimeTimers", 1);
-    session.lifetimeTimer.unref();
+    // One deadline timer per session covers absolute lifetime and idle policy;
+    // the diagnostics keep reporting it as the session's lifetime timer.
+    governed.start(
+      reason => this.beginClose(session, reason),
+      (kind, delta) => this.diagnostics.change(session.observation, kind === "deadline" ? "lifetimeTimers" : "drainTimers", delta),
+    );
     transport.onclose = () => {
       this.cleanupSession(session);
     };
     return session;
   }
 
-  private cleanupSession(session: McpSession): void {
-    if (session.observation.closed) return;
+  /**
+   * Policy close: admit no new work, stop renewal and drain accepted calls for
+   * a bounded time. Their real outcomes stay reported; nothing is replayed.
+   * Managed servers, accepted test jobs and client processes are untouched.
+   */
+  private beginClose(session: McpSession, reason: McpPolicyCloseReason): void {
+    if (session.closing) return;
+    session.closing = true;
+    session.closeReason = reason;
     const sessionId = session.transport.sessionId;
     if (sessionId) this.sessions.delete(sessionId);
+    this.draining.add(session);
+    this.clearTimers(session);
+    this.diagnostics.close(session.observation, reason);
+    this.announceClosed(session);
+    session.governed.beginDrain(() => { void session.server.close(); });
+  }
+
+  private announceClosed(session: McpSession): void {
+    if (session.closeAnnounced) return;
+    session.closeAnnounced = true;
+    this.diagnostic("mcp.session_closed", { sessionId: session.transport.sessionId, reason: session.closeReason });
+  }
+
+  private cleanupSession(session: McpSession): void {
+    if (session.cleanedUp) return;
+    session.cleanedUp = true;
+    session.closing = true;
+    const sessionId = session.transport.sessionId;
+    if (sessionId && this.sessions.get(sessionId) === session) this.sessions.delete(sessionId);
+    this.draining.delete(session);
     this.clearTimers(session);
     this.disposeRuntimeOperations(session);
+    this.answerPendingCalls(session);
+    session.governed.markClosed();
     this.diagnostics.close(session.observation, session.closeReason);
-    this.diagnostic("mcp.session_closed", { sessionId, reason: session.closeReason });
+    this.announceClosed(session);
+  }
+
+  /**
+   * The SDK drops a pending JSON response when its transport closes, which
+   * would keep the HTTP response and the admission slot open indefinitely.
+   * Answer it truthfully instead: the call may still complete, so its outcome
+   * is unknown and must be inspected rather than replayed.
+   */
+  private answerPendingCalls(session: McpSession): void {
+    for (const [response, id] of [...session.pendingCalls]) {
+      session.pendingCalls.delete(response);
+      if (response.headersSent || response.writableEnded) continue;
+      response.writeHead(503, { "Content-Type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({
+        jsonrpc: "2.0",
+        error: {
+          code: -32000,
+          message: "The MCP session closed before this request completed. Its outcome is unknown: inspect current status before retrying, and do not repeat a mutation blindly.",
+          data: { reason: session.closeReason, outcome: "unknown" },
+        },
+        id: id ?? null,
+      }));
+    }
+  }
+
+  private recordActivity(session: McpSession): void {
+    if (session.closing) return;
+    const resumed = session.governed.activity();
+    this.diagnostics.qualifyingActivity(session.observation, new Date(this.clock.now()).toISOString());
+    // A returning client resumes renewal of claims whose renewal stopped for
+    // idleness, provided the persisted lease has not expired meanwhile.
+    if (resumed) for (const claim of session.claims.values()) if (!claim.timer) this.scheduleRenewal(session, claim, 0);
   }
 
   private createProtocolServer(session: McpSession): McpServer {
     const server = new McpServer({ name: "worktree-control", version: packageJson.version });
     const setRequestHandler = server.server.setRequestHandler.bind(server.server);
     server.server.setRequestHandler = (schema, handler) => setRequestHandler(schema, async (request, extra) => {
+      if (session.closing) throw new McpError(ErrorCode.InvalidRequest, "The MCP session is closing and accepts no new work. Start a new session.");
+      // Qualifying activity: an authenticated tool call or resource read,
+      // stamped when it starts and when it settles. Listing, initialize,
+      // ping, SSE reconnects and server renewals never extend liveness.
+      const qualifying = request.method === "tools/call" || request.method === "resources/read";
+      const settle = session.governed.callStarted();
       this.diagnostics.change(session.observation, "operations", 1);
+      if (qualifying) this.recordActivity(session);
       try { return await handler(request, extra); }
-      finally { this.diagnostics.change(session.observation, "operations", -1); }
+      finally {
+        if (qualifying) this.recordActivity(session);
+        this.diagnostics.change(session.observation, "operations", -1);
+        settle();
+      }
     });
     if (session.authentication.kind !== "legacy") {
       const actor = session.authentication.actor;
@@ -561,7 +694,7 @@ export class McpRuntime {
         ttlSeconds,
         owner: owner(),
       }, existingToken, responseMode !== "compact"));
-      if (session.closed) {
+      if (session.closing) {
         // The accepted operation may have completed, but this closed session
         // cannot retain its secret or acquire a new renewal resource. Preserve
         // the resulting lease's TTL and the project's independent lifecycle.
@@ -577,7 +710,7 @@ export class McpRuntime {
       };
       if (!session.claims.has(result.reservation.id)) this.diagnostics.change(session.observation, "claims", 1);
       const previous = session.claims.get(result.reservation.id);
-      if (previous?.timer) { clearTimeout(previous.timer); this.diagnostics.change(session.observation, "renewalTimers", -1); }
+      if (previous?.timer) { this.clock.clearTimeout(previous.timer); this.diagnostics.change(session.observation, "renewalTimers", -1); }
       session.claims.set(result.reservation.id, claim);
       this.scheduleRenewal(session, claim);
       if (responseMode === "compact") return jsonContent({
@@ -640,7 +773,7 @@ export class McpRuntime {
     }, async ({ projectId, reservationId }) => {
       const claim = this.requireClaim(session, projectId, reservationId);
       await english(() => this.service.releaseAgentClaim(projectId, reservationId, owner(), claim.token));
-      if (claim.timer) { clearTimeout(claim.timer); claim.timer = null; this.diagnostics.change(session.observation, "renewalTimers", -1); }
+      if (claim.timer) { this.clock.clearTimeout(claim.timer); claim.timer = null; this.diagnostics.change(session.observation, "renewalTimers", -1); }
       if (session.claims.delete(reservationId)) this.diagnostics.change(session.observation, "claims", -1);
       return jsonContent({ released: true, projectId, reservationId });
     });
@@ -668,14 +801,14 @@ export class McpRuntime {
       if (existing.fingerprint !== fingerprint) throw new Error("The idempotency key was already used for a different runtime operation.");
       return { ...(await existing.promise), replayed: true };
     }
-    if (session.closed) throw new Error("The MCP session is closed.");
+    if (session.closing) throw new Error("The MCP session is closed.");
     if (session.runtimeOperations.size >= 64 || this.runtimeOperationCount >= 512) {
       throw new Error("The runtime operation retry ledger is full. Start a new MCP session before submitting another operation.");
     }
     const entry: RuntimeOperationEntry = { fingerprint, promise: null as unknown as Promise<ClaimedRuntimeReceipt>, settled: false, counted: true };
     this.runtimeOperationCount += 1;
     entry.promise = this.service.operateClaimedRuntime(
-      projectId, reservationId, action, { owner: session.owner, leaseToken: claim.token }, signal, () => session.closed,
+      projectId, reservationId, action, { owner: session.owner, leaseToken: claim.token }, signal, () => session.closing,
     ).then((receipt) => {
       entry.settled = true;
       return receipt;
@@ -703,14 +836,22 @@ export class McpRuntime {
     this.runtimeOperationCount -= 1;
   }
 
-  private scheduleRenewal(session: McpSession, claim: ClaimSecret): void {
-    if (session.closed || session.claims.get(claim.reservationId) !== claim) return;
-    if (claim.timer) { clearTimeout(claim.timer); this.diagnostics.change(session.observation, "renewalTimers", -1); }
-    const delay = Math.max(10_000, Math.min(10 * 60_000, Math.floor(claim.ttlSeconds * 1000 / 3)));
+  private scheduleRenewal(session: McpSession, claim: ClaimSecret, delayMs?: number): void {
+    if (session.closing || session.claims.get(claim.reservationId) !== claim) return;
+    if (claim.timer) { this.clock.clearTimeout(claim.timer); this.diagnostics.change(session.observation, "renewalTimers", -1); }
+    const delay = delayMs ?? Math.max(10_000, Math.min(10 * 60_000, Math.floor(claim.ttlSeconds * 1000 / 3)));
     this.diagnostics.change(session.observation, "renewalTimers", 1);
-    claim.timer = setTimeout(() => {
+    claim.timer = this.clock.setTimeout(() => {
       claim.timer = null;
       this.diagnostics.change(session.observation, "renewalTimers", -1);
+      if (session.closing || session.claims.get(claim.reservationId) !== claim) return;
+      if (!session.governed.renewalAllowed()) {
+        // Without qualifying activity the lease is not extended. It stays held
+        // for its remaining TTL and is never released early or handed over.
+        this.diagnostics.renewalSkipped(session.observation);
+        this.diagnostic("mcp.claim_auto_renew_stopped", { projectId: claim.projectId, reservationId: claim.reservationId, reason: "client-idle" });
+        return;
+      }
       try {
         this.service.renewAgentClaim(claim.projectId, claim.reservationId, session.owner, claim.token, claim.ttlSeconds);
         this.diagnostics.renewed(session.observation, true);
@@ -727,12 +868,11 @@ export class McpRuntime {
         });
       }
     }, delay);
-    claim.timer.unref();
   }
 
+  /** Dispose session-held claim handles and secrets; persisted leases keep their remaining TTL. */
   private clearTimers(session: McpSession): void {
-    if (session.lifetimeTimer) { clearTimeout(session.lifetimeTimer); session.lifetimeTimer = null; this.diagnostics.change(session.observation, "lifetimeTimers", -1); }
-    for (const claim of session.claims.values()) if (claim.timer) { clearTimeout(claim.timer); claim.timer = null; this.diagnostics.change(session.observation, "renewalTimers", -1); }
+    for (const claim of session.claims.values()) if (claim.timer) { this.clock.clearTimeout(claim.timer); claim.timer = null; this.diagnostics.change(session.observation, "renewalTimers", -1); }
     this.diagnostics.change(session.observation, "claims", -session.observation.claims);
     session.claims.clear();
     session.idempotencyTokens.clear();
