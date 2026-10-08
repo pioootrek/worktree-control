@@ -1,6 +1,6 @@
 ---
 audience: "people installing Worktree Control from the npm registry or a verified tarball"
-last_reviewed: "2026-10-05"
+last_reviewed: "2026-10-08"
 source_of_truth: "trial artifact installation, first run, upgrade, and removal"
 status: "active"
 ---
@@ -25,7 +25,7 @@ worktree-control doctor
 A global install into the system prefix may need elevated rights. To stay
 without `sudo`, use the user-owned prefix shown below with `npm install --global
 --prefix "$HOME/.local/worktree-control" worktree-control`. Then continue with
-the token and service steps under [Install without sudo](#install-without-sudo).
+the first-run steps under [Install without sudo](#install-without-sudo).
 The registry package is named `worktree-control`; the unrelated `worktree-switcher`
 package on npm is a different project.
 
@@ -81,22 +81,22 @@ resolves production dependencies at that time; the tarball checksum does not
 freeze their transitive versions. Keep the smoke report supplied with a release
 candidate when exact resolved dependencies matter for diagnosis.
 
-A new installation runs in `token` mode. Generate the installation token once
-and save it in a password manager; the controller refuses to start without it.
-See [authentication modes](authentication.md).
-
-```bash
-worktree-control auth token generate
-```
-
-To run without a service manager:
+A new installation runs in `token` mode. Its first start creates the
+installation token. To run without a service manager:
 
 ```bash
 worktree-control start --host 127.0.0.1
 ```
 
-Open the printed address and sign in with the installation token. Keep the
-token out of logs and issues. Stop it with `Ctrl-C` before installing the background service.
+The first run prints the installation token once. Save it in a password manager
+straight away; it is not shown again. If you lose it, run
+`worktree-control auth token rotate` to issue a new one. Open the printed
+address and sign in with the token. Keep the token out of logs and issues. Stop
+the controller with `Ctrl-C` before installing the background service.
+
+The token is printed only to an interactive terminal. In a script or CI job,
+run `worktree-control auth token generate` first and store its output
+privately. See [authentication modes](authentication.md).
 
 ## Install the user service
 
@@ -108,7 +108,9 @@ worktree-control service status
 worktree-control service open
 ```
 
-`service open` opens the dashboard sign-in page. For custom ports, directories, or a
+If you skipped `start`, `service install` prints the installation token once
+before it starts the service; save it as described above. `service open` opens
+the dashboard sign-in page. For custom ports, directories, or a
 public HTTPS origin, follow the bundled [user-service guide](user-service.md)
 and [HTTPS guide](controller-https.md).
 

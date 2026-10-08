@@ -80,19 +80,21 @@ author. Linux x64 is verified; macOS and Windows are unverified. The CLI and
 data model may change; see the [changelog](CHANGELOG.md).
 
 Install [Node.js 22 or newer](https://nodejs.org/) and Git, then install and
-start the controller. Installing takes one command; a new installation refuses
-to start until you generate its token once:
+start the controller:
 
 ```bash
 npm install --global worktree-control
-worktree-control auth token generate
 worktree-control start --host 127.0.0.1
 ```
 
-Save the token printed by `auth token generate`; it is shown once. Open the
-controller's printed address and sign in with that token. To keep the controller
-running after you close the terminal, stop it and run
-`worktree-control service install --host 127.0.0.1` instead of `start`; see
+The first start prints the installation token once. Save it in a password
+manager; it is not shown again, and `worktree-control auth token rotate` issues
+a new one. Open the controller's printed address and sign in with that token.
+The token is printed only to an interactive terminal; in scripts and CI run
+`worktree-control auth token generate` first. To keep the controller running
+after you close the terminal, run
+`worktree-control service install --host 127.0.0.1` instead of `start`. It
+prints the token the same way if none exists yet; see
 [Run it in the background](#run-it-in-the-background). A global install into the
 system npm prefix may need elevated rights. The
 [installation guide](docs/package-trial.md) shows a user-owned prefix and how to
@@ -125,7 +127,6 @@ git clone https://github.com/pioootrek/worktree-control.git
 cd worktree-control
 pnpm install --frozen-lockfile
 pnpm build
-node dist/cli/index.js auth token generate
 node dist/cli/index.js start --host 127.0.0.1
 ```
 
