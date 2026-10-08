@@ -26,6 +26,7 @@ import {
   validatePublicControllerBackend,
 } from "./controller-addresses";
 import { writeCliLine } from "./output";
+import { cliInformation } from "./help";
 import { runAuthCommand } from "./auth-management";
 import { bootstrapInstallationToken, bootstrapServiceInstallationToken } from "./first-run-token";
 import { runIdentityCommand } from "./identity-management";
@@ -75,6 +76,11 @@ function optionalPositiveNumber(value: string | undefined, label: string): numbe
 }
 
 async function main(retainedLock?: ControllerLock): Promise<void> {
+  const information = retainedLock ? null : cliInformation(process.argv.slice(2), packageJson.version);
+  if (information !== null) {
+    process.stdout.write(`${information}\n`);
+    return;
+  }
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
   if (command === "service") {
