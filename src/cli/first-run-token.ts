@@ -54,9 +54,10 @@ export function bootstrapInstallationToken(authentication: AuthenticationService
 }
 
 /**
- * `service install` variant: runs offline under the controller lock before the unit starts. A
- * running controller already satisfies its startup policy, and a database that still needs a
- * migration or restore recovery is left to the controller, so neither is opened here.
+ * `service install` variant: runs offline under the controller lock before the unit starts, like
+ * `auth token generate`. A running controller (or another database owner) already satisfies its
+ * startup policy; a database that still needs a migration or a pending restore handoff is left to
+ * the controller. None of them is opened here.
  */
 export function bootstrapServiceInstallationToken(paths: AppPaths, options: FirstRunTokenOptions): boolean {
   let lock;
@@ -73,7 +74,12 @@ export function bootstrapServiceInstallationToken(paths: AppPaths, options: Firs
     } catch {
       return false;
     }
-    store = openCurrentControllerStore(paths.databasePath);
+    try {
+      store = openCurrentControllerStore(paths.databasePath);
+    } catch (error) {
+      if (error instanceof ControllerAlreadyRunningError) return false;
+      throw error;
+    }
     if (!store) return false;
     return bootstrapInstallationToken(new AuthenticationService(store), options);
   } finally {

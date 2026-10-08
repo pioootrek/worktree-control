@@ -209,4 +209,17 @@ describe("service install first-run token", () => {
     }
     expect(tty.output).toEqual([]);
   });
+
+  it("leaves a database held by another owner alone", () => {
+    const appPaths = paths();
+    const owner = new SqliteStateStore(appPaths.databasePath);
+    const tty = terminal(true);
+    try {
+      expect(bootstrapServiceInstallationToken(appPaths, { terminal: tty, locale: "en" })).toBe(false);
+    } finally {
+      owner.close();
+    }
+    expect(tty.output).toEqual([]);
+    acquireControllerLock(appPaths.controllerLockPath).release();
+  });
 });
