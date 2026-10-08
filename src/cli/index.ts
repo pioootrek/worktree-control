@@ -26,7 +26,9 @@ import {
   validatePublicControllerBackend,
 } from "./controller-addresses";
 import { writeCliLine } from "./output";
+import { cliInformation } from "./help";
 import { runAuthCommand } from "./auth-management";
+import { bootstrapInstallationToken, bootstrapServiceInstallationToken } from "./first-run-token";
 import { runIdentityCommand } from "./identity-management";
 import { runBackupCommand } from "./backup-management";
 import { runBackupMonitor } from "./backup-monitor";
@@ -74,6 +76,11 @@ function optionalPositiveNumber(value: string | undefined, label: string): numbe
 }
 
 async function main(retainedLock?: ControllerLock): Promise<void> {
+  const information = retainedLock ? null : cliInformation(process.argv.slice(2), packageJson.version);
+  if (information !== null) {
+    process.stdout.write(`${information}\n`);
+    return;
+  }
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
   if (command === "service") {
@@ -181,8 +188,11 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     if (handoff) finishBackupHandoff(paths.databasePath, handoff, store);
   } catch (error) { store?.close(); controllerLock.release(); throw error; }
   const authentication = new AuthenticationService(store);
+  const serviceMode = process.argv.includes("--service-mode");
   let logs: FileLogWriter;
   try {
+    // Only a first start may issue the token; a restore handoff keeps the restored policy as is.
+    if (!retainedLock) bootstrapInstallationToken(authentication, { terminal: process.stdout, locale, serviceMode });
     authentication.assertStartupPolicy();
     logs = new FileLogWriter(paths.logDirectory);
   } catch (error) {
@@ -316,7 +326,6 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     : new URL("/", origin).toString();
   const advertisedAddress = accessLink(advertisedOrigin);
   const interactiveAddress = accessLink(interactiveControllerOrigin(localOrigin, publicOrigin));
-  const serviceMode = process.argv.includes("--service-mode");
   const startedAt = new Date().toISOString();
   const recordServiceAccess = () => writeServiceAccess(paths.serviceAccessPath, {
     pid: process.pid,
@@ -481,6 +490,8 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
       throw new Error("Legacy service settings would change. Review service install --print, then repeat with --yes to accept the listed changes.");
     }
     manager.assertInstalledServiceConfiguration();
+    // The unit's output goes to a service log, so a first-run token is shown here, before it starts.
+    bootstrapServiceInstallationToken(paths, { terminal: process.stdout, locale: systemLocale(process.env) });
     if (legacyInstalled || (installed && installOptions.refresh)) {
       writeCliLine("Warning: installing this upgrade restarts the controller and stops its managed servers and active tests. Reacquire claims and start servers after the upgrade.");
     }

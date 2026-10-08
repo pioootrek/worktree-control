@@ -1,6 +1,6 @@
 ---
 audience: "people running Worktree Control and choosing how callers authenticate"
-last_reviewed: "2026-10-05"
+last_reviewed: "2026-10-08"
 source_of_truth: "authentication modes, the auth CLI, and migration from legacy access"
 status: "active"
 ---
@@ -38,8 +38,10 @@ owner-only Unix socket, `admin.sock` in the state directory. The socket is
 controller closes MCP sessions and live dashboard connections, and those
 callers must authenticate again.
 
-`token generate` and `token rotate` print the token once. The controller stores
-only a hash; a lost token cannot be recovered, only rotated. Rotation
+`token generate` and `token rotate` print the token once. The first `start` or
+`service install` of a new installation does the same; see
+[Use token mode](#use-token-mode). The controller stores only a hash; a lost
+token cannot be recovered, only rotated. Rotation
 invalidates the previous token immediately. Save the token in a password
 manager and keep it out of issues, logs and shared shell history.
 
@@ -47,8 +49,18 @@ There is no command to return to `legacy`.
 
 ## Use token mode
 
-A new installation starts in `token` mode without a token. The controller
-refuses to start until you run `auth token generate`.
+A new installation starts in `token` mode without a token. The first
+`worktree-control start` or `worktree-control service install` run from an
+interactive terminal creates it, exactly as `auth token generate` would, and
+prints it once with a reminder to save it. `start` then keeps running;
+`service install` prints the token before the service starts, so it never
+reaches the service log. Save the token in a password manager straight away.
+If you lose it, run `worktree-control auth token rotate`.
+
+The controller prints a new token only to an interactive terminal. When output
+goes to a pipe, a file or a service log (CI, scripts, `--service-mode`), `start`
+and `service install` refuse and ask you to run `auth token generate` first.
+Run it in a terminal, save the token, then repeat the command.
 
 - **Browser:** the dashboard asks for the token and keeps it for the browser
   tab's session. **Sign out** forgets it. `service open` and `service url` open
@@ -127,8 +139,9 @@ apply after the upgrade:
 
 New installations differ from earlier releases:
 
-- `start` and the user service refuse to run until `auth token generate`
-  creates the installation token.
+- The first interactive `start` or `service install` creates the installation
+  token and prints it once. Without an interactive terminal, both refuse until
+  `auth token generate` creates it.
 - The controller prints no pairing link. `service open` and `service url` show
   the sign-in page.
 - `config mcp` prints a token placeholder unless `WORKTREE_CONTROL_TOKEN` is

@@ -18,10 +18,17 @@ export type RestoreHandoff = z.infer<typeof handoffSchema>;
 const handoffPath = (database: string) => join(privateDirectory(`${database}.backup-operations`), "handoff.json");
 const publicStatus = (record: RestoreHandoff): RestoreOperation => ({ operationId: record.operationId, backupId: record.actor.backupId, createdAt: record.createdAt, state: record.state });
 const sameActor = (actor: BackupActor): string => typeof actor === "string" ? actor : `installation:${actor.credentialId}`;
+/** A restore handoff awaits completion by controller startup; distinct from an unreadable record. */
+export class BackupHandoffPendingError extends Error {
+  constructor() {
+    super("Start the controller to complete restore authentication recovery before offline administration.");
+    this.name = "BackupHandoffPendingError";
+  }
+}
 /** Offline transports must not trust a replaced database before startup finishes its security fence. */
 export function assertBackupHandoffCompleted(database: string): void {
   const record = readRecord(join(`${database}.backup-operations`, "handoff.json"), handoffSchema);
-  if (record?.state === "executing") throw new Error("Start the controller to complete restore authentication recovery before offline administration.");
+  if (record?.state === "executing") throw new BackupHandoffPendingError();
 }
 /** Read-only guard called under canonical ownership; does not run recovery. */
 export function assertNoUnfinishedBackupHandoff(database: string): RestoreHandoff | null {

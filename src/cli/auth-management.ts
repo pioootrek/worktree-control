@@ -12,7 +12,8 @@ export interface AuthCommandDependencies {
   write?: (line: string) => void;
 }
 
-const ACTOR = "local-cli";
+/** Audit actor of offline auth administration, including the first-run token of `start`. */
+export const AUTH_CLI_ACTOR = "local-cli";
 
 /**
  * A stopped controller is administered offline under the singleton lock; a running one through
@@ -46,7 +47,7 @@ export async function runAuthCommand(
   let store: SqliteStateStore | null = null;
   try {
     store = new SqliteStateStore(paths.databasePath);
-    const { result } = executeAuthenticationCommand(new AuthenticationService(store), request, ACTOR);
+    const { result } = executeAuthenticationCommand(new AuthenticationService(store), request, AUTH_CLI_ACTOR);
     write(JSON.stringify(result, null, 2));
   } finally {
     store?.close();

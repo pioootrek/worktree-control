@@ -31,13 +31,13 @@ controller share the same state directory.
 worktree-control doctor
 ```
 
-A new installation runs in `token` mode and refuses to start without an
-installation token. Generate it once before installing the service and save it
-privately; see [authentication modes](authentication.md).
-
-```bash
-worktree-control auth token generate
-```
+A new installation runs in `token` mode. If it has no installation token yet,
+`service install` creates one and prints it once, before the service starts.
+Save it in a password manager; it is not shown again, and
+`worktree-control auth token rotate` replaces a lost token. The token is never
+written to the service definition or its logs. Without an interactive terminal,
+`service install` refuses; run `worktree-control auth token generate` first.
+See [authentication modes](authentication.md).
 
 The examples below use the executable installed into a user-owned npm prefix.
 When developing from a source checkout, use `node dist/cli/index.js` in its

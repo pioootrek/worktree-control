@@ -182,10 +182,10 @@
         </p>
         <p>
           Requires <a href="https://nodejs.org/">Node.js 22 or newer</a> and Git. Install the
-          package, then generate the installation token:
+          package, then start the controller on loopback:
         </p>
         <pre class="code" tabindex="0" aria-label="Install commands"><code><span class="prompt" aria-hidden="true">$ </span>npm install -g worktree-control@0.1.0
-<span class="prompt" aria-hidden="true">$ </span>worktree-control auth token generate</code></pre>
+<span class="prompt" aria-hidden="true">$ </span>worktree-control start --host 127.0.0.1</code></pre>
         <p>
           Until 0.1.0 is on npm, the first command fails with a "no matching version" error. The
           <a href="https://github.com/pioootrek/worktree-control#quick-start">source build in the README</a>
@@ -193,14 +193,16 @@
           are the install paths that work today.
         </p>
         <p>
-          Save the printed token; it is shown once. Start the controller on loopback, open the
-          printed address and sign in with that token:
+          The first start prints the installation token once. Save it in a password manager; it is
+          not shown again, and <code>worktree-control auth token rotate</code> issues a new one.
+          Open the printed address and sign in with that token. In scripts and CI, where the token
+          is not printed, run <code>worktree-control auth token generate</code> first.
         </p>
-        <pre class="code" tabindex="0" aria-label="Start command"><code><span class="prompt" aria-hidden="true">$ </span>worktree-control start --host 127.0.0.1</code></pre>
         <p>
           The command is also available as <code>wtc</code>. The dashboard listens on port
           <code>47831</code> and MCP on loopback port <code>47832</code>. To run it in the
-          background, see the
+          background, use <code>worktree-control service install --host 127.0.0.1</code> instead
+          of <code>start</code>; it prints the token the same way. See the
           <a href="https://github.com/pioootrek/worktree-control/blob/main/docs/user-service.md">user-service guide</a>.
         </p>
         <p class="note">

@@ -22,3 +22,16 @@ export async function openControllerStore(databasePath: string, options: Migrati
     return new SqliteStateStore(databasePath, inspected);
   } catch (error) { inspected.close(); throw error; }
 }
+
+/**
+ * Opens the store only when that has no migration effect: the database is new or already at the
+ * supported schema. Returns null otherwise, leaving migration and its backup policy to the controller.
+ */
+export function openCurrentControllerStore(databasePath: string): SqliteStateStore | null {
+  const inspected = new OwnedSqliteDatabase(databasePath, true);
+  if (!inspected.inspection.fresh && inspected.inspection.version !== SUPPORTED_SCHEMA_VERSION) {
+    inspected.close();
+    return null;
+  }
+  return new SqliteStateStore(databasePath, inspected);
+}
