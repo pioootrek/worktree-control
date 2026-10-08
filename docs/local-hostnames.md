@@ -34,9 +34,10 @@ http://api.localhost {
 ```
 
 Use the port assigned to the project in Worktree Control. `bind 127.0.0.1`
-keeps the proxy off your network. The `http://` prefix keeps Caddy from issuing a certificate for the name. Port 80 is privileged on
-many systems; append a port such as `http://frontend.localhost:8080` to the
-site address if Caddy cannot bind it, and open `http://frontend.localhost:8080`.
+keeps the proxy off your network. The `http://` prefix keeps Caddy from
+issuing a certificate for the name. Port 80 is privileged on many systems;
+append a port such as `http://frontend.localhost:8080` to the site address if
+Caddy cannot bind it, and open `http://frontend.localhost:8080`.
 Validate the file before reloading Caddy:
 
 ```bash
@@ -65,9 +66,8 @@ The `localhost` top-level name is reserved for loopback by
   `/etc/hosts` line such as `127.0.0.1 frontend.localhost`.
 
 Because a name can resolve to `::1`, the upstream in the Caddyfile above uses
-`127.0.0.1` explicitly, which matches the loopback address the controller's
-Django preset binds. A dev server that listens only on one address family may
-be unreachable by name when you bypass the proxy.
+`127.0.0.1` explicitly. A dev server that listens only on one address family
+may be unreachable by name when you bypass the proxy.
 
 ## Limits
 
