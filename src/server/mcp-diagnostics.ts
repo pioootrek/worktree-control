@@ -2,8 +2,8 @@
  * Observations only: admission, liveness, renewal and drain decisions belong to
  * the mcp-sessions application module; this records their outcomes.
  */
-export type McpCloseReason = "client-delete" | "absolute-lifetime" | "authentication-policy" | "controller-shutdown" | "initialization-failed" | "transport-close"
-  | "idle-expired" | "abandoned-transport" | "admission-refused";
+import type { McpCloseReason } from "@/shared/contracts/mcp-diagnostics";
+export type { McpCloseReason } from "@/shared/contracts/mcp-diagnostics";
 type Gauge = "openResponses" | "sseResponses" | "operations" | "claims" | "renewalTimers" | "lifetimeTimers" | "drainTimers";
 const DETAIL_LIMIT = 32;
 export interface McpSessionObservation {

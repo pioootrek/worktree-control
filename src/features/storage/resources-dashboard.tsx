@@ -18,16 +18,18 @@ import { useI18n } from "@/i18n/provider";
 import type { ProjectSnapshot } from "@/shared/contracts";
 import { restoreDetailFocus, type DetailReturnTarget } from "@/features/detail-return-focus";
 import { bytes, cacheBlock, currentMetrics, runtimeActive, storageRows, sumKnown, type StorageRow } from "./resource-summary";
+import { McpSessionsPanel } from "@/features/mcp/mcp-sessions-panel";
+import type { McpDiagnosticsRead } from "@/features/mcp/session-summary";
 import { WorktreeStoragePanel } from "./worktree-storage-panel";
 
 const ALL = "__all__";
 const descending = (a: number | null, b: number | null) => a === null ? b === null ? 0 : 1 : b === null ? -1 : b - a;
 
-export function ResourcesDashboard({ snapshots, aggregate, mutate, setError }: {
+export function ResourcesDashboard({ snapshots, aggregate, mutate, setError, view, setView, diagnostics, refreshDiagnostics }: {
+  view: string; setView: (value: string) => void; diagnostics: McpDiagnosticsRead; refreshDiagnostics: () => void;
   snapshots: ProjectSnapshot[]; aggregate: boolean; mutate: Mutate; setError: (error: string | null) => void;
 }) {
   const { t, locale } = useI18n();
-  const [view, setView] = useState("storage");
   const [query, setQuery] = useState("");
   const [project, setProject] = useState(ALL);
   const [status, setStatus] = useState(ALL);
@@ -80,8 +82,8 @@ export function ResourcesDashboard({ snapshots, aggregate, mutate, setError }: {
     <div className="grid grid-cols-2 gap-2 lg:grid-cols-4" data-resource-metrics>{metrics.map(({ label, icon: Icon, value, hint, action, selected }) => <Button key={label} variant="outline" aria-pressed={selected} className={`h-auto min-h-20 w-full flex-col items-start justify-start gap-1 whitespace-normal px-3 py-2 text-left ${selected ? "border-primary/60 bg-primary/10" : ""}`} onClick={action}><span className="flex items-center gap-1.5 text-xs text-muted-foreground"><Icon className="size-4 shrink-0" aria-hidden />{label}</span><span className="text-base font-semibold tabular-nums sm:text-lg">{value}</span><span className="text-xs font-normal leading-snug text-muted-foreground">{hint}</span></Button>)}</div>
     <p className="text-sm text-muted-foreground">{active.length ? t("resourceView.activeServers", { count: active.length }) : t("resourceView.noServers")}</p>
     <Tabs value={view} onValueChange={changeView}>
-      <TabsList><TabsTrigger value="storage">{t("storage.tab")} ({rows.length})</TabsTrigger><TabsTrigger value="servers">{t("resourceView.servers")} ({snapshots.length})</TabsTrigger></TabsList>
-      <div className="my-4 flex flex-wrap items-end gap-3">
+      <TabsList><TabsTrigger value="storage">{t("storage.tab")} ({rows.length})</TabsTrigger><TabsTrigger value="servers">{t("resourceView.servers")} ({snapshots.length})</TabsTrigger><TabsTrigger value="sessions">{t("mcpSessions.tab")}</TabsTrigger></TabsList>
+      {view !== "sessions" && <div className="my-4 flex flex-wrap items-end gap-3">
         <div className="min-w-0 flex-1 basis-60 space-y-2"><Label htmlFor="resources-search">{t("resourceView.search")}</Label><Input id="resources-search" type="search" placeholder={t("resourceView.searchHint")} value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} /></div>
         <Button variant="outline" className="md:hidden" aria-expanded={filtersOpen} aria-controls="resource-extra-filters" onClick={() => setFiltersOpen(!filtersOpen)}><ListFilter aria-hidden />{t("layout.filters")}{activeFilters ? ` (${activeFilters})` : ""}</Button>
         <div id="resource-extra-filters" className={`${filtersOpen ? "flex" : "hidden"} w-full flex-wrap items-end gap-3 md:flex`}>
@@ -89,7 +91,8 @@ export function ResourcesDashboard({ snapshots, aggregate, mutate, setError }: {
         <Filter label={t("overview.filter")} value={status} onChange={(value) => { setStatus(value); setPage(0); }} options={[[ALL, t("testView.all")], ...(view === "storage" ? [["next", t("resourceView.withNext")], ["missing", t("resourceView.unmeasured")], ["scanning", t("resourceView.scanning")]] : [["active", t("resourceView.active")], ["stopped", t("resourceView.stopped")]])]} />
         <Filter label={t("overview.sort")} value={sort} onChange={(value) => { setSort(value); setPage(0); }} options={view === "storage" ? [["total", t("resourceView.largest")], ["next", t("resourceView.largestNext")], ["modules", "node_modules ↓"], ["name", t("resourceView.name")]] : [["ram", t("resourceView.mostRam")], ["cpu", t("resourceView.mostCpu")], ["name", t("resourceView.name")]]} />
         </div>
-      </div>
+      </div>}
+      <TabsContent value="sessions">{view === "sessions" && <McpSessionsPanel read={diagnostics} refresh={refreshDiagnostics} />}</TabsContent>
       <TabsContent value="storage">
         <p className="mb-3 text-xs text-muted-foreground">{t("resourceView.storageHint")}</p>
         <div className="space-y-2 xl:hidden">{range(diskRows).map((row) => <article key={row.key} data-resource-row className="rounded-lg border p-3"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="break-all font-medium">{row.worktree.branch ?? row.worktree.path}</p>{aggregate && <p className="text-xs text-muted-foreground">{row.snapshot.project.name}</p>}</div><strong className="shrink-0 font-mono text-sm">{bytes(row.storage.totalBytes)}</strong></div><div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>.next {bytes(row.storage.nextBytes)}</span>{row.storage.status !== "available" && <Badge variant="outline">{t(`resourceView.status.${row.storage.status}`)}</Badge>}{row.storage.measuredAt && <span>{new Date(row.storage.measuredAt).toLocaleString(locale)}</span>}</div><div className="mt-2 flex justify-end">{details("storage", row.key, `${row.snapshot.project.name} · ${row.worktree.branch ?? row.worktree.path}`)}</div></article>)}{!count && <p className="rounded-lg border p-4 text-sm text-muted-foreground">{t("resourceView.empty")}</p>}</div>
@@ -106,7 +109,7 @@ export function ResourcesDashboard({ snapshots, aggregate, mutate, setError }: {
           {!count ? <TableRow><TableCell colSpan={8} className="h-24 text-center text-muted-foreground">{t("resourceView.empty")}</TableCell></TableRow> : null}
         </TableBody></Table></div>
       </TabsContent>
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-muted-foreground" aria-live="polite">{t("testView.results", { from: count ? currentPage * 10 + 1 : 0, to: Math.min(count, currentPage * 10 + 10), count })}</p><nav aria-label={t("resourceView.pages")} className="flex items-center gap-2"><Button size="sm" variant="outline" disabled={!currentPage} onClick={() => setPage(currentPage - 1)}>{t("project.previousPage")}</Button><span className="text-xs">{currentPage + 1} / {pages}</span><Button size="sm" variant="outline" disabled={currentPage + 1 >= pages} onClick={() => setPage(currentPage + 1)}>{t("project.nextPage")}</Button></nav></div>
+      {view !== "sessions" && <div className="mt-3 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-muted-foreground" aria-live="polite">{t("testView.results", { from: count ? currentPage * 10 + 1 : 0, to: Math.min(count, currentPage * 10 + 10), count })}</p><nav aria-label={t("resourceView.pages")} className="flex items-center gap-2"><Button size="sm" variant="outline" disabled={!currentPage} onClick={() => setPage(currentPage - 1)}>{t("project.previousPage")}</Button><span className="text-xs">{currentPage + 1} / {pages}</span><Button size="sm" variant="outline" disabled={currentPage + 1 >= pages} onClick={() => setPage(currentPage + 1)}>{t("project.nextPage")}</Button></nav></div>}
     </Tabs>
     <Sheet open={!!selectedSnapshot} onOpenChange={(open) => { if (!open) setSelection(null); }}><SheetContent closeLabel={t("common.close")} className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl" onCloseAutoFocus={(event) => { event.preventDefault(); restoreDetailFocus(sectionRef.current, focusReturn.current); focusReturn.current = null; }}>
       {selectedSnapshot ? <><SheetHeader className="pr-12"><SheetTitle className="break-all">{selectedSnapshot.project.name}{selectedRow ? ` · ${selectedRow.worktree.branch ?? "detached"}` : ""}</SheetTitle><SheetDescription className="break-all">{selectedRow?.worktree.path ?? selectedServer?.runtime.worktreePath ?? t("resourceView.noServers")}</SheetDescription></SheetHeader><div className="space-y-4 px-4 pb-6">

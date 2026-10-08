@@ -1,5 +1,7 @@
 "use client";
 
+import type { McpDiagnosticsResponse } from "@/shared/contracts/mcp-diagnostics";
+import type { McpDiagnosticsRead } from "@/features/mcp/session-summary";
 import { EMPTY_RESOURCES } from "@/features/runtime/defaults";
 
 import { parseResponse } from "@/features/control-client";
@@ -41,10 +43,12 @@ function newestResources(current: RuntimeResourceMetrics, incoming: RuntimeResou
   return incoming.sampledAt >= current.sampledAt ? incoming : current;
 }
 
-export function useDashboard() {
+export function useDashboard(sessionsActive = false) {
   const { locale, t } = useI18n();
   const [data, setData] = useState<ControllerDashboardResponse>({ projects: [], capacity: EMPTY_CAPACITY, testQueue: EMPTY_TEST_QUEUE, mcp: EMPTY_MCP_STATUS });
   const [token, setToken] = useState("");
+  const [mcpDiagnostics, setMcpDiagnostics] = useState<McpDiagnosticsRead & { credential: string }>({ credential: "", body: null, receivedAt: 0, loading: false, error: null });
+  const refreshDiagnostics = useRef<(() => void) | null>(null);
   const [accessRequired, setAccessRequired] = useState<"missing" | "invalid" | null>(null);
   const [scopedKnowledgeToken, setKnowledgeToken] = useState("");
   const knowledgeAccess: "open" | "installation" | "scoped" = token === OPEN_ACCESS ? "open" : isInstallationToken(token) ? "installation" : "scoped";
@@ -309,18 +313,39 @@ export function useDashboard() {
   );
 
   useEffect(() => {
-    if (!token || !monitoredProjectIds) return;
+    if (!token || (!monitoredProjectIds && !sessionsActive)) return;
     let cancelled = false;
     let polling = false;
     let controller: AbortController | null = null;
+    let diagnosticsDenied = false;
     const poll = async () => {
-      if (polling) return;
+      if (polling || cancelled || document.hidden) return;
       polling = true;
       controller = new AbortController();
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]);
+      if (sessionsActive && !diagnosticsDenied) {
+        setMcpDiagnostics(current => ({ ...(current.credential === token ? current : { body: null, receivedAt: 0, error: null }), credential: token, loading: true }));
+        try {
+          const response = await fetch("/api/mcp/diagnostics", {
+            cache: "no-store", signal,
+            headers: { "X-Worktree-Control-Token": token, "Accept-Language": locale },
+          });
+          if (response.status === 401 || response.status === 403) {
+            diagnosticsDenied = true;
+            if (!cancelled) setMcpDiagnostics({ credential: token, body: null, receivedAt: 0, loading: false, error: response.status === 401 ? "unauthorized" : "forbidden" });
+          } else {
+            const body = await parseResponse<McpDiagnosticsResponse>(response, t("mcpSessions.failed"));
+            if (!cancelled) setMcpDiagnostics({ credential: token, body, receivedAt: Date.now(), loading: false, error: null });
+          }
+        } catch {
+          if (!cancelled) setMcpDiagnostics(current => ({ ...current, loading: false, error: "failed" }));
+        }
+      }
       try {
+        if (!monitoredProjectIds || cancelled) return;
         const response = await fetch("/api/metrics", {
           cache: "no-store",
-          signal: controller.signal,
+          signal,
           headers: { "X-Worktree-Control-Token": token },
         });
         const body = await parseResponse<RuntimeMetricsResponse>(response, t("http.error", { status: response.status }));
@@ -343,15 +368,21 @@ export function useDashboard() {
         polling = false;
       }
     };
+    const refresh = () => { diagnosticsDenied = false; void poll(); };
+    refreshDiagnostics.current = refresh;
     void poll();
     const interval = window.setInterval(() => void poll(), 5_000);
+    const visibility = () => { if (!document.hidden) void poll(); };
+    document.addEventListener("visibilitychange", visibility);
     return () => {
       cancelled = true;
       controller?.abort();
       window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", visibility);
+      if (refreshDiagnostics.current === refresh) refreshDiagnostics.current = null;
     };
-  }, [monitoredProjectIds, t, token]);
+  }, [monitoredProjectIds, sessionsActive, locale, t, token]);
 
-  return { data, observedAt, token, accessRequired, signIn, signOut, knowledgeToken, knowledgeAccess, knowledgeSessionVersion,
+  return { mcpDiagnostics: mcpDiagnostics.credential === token ? mcpDiagnostics : { body: null, receivedAt: 0, loading: false, error: null }, refreshMcpDiagnostics: () => refreshDiagnostics.current?.(), data, observedAt, token, accessRequired, signIn, signOut, knowledgeToken, knowledgeAccess, knowledgeSessionVersion,
     changeKnowledgeToken, knowledgeChange, loading, error: connectionError ?? error, notice, dismissNotice: () => setNotice(null), mutate, setError, runningCount };
 }

@@ -30,8 +30,9 @@ import { OPEN_ACCESS, useDashboard } from "./use-dashboard";
 
 export function Dashboard() {
   const { locale, setLocale, t } = useI18n();
-  const { data, observedAt, token, accessRequired, signIn, signOut, loading, error, notice, dismissNotice, mutate, setError, runningCount, knowledgeToken, knowledgeAccess, knowledgeSessionVersion, changeKnowledgeToken, knowledgeChange } = useDashboard();
   const [section, setSection] = useState<ProjectSection>("worktrees");
+  const [resourceView, setResourceView] = useState("storage");
+  const { mcpDiagnostics, refreshMcpDiagnostics, data, observedAt, token, accessRequired, signIn, signOut, loading, error, notice, dismissNotice, mutate, setError, runningCount, knowledgeToken, knowledgeAccess, knowledgeSessionVersion, changeKnowledgeToken, knowledgeChange } = useDashboard(section === "resources" && resourceView === "sessions");
   useEffect(() => {
     const sync = () => {
       const view = new URLSearchParams(window.location.search).get("view");
@@ -158,11 +159,11 @@ export function Dashboard() {
           </div>
         ) : section === "knowledge" ? (
           <KnowledgeDashboard key={knowledgeSessionVersion} token={knowledgeToken} setToken={changeKnowledgeToken} access={knowledgeAccess} change={knowledgeChange} />
-        ) : data.projects.length === 0 ? (
+        ) : data.projects.length === 0 && section !== "resources" ? (
           <EmptyState buttonRef={emptyAddTrigger} onAdd={() => setDialogOpen(true)} />
         ) : (
           <section id="projects" className="grid gap-7" aria-label={t("dashboard.projects")}>
-            {section === "logs" ? <LogsDashboard key={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id} snapshots={allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []} aggregate={allProjects} /> : section === "resources" ? <ResourcesDashboard key={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id} snapshots={allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []} aggregate={allProjects} mutate={mutate} setError={setError} /> : section === "tests" ? <TestsDashboard now={observedAt} key={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id} snapshots={allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []} aggregate={allProjects} mutate={mutate} setError={setError} /> : allProjects && section === "worktrees" ? <AllProjectsWorktrees snapshots={data.projects} mutate={mutate} setError={setError} onOpenLogs={openFailedLogs} /> : (allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []).map((snapshot) => <ProjectCard key={snapshot.project.id} snapshot={snapshot} section={section} mutate={mutate} setError={setError} token={token} onOpenLogs={openFailedLogs} />)}
+            {section === "logs" ? <LogsDashboard key={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id} snapshots={allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []} aggregate={allProjects} /> : section === "resources" ? <ResourcesDashboard view={resourceView} setView={setResourceView} diagnostics={mcpDiagnostics} refreshDiagnostics={refreshMcpDiagnostics} key={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id} snapshots={allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []} aggregate={allProjects} mutate={mutate} setError={setError} /> : section === "tests" ? <TestsDashboard now={observedAt} key={allProjects ? ALL_PROJECTS : selectedSnapshot?.project.id} snapshots={allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []} aggregate={allProjects} mutate={mutate} setError={setError} /> : allProjects && section === "worktrees" ? <AllProjectsWorktrees snapshots={data.projects} mutate={mutate} setError={setError} onOpenLogs={openFailedLogs} /> : (allProjects ? data.projects : selectedSnapshot ? [selectedSnapshot] : []).map((snapshot) => <ProjectCard key={snapshot.project.id} snapshot={snapshot} section={section} mutate={mutate} setError={setError} token={token} onOpenLogs={openFailedLogs} />)}
           </section>
         )}
         </div>
