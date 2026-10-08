@@ -71,8 +71,7 @@ queue tools are unavailable, use supported finite commands within host limits.
 
 Queued tests do not claim, start, or switch a development server. Tests needing
 that server require a separate claim for the same worktree. Use the
-`worktree-control` skill (installed as `worktree-switcher` where shared skills
-predate the rename) and MCP for managed development-server lifecycle.
+`worktree-control` skill and MCP for managed development-server lifecycle.
 
 ## Backlog and documentation
 
