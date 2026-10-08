@@ -285,6 +285,13 @@ Each worktree needs its own installed dependencies and runtime setup. Server
 profiles provide named environment overrides. Tests have separate environment
 policies and queue limits.
 
+Every managed server starts without a shell and receives the project's port as
+the `PORT` environment variable. A package script such as `dev` is run by the
+package manager, which may use a shell, so `$PORT` in that script resolves there.
+The command is derived from the launch preset, not entered as free text, so
+there is no custom command in which to write `$PORT`. Profiles cannot override
+`PORT`.
+
 Resources shows cached worktree disk usage and Linux process-group RAM/CPU.
 Logs can be filtered, searched, paused and exported. macOS reports unavailable
 process metrics, and its service lifecycle still needs real-host verification.
@@ -300,6 +307,11 @@ For HTTPS, follow [Protect the controller with HTTPS](docs/controller-https.md).
 Keep the controller on loopback behind Caddy and configure `--public-url`.
 The dashboard proxy does not expose the loopback MCP listener. A managed
 Next.js app's development HTTPS is a separate project setting.
+
+To open a project at a readable address such as `http://frontend.localhost`
+instead of its port number, see
+[stable local hostnames](https://github.com/pioootrek/worktree-control/blob/main/docs/local-hostnames.md).
+The controller does not manage that proxy.
 
 Worktree Control executes project code under your OS user. Use trusted repositories and
 clients; process ownership and preset validation are not a sandbox.

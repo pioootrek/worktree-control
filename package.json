@@ -7,7 +7,16 @@
     "worktree",
     "development-server",
     "mcp",
-    "control-plane"
+    "control-plane",
+    "coding-agents",
+    "claude-code",
+    "codex",
+    "dev-server",
+    "git-worktree",
+    "port",
+    "port-allocation",
+    "agents",
+    "worktrees"
   ],
   "license": "MIT",
   "author": "pioootrek",
