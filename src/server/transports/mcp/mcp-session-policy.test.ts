@@ -30,12 +30,6 @@ const reservationId = "a3a76c68-c531-4dc8-838a-88416746a581";
 const reservation = { id: reservationId, projectId, worktreePath: "/code/web" } as Reservation;
 const claimArguments = { projectId, worktreePath: "/code/web", reason: "owned policy fixture", idempotencyKey: "claim-1", responseMode: "compact" };
 
-type Snapshot = {
-  logicalSessions: number; initializingSessions: number; drainingSessions: number; openResponses: number; sseResponses: number;
-  operations: number; claims: number; renewalTimers: number; lifetimeTimers: number; drainTimers: number; runtimeRetryEntries: number;
-  automaticRenewals: number; renewalsSkippedByPolicy: number; truncated: number; closeReasons: Record<string, number>;
-  admission: { admittedSessions: number }; sessions: Array<Record<string, unknown>>;
-};
 const baseline = {
   logicalSessions: 0, initializingSessions: 0, drainingSessions: 0, openResponses: 0, sseResponses: 0, operations: 0,
   claims: 0, renewalTimers: 0, lifetimeTimers: 0, drainTimers: 0, runtimeRetryEntries: 0, sessions: [], admission: { admittedSessions: 0 },
@@ -71,7 +65,7 @@ async function listen(service: FixtureService, limits: Partial<McpSessionLimits>
   controllers.push(controller);
   await new Promise<void>(resolve => controller.server.listen(0, "127.0.0.1", resolve));
   const endpoint = new URL(`http://127.0.0.1:${(controller.server.address() as AddressInfo).port}/mcp`);
-  const snapshot = async () => await controller.diagnosticsSnapshot() as Snapshot;
+  const snapshot = async () => await controller.diagnosticsSnapshot();
   return { controller, endpoint, clock, snapshot };
 }
 

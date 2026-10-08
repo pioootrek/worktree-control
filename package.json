@@ -83,7 +83,8 @@
     "test:package:upgrade:driver": "node scripts/build-fingerprint.mjs --check && node scripts/require-restic-fixture.mjs && node scripts/package-upgrade-trial.mjs --driver-only",
     "test:package:upgrade": "node scripts/build-fingerprint.mjs --check && node scripts/require-restic-fixture.mjs && node scripts/package-upgrade-trial.mjs",
     "test:package": "node scripts/build-fingerprint.mjs --check && node scripts/package-smoke.mjs",
-    "test:mcp-diagnostics": "vitest run src/server/mcp-diagnostics.test.ts src/server/mcp-http-server.test.ts src/server/modules/mcp-sessions src/server/transports/mcp src/cli/mcp-session-options.test.ts src/server/admin-socket.test.ts src/server/modules/status/status-service.test.ts",
+    "test:ui:mcp-sessions": "playwright test tests/ui/mcp-sessions.spec.ts",
+    "test:mcp-diagnostics": "vitest run src/server/mcp-diagnostics-http.test.ts src/features/mcp/session-summary.test.ts src/server/mcp-diagnostics.test.ts src/server/mcp-http-server.test.ts src/server/modules/mcp-sessions src/server/transports/mcp src/cli/mcp-session-options.test.ts src/server/admin-socket.test.ts src/server/modules/status/status-service.test.ts",
     "test:integration:mcp-diagnostics": "node scripts/build-fingerprint.mjs --check && vitest run --config vitest.integration.config.ts tests/integration/mcp-diagnostics.test.ts",
     "bench:mcp-resources": "node scripts/build-fingerprint.mjs --check && tsx scripts/mcp-resource-benchmark.mjs"
   },

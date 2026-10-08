@@ -1,3 +1,4 @@
+import type { McpDiagnosticsSnapshot } from "@/shared/contracts/mcp-diagnostics";
 import { McpDiagnostics, type McpCloseReason } from "./mcp-diagnostics";
 import { timingSafeEqual } from "node:crypto";
 import { createHttpServerCloser } from "./http-server-lifecycle";
@@ -16,14 +17,14 @@ const MANIFEST_BODY_LIMIT = knowledgeRequestLimit("check_attachment_batch") + 16
 interface McpRuntimeLike {
   handle(request: IncomingMessage, response: ServerResponse, authentication: ControllerAuthentication, body?: unknown): Promise<void>;
   close(reason?: McpCloseReason): Promise<void>;
-  diagnosticsSnapshot(): unknown;
+  diagnosticsSnapshot(): McpDiagnosticsSnapshot;
 }
 
 export interface McpControllerServer {
   server: Server;
   /** Ends every MCP session so clients must reconnect under the current authentication policy. */
   closeSessions(): Promise<void>;
-  diagnosticsSnapshot(): Promise<unknown>;
+  diagnosticsSnapshot(): Promise<McpDiagnosticsSnapshot>;
   close(): Promise<void>;
 }
 
@@ -144,7 +145,7 @@ export function createMcpControllerServer(options: {
   return {
     server,
     async diagnosticsSnapshot() {
-      return runtimePromise ? (await runtimePromise).diagnosticsSnapshot() : { ...diagnostics.snapshot(), runtimeRetryEntries: 0, ...governor.describe() };
+      return runtimePromise ? (await runtimePromise).diagnosticsSnapshot() : { ...diagnostics.snapshot(), sessions: [], runtimeRetryEntries: 0, ...governor.describe() };
     },
     async closeSessions() {
       if (runtimePromise) await (await runtimePromise).close("authentication-policy");

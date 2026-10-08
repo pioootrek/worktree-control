@@ -1,3 +1,4 @@
+import type { McpDiagnosticsResponse } from "@/shared/contracts/mcp-diagnostics";
 import { handleUserBackupHttp } from "./transports/user-backup-http";
 import { handleBackupHttp } from "./transports/backup-http";
 import { createHttpServerCloser } from "./http-server-lifecycle";
@@ -397,6 +398,7 @@ export function createControllerServer(options: {
   directoryBrowser: DirectoryBrowser;
   events: EventStream;
   mcpStatus: () => McpStatus;
+  mcpDiagnostics?: () => Promise<McpDiagnosticsResponse>;
   webRoot: string;
   host: string;
   port: number;
@@ -560,6 +562,37 @@ export function createControllerServer(options: {
           } catch {
             json(response, 401, { error: localizeServerMessage("Brak prawidłowego klucza dostępu.", locale) });
           }
+          return;
+        }
+        if (url.pathname === "/api/mcp/diagnostics") {
+          if (!hasValidOrigin(request, options.publicOrigin)) {
+            json(response, 403, { code: "origin_forbidden", error: localizeServerMessage("Odrzucono żądanie z obcego originu.", locale) });
+            return;
+          }
+          const authentication = resolveControllerAuthentication(dependencies, {
+            bearer: bearerToken(request) ?? controllerTokenHeader(request),
+            legacySecretValid: () => hasValidToken(request, options.accessToken),
+          });
+          if (!authentication) {
+            json(response, 401, { code: "invalid_credential", error: localizeServerMessage("Brak prawidłowego klucza dostępu.", locale) });
+            return;
+          }
+          if (authentication.kind !== "legacy") {
+            if (!options.identity) { json(response, 503, { error: "Identity service is unavailable." }); return; }
+            try { options.identity.requireOwnerSession(authentication.actor); }
+            catch (error) {
+              if (!(error instanceof IdentityError)) throw error;
+              json(response, error.code === "owner_authentication_required" ? 403 : 401, { code: error.code, error: localizeServerMessage(error.message, locale) });
+              return;
+            }
+          }
+          if (request.method !== "GET") {
+            response.setHeader("Allow", "GET");
+            json(response, 405, { error: "Method not allowed." });
+            return;
+          }
+          if (!options.mcpDiagnostics) { json(response, 503, { error: "MCP diagnostics are unavailable." }); return; }
+          json(response, 200, await options.mcpDiagnostics());
           return;
         }
         const runtimeAuthentication = authenticateRuntime(request);

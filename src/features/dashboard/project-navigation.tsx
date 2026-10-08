@@ -38,11 +38,11 @@ export function ProjectNavigation({ section, onSelect, projectName }: {
                 <SidebarMenuItem key={id}>
                   <SidebarMenuButton
                     type="button"
-                    isActive={section === id && (!!projectName || id === "knowledge")}
-                    aria-current={section === id && (projectName || id === "knowledge") ? "page" : undefined}
+                    isActive={section === id && (!!projectName || id === "knowledge" || id === "resources")}
+                    aria-current={section === id && (projectName || id === "knowledge" || id === "resources") ? "page" : undefined}
                     aria-label={t(label)}
                     tooltip={t(label)}
-                    disabled={!projectName && id !== "knowledge"}
+                    disabled={!projectName && id !== "knowledge" && id !== "resources"}
                     className="h-10 data-active:border-l-2 data-active:border-primary data-active:bg-sidebar-accent data-active:text-foreground"
                     onClick={() => { onSelect(id); setOpenMobile(false); }}
                   >
