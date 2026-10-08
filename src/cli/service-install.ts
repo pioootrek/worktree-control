@@ -1,5 +1,5 @@
 import { backupPolicyArguments } from "./backup-policy-options";
-import { parseUserBackupOptions, userBackupArguments } from "./user-backup-options";
+import { userBackupArguments } from "./user-backup-options";
 import { remoteBackupArguments, type RemoteBackupOptions } from "./remote-backup-options";
 import { userBackupPolicySchema, type UserBackupPolicy } from "@/server/modules/backups";
 import { backupPolicySchema, type BackupPolicy } from "@/server/modules/backups";
@@ -22,16 +22,6 @@ export interface ServiceStartArgumentsOptions {
   backupPolicy?: BackupPolicy;
   userBackupPolicy?: UserBackupPolicy;
   remoteBackupOptions?: RemoteBackupOptions;
-}
-
-export function resolveServiceUserBackupPolicy(args: string[], readInstalled: () => string[] | null): UserBackupPolicy {
-  const inherit = args.includes("--refresh") && !args.some(value => value.startsWith("--user-backup"));
-  return parseUserBackupOptions(inherit ? readInstalled() ?? [] : args);
-}
-/** Keep a refreshed remote policy attached to its original local catalog/schedule. */
-export function resolveServiceBackupArguments(args: string[], readInstalled: () => string[] | null): string[] {
-  const inherit = args.includes("--refresh") && !args.some(value => value.startsWith("--backup") && !value.startsWith("--backup-remote"));
-  return inherit ? readInstalled() ?? [] : args;
 }
 
 export function buildServiceStartArguments(options: ServiceStartArgumentsOptions): string[] {

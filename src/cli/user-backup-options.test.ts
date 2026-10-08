@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseUserBackupOptions, userBackupArguments } from "./user-backup-options";
-import { buildServiceStartArguments, resolveServiceUserBackupPolicy } from "./service-install";
+import { buildServiceStartArguments } from "./service-install";
+import { resolveServiceInstallArguments } from "./service-options";
 import { UserServiceManager, type ServiceCommandRunner } from "./service-manager";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -38,21 +39,22 @@ describe("user backup startup policy", () => {
       const base = { host: "127.0.0.1", port: 3000, mcpPort: 4000, browseRoot: root, dataDirectory: root, stateDirectory: root, webRoot: root, noMcp: false, memoryWarningMiB: null };
       const options = { nodePath: "/opt/node", entrypointPath: "/opt/old/index.js", workingDirectory: root, startArguments: buildServiceStartArguments({ ...base, userBackupPolicy: policy }), stateDirectory: root, refresh: false };
       manager.install(options);
-      const inherited = resolveServiceUserBackupPolicy(["install", "--refresh"], () => manager.readStartArguments());
+      const inherited = parseUserBackupOptions(resolveServiceInstallArguments(["install", "--refresh"], manager.readStartArguments()).args);
       expect(inherited).toEqual(policy);
       manager.install({ ...options, entrypointPath: "/opt/new/index.js", refresh: true, startArguments: buildServiceStartArguments({ ...base, userBackupPolicy: inherited }) });
       expect(parseUserBackupOptions(manager.readStartArguments()!)).toEqual(policy);
       const before = readFileSync(manager.definitionPath, "utf8"), called = calls.length;
-      expect(resolveServiceUserBackupPolicy(["install", "--refresh", "--user-backup-max-schedules", "2"], () => { throw new Error("Explicit replacement must not read old policy."); })).toMatchObject({ enabled: false, maxSchedules: 2, targets: [] });
+      expect(parseUserBackupOptions(resolveServiceInstallArguments(["install", "--refresh", "--user-backup-max-schedules", "2"], manager.readStartArguments()).args)).toMatchObject({ enabled: true, maxSchedules: 2, targets: policy.targets });
+      expect(parseUserBackupOptions(resolveServiceInstallArguments(["install", "--refresh", "--unset", "--user-backup-enabled"], manager.readStartArguments()).args)).toMatchObject({ enabled: false, targets: policy.targets });
       expect(readFileSync(manager.definitionPath, "utf8")).toBe(before); expect(calls).toHaveLength(called);
       writeFileSync(manager.definitionPath, "unrecognized service definition", { mode: 0o600 });
-      expect(() => resolveServiceUserBackupPolicy(["install", "--refresh"], () => manager.readStartArguments())).toThrow("complete user backup policy");
+      expect(() => resolveServiceInstallArguments(["install", "--refresh"], manager.readStartArguments())).toThrow("complete user backup policy");
       expect(readFileSync(manager.definitionPath, "utf8")).toBe("unrecognized service definition"); expect(calls).toHaveLength(called);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("keeps fresh installs and legacy refresh without user arguments disabled", () => {
-    expect(resolveServiceUserBackupPolicy(["install"], () => { throw new Error("A new install must not inherit policy."); }).enabled).toBe(false);
-    expect(resolveServiceUserBackupPolicy(["install", "--refresh"], () => null).enabled).toBe(false);
-    expect(resolveServiceUserBackupPolicy(["install", "--refresh"], () => ["--service-mode"]).enabled).toBe(false);
+    expect(parseUserBackupOptions(resolveServiceInstallArguments(["install"], null).args).enabled).toBe(false);
+    expect(parseUserBackupOptions(resolveServiceInstallArguments(["install", "--refresh"], null).args).enabled).toBe(false);
+    expect(parseUserBackupOptions(resolveServiceInstallArguments(["install", "--refresh"], ["--service-mode"]).args).enabled).toBe(false);
   });
 });

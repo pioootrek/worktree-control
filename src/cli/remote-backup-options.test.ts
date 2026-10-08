@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseRemoteBackupOptions, remoteBackupArguments, resolveServiceRemoteBackupOptions } from "./remote-backup-options";
-import { buildServiceStartArguments, resolveServiceBackupArguments } from "./service-install";
+import { parseRemoteBackupOptions, remoteBackupArguments } from "./remote-backup-options";
+import { buildServiceStartArguments } from "./service-install";
+import { resolveServiceInstallArguments } from "./service-options";
 import { parseBackupPolicyOptions } from "./backup-policy-options";
 import { parseMigrationBackupOptions } from "./migration-backup-options";
 
@@ -36,12 +37,14 @@ describe("operator-only remote startup policy", () => {
   it("preserves and revalidates installed local/remote arguments on refresh, with explicit replacement and disable", () => {
     const f = fixture(), remote = parseRemoteBackupOptions(f.args), local = ["--backup-dir", join(f.root, "copies"), "--backup-interval-seconds", "60"];
     const generated = buildServiceStartArguments({ host: "localhost", port: 4000, mcpPort: 4001, browseRoot: f.root, dataDirectory: f.root, stateDirectory: f.root, webRoot: f.root, noMcp: true, memoryWarningMiB: null, backupDirectory: local[1], backupPolicy: parseBackupPolicyOptions(local), remoteBackupOptions: remote });
-    expect(resolveServiceRemoteBackupOptions(["--refresh"], () => generated)).toEqual(remote);
-    expect(parseBackupPolicyOptions(resolveServiceBackupArguments(["--refresh"], () => generated))).toEqual(parseBackupPolicyOptions(local));
+    const resolved = (args: string[]) => resolveServiceInstallArguments(["install", "--refresh", ...args], generated).args;
+    expect(parseRemoteBackupOptions(resolved([]))).toEqual(remote);
+    expect(parseBackupPolicyOptions(resolved([]))).toEqual(parseBackupPolicyOptions(local));
     expect(parseMigrationBackupOptions(generated)).toMatchObject({ backupDirectory: local[1] });
-    expect(resolveServiceRemoteBackupOptions(["--refresh", "--backup-remote-disabled"], () => generated)).toEqual({});
-    expect(() => resolveServiceRemoteBackupOptions(["--refresh", "--backup-remote-pending-limit", "1"], () => generated)).toThrow();
-    chmodSync(f.key, 0o644); expect(() => resolveServiceRemoteBackupOptions(["--refresh"], () => generated)).toThrow();
+    expect(parseRemoteBackupOptions(resolved(["--backup-remote-disabled"]))).toEqual({});
+    expect(parseRemoteBackupOptions(resolved(["--backup-remote-pending-limit", "1"])).loaded?.configuration.policy.pendingLimit).toBe(1);
+    expect(parseBackupPolicyOptions(resolved(["--backup-retain-count", "7"]))).toMatchObject({ retainCount: 7, intervalSeconds: 60 });
+    chmodSync(f.key, 0o644); expect(() => parseRemoteBackupOptions(resolved([]))).toThrow();
     expect(() => parseRemoteBackupOptions(f.args, false)).toThrow();
   });
 });

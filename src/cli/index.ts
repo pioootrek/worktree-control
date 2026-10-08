@@ -4,7 +4,7 @@ import { parseUserBackupOptions } from "./user-backup-options";
 import { UserSchedules, BackupOperations, RestoreOperations, recoverBackupHandoff, finishBackupHandoff, assertBackupHandoffCompleted } from "../server/modules/backups";
 import { backupAdminHandler } from "../server/backup-admin";
 import { parseBackupPolicyOptions, validateBackupPolicyDestination } from "./backup-policy-options";
-import { parseRemoteBackupOptions, resolveServiceRemoteBackupOptions } from "./remote-backup-options";
+import { parseRemoteBackupOptions } from "./remote-backup-options";
 import { ResticBackupTransport } from "../server/infrastructure/backups";
 import type { ControllerLock } from "../server/controller-lock";
 import { parseKnowledgeCommandArgs, runKnowledgeCommand } from "./knowledge-management";
@@ -36,8 +36,9 @@ import { controllerAccessToken, localDashboardEndpoint, publicDashboardEndpoint,
 import { mcpConfigToken } from "./mcp-config";
 import { mcpDiagnosticsAdminHandler } from "../server/mcp-diagnostics-admin";
 import { requestAdminSocket, listenAdminSocket, type AdminSocketServer } from "../server/admin-socket";
-import { buildServiceStartArguments, resolveServiceUserBackupPolicy, resolveServiceBackupArguments } from "./service-install";
-import { legacyServiceWarning, UserServiceManager } from "./service-manager";
+import { buildServiceStartArguments } from "./service-install";
+import { resolveServiceInstallArguments, serviceSettingChanges, validateServiceCommand } from "./service-options";
+import { legacyServiceWarning, renderLaunchAgent, renderSystemdUnit, UserServiceManager, type ServiceInstallOptions } from "./service-manager";
 import { ControlService } from "../server/control-service";
 import { acquireControllerLock } from "../server/controller-lock";
 import { DirectoryBrowser } from "../server/directory-browser";
@@ -75,16 +76,22 @@ function optionalPositiveNumber(value: string | undefined, label: string): numbe
 async function main(retainedLock?: ControllerLock): Promise<void> {
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
+  if (command === "service") {
+    const args = process.argv.slice(3);
+    validateServiceCommand(args);
+    await handleServiceCommand(args, resolveAppPaths(option("--data-dir", args), option("--state-dir", args)));
+    return;
+  }
   if (command === "backup" && process.argv[3] === "monitor") {
     const result = await runBackupMonitor(process.argv.slice(4));
     writeCliLine(JSON.stringify(result, null, 2)); process.exitCode = result.exitCode; return;
   }
-  const backupPolicy = parseBackupPolicyOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
-  const remoteBackup = parseRemoteBackupOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
+  const backupPolicy = parseBackupPolicyOptions(process.argv.slice(2), command === "start");
+  const remoteBackup = parseRemoteBackupOptions(process.argv.slice(2), command === "start");
   if (command === "start" && remoteBackup.loaded && !backupPolicy.directory) throw new Error("Remote backup transfer requires --backup-dir.");
-  const userBackupPolicy = parseUserBackupOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
-  const migrationBackup = parseMigrationBackupOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
-  const mcpSessionOptions = parseMcpSessionOptions(process.argv.slice(2), command === "start" || (command === "service" && process.argv[3] === "install"));
+  const userBackupPolicy = parseUserBackupOptions(process.argv.slice(2), command === "start");
+  const migrationBackup = parseMigrationBackupOptions(process.argv.slice(2), command === "start");
+  const mcpSessionOptions = parseMcpSessionOptions(process.argv.slice(2), command === "start");
   validateBackupPolicyDestination(backupPolicy);
   const knowledgeArgs = command === "knowledge" ? parseKnowledgeCommandArgs(process.argv.slice(3)) : undefined;
   const paths = knowledgeArgs
@@ -95,10 +102,6 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     if (withoutPathOptions(process.argv.slice(4)).length) throw new Error("Usage: mcp diagnostics [--data-dir PATH] [--state-dir PATH]");
     const result = await requestAdminSocket(paths.adminSocketPath, { command: "mcp-diagnostics" }, 5000, 64 * 1024);
     writeCliLine(JSON.stringify(result, null, 2));
-    return;
-  }
-  if (command === "service") {
-    await handleServiceCommand(process.argv.slice(3), paths);
     return;
   }
   if (command === "config" && process.argv[3] === "path") {
@@ -415,12 +418,17 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
   const action = args[0] ?? "status";
   const manager = new UserServiceManager();
   if (action === "install") {
-    const backupArguments = resolveServiceBackupArguments(args, () => manager.readStartArguments());
-    const migrationBackup = parseMigrationBackupOptions(backupArguments);
-    const backupPolicy = parseBackupPolicyOptions(backupArguments);
+    const requested = args;
+    const installed = manager.readInstallStartArguments();
+    const legacyInstalled = existsSync(manager.legacyDefinitionPath);
+    const resolved = resolveServiceInstallArguments(requested, installed);
+    args = resolved.args;
+    paths = resolveAppPaths(option("--data-dir", args), option("--state-dir", args));
+    const migrationBackup = parseMigrationBackupOptions(args);
+    const backupPolicy = parseBackupPolicyOptions(args);
     validateBackupPolicyDestination(backupPolicy);
-    const userBackupPolicy = resolveServiceUserBackupPolicy(args, () => manager.readStartArguments());
-    const remoteBackup = resolveServiceRemoteBackupOptions(args, () => manager.readStartArguments());
+    const userBackupPolicy = parseUserBackupOptions(args);
+    const remoteBackup = parseRemoteBackupOptions(args);
     if (remoteBackup.loaded && !backupPolicy.directory) throw new Error("Remote backup transfer requires --backup-dir.");
     const entrypointPath = realpathSync(resolve(process.argv[1]));
     if (extname(entrypointPath) !== ".js") {
@@ -437,7 +445,6 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
     const configuredPublicOrigin = option("--public-url", args);
     const publicOrigin = configuredPublicOrigin ? parsePublicControllerOrigin(configuredPublicOrigin) : undefined;
     validatePublicControllerBackend(host, publicOrigin);
-    mkdirSync(paths.logDirectory, { recursive: true, mode: 0o700 });
     const startArguments = buildServiceStartArguments({
       host,
       port,
@@ -453,14 +460,29 @@ async function handleServiceCommand(args: string[], paths: ReturnType<typeof res
       ...migrationBackup,
       backupPolicy, userBackupPolicy, remoteBackupOptions: remoteBackup,
     });
-    const result = manager.install({
+    const installOptions: ServiceInstallOptions = {
       nodePath: resolve(process.execPath),
       entrypointPath,
       workingDirectory: resolve(fileURLToPath(new URL("../../", import.meta.url))),
       startArguments,
       stateDirectory: paths.stateDirectory,
-      refresh: args.includes("--refresh"),
-    });
+      refresh: requested.includes("--refresh"),
+    };
+    const changes = serviceSettingChanges(installed, args, startArguments);
+    for (const change of changes) writeCliLine(`Service setting change: ${change}`);
+    if (requested.includes("--print")) {
+      writeCliLine(manager.kind === "systemd" ? renderSystemdUnit(installOptions) : renderLaunchAgent(installOptions));
+      return;
+    }
+    if (legacyInstalled && changes.length && !requested.includes("--yes")) {
+      throw new Error("Legacy service settings would change. Review service install --print, then repeat with --yes to accept the listed changes.");
+    }
+    manager.assertInstalledServiceConfiguration();
+    if (legacyInstalled || (installed && installOptions.refresh)) {
+      writeCliLine("Warning: installing this upgrade restarts the controller and stops its managed servers and active tests. Reacquire claims and start servers after the upgrade.");
+    }
+    mkdirSync(paths.logDirectory, { recursive: true, mode: 0o700 });
+    const result = manager.install(installOptions);
     writeCliLine(`${result.changed ? "Installed" : "Service already up to date"}: ${result.definitionPath}`);
     if (result.legacy) {
       writeCliLine(`Migrated the legacy worktree-switcher service: ${result.legacy.wasActive ? "stopped, " : ""}disabled and removed ${result.legacy.definitionPath}`);

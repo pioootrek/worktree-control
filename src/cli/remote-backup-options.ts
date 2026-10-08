@@ -45,6 +45,3 @@ export function remoteBackupArguments(options: RemoteBackupOptions): string[] {
   for (const [flag, key] of Object.entries(numbers)) result.push(flag, String(configuration.policy[key]));
   return result;
 }
-export function resolveServiceRemoteBackupOptions(args: string[], readInstalled: () => string[] | null): RemoteBackupOptions {
-  return parseRemoteBackupOptions(args.includes("--refresh") && !args.some(value => value.startsWith("--backup-remote")) ? readInstalled() ?? [] : args);
-}

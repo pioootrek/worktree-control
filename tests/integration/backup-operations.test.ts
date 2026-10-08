@@ -9,6 +9,19 @@ import { startControllerFixture, waitFor, type ControllerFixture } from "../supp
 describe("operational backups in the packaged controller", () => {
   let fixture: ControllerFixture | undefined;
   afterEach(async () => { await fixture?.close(); fixture = undefined; });
+  it("routes explicit data/state directories and environment paths to the same running backup owner", async () => {
+    fixture = await startControllerFixture(0, [], { backups: true });
+    const key = "explicit-paths";
+    const created = JSON.parse(await fixture.cli(["backup", "now", "--idempotency-key", key], {}, "flags")) as BackupOperation;
+    const replay = JSON.parse(await fixture.cli(["backup", "now", "--idempotency-key", key])) as BackupOperation;
+    expect(created.operationId).toBe(replay.operationId);
+    expect(created.backupId).toBe(replay.backupId);
+    await waitFor(async () => {
+      const status = JSON.parse(await fixture!.cli(["backup", "status", "--idempotency-key", key], {}, "flags")) as BackupOperation;
+      return status.state === "succeeded" ? status : null;
+    }, 10000, () => "Explicit-path backup did not finish through the controller.");
+    expect(JSON.parse(await fixture.cli(["backup", "list"], {}, "flags"))).toEqual(JSON.parse(await fixture.cli(["backup", "list"])));
+  });
   it("restores during a gated start without waiting for readiness timeout or leaving owned processes", async () => {
     fixture = await startControllerFixture(1, [], { backups: true });
     const f = fixture, project = f.projects[0]!;

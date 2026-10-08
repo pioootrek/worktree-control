@@ -1,0 +1,83 @@
+{
+  "date": "2026-10-08",
+  "baseline": "5f791aef158d8db3c4288747f07ba0a170205770",
+  "branch": "fix/service-install-safety-review",
+  "taskId": "44ac7da6-3228-4832-b97a-8b1ca2b19829",
+  "runs": [
+    {
+      "id": "90cae1a7-9d4a-4079-8ca3-fe28950f56d8",
+      "presetId": "node:check",
+      "startedAt": "2026-10-08T09:44:34.032Z",
+      "finishedAt": "2026-10-08T09:46:45.441Z",
+      "exitCode": 0,
+      "signal": null,
+      "queuePhase": "failed",
+      "processOutcome": "passed",
+      "sourceAttribution": "uncertain",
+      "reasonCodes": [
+        "dirty_source"
+      ]
+    },
+    {
+      "id": "1786c03f-84de-4bd1-b9fb-1b269ea110cb",
+      "presetId": "node:build",
+      "startedAt": "2026-10-08T09:46:50.618Z",
+      "finishedAt": "2026-10-08T09:47:11.630Z",
+      "exitCode": 0,
+      "signal": null,
+      "queuePhase": "failed",
+      "processOutcome": "passed",
+      "sourceAttribution": "uncertain",
+      "reasonCodes": [
+        "dirty_source"
+      ]
+    },
+    {
+      "id": "fbb1d986-739c-4428-952d-42e191a91fd0",
+      "presetId": "node:test:integration:service-safety",
+      "startedAt": "2026-10-08T09:47:45.067Z",
+      "finishedAt": "2026-10-08T09:47:59.047Z",
+      "exitCode": 0,
+      "signal": null,
+      "queuePhase": "failed",
+      "processOutcome": "passed",
+      "sourceAttribution": "uncertain",
+      "reasonCodes": [
+        "dirty_source"
+      ]
+    }
+  ],
+  "results": {
+    "check": {
+      "lintErrors": 0,
+      "lintWarnings": 1,
+      "warning": "Existing knowledge-dashboard.tsx selection.tab dependency warning",
+      "typecheck": "passed",
+      "vitestTests": 1137,
+      "vitestFiles": 112,
+      "scriptTests": 22
+    },
+    "build": "Static dashboard export and bundled CLI passed",
+    "integration": {
+      "tests": 10,
+      "files": 2,
+      "buildFingerprint": "matched"
+    },
+    "documentation": "Hub fmt: 0 files; validate: OK (15 items, 21 done, 20 notes, 20 doc pages)",
+    "diffCheck": "passed",
+    "sourceManifest": "18 changed files matched the pre-build SHA-256 manifest after integration tests"
+  },
+  "livePreview": {
+    "command": "node dist/cli/index.js service install --print",
+    "exitCode": 0,
+    "renderedSystemdDefinition": true,
+    "installedUnitHashUnchanged": true,
+    "controllerPidUnchanged": true
+  },
+  "limits": [
+    "Queue results are failed because uncommitted source has uncertain attribution (dirty_source); all three commands exited 0. This is not verification of a clean commit.",
+    "No real installation, service restart, publication, macOS lifecycle or browser QA performed.",
+    "Backup routing regression passed with matching explicit data and state directories; no production backup-routing code change was needed.",
+    "Implementation remains local and uncommitted. Merge and deployment are pending."
+  ]
+}
