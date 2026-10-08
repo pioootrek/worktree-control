@@ -77,7 +77,7 @@ test("MCP polling is active-only, non-overlapping, stale on error and clears den
   const deniedReads = reads;
   await page.clock.runFor(10_000);
   expect(reads).toBe(deniedReads);
-  await page.getByRole("tab", { name: /^Disk/ }).click();
+  await page.getByRole("tab", { name: /^Storage/ }).click();
   await page.clock.runFor(10_000);
   expect(reads).toBe(deniedReads);
   expect(errors).toEqual([]);
@@ -101,7 +101,7 @@ test("MCP loading read is cancelled when leaving Sessions; empty and disabled re
   await expect.poll(() => reads).toBe(1);
   await page.clock.runFor(5000);
   expect(reads).toBe(1);
-  await page.getByRole("tab", { name: /^Disk/ }).click();
+  await page.getByRole("tab", { name: /^Storage/ }).click();
   release();
   await page.unroute("**/api/mcp/diagnostics");
   const fixture = mcpDiagnosticsFixture();
