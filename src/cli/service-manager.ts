@@ -218,10 +218,11 @@ export class UserServiceManager {
       return [line.slice(0, separator), line.slice(separator + 1)];
     });
     const properties: Record<string, string> = Object.fromEntries(entries);
-    const dropIns = properties.DropInPaths?.trim().split(/\s+/).filter(Boolean);
+    const dropIns = parseSystemdPathList(properties.DropInPaths);
     if (result.status !== 0 || entries.length !== 3 || new Set(entries.map(([key]) => key)).size !== 3
-      || properties.FragmentPath !== path || properties.NeedDaemonReload !== "no" || dropIns === undefined
-      || dropIns.length !== expectedDropIns.size || dropIns.some(value => !expectedDropIns.has(value))) {
+      || properties.FragmentPath !== path || properties.NeedDaemonReload !== "no" || dropIns === null
+      || dropIns.length !== expectedDropIns.size || new Set(dropIns).size !== dropIns.length
+      || dropIns.some(value => !expectedDropIns.has(value))) {
       throw new Error("Installed service manager configuration differs from the inspected local definition or needs daemon-reload. Inspect and reconcile its fragment and drop-ins before installing; no service was changed.");
     }
   }
@@ -624,6 +625,47 @@ export class UserServiceManager {
 
 function unsafeInstalledDefinition(): never {
   throw new Error("Installed service configuration cannot be safely inherited. Inspect and reconcile the definition and drop-ins into generated absolute startup arguments and resource-only drop-ins before installing; no service was changed.");
+}
+
+/** Decode systemctl's shell_maybe_quote(..., 0) string array without shell evaluation. */
+function parseSystemdPathList(value: string | undefined): string[] | null {
+  if (value === undefined || value.length > 1024 * 1024) return null;
+  const paths: string[] = [];
+  const escapes: Record<string, string> = { a: "\x07", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "\\": "\\", '"': '"', "`": "`", $: "$" };
+  // systemd emits whole double-quoted words, never shell concatenation or single quotes.
+  const words = /"((?:\\.|[^"\\])*)"|([^ ]+)/gy;
+  let offset = 0;
+  while (offset < value.length) {
+    if (value[offset] === " ") { offset++; continue; }
+    words.lastIndex = offset;
+    const match = words.exec(value);
+    if (!match || (words.lastIndex < value.length && value[words.lastIndex] !== " ")) return null;
+    offset = words.lastIndex;
+    let path = match[2];
+    if (match[1] !== undefined) {
+      const bytes: Buffer[] = [];
+      const parts = /\\([abfnrtv\\"`$]|[0-7]{3})|([^\\]+)/gy;
+      let position = 0;
+      while (position < match[1].length) {
+        parts.lastIndex = position;
+        const part = parts.exec(match[1]);
+        if (!part) return null;
+        position = parts.lastIndex;
+        if (part[2] !== undefined) bytes.push(Buffer.from(part[2]));
+        else if (part[1] in escapes) bytes.push(Buffer.from(escapes[part[1]]));
+        else {
+          const byte = Number.parseInt(part[1], 8);
+          if (byte === 0 || byte > 255) return null;
+          bytes.push(Buffer.from([byte]));
+        }
+      }
+      try { path = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(Buffer.concat(bytes)); }
+      catch { return null; }
+    } else if (/[\s"'\\`$?*\[\]()<>|&;!]/.test(path)) return null;
+    if (!isAbsolute(path) || path.includes("\0") || paths.length >= 128) return null;
+    paths.push(path);
+  }
+  return paths;
 }
 
 const installedPathFlags = new Set([

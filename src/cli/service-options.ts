@@ -80,7 +80,7 @@ export function resolveServiceInstallArguments(args: string[], installed: string
   return { args: flatten(merged), changes: serviceSettingChanges(installed, flatten(merged)) };
 }
 
-/** Report intended changes with the actual serialized defaults used by the generated service. */
+/** Compare requested settings with the actual serialized values used by the generated service. */
 export function serviceSettingChanges(installed: string[] | null, intended: string[], effective = intended): string[] {
   const previous = parseOptions(installed ?? [], "installed");
   const merged = parseOptions(intended, "installed");
@@ -89,9 +89,8 @@ export function serviceSettingChanges(installed: string[] | null, intended: stri
   if (installed) {
     for (const flag of new Set([...previous.keys(), ...merged.keys()])) {
       if (flag === "--web-root" || internalFlags.has(flag)) continue;
-      const before = previous.get(flag), requested = merged.get(flag);
-      if (JSON.stringify(before) === JSON.stringify(requested)) continue;
-      const after = generated.get(flag);
+      const before = previous.get(flag), after = generated.get(flag);
+      if (JSON.stringify(before) === JSON.stringify(after)) continue;
       const show = (values: string[] | undefined) => values === undefined ? "(unset; controller default)" : !values.length ? "enabled"
         : flag === "--backup-remote-repository" ? "(configured; value redacted)" : JSON.stringify(values);
       changes.push(`${flag}: ${show(before)} -> ${show(after)}`);

@@ -86,6 +86,7 @@ interface LinuxOptions {
   show?: string[];
   health?: Partial<ServiceHealthPolicy>;
   destinationExternalDropIn?: boolean;
+  formatDropIns?: (paths: string[]) => string;
 }
 
 function linuxHome(options: LinuxOptions = {}) {
@@ -102,7 +103,7 @@ function linuxHome(options: LinuxOptions = {}) {
           const path = join(home, ".config", "systemd", "user", args[2]);
           const dropIns = existsSync(`${path}.d`) ? readdirSync(`${path}.d`).filter(name => name.endsWith(".conf")).map(name => join(`${path}.d`, name)) : [];
           if (options.destinationExternalDropIn && args[2] === "worktree-control.service") dropIns.push("/etc/systemd/user/worktree-control.service.d/override.conf");
-          return { status: 0, stdout: `FragmentPath=${path}\nDropInPaths=${dropIns.join(" ")}\nNeedDaemonReload=no\n`, stderr: "" };
+          return { status: 0, stdout: `FragmentPath=${path}\nDropInPaths=${options.formatDropIns?.(dropIns) ?? dropIns.join(" ")}\nNeedDaemonReload=no\n`, stderr: "" };
         }
         const outputs = options.show ?? [running];
         return { status: 0, stdout: outputs[Math.min(polls++, outputs.length - 1)], stderr: "" };
@@ -233,6 +234,69 @@ describe("safe installed configuration inheritance", () => {
     manager.assertInstalledServiceConfiguration();
     expect(calls).toEqual([]);
   });
+
+  it.each([
+    ["resource limits.conf", "resource limits.conf"],
+    ['quote"limits.conf', 'quote\\"limits.conf'],
+    ["back\\slash.conf", "back\\\\slash.conf"],
+    ["cost$`tag.conf", "cost\\$\\`tag.conf"],
+    ["owner'limits.conf", "owner'limits.conf"],
+    ["literal$(touch marker).conf", "literal\\$(touch marker).conf"],
+    ["tab\tlimits.conf", "tab\\tlimits.conf"],
+    ["control\x7flimits.conf", "control\\177limits.conf"],
+    ["zażółć.conf", "zażółć.conf"],
+  ])("matches systemd's quoted array path for %j without evaluating it", (name, encoded) => {
+    const { manager, calls } = linuxHome({ formatDropIns: paths => paths.map(path => path.endsWith(name)
+      ? `"${path.slice(0, -name.length)}${encoded}"` : path).join(" ") });
+    writeFileSync(manager.legacyDefinitionPath, renderSystemdUnit(complete));
+    mkdirSync(`${manager.legacyDefinitionPath}.d`);
+    writeFileSync(join(`${manager.legacyDefinitionPath}.d`, name), "[Service]\nMemoryMax=512M\n");
+    writeFileSync(join(`${manager.legacyDefinitionPath}.d`, "plain.conf"), "[Service]\nTasksMax=64\n");
+
+    expect(manager.readInstallStartArguments()).toEqual(arguments_);
+    expect(() => manager.assertInstalledServiceConfiguration()).not.toThrow();
+    expect(calls).toEqual([["systemctl", "--user", "show", "worktree-switcher.service", "--property=FragmentPath", "--property=DropInPaths", "--property=NeedDaemonReload"]]);
+    expect(existsSync(manager.definitionPath)).toBe(false);
+  });
+
+  it.each([
+    ["unterminated quote", (path: string) => `"${path}`],
+    ["trailing escape", (path: string) => `"${path}\\`],
+    ["unknown escape", (path: string) => `"${path.replace("limits.conf", "lim\\its.conf")}"`],
+    ["single quotes", (path: string) => `'${path}'`],
+    ["concatenated words", (path: string) => `"${path}"extra`],
+    ["NUL byte", (path: string) => `"${path}\\000"`],
+    ["out-of-range octal", (path: string) => `"${path}\\777"`],
+    ["invalid UTF-8", (path: string) => `"${path}\\377"`],
+    ["BOM prefix must not disappear", (path: string) => `"\\357\\273\\277${path}"`],
+    ["relative path", () => "limits.conf"],
+    ["duplicate path hiding a missing drop-in", (path: string) => `${path} ${path}`],
+  ] as const)("refuses a malformed systemd path list: %s", (scenario, format) => {
+    const { manager, calls } = linuxHome({ formatDropIns: paths => format(paths[0]) });
+    writeFileSync(manager.legacyDefinitionPath, renderSystemdUnit(complete));
+    mkdirSync(`${manager.legacyDefinitionPath}.d`);
+    writeFileSync(join(`${manager.legacyDefinitionPath}.d`, "limits.conf"), "[Service]\nMemoryMax=512M\n");
+    if (scenario === "duplicate path hiding a missing drop-in") writeFileSync(join(`${manager.legacyDefinitionPath}.d`, "other.conf"), "[Service]\nTasksMax=64\n");
+
+    expect(manager.readInstallStartArguments()).toEqual(arguments_);
+    expect(() => manager.assertInstalledServiceConfiguration()).toThrow("Inspect and reconcile");
+    expect(calls).toHaveLength(1);
+    expect(calls[0][2]).toBe("show");
+    expect(existsSync(manager.definitionPath)).toBe(false);
+  });
+
+  it.each(["service.d", "worktree-.service.d"])("keeps refusing uninspected external %s policy alongside matching local paths", directory => {
+    const { manager, calls } = linuxHome({ formatDropIns: paths => [...paths.map(path => `"${path}"`), `/usr/lib/systemd/user/${directory}/policy.conf`].join(" ") });
+    writeFileSync(manager.legacyDefinitionPath, renderSystemdUnit(complete));
+    mkdirSync(`${manager.legacyDefinitionPath}.d`);
+    writeFileSync(join(`${manager.legacyDefinitionPath}.d`, "resource limits.conf"), "[Service]\nMemoryMax=512M\n");
+
+    expect(manager.readInstallStartArguments()).toEqual(arguments_);
+    expect(() => manager.assertInstalledServiceConfiguration()).toThrow("Inspect and reconcile");
+    expect(calls).toHaveLength(1);
+    expect(calls[0][2]).toBe("show");
+    expect(existsSync(manager.definitionPath)).toBe(false);
+  });
 });
 
 describe("UserServiceManager", () => {
@@ -290,6 +354,21 @@ describe("UserServiceManager", () => {
       expect(readFileSync(join(`${manager.legacyDefinitionPath}.d`, "limits.conf"), "utf8")).toBe("[Service]\nMemoryMax=512M\n");
       expect(existsSync(`${manager.definitionPath}.d`)).toBe(false);
     }
+  });
+
+  it.each(["fresh", "refresh", "legacy"] as const)("accepts quoted local drop-ins during %s destination preflight", mode => {
+    const { manager, calls } = linuxHome({ legacy: mode === "legacy", current: mode === "refresh",
+      formatDropIns: paths => paths.map(path => `"${path}"`).join(" ") });
+    const source = mode === "legacy" ? manager.legacyDefinitionPath : manager.definitionPath;
+    mkdirSync(`${source}.d`);
+    writeFileSync(join(`${source}.d`, "resource limits.conf"), "[Service]\nMemoryMax=512M\n");
+
+    expect(() => manager.install({ ...installOptions, refresh: mode === "refresh" })).not.toThrow();
+    expect(readFileSync(join(`${manager.definitionPath}.d`, "resource limits.conf"), "utf8")).toBe("[Service]\nMemoryMax=512M\n");
+    const inspection = calls.findIndex(call => call.includes("--property=DropInPaths"));
+    const transition = calls.findIndex(call => ["start", "stop", "restart"].includes(call[2]));
+    expect(inspection).toBeGreaterThanOrEqual(0);
+    expect(inspection).toBeLessThan(transition);
   });
 
   it("rolls back when the main process changes while waiting for stability", () => {
