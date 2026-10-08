@@ -1,6 +1,6 @@
 ---
 audience: "people running Worktree Control on a development machine"
-last_reviewed: "2026-10-05"
+last_reviewed: "2026-10-08"
 source_of_truth: "user-service installation, operation, logs, and removal"
 status: "active"
 ---
@@ -67,10 +67,21 @@ Installation is idempotent. Running the same command again keeps the existing
 process. If the generated definition would change, the command stops and asks
 for an explicit refresh.
 
+Preview the generated local definition without writing files or calling the
+service manager:
+
+```bash
+worktree-control service install --print
+```
+
+All service commands reject unknown options, misplaced arguments, duplicate
+single-value options and missing values before performing service operations.
+`--help` and `-h` currently print usage as an error and exit without installing.
+
 ## Choose the network and directories
 
-`service install` accepts the same host, port, MCP, directory, and browser
-options as `start`:
+`service install` accepts host, port, MCP, directory and backup startup options;
+service mode always disables automatic browser opening:
 
 ```bash
 worktree-control service install \
@@ -96,11 +107,47 @@ The `--mcp-*` session options (`--mcp-claim-renewal-idle-minutes`,
 `--mcp-reconnect-grace-seconds`, `--mcp-drain-seconds`, `--mcp-max-sessions`
 and `--mcp-max-sessions-per-credential`) override the MCP session limits
 described in [session liveness, cleanup and admission](reservations-and-mcp.md#session-liveness-cleanup-and-admission).
-Only explicitly passed values are written into the definition.
+Explicit MCP session values are written into the definition and retained on
+subsequent installs or refreshes.
 
-The values become part of the service definition. Repeat them when you later
-run `service install --refresh`, otherwise the omitted values return to their
-defaults.
+The values become part of the service definition. Later installs, legacy
+migrations and `service install --refresh` inherit every omitted startup
+setting from that definition, including data/state directories, network,
+backup policies and MCP limits. Explicit options replace only their own
+setting; passing `--user-backup-target` replaces the full target list, and
+`--backup-remote-disabled` clears the inherited remote transfer settings.
+The new package supplies its own dashboard asset path unless `--web-root` is
+passed explicitly. An unreadable or unrecognized definition is refused rather
+than silently replaced with defaults. Automatic inheritance accepts the
+generated definition with complete absolute startup paths and recognized
+environment settings. Relative paths, environment substitutions and custom
+main-unit settings require operator reconciliation first. Supported resource
+drop-ins are preserved; command/environment overrides and conflicting legacy
+and destination drop-ins are refused.
+
+The preview covers local files. Before an actual Linux install, a read-only
+service-manager check also verifies the loaded fragment and drop-ins and
+rejects a stale definition or overrides outside the inspected local directory.
+After loading the new definition, the installer checks the destination unit
+again before stopping or starting a controller. A failed check restores the
+previous files without interrupting the running service.
+An explicit `--yes` does not bypass these checks. macOS validates the stored
+LaunchAgent; real-host migration acceptance remains outstanding.
+
+Use repeated `--unset STARTUP_FLAG` options to reset inherited settings. For
+example, `--unset --no-mcp` enables MCP again,
+`--unset --user-backup-enabled` disables user schedules, and
+`--unset --backup-interval-seconds` disables the installation backup schedule.
+A setting cannot be both supplied and unset in one command. The preview shows
+the generated default when resetting a serialized numeric setting.
+
+During migration from the legacy service name, an explicit settings change
+prints a before/after comparison and requires `--yes`. First review the same
+command with `--print`; package path updates alone need no confirmation.
+
+A refresh or legacy migration restarts the controller and stops its managed
+development servers and active test jobs. After the upgrade, agents must
+reacquire claims and start the required servers through the normal workflow.
 
 Commands that read the access record or MCP token do not parse the installed
 service definition. If you choose custom directories, pass the matching path:
@@ -203,7 +250,7 @@ explicitly selected data and state directories as described in the
 
 `service install --refresh` updates only the service definition for the currently
 installed build. Use it after deliberately changing its executable, Node.js,
-dashboard, network or directory paths, and repeat every non-default option:
+dashboard, network or directory paths. Omitted startup settings are inherited:
 
 ```bash
 worktree-control service stop
@@ -233,8 +280,11 @@ any package upgrade and prepare it as described in
    example `$HOME/.local/worktree-control`, as in the
    [package trial guide](package-trial.md). It provides the `worktree-control`
    command and the short alias `wtc`, and no `worktree-switcher` command.
-2. Run `worktree-control service install` with the same options as the legacy
-   service, including any `--data-dir` and `--state-dir`. The command stops the
+2. Review `worktree-control service install --print`, then run
+   `worktree-control service install`. Both inherit the legacy startup options,
+   including data/state directories; explicitly changed settings require
+   `--yes` after reviewing their comparison. If both legacy and current
+   definitions exist, reconcile them before installing. The command stops the
    legacy `worktree-switcher.service` (or the `dev.worktree-switcher.controller`
    LaunchAgent) just before starting the new service, because both use the same
    ports and lock. Legacy systemd drop-ins (`worktree-switcher.service.d/*.conf`)

@@ -12,6 +12,7 @@ const flags = {
 } as const satisfies Record<string, { key: keyof McpSessionLimits; unit: number; max: number }>;
 
 type Flag = keyof typeof flags;
+export const MCP_SESSION_VALUE_FLAGS = Object.keys(flags);
 
 /** Explicit MCP session options in their CLI units; omitted values use the controller defaults. */
 export type McpSessionOptions = Partial<Record<Flag, number>>;

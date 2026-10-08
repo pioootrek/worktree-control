@@ -331,12 +331,13 @@ worktree-control start --user-backup-enabled \
   --user-backup-retain-days 30
 ```
 
-`service install --refresh` preserves the installed user policy when no
-`--user-backup-*` flags are supplied. Supplying any user-policy flag replaces
-the whole user policy, so repeat all desired allowlists, targets and limits;
-omitting `--user-backup-enabled` in that explicit replacement disables it.
-An unreadable or unsupported installed definition refuses implicit refresh
-before changing the service; provide the complete policy explicitly after review.
+`service install --refresh` preserves omitted installed settings. Explicit
+user-policy options replace only that setting; repeated `--user-backup-target`
+options replace the entire target list. Use `--unset --user-backup-enabled` to
+disable schedules, or `--unset STARTUP_FLAG` to reset another inherited option.
+Preview changes with `service install --refresh --print`. An unreadable or
+unsupported definition is refused before changing the service; inspect and
+reconcile it first.
 Repeat `--user-backup-target`
 for up to 16 private local targets; projects are a comma-separated allowlist.
 The only supported scope is current discussion text (`knowledge-discussions`).
@@ -522,9 +523,10 @@ destination remain available for operator rescue. Confirmed receipt history
 compacts only after the source and its durable service operation have retired,
 using the existing service replay fence; latest confirmation remains visible.
 
-`service install --refresh` preserves and revalidates installed local and remote
-policies when no flags for that policy are supplied. Explicit policy flags
-replace that whole policy. Use `--backup-remote-disabled` to disable transfer;
+`service install --refresh` preserves and revalidates omitted installed local
+and remote settings. Explicit options replace only that setting. Use
+`--unset --backup-interval-seconds` to disable the automatic local schedule,
+or `--backup-remote-disabled` to disable remote transfer;
 this preserves retry material and makes no background connections or alarms.
 Remote policy/status is not available through dashboard, HTTP or MCP actions.
 

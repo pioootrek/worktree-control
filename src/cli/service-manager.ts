@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export const SYSTEMD_UNIT_NAME = "worktree-control.service";
 export const LAUNCHD_LABEL = "dev.worktree-control.controller";
@@ -61,6 +61,7 @@ interface InstallState {
   previous: string | null;
   changed: boolean;
   currentWasActive: boolean;
+  currentStartAttempted: boolean;
   legacyWasActive: boolean;
   copiedDropIns: string[];
   createdDropInDirectory: string | null;
@@ -182,6 +183,73 @@ export class UserServiceManager {
     return command.slice(3);
   }
 
+  /** Read-only preview input. Refuse definitions whose effective settings cannot be preserved. */
+  readInstallStartArguments(): string[] | null {
+    const path = this.installDefinitionPath();
+    if (path === null) {
+      if (this.kind === "systemd" && readResourceDropIns(`${this.definitionPath}.d`).size) unsafeInstalledDefinition();
+      return null;
+    }
+    const arguments_ = this.readStartArguments();
+    if (arguments_ === null) unsafeInstalledDefinition();
+    validateInstalledPaths(arguments_);
+    const definition = readFileSync(path, "utf8");
+    if (this.kind === "systemd") {
+      validateInstalledSystemdDefinition(definition);
+      this.installDropIns(path);
+    } else validateInstalledLaunchAgent(definition, arguments_);
+    return arguments_;
+  }
+
+  /** Actual-install preflight only: preview must never contact the service manager. */
+  assertInstalledServiceConfiguration(): void {
+    const path = this.installDefinitionPath();
+    if (path === null || this.kind !== "systemd") return;
+    this.installDropIns(path);
+    this.assertSystemdConfiguration(path);
+  }
+
+  private assertSystemdConfiguration(path: string): void {
+    const expectedDropIns = readResourceDropIns(`${path}.d`);
+    const unit = path === this.definitionPath ? SYSTEMD_UNIT_NAME : LEGACY_SYSTEMD_UNIT_NAME;
+    const result = this.runner.run("systemctl", ["--user", "show", unit, "--property=FragmentPath", "--property=DropInPaths", "--property=NeedDaemonReload"]);
+    const entries = result.stdout.trim().split(/\r?\n/).map(line => {
+      const separator = line.indexOf("=");
+      return [line.slice(0, separator), line.slice(separator + 1)];
+    });
+    const properties: Record<string, string> = Object.fromEntries(entries);
+    const dropIns = properties.DropInPaths?.trim().split(/\s+/).filter(Boolean);
+    if (result.status !== 0 || entries.length !== 3 || new Set(entries.map(([key]) => key)).size !== 3
+      || properties.FragmentPath !== path || properties.NeedDaemonReload !== "no" || dropIns === undefined
+      || dropIns.length !== expectedDropIns.size || dropIns.some(value => !expectedDropIns.has(value))) {
+      throw new Error("Installed service manager configuration differs from the inspected local definition or needs daemon-reload. Inspect and reconcile its fragment and drop-ins before installing; no service was changed.");
+    }
+  }
+
+  private installDefinitionPath(): string | null {
+    const present = (path: string) => {
+      try { lstatSync(path); return true; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+    };
+    const current = present(this.definitionPath), legacy = present(this.legacyDefinitionPath);
+    if (current && legacy) throw new Error("Both current and legacy service definitions exist. Inspect and reconcile them before installing; no service was changed.");
+    const path = current ? this.definitionPath : legacy ? this.legacyDefinitionPath : null;
+    if (path !== null && (!lstatSync(path).isFile() || lstatSync(path).size > 256 * 1024)) unsafeInstalledDefinition();
+    return path;
+  }
+
+  private installDropIns(path: string): Map<string, string> {
+    const selected = readResourceDropIns(`${path}.d`);
+    if (path === this.legacyDefinitionPath) {
+      const target = readResourceDropIns(`${this.definitionPath}.d`);
+      for (const [destination, contents] of target) {
+        const source = `${this.legacyDefinitionPath}.d${destination.slice(`${this.definitionPath}.d`.length)}`;
+        if (selected.get(source) !== contents) unsafeInstalledDefinition();
+      }
+    }
+    return selected;
+  }
+
   /**
    * Installs the service and enables it only after a verified healthy start. A legacy
    * `worktree-switcher` service is stopped just before the new one starts, because both would claim
@@ -200,7 +268,7 @@ export class UserServiceManager {
     const changed = previous !== definition;
     const legacyInstalled = existsSync(this.legacyDefinitionPath);
     const state: InstallState = {
-      previous, changed, currentWasActive: false, legacyWasActive: false,
+      previous, changed, currentWasActive: false, currentStartAttempted: false, legacyWasActive: false,
       copiedDropIns: [], createdDropInDirectory: null, retainedDropInDirectory: null,
     };
 
@@ -210,10 +278,14 @@ export class UserServiceManager {
       this.withRollback(state, () => {
         if (legacyInstalled) this.migrateDropIns(state);
         this.requireSuccess("systemctl", ["--user", "daemon-reload"]);
+        // Destination-only system/runtime drop-ins are visible once the new fragment is loaded.
+        // Inspect them before stopping either controller, including on a fresh installation.
+        this.assertSystemdConfiguration(this.definitionPath);
         if (legacyInstalled) {
           state.legacyWasActive = this.systemdActive(LEGACY_SYSTEMD_UNIT_NAME);
           this.requireSuccess("systemctl", ["--user", "stop", LEGACY_SYSTEMD_UNIT_NAME]);
         }
+        state.currentStartAttempted = true;
         if (options.refresh && previous !== null) this.requireSuccess("systemctl", ["--user", "restart", SYSTEMD_UNIT_NAME]);
         else this.requireSuccess("systemctl", ["--user", "start", SYSTEMD_UNIT_NAME]);
         this.waitUntilHealthy();
@@ -302,9 +374,9 @@ export class UserServiceManager {
     } catch (error) {
       // Best-effort restoration: report the original failure, not a secondary cleanup error.
       if (this.kind === "systemd") {
-        this.runner.run("systemctl", ["--user", "stop", SYSTEMD_UNIT_NAME]);
+        if (state.currentStartAttempted) this.runner.run("systemctl", ["--user", "stop", SYSTEMD_UNIT_NAME]);
         if (state.previous === null) {
-          this.runner.run("systemctl", ["--user", "disable", SYSTEMD_UNIT_NAME]);
+          if (state.currentStartAttempted) this.runner.run("systemctl", ["--user", "disable", SYSTEMD_UNIT_NAME]);
           rmSync(this.definitionPath, { force: true });
         } else if (state.changed) {
           writeDefinition(this.definitionPath, state.previous);
@@ -318,7 +390,7 @@ export class UserServiceManager {
           }
         }
         this.runner.run("systemctl", ["--user", "daemon-reload"]);
-        if (state.previous !== null && state.currentWasActive) this.runner.run("systemctl", ["--user", "start", SYSTEMD_UNIT_NAME]);
+        if (state.currentStartAttempted && state.previous !== null && state.currentWasActive) this.runner.run("systemctl", ["--user", "start", SYSTEMD_UNIT_NAME]);
         if (state.legacyWasActive) this.runner.run("systemctl", ["--user", "start", LEGACY_SYSTEMD_UNIT_NAME]);
       } else {
         const target = this.launchdTarget();
@@ -550,6 +622,145 @@ export class UserServiceManager {
   }
 }
 
+function unsafeInstalledDefinition(): never {
+  throw new Error("Installed service configuration cannot be safely inherited. Inspect and reconcile the definition and drop-ins into generated absolute startup arguments and resource-only drop-ins before installing; no service was changed.");
+}
+
+const installedPathFlags = new Set([
+  "--browse-root", "--data-dir", "--state-dir", "--web-root", "--backup-dir",
+  "--backup-remote-restic", "--backup-remote-password-file", "--backup-remote-credentials-file", "--backup-remote-ca-file",
+]);
+function validateInstalledPaths(args: string[]): void {
+  for (const flag of ["--service-mode", "--no-open", "--host", "--port", "--mcp-port", "--browse-root", "--data-dir", "--state-dir", "--web-root"]) {
+    if (args.filter(value => value === flag).length !== 1) unsafeInstalledDefinition();
+  }
+  for (let index = 0; index < args.length; index++) {
+    const flag = args[index];
+    if (!installedPathFlags.has(flag) && flag !== "--user-backup-target") continue;
+    const value = args[++index];
+    const path = flag === "--user-backup-target" ? value?.slice(value.indexOf("=") + 1) : value;
+    if (!path || !isAbsolute(path) || /[\0\r\n]/.test(path)) unsafeInstalledDefinition();
+  }
+}
+
+/** The generated unit grammar is deliberately small; custom policy belongs in preserved drop-ins. */
+function systemdEntries(definition: string): Array<{ section: string; key: string; value: string }> {
+  let section = "";
+  const entries: Array<{ section: string; key: string; value: string }> = [];
+  for (const source of definition.split(/\r?\n/)) {
+    const line = source.trim();
+    if (!line || /^[#;]/.test(line)) continue;
+    if (/^\[[A-Za-z]+\]$/.test(line)) { section = line.slice(1, -1); continue; }
+    const match = /^([A-Za-z][A-Za-z0-9]*)=(.*)$/.exec(line);
+    if (!section || !match || /[\0\r\n]/.test(line) || line.endsWith("\\")) unsafeInstalledDefinition();
+    entries.push({ section, key: match[1], value: match[2] });
+  }
+  return entries;
+}
+
+function validateInstalledSystemdDefinition(definition: string): void {
+  const fixed: Record<string, string> = {
+    "Unit.After": "network.target", "Unit.StartLimitIntervalSec": "60", "Unit.StartLimitBurst": "5",
+    "Service.Type": "simple", "Service.Restart": "on-failure", "Service.RestartSec": "5",
+    "Service.KillMode": "control-group", "Service.TimeoutStopSec": "15", "Service.UMask": "0077",
+    "Install.WantedBy": "default.target",
+  };
+  const seen = new Set<string>();
+  for (const { section, key, value } of systemdEntries(definition)) {
+    const name = `${section}.${key}`;
+    if (name !== "Service.Environment" && seen.has(name)) unsafeInstalledDefinition();
+    seen.add(name);
+    // Dollar substitutions and unit-name specifiers can change meaning during migration.
+    if (value.includes("$") || value.replaceAll("%%", "").includes("%")) unsafeInstalledDefinition();
+    if (name === "Unit.Description") continue;
+    if (name === "Service.ExecStart") continue; // Strict argv parsing is performed by readStartArguments.
+    if (name === "Service.WorkingDirectory") {
+      if (!isAbsolute(value)) unsafeInstalledDefinition();
+      continue;
+    }
+    if (name === "Service.Environment") {
+      const quoted = value.startsWith('"') && value.endsWith('"');
+      if (!quoted && /\s/.test(value)) unsafeInstalledDefinition();
+      const assignment = quoted ? value.slice(1, -1) : value;
+      const variable = assignment.split("=", 1)[0];
+      if (seen.has(`Environment.${variable}`)) unsafeInstalledDefinition();
+      seen.add(`Environment.${variable}`);
+      if (assignment === "NODE_ENV=production") continue;
+      if (assignment.startsWith("PATH=") && assignment.slice(5).split(":").every(path => isAbsolute(path) && !/["\\]/.test(path))) continue;
+      unsafeInstalledDefinition();
+    }
+    if (!(name in fixed) || value !== fixed[name]) unsafeInstalledDefinition();
+  }
+  if (!["Service.ExecStart", "Service.WorkingDirectory", "Environment.NODE_ENV", "Environment.PATH"].every(name => seen.has(name))) unsafeInstalledDefinition();
+}
+
+const resourceDropInKeys = new Set([
+  "MemoryAccounting", "MemoryMin", "MemoryLow", "MemoryHigh", "MemoryMax", "MemorySwapMax", "MemoryZSwapMax",
+  "CPUAccounting", "CPUWeight", "StartupCPUWeight", "CPUQuota", "CPUQuotaPeriodSec", "AllowedCPUs", "StartupAllowedCPUs",
+  "AllowedMemoryNodes", "StartupAllowedMemoryNodes", "TasksAccounting", "TasksMax", "IOAccounting", "IOWeight",
+  "StartupIOWeight", "IOReadBandwidthMax", "IOWriteBandwidthMax", "IOReadIOPSMax", "IOWriteIOPSMax", "Nice",
+  "OOMScoreAdjust", "OOMPolicy", "ManagedOOMSwap", "ManagedOOMMemoryPressure", "ManagedOOMMemoryPressureLimit",
+  "LimitAS", "LimitCORE", "LimitCPU", "LimitDATA", "LimitFSIZE", "LimitLOCKS", "LimitMEMLOCK", "LimitMSGQUEUE",
+  "LimitNICE", "LimitNOFILE", "LimitNPROC", "LimitRSS", "LimitRTPRIO", "LimitRTTIME", "LimitSIGPENDING", "LimitSTACK",
+]);
+function readResourceDropIns(directory: string): Map<string, string> {
+  let stat;
+  try { stat = lstatSync(directory); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Map(); throw error; }
+  if (!stat.isDirectory()) unsafeInstalledDefinition();
+  const entries = readdirSync(directory, { withFileTypes: true });
+  if (entries.length > 128) unsafeInstalledDefinition();
+  const result = new Map<string, string>();
+  let bytes = 0;
+  for (const entry of entries) {
+    if (!entry.name.endsWith(".conf")) continue;
+    const path = join(directory, entry.name);
+    if (!entry.isFile() || (bytes += lstatSync(path).size) > 1024 * 1024) unsafeInstalledDefinition();
+    const contents = readFileSync(path, "utf8");
+    for (const { section, key, value } of systemdEntries(contents)) {
+      if (section !== "Service" || !resourceDropInKeys.has(key) || value.includes("$")
+        || (value.includes("%") && !/^[0-9]+(?:\.[0-9]+)?%$/.test(value))) unsafeInstalledDefinition();
+    }
+    result.set(path, contents);
+  }
+  return result;
+}
+
+function validateInstalledLaunchAgent(definition: string, args: string[]): void {
+  const body = definition
+    .replace(/^\s*<\?xml[^?]*\?>\s*/, "")
+    .replace(/^<!DOCTYPE plist PUBLIC "-\/\/Apple\/\/DTD PLIST 1\.0\/\/EN" "http:\/\/www\.apple\.com\/DTDs\/PropertyList-1\.0\.dtd">\s*/, "")
+    .match(/^<plist version="1\.0">\s*<dict>([\s\S]*)<\/dict>\s*<\/plist>\s*$/)?.[1];
+  if (body === undefined) unsafeInstalledDefinition();
+  const fields = /<key>([^<]*)<\/key>\s*(<string>[^<]*<\/string>|<array>[\s\S]*?<\/array>|<dict>[\s\S]*?<\/dict>|<(?:true|false)\s*\/>|<integer>[0-9]+<\/integer>)/g;
+  if (body.replace(fields, "").trim()) unsafeInstalledDefinition();
+  const seen = new Set<string>();
+  const stateDirectory = args[args.indexOf("--state-dir") + 1];
+  const fixed: Record<string, string> = {
+    RunAtLoad: "<true/>", KeepAlive: "<dict><key>SuccessfulExit</key><false/></dict>",
+    ThrottleInterval: "<integer>5</integer>", ProcessType: "<string>Background</string>", AbandonProcessGroup: "<false/>",
+    StandardOutPath: `<string>${xmlEscape(join(stateDirectory, "logs", "service.stdout.log"))}</string>`,
+    StandardErrorPath: `<string>${xmlEscape(join(stateDirectory, "logs", "service.stderr.log"))}</string>`,
+  };
+  for (const [, key, value] of body.matchAll(fields)) {
+    if (seen.has(key)) unsafeInstalledDefinition();
+    seen.add(key);
+    if (key === "ProgramArguments") continue;
+    if (key === "Label" && [LAUNCHD_LABEL, LEGACY_LAUNCHD_LABEL].some(label => value === `<string>${label}</string>`)) continue;
+    if (key === "WorkingDirectory" && /^<string>\/[^<]*<\/string>$/.test(value)) continue;
+    if (key === "EnvironmentVariables") {
+      const environment = value.slice("<dict>".length, -"</dict>".length);
+      const pairs = [...environment.matchAll(/<key>(NODE_ENV|PATH)<\/key>\s*<string>([^<]*)<\/string>/g)];
+      if (pairs.length !== 2 || new Set(pairs.map(pair => pair[1])).size !== 2
+        || environment.replace(/<key>(NODE_ENV|PATH)<\/key>\s*<string>([^<]*)<\/string>/g, "").trim()
+        || pairs.some(([, name, contents]) => name === "NODE_ENV" ? contents !== "production" : !contents.split(":").every(path => isAbsolute(path)))) unsafeInstalledDefinition();
+      continue;
+    }
+    if (!(key in fixed) || value.replace(/>\s+</g, "><") !== fixed[key]) unsafeInstalledDefinition();
+  }
+  if (!["Label", "ProgramArguments", "WorkingDirectory", "EnvironmentVariables"].every(key => seen.has(key))) unsafeInstalledDefinition();
+}
+
 export function renderSystemdUnit(options: ServiceInstallOptions): string {
   const command = [options.nodePath, options.entrypointPath, "start", ...options.startArguments]
     .map(systemdQuote)
@@ -575,12 +786,12 @@ function writeDefinition(path: string, contents: string): void {
 }
 
 function systemdQuote(value: string): string {
-  if (/[\0\r\n]/.test(value)) throw new Error("Service arguments cannot contain NUL or newline characters.");
+  if (/[\0\r\n$]/.test(value)) throw new Error("Systemd service arguments cannot contain NUL, newline or dollar characters.");
   return `"${value.replaceAll("%", "%%").replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
 function systemdDirectivePath(value: string): string {
-  if (!value.startsWith("/") || /[\0\r\n]/.test(value)) throw new Error("The service working directory must be an absolute path without control characters.");
+  if (!value.startsWith("/") || /[\0\r\n$]/.test(value)) throw new Error("The service working directory must be an absolute path without control or dollar characters.");
   return value.replaceAll("%", "%%");
 }
 

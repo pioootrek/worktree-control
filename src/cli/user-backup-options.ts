@@ -3,6 +3,7 @@ import { validatePrivateDirectory } from "@/server/private-storage";
 import { userBackupPolicySchema, type UserBackupPolicy } from "@/server/modules/backups";
 
 const numeric = { "--user-backup-min-interval-seconds": "minIntervalSeconds", "--user-backup-max-schedules": "maxSchedules", "--user-backup-max-bytes": "maxBytes", "--user-backup-timeout-seconds": "timeoutSeconds", "--user-backup-queue-limit": "queueLimit", "--user-backup-retain-count": "retainCount", "--user-backup-retain-days": "retainDays" } as const;
+export const USER_BACKUP_VALUE_FLAGS = [...Object.keys(numeric), "--user-backup-projects", "--user-backup-scopes", "--user-backup-target"];
 export function parseUserBackupOptions(args: string[], allowed = true): UserBackupPolicy {
   const values: Record<string, unknown> = {}, seen = new Set<string>();
   const targets: Array<{ id: string; directory: string }> = [];

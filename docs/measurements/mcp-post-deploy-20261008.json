@@ -1,0 +1,421 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-10-08T09:36:19.702068+00:00",
+  "status": "partial_post_deploy_observation",
+  "deployedCommit": "5f791aef158d8db3c4288747f07ba0a170205770",
+  "pullRequest": "https://github.com/pioootrek/worktree-control/pull/86",
+  "deploymentEvidence": {
+    "knowledgeProjectId": "k7a-worktree-switcher",
+    "memoryId": "a7ef56d9-83dc-48d8-aef6-ce73b9888588"
+  },
+  "kind": "read-only production observation; no synthetic claim, reconnect, client termination or lifecycle change",
+  "source": {
+    "filename": "mcp-sessions-2026-10-08.jsonl",
+    "snapshotBytes": 2325451,
+    "snapshotSha256": "f41e26107380f259f472ae23ebcf36ef220a395ac56429c1e6c3279ed11bdfdc",
+    "snapshotRows": 287,
+    "includedRows": 101,
+    "sampling": "existing two-minute owner-only mcp diagnostics sampler",
+    "rawData": "private sampler snapshot; only aggregates and process gauges published"
+  },
+  "controllerLifecycle": [
+    {
+      "at": "2026-10-08T06:10:20Z",
+      "event": "service started after deployment",
+      "source": "user-service journal; deployed revision independently recorded in Knowledge"
+    },
+    {
+      "at": "2026-10-08T06:43:38Z",
+      "event": "service stopping",
+      "source": "user-service journal"
+    },
+    {
+      "at": "2026-10-08T06:43:39Z",
+      "event": "service stopped",
+      "source": "user-service journal"
+    },
+    {
+      "at": "2026-10-08T06:44:04Z",
+      "event": "service started; resets process-local counters",
+      "source": "user-service journal and read-only systemctl start timestamp"
+    }
+  ],
+  "methodology": [
+    "Include complete recorded samples after deployment, ending at the fixed source snapshot cutoff. Samples before deployment are excluded from aggregates.",
+    "Split before/after the intervening stop/start; closure counters are process-local, not durable cumulative totals. Do not attribute restart cleanup to session policy.",
+    "Use global diagnostic gauges for sampled resources; session detail lists are bounded. Sampling can miss short calls, claims, renewal timers, disconnections or peaks between observations.",
+    "Record controllerProcess.rssBytes separately from cgroup memory and client/proxy process memory. RSS and policy fields first appear at 09:24 UTC because the existing sampler previously omitted them.",
+    "Knowledge reads during investigation are real client traffic and may change the observed workload. No client lifecycle or claim scenario was induced."
+  ],
+  "segments": [
+    {
+      "segment": 1,
+      "firstSample": "2026-10-08T06:12:05.142Z",
+      "lastSample": "2026-10-08T06:42:02.709Z",
+      "samples": 16,
+      "errorSamples": 0,
+      "controllerPid": null,
+      "controllerPidSource": null,
+      "sampleIntervalSeconds": {
+        "minimum": 115.495,
+        "maximum": 124.562
+      },
+      "gauges": {
+        "logicalSessions": {
+          "minimum": 1,
+          "maximum": 9,
+          "final": 7
+        },
+        "initializingSessions": {
+          "minimum": 0,
+          "maximum": 0,
+          "final": 0
+        },
+        "drainingSessions": {
+          "minimum": 0,
+          "maximum": 0,
+          "final": 0
+        },
+        "operations": {
+          "minimum": 0,
+          "maximum": 0,
+          "final": 0
+        },
+        "claims": {
+          "minimum": 0,
+          "maximum": 0,
+          "final": 0
+        },
+        "renewalTimers": {
+          "minimum": 0,
+          "maximum": 0,
+          "final": 0
+        },
+        "lifetimeTimers": {
+          "minimum": 1,
+          "maximum": 9,
+          "final": 7
+        },
+        "connections": {
+          "minimum": 1,
+          "maximum": 8,
+          "final": 5
+        },
+        "openResponses": {
+          "minimum": 1,
+          "maximum": 8,
+          "final": 5
+        },
+        "sseResponses": {
+          "minimum": 1,
+          "maximum": 8,
+          "final": 5
+        }
+      },
+      "closeReasonCountersAtFirstSample": {
+        "client-delete": 0,
+        "absolute-lifetime": 0,
+        "authentication-policy": 0,
+        "controller-shutdown": 0,
+        "initialization-failed": 0,
+        "transport-close": 0,
+        "idle-expired": 0,
+        "abandoned-transport": 0,
+        "admission-refused": 0
+      },
+      "closeReasonCountersAtLastSample": {
+        "client-delete": 5,
+        "absolute-lifetime": 0,
+        "authentication-policy": 0,
+        "controller-shutdown": 0,
+        "initialization-failed": 0,
+        "transport-close": 0,
+        "idle-expired": 0,
+        "abandoned-transport": 9,
+        "admission-refused": 0
+      },
+      "closeReasonCounterIncrements": {
+        "client-delete": 5,
+        "absolute-lifetime": 0,
+        "authentication-policy": 0,
+        "controller-shutdown": 0,
+        "initialization-failed": 0,
+        "transport-close": 0,
+        "idle-expired": 0,
+        "abandoned-transport": 9,
+        "admission-refused": 0
+      },
+      "closureCountersMonotonicWithinSegment": true,
+      "automaticRenewalsAtLastSample": 0,
+      "automaticRenewalFailuresAtLastSample": 0,
+      "zeroSessionAndResourceSamples": 0,
+      "zeroSessionAndResourceWindows": []
+    },
+    {
+      "segment": 2,
+      "firstSample": "2026-10-08T06:46:03.612Z",
+      "lastSample": "2026-10-08T09:34:00.384Z",
+      "samples": 85,
+      "errorSamples": 0,
+      "controllerPid": 5543,
+      "controllerPidSource": "read-only systemctl MainPID; sampler does not record PID",
+      "sampleIntervalSeconds": {
+        "minimum": 116.699,
+        "maximum": 123.287
+      },
+      "gauges": {
+        "logicalSessions": {
+          "minimum": 0,
+          "maximum": 12,
+          "final": 12
+        },
+        "initializingSessions": {
+          "minimum": 0,
+          "maximum": 0,
+          "final": 0
+        },
+        "drainingSessions": {
+          "minimum": 0,
+          "maximum": 0,
+          "final": 0
+        },
+        "operations": {
+          "minimum": 0,
+          "maximum": 0,
+          "final": 0
+        },
+        "claims": {
+          "minimum": 0,
+          "maximum": 0,
+          "final": 0
+        },
+        "renewalTimers": {
+          "minimum": 0,
+          "maximum": 0,
+          "final": 0
+        },
+        "lifetimeTimers": {
+          "minimum": 0,
+          "maximum": 12,
+          "final": 12
+        },
+        "connections": {
+          "minimum": 0,
+          "maximum": 12,
+          "final": 12
+        },
+        "openResponses": {
+          "minimum": 0,
+          "maximum": 12,
+          "final": 12
+        },
+        "sseResponses": {
+          "minimum": 0,
+          "maximum": 12,
+          "final": 12
+        }
+      },
+      "closeReasonCountersAtFirstSample": {
+        "client-delete": 0,
+        "absolute-lifetime": 0,
+        "authentication-policy": 0,
+        "controller-shutdown": 0,
+        "initialization-failed": 0,
+        "transport-close": 0,
+        "idle-expired": 0,
+        "abandoned-transport": 0,
+        "admission-refused": 0
+      },
+      "closeReasonCountersAtLastSample": {
+        "client-delete": 0,
+        "absolute-lifetime": 0,
+        "authentication-policy": 0,
+        "controller-shutdown": 0,
+        "initialization-failed": 0,
+        "transport-close": 0,
+        "idle-expired": 3,
+        "abandoned-transport": 7,
+        "admission-refused": 0
+      },
+      "closeReasonCounterIncrements": {
+        "client-delete": 0,
+        "absolute-lifetime": 0,
+        "authentication-policy": 0,
+        "controller-shutdown": 0,
+        "initialization-failed": 0,
+        "transport-close": 0,
+        "idle-expired": 3,
+        "abandoned-transport": 7,
+        "admission-refused": 0
+      },
+      "closureCountersMonotonicWithinSegment": true,
+      "automaticRenewalsAtLastSample": 0,
+      "automaticRenewalFailuresAtLastSample": 0,
+      "zeroSessionAndResourceSamples": 14,
+      "zeroSessionAndResourceWindows": [
+        {
+          "firstSample": "2026-10-08T06:46:03.612Z",
+          "lastSample": "2026-10-08T06:48:03.590Z",
+          "samples": 2
+        },
+        {
+          "firstSample": "2026-10-08T08:36:03.582Z",
+          "lastSample": "2026-10-08T08:58:03.587Z",
+          "samples": 12
+        }
+      ]
+    }
+  ],
+  "observedPolicy": {
+    "firstRecordedAt": "2026-10-08T09:24:03.618Z",
+    "claimRenewalIdleSeconds": 900,
+    "sessionIdleSeconds": 900,
+    "openSessionIdleSeconds": 3600,
+    "reconnectGraceSeconds": 60,
+    "drainSeconds": 120,
+    "absoluteLifetimeSeconds": 28800,
+    "sessionAdmissionLimit": 64,
+    "perCredentialSessionAdmissionLimit": 32
+  },
+  "controllerProcessSamples": [
+    {
+      "sampledAt": "2026-10-08T09:24:03.609Z",
+      "rssBytes": 137388032,
+      "heapUsedBytes": 41083960,
+      "cpuPercent": 0.08136861222653581,
+      "logicalSessions": 4,
+      "operations": 0,
+      "claims": 0,
+      "renewalTimers": 0,
+      "renewalsSkippedByPolicy": 0,
+      "truncated": 0,
+      "omittedSessions": 0
+    },
+    {
+      "sampledAt": "2026-10-08T09:26:03.579Z",
+      "rssBytes": 143286272,
+      "heapUsedBytes": 44477128,
+      "cpuPercent": 0.05183295823955989,
+      "logicalSessions": 4,
+      "operations": 0,
+      "claims": 0,
+      "renewalTimers": 0,
+      "renewalsSkippedByPolicy": 0,
+      "truncated": 0,
+      "omittedSessions": 0
+    },
+    {
+      "sampledAt": "2026-10-08T09:28:03.594Z",
+      "rssBytes": 144728064,
+      "heapUsedBytes": 46994888,
+      "cpuPercent": 0.16718076907053284,
+      "logicalSessions": 4,
+      "operations": 0,
+      "claims": 0,
+      "renewalTimers": 0,
+      "renewalsSkippedByPolicy": 0,
+      "truncated": 0,
+      "omittedSessions": 0
+    },
+    {
+      "sampledAt": "2026-10-08T09:30:03.575Z",
+      "rssBytes": 144728064,
+      "heapUsedBytes": 47686288,
+      "cpuPercent": 0.058953500970987074,
+      "logicalSessions": 4,
+      "operations": 0,
+      "claims": 0,
+      "renewalTimers": 0,
+      "renewalsSkippedByPolicy": 0,
+      "truncated": 0,
+      "omittedSessions": 0
+    },
+    {
+      "sampledAt": "2026-10-08T09:32:01.230Z",
+      "rssBytes": 171073536,
+      "heapUsedBytes": 54566400,
+      "cpuPercent": 2.7771288937996683,
+      "logicalSessions": 4,
+      "operations": 0,
+      "claims": 0,
+      "renewalTimers": 0,
+      "renewalsSkippedByPolicy": 0,
+      "truncated": 0,
+      "omittedSessions": 0
+    },
+    {
+      "sampledAt": "2026-10-08T09:34:00.371Z",
+      "rssBytes": 194547712,
+      "heapUsedBytes": 73288824,
+      "cpuPercent": 7.252573841079058,
+      "logicalSessions": 12,
+      "operations": 0,
+      "claims": 0,
+      "renewalTimers": 0,
+      "renewalsSkippedByPolicy": 0,
+      "truncated": 0,
+      "omittedSessions": 0
+    }
+  ],
+  "controllerProcessSummary": {
+    "samples": 6,
+    "rssMinimumBytes": 137388032,
+    "rssMaximumBytes": 194547712,
+    "firstSample": "2026-10-08T09:24:03.609Z",
+    "lastSample": "2026-10-08T09:34:00.371Z",
+    "interpretation": "Short post-deploy series under changing activity; no matched before/after, steady state or cleanup RSS comparison."
+  },
+  "acceptance": [
+    {
+      "criterion": "Deployed idle and abandoned-transport cleanup",
+      "status": "observed",
+      "evidence": "Within the two reset-separated segments, abandoned-transport counters increased by 9 and 7, and idle-expired increased by 0 and 3. Second segment contains 14 sampled zero session/operation/claim/renewal/lifetime baselines; this does not cover resources omitted by the sampler."
+    },
+    {
+      "criterion": "Production idle-claim renewal stops and lease becomes available within the documented bound",
+      "status": "unverified",
+      "evidence": "Every included sample has zero claims, renewal timers and automatic renewals. Policy-enriched samples also have zero skipped renewals. Deployed configuration alone is not behavioral claim evidence."
+    },
+    {
+      "criterion": "Real supported-client interruption, grace reconnect and subsequent reinitialization",
+      "status": "unverified",
+      "evidence": "Counter and transport snapshots do not establish client identity/version, an actual reconnect outcome, ownership continuity or safe recovery of an unknown write outcome."
+    },
+    {
+      "criterion": "Bounded session retention under representative repeated normal use",
+      "status": "partial",
+      "evidence": "Peaks are 9 and 12 in short windows. Admission refusals and draining were zero; no saturation or controlled repetition observed."
+    },
+    {
+      "criterion": "Controller and client/proxy memory effect",
+      "status": "unverified",
+      "evidence": "Six controller RSS samples span only ten minutes. There is no matched old/new workload or client/proxy RSS/liveness series."
+    },
+    {
+      "criterion": "Cleanup preserves claim ownership, managed servers and accepted queued jobs in production",
+      "status": "unverified",
+      "evidence": "No sampled claim/cleanup or accepted-job scenario was observed; prior isolated tests remain separate evidence."
+    }
+  ],
+  "normalOwnerUseNeeded": [
+    "During ordinary work that actually needs a managed server, record the real client/proxy name and version and acquire its own claim through the usual workflow. Observe last qualifying activity, lease expiry and policy state without releasing the claim or forcing a server/client stop to create evidence.",
+    "When normal work produces a gap longer than 15 minutes in qualifying MCP activity, capture stopped-idle or skipped renewal evidence and show no successful automatic renewal after the eligibility deadline. Ordinary explicit renew/tool calls refresh activity; record them because they invalidate an idle-expiry window.",
+    "For a naturally abandoned claimed session, observe existing lease expiry and reservation availability within at most 45 minutes after last qualifying activity under the recorded 15-minute renewal idle and lease TTL at most 30 minutes. A later normally needed acquisition must use its own session and authority. Confirm the managed server continues and any already accepted test job follows its independent lifecycle.",
+    "Record a naturally occurring real client/proxy interruption, reconnect within the 60-second grace and a successful authorized read with preserved ownership, then record reinitialization after an actually expired session when ordinary work resumes. Do not replay an uncertain mutation. Controller counters alone cannot prove these outcomes.",
+    "Continue the unchanged bounded sampler across representative normal work and a quiet cleanup interval on an uninterrupted controller process. Compare controller RSS for comparable warm workloads and session counts before/after cleanup; measure any owned client/proxy process RSS and liveness separately if that becomes authorized scope. Longer uncontrolled sampling alone does not establish causal savings."
+  ],
+  "limitations": [
+    "The earlier 43-hour baseline peak of 208 sessions and these short post-deploy peaks are different durations/load with intervening restarts. A causal 208-to-12 reduction is not established.",
+    "The restart gap contains no retained-session attribution; controller shutdown cleanup cannot be inferred from the last pre-stop and first post-start gauges.",
+    "Zero admission refusals do not prove admission enforcement under load. Zero sampled operations/drains cannot certify long-running-call or lost-response behavior.",
+    "The sampler does not record PID, client/proxy versions, process liveness, reservation expiry/availability, closure event history, status waiter/subscription counts or event-loop latency. The zero resource baseline covers only its recorded gauges.",
+    "Policy/detail completeness fields were omitted before 09:24 UTC. From 09:24 through the cutoff every recorded detail list reports truncated=0 and omittedSessions=0; this does not restore the earlier omitted fields.",
+    "Existing two-minute sampler timer was unchanged. Previously planned cleanup after 2026-10-10 remains outstanding; no timer, guard, resource limit, managed server or client process was changed for this report."
+  ],
+  "knowledgeTask": {
+    "projectId": "k7a-worktree-switcher",
+    "taskId": "48284853d99c88ae756dfb967a93e5de",
+    "threadId": "23d44c27b8f10d6f14ca18d161f0c7b7",
+    "status": "in_progress"
+  }
+}
