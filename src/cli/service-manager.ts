@@ -61,6 +61,7 @@ interface InstallState {
   previous: string | null;
   changed: boolean;
   currentWasActive: boolean;
+  currentStartAttempted: boolean;
   legacyWasActive: boolean;
   copiedDropIns: string[];
   createdDropInDirectory: string | null;
@@ -204,7 +205,12 @@ export class UserServiceManager {
   assertInstalledServiceConfiguration(): void {
     const path = this.installDefinitionPath();
     if (path === null || this.kind !== "systemd") return;
-    const expectedDropIns = this.installDropIns(path);
+    this.installDropIns(path);
+    this.assertSystemdConfiguration(path);
+  }
+
+  private assertSystemdConfiguration(path: string): void {
+    const expectedDropIns = readResourceDropIns(`${path}.d`);
     const unit = path === this.definitionPath ? SYSTEMD_UNIT_NAME : LEGACY_SYSTEMD_UNIT_NAME;
     const result = this.runner.run("systemctl", ["--user", "show", unit, "--property=FragmentPath", "--property=DropInPaths", "--property=NeedDaemonReload"]);
     const entries = result.stdout.trim().split(/\r?\n/).map(line => {
@@ -262,7 +268,7 @@ export class UserServiceManager {
     const changed = previous !== definition;
     const legacyInstalled = existsSync(this.legacyDefinitionPath);
     const state: InstallState = {
-      previous, changed, currentWasActive: false, legacyWasActive: false,
+      previous, changed, currentWasActive: false, currentStartAttempted: false, legacyWasActive: false,
       copiedDropIns: [], createdDropInDirectory: null, retainedDropInDirectory: null,
     };
 
@@ -272,10 +278,14 @@ export class UserServiceManager {
       this.withRollback(state, () => {
         if (legacyInstalled) this.migrateDropIns(state);
         this.requireSuccess("systemctl", ["--user", "daemon-reload"]);
+        // Destination-only system/runtime drop-ins are visible once the new fragment is loaded.
+        // Inspect them before stopping either controller, including on a fresh installation.
+        this.assertSystemdConfiguration(this.definitionPath);
         if (legacyInstalled) {
           state.legacyWasActive = this.systemdActive(LEGACY_SYSTEMD_UNIT_NAME);
           this.requireSuccess("systemctl", ["--user", "stop", LEGACY_SYSTEMD_UNIT_NAME]);
         }
+        state.currentStartAttempted = true;
         if (options.refresh && previous !== null) this.requireSuccess("systemctl", ["--user", "restart", SYSTEMD_UNIT_NAME]);
         else this.requireSuccess("systemctl", ["--user", "start", SYSTEMD_UNIT_NAME]);
         this.waitUntilHealthy();
@@ -364,9 +374,9 @@ export class UserServiceManager {
     } catch (error) {
       // Best-effort restoration: report the original failure, not a secondary cleanup error.
       if (this.kind === "systemd") {
-        this.runner.run("systemctl", ["--user", "stop", SYSTEMD_UNIT_NAME]);
+        if (state.currentStartAttempted) this.runner.run("systemctl", ["--user", "stop", SYSTEMD_UNIT_NAME]);
         if (state.previous === null) {
-          this.runner.run("systemctl", ["--user", "disable", SYSTEMD_UNIT_NAME]);
+          if (state.currentStartAttempted) this.runner.run("systemctl", ["--user", "disable", SYSTEMD_UNIT_NAME]);
           rmSync(this.definitionPath, { force: true });
         } else if (state.changed) {
           writeDefinition(this.definitionPath, state.previous);
@@ -380,7 +390,7 @@ export class UserServiceManager {
           }
         }
         this.runner.run("systemctl", ["--user", "daemon-reload"]);
-        if (state.previous !== null && state.currentWasActive) this.runner.run("systemctl", ["--user", "start", SYSTEMD_UNIT_NAME]);
+        if (state.currentStartAttempted && state.previous !== null && state.currentWasActive) this.runner.run("systemctl", ["--user", "start", SYSTEMD_UNIT_NAME]);
         if (state.legacyWasActive) this.runner.run("systemctl", ["--user", "start", LEGACY_SYSTEMD_UNIT_NAME]);
       } else {
         const target = this.launchdTarget();

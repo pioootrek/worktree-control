@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -85,6 +85,7 @@ interface LinuxOptions {
   /** Output of `systemctl show` for each poll, last entry repeated. */
   show?: string[];
   health?: Partial<ServiceHealthPolicy>;
+  destinationExternalDropIn?: boolean;
 }
 
 function linuxHome(options: LinuxOptions = {}) {
@@ -97,6 +98,12 @@ function linuxHome(options: LinuxOptions = {}) {
       calls.push([command, ...args]);
       if (options.fail?.(args)) return { status: 1, stdout: "", stderr: "failed" };
       if (args[1] === "show") {
+        if (args.includes("--property=FragmentPath")) {
+          const path = join(home, ".config", "systemd", "user", args[2]);
+          const dropIns = existsSync(`${path}.d`) ? readdirSync(`${path}.d`).filter(name => name.endsWith(".conf")).map(name => join(`${path}.d`, name)) : [];
+          if (options.destinationExternalDropIn && args[2] === "worktree-control.service") dropIns.push("/etc/systemd/user/worktree-control.service.d/override.conf");
+          return { status: 0, stdout: `FragmentPath=${path}\nDropInPaths=${dropIns.join(" ")}\nNeedDaemonReload=no\n`, stderr: "" };
+        }
         const outputs = options.show ?? [running];
         return { status: 0, stdout: outputs[Math.min(polls++, outputs.length - 1)], stderr: "" };
       }
@@ -245,10 +252,10 @@ describe("UserServiceManager", () => {
 
     manager.install(installOptions);
 
-    const names = calls.map((call) => call[2]);
+    const names = calls.filter(call => !call.includes("--property=FragmentPath")).map((call) => call[2]);
     expect(names.indexOf("start")).toBeLessThan(names.indexOf("show"));
     expect(names.lastIndexOf("show")).toBeLessThan(names.indexOf("enable"));
-    expect(calls.filter((call) => call[2] === "show")).toHaveLength(11);
+    expect(calls.filter((call) => call[2] === "show" && call.includes("--property=ActiveState"))).toHaveLength(11);
     expect(clock.elapsed).toBe(5_000);
   });
 
@@ -264,6 +271,25 @@ describe("UserServiceManager", () => {
       ["systemctl", "--user", "disable", "worktree-control.service"],
       ["systemctl", "--user", "daemon-reload"],
     ]);
+  });
+
+  it.each(["fresh", "refresh", "legacy"] as const)("refuses destination-only external overrides on %s without stopping the existing controller", mode => {
+    const { manager, calls } = linuxHome({ legacy: mode === "legacy", current: mode === "refresh", destinationExternalDropIn: true });
+    if (mode === "legacy") {
+      mkdirSync(`${manager.legacyDefinitionPath}.d`);
+      writeFileSync(join(`${manager.legacyDefinitionPath}.d`, "limits.conf"), "[Service]\nMemoryMax=512M\n");
+    }
+    expect(() => manager.install({ ...installOptions, refresh: mode === "refresh" })).toThrow("Inspect and reconcile");
+    expect(calls.some(call => ["start", "stop", "restart", "enable", "disable"].includes(call[2]))).toBe(false);
+    expect(calls).toContainEqual(["systemctl", "--user", "show", "worktree-control.service", "--property=FragmentPath", "--property=DropInPaths", "--property=NeedDaemonReload"]);
+    expect(calls.at(-1)).toEqual(["systemctl", "--user", "daemon-reload"]);
+    if (mode === "refresh") expect(readFileSync(manager.definitionPath, "utf8")).toBe("unit");
+    else expect(existsSync(manager.definitionPath)).toBe(false);
+    if (mode === "legacy") {
+      expect(readFileSync(manager.legacyDefinitionPath, "utf8")).toBe(legacyUnit);
+      expect(readFileSync(join(`${manager.legacyDefinitionPath}.d`, "limits.conf"), "utf8")).toBe("[Service]\nMemoryMax=512M\n");
+      expect(existsSync(`${manager.definitionPath}.d`)).toBe(false);
+    }
   });
 
   it("rolls back when the main process changes while waiting for stability", () => {
@@ -338,6 +364,7 @@ describe("legacy worktree-switcher service migration", () => {
     expect(existsSync(manager.definitionPath)).toBe(true);
     expect(calls).toEqual([
       ["systemctl", "--user", "daemon-reload"],
+      ["systemctl", "--user", "show", "worktree-control.service", "--property=FragmentPath", "--property=DropInPaths", "--property=NeedDaemonReload"],
       ["systemctl", "--user", "is-active", "--quiet", "worktree-switcher.service"],
       ["systemctl", "--user", "stop", "worktree-switcher.service"],
       ["systemctl", "--user", "start", "worktree-control.service"],

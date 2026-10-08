@@ -128,6 +128,9 @@ and destination drop-ins are refused.
 The preview covers local files. Before an actual Linux install, a read-only
 service-manager check also verifies the loaded fragment and drop-ins and
 rejects a stale definition or overrides outside the inspected local directory.
+After loading the new definition, the installer checks the destination unit
+again before stopping or starting a controller. A failed check restores the
+previous files without interrupting the running service.
 An explicit `--yes` does not bypass these checks. macOS validates the stored
 LaunchAgent; real-host migration acceptance remains outstanding.
 

@@ -30,7 +30,11 @@ describe("user backup startup policy", () => {
     const root = mkdtempSync(join(tmpdir(), "user-policy-refresh-"));
     const calls: string[][] = [];
     // The health check needs a running main process; the fake managers report one.
-    const healthy = (args: string[]) => args[1] === "show" ? "ActiveState=active\nSubState=running\nMainPID=42\nNRestarts=0\n" : args[0] === "print" ? "state = running\npid = 42\n" : "";
+    const healthy = (args: string[]) => args[1] === "show"
+      ? args.includes("--property=FragmentPath")
+        ? `FragmentPath=${join(root, ".config", "systemd", "user", args[2])}\nDropInPaths=\nNeedDaemonReload=no\n`
+        : "ActiveState=active\nSubState=running\nMainPID=42\nNRestarts=0\n"
+      : args[0] === "print" ? "state = running\npid = 42\n" : "";
     const runner: ServiceCommandRunner = { run: (command, args) => { calls.push([command, ...args]); return { status: 0, stdout: healthy(args), stderr: "" }; } };
     try {
       const manager = new UserServiceManager({ platform, homeDirectory: root, environment: { NODE_ENV: "test" }, uid: 123, runner, health: { stableMs: 0 } });
