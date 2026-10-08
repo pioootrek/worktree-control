@@ -7,7 +7,7 @@ status: "active"
 
 # Install the local controller
 
-The `0.1.0` package installs the complete local Worktree Control controller:
+The `0.1.1` package installs the complete local Worktree Control controller:
 CLI, browser dashboard, MCP endpoint, SQLite state, user-service commands, and
 the bundled agent skill. It is not a remote worker and does not need a hosted
 account. The same bytes are available as a CI-built tarball with checksums and
@@ -43,7 +43,7 @@ package on npm is a different project.
 The download set contains:
 
 ```text
-worktree-control-0.1.0.tgz
+worktree-control-0.1.1.tgz
 SHA256SUMS
 provenance.json
 INSTALL.md
@@ -71,7 +71,7 @@ the system npm prefix:
 mkdir -p "$HOME/.local/worktree-control"
 npm install --global \
   --prefix "$HOME/.local/worktree-control" \
-  ./worktree-control-0.1.0.tgz
+  ./worktree-control-0.1.1.tgz
 export PATH="$HOME/.local/worktree-control/bin:$PATH"
 worktree-control doctor
 ```

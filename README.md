@@ -75,7 +75,7 @@ writes belong. See the [knowledge delivery plan](https://github.com/pioootrek/wo
 
 ## Quick start
 
-**Status:** pre-1.0 (`0.1.0`). The local controller is in daily use by its
+**Status:** pre-1.0 (`0.1.1`). The local controller is in daily use by its
 author. Linux x64 is verified; macOS and Windows are unverified. The CLI and
 data model may change; see the [changelog](CHANGELOG.md).
 

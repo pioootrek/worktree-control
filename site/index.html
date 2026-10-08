@@ -184,14 +184,8 @@
           Requires <a href="https://nodejs.org/">Node.js 22 or newer</a> and Git. Install the
           package, then start the controller on loopback:
         </p>
-        <pre class="code" tabindex="0" aria-label="Install commands"><code><span class="prompt" aria-hidden="true">$ </span>npm install -g worktree-control@0.1.0
+        <pre class="code" tabindex="0" aria-label="Install commands"><code><span class="prompt" aria-hidden="true">$ </span>npm install -g worktree-control
 <span class="prompt" aria-hidden="true">$ </span>worktree-control start --host 127.0.0.1</code></pre>
-        <p>
-          Until 0.1.0 is on npm, the first command fails with a "no matching version" error. The
-          <a href="https://github.com/pioootrek/worktree-control#quick-start">source build in the README</a>
-          and the <a href="https://github.com/pioootrek/worktree-control/blob/main/docs/package-trial.md">tarball trial in docs/package-trial.md</a>
-          are the install paths that work today.
-        </p>
         <p>
           The first start prints the installation token once. Save it in a password manager; it is
           not shown again, and <code>worktree-control auth token rotate</code> issues a new one.
