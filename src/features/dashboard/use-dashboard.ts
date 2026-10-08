@@ -49,6 +49,7 @@ export function useDashboard(sessionsActive = false) {
   const [token, setToken] = useState("");
   const [mcpDiagnostics, setMcpDiagnostics] = useState<McpDiagnosticsRead & { credential: string }>({ credential: "", body: null, receivedAt: 0, loading: false, error: null });
   const refreshDiagnostics = useRef<(() => void) | null>(null);
+  const deniedDiagnosticsCredential = useRef<string | null>(null);
   const [accessRequired, setAccessRequired] = useState<"missing" | "invalid" | null>(null);
   const [scopedKnowledgeToken, setKnowledgeToken] = useState("");
   const knowledgeAccess: "open" | "installation" | "scoped" = token === OPEN_ACCESS ? "open" : isInstallationToken(token) ? "installation" : "scoped";
@@ -315,37 +316,41 @@ export function useDashboard(sessionsActive = false) {
   useEffect(() => {
     if (!token || (!monitoredProjectIds && !sessionsActive)) return;
     let cancelled = false;
-    let polling = false;
-    let controller: AbortController | null = null;
-    let diagnosticsDenied = false;
-    const poll = async () => {
-      if (polling || cancelled || document.hidden) return;
-      polling = true;
-      controller = new AbortController();
-      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]);
-      if (sessionsActive && !diagnosticsDenied) {
-        setMcpDiagnostics(current => ({ ...(current.credential === token ? current : { body: null, receivedAt: 0, error: null }), credential: token, loading: true }));
-        try {
-          const response = await fetch("/api/mcp/diagnostics", {
-            cache: "no-store", signal,
-            headers: { "X-Worktree-Control-Token": token, "Accept-Language": locale },
-          });
-          if (response.status === 401 || response.status === 403) {
-            diagnosticsDenied = true;
-            if (!cancelled) setMcpDiagnostics({ credential: token, body: null, receivedAt: 0, loading: false, error: response.status === 401 ? "unauthorized" : "forbidden" });
-          } else {
-            const body = await parseResponse<McpDiagnosticsResponse>(response, t("mcpSessions.failed"));
-            if (!cancelled) setMcpDiagnostics({ credential: token, body, receivedAt: Date.now(), loading: false, error: null });
-          }
-        } catch {
-          if (!cancelled) setMcpDiagnostics(current => ({ ...current, loading: false, error: "failed" }));
-        }
-      }
+    const controller = new AbortController();
+    let metricsPolling = false;
+    let diagnosticsPolling = false;
+    const pollDiagnostics = async () => {
+      if (!sessionsActive || diagnosticsPolling || deniedDiagnosticsCredential.current === token || cancelled || document.hidden) return;
+      diagnosticsPolling = true;
+      setMcpDiagnostics(current => ({ ...(current.credential === token ? current : { body: null, receivedAt: 0, error: null }), credential: token, loading: true }));
       try {
-        if (!monitoredProjectIds || cancelled) return;
+        const response = await fetch("/api/mcp/diagnostics", {
+          cache: "no-store",
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
+          headers: { "X-Worktree-Control-Token": token, "Accept-Language": locale },
+        });
+        if (cancelled) return;
+        if (response.status === 401 || response.status === 403) {
+          // The same credential stays denied across tab, locale and runtime changes.
+          deniedDiagnosticsCredential.current = token;
+          setMcpDiagnostics({ credential: token, body: null, receivedAt: 0, loading: false, error: response.status === 401 ? "unauthorized" : "forbidden" });
+        } else {
+          const body = await parseResponse<McpDiagnosticsResponse>(response, t("mcpSessions.failed"));
+          if (!cancelled) setMcpDiagnostics({ credential: token, body, receivedAt: Date.now(), loading: false, error: null });
+        }
+      } catch {
+        if (!cancelled) setMcpDiagnostics(current => ({ ...current, loading: false, error: "failed" }));
+      } finally {
+        diagnosticsPolling = false;
+      }
+    };
+    const pollMetrics = async () => {
+      if (!monitoredProjectIds || metricsPolling || cancelled || document.hidden) return;
+      metricsPolling = true;
+      try {
         const response = await fetch("/api/metrics", {
           cache: "no-store",
-          signal,
+          signal: controller.signal,
           headers: { "X-Worktree-Control-Token": token },
         });
         const body = await parseResponse<RuntimeMetricsResponse>(response, t("http.error", { status: response.status }));
@@ -365,10 +370,12 @@ export function useDashboard(sessionsActive = false) {
       } catch {
         // The dashboard/SSE connection owns the visible connection error state.
       } finally {
-        polling = false;
+        metricsPolling = false;
       }
     };
-    const refresh = () => { diagnosticsDenied = false; void poll(); };
+    // One timer owns both reads; a slow diagnostics read cannot delay metrics.
+    const poll = () => { void pollDiagnostics(); void pollMetrics(); };
+    const refresh = () => { deniedDiagnosticsCredential.current = null; poll(); };
     refreshDiagnostics.current = refresh;
     void poll();
     const interval = window.setInterval(() => void poll(), 5_000);
@@ -376,7 +383,7 @@ export function useDashboard(sessionsActive = false) {
     document.addEventListener("visibilitychange", visibility);
     return () => {
       cancelled = true;
-      controller?.abort();
+      controller.abort();
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", visibility);
       if (refreshDiagnostics.current === refresh) refreshDiagnostics.current = null;

@@ -78,6 +78,19 @@ describe.skipIf(process.platform !== "linux")("packaged service command safety",
     await unchanged();
   });
 
+  it("does not request legacy acceptance for backup UI actions that serialize to the installed default", async () => {
+    const { stdout } = await run(["install", "--backup-ui-actions", "none", "--print"]);
+    expect(stdout).not.toContain("Service setting change:");
+    expect(stdout).not.toContain("--backup-ui-actions");
+    await unchanged();
+
+    // The no-op passes acceptance and reaches the deliberately failing, isolated manager preflight.
+    await expect(run(["install", "--backup-ui-actions", "none"])).rejects.toThrow("Installed service manager configuration differs");
+    expect(await readFile(marker, "utf8")).toBe("called");
+    await rm(marker);
+    await unchanged();
+  });
+
   it("refuses ambiguous current and legacy definitions without choosing one policy", async () => {
     const current = legacy.replace("worktree-switcher", "worktree-control");
     await writeFile(current, original.replace('"--port" "49151"', '"--port" "49154"'));

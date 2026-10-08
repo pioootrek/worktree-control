@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { backupPolicyArguments, parseBackupPolicyOptions } from "./backup-policy-options";
 import { resolveServiceInstallArguments, serviceSettingChanges, validateServiceCommand } from "./service-options";
 
 describe("service command validation", () => {
@@ -79,5 +80,19 @@ describe("installed service settings", () => {
   it("shows the generated default when an inherited numeric option is reset", () => {
     expect(serviceSettingChanges(["--backup-retain-count", "7"], [], ["--backup-retain-count", "30"]))
       .toEqual(['--backup-retain-count: ["7"] -> ["30"]']);
+  });
+  it.each([
+    [[], ["--backup-ui-actions", "none"]],
+    [["--backup-retain-count", "7"], ["--backup-retain-count", "007"]],
+    [["--backup-retain-count", "30"], []],
+  ])("does not report requested values that serialize to the installed setting: %j -> %j", (previous, intended) => {
+    const effective = backupPolicyArguments(parseBackupPolicyOptions(intended));
+    expect(serviceSettingChanges(previous, intended, effective)).toEqual([]);
+  });
+  it("reports disabling configured backup UI actions after serialization omits none", () => {
+    const intended = ["--backup-ui-actions", "none"];
+    const effective = backupPolicyArguments(parseBackupPolicyOptions(intended));
+    expect(serviceSettingChanges(["--backup-ui-actions", "create"], intended, effective))
+      .toEqual(['--backup-ui-actions: ["create"] -> (unset; controller default)']);
   });
 });
