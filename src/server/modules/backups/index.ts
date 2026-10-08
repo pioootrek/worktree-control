@@ -7,4 +7,4 @@ export type { RemoteBackupStatus } from "./remote-backups";
 export { backupMonitorMetadataSchema, type BackupMonitorMetadata } from "./monitor";
 export { userBackupPolicySchema, UserBackupError, type UserBackupPolicy } from "./user-policy";
 export { UserSchedules } from "./user-schedules";
-export { RestoreOperations, recoverBackupHandoff, finishBackupHandoff, assertBackupHandoffCompleted } from "./restore-operations";
+export { RestoreOperations, recoverBackupHandoff, finishBackupHandoff, assertBackupHandoffCompleted, BackupHandoffPendingError } from "./restore-operations";

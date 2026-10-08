@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { acquireControllerLock } from "../server/controller-lock";
 import { FileLogWriter } from "../server/log-writer";
+import { writeRecord } from "../server/modules/backups/records";
 import { AuthenticationService } from "../server/modules/authentication";
 import { resolveAppPaths } from "../server/paths";
 import { SqliteStateStore } from "../server/sqlite-store";
@@ -46,6 +47,10 @@ function persisted(databasePath: string): { settings: string; audit: Array<{ eve
   } finally {
     database.close();
   }
+}
+
+function handoffPath(appPaths: ReturnType<typeof paths>): string {
+  return join(`${appPaths.databasePath}.backup-operations`, "handoff.json");
 }
 
 function filesUnder(directory: string): string[] {
@@ -208,6 +213,39 @@ describe("service install first-run token", () => {
       inspected.close();
     }
     expect(tty.output).toEqual([]);
+  });
+
+  it("leaves a pending restore handoff to the controller", () => {
+    const appPaths = paths();
+    mkdirSync(`${appPaths.databasePath}.backup-operations`, { recursive: true, mode: 0o700 });
+    writeRecord(handoffPath(appPaths), {
+      format: 1, operationId: "11111111-1111-4111-8111-111111111111", createdAt: "2026-10-08T00:00:00.000Z", state: "executing",
+      actor: { actorId: "local-cli", backupId: "backup-1", idempotencyKey: "restore-1" }, authentication: null, local: true,
+    });
+    const tty = terminal(true);
+    expect(bootstrapServiceInstallationToken(appPaths, { terminal: tty, locale: "en" })).toBe(false);
+    expect(tty.output).toEqual([]);
+    // The database was not opened, so it was not created either.
+    expect(readdirSync(appPaths.dataDirectory)).toEqual(["state.sqlite3.backup-operations"]);
+    acquireControllerLock(appPaths.controllerLockPath).release();
+  });
+
+  it("fails the installation on an unreadable restore handoff record instead of skipping", () => {
+    const appPaths = paths();
+    mkdirSync(`${appPaths.databasePath}.backup-operations`, { recursive: true, mode: 0o700 });
+    const tty = terminal(true);
+    writeFileSync(handoffPath(appPaths), JSON.stringify({ payload: { format: 1 }, sha256: "0".repeat(64) }), { mode: 0o600 });
+    expect(() => bootstrapServiceInstallationToken(appPaths, { terminal: tty, locale: "en" })).toThrow();
+    writeRecord(handoffPath(appPaths), {
+      format: 1, operationId: "11111111-1111-4111-8111-111111111111", createdAt: "2026-10-08T00:00:00.000Z", state: "executing",
+      actor: { actorId: "local-cli", backupId: "backup-1", idempotencyKey: "restore-1" }, authentication: null, local: true,
+    });
+    const record = JSON.parse(readFileSync(handoffPath(appPaths), "utf8")) as { payload: Record<string, unknown>; sha256: string };
+    writeFileSync(handoffPath(appPaths), JSON.stringify({ ...record, payload: { ...record.payload, state: "verified" } }), { mode: 0o600 });
+    expect(() => bootstrapServiceInstallationToken(appPaths, { terminal: tty, locale: "en" })).toThrow("Corrupt backup operation record");
+    expect(tty.output).toEqual([]);
+    // The lock is released after the failure.
+    acquireControllerLock(appPaths.controllerLockPath).release();
   });
 
   it("leaves a database held by another owner alone", () => {

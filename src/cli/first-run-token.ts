@@ -4,7 +4,7 @@ import { acquireControllerLock, ControllerAlreadyRunningError } from "../server/
 import { openCurrentControllerStore } from "../server/controller-storage";
 import type { AppPaths } from "../server/paths";
 import { AuthenticationService, executeAuthenticationCommand, type IssuedInstallationToken } from "../server/modules/authentication";
-import { assertBackupHandoffCompleted } from "../server/modules/backups";
+import { assertBackupHandoffCompleted, BackupHandoffPendingError } from "../server/modules/backups";
 import { AUTH_CLI_ACTOR } from "./auth-management";
 
 /** The terminal that receives a first-run token. Only an interactive one is ever written to. */
@@ -71,8 +71,10 @@ export function bootstrapServiceInstallationToken(paths: AppPaths, options: Firs
   try {
     try {
       assertBackupHandoffCompleted(paths.databasePath);
-    } catch {
-      return false;
+    } catch (error) {
+      // Only a pending handoff belongs to the controller; an unreadable record must fail the install.
+      if (error instanceof BackupHandoffPendingError) return false;
+      throw error;
     }
     try {
       store = openCurrentControllerStore(paths.databasePath);
