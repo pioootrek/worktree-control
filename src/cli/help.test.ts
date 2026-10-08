@@ -40,7 +40,8 @@ describe("CLI help and version", () => {
     directories.push(root);
     const home = join(root, "home");
     mkdirSync(home);
-    const environment = {
+    const environment: NodeJS.ProcessEnv = {
+      NODE_ENV: "test",
       PATH: process.env.PATH ?? "",
       HOME: home,
       XDG_DATA_HOME: join(root, "data"),
