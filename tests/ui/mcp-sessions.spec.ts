@@ -1,0 +1,115 @@
+import { expect, test } from "@playwright/test";
+import { dashboardFixture, mountDashboard } from "./dashboard-fixture";
+import { mcpDiagnosticsFixture } from "./mcp-sessions-fixture";
+import { selectLanguage } from "./shell-actions";
+
+for (const width of [320, 390, 1366, 1440]) {
+  test(`MCP sessions observations and accessible sorting at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 850 });
+    const { requests, errors } = await mountDashboard(page);
+    let reads = 0;
+    await page.route("**/api/mcp/diagnostics", route => { reads++; return route.fulfill({ json: mcpDiagnosticsFixture() }); });
+    if (width < 768) await page.getByRole("button", { name: "Toggle navigation", exact: true }).click();
+    await page.getByRole("navigation").getByRole("button", { name: "Resources", exact: true }).click();
+    await page.getByRole("tab", { name: "Sessions", exact: true }).click();
+    const panel = page.locator("[data-mcp-sessions]");
+    await expect(panel).toContainText("5 / 128");
+    await expect(panel).toContainText("Details are incomplete");
+    await expect(panel).toContainText("CPU Unknown");
+    await expect(panel).toContainText("History has no session labels.");
+    await expect(panel).toContainText("No qualifying activity");
+    await expect(panel).toContainText("Stopped: idle");
+    const visibleRows = width < 768 ? panel.locator("article[data-session-label]") : panel.locator("tbody tr");
+    await expect(visibleRows.first()).toHaveAttribute("data-session-label", "1");
+    const sort = panel.getByRole("button", { name: "Sort by idle time", exact: true }).filter({ visible: true });
+    await sort.focus();
+    await page.keyboard.press("Enter");
+    await expect(visibleRows.first()).toHaveAttribute("data-session-label", "4");
+    if (width >= 768) await expect(panel.locator('th[aria-sort="descending"]')).toContainText("Idle time");
+    await page.keyboard.press("Enter");
+    await expect(visibleRows.first()).toHaveAttribute("data-session-label", "1");
+    if (width < 768) await visibleRows.first().getByText("Details", { exact: true }).click();
+    await expect(panel).toContainText(/25\d{3} s/);
+    await panel.getByText("Effective policy", { exact: true }).click();
+    await expect(panel).toContainText("28800 s");
+    const before = reads;
+    await panel.getByRole("button", { name: "Refresh sessions" }).click();
+    await expect.poll(() => reads).toBeGreaterThan(before);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await page.screenshot({ path: test.info().outputPath("mcp-sessions.png"), fullPage: true, animations: "disabled" });
+    await selectLanguage(page);
+    await expect(page.getByRole("tab", { name: "Sesje", exact: true })).toBeVisible();
+    await expect(panel).toContainText("Zasoby kontrolera");
+    expect(requests).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("MCP polling is active-only, non-overlapping, stale on error and clears denied observations", async ({ page }) => {
+  await page.clock.install();
+  const { errors } = await mountDashboard(page);
+  let reads = 0;
+  let outcome: "ok" | "error" | "denied" = "ok";
+  await page.route("**/api/mcp/diagnostics", route => { reads++; return route.fulfill(outcome === "ok" ? { json: mcpDiagnosticsFixture() } : { status: outcome === "denied" ? 403 : 503, json: { error: "Fixture unavailable" } }); });
+  await page.getByRole("navigation").getByRole("button", { name: "Resources", exact: true }).click();
+  expect(reads).toBe(0);
+  await page.getByRole("tab", { name: "Sessions", exact: true }).click();
+  const panel = page.locator("[data-mcp-sessions]");
+  await expect(panel).toContainText("5 / 128");
+  const visibleReads = reads;
+  await page.evaluate(() => Object.defineProperty(document, "hidden", { configurable: true, value: true }));
+  await page.clock.runFor(5000);
+  expect(reads).toBe(visibleReads);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => reads).toBeGreaterThan(visibleReads);
+  outcome = "error";
+  await page.clock.runFor(5000);
+  await expect(panel).toContainText("Could not refresh sessions");
+  await expect(panel).toContainText("Stale data");
+  await expect(panel).toContainText("5 / 128");
+  outcome = "denied";
+  await panel.getByRole("button", { name: "Refresh sessions" }).click();
+  await expect(panel).toContainText("This view requires owner or installation authority");
+  await expect(panel).not.toContainText("5 / 128");
+  const deniedReads = reads;
+  await page.clock.runFor(10_000);
+  expect(reads).toBe(deniedReads);
+  await page.getByRole("tab", { name: /^Storage/ }).click();
+  await page.clock.runFor(10_000);
+  expect(reads).toBe(deniedReads);
+  expect(errors).toEqual([]);
+});
+
+test("MCP loading read is cancelled when leaving Sessions; empty and disabled remain distinct", async ({ page }) => {
+  await page.clock.install();
+  const data = dashboardFixture();
+  data.projects = [];
+  await mountDashboard(page, data);
+  let release = () => {};
+  let reads = 0;
+  await page.route("**/api/mcp/diagnostics", async route => {
+    reads++;
+    await new Promise<void>(resolve => { release = resolve; });
+    await route.fulfill({ json: { status: "disabled", mcp: null, statusWaits: { waiters: 0, waiterTimers: 0 } } }).catch(() => {});
+  });
+  await page.getByRole("navigation").getByRole("button", { name: "Resources", exact: true }).click();
+  await page.getByRole("tab", { name: "Sessions", exact: true }).click();
+  await expect(page.locator("[data-mcp-sessions]")).toContainText("Loading sessions");
+  await expect.poll(() => reads).toBe(1);
+  await page.clock.runFor(5000);
+  expect(reads).toBe(1);
+  await page.getByRole("tab", { name: /^Storage/ }).click();
+  release();
+  await page.unroute("**/api/mcp/diagnostics");
+  const fixture = mcpDiagnosticsFixture();
+  fixture.mcp!.sessions = []; fixture.mcp!.truncated = 0; fixture.mcp!.omittedSessions = 0;
+  await page.route("**/api/mcp/diagnostics", route => route.fulfill({ json: fixture }));
+  await page.getByRole("tab", { name: "Sessions", exact: true }).click();
+  await expect(page.locator("[data-mcp-sessions]")).toContainText("No retained sessions.");
+  await page.route("**/api/mcp/diagnostics", route => route.fulfill({ json: { ...fixture, mcp: null, status: "disabled" } }));
+  await page.getByRole("button", { name: "Refresh sessions" }).click();
+  await expect(page.locator("[data-mcp-sessions]")).toContainText("The MCP server is disabled.");
+});

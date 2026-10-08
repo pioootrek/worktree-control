@@ -1,6 +1,6 @@
 ---
 audience: "operators and contributors measuring MCP resources"
-last_reviewed: "2026-10-07"
+last_reviewed: "2026-10-08"
 source_of_truth: "implemented diagnostic read, session policy observations and measurements"
 status: "active"
 ---
@@ -19,8 +19,9 @@ isolated instance, supply `--data-dir PATH --state-dir PATH`, or use the existin
 path environment variables. The CLI sends the exact `mcp-diagnostics` command
 to the existing owner-only Unix socket (0700 directory, 0600 socket). It never
 opens SQLite or starts an absent controller. Timeout is five seconds and the
-CLI bounds the response to 64 KiB. There is no public HTTP route, extra MCP tool,
-scoped-credential permission or dashboard in this slice.
+CLI bounds the response to 64 KiB. The dashboard administration read below uses
+the same bounded snapshot and global status-wait observations. No extra MCP tool
+or scoped-credential permission is added.
 
 The transport's public snapshot and the application's status-wait diagnostics
 are the read operations. Input validation is shared by the local socket
@@ -61,6 +62,43 @@ sampled on demand at most once per five seconds, with a timestamp and age. The
 first CPU sample is unknown; subsequent percentages are elapsed CPU time as a
 percentage of one logical core. The process sample is the controller alone,
 not descendants, managed servers or proxies.
+
+## Dashboard Sessions
+
+Open **Resources → Sessions** for controller-wide observations, including when
+no runtime project is registered. `GET /api/mcp/diagnostics` reads the same
+snapshot as the owner CLI. It accepts the current installation authority and
+owner sessions through shared authentication and owner authorization. Legacy
+mode also accepts the existing dashboard pairing header. In credential-enforcing
+modes, valid agent and worker credentials receive 403, while missing, expired,
+revoked or invalid credentials receive 401. The route checks Origin, accepts
+only GET, and returns `Cache-Control: no-store`.
+
+Explicit open mode retains its existing trust semantics: every caller resolves
+as anonymous installation authority and bearer credentials are ignored. It does
+not isolate this view from agents or other callers in that mode.
+
+The read-only view shows session counts, qualifying idle age, transport and
+renewal policy, the effective close deadline and remaining absolute lifetime.
+A null activity timestamp means no qualifying activity has been observed; it
+never proves an agent is dead. Local labels do not identify clients, credentials
+or projects, and the snapshot has no per-session claim project, worktree or
+lease expiry. Recent closures show time, reason and operations at close; they
+have no session labels. Omitted details remain explicit beside aggregate counts.
+
+Controller RSS/CPU has its own scope and sample age, separate from the existing
+managed-server resources. Unknown first CPU samples remain unknown. Effective
+policy values are positive; zero does not disable a limit.
+
+The dashboard's existing resource polling owner reads diagnostics approximately
+every five seconds while Sessions is active and the browser document is visible.
+Reads do not overlap and have a ten-second timeout. Leaving the view or changing
+credentials cancels the pending read. Manual refresh uses the same poll. Local
+one-second display ticks advance age and remaining-time labels without extra
+HTTP reads. Failed refreshes retain a visibly stale snapshot; loss of authority
+clears it and pauses automatic diagnostics polling until a manual retry. No
+session-close action, new collector, background sampler, history storage or
+server lifecycle operation is introduced.
 
 ## Reproduction
 

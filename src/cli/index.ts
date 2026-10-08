@@ -266,10 +266,16 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       logs.controller(message, details);
     },
   });
+  const readMcpDiagnostics = async () => ({
+    mcp: mcp ? await mcp.diagnosticsSnapshot() : null,
+    status: mcp ? "enabled" as const : "disabled" as const,
+    statusWaits: service.statusWaitDiagnostics(),
+  });
   const controller = createControllerServer({
     service,
     directoryBrowser: new DirectoryBrowser(option("--browse-root") ?? homedir()),
     events,
+    mcpDiagnostics: readMcpDiagnostics,
     mcpStatus: () => ({
       phase: !mcp ? "disabled" : mcp.server.listening ? "running" : "stopped",
       endpoint: mcp ? mcpEndpoint : null,
@@ -336,10 +342,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       },
     });
     const backupHandler = backupAdminHandler(backups, restores, userSchedules);
-    const mcpDiagnosticsHandler = mcpDiagnosticsAdminHandler(async () => ({
-      mcp: mcp ? await mcp.diagnosticsSnapshot() : null, status: mcp ? "enabled" : "disabled",
-      statusWaits: service.statusWaitDiagnostics(),
-    }));
+    const mcpDiagnosticsHandler = mcpDiagnosticsAdminHandler(readMcpDiagnostics);
     adminSocket = await listenAdminSocket(paths.adminSocketPath, body => {
       if (body && typeof body === "object" && "command" in body && (body.command === "backup" || body.command === "backup-remote" || body.command === "backup-monitor" || body.command === "user-export-recovery")) return backupHandler(body);
       if (body && typeof body === "object" && "command" in body && body.command === "mcp-diagnostics") {

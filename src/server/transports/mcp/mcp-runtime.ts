@@ -1,3 +1,4 @@
+import type { McpDiagnosticsSnapshot, McpSessionDiagnostics } from "@/shared/contracts/mcp-diagnostics";
 import { registerKnowledgeTools } from "./knowledge-tools";
 import { McpDiagnostics, type McpSessionObservation, type McpCloseReason } from "../../mcp-diagnostics";
 import { randomUUID } from "node:crypto";
@@ -197,7 +198,7 @@ export class McpRuntime {
     await Promise.allSettled(sessions.map((session) => session.server.close()));
   }
 
-  diagnosticsSnapshot() {
+  diagnosticsSnapshot(): McpDiagnosticsSnapshot {
     const snapshot = this.diagnostics.snapshot();
     const live = new Map<number, McpSession>();
     for (const session of [...this.sessions.values(), ...this.draining]) live.set(session.observation.label, session);
@@ -205,7 +206,7 @@ export class McpRuntime {
       ...snapshot,
       runtimeRetryEntries: this.runtimeOperationCount,
       ...this.governor.describe(),
-      sessions: snapshot.sessions.map(entry => {
+      sessions: snapshot.sessions.map((entry): McpSessionDiagnostics => {
         const session = live.get(entry.label);
         const deadline = session?.governed.deadline ?? null;
         return {
