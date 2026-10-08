@@ -14,6 +14,7 @@ import { productionInstallEnvironment, installProductionPrefix, installedSqlite,
 const exec = promisify(execFile);
 const STEP_TIMEOUT = 45_000;
 const SENTINEL = "portable-smoke-secret-must-not-leak";
+const INSTALLATION_TOKEN = /wsi_[0-9a-f-]{36}_[0-9a-f]{64}/g;
 const startedAt = Date.now();
 const steps = [];
 let root;
@@ -60,6 +61,10 @@ async function run(file, args, options = {}) {
   } catch (error) {
     throw new Error(`${basename(file)} ${args[0] ?? ""} failed: ${redact(error.stderr || error.message)}`);
   }
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
 async function freePort() {
@@ -255,6 +260,67 @@ async function main() {
     }
   });
 
+  // A new installation needs no separate token command: an interactive first start issues it once.
+  const firstRunTerminal = await step("first-run-token", async () => {
+    const firstData = join(root, "first-run-data");
+    const firstState = join(root, "first-run-state");
+    await Promise.all([mkdir(firstData, { mode: 0o700 }), mkdir(firstState, { mode: 0o700 })]);
+    const firstCommon = ["--data-dir", firstData, "--state-dir", firstState];
+    const port = await freePort();
+    const mcp = await freePort();
+    const startArgs = ["start", "--no-open", "--host", "127.0.0.1", "--port", String(port), "--mcp-port", String(mcp), ...firstCommon];
+    const status = async () => JSON.parse((await run(cliCommand, ["auth", "status", ...firstCommon], { cwd: root, env: runtimeEnv })).stdout);
+
+    // Captured output is not a terminal: the controller refuses rather than write a token into it.
+    let refused;
+    try { await exec(cliCommand, startArgs, { cwd: root, env: runtimeEnv, encoding: "utf8", timeout: STEP_TIMEOUT, maxBuffer: 64 * 1024 }); }
+    catch (error) { refused = error; }
+    check(refused?.code === 1 && /auth token generate/.test(refused.stderr), "Non-interactive first start did not refuse with the auth token generate guidance.");
+    check(!/wsi_/.test(`${refused.stdout}${refused.stderr}`), "Non-interactive first start printed an installation token.");
+    const missing = await status();
+    check(missing.mode === "token" && missing.token === null && missing.generation === 0, "Non-interactive first start changed the authentication policy.");
+
+    if (process.platform !== "linux") return "not-exercised";
+    // util-linux script supplies the pseudo-terminal an operator's shell would.
+    const command = `exec ${[cliCommand, ...startArgs].map(shellQuote).join(" ")}`;
+    const terminal = spawn("script", ["-qefc", command, "/dev/null"], { cwd: root, env: { ...runtimeEnv, SHELL: "/bin/sh" }, stdio: ["pipe", "pipe", "pipe"] });
+    let output = "";
+    terminal.stdout.on("data", (chunk) => { output += chunk.toString(); });
+    terminal.stderr.on("data", (chunk) => { output += chunk.toString(); });
+    const exited = new Promise((accept) => terminal.once("exit", (code, signal) => accept({ code, signal })));
+    let token;
+    try {
+      token = await waitFor(async () => {
+        check(terminal.exitCode === null, `Interactive first start exited early: ${redact(output)}`);
+        const [printed] = output.match(INSTALLATION_TOKEN) ?? [];
+        check(printed, "The installation token has not been printed yet.");
+        const response = await fetch(`http://127.0.0.1:${port}/api/dashboard`, { headers: { "X-Worktree-Control-Token": printed }, signal: AbortSignal.timeout(1_000) });
+        check(response.ok, `Dashboard returned ${response.status} for the printed token.`);
+        return printed;
+      }, "Interactive first start did not issue a working installation token");
+      check(output.includes("it is not shown again") && output.includes("auth token rotate"), "Interactive first start omitted the save-once warning.");
+      const issued = await status();
+      check(issued.mode === "token" && issued.generation === 1 && token.startsWith(`${issued.token?.prefix}_`), "Running controller does not report the issued token.");
+    } finally {
+      if (terminal.exitCode === null) terminal.stdin.write("\x03");
+      const result = await Promise.race([exited, new Promise((accept) => setTimeout(() => accept(null), 15_000))]);
+      if (!result) {
+        forcedCleanup = true;
+        try { process.kill(JSON.parse(await readFile(join(firstState, "controller.lock"), "utf8")).pid, "SIGKILL"); } catch {}
+        terminal.kill("SIGKILL");
+        await exited;
+      }
+    }
+    check((await exited).code === 0 && !existsSync(join(firstState, "controller.lock")), "Interactive first start did not stop gracefully.");
+    check((output.match(INSTALLATION_TOKEN) ?? []).length === 1, "The installation token was printed more than once.");
+    const secret = token.split("_").at(-1);
+    for (const path of [...await filesUnder(firstData), ...await filesUnder(firstState)]) {
+      if (!(await lstat(path)).isFile()) continue;
+      check(!(await readFile(path)).includes(secret), `The installation token was persisted in ${relative(root, path)}.`);
+    }
+    return "pseudo-terminal";
+  });
+
   const fixturePort = await freePort();
   const dashboardPort = await freePort();
   const mcpPort = await freePort();
@@ -430,6 +496,7 @@ async function main() {
     bytes: (await stat(tarball)).size, archiveEntries: archiveFiles.length, node: process.version,
     npm: (await run("npm", ["--version"])).stdout.trim(), platform: `${process.platform}-${process.arch}`,
     install: { mode: "global-prefix", prefixContainsSpaces: prefix.includes(" ") },
+    firstRunToken: { nonInteractive: "refused", interactive: firstRunTerminal },
     nativeSqlite: { load: "success", binary: nativeAddon, provisioning: nativeProvisioning },
     dependencies, additionalVerification,
     steps, cleanup: "graceful", durationMs: Date.now() - startedAt,
