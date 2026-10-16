@@ -492,3 +492,92 @@ h3 {
     font-size: 0.85rem;
   }
 }
+
+/* Writing section: list and article typography. */
+
+.article-header {
+  padding: 3.5rem 0 1.5rem;
+}
+
+.article-header h1 {
+  max-width: 24ch;
+  font-size: clamp(2rem, 5.5vw, 3.1rem);
+  text-wrap: balance;
+}
+
+.byline {
+  margin: 0.9rem 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.95rem;
+}
+
+.article-body {
+  max-width: 68ch;
+  padding-bottom: 4rem;
+}
+
+.article-body h2 {
+  margin: 2.75rem 0 0.75rem;
+  font-size: clamp(1.4rem, 3.2vw, 1.75rem);
+}
+
+.article-body p,
+.article-body li {
+  margin: 0 0 1.1rem;
+}
+
+.article-body ul {
+  margin: 0 0 1.1rem;
+  padding-left: 1.2rem;
+}
+
+.article-body li a {
+  overflow-wrap: anywhere;
+}
+
+.article-body .article-shot {
+  margin: 1.75rem 0 2rem;
+}
+
+.post-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 4rem;
+}
+
+.post-card {
+  max-width: 68ch;
+  padding: 1.25rem 1.4rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+
+.post-card h2 {
+  margin: 0;
+  font-size: clamp(1.4rem, 3vw, 1.75rem);
+}
+
+.post-card h2 a {
+  color: var(--foreground);
+  text-decoration: none;
+}
+
+.post-card h2 a:hover {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
+.post-card .byline {
+  margin: 0.5rem 0 0.9rem;
+}
+
+.post-card p:last-child {
+  margin: 0;
+}
+
+@media (max-width: 30rem) {
+  .article-header {
+    padding-top: 2.5rem;
+  }
+}
