@@ -2,6 +2,14 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://pioootrek.github.io/worktree-control/</loc>
-    <lastmod>2026-10-13</lastmod>
+    <lastmod>2026-10-16</lastmod>
+  </url>
+  <url>
+    <loc>https://pioootrek.github.io/worktree-control/blog/</loc>
+    <lastmod>2026-10-16</lastmod>
+  </url>
+  <url>
+    <loc>https://pioootrek.github.io/worktree-control/blog/managing-the-agents/</loc>
+    <lastmod>2026-10-16</lastmod>
   </url>
 </urlset>

@@ -10,7 +10,7 @@ Worktree Control runs on your machine with a browser dashboard, CLI and MCP
 server. It supports Node.js and Django projects, stores state in SQLite, and
 needs no hosted account. It is MIT licensed.
 
-[Website](https://pioootrek.github.io/worktree-control/) · [Try it locally](#quick-start) · [Connect your agent](#mcp-for-coding-agents) · [Project knowledge](#keep-project-context-between-sessions) · [Documentation](#documentation)
+[Website](https://pioootrek.github.io/worktree-control/) · [Why I built it](https://pioootrek.github.io/worktree-control/blog/managing-the-agents/) · [Try it locally](#quick-start) · [Connect your agent](#mcp-for-coding-agents) · [Project knowledge](#keep-project-context-between-sessions) · [Documentation](#documentation)
 
 ![Worktrees dashboard with example projects, branches, reservations and server actions](https://raw.githubusercontent.com/pioootrek/worktree-control/main/.github/assets/dashboard.png)
 
