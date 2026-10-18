@@ -1,6 +1,7 @@
 {
   "name": "worktree-control",
   "version": "0.1.1",
+  "mcpName": "io.github.pioootrek/worktree-control",
   "description": "Local control plane that moves development servers between Git worktrees on stable ports",
   "keywords": [
     "git",

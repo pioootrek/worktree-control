@@ -1,0 +1,62 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.pioootrek/worktree-control",
+  "title": "Worktree Control",
+  "description": "Claim and switch dev servers between Git worktrees on stable ports, queue tests, keep project memory",
+  "repository": {
+    "url": "https://github.com/pioootrek/worktree-control",
+    "source": "github",
+    "id": "1350790640"
+  },
+  "websiteUrl": "https://pioootrek.github.io/worktree-control/",
+  "version": "0.1.1",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "worktree-control",
+      "version": "0.1.1",
+      "transport": {
+        "type": "streamable-http",
+        "url": "http://127.0.0.1:{--mcp-port}/mcp",
+        "headers": [
+          {
+            "name": "Authorization",
+            "description": "Installation token or scoped agent token. Run `worktree-control config mcp` to print the header. Open mode needs no header.",
+            "value": "Bearer {token}",
+            "isRequired": true,
+            "isSecret": true,
+            "variables": {
+              "token": {
+                "description": "Worktree Control installation token or scoped agent token",
+                "isRequired": true,
+                "isSecret": true
+              }
+            }
+          }
+        ]
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "valueHint": "command",
+          "value": "start",
+          "description": "Run the local controller in the foreground"
+        },
+        {
+          "type": "named",
+          "name": "--host",
+          "default": "127.0.0.1",
+          "description": "Dashboard bind address. MCP always listens on loopback."
+        },
+        {
+          "type": "named",
+          "name": "--mcp-port",
+          "default": "47832",
+          "format": "number",
+          "description": "Loopback port for the MCP endpoint"
+        }
+      ]
+    }
+  ]
+}
