@@ -22,7 +22,7 @@
         "headers": [
           {
             "name": "Authorization",
-            "description": "Installation token or scoped agent token. Run `worktree-control config mcp` to print the header. Open mode needs no header.",
+            "description": "Installation token or scoped agent token. Run `worktree-control auth token generate` before the first client-launched start; `worktree-control config mcp` prints the header. Open mode needs no header.",
             "value": "Bearer {token}",
             "isRequired": true,
             "isSecret": true,
@@ -45,9 +45,14 @@
         },
         {
           "type": "named",
+          "name": "--no-open",
+          "description": "Do not open the dashboard in a browser when the client starts the controller"
+        },
+        {
+          "type": "named",
           "name": "--host",
-          "default": "127.0.0.1",
-          "description": "Dashboard bind address. MCP always listens on loopback."
+          "value": "127.0.0.1",
+          "description": "Dashboard bind address, fixed to loopback. Without it the controller listens on 0.0.0.0. MCP always listens on loopback."
         },
         {
           "type": "named",

@@ -20,7 +20,9 @@ controller; it has no stdio transport and no public remote endpoint. The
 manifest therefore declares a package with a local `streamable-http`
 transport:
 
-- command: `worktree-control start --host 127.0.0.1 --mcp-port 47832`;
+- command: `worktree-control start --no-open --host 127.0.0.1 --mcp-port 47832`,
+  where `--no-open` stops each client launch from opening a browser tab and
+  the fixed `--host` keeps the dashboard off the CLI default `0.0.0.0`;
 - endpoint: `http://127.0.0.1:{--mcp-port}/mcp`, always on loopback;
 - header: `Authorization: Bearer <token>`, using the installation token or a
   scoped agent token. Open mode needs no header.
@@ -32,8 +34,11 @@ to clients that launch the package themselves:
   service already runs, a second controller started by the client does not
   start. Those users should put the output of `worktree-control config mcp`
   in the client's private MCP configuration instead.
-- A controller started without an interactive terminal does not print the new
-  installation token. Run `worktree-control auth token generate` first.
+- On a new token-mode installation, a controller started without an
+  interactive terminal refuses to start rather than print the installation
+  token to a log. MCP clients start the package without a terminal, so the
+  first client-launched start fails until the user runs
+  `worktree-control auth token generate`.
 
 ## Publish to the official MCP Registry
 
