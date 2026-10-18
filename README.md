@@ -215,6 +215,10 @@ project's development server. Honor existing claims. Use its managed test queue
 for available verification presets.
 ```
 
+The repository root also contains [`server.json`](https://github.com/pioootrek/worktree-control/blob/main/server.json)
+for the official MCP Registry. [Distribution](https://github.com/pioootrek/worktree-control/blob/main/docs/distribution.md)
+covers publishing it and listing the project in MCP directories.
+
 Knowledge tools include `knowledge_create_thread`, `knowledge_create_reply`,
 `knowledge_create_task` and `knowledge_update_task`. An agent can save a finding
 for you to read in the dashboard without editing repository files.
