@@ -118,6 +118,35 @@ describe("queue phase telemetry with independent wall and monotonic clocks", () 
     expect(f.store.getTestRun(run.id)).toMatchObject({ phase: mode === "exit-first" ? "passed" : mode === "cancel" ? "cancelled" : "timed_out", telemetry: { termination: mode === "exit-first" ? "exit" : mode, cleanup: "confirmed", stopRequestedAt: mode === "exit-first" ? null : expect.any(String) } });
   });
 
+  it.each(["cancel", "shutdown"])("preserves timeout attribution when %s arrives during teardown", async action => {
+    const f = fixture(); const run = f.enqueue(); await drain(); f.child.emit("spawn");
+    let cleaned!: () => void;
+    f.stop.mockImplementation(() => new Promise<void>(resolve => { cleaned = resolve; }));
+    const timeoutAt = "2026-10-19T00:00:01.000Z";
+    f.advance(1000, timeoutAt); await vi.advanceTimersByTimeAsync(1000); await drain();
+    f.advance(1100, "2026-10-19T00:00:01.100Z");
+    const requested = action === "cancel" ? f.manager.cancel(run.id, "local-user") : f.manager.shutdown();
+    await drain();
+    expect(f.store.getTestRun(run.id)).toMatchObject({ phase: "running", telemetry: { termination: "timeout", stopRequestedAt: timeoutAt } });
+    expect(f.manager.status().running).toBe(1);
+    expect(f.stop).toHaveBeenCalledTimes(1);
+    f.exit(null, "SIGTERM"); cleaned(); await requested; await drain();
+    expect(f.store.getTestRun(run.id)).toMatchObject({ phase: "timed_out", source: { processOutcome: "timed_out" }, telemetry: { termination: "timeout", stopRequestedAt: timeoutAt, cleanup: "confirmed" } });
+    expect(f.manager.status().running).toBe(0);
+  });
+
+  it("preserves cancellation attribution when the timeout fires during teardown", async () => {
+    const f = fixture(); const run = f.enqueue(); await drain(); f.child.emit("spawn");
+    let cleaned!: () => void;
+    f.stop.mockImplementation(() => new Promise<void>(resolve => { cleaned = resolve; }));
+    const cancelledAt = "2026-10-19T00:00:00.100Z";
+    f.advance(100, cancelledAt); await f.manager.cancel(run.id, "local-user"); await drain();
+    f.advance(1000, "2026-10-19T00:00:01.000Z"); await vi.advanceTimersByTimeAsync(1000); await drain();
+    expect(f.stop).toHaveBeenCalledTimes(1);
+    f.exit(null, "SIGTERM"); cleaned(); await drain();
+    expect(f.store.getTestRun(run.id)).toMatchObject({ phase: "cancelled", source: { processOutcome: "cancelled" }, telemetry: { termination: "cancel", stopRequestedAt: cancelledAt, cleanup: "confirmed" } });
+  });
+
   it("retains the occupied slot and nonterminal summary on failed cleanup, then retries", async () => {
     const f = fixture(); const run = f.enqueue(); await drain(); f.child.emit("spawn");
     f.stop.mockRejectedValue(Error("cannot inspect owned tree")); f.advance(50); f.exit();
