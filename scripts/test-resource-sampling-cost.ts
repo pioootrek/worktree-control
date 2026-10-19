@@ -70,7 +70,7 @@ async function main(signals: ProbeSignals) {
         const child = spawn(process.execPath, [...process.execArgv, fileURLToPath(import.meta.url), "--worker", mode], { stdio: ["ignore", "pipe", "inherit", "ipc"] });
         child.on("message", (message: { phase: string; pids: number[] }) => phase(message.phase, message.pids));
         const chunks: Buffer[] = [];
-        child.stdout.on("data", chunk => chunks.push(chunk));
+        child.stdout!.on("data", chunk => chunks.push(chunk));
         await new Promise<void>((resolve, reject) => {
           let deadline: NodeJS.Timeout | undefined;
           const interrupt = () => {
