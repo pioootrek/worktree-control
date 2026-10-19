@@ -11,7 +11,7 @@ import { EventStream } from "@/server/events";
 import { createControllerServer } from "@/server/http-server";
 import { createMcpControllerServer } from "@/server/mcp-http-server";
 import type { IdentityService } from "@/server/modules/identity";
-import { emptyTelemetry, VerificationHistoryService } from "@/server/modules/verification";
+import { emptyRunResources, emptyTelemetry, VerificationHistoryService } from "@/server/modules/verification";
 import type { ProcessManager } from "@/server/process-manager";
 import type { DirectoryBrowser } from "@/server/directory-browser";
 import { legacySourceEvidence } from "@/server/test-source-attribution";
@@ -58,6 +58,56 @@ describe("verification history on the existing SQLite owner", () => {
     expect(f.history.list({ ...f.filter, cursor: page.nextCursor }).items).toHaveLength(10);
     expect(page.coverage).toMatchObject({ records: 60, evicted: 0, historicalCompleteness: "not_guaranteed" });
     for (const secret of ["SECRET_ARG", "SECRET_ERROR", "SECRET_LOG", "SECRET_PROFILE", "SECRET_ENV"]) expect(JSON.stringify(page)).not.toContain(secret);
+  });
+
+  it("persists versioned resources across detail pruning and maps old JSON to unknown", () => {
+    const f = fixture(), run = f.run();
+    run.telemetry!.resources = { ...emptyRunResources("sampled", 1000), sampleCount: 2, attemptCount: 2, cpuIntervalCount: 1,
+      peakSampledRssBytes: 1000, peakSampledCpuPercent: 25, peakSampledProcessCount: 2 };
+    f.store.saveTestRun(run);
+    expect(f.store.getTestRun(run.id)?.telemetry?.resources).toEqual(run.telemetry!.resources);
+    for (let i = 0; i < 50; i++) f.store.saveTestRun(f.run({ queuedAt: f.at(i + 1) }));
+    expect(f.store.getTestRun(run.id)).toBeNull();
+    expect(f.history.summary({ projectId: f.project.id, runId: run.id })).toMatchObject({ detailAvailable: false,
+      summary: { telemetry: { resources: run.telemetry!.resources } } });
+    const legacy = f.run({ queuedAt: f.at(100) }); delete legacy.telemetry!.resources;
+    f.store.saveTestRun(legacy);
+    f.owned.database.prepare("UPDATE test_runs SET telemetry_json=? WHERE id=?").run(JSON.stringify(legacy.telemetry), legacy.id);
+    expect(f.store.getTestRun(legacy.id)?.telemetry?.resources?.status).toBe("legacy_unknown");
+    // Exercise already-stored JSON from the previous release, not only new writes.
+    const json = JSON.parse(f.owned.database.prepare("SELECT summary_json FROM test_run_summaries WHERE run_id=?").pluck().get(legacy.id) as string);
+    delete json.telemetry.resources;
+    f.owned.database.prepare("UPDATE test_run_summaries SET summary_json=? WHERE run_id=?").run(JSON.stringify(json), legacy.id);
+    expect(f.history.summary({ projectId: f.project.id, runId: legacy.id }).summary.telemetry.resources).toMatchObject({ status: "legacy_unknown", peakSampledRssBytes: null });
+    expect(f.history.list(f.filter).items.find(e => e.summary.runId === legacy.id)?.summary.telemetry.resources?.status).toBe("legacy_unknown");
+  });
+
+  it("retains only saved observations on interruption and marks resource quality partial", () => {
+    const f = fixture(), run = f.run({ phase: "running", finishedAt: null });
+    run.telemetry!.finalizedAt = null;
+    run.telemetry!.resources = { ...emptyRunResources("sampled", 1000), sampleCount: 3, attemptCount: 3, peakSampledRssBytes: 5000 };
+    f.store.saveTestRun(run); f.store.markInterruptedTestRuns();
+    expect(f.store.getTestRun(run.id)).toMatchObject({ phase: "interrupted", telemetry: { resources: {
+      status: "partial", sampleCount: 3, peakSampledRssBytes: 5000, peakSampledCpuPercent: null, reasons: ["controller_interrupted"] } } });
+  });
+
+  it("exposes per-population resource denominators, gaps and qualified comparison deltas", () => {
+    const f = fixture(), a = f.run(), b = f.run(), gap = f.run();
+    a.telemetry!.resources = { ...emptyRunResources("sampled", 1000), sampleCount: 2, attemptCount: 2,
+      cpuIntervalCount: 1, peakSampledRssBytes: 1000, peakSampledCpuPercent: 20 };
+    b.telemetry!.resources = { ...a.telemetry!.resources, peakSampledRssBytes: 3000, peakSampledCpuPercent: 40 };
+    for (const r of [a, b, gap]) f.store.saveTestRun(r);
+    const metrics = f.history.metrics(f.filter);
+    expect(metrics.resources.rss.populations.completed_execution).toMatchObject({ median: 2000, p95: 3000, valid: 2, missing: 1, denominator: 3,
+      statuses: { sampled: 2, legacy_unknown: 1 }, sampleCount: 4 });
+    expect(metrics.resources.cpu.populations.completed_execution).toMatchObject({ median: 30, valid: 2, missing: 1, cpuIntervalCount: 2 });
+    const input = { projectId: f.project.id, leftRunId: a.id, rightRunId: b.id };
+    expect(f.history.compare(input).resources.rss).toMatchObject({ left: 1000, right: 3000, delta: 2000 });
+    b.telemetry!.resources.status = "partial"; f.store.saveTestRun(b);
+    expect(f.history.compare(input).resources.rss.delta).toBeNull();
+    b.telemetry!.resources.status = "sampled"; b.telemetry!.resources.intervalMs = 2000; f.store.saveTestRun(b);
+    expect(f.history.compare(input).resources.cpu.delta).toBeNull();
+    expect(f.history.compare({ ...input, rightRunId: gap.id }).resources.cpu).toMatchObject({ left: 20, right: null, delta: null });
   });
 
   it("uses stable equal-time keysets across insertions/deletions and authenticates filter/project/order scope", () => {
@@ -133,7 +183,8 @@ describe("verification history on the existing SQLite owner", () => {
     expect(metrics.sourceAttributions).toMatchObject({ observed_match: 24, pending: 1, changed: 1, legacy_unknown: 1 });
     expect(metrics.method.p95).toBe("nearest_rank_ceil_0.95_n");
     expect(f.history.metrics({ ...f.filter, presetId: "none" }).populations.completed_execution.durations.totalMs).toMatchObject({ valid: 0, denominator: 0, medianMs: null });
-    expect(metrics.resources).toEqual({ cpu: "unavailable", rss: "unavailable", runnerWait: "unavailable" });
+    expect(metrics.resources.rss.populations.completed_execution).toMatchObject({ valid: 0, missing: 21, median: null });
+    expect(metrics.resources.cpu.populations.completed_execution.median).toBeNull();
   });
 
   it.each([
@@ -280,11 +331,16 @@ async function transports() {
 describe("HTTP/MCP verification history parity through real handlers", () => {
   it("shares validated history, metrics, comparison and pruned-summary semantics", async () => {
     const f = await transports(), a = f.run(), b = f.run();
+    a.telemetry!.resources = { ...emptyRunResources("partial", 1000), sampleCount: 2, peakSampledRssBytes: 1234, missingSampleCount: 1,
+      cpuIntervalCount: 1, peakSampledCpuPercent: 20, reasons: ["membership_changed", "process_churn", "group_exited"] };
+    b.telemetry!.resources = { ...a.telemetry!.resources, peakSampledRssBytes: 2234, peakSampledCpuPercent: 40, reasons: ["inflight_discarded"] };
     a.queuedAt = f.at(-1); f.store.saveTestRun(a); f.store.saveTestRun(b);
     for (let i = 0; i < 50; i++) f.store.saveTestRun(f.run({ queuedAt: f.at(120_000 + i) }));
     expect(f.service.testRunSummary({ projectId: f.project.id, runId: a.id }).detailAvailable).toBe(false);
     expect(() => f.service.testRun(a.id)).toThrow("Nie znaleziono uruchomienia testu.");
     expect((await f.client.callTool({ name: "get_test_run", arguments: { runId: a.id } })).isError).toBe(true);
+    expect(f.history.compare({ projectId: f.project.id, leftRunId: a.id, rightRunId: b.id }).resources).toMatchObject({ rss: { delta: 1000 }, cpu: { delta: 20 } });
+    expect(f.history.summary({ projectId: f.project.id, runId: a.id }).summary.telemetry.resources).toEqual(a.telemetry!.resources);
     const { projectId: _projectId, ...query } = f.filter; void _projectId;
     const pairs = [
       ["test-runs", "list_test_runs", query], ["test-metrics", "get_test_metrics", query],

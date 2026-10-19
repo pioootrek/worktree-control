@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { TestJobManager } from "./test-job-manager";
 import { SqliteStateStore } from "./sqlite-store";
+import type { OwnedResourceSampler, ProcessGroupSnapshot } from "./resource-monitor";
 import { OwnedProcessGroup } from "./owned-process-group";
 import { nullLogWriter } from "./log-writer";
 import type { TestSourceObservation, Worktree } from "@/shared/contracts";
@@ -23,7 +24,7 @@ afterEach(async () => {
 });
 const clean = (): TestSourceObservation => ({ observedAt: "2026-10-19T00:00:00.000Z", head: "aaa", branch: "main", dirty: false, statusDigest: "empty", statusEntries: 0, complete: true, errorCode: null });
 const drain = async () => { for (let n = 0; n < 30; n++) await Promise.resolve(); };
-function fixture(options: { failStartupPrune?: boolean } = {}) {
+function fixture(options: { failStartupPrune?: boolean; sampler?: OwnedResourceSampler; timeoutMs?: number } = {}) {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   const root = mkdtempSync(join(tmpdir(), "wtc-phase-"));
   const store = new SqliteStateStore(join(root, "state.sqlite3"));
@@ -33,20 +34,113 @@ function fixture(options: { failStartupPrune?: boolean } = {}) {
   const finishLog = vi.fn(async () => {});
   const controllerLog = vi.fn();
   if (options.failStartupPrune) vi.spyOn(store, "pruneTestSummaryHistory").mockImplementationOnce(() => { throw Error("retention busy"); });
-  const manager = new TestJobManager(store, { ...nullLogWriter, finishTest: finishLog, controller: controllerLog }, () => {}, clock);
+  const manager = new TestJobManager(store, { ...nullLogWriter, finishTest: finishLog, controller: controllerLog }, () => {}, clock, { sampler: options.sampler });
   const child = new EventEmitter() as ChildProcess;
-  Object.assign(child, { stdout: null, stderr: null });
+  Object.assign(child, { stdout: null, stderr: null, pid: options.sampler ? 42 : undefined, exitCode: null, signalCode: null });
   vi.mocked(spawn).mockReset().mockReturnValue(child);
   const stop = vi.spyOn(OwnedProcessGroup.prototype, "stop").mockResolvedValue();
   const worktree: Worktree = { path: root, head: "aaa", shortHead: "aaa", branch: "main", detached: false, locked: false, prunable: false, dirty: false };
   const enqueue = (source = clean()) => manager.enqueue({ projectId: project.id, worktree,
-    command: { executable: "node", args: [], cwd: root, preset: { id: "node:test", name: "test", adapter: "node", timeoutMs: 1000 } },
+    command: { executable: "node", args: [], cwd: root, preset: { id: "node:test", name: "test", adapter: "node", timeoutMs: options.timeoutMs ?? 1000 } },
     environment: { environment: {}, mode: "clean", profile: "unit", inheritedServerProfile: null, variableNames: [] }, actor: "local-user", sourceObservation: source });
   const advance = (value: number, date?: string) => { tick = value; if (date) wall = date; };
   const exit = (code: number | null = 0, signal: string | null = null) => { child.emit("exit", code, signal); child.emit("close"); };
   const f = { root, store, manager, child, stop, enqueue, advance, exit, finishLog, controllerLog, missing: () => { missing = true; } };
   fixtures.push(f); return f;
 }
+
+const resourceSnapshot = (ticks = 5, observedAtMs = 0): ProcessGroupSnapshot => ({
+  members: [{ pid: 42, startTicks: 100, processGroupId: 42, cpuTicks: ticks, rssBytes: 1234, state: "S" }],
+  hostCpuTicks: 100 + observedAtMs, cpuCount: 2, observedAtMs, incomplete: false,
+});
+const resourceSampler = (): OwnedResourceSampler => ({ supported: true, capture: vi.fn(async () => ({ pid: 42, startTicks: 100 })), snapshot: vi.fn(async () => resourceSnapshot()) });
+
+describe("test job passive resource integration", () => {
+  it.each(["exit", "cancel", "timeout", "shutdown", "cleanup_retry"])("retains samples and stops on confirmed cleanup: %s", async cause => {
+    const sampler = resourceSampler(), f = fixture({ sampler, timeoutMs: 10_000 });
+    vi.mocked(sampler.snapshot).mockResolvedValueOnce(resourceSnapshot()).mockResolvedValue(resourceSnapshot(15, 1000));
+    const run = f.enqueue(); await drain(); f.child.emit("spawn"); await drain();
+    await vi.advanceTimersByTimeAsync(1000); await drain();
+    let shutdown: Promise<void> | undefined;
+    if (cause === "cancel") await f.manager.cancel(run.id, "local-user");
+    if (cause === "timeout") await vi.advanceTimersByTimeAsync(9000);
+    if (cause === "shutdown") shutdown = f.manager.shutdown();
+    if (cause === "cleanup_retry") f.stop.mockRejectedValue(Error("inspection failed"));
+    f.exit(cause === "exit" || cause === "cleanup_retry" ? 0 : null, cause === "exit" || cause === "cleanup_retry" ? null : "SIGTERM");
+    if (cause === "cleanup_retry") {
+      await vi.advanceTimersByTimeAsync(250); await drain();
+      expect(f.manager.status().running).toBe(1);
+      const calls = vi.mocked(sampler.snapshot).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(vi.mocked(sampler.snapshot).mock.calls.length).toBeGreaterThan(calls);
+      f.stop.mockResolvedValue(); await f.manager.cancel(run.id, "local-user");
+    }
+    await drain(); if (shutdown) await shutdown;
+    const result = f.store.getTestRun(run.id)!;
+    const phase = cause === "timeout" ? "timed_out" : cause === "cancel" || cause === "shutdown" ? "cancelled" : "passed";
+    expect(result.phase).toBe(phase);
+    expect(result.source.processOutcome).toBe(phase);
+    expect(result.telemetry!.resources).toMatchObject({ sampleCount: expect.any(Number), peakSampledRssBytes: 1234, peakSampledCpuPercent: 2 });
+    const calls = vi.mocked(sampler.snapshot).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(sampler.snapshot).toHaveBeenCalledTimes(calls);
+    expect(f.manager.status().running).toBe(0);
+  });
+
+  it("closes observation after failed shutdown while retaining process ownership for cleanup retry", async () => {
+    const sampler = resourceSampler(), f = fixture({ sampler, timeoutMs: 100_000 });
+    const run = f.enqueue(); await drain(); f.child.emit("spawn"); await drain();
+    f.stop.mockRejectedValue(Error("inspection failed"));
+    const stopped = expect(f.manager.shutdown()).rejects.toThrow("Nie potwierdzono");
+    await vi.advanceTimersByTimeAsync(500); await stopped;
+    expect(f.manager.status().running).toBe(1);
+    expect(f.store.getTestRun(run.id)?.telemetry?.resources).toMatchObject({ status: "partial", sampleCount: 1, reasons: ["no_cpu_interval", "controller_interrupted"] });
+    const calls = vi.mocked(sampler.snapshot).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(sampler.snapshot).toHaveBeenCalledTimes(calls);
+    f.stop.mockResolvedValue(); f.exit(null, "SIGTERM"); await drain();
+    expect(f.store.getTestRun(run.id)?.phase).toBe("cancelled");
+    expect(f.manager.status().running).toBe(0);
+  });
+
+  it("bounds resource-only durable checkpoints to one per ten seconds", async () => {
+    const sampler = resourceSampler(), f = fixture({ sampler, timeoutMs: 100_000 });
+    const tick = vi.spyOn(performance, "now").mockReturnValue(0);
+    const run = f.enqueue(); await drain(); f.child.emit("spawn"); await drain();
+    const save = vi.spyOn(f.store, "saveTestRun");
+    await vi.advanceTimersByTimeAsync(9500);
+    expect(save).not.toHaveBeenCalled();
+    tick.mockReturnValue(10_000); await vi.advanceTimersByTimeAsync(1000);
+    expect(save).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(save).toHaveBeenCalledTimes(1);
+    f.exit(); await drain();
+    expect(f.store.getTestRun(run.id)?.telemetry?.resources?.sampleCount).toBeGreaterThan(10);
+  });
+
+  it("releases the slot without waiting for sampling and rejects late mutation of durable results", async () => {
+    const sampler = resourceSampler(), f = fixture({ sampler });
+    let release!: (value: ProcessGroupSnapshot) => void;
+    vi.mocked(sampler.snapshot).mockImplementation(() => new Promise(resolve => { release = resolve; }));
+    const run = f.enqueue(); await drain(); f.child.emit("spawn"); await drain();
+    f.exit(); await drain();
+    const final = f.store.getTestRun(run.id)!;
+    expect(final.phase).toBe("passed");
+    expect(final.telemetry!.resources).toMatchObject({ status: "unavailable", sampleCount: 0, peakSampledRssBytes: null, missingSampleCount: 1 });
+    expect(f.manager.status().running).toBe(0);
+    release(resourceSnapshot()); await drain();
+    expect(f.store.getTestRun(run.id)).toEqual(final);
+  });
+
+  it("never changes successful process/source attribution when the sampler fails", async () => {
+    const sampler = resourceSampler(), f = fixture({ sampler });
+    vi.mocked(sampler.snapshot).mockRejectedValue(Error("EACCES"));
+    f.manager.configureSourceObserver(async () => clean());
+    const run = f.enqueue(); await drain(); f.child.emit("spawn"); await drain(); f.exit(); await drain();
+    expect(f.store.getTestRun(run.id)).toMatchObject({ phase: "passed", source: { processOutcome: "passed", attribution: "observed_match" },
+      telemetry: { resources: { status: "unavailable", peakSampledRssBytes: null, missingSampleCount: 1 } } });
+  });
+});
 
 describe("queue phase telemetry with independent wall and monotonic clocks", () => {
   it("separates queue, preparation, process, cleanup and source/log finalization despite wall jumps", async () => {
@@ -265,11 +359,13 @@ describe("queue phase telemetry with independent wall and monotonic clocks", () 
   it("surfaces final durable-write failure and does not release the slot as a successful finalization", async () => {
     const f = fixture(); const run = f.enqueue(); await drain(); f.child.emit("spawn");
     const save = f.store.saveTestRun.bind(f.store);
-    vi.spyOn(f.store, "saveTestRun").mockImplementation((value, key) => { if (value.telemetry?.finalizedAt) throw Error("disk full"); save(value, key); });
+    const persistence = vi.spyOn(f.store, "saveTestRun").mockImplementation((value, key) => { if (value.telemetry?.finalizedAt) throw Error("disk full"); save(value, key); });
     f.exit(); await drain();
     expect(f.store.getTestRun(run.id)?.phase).toBe("running");
     expect(f.manager.status().running).toBe(1);
     expect(() => f.enqueue()).toThrow("Kolejka testów jest zamknięta.");
+    const snapshot = structuredClone(persistence.mock.calls.at(-1)![0].telemetry!.resources);
     await expect(f.manager.shutdown()).rejects.toThrow("disk full");
+    expect(persistence.mock.calls.at(-1)![0].telemetry!.resources).toEqual(snapshot);
   });
 });

@@ -1,7 +1,7 @@
 import type { PendingTestRun, TestRunStatusRecord } from "@/server/state-store";
 import type { TestEnvironmentMode, TestRun, TestRunPhase } from "@/shared/contracts";
 import Database from "better-sqlite3";
-import { emptyTelemetry } from "@/server/modules/verification";
+import { emptyTelemetry, emptyRunResources, resourceReason } from "@/server/modules/verification";
 import { TestSummaryQueries } from "./test-summary-queries";
 import { legacySourceEvidence } from "@/server/test-source-attribution";
 
@@ -38,6 +38,8 @@ export type TestRunRow = {
 };
 
 export function mapTestRun(row: TestRunRow): TestRun {
+  const telemetry = row.telemetry_json ? JSON.parse(row.telemetry_json) as NonNullable<TestRun["telemetry"]> : emptyTelemetry();
+  telemetry.resources ??= emptyRunResources();
   return {
     id: row.id,
     projectId: row.project_id,
@@ -65,7 +67,7 @@ export function mapTestRun(row: TestRunRow): TestRun {
     environmentProfile: row.environment_profile,
     inheritedServerProfile: row.inherited_server_profile,
     environmentVariableNames: JSON.parse(row.environment_variable_names_json) as string[],
-    telemetry: row.telemetry_json ? JSON.parse(row.telemetry_json) as TestRun["telemetry"] : emptyTelemetry(),
+    telemetry,
     source: row.source_json ? JSON.parse(row.source_json) as TestRun["source"] : legacySourceEvidence(),
   };
 }
@@ -203,6 +205,11 @@ export class TestRunQueries {
         run.error = "Kontroler został zatrzymany przed zakończeniem testu.";
         run.telemetry ??= emptyTelemetry();
         if (run.telemetry.availability !== "legacy_unknown") run.telemetry.availability = "partial";
+        if (run.telemetry.resources && run.telemetry.resources.status !== "legacy_unknown") {
+          const resources = run.telemetry.resources;
+          if (resources.status !== "unsupported") resources.status = resources.sampleCount ? "partial" : "unavailable";
+          resourceReason(resources, "controller_interrupted");
+        }
         run.telemetry.termination = "interruption";
         run.telemetry.recoveredAt = now;
         // Recovery cannot observe the lost process's exit, cleanup or monotonic intervals.

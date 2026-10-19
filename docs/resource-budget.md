@@ -43,9 +43,9 @@ that exceeds disk throughput; this finite workload does not certify that case.
 
 ## Queued verification summaries
 
-Stage 1 adds event-driven phase measurement without process resource sampling.
-Each run keeps a small monotonic observation map until finalization; no polling
-or additional scheduler/capacity map is introduced. Detail and summary writes
+Stage 1 adds event-driven phase measurement; stage 3 adds passive per-run resource sampling.
+Each run keeps a small monotonic phase observation map until finalization;
+resource observers share the existing admission and capacity decisions. Detail and summary writes
 share one transaction/connection, with summary updates skipped for unchanged
 payloads (for example log-only checkpoints).
 
@@ -180,3 +180,64 @@ and 50,000 globally, prints query plans, elapsed times and response sizes, and
 asserts indexed access and candidate limits without a machine-speed threshold.
 See [verification history API](verification-history-api.md) for consistency and
 statistical semantics. Existing summary retention policy remains unchanged.
+
+
+## Passive verification sampler cost
+
+Runtime and finite-job Linux observers share one single-flight `/proc` stat
+enumeration, cached for 250 ms after completion. The collector permits eight
+open process-file readers globally, reusing eight 8 KiB buffers, with at most
+256 waiting readers, 32,768 enumerated records and 4,096 candidate members per
+group. Over-budget scans fail as missing measurements. RSS is read only for
+requested group members and followed by another stat read to reject identity
+changes during the read. ENOENT/ESRCH during global enumeration or owned-member
+validation mark coverage partial with `process_churn`; global membership is
+unknown. A member that becomes a zombie is also excluded as churn, but only
+after its PID, start ticks and PGID still match, even if its status omits RSS.
+Identity mismatches, malformed records, missing RSS on a live process and other
+read errors remain `incomplete_scan`. Oversized records reject the sample.
+Repeated runtime ticks coalesce while a previous sample is pending; finite
+jobs schedule their next attempt
+only after the preceding one completes.
+
+Capturing a new job's leader also records the next collector scan generation.
+Its first snapshot requires an enumeration started after capture, so neither a
+warm cache nor an older in-flight directory listing can omit a newly spawned
+leader solely because it predates spawn. An older flight drains before one
+shared replacement starts, even if the discarded flight failed. Consumers of
+that older scan and of a failed eligible scan still receive their errors.
+There is no retry loop or parallel full scan. Later snapshots retain that
+minimum generation and use the ordinary shared cache.
+Distinct captures during successive scans can require additional scans, so
+unsynchronized job startup cost remains workload-dependent.
+
+The first observation is still non-atomic. If the captured leader exits before
+it and a surviving child are observed together, PGID alone cannot prove that
+child's ownership. Observation then ends conservatively with `identity_lost`.
+An unreadable or disappearing anchor during member validation can also prevent
+that first observation. Freshness does not recover never-observed generations
+or weaken permanent identity loss after continuity is lost.
+
+The finite-job default is an immediate attempt followed by a one-second delay
+after each attempt. No idle observer timer runs after completion. A short run
+can legitimately have no samples. These measurements describe sampled sums
+and CPU intervals; see [resource semantics](verification-history-api.md#passive-per-run-resources).
+
+Run the bounded sampler-only probe with the discovered queue preset
+`node:test:resource-sampling-cost` (package command
+`pnpm test:resource-sampling-cost`). It runs three sequential repetitions of
+fresh Node workers: baseline, one sampled group and three sampled groups. All
+arms have three idle two-process fixture groups, six one-second intervals and
+an initial sample. It records each RSS point, user+system CPU, actual elapsed
+time, scan latency, environment/load and baseline deltas. Cleanup uses only
+freshly spawned owned groups. SIGTERM/SIGINT request cancellation in both
+parent and worker; the parent awaits worker termination and the worker awaits
+all group cleanup attempts, even if one fails. Interruption and cleanup failure
+exit unsuccessfully without reporting confirmed probe cleanup. Fixtures have
+20-second lifetimes and close when their worker pipe disappears. These provide
+bounded fallback after abrupt worker death, not synchronous SIGKILL cleanup or
+an OS failure guarantee. It starts no server
+or service and touches no supervised project. This short sampler-only probe
+cannot certify controller release budgets, database/UI overhead, busy child
+churn, accuracy, or long-duration behavior. Keep the full JSON and all runs;
+do not select the best repetition or invent a pass threshold.

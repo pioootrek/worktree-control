@@ -124,8 +124,16 @@ The median is the middle sorted value, or mean of the two middle values for an
 even sample count (`sorted_midpoint_mean`). p95 is exact nearest rank,
 `sorted[ceil(0.95*n)-1]`. Both use raw selected per-run observations; there is no
 averaging of daily percentiles. There are no unbounded group-by dimensions.
-CPU, RSS and runner wait have explicit `unavailable` status. Process duration
-can include waiting inside an external runner whose lock boundary is unobserved.
+`resources.cpu` and `resources.rss` now return statistic objects instead of the
+stage-2 literal `"unavailable"`. The top-level keys are preserved, but clients
+must handle this deliberate type evolution. CPU names `peak_sampled_cpu_percent`
+and unit `percent_one_core`; RSS names `peak_sampled_summed_rss` in bytes. Each
+has the same fixed `populations` as durations, with `median`, `p95`, `valid`,
+`missing`, `denominator`, status counts, summed `sampleCount` and
+`cpuIntervalCount`. Partial measurements enter the descriptive statistics with
+their quality counts exposed. Legacy gaps never enter as zero. Filter identities
+and inspect quality before using an aggregate. Runner wait remains `"unavailable"`;
+process duration can include an external runner's unobserved lock wait.
 
 ## Comparisons
 
@@ -142,4 +150,88 @@ missing timing and incomplete execution. Every comparison explains that matching
 SHA/status digest does not prove identical files, environment, installed tools
 or external services. Profile digests identify policy selection, not secret
 values. No comparison declares flaky tests, unnecessary repeats or equivalent
-environments. CPU/RSS and runner wait remain unavailable.
+environments. Resource comparisons return `left`, `right` and right-minus-left
+`delta`, labelled `descriptive_sampled_peaks_only`. Deltas require both runs in
+`completed_execution`, compatible version/source/coverage/CPU normalization,
+and identical positive intervals. States may be `sampled` or an explained
+`partial`. Membership changes, processes disappearing during enumeration or
+member validation, verified same-generation zombies,
+an observed empty group after child exit, and a discarded final in-flight read
+permit descriptive deltas while preserving all quality reasons and counts.
+These gaps do not establish complete coverage. Identity loss, read failures,
+incomplete scans, controller interruption, unknown reasons and unexplained old
+partial summaries exclude both deltas. Counter gaps exclude CPU deltas but
+permit RSS; no CPU interval leaves only the RSS delta available. Old stored
+`incomplete_scan` reasons remain excluded because they do not distinguish
+process churn from read failures. Individually observed peaks remain visible.
+Matching cadence does not ensure matching coverage or workload.
+Runner wait remains unavailable.
+
+## Passive per-run resources
+
+`get_test_run`, retained summaries and history entries expose
+`telemetry.resources`, a nested version-1 record stored in the existing JSON.
+SQLite remains schema 29. Old JSON without resources reads as `legacy_unknown`.
+Existing retention caps and transactions apply; pruning details preserves the
+summary. Recovery retains checkpointed observations and marks their quality
+partial with `controller_interrupted`. It cannot reconstruct lost samples.
+
+The observer starts only from a freshly spawned detached child and captures
+its `/proc/PID/stat` start ticks. Each accepted snapshot must contain that
+same leader generation or a previously observed surviving member generation.
+A reused leader or loss of every known member permanently ends observation.
+An empty, readable group after the spawned child exited ends observation with
+`group_exited` when earlier samples established ownership. It adds no zero
+sample and does not accept an unanchored nonempty group.
+PID/PGID alone and persisted PIDs never establish sampling identity. Children
+that leave the process group are outside coverage. Process stopping keeps its
+existing ownership and retry behavior.
+
+The initial attempt is immediate, then another attempt follows one second
+after the preceding attempt completes. Scans never overlap within an observer;
+slow reads increase the actual spacing. `intervalMs` is the configured delay,
+not a promise of exactly one sample per second. `firstSampledAt`,
+`lastSampledAt`, `attemptCount`, `sampleCount`, `missingSampleCount` and
+`partialSampleCount` describe observations. `peakSampledProcessCount` counts
+the largest observed group. `status` is `pending`, `sampled`, `partial`,
+`unavailable`, `unsupported` or `legacy_unknown`. `sampled` means no detected
+read/identity gaps, not complete temporal coverage. Bounded `reasons` report
+gaps, churn, identity loss and interrupted/discarded reads. `process_churn`
+means ENOENT/ESRCH during enumeration or member validation, or a member becoming
+a zombie with matching PID, start ticks and PGID. Such members are excluded
+from the sample, including verified zombies whose status omits RSS. Global
+churn has unknown group membership. Coverage remains partial; it does not
+claim complete RSS or CPU totals. Identity mismatches (including zombies),
+malformed records, missing RSS on live members and other read errors retain
+`incomplete_scan`, which excludes comparison deltas. Churn never establishes
+ownership of an unobserved generation or recovers lost identity continuity.
+
+`peakSampledRssBytes` is the largest sampled sum of member RSS. Shared resident
+pages count once per process, so the sum can double count memory. Reads are
+sequential observations, not an atomic snapshot. Peaks between attempts and
+short-lived children can be missed. This is neither cgroup memory, allocation,
+page-cache accounting nor a complete job peak.
+
+CPU uses only nonnegative deltas between adjacent observations of the same
+PID **and start ticks**. New/dead/reused members never add or subtract lifetime
+CPU counters. Missing snapshots break the CPU interval. Any regressed or
+invalid counter discards the entire interval, including other valid pairs, and
+requires fresh endpoints before another CPU interval. Valid member deltas are summed and divided by host CPU-tick deltas, multiplied by the logical CPU
+count; 100% represents one core and values may exceed 100%.
+`peakSampledCpuPercent` is the largest observed interval value,
+`cpuIntervalCount` its denominator and `observedCpuWindowMs` the sum of these
+observed intervals. Churn makes this a partial CPU observation of surviving
+members. CPU of unobserved/dead children and the initial/final tails is unknown;
+there is no inferred total CPU time. No valid interval leaves the peak null.
+
+Observation continues through leader exit/cleanup retries and stops after
+confirmed group cleanup. Failed shutdown also stops observation before the store
+closes, marks remaining measurements partial, and retains process ownership and
+occupied slots for cleanup retry. Stop clears the timer immediately and discards late
+reads; bounded file reads already underway drain and close without delaying
+slot release or changing the finalized summary. Sampling errors cannot change
+the command, exit/signal, stop cause or source qualification. Resource-only
+checkpoints occur after the initial observation and at most once per ten seconds afterward; existing lifecycle/log writes
+and finalization also retain observations. No raw resource history is stored.
+No signal alone is diagnosed as OOM. This observer sets no limits or budgets
+and exports no telemetry.

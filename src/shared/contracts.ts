@@ -71,6 +71,8 @@ export interface RedactedTestEnvironmentProfile extends Omit<TestEnvironmentProf
 /** Wall milestones correlate events; only same-controller monotonic intervals are durations. */
 export interface TestRunTelemetry {
   version: 1;
+  /** Versioned passive measurements; absent in pre-sampling records. */
+  resources?: TestRunResources;
   availability: "observed" | "partial" | "legacy_unknown";
   admittedAt: string | null;
   prepareFinishedAt: string | null;
@@ -94,6 +96,32 @@ export interface TestRunTelemetry {
   termination: "exit" | "cancel" | "timeout" | "interruption" | "spawn_error" | "rejected" | "unknown";
   cleanup: "unknown" | "pending" | "confirmed" | "failed" | "not_required";
 }
+
+/** Sampled process-group observations, never a job/cgroup memory or CPU total. */
+export interface TestRunResources {
+  version: 1;
+  source: "linux_proc_process_group";
+  cpuNormalization: "one_core_100_percent";
+  coverage: "sampled_members_remaining_in_owned_pgid";
+  status: "pending" | "sampled" | "partial" | "unavailable" | "unsupported" | "legacy_unknown";
+  intervalMs: number | null;
+  sampleCount: number;
+  attemptCount: number;
+  missingSampleCount: number;
+  partialSampleCount: number;
+  cpuIntervalCount: number;
+  observedCpuWindowMs: number;
+  peakSampledRssBytes: number | null;
+  peakSampledCpuPercent: number | null;
+  peakSampledProcessCount: number | null;
+  firstSampledAt: string | null;
+  lastSampledAt: string | null;
+  reasons: TestResourceReason[];
+}
+export type TestResourceReason = "not_started" | "legacy_unknown" | "unsupported" | "identity_unavailable"
+  | "identity_lost" | "read_failed" | "incomplete_scan" | "membership_changed" | "counter_gap"
+  | "no_cpu_interval" | "inflight_discarded" | "controller_interrupted"
+  | "process_churn" | "group_exited";
 
 /** Bounded history without command arguments, environment values, log tails or free-form errors. */
 export interface TestRunSummary {

@@ -1,4 +1,5 @@
 import type { TestRun, TestRunTelemetry } from "@/shared/contracts";
+import { emptyRunResources } from "./run-resources";
 
 export interface VerificationClock {
   wallNow(): string;
@@ -10,7 +11,7 @@ export const verificationClock: VerificationClock = {
 };
 export function emptyTelemetry(availability: TestRunTelemetry["availability"] = "legacy_unknown"): TestRunTelemetry {
   return {
-    version: 1, availability, admittedAt: null, prepareFinishedAt: null, spawnedAt: null,
+    version: 1, availability, resources: emptyRunResources(), admittedAt: null, prepareFinishedAt: null, spawnedAt: null,
     exitedAt: null, stopRequestedAt: null, cleanupStartedAt: null, cleanupFinishedAt: null,
     finalizationStartedAt: null, finalizedAt: null, recoveredAt: null,
     durations: { queueMs: null, prepareMs: null, processMs: null, cleanupMs: null, finalizationMs: null, totalMs: null, runnerWaitMs: null },

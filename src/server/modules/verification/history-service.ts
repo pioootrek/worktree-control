@@ -2,6 +2,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import type { StateStore, TestHistoryPosition } from "@/server/state-store";
 import type { TestRunSummary } from "@/shared/contracts";
 import type { TestHistoryFilter, TestHistoryPage, TestMetrics, TestMetricPopulation, TestDurationKey, TestRunComparison } from "@/shared/contracts/verification-history";
+import { resourceMetrics, compareResources } from "./resource-statistics";
 import { parseHistoryInput, testComparisonSchema, testHistorySchema, testMetricsSchema, testSummarySchema } from "./history-input";
 
 const PAGE_SCAN_LIMIT = 1000;
@@ -9,7 +10,7 @@ const METRIC_SCAN_LIMIT = 5000;
 const ORDER = "queuedAt_desc_runId_desc";
 const durations: TestDurationKey[] = ["queueMs", "prepareMs", "processMs", "cleanupMs", "finalizationMs", "totalMs"];
 const populationNames: TestMetricPopulation[] = ["completed_execution", "cancelled", "timed_out", "interrupted", "in_progress", "rejected", "other_incomplete"];
-const resources = { cpu: "unavailable", rss: "unavailable", runnerWait: "unavailable" } as const;
+
 const finiteDuration = (value: number | null) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 
 export function metricPopulation(s: TestRunSummary): TestMetricPopulation {
@@ -94,8 +95,10 @@ export class VerificationHistoryService {
     const processOutcomes: TestMetrics["processOutcomes"] = { passed: 0, failed: 0, cancelled: 0, timed_out: 0, interrupted: 0, unknown: 0 };
     const sourceAttributions: TestMetrics["sourceAttributions"] = { pending: 0, observed_match: 0, changed: 0, uncertain: 0, legacy_unknown: 0 };
     const populations = {} as TestMetrics["populations"];
+    const groups = {} as Record<TestMetricPopulation, TestRunSummary[]>;
     for (const name of populationNames) {
       const summaries = scan.items.map(e => e.summary).filter(s => metricPopulation(s) === name);
+      groups[name] = summaries;
       const statistics = {} as TestMetrics["populations"][TestMetricPopulation]["durations"];
       for (const key of durations) {
         const values = summaries.map(s => finiteDuration(s.telemetry.durations[key])).filter((v): v is number => v !== null).sort((a, b) => a - b);
@@ -109,7 +112,7 @@ export class VerificationHistoryService {
     return { selection: { filter, scanned: scan.scanned, scanLimit: METRIC_SCAN_LIMIT, truncated: scan.more, matched: scan.items.length, order: ORDER },
       processOutcomes, sourceAttributions, populations,
       method: { median: "sorted_midpoint_mean", p95: "nearest_rank_ceil_0.95_n", missing: "excluded_not_zero", population: "per_run_not_daily_percentiles" },
-      resources, coverage: this.store.getTestHistoryCoverage(filter.projectId) };
+      resources: resourceMetrics(groups), coverage: this.store.getTestHistoryCoverage(filter.projectId) };
   }
 
   compare(input: unknown): TestRunComparison {
@@ -130,6 +133,8 @@ export class VerificationHistoryService {
       timings[key] = { leftMs, rightMs, deltaMs: leftMs === null || rightMs === null ? null : rightMs - leftMs };
     }
     if (durations.some(k => timings[k].deltaMs === null)) caveats.push("Missing timing observations remain null; no duration is inferred from wall timestamps.");
-    return { left, right, differences, timings, populations, caveats, resources };
+    caveats.push("Resources are sampled peaks of summed RSS and observed per-generation CPU deltas (100% = one core), not complete job totals. Shared pages, missed processes/peaks and variable coverage limit comparisons. Explained membership/process churn, observed group exit and discarded final reads permit descriptive deltas with partial coverage. Identity/read failures, unknown quality, incompatible source/cadence and censored runs have null resource deltas; counter gaps exclude CPU deltas only. Inspect each summary's reasons and sample/interval counts.");
+    return { left, right, differences, timings, populations, caveats,
+      resources: compareResources(a, b, populations.left === "completed_execution" && populations.right === "completed_execution") };
   }
 }
