@@ -8,6 +8,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { TestRun } from "@/shared/contracts";
+import { emptyTelemetry } from "@/server/modules/verification";
 import { legacySourceEvidence } from "@/server/test-source-attribution";
 import { ProjectLaunchCommandResolver } from "@/server/launch-command";
 import { SqliteStateStore } from "./index";
@@ -118,7 +119,7 @@ describe("SqliteStateStore", () => {
       queuePosition: null,
       queuedAt: run.queuedAt,
     }]);
-    expect(store.findTestRunByIdempotency("agent:mcp:test", "attempt-1")).toEqual(run);
+    expect(store.findTestRunByIdempotency("agent:mcp:test", "attempt-1")).toEqual({ ...run, telemetry: emptyTelemetry() });
     expect(store.getTestRunStatus(run.id)).toEqual({
       id: run.id, projectId: run.projectId, worktreePath: run.worktreePath,
       worktreeHead: run.worktreeHead, worktreeBranch: run.worktreeBranch,

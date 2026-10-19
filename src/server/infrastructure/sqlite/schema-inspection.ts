@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { telemetryChecksum, telemetryMigration } from "./test-summary-migration";
 import { initializeSchema } from "./migrations";
 
 import { registryChecksum, registryMigration, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
@@ -12,6 +13,7 @@ type ForeignKey = { table: string; from: string; to: string; on_delete: string; 
 const tableVersions: Record<string, number> = {
   schema_migrations: 1, projects: 1, reservations: 1, audit_events: 1,
   controller_settings: 5, controller_audit_events: 5, worktree_storage_samples: 6,
+  test_run_summaries: 29, test_summary_coverage: 29,
   test_runs: 10, remote_principals: 14, remote_project_identities: 14,
   remote_workers: 14, remote_principal_project_grants: 14, remote_worker_project_grants: 14,
   remote_verification_requests: 14, remote_verification_attempts: 15,
@@ -31,7 +33,7 @@ const columnVersions: Record<string, number> = {
   "projects.test_environment_profiles_json": 11, "projects.test_preset_profiles_json": 11,
   "test_runs.environment_mode": 11, "test_runs.environment_profile": 11,
   "test_runs.inherited_server_profile": 11, "test_runs.environment_variable_names_json": 11,
-  "test_runs.source_json": 12, "knowledge_import_sources.target_revision": 23,
+  "test_runs.telemetry_json": 29, "test_runs.source_json": 12, "knowledge_import_sources.target_revision": 23,
   "knowledge_import_batches.authentication_method": 26,
 };
 const historicalLeaseCheck = "(kind='human'andexpires_atisnull)or(kind='agent'andexpires_atisnotnull)";
@@ -94,7 +96,8 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
   if (version >= 28) {
     const entries = database.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version").all() as Array<{version:number;name:string|null;checksum:string|null}>;
     if (entries.some(x => x.version < 28 ? x.name !== null || x.checksum !== null
-      : x.name !== registryMigration.name || x.checksum !== registryChecksum)) refuse("migration checksum or name");
+      : x.version === 28 ? x.name !== registryMigration.name || x.checksum !== registryChecksum
+      : x.name !== telemetryMigration.name || x.checksum !== telemetryChecksum)) refuse("migration checksum or name");
   }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));
   if (objects.some(x => x.type === "view" || x.type === "trigger") || [...tables].some(x => !(x in tableVersions))) refuse();

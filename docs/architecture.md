@@ -1,6 +1,6 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-10-05"
+last_reviewed: "2026-10-19"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
@@ -233,6 +233,55 @@ removed by retention. Full rotating output is stored in the state log
 directory rather than SQLite. Versioned source evidence is stored as bounded
 JSON; rows created before source attribution map to `legacy_unknown` without
 inventing execution-time observations.
+
+Version-1 `test_run_summaries` persist independently of detailed rows, using the
+same owner connection and transaction as each run checkpoint. Migration 29
+backfills only retained details with `legacy_unknown` timing; pruned history
+cannot be reconstructed. Project removal cascades both summaries and coverage
+accounting under the existing project operation. `get_test_run` supplies additive
+`telemetry` for retained runs; historical summary reads belong to stage 2.
+
+Telemetry uses wall timestamps for correlation and same-controller monotonic
+intervals for duration. `admittedAt` ends queue residence and begins preparation;
+`prepareFinishedAt` ends preflight, including rejection. `startedAt` retains its
+existing pre-spawn meaning; `spawnedAt` records the spawn event and `exitedAt`
+records the leader's exit event. Requested cancellation/timeout has its own
+`stopRequestedAt`. Cleanup duration begins at observed exit (or spawn error)
+and ends at confirmed owned-tree cleanup. Output-pipe closure, final source
+observation and log closure belong to finalization. `finishedAt` keeps its
+existing boundary after process cleanup/output closure, before final source and
+log finalization; `finalizedAt` is captured immediately before the atomic final
+detail/summary write, excluding that write's latency. Queue cancellation without
+admission measures queue residence to the stop request; cancelled preparation
+retains exclusion and finishes measurement when its observer settles.
+
+Missing intervals are null, never inferred from wall times. Internal runner
+lock waiting is unknown (`runnerWaitMs: null`). After restart, `recoveredAt`
+records reconciliation and lost intervals remain unknown; known exit observations
+and process outcomes survive. Termination distinguishes exit, cancel, timeout,
+interruption, spawn error, rejected preparation and unknown. Exit 137 or SIGKILL
+alone does not identify OOM. Source attribution and process outcome remain
+separate; dirty command success cannot certify `observed_match`.
+
+Summaries contain bounded project/preset/worktree and source identities, command
+and profile-policy digests, result and timing. They omit arguments, environment
+values/names, raw profile values, free-form errors and log tails. A profile digest
+identifies declared policy selection, not its secret values or the actual
+installed toolchain. Primary persistence failures roll back detail and summary,
+stop further admission, emit a controller error and remain visible at shutdown.
+An unavailable monotonic observation only makes telemetry partial.
+
+Local stage-1 retention defaults are 30 days from enqueue, 5,000 records and
+16 MiB of logical summary JSON per project, with 50,000 records/128 MiB globally
+and 8 KiB per record. These conservative defaults are for calibration, not the
+plan's proposed 90-day product policy. Limits can evict earlier than the time
+horizon. At most 64 terminal summaries are deleted per completion or one-minute
+maintenance tick, also once on startup; queued, preparing, executing and
+unfinished-finalization summaries are excluded. Active data and a maintenance
+backlog can temporarily exceed targets. Internal coverage reports retained
+count/bytes, oldest/newest enqueue, eviction count, last pruning time, policy
+and pending maintenance. SQLite indexes/pages/WAL overhead is outside the logical
+JSON budget. There is no new detailed-trace retention or resource sampler.
 
 Accounts would also require authentication, authorization, ownership,
 and audit semantics; SQLite alone does not make the application multi-user.

@@ -21,8 +21,10 @@ function fixture() {
   const project = store.addProject({ name: "Logs", repositoryPath: directory, port: 3210, executable: "node", args: [] });
   const logs = new FileLogWriter(directory);
   const manager = new TestJobManager(store, logs);
+  let expectedDurabilityFailure = false;
   cleanups.push(async () => {
-    await manager.shutdown();
+    if (expectedDurabilityFailure) await expect(manager.shutdown()).rejects.toThrow("database write failed");
+    else await manager.shutdown();
     await logs.close();
     store.close();
     rmSync(directory, { recursive: true, force: true });
@@ -43,7 +45,7 @@ function fixture() {
     try { return readlinkSync(`/proc/self/fd/${fd}`).startsWith(join(directory, "tests") + "/"); }
     catch { return false; }
   }) : [];
-  return { directory, store, project, logs, manager, enqueue, testDescriptors };
+  return { directory, store, project, logs, manager, enqueue, testDescriptors, expectDurabilityFailure: () => { expectedDurabilityFailure = true; } };
 }
 
 describe("test log lifecycle", () => {
@@ -95,7 +97,7 @@ describe("test log lifecycle", () => {
       // Exercise the real history policy without launching 55 processes.
       const persisted = store.getTestRun(queued.id)!;
       const id = randomUUID();
-      store.saveTestRun({ ...persisted, id, queuedAt: new Date(index * 1000).toISOString(), phase: "passed" });
+      store.saveTestRun({ ...persisted, id, queuedAt: new Date(index * 1000).toISOString(), phase: "passed", telemetry: { ...persisted.telemetry!, finalizedAt: new Date().toISOString() } });
       logs.openTest(id);
       logs.test(id, "retained output");
       await logs.finishTest(id);
@@ -216,7 +218,8 @@ describe("test log lifecycle", () => {
   });
 
   it("observes background finalization failures after a synchronous spawn error", async () => {
-    const { store, logs, enqueue, testDescriptors } = fixture();
+    const { store, logs, manager, enqueue, testDescriptors, expectDurabilityFailure } = fixture();
+    expectDurabilityFailure();
     const audit = vi.spyOn(logs, "controller");
     const save = store.saveTestRun.bind(store);
     vi.spyOn(store, "saveTestRun").mockImplementation((run, key) => {
@@ -228,15 +231,16 @@ describe("test log lifecycle", () => {
       runId: run.id, error: "Error: database write failed",
     }));
     expect(testDescriptors()).toHaveLength(0);
-    // No false terminal result is stored when persistence fails; other jobs
-    // still run, and restart recovery can mark the remaining record interrupted.
+    // Durability failure stops admission, remains visible at shutdown, and leaves
+    // the persisted active record available for interrupted recovery.
     expect(store.getTestRun(run.id)?.phase).toBe("running");
-    const next = enqueue();
-    await vi.waitFor(() => expect(store.getTestRun(next.id)?.phase).toBe("passed"));
+    expect(() => enqueue()).toThrow("zamknięta");
+    await expect(manager.shutdown()).rejects.toThrow("database write failed");
   });
 
   it("still stops active processes when another cancellation fails during shutdown", async () => {
-    const { store, manager, enqueue, testDescriptors } = fixture();
+    const { store, manager, enqueue, testDescriptors, expectDurabilityFailure } = fixture();
+    expectDurabilityFailure();
     const running = enqueue("console.log('ready'); setInterval(() => {}, 1000)");
     await vi.waitFor(() => expect(store.getTestRun(running.id)?.logs).toContain("ready"));
     const queued = enqueue();
