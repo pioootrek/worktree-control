@@ -68,6 +68,55 @@ export interface RedactedTestEnvironmentProfile extends Omit<TestEnvironmentProf
   variableNames: string[];
 }
 
+/** Wall milestones correlate events; only same-controller monotonic intervals are durations. */
+export interface TestRunTelemetry {
+  version: 1;
+  availability: "observed" | "partial" | "legacy_unknown";
+  admittedAt: string | null;
+  prepareFinishedAt: string | null;
+  spawnedAt: string | null;
+  exitedAt: string | null;
+  stopRequestedAt: string | null;
+  cleanupStartedAt: string | null;
+  cleanupFinishedAt: string | null;
+  finalizationStartedAt: string | null;
+  finalizedAt: string | null;
+  recoveredAt: string | null;
+  durations: {
+    queueMs: number | null;
+    prepareMs: number | null;
+    processMs: number | null;
+    cleanupMs: number | null;
+    finalizationMs: number | null;
+    totalMs: number | null;
+    runnerWaitMs: null;
+  };
+  termination: "exit" | "cancel" | "timeout" | "interruption" | "spawn_error" | "rejected" | "unknown";
+  cleanup: "unknown" | "pending" | "confirmed" | "failed" | "not_required";
+}
+
+/** Bounded history without command arguments, environment values, log tails or free-form errors. */
+export interface TestRunSummary {
+  version: 1;
+  runId: string;
+  projectId: string;
+  presetId: string;
+  worktreePath: string;
+  commandDigest: string;
+  profileDigest: string;
+  sourceIdentity: { head: string | null; statusDigest: string | null; dirty: boolean | null };
+  queuedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  phase: TestRunPhase;
+  processOutcome: TestProcessOutcome | null;
+  attribution: TestSourceAttribution;
+  sourceReasonCodes: string[];
+  exitCode: number | null;
+  signal: string | null;
+  telemetry: TestRunTelemetry;
+}
+
 export interface TestRun {
   id: string;
   projectId: string;
@@ -96,6 +145,8 @@ export interface TestRun {
   inheritedServerProfile: string | null;
   environmentVariableNames: string[];
   source: TestSourceEvidence;
+  /** Absent only in older clients/fixtures; persisted reads always supply legacy_unknown. */
+  telemetry?: TestRunTelemetry;
 }
 
 export interface TestQueueSettings {

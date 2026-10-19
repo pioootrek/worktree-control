@@ -1,6 +1,6 @@
 ---
 audience: "contributors validating release resource use"
-last_reviewed: "2026-09-09"
+last_reviewed: "2026-10-19"
 source_of_truth: "controller resource budgets and reproducible measurement procedure"
 status: "active"
 ---
@@ -40,6 +40,29 @@ implementation's fixed log/history limits and regression tests. The retained-log
 check covers runtime tails. Batching disk writes reduces allocation overhead
 but does not impose a pending-byte limit or backpressure on continuous output
 that exceeds disk throughput; this finite workload does not certify that case.
+
+## Queued verification summaries
+
+Stage 1 adds event-driven phase measurement without process resource sampling.
+Each run keeps a small monotonic observation map until finalization; no polling
+or additional scheduler/capacity map is introduced. Detail and summary writes
+share one transaction/connection, with summary updates skipped for unchanged
+payloads (for example log-only checkpoints).
+
+Summary history uses 30 days, 5,000 records/16 MiB per project and
+50,000 records/128 MiB globally; each serialized summary is capped at 8 KiB.
+The byte budgets count JSON only, not physical SQLite/WAL/index allocation.
+Maintenance uses indexed age/project ordering and accounting totals, deleting
+at most 64 terminal rows per call, after completion and once per minute.
+Active rows are protected. A backlog after downtime is drained incrementally
+and exposed by coverage metadata. Record/byte caps can shorten the time horizon;
+30 days is a calibration default, not a guaranteed history window.
+
+Migration backfill reads at most 64 existing details at once and writes only
+legacy/unknown timing. Coverage and summaries cascade with project deletion.
+No logs, environment values or arguments are copied to history. These bounds
+and tests establish storage behavior; they do not claim a measured CPU/RSS
+overhead for telemetry or any resource limit on supervised commands.
 
 ## Reproduce the benchmark
 

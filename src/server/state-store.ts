@@ -74,6 +74,7 @@ export interface StateStore {
   findTestRunByIdempotency(actor: string, idempotencyKey: string): TestRun | null;
   saveTestRun(run: TestRun, idempotencyKey?: string): void;
   markInterruptedTestRuns(): void;
+  pruneTestSummaryHistory(): number;
   getWorktreeStorage(projectId: string, worktreePath: string): WorktreeStorageSnapshot | null;
   saveWorktreeStorage(sample: WorktreeStorageSample): void;
   recordProjectEvent(projectId: string, eventType: string, actor: string, details: unknown): void;
