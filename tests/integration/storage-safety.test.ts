@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
+import { SUPPORTED_SCHEMA_VERSION } from "../../src/server/infrastructure/sqlite/migration-registry";
 
 const exec=promisify(execFile);
 const cli=resolve("dist/cli/index.js");
@@ -78,7 +79,7 @@ describe("built SQLite safety CLI",()=>{
       const access=JSON.parse(readFileSync(join(f.state,"service-access.json"),"utf8"));expect(access.authenticationMode).toBe("legacy");
       if(enabled){const [copy]=readdirSync(f.backup);expect(JSON.parse(readFileSync(join(f.backup,copy,"manifest.json"),"utf8")).database.schemaVersion).toBe(12);}else expect(existsSync(f.backup)).toBe(false);
     } finally {await stop(child);}
-    const db=new Database(f.database,{readonly:true});try{expect(db.prepare("SELECT max(version) version FROM schema_migrations").get()).toEqual({version:28});}finally{db.close();}
+    const db=new Database(f.database,{readonly:true});try{expect(db.prepare("SELECT max(version) version FROM schema_migrations").get()).toEqual({version:SUPPORTED_SCHEMA_VERSION});}finally{db.close();}
     expect(existsSync(join(f.state,"controller.lock"))).toBe(false);expect(existsSync(`${f.database}.owner.lock`)).toBe(false);
   });
 });
