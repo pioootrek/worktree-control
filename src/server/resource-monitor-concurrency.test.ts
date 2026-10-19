@@ -219,7 +219,9 @@ describe.skipIf(process.platform !== "linux")("bounded process inspection", () =
       expect(state.reasons).not.toContain("incomplete_scan");
       const left = { telemetry: { resources: state } } as TestRunSummary;
       const right = { telemetry: { resources: { ...state, peakSampledRssBytes: state.peakSampledRssBytes! + 100, peakSampledCpuPercent: state.peakSampledCpuPercent! + 10 } } } as TestRunSummary;
-      expect(compareResources(left, right, true)).toMatchObject({ rss: { delta: 100 }, cpu: { delta: 10 } });
+      const comparison = compareResources(left, right, true);
+      expect(comparison.rss.delta).toBe(100);
+      expect(comparison.cpu.delta).toBeCloseTo(10);
       expect(fixture.scans).toBe(2);
       expect(fixture.active).toBe(0);
       expect(fixture.peak).toBeLessThanOrEqual(8);
