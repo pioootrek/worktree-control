@@ -58,11 +58,8 @@ export class TestJobManager {
   ) {
     this.telemetry = new RunTelemetryRecorder(clock);
     this.store.markInterruptedTestRuns();
-    this.store.pruneTestSummaryHistory();
-    this.summaryMaintenance = setInterval(() => {
-      try { this.store.pruneTestSummaryHistory(); }
-      catch (error) { this.persistenceFailure ??= error; this.closed = true; this.logs.controller("test_summary.retention_failed", { error: String(error) }); }
-    }, 60_000);
+    this.pruneSummaries();
+    this.summaryMaintenance = setInterval(() => this.pruneSummaries(), 60_000);
     this.summaryMaintenance.unref();
     void this.pruneLogs();
   }
@@ -82,10 +79,11 @@ export class TestJobManager {
 
   status(): TestQueueStatus {
     const settings = this.store.getTestQueueSettings();
+    const queuedPreparations = [...this.preparing].filter(id => this.store.getTestRun(id)?.phase === "queued").length;
     return {
       ...settings,
       running: this.active.size + this.preparing.size,
-      queued: Math.max(0, this.store.countTestRuns(["queued"]) - this.preparing.size),
+      queued: Math.max(0, this.store.countTestRuns(["queued"]) - queuedPreparations),
     };
   }
 
@@ -164,7 +162,7 @@ export class TestJobManager {
       const preparation = this.preparationPromises.get(run.id);
       if (preparation) {
         this.persistNow(run);
-        await preparation;
+        this.onChange(run.projectId);
       } else {
         await this.finish(run);
       }
@@ -461,6 +459,13 @@ export class TestJobManager {
     active.child.stderr?.removeAllListeners("data");
     active.child.stdout?.destroy();
     active.child.stderr?.destroy();
+  }
+
+  private pruneSummaries(): void {
+    // Maintenance only deletes terminal summaries. Retry at the next bounded
+    // interval; durable run writes still fail closed through persistNow.
+    try { this.store.pruneTestSummaryHistory(); }
+    catch (error) { this.logs.controller("test_summary.retention_failed", { error: String(error) }); }
   }
 
   pruneLogs(): Promise<void> {
