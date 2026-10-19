@@ -369,6 +369,13 @@ export class TestJobManager {
     if (active.completion) return active.completion;
     active.completion = (async () => {
       const { run } = active;
+      // Finalization has already prepared an immutable result. A failed durable
+      // write may retry that snapshot, never rerun source/log qualification.
+      if (run.telemetry?.finalizedAt) {
+        try { await this.finish(run); }
+        finally { active.completion = null; }
+        return;
+      }
       try {
         if (active.exited || run.telemetry!.termination === "spawn_error") this.telemetry.mark(run, "cleanupStartedAt");
         run.telemetry!.cleanup = "pending";
@@ -476,15 +483,17 @@ export class TestJobManager {
     this.cleanup(run.id);
     this.telemetry.mark(run, "finalizationStartedAt");
     const completion = (async () => {
-      try {
-        await this.logs.finishTest(run.id);
-      } catch (error) {
-        const message = `Nie udało się zapisać lub zamknąć logu testu: ${String(error)}`;
-        run.error = run.error ? `${run.error} ${message}` : message;
-        if (run.phase === "passed") run.phase = "failed";
-        this.logs.controller("test_log.finalization_failed", { runId: run.id, error: String(error) });
+      if (!run.telemetry!.finalizedAt) {
+        try {
+          await this.logs.finishTest(run.id);
+        } catch (error) {
+          const message = `Nie udało się zapisać lub zamknąć logu testu: ${String(error)}`;
+          run.error = run.error ? `${run.error} ${message}` : message;
+          if (run.phase === "passed") run.phase = "failed";
+          this.logs.controller("test_log.finalization_failed", { runId: run.id, error: String(error) });
+        }
+        this.telemetry.mark(run, "finalizedAt");
       }
-      this.telemetry.mark(run, "finalizedAt");
       this.persistNow(run);
       this.telemetry.forget(run.id);
       this.active.delete(run.id);
