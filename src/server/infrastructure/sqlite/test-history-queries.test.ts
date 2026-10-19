@@ -111,21 +111,26 @@ describe("verification history on the existing SQLite owner", () => {
     for (let i = 1; i <= 20; i++) {
       const run = f.run(); run.telemetry!.durations.processMs = i;
       if (i === 1) { run.phase = "failed"; run.source.attribution = "changed"; } // process still passed
+      if (i === 2) { run.phase = "failed"; run.source.processOutcome = "failed"; }
       f.store.saveTestRun(run);
     }
     const missing = f.run(); missing.telemetry!.durations.processMs = null; f.store.saveTestRun(missing);
     for (const phase of ["cancelled", "timed_out", "interrupted", "running"] as const) {
-      const run = f.run({ phase }); run.telemetry!.durations.processMs = 999_999; f.store.saveTestRun(run);
+      const run = f.run({ phase }); run.telemetry!.durations.processMs = 999_999;
+      if (phase === "cancelled" || phase === "timed_out") run.source.processOutcome = phase;
+      if (phase === "running") { run.source.processOutcome = null; run.source.attribution = "pending"; }
+      f.store.saveTestRun(run);
     }
-    const rejected = f.run({ phase: "failed" }); rejected.telemetry!.termination = "rejected"; f.store.saveTestRun(rejected);
+    const rejected = f.run({ phase: "failed" }); rejected.telemetry!.termination = "rejected"; rejected.source.processOutcome = null; f.store.saveTestRun(rejected);
     f.store.saveTestRun(f.run({ telemetry: emptyTelemetry(), source: legacySourceEvidence() }));
     const metrics = f.history.metrics(f.filter);
     expect(metrics.selection.matched).toBe(27);
     expect(metrics.populations.completed_execution).toMatchObject({ count: 21, durations: { processMs: { medianMs: 10.5, p95Ms: 19, valid: 20, missing: 1, denominator: 21 } } });
     for (const p of ["cancelled", "timed_out", "interrupted", "in_progress", "rejected", "other_incomplete"] as const) expect(metrics.populations[p].count).toBe(1);
     expect(metrics.populations.other_incomplete.durations.processMs).toEqual({ medianMs: null, p95Ms: null, valid: 0, missing: 1, denominator: 1 });
-    expect(metrics.processOutcomes).toMatchObject({ passed: 26, unknown: 1 });
-    expect(metrics.sourceAttributions).toMatchObject({ observed_match: 25, changed: 1, legacy_unknown: 1 });
+    expect(metrics.processOutcomes).toEqual({ passed: 21, failed: 1, cancelled: 1, timed_out: 1, interrupted: 0, unknown: 3 });
+    expect(f.history.metrics({ ...f.filter, processOutcome: "unknown" }).selection.matched).toBe(3);
+    expect(metrics.sourceAttributions).toMatchObject({ observed_match: 24, pending: 1, changed: 1, legacy_unknown: 1 });
     expect(metrics.method.p95).toBe("nearest_rank_ceil_0.95_n");
     expect(f.history.metrics({ ...f.filter, presetId: "none" }).populations.completed_execution.durations.totalMs).toMatchObject({ valid: 0, denominator: 0, medianMs: null });
     expect(metrics.resources).toEqual({ cpu: "unavailable", rss: "unavailable", runnerWait: "unavailable" });
@@ -205,7 +210,12 @@ async function transports() {
 
 describe("HTTP/MCP verification history parity through real handlers", () => {
   it("shares validated history, metrics, comparison and pruned-summary semantics", async () => {
-    const f = await transports(), a = f.run(), b = f.run(); f.store.saveTestRun(a); f.store.saveTestRun(b);
+    const f = await transports(), a = f.run(), b = f.run();
+    a.queuedAt = f.at(-1); f.store.saveTestRun(a); f.store.saveTestRun(b);
+    for (let i = 0; i < 50; i++) f.store.saveTestRun(f.run({ queuedAt: f.at(120_000 + i) }));
+    expect(f.service.testRunSummary({ projectId: f.project.id, runId: a.id }).detailAvailable).toBe(false);
+    expect(() => f.service.testRun(a.id)).toThrow("Nie znaleziono uruchomienia testu.");
+    expect((await f.client.callTool({ name: "get_test_run", arguments: { runId: a.id } })).isError).toBe(true);
     const { projectId: _projectId, ...query } = f.filter; void _projectId;
     const pairs = [
       ["test-runs", "list_test_runs", query], ["test-metrics", "get_test_metrics", query],
@@ -217,6 +227,8 @@ describe("HTTP/MCP verification history parity through real handlers", () => {
       const response = await f.get(operation, httpParams); expect(response.status).toBe(200);
       expect((await f.call(tool, { projectId: f.project.id, ...params })).data).toEqual(await response.json());
     }
+    const exact = { ...query, presetId: "node:test", head: "abc", statusDigest: "clean", dirty: false, processOutcome: "passed", attribution: "observed_match" };
+    expect(await (await f.get("test-runs", exact)).json()).toEqual((await f.call("list_test_runs", { projectId: f.project.id, ...exact })).data);
     const first = await f.call("list_test_runs", { ...f.filter, limit: 1 });
     const next = await f.get("test-runs", { ...query, cursor: first.data.nextCursor });
     expect((await next.json()).items).toHaveLength(1); // cursor crosses transports
@@ -232,6 +244,7 @@ describe("HTTP/MCP verification history parity through real handlers", () => {
     const missingTool = await f.client.callTool({ name: "get_test_run_summary", arguments: { projectId: f.other.id, runId: randomUUID() } });
     expect(crossTool).toEqual(missingTool);
     expect((await f.get("test-runs", { ...query, cursor: first.data.nextCursor }, undefined, f.other.id)).status).toBe(400);
+    expect((await f.client.callTool({ name: "list_test_runs", arguments: { ...f.filter, projectId: f.other.id, cursor: first.data.nextCursor } })).isError).toBe(true);
   });
 
   it("keeps scoped Knowledge credentials outside verification, with no guessed project/run/cursor leakage", async () => {
