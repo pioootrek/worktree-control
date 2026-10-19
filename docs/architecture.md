@@ -244,7 +244,11 @@ accounting under the existing project operation. `get_test_run` supplies additiv
 `telemetry` for retained runs. Stage 3 nests a versioned passive resource
 summary inside that existing JSON, preserving schema 29 and summary retention.
 A fresh spawn's PID/start ticks and surviving observed generations establish
-sampling identity; PGID alone does not. RSS is sampled summed process RSS, and
+sampling identity; PGID alone does not. Its first enumeration must start after
+identity capture, even when another consumer has a cached or in-flight scan.
+If the leader exits before any surviving generation is observed with it,
+sampling ends conservatively because group continuity cannot be established.
+RSS is sampled summed process RSS, and
 CPU describes only deltas between observed matching generations (100% is one
 core), never complete job totals. Missing/partial/unsupported/legacy quality
 and denominators travel with the peaks. No cgroups, resource enforcement or

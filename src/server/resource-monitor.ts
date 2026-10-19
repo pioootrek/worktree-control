@@ -76,11 +76,16 @@ export interface ProcessGroupSnapshot {
   observedAtMs: number;
   incomplete: boolean;
 }
-export interface OwnedResourceIdentity { pid: number; startTicks: number }
+export interface OwnedResourceIdentity {
+  pid: number;
+  startTicks: number;
+  /** Collector-local freshness boundary, not persisted process identity. */
+  minimumScanGeneration?: number;
+}
 export interface OwnedResourceSampler {
   readonly supported: boolean;
   capture(pid: number): Promise<OwnedResourceIdentity>;
-  snapshot(processGroupId: number): Promise<ProcessGroupSnapshot>;
+  snapshot(processGroupId: number, minimumScanGeneration?: number): Promise<ProcessGroupSnapshot>;
 }
 
 /** Shared by runtime and finite jobs. One cached/single-flight enumeration, eight
@@ -91,6 +96,8 @@ export class LinuxProcessResourceSampler implements ProcessResourceSampler, Owne
   readonly supported = process.platform === "linux";
   private scan: Promise<{ records: ProcessStat[]; hostCpuTicks: number; cpuCount: number; observedAtMs: number; incomplete: boolean }> | null = null;
   private scanAt = -Infinity;
+  private scanGeneration = 0;
+  private cachedGeneration = 0;
   private readonly buffers: Buffer[] = Array.from({ length: 8 }, () => Buffer.allocUnsafe(8192));
   private readonly waiters: Array<(buffer: Buffer) => void> = [];
 
@@ -109,17 +116,24 @@ export class LinuxProcessResourceSampler implements ProcessResourceSampler, Owne
   async capture(pid: number): Promise<OwnedResourceIdentity> {
     const stat = await this.read(async buffer => parseProcessStat(await readProcessFile(`/proc/${pid}/stat`, buffer)));
     if (!stat || stat.pid !== pid || stat.processGroupId !== pid || stat.state === "Z") throw new Error("Spawned group identity unavailable.");
-    return { pid, startTicks: stat.startTicks };
+    // Even a pending enumeration can have listed /proc before this spawn.
+    // Require a scan STARTED after capture, independent of completion time.
+    return { pid, startTicks: stat.startTicks, minimumScanGeneration: this.scanGeneration + 1 };
   }
 
-  private enumeration() {
+  private async enumeration(minimumScanGeneration: number) {
+    // Drain an older flight before starting its replacement. Concurrent captures
+    // share that replacement; each caller waits at most one stale flight and
+    // never loops/rescans in response to ongoing process churn.
+    if (this.scan && this.scanGeneration < minimumScanGeneration) await this.scan;
     const now = performance.now();
     if (this.scan) return this.scan;
     // Retain a successful snapshot for a short coalescing window, including
     // consumers whose timers did not fire in the same event-loop turn.
-    if (this.cached && now - this.scanAt < 250) return Promise.resolve(this.cached);
+    if (this.cached && this.cachedGeneration >= minimumScanGeneration && now - this.scanAt < 250) return this.cached;
+    const generation = ++this.scanGeneration;
     this.scan = this.enumerate().then(value => {
-      this.cached = value; this.scanAt = performance.now(); return value;
+      this.cached = value; this.cachedGeneration = generation; this.scanAt = performance.now(); return value;
     }).finally(() => { this.scan = null; });
     return this.scan;
   }
@@ -152,8 +166,8 @@ export class LinuxProcessResourceSampler implements ProcessResourceSampler, Owne
     return { records, hostCpuTicks, cpuCount: Math.max(1, cpus().length), observedAtMs: performance.now(), incomplete };
   }
 
-  async snapshot(processGroupId: number): Promise<ProcessGroupSnapshot> {
-    const scan = await this.enumeration();
+  async snapshot(processGroupId: number, minimumScanGeneration = 0): Promise<ProcessGroupSnapshot> {
+    const scan = await this.enumeration(minimumScanGeneration);
     const candidates = scan.records.filter(stat => stat.processGroupId === processGroupId && stat.state !== "Z");
     if (candidates.length > 4096) throw new Error("Process group exceeds the read limit.");
     const members: ProcessGroupSnapshot["members"] = [];

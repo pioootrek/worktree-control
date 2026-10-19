@@ -1,18 +1,24 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const fixture = vi.hoisted(() => ({ active: 0, peak: 0, reads: 0, scans: 0, buffers: new Set<Buffer>(), recordPath: "", recordSize: 0, reusedPid: 0, missingRssPid: 0, statReads: new Map<number, number>() }));
+const fixture = vi.hoisted(() => ({ active: 0, peak: 0, reads: 0, scans: 0, spawned: false, pauseListing: null as (() => Promise<void>) | null, hostTicks: 10, buffers: new Set<Buffer>(), recordPath: "", recordSize: 0, reusedPid: 0, missingRssPid: 0, statReads: new Map<number, number>() }));
 vi.mock("node:fs/promises", () => ({
-  readdir: async () => { fixture.scans++; return Array.from({ length: 120 }, (_, index) => ({ name: String(index + 1), isDirectory: () => true })); },
+  readdir: async () => {
+    fixture.scans++;
+    const entries = Array.from({ length: fixture.spawned ? 122 : 120 }, (_, index) => ({ name: String(index + 1), isDirectory: () => true }));
+    const pause = fixture.pauseListing; fixture.pauseListing = null;
+    await pause?.();
+    return entries;
+  },
   readFile: async (path: string) => {
     if (path !== "/proc/stat") throw new Error("Unbounded process read");
-    return "cpu 1 2 3 4\n";
+    return `cpu ${fixture.hostTicks} 0 0 0\n`;
   },
   open: async (path: string) => {
     const pid = Number(path.split("/")[2]);
     if (path.endsWith("/stat")) { fixture.reads++; fixture.statReads.set(pid, (fixture.statReads.get(pid) ?? 0) + 1); }
     if (pid === 3) throw Object.assign(new Error("process exited"), { code: "ENOENT" });
     const fields = Array<string>(20).fill("0");
-    fields[0] = "S"; fields[2] = pid <= 2 ? "42" : "99";
+    fields[0] = "S"; fields[2] = pid > 120 ? "121" : pid <= 2 ? "42" : "99";
     fields[11] = "10"; fields[12] = "5"; fields[19] = pid === fixture.reusedPid && (fixture.statReads.get(pid) ?? 0) > 1 ? "999" : "100";
     const value = path.endsWith("/status") ? pid === fixture.missingRssPid ? "Name: missing\n" : "VmRSS: 123 kB\n" : `${pid} (fixture worker) ${fields.join(" ")}`;
     const contents = Buffer.from(path === fixture.recordPath ? value.padEnd(fixture.recordSize, " ") : value);
@@ -35,11 +41,58 @@ vi.mock("node:fs/promises", () => ({
 }));
 
 import { LinuxProcessResourceSampler } from "./resource-monitor";
+import { emptyRunResources, observeRunResources } from "./modules/verification/run-resources";
+
+const deferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+};
 
 describe.skipIf(process.platform !== "linux")("bounded process inspection", () => {
   beforeEach(() => {
     fixture.active = 0; fixture.peak = 0; fixture.reads = 0; fixture.scans = 0;
+    fixture.spawned = false; fixture.pauseListing = null; fixture.hostTicks = 10;
     fixture.buffers.clear(); fixture.recordPath = ""; fixture.recordSize = 0; fixture.reusedPid = 0; fixture.missingRssPid = 0; fixture.statReads.clear();
+  });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  it.each(["completed", "inflight"])("observes a fresh job after a %s enumeration predating spawn, then keeps sampling", async mode => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const now = vi.spyOn(performance, "now").mockReturnValue(0);
+    const sampler = new LinuxProcessResourceSampler(), listed = deferred(), release = deferred();
+    if (mode === "inflight") fixture.pauseListing = async () => { listed.resolve(); await release.promise; };
+    const old = sampler.snapshot(42);
+    if (mode === "completed") await old; else await listed.promise;
+    fixture.spawned = true;
+    const capture = vi.spyOn(sampler, "capture");
+    const summary = emptyRunResources("pending"), first = deferred(), second = deferred();
+    let updates = 0;
+    const observer = observeRunResources(summary, 121, () => true, () => {
+      if (++updates === 1) first.resolve(); else second.resolve();
+    }, { sampler });
+    try {
+      // Finish capture before the pre-spawn listing is allowed to complete.
+      const identity = await capture.mock.results[0].value;
+      const concurrent = Promise.all(Array.from({ length: 8 }, () => sampler.snapshot(121, identity.minimumScanGeneration)));
+      if (mode === "inflight") expect(fixture.scans).toBe(1);
+      release.resolve(); await old; await first.promise;
+      expect((await concurrent).every(sample => sample.members.length === 2)).toBe(true);
+      expect(summary).toMatchObject({ sampleCount: 1, peakSampledProcessCount: 2, missingSampleCount: 0 });
+      expect(summary.reasons).not.toContain("identity_lost");
+      expect(fixture.scans).toBe(2);
+      // The fresh result remains shareable by runtime and other job consumers.
+      await Promise.all([sampler.sample(42), sampler.snapshot(99)]);
+      expect(fixture.scans).toBe(2);
+      now.mockReturnValue(1000); fixture.hostTicks = 110;
+      await vi.advanceTimersByTimeAsync(1000); await second.promise;
+      expect(summary).toMatchObject({ sampleCount: 2, cpuIntervalCount: 1, missingSampleCount: 0 });
+      expect(fixture.scans).toBe(3);
+      expect(fixture.peak).toBeLessThanOrEqual(8);
+      expect(fixture.active).toBe(0);
+      expect(fixture.buffers.size).toBe(8);
+    } finally { release.resolve(); observer.stop(); }
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("reuses bounded buffers, handles short reads and closes descriptors on a busy host", async () => {

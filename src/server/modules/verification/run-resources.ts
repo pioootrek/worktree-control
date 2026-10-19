@@ -94,6 +94,7 @@ export function observeRunResources(
   let stopped = false, inflight = false;
   let timer: NodeJS.Timeout | null = null;
   let accumulator: RunResourceAccumulator | null = null;
+  let minimumScanGeneration: number | undefined;
   const stop = () => {
     if (stopped) return;
     stopped = true;
@@ -114,8 +115,9 @@ export function observeRunResources(
         if (stopped) return;
         if (!isSpawnedChild()) { resourceReason(summary, "identity_unavailable"); stop(); notify(); return; }
         accumulator = new RunResourceAccumulator(summary, identity);
+        minimumScanGeneration = identity.minimumScanGeneration;
       }
-      const snapshot = await sampler.snapshot(pid);
+      const snapshot = await sampler.snapshot(pid, minimumScanGeneration);
       if (stopped) return;
       if (!accumulator.add(snapshot, wallNow())) {
         inflight = false; stop(); notify(); return;

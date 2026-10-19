@@ -22,14 +22,15 @@ async function worker(mode: string) {
     }
     await sleep(300);
     const pids = children.map(child => child.pid!);
-    for (const pid of pids) await sampler.capture(pid);
+    const identities = [];
+    for (const pid of pids) identities.push(await sampler.capture(pid));
     const hostProcessCount = readdirSync("/proc").filter(name => /^\d+$/.test(name)).length;
     const cpu = process.cpuUsage(), start = performance.now(), samples = [], scanMs = [];
     for (let i = 0; i <= intervals; i++) {
       if (i) await sleep(intervalMs);
       if (mode !== "baseline") {
         const scanStart = performance.now();
-        const snapshots = await Promise.all(pids.slice(0, mode === "one_group" ? 1 : 3).map(pid => sampler.snapshot(pid)));
+        const snapshots = await Promise.all(pids.slice(0, mode === "one_group" ? 1 : 3).map((pid, index) => sampler.snapshot(pid, identities[index].minimumScanGeneration)));
         if (snapshots.some(s => s.members.length < 2)) throw Error("Fixture member missing");
         scanMs.push(performance.now() - scanStart);
       }

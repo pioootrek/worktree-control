@@ -195,6 +195,22 @@ partial. Oversized records reject the sample. Repeated runtime ticks coalesce
 while a previous sample is pending; finite jobs schedule their next attempt
 only after the preceding one completes.
 
+Capturing a new job's leader also records the next collector scan generation.
+Its first snapshot requires an enumeration started after capture, so neither a
+warm cache nor an older in-flight directory listing can omit a newly spawned
+leader solely because it predates spawn. An older flight drains before one
+shared replacement starts; there is no retry loop or parallel full scan. Later
+snapshots retain that minimum generation and use the ordinary shared cache.
+Distinct captures during successive scans can require additional scans, so
+unsynchronized job startup cost remains workload-dependent.
+
+The first observation is still non-atomic. If the captured leader exits before
+it and a surviving child are observed together, PGID alone cannot prove that
+child's ownership. Observation then ends conservatively with `identity_lost`.
+An unreadable or disappearing anchor during member validation can also prevent
+that first observation. Freshness does not recover never-observed generations
+or weaken permanent identity loss after continuity is lost.
+
 The finite-job default is an immediate attempt followed by a one-second delay
 after each attempt. No idle observer timer runs after completion. A short run
 can legitimately have no samples. These measurements describe sampled sums

@@ -53,6 +53,16 @@ function sampler(): OwnedResourceSampler {
   return { supported: true, capture: vi.fn(async () => ({ pid: 42, startTicks: 100 })), snapshot: vi.fn(async () => snapshot()) };
 }
 describe("passive observer lifetime", () => {
+  it("permanently stops when the captured leader exits before any child generation is observed", async () => {
+    vi.useFakeTimers(); const s = sampler(), summary = emptyRunResources("pending");
+    vi.mocked(s.snapshot).mockResolvedValueOnce(snapshot([member(43, 101)]));
+    const observer = observeRunResources(summary, 42, () => true, () => {}, { sampler: s });
+    await drain(); await vi.advanceTimersByTimeAsync(5000);
+    expect(s.snapshot).toHaveBeenCalledTimes(1);
+    expect(summary).toMatchObject({ sampleCount: 0, missingSampleCount: 1, status: "unavailable", reasons: ["identity_lost"] });
+    expect(vi.getTimerCount()).toBe(0); observer.stop();
+  });
+
   it("does not overlap slow samples and discards in-flight completion without waiting", async () => {
     vi.useFakeTimers();
     const s = sampler(), summary = emptyRunResources("pending"), updated = vi.fn();
