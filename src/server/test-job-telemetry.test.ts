@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 const clean = (): TestSourceObservation => ({ observedAt: "2026-10-19T00:00:00.000Z", head: "aaa", branch: "main", dirty: false, statusDigest: "empty", statusEntries: 0, complete: true, errorCode: null });
 const drain = async () => { for (let n = 0; n < 30; n++) await Promise.resolve(); };
-function fixture() {
+function fixture(options: { failStartupPrune?: boolean } = {}) {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   const root = mkdtempSync(join(tmpdir(), "wtc-phase-"));
   const store = new SqliteStateStore(join(root, "state.sqlite3"));
@@ -31,7 +31,9 @@ function fixture() {
   let wall = "2026-10-19T00:00:00.000Z", tick = 0, missing = false;
   const clock = { wallNow: () => wall, monotonicNow: () => { if (missing) throw Error("unavailable"); return tick; } };
   const finishLog = vi.fn(async () => {});
-  const manager = new TestJobManager(store, { ...nullLogWriter, finishTest: finishLog }, () => {}, clock);
+  const controllerLog = vi.fn();
+  if (options.failStartupPrune) vi.spyOn(store, "pruneTestSummaryHistory").mockImplementationOnce(() => { throw Error("retention busy"); });
+  const manager = new TestJobManager(store, { ...nullLogWriter, finishTest: finishLog, controller: controllerLog }, () => {}, clock);
   const child = new EventEmitter() as ChildProcess;
   Object.assign(child, { stdout: null, stderr: null });
   vi.mocked(spawn).mockReset().mockReturnValue(child);
@@ -42,7 +44,7 @@ function fixture() {
     environment: { environment: {}, mode: "clean", profile: "unit", inheritedServerProfile: null, variableNames: [] }, actor: "local-user", sourceObservation: source });
   const advance = (value: number, date?: string) => { tick = value; if (date) wall = date; };
   const exit = (code: number | null = 0, signal: string | null = null) => { child.emit("exit", code, signal); child.emit("close"); };
-  const f = { root, store, manager, child, stop, enqueue, advance, exit, finishLog, missing: () => { missing = true; } };
+  const f = { root, store, manager, child, stop, enqueue, advance, exit, finishLog, controllerLog, missing: () => { missing = true; } };
   fixtures.push(f); return f;
 }
 
@@ -126,16 +128,85 @@ describe("queue phase telemetry with independent wall and monotonic clocks", () 
     expect(f.store.getTestRun(run.id)).toMatchObject({ phase: "passed", telemetry: { termination: "exit", durations: { cleanupMs: 50 } } });
   });
 
-  it("holds preparation exclusion until a cancelled observer settles", async () => {
+  it.each([1, 2])("returns cancellation promptly and holds preparation exclusion through finalization at limit %s", async limit => {
+    const f = fixture(); let release!: (value: TestSourceObservation) => void;
+    f.manager.setLimit(limit);
+    const observer = vi.fn(async () => clean());
+    observer.mockImplementationOnce(async () => new Promise(resolve => { release = resolve; }));
+    f.manager.configureSourceObserver(observer);
+    const run = f.enqueue(); await drain(); f.advance(20);
+    const waiting = f.enqueue(); await drain();
+    expect(f.manager.status()).toMatchObject({ running: 1, queued: 1 });
+    let cancellationResolved = false;
+    const cancelled = f.manager.cancel(run.id, "local-user").then(result => { cancellationResolved = true; return result; });
+    await drain();
+    expect(cancellationResolved).toBe(true);
+    expect(await cancelled).toMatchObject({ phase: "cancelled" });
+    expect(f.manager.status()).toMatchObject({ running: 1, queued: 1 });
+    expect(observer).toHaveBeenCalledTimes(1);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(f.store.getTestRun(run.id)?.telemetry?.finalizedAt).toBeNull();
+    let finishLog!: () => void;
+    f.finishLog.mockImplementationOnce(() => new Promise<void>(resolve => { finishLog = resolve; }));
+    f.advance(50); release(clean()); await drain();
+    expect(f.manager.status()).toMatchObject({ running: 1, queued: 1 });
+    expect(observer).toHaveBeenCalledTimes(1);
+    expect(spawn).not.toHaveBeenCalled();
+    finishLog(); await drain();
+    expect(f.store.getTestRun(run.id)).toMatchObject({ phase: "cancelled", telemetry: { termination: "cancel", durations: { prepareMs: 50, processMs: null, totalMs: 50 } } });
+    expect(f.store.getTestRun(waiting.id)?.phase).toBe("running");
+    expect(f.manager.status()).toMatchObject({ running: 1, queued: 0 });
+    f.child.emit("spawn"); f.exit(); await drain();
+    expect(f.manager.status()).toMatchObject({ running: 0, queued: 0 });
+  });
+
+  it("waits for a cancelled preparation and log finalization during shutdown", async () => {
     const f = fixture(); let release!: (value: TestSourceObservation) => void;
     f.manager.configureSourceObserver(async () => new Promise(resolve => { release = resolve; }));
-    const run = f.enqueue(); await drain(); f.advance(20);
-    const cancelled = f.manager.cancel(run.id, "local-user"); await drain();
+    const run = f.enqueue(); await drain();
+    let cancelled = false;
+    void f.manager.cancel(run.id, "local-user").then(() => { cancelled = true; }); await drain();
+    expect(cancelled).toBe(true);
+    let finalized!: () => void;
+    f.finishLog.mockImplementationOnce(() => new Promise<void>(resolve => { finalized = resolve; }));
+    let stopped = false;
+    const shutdown = f.manager.shutdown().then(() => { stopped = true; }); await drain();
+    expect(stopped).toBe(false);
+    release(clean()); await drain();
+    expect(stopped).toBe(false);
     expect(f.manager.status().running).toBe(1);
-    expect(f.store.getTestRun(run.id)?.telemetry?.finalizedAt).toBeNull();
-    f.advance(50); release(clean()); await cancelled; await drain();
+    finalized(); await shutdown;
+    expect(stopped).toBe(true);
     expect(f.manager.status().running).toBe(0);
-    expect(f.store.getTestRun(run.id)).toMatchObject({ phase: "cancelled", telemetry: { termination: "cancel", durations: { prepareMs: 50, processMs: null, totalMs: 50 } } });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("retries retention without closing admission or stranding pending jobs (startup failure: %s)", async failStartupPrune => {
+    const f = fixture({ failStartupPrune });
+    const prune = vi.spyOn(f.store, "pruneTestSummaryHistory");
+    let release!: (value: TestSourceObservation) => void;
+    f.manager.configureSourceObserver(vi.fn(async () => clean())
+      .mockImplementationOnce(async () => new Promise(resolve => { release = resolve; })));
+    const first = f.enqueue(); await drain();
+    const pending = f.enqueue(); await drain();
+    const calls = prune.mock.calls.length;
+    prune.mockImplementationOnce(() => { throw Error("retention busy"); });
+    await vi.advanceTimersByTimeAsync(60_000); await drain();
+    expect(prune).toHaveBeenCalledTimes(calls + 1);
+    expect(f.controllerLog).toHaveBeenCalledWith("test_summary.retention_failed", { error: "Error: retention busy" });
+    expect(f.manager.status()).toMatchObject({ running: 1, queued: 1 });
+    const added = f.enqueue(); await drain();
+    expect(f.manager.status()).toMatchObject({ running: 1, queued: 2 });
+    await vi.advanceTimersByTimeAsync(60_000); await drain();
+    expect(prune).toHaveBeenCalledTimes(calls + 2);
+    expect(f.controllerLog.mock.calls.filter(([event]) => event === "test_summary.retention_failed")).toHaveLength(failStartupPrune ? 2 : 1);
+    release(clean()); await drain();
+    for (const run of [first, pending, added]) {
+      expect(f.store.getTestRun(run.id)?.phase).toBe("running");
+      f.child.emit("spawn"); f.exit(); await drain();
+      expect(f.store.getTestRun(run.id)?.phase).toBe("passed");
+    }
+    await expect(f.manager.shutdown()).resolves.toBeUndefined();
   });
 
   it("keeps a correct process outcome when the measurement clock is unavailable", async () => {
@@ -167,6 +238,7 @@ describe("queue phase telemetry with independent wall and monotonic clocks", () 
     f.exit(); await drain();
     expect(f.store.getTestRun(run.id)?.phase).toBe("running");
     expect(f.manager.status().running).toBe(1);
+    expect(() => f.enqueue()).toThrow("Kolejka testów jest zamknięta.");
     await expect(f.manager.shutdown()).rejects.toThrow("disk full");
   });
 });
