@@ -186,7 +186,11 @@ async function transports() {
   const service = new ControlService(f.store, { list: vi.fn(async () => []) } as never, {} as ProcessManager);
   const actor = { principalId: "scoped-agent", principalKind: "agent" as const, credentialId: "credential", authenticationMethod: "agent_token" as const };
   const identity = { authenticateBearer: (token: string) => { if (token !== "scoped") throw Error("invalid credential"); return actor; } } as IdentityService;
-  const http = createControllerServer({ service, directoryBrowser: {} as DirectoryBrowser, events: new EventStream(), webRoot: f.root, host: "127.0.0.1", port: 0, accessToken: "runtime-token", identity });
+  const http = createControllerServer({
+    service, directoryBrowser: {} as DirectoryBrowser, events: new EventStream(), webRoot: f.root,
+    host: "127.0.0.1", port: 0, accessToken: "runtime-token", identity,
+    mcpStatus: () => ({ phase: "running", endpoint: null, transport: "streamable-http", network: "loopback", authentication: "bearer", activeSessions: 0 }),
+  });
   const mcp = createMcpControllerServer({ service, port: 0, accessToken: "runtime-token", identity });
   for (const controller of [http, mcp]) {
     cleanup.push(() => controller.close());
