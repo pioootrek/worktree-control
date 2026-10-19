@@ -188,6 +188,7 @@ describe("queue phase telemetry with independent wall and monotonic clocks", () 
     f.manager.configureSourceObserver(vi.fn(async () => clean())
       .mockImplementationOnce(async () => new Promise(resolve => { release = resolve; })));
     const first = f.enqueue(); await drain();
+    f.advance(1, "2026-10-19T00:00:00.001Z");
     const pending = f.enqueue(); await drain();
     const calls = prune.mock.calls.length;
     prune.mockImplementationOnce(() => { throw Error("retention busy"); });
@@ -195,6 +196,7 @@ describe("queue phase telemetry with independent wall and monotonic clocks", () 
     expect(prune).toHaveBeenCalledTimes(calls + 1);
     expect(f.controllerLog).toHaveBeenCalledWith("test_summary.retention_failed", { error: "Error: retention busy" });
     expect(f.manager.status()).toMatchObject({ running: 1, queued: 1 });
+    f.advance(2, "2026-10-19T00:00:00.002Z");
     const added = f.enqueue(); await drain();
     expect(f.manager.status()).toMatchObject({ running: 1, queued: 2 });
     await vi.advanceTimersByTimeAsync(60_000); await drain();
