@@ -87,6 +87,22 @@ describe("test job passive resource integration", () => {
     expect(f.manager.status().running).toBe(0);
   });
 
+  it("closes observation after failed shutdown while retaining process ownership for cleanup retry", async () => {
+    const sampler = resourceSampler(), f = fixture({ sampler, timeoutMs: 100_000 });
+    const run = f.enqueue(); await drain(); f.child.emit("spawn"); await drain();
+    f.stop.mockRejectedValue(Error("inspection failed"));
+    const stopped = expect(f.manager.shutdown()).rejects.toThrow("Nie potwierdzono");
+    await vi.advanceTimersByTimeAsync(500); await stopped;
+    expect(f.manager.status().running).toBe(1);
+    expect(f.store.getTestRun(run.id)?.telemetry?.resources).toMatchObject({ status: "partial", sampleCount: 1, reasons: ["no_cpu_interval", "controller_interrupted"] });
+    const calls = vi.mocked(sampler.snapshot).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(sampler.snapshot).toHaveBeenCalledTimes(calls);
+    f.stop.mockResolvedValue(); f.exit(null, "SIGTERM"); await drain();
+    expect(f.store.getTestRun(run.id)?.phase).toBe("cancelled");
+    expect(f.manager.status().running).toBe(0);
+  });
+
   it("bounds resource-only durable checkpoints to one per ten seconds", async () => {
     const sampler = resourceSampler(), f = fixture({ sampler, timeoutMs: 100_000 });
     const tick = vi.spyOn(performance, "now").mockReturnValue(0);

@@ -249,7 +249,7 @@ CPU describes only deltas between observed matching generations (100% is one
 core), never complete job totals. Missing/partial/unsupported/legacy quality
 and denominators travel with the peaks. No cgroups, resource enforcement or
 exporter is introduced. See [resource semantics](verification-history-api.md#passive-per-run-resources).
- `VerificationHistoryService` supplies retained
+`VerificationHistoryService` supplies retained
 summary history, single-summary lookup, metrics and comparison through the
 `ControlService` facade to HTTP and MCP. It uses the same runtime authentication
 boundary as verification detail reads; scoped Knowledge grants do not authorize

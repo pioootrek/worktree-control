@@ -190,16 +190,30 @@ export class TestJobManager {
     clearInterval(this.summaryMaintenance);
     if (this.outputNotification) clearTimeout(this.outputNotification);
     this.outputNotification = null;
-    const unfinished = this.store.listPendingTestRuns();
-    const cancellations = await Promise.allSettled(unfinished.map((run) => this.cancel(run.id, "local-user")));
-    await Promise.allSettled(this.preparationPromises.values());
-    await Promise.all([...this.active.values()].map((active) => this.complete(active)));
-    await Promise.all(this.finalizations.values());
-    await this.logMaintenance;
-    if (this.active.size && !this.persistenceFailure) throw new Error("Nie potwierdzono zakończenia wszystkich grup procesów testowych.");
-    const failures = cancellations.filter((result) => result.status === "rejected").map((result) => result.reason);
-    if (failures.length) throw new AggregateError(failures, "Nie zakończono poprawnie anulowania zadań testowych.");
-    if (this.persistenceFailure) throw this.persistenceFailure;
+    try {
+      const unfinished = this.store.listPendingTestRuns();
+      const cancellations = await Promise.allSettled(unfinished.map((run) => this.cancel(run.id, "local-user")));
+      await Promise.allSettled(this.preparationPromises.values());
+      await Promise.all([...this.active.values()].map((active) => this.complete(active)));
+      await Promise.all(this.finalizations.values());
+      await this.logMaintenance;
+      if (this.active.size && !this.persistenceFailure) throw new Error("Nie potwierdzono zakończenia wszystkich grup procesów testowych.");
+      const failures = cancellations.filter((result) => result.status === "rejected").map((result) => result.reason);
+      if (failures.length) throw new AggregateError(failures, "Nie zakończono poprawnie anulowania zadań testowych.");
+      if (this.persistenceFailure) throw this.persistenceFailure;
+    } finally {
+      // Even failed shutdown closes observation before ControlService closes the
+      // store. Process ownership/occupied slots remain intact for cleanup retry.
+      for (const active of this.active.values()) {
+        active.resources?.stop();
+        const resources = active.run.telemetry?.resources;
+        if (resources && resources.status !== "legacy_unknown" && resources.status !== "unsupported") {
+          resourceReason(resources, "controller_interrupted");
+          resources.status = resources.sampleCount ? "partial" : "unavailable";
+        }
+        this.checkpoint(active.run);
+      }
+    }
   }
 
   private readonly environments = new Map<string, Record<string, string>>();

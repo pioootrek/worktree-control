@@ -203,7 +203,9 @@ members. CPU of unobserved/dead children and the initial/final tails is unknown;
 there is no inferred total CPU time. No valid interval leaves the peak null.
 
 Observation continues through leader exit/cleanup retries and stops after
-confirmed group cleanup. Stop clears the timer immediately and discards late
+confirmed group cleanup. Failed shutdown also stops observation before the store
+closes, marks remaining measurements partial, and retains process ownership and
+occupied slots for cleanup retry. Stop clears the timer immediately and discards late
 reads; bounded file reads already underway drain and close without delaying
 slot release or changing the finalized summary. Sampling errors cannot change
 the command, exit/signal, stop cause or source qualification. Resource-only
