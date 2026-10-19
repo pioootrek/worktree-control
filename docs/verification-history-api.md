@@ -154,7 +154,8 @@ environments. Resource comparisons return `left`, `right` and right-minus-left
 `delta`, labelled `descriptive_sampled_peaks_only`. Deltas require both runs in
 `completed_execution`, compatible version/source/coverage/CPU normalization,
 and identical positive intervals. States may be `sampled` or an explained
-`partial`. Membership changes, vanished processes during global enumeration,
+`partial`. Membership changes, processes disappearing during enumeration or
+member validation, verified same-generation zombies,
 an observed empty group after child exit, and a discarded final in-flight read
 permit descriptive deltas while preserving all quality reasons and counts.
 These gaps do not establish complete coverage. Identity loss, read failures,
@@ -196,10 +197,14 @@ the largest observed group. `status` is `pending`, `sampled`, `partial`,
 `unavailable`, `unsupported` or `legacy_unknown`. `sampled` means no detected
 read/identity gaps, not complete temporal coverage. Bounded `reasons` report
 gaps, churn, identity loss and interrupted/discarded reads. `process_churn`
-means an enumerated process vanished before its stat read, with unknown group
-membership. It makes coverage partial without claiming a read integrity error.
-Missing/unreadable owned candidates during RSS/stat validation and other global
-read failures retain `incomplete_scan`, which excludes comparison deltas.
+means ENOENT/ESRCH during enumeration or member validation, or a member becoming
+a zombie with matching PID, start ticks and PGID. Such members are excluded
+from the sample, including verified zombies whose status omits RSS. Global
+churn has unknown group membership. Coverage remains partial; it does not
+claim complete RSS or CPU totals. Identity mismatches (including zombies),
+malformed records, missing RSS on live members and other read errors retain
+`incomplete_scan`, which excludes comparison deltas. Churn never establishes
+ownership of an unobserved generation or recovers lost identity continuity.
 
 `peakSampledRssBytes` is the largest sampled sum of member RSS. Shared resident
 pages count once per process, so the sum can double count memory. Reads are

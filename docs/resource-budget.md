@@ -190,19 +190,24 @@ open process-file readers globally, reusing eight 8 KiB buffers, with at most
 256 waiting readers, 32,768 enumerated records and 4,096 candidate members per
 group. Over-budget scans fail as missing measurements. RSS is read only for
 requested group members and followed by another stat read to reject identity
-changes during the read. Vanished processes during global stat enumeration
-mark coverage partial with `process_churn`; their membership is unknown.
-Other global read failures and missing/unreadable owned RSS/stat candidates
-remain `incomplete_scan`. Oversized records reject the sample. Repeated runtime ticks coalesce
-while a previous sample is pending; finite jobs schedule their next attempt
+changes during the read. ENOENT/ESRCH during global enumeration or owned-member
+validation mark coverage partial with `process_churn`; global membership is
+unknown. A member that becomes a zombie is also excluded as churn, but only
+after its PID, start ticks and PGID still match, even if its status omits RSS.
+Identity mismatches, malformed records, missing RSS on a live process and other
+read errors remain `incomplete_scan`. Oversized records reject the sample.
+Repeated runtime ticks coalesce while a previous sample is pending; finite
+jobs schedule their next attempt
 only after the preceding one completes.
 
 Capturing a new job's leader also records the next collector scan generation.
 Its first snapshot requires an enumeration started after capture, so neither a
 warm cache nor an older in-flight directory listing can omit a newly spawned
 leader solely because it predates spawn. An older flight drains before one
-shared replacement starts; there is no retry loop or parallel full scan. Later
-snapshots retain that minimum generation and use the ordinary shared cache.
+shared replacement starts, even if the discarded flight failed. Consumers of
+that older scan and of a failed eligible scan still receive their errors.
+There is no retry loop or parallel full scan. Later snapshots retain that
+minimum generation and use the ordinary shared cache.
 Distinct captures during successive scans can require additional scans, so
 unsynchronized job startup cost remains workload-dependent.
 

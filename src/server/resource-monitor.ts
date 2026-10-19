@@ -75,7 +75,7 @@ export interface ProcessGroupSnapshot {
   cpuCount: number;
   observedAtMs: number;
   incomplete: boolean;
-  /** A process vanished during global stat enumeration; membership is unknown. */
+  /** A process vanished during enumeration/member validation or became a verified zombie. */
   processChurn?: boolean;
 }
 export interface OwnedResourceIdentity {
@@ -127,7 +127,9 @@ export class LinuxProcessResourceSampler implements ProcessResourceSampler, Owne
     // Drain an older flight before starting its replacement. Concurrent captures
     // share that replacement; each caller waits at most one stale flight and
     // never loops/rescans in response to ongoing process churn.
-    if (this.scan && this.scanGeneration < minimumScanGeneration) await this.scan;
+    // This caller cannot use the stale flight, including its failure. Consumers
+    // of that flight still receive its error; an eligible replacement may fail too.
+    if (this.scan && this.scanGeneration < minimumScanGeneration) await this.scan.catch(() => {});
     const now = performance.now();
     if (this.scan) return this.scan;
     // Retain a successful snapshot for a short coalescing window, including
@@ -156,9 +158,10 @@ export class LinuxProcessResourceSampler implements ProcessResourceSampler, Owne
           const stat = await this.read(async buffer => parseProcessStat(await readProcessFile(`/proc/${id}/stat`, buffer)));
           if (stat) records.push(stat); else incomplete = true;
         } catch (error) {
-          // ENOENT is expected global churn, with unknown membership. Other
+          // ENOENT/ESRCH are expected global churn, with unknown membership. Other
           // errors leave integrity uncertain and must not qualify comparisons.
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") processChurn = true;
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === "ENOENT" || code === "ESRCH") processChurn = true;
           else incomplete = true;
           if (error instanceof ProcessRecordTooLargeError) recordError ??= error;
         }
@@ -176,6 +179,7 @@ export class LinuxProcessResourceSampler implements ProcessResourceSampler, Owne
     if (candidates.length > 4096) throw new Error("Process group exceeds the read limit.");
     const members: ProcessGroupSnapshot["members"] = [];
     let next = 0, incomplete = scan.incomplete;
+    let processChurn = scan.processChurn;
     let recordError: ProcessRecordTooLargeError | undefined;
     await Promise.all(Array.from({ length: Math.min(8, candidates.length) }, async () => {
       while (next < candidates.length) {
@@ -184,19 +188,25 @@ export class LinuxProcessResourceSampler implements ProcessResourceSampler, Owne
           await this.read(async buffer => {
             const rssBytes = parseRssBytes(await readProcessFile(`/proc/${before.pid}/status`, buffer));
             const after = parseProcessStat(await readProcessFile(`/proc/${before.pid}/stat`, buffer));
-            if (rssBytes === null || !after || after.pid !== before.pid || after.startTicks !== before.startTicks
-              || after.processGroupId !== processGroupId || after.state === "Z") { incomplete = true; return; }
+            if (!after || after.pid !== before.pid || after.startTicks !== before.startTicks
+              || after.processGroupId !== processGroupId) { incomplete = true; return; }
+            // A matching zombie has exited, including when status omits VmRSS.
+            // Identity mismatches must fail above even if the new process is dead.
+            if (after.state === "Z") { processChurn = true; return; }
+            if (rssBytes === null) { incomplete = true; return; }
             // CPU counters use the common enumeration endpoint; RSS was read later.
             members.push({ ...before, rssBytes });
           });
         } catch (error) {
-          incomplete = true;
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === "ENOENT" || code === "ESRCH") processChurn = true;
+          else incomplete = true;
           if (error instanceof ProcessRecordTooLargeError) recordError ??= error;
         }
       }
     }));
     if (recordError) throw recordError;
-    return { members, hostCpuTicks: scan.hostCpuTicks, cpuCount: scan.cpuCount, observedAtMs: scan.observedAtMs, incomplete, processChurn: scan.processChurn };
+    return { members, hostCpuTicks: scan.hostCpuTicks, cpuCount: scan.cpuCount, observedAtMs: scan.observedAtMs, incomplete, processChurn };
   }
 
   private readonly runtimeSamples = new Map<number, Promise<RawResourceSample>>();
