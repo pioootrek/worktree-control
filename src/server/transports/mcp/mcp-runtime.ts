@@ -562,7 +562,7 @@ export class McpRuntime {
     });
 
     server.registerTool("get_test_run", {
-      description: "Read one queued, active, or completed test run including its bounded output tail.",
+      description: "Read one queued, active, or completed test run including its bounded output tail and passive resource summary with sampling quality.",
       inputSchema: { runId: z.string().uuid() },
       annotations: { readOnlyHint: true, idempotentHint: true },
     }, async ({ runId }) => {
@@ -576,17 +576,17 @@ export class McpRuntime {
       annotations: { readOnlyHint: true, idempotentHint: true },
     }, async input => jsonContent(await english(() => this.service.listTestHistory(input))));
     server.registerTool("get_test_run_summary", {
-      description: "Read one retained compact summary within a project, even after detailed test-run pruning. No logs or raw command/environment data.",
+      description: "Read one retained compact summary within a project, including passive resource measurements and quality, even after detailed test-run pruning. No logs or raw command/environment data.",
       inputSchema: testSummarySchema,
       annotations: { readOnlyHint: true, idempotentHint: true },
     }, async input => jsonContent(await english(() => this.service.testRunSummary(input))));
     server.registerTool("get_test_metrics", {
-      description: "Analyze up to 5000 newest retained candidates in project enqueue window [from,to] (maximum 31 days), before exact filters. Separate outcome/source axes and censored populations; explicit truncation, retention and missing samples. CPU/RSS unavailable.",
+      description: "Analyze up to 5000 newest retained candidates in project enqueue window [from,to] (maximum 31 days), before exact filters. Separate outcome/source axes and censored populations; explicit truncation, retention and missing samples. Sampled CPU/RSS peak statistics include quality and sample denominators; runner wait remains unavailable.",
       inputSchema: testMetricsSchema,
       annotations: { readOnlyHint: true, idempotentHint: true },
     }, async input => jsonContent(await english(() => this.service.testMetrics(input))));
     server.registerTool("compare_test_runs", {
-      description: "Compare two retained summaries in one project. Right-minus-left duration deltas, identity differences and comparability caveats; no automatic regression, duplicate or flakiness verdict.",
+      description: "Compare two retained summaries in one project. Right-minus-left duration deltas, descriptive sampled resource peak deltas for compatible completed observations, identity differences and comparability caveats; no automatic regression, duplicate or flakiness verdict.",
       inputSchema: testComparisonSchema,
       annotations: { readOnlyHint: true, idempotentHint: true },
     }, async input => jsonContent(await english(() => this.service.compareTestRuns(input))));
