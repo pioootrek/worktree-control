@@ -664,6 +664,10 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     return this.testRuns.saveTestRun(run, idempotencyKey);
   }
 
+  pruneTestSummaryHistory(): number {
+    return this.testRuns.pruneTestSummaryHistory();
+  }
+
   markInterruptedTestRuns(): void {
     return this.testRuns.markInterruptedTestRuns();
   }

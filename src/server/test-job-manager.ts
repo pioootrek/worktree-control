@@ -1,13 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 
-import type { TestQueueStatus, TestRun, TestSourceObservation, Worktree } from "@/shared/contracts";
+import type { TestQueueStatus, TestRun } from "@/shared/contracts";
 import type { LogWriter } from "./log-writer";
 import type { StateStore } from "./state-store";
-import type { ResolvedTestEnvironment } from "@/server/modules/environments";
-import type { TestCommand } from "./test-command";
 
 import { OwnedProcessGroup } from "./owned-process-group";
+import { emptyTelemetry, RunTelemetryRecorder, verificationClock, type VerificationClock, type EnqueueTestInput } from "./modules/verification";
 import { compareSource, legacySourceEvidence, pendingSourceEvidence, qualifySource, type TestSourceObserver } from "./test-source-attribution";
 
 const MAX_LOG_LINES = 200;
@@ -32,21 +31,16 @@ interface ActiveRun {
   worktreePath: string;
 }
 
-export interface EnqueueTestInput {
-  projectId: string;
-  worktree: Worktree;
-  command: TestCommand;
-  environment: ResolvedTestEnvironment;
-  actor: string;
-  idempotencyKey?: string;
-  sourceObservation?: TestSourceObservation;
-}
+export type { EnqueueTestInput } from "./modules/verification";
 
 export class TestJobManager {
+  private readonly telemetry: RunTelemetryRecorder;
+  private readonly summaryMaintenance: NodeJS.Timeout;
+  private persistenceFailure: unknown = null;
   private readonly active = new Map<string, ActiveRun>();
   private readonly finalizations = new Map<string, Promise<void>>();
   private readonly preparing = new Set<string>();
-  private readonly preparationPromises = new Set<Promise<void>>();
+  private readonly preparationPromises = new Map<string, Promise<void>>();
   private sourceObserver: TestSourceObserver | null = null;
   private logMaintenance: Promise<void> = Promise.resolve();
   private pruneOperation: Promise<void> | null = null;
@@ -60,8 +54,13 @@ export class TestJobManager {
     private readonly store: StateStore,
     private readonly logs: LogWriter,
     private readonly onChange: (projectId?: string) => void = () => undefined,
+    private readonly clock: VerificationClock = verificationClock,
   ) {
+    this.telemetry = new RunTelemetryRecorder(clock);
     this.store.markInterruptedTestRuns();
+    this.pruneSummaries();
+    this.summaryMaintenance = setInterval(() => this.pruneSummaries(), 60_000);
+    this.summaryMaintenance.unref();
     void this.pruneLogs();
   }
 
@@ -80,10 +79,11 @@ export class TestJobManager {
 
   status(): TestQueueStatus {
     const settings = this.store.getTestQueueSettings();
+    const queuedPreparations = [...this.preparing].filter(id => this.store.getTestRun(id)?.phase === "queued").length;
     return {
       ...settings,
       running: this.active.size + this.preparing.size,
-      queued: Math.max(0, this.store.countTestRuns(["queued"]) - this.preparing.size),
+      queued: Math.max(0, this.store.countTestRuns(["queued"]) - queuedPreparations),
     };
   }
 
@@ -120,7 +120,7 @@ export class TestJobManager {
       executable: input.command.executable,
       args: input.command.args,
       cwd: input.command.cwd,
-      queuedAt: new Date().toISOString(),
+      queuedAt: this.clock.wallNow(),
       startedAt: null,
       finishedAt: null,
       exitCode: null,
@@ -131,9 +131,12 @@ export class TestJobManager {
       environmentProfile: input.environment.profile,
       inheritedServerProfile: input.environment.inheritedServerProfile,
       environmentVariableNames: input.environment.variableNames,
+      telemetry: emptyTelemetry("observed"),
       source: input.sourceObservation ? pendingSourceEvidence(input.sourceObservation) : legacySourceEvidence(),
     };
-    this.store.saveTestRun(run, input.idempotencyKey);
+    this.telemetry.mark(run, "queuedAt");
+    try { this.store.saveTestRun(run, input.idempotencyKey); }
+    catch (error) { this.telemetry.forget(run.id); throw error; }
     this.environments.set(run.id, input.environment.environment);
     this.timeouts.set(run.id, input.command.preset.timeoutMs);
     this.logs.openTest(run.id);
@@ -150,32 +153,51 @@ export class TestJobManager {
     const run = active?.run ?? persisted;
     if (actor !== "local-user" && run.actor !== actor) throw new Error("Tylko autor testu może go anulować.");
     if (run.phase === "queued") {
-      this.preparing.delete(run.id);
+      run.telemetry ??= emptyTelemetry();
+      run.telemetry.termination = "cancel";
+      run.telemetry.cleanup = "not_required";
+      this.telemetry.mark(run, "stopRequestedAt");
       run.phase = "cancelled";
-      run.finishedAt = new Date().toISOString();
-      await this.finish(run);
+      run.finishedAt = this.clock.wallNow();
+      const preparation = this.preparationPromises.get(run.id);
+      if (preparation) {
+        this.persistNow(run);
+        this.onChange(run.projectId);
+      } else {
+        await this.finish(run);
+      }
       return this.store.getTestRun(run.id) ?? run;
     }
     if (!active || run.phase !== "running") return run;
-    if (!active.exited) active.cancellationRequested = true;
+    // A timeout that already initiated teardown remains the stop cause, even
+    // when cancellation or shutdown arrives before the process exits.
+    if (!active.exited && !active.timedOut) {
+      active.cancellationRequested = true;
+      active.run.telemetry!.termination = "cancel";
+      this.telemetry.mark(active.run, "stopRequestedAt");
+      this.checkpoint(active.run);
+    }
     this.complete(active);
+    if (this.persistenceFailure) throw this.persistenceFailure;
     this.onChange(run.projectId);
     return run;
   }
 
   async shutdown(): Promise<void> {
     this.closed = true;
+    clearInterval(this.summaryMaintenance);
     if (this.outputNotification) clearTimeout(this.outputNotification);
     this.outputNotification = null;
     const unfinished = this.store.listPendingTestRuns();
     const cancellations = await Promise.allSettled(unfinished.map((run) => this.cancel(run.id, "local-user")));
-    await Promise.allSettled(this.preparationPromises);
+    await Promise.allSettled(this.preparationPromises.values());
     await Promise.all([...this.active.values()].map((active) => this.complete(active)));
     await Promise.all(this.finalizations.values());
     await this.logMaintenance;
-    if (this.active.size) throw new Error("Nie potwierdzono zakończenia wszystkich grup procesów testowych.");
+    if (this.active.size && !this.persistenceFailure) throw new Error("Nie potwierdzono zakończenia wszystkich grup procesów testowych.");
     const failures = cancellations.filter((result) => result.status === "rejected").map((result) => result.reason);
     if (failures.length) throw new AggregateError(failures, "Nie zakończono poprawnie anulowania zadań testowych.");
+    if (this.persistenceFailure) throw this.persistenceFailure;
   }
 
   private readonly environments = new Map<string, Record<string, string>>();
@@ -200,11 +222,17 @@ export class TestJobManager {
           occupiedWorktrees.add(next.worktreePath);
           const run = this.requireRun(next.id);
           this.preparing.add(run.id);
+          this.telemetry.mark(run, "admittedAt");
+          this.persistNow(run);
           const preparation = this.prepare(run);
-          this.preparationPromises.add(preparation);
-          void preparation.finally(() => this.preparationPromises.delete(preparation));
+          this.preparationPromises.set(run.id, preparation);
+          void preparation.finally(() => this.preparationPromises.delete(run.id)).catch(error => this.recordPersistenceFailure(run, error));
         }
         this.updateQueuePositions();
+      } catch (error) {
+        this.persistenceFailure ??= error;
+        this.closed = true;
+        this.logs.controller("test_queue.persistence_failed", { error: String(error) });
       } finally {
         this.pumping = false;
       }
@@ -224,8 +252,11 @@ export class TestJobManager {
       this.persistNow(run);
       if (run.source.queueComparison !== "match") {
         run.source = qualifySource(run.source);
+        this.telemetry.mark(run, "prepareFinishedAt");
+        run.telemetry!.termination = "rejected";
+        run.telemetry!.cleanup = "not_required";
         run.phase = "failed";
-        run.finishedAt = new Date().toISOString();
+        run.finishedAt = this.clock.wallNow();
         run.error = run.source.queueComparison === "changed" ? "Źródło testu zmieniło się podczas oczekiwania w kolejce." : "Nie udało się potwierdzić źródła testu przed uruchomieniem.";
         this.preparing.delete(run.id);
         await this.finish(run);
@@ -235,25 +266,35 @@ export class TestJobManager {
       if (this.closed || this.store.getTestRun(run.id)?.phase !== "queued") return;
       this.start(run);
     } catch (error) {
+      if (this.persistenceFailure) throw error;
       if (this.store.getTestRun(run.id)?.phase === "queued") {
         run.source.reasonCodes = [...new Set([...run.source.reasonCodes, "source_preflight_failed"])];
         run.source = qualifySource(run.source);
+        this.telemetry.mark(run, "prepareFinishedAt");
+        run.telemetry!.termination = "rejected";
+        run.telemetry!.cleanup = "not_required";
         run.phase = "failed";
-        run.finishedAt = new Date().toISOString();
+        run.finishedAt = this.clock.wallNow();
         run.error = `Nie udało się sprawdzić źródła testu: ${String(error)}`;
         await this.finish(run);
       }
     } finally {
+      const cancelled = this.store.getTestRun(run.id);
+      if (cancelled?.phase === "cancelled" && !cancelled.telemetry?.finalizedAt) {
+        this.telemetry.mark(cancelled, "prepareFinishedAt");
+        await this.finish(cancelled);
+      }
       this.preparing.delete(run.id);
       this.pump();
     }
   }
 
   private start(run: TestRun): void {
+    this.telemetry.mark(run, "prepareFinishedAt");
     run.phase = "running";
-    run.startedAt = new Date().toISOString();
+    run.startedAt = this.clock.wallNow();
     run.queuePosition = null;
-    this.store.saveTestRun(run);
+    this.persistNow(run);
     let child: ChildProcess;
     try {
       child = spawn(run.executable, run.args, {
@@ -267,18 +308,25 @@ export class TestJobManager {
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error) {
+      run.telemetry!.termination = "spawn_error";
+      run.telemetry!.cleanup = "not_required";
       run.phase = "failed";
       run.error = error instanceof Error ? error.message : String(error);
-      run.finishedAt = new Date().toISOString();
+      run.finishedAt = this.clock.wallNow();
       void this.finish(run).catch((error: unknown) => {
         this.logs.controller("test_run.finalization_failed", { runId: run.id, error: String(error) });
+        this.recordPersistenceFailure(run, error);
       });
       return;
     }
     const timeout = setTimeout(() => {
       const active = this.active.get(run.id);
       if (!active || active.exited) return;
+      if (active.cancellationRequested) return;
       active.timedOut = true;
+      run.telemetry!.termination = "timeout";
+      this.telemetry.mark(run, "stopRequestedAt");
+      this.checkpoint(run);
       this.complete(active);
     }, this.timeouts.get(run.id) ?? 15 * 60_000);
     timeout.unref();
@@ -289,9 +337,14 @@ export class TestJobManager {
       closed: new Promise<void>((resolve) => child.once("close", () => resolve())),
     };
     this.active.set(run.id, active);
+    child.once("spawn", () => {
+      this.telemetry.mark(run, "spawnedAt");
+      this.checkpoint(run);
+    });
     child.stdout?.on("data", (chunk: Buffer) => this.appendChunk(run, chunk));
     child.stderr?.on("data", (chunk: Buffer) => this.appendChunk(run, chunk));
     child.once("error", (error) => {
+      if (!run.telemetry!.spawnedAt) run.telemetry!.termination = "spawn_error";
       active.executionError = error.message;
       run.error = error.message;
       this.complete(active);
@@ -301,6 +354,12 @@ export class TestJobManager {
       clearTimeout(active.timeout);
       run.exitCode = code;
       run.signal = signal;
+      run.source.processOutcome = active.cancellationRequested ? "cancelled" : active.timedOut ? "timed_out"
+        : code === 0 && !active.executionError ? "passed" : "failed";
+      this.telemetry.mark(run, "exitedAt");
+      this.telemetry.mark(run, "cleanupStartedAt");
+      if (run.telemetry!.termination === "unknown") run.telemetry!.termination = "exit";
+      this.checkpoint(run);
       this.complete(active);
     });
     this.onChange(run.projectId);
@@ -310,11 +369,35 @@ export class TestJobManager {
     if (active.completion) return active.completion;
     active.completion = (async () => {
       const { run } = active;
+      // Finalization has already prepared an immutable result. A failed durable
+      // write may retry that snapshot, never rerun source/log qualification.
+      if (run.telemetry?.finalizedAt) {
+        try { await this.finish(run); }
+        finally { active.completion = null; }
+        return;
+      }
       try {
+        if (active.exited || run.telemetry!.termination === "spawn_error") this.telemetry.mark(run, "cleanupStartedAt");
+        run.telemetry!.cleanup = "pending";
+        this.checkpoint(run);
         await this.stopWithRetries(active.group);
+        this.telemetry.mark(run, "cleanupFinishedAt");
+        run.telemetry!.cleanup = "confirmed";
+        this.telemetry.mark(run, "finalizationStartedAt");
         await this.waitForOutputClose(active);
+      } catch (error) {
+        if (this.persistenceFailure) { active.completion = null; throw error; }
+        run.telemetry!.cleanup = "failed";
+        run.error = `Nie potwierdzono sprzątania procesów: ${error instanceof Error ? error.message : String(error)}`;
+        active.completion = null;
+        this.persistNow(run);
+        this.onChange(run.projectId);
+        return;
+      }
+      try {
+        this.telemetry.mark(run, "finalizationStartedAt");
         run.error = active.executionError;
-        run.finishedAt = new Date().toISOString();
+        run.finishedAt = this.clock.wallNow();
         run.phase = active.cancellationRequested ? "cancelled" : active.timedOut ? "timed_out"
           : run.exitCode === 0 && !run.error ? "passed" : "failed";
         run.source.processOutcome = run.phase;
@@ -323,7 +406,7 @@ export class TestJobManager {
             run.source.finish = await this.sourceObserver(run, "finish");
           } catch {
             run.source.finish = {
-              observedAt: new Date().toISOString(), head: null, branch: null, dirty: null,
+              observedAt: this.clock.wallNow(), head: null, branch: null, dirty: null,
               statusDigest: null, statusEntries: null, complete: false, errorCode: "source_finish_failed",
             };
           }
@@ -336,14 +419,14 @@ export class TestJobManager {
         if (run.phase === "failed" && !run.error) run.error = `Proces testowy zakończył się z kodem ${run.exitCode ?? run.signal ?? "unknown"}.`;
         await this.finish(run);
       } catch (error) {
-        // Non-terminal: preserve the active slot and worktree exclusion until cleanup succeeds.
-        run.error = `Nie potwierdzono sprzątania procesów: ${error instanceof Error ? error.message : String(error)}`;
-        this.persistNow(run);
-        this.onChange(run.projectId);
+        this.recordPersistenceFailure(run, error);
+        throw error;
       } finally {
         active.completion = null;
       }
     })();
+    // Event handlers cannot await; shutdown still reports the latched durability failure.
+    void active.completion.catch(error => this.recordPersistenceFailure(active.run, error));
     return active.completion;
   }
 
@@ -380,6 +463,13 @@ export class TestJobManager {
     active.child.stderr?.destroy();
   }
 
+  private pruneSummaries(): void {
+    // Maintenance only deletes terminal summaries. Retry at the next bounded
+    // interval; durable run writes still fail closed through persistNow.
+    try { this.store.pruneTestSummaryHistory(); }
+    catch (error) { this.logs.controller("test_summary.retention_failed", { error: String(error) }); }
+  }
+
   pruneLogs(): Promise<void> {
     const pruning = this.logs.pruneTests((id) => this.store.hasTestRun(id));
     // The writer coalesces overlapping scans; keep only one maintenance waiter.
@@ -398,18 +488,23 @@ export class TestJobManager {
     const active = this.active.get(run.id);
     if (active) clearTimeout(active.timeout);
     this.cleanup(run.id);
+    this.telemetry.mark(run, "finalizationStartedAt");
     const completion = (async () => {
-      try {
-        await this.logs.finishTest(run.id);
-      } catch (error) {
-        const message = `Nie udało się zapisać lub zamknąć logu testu: ${String(error)}`;
-        run.error = run.error ? `${run.error} ${message}` : message;
-        if (run.phase === "passed") run.phase = "failed";
-        this.logs.controller("test_log.finalization_failed", { runId: run.id, error: String(error) });
+      if (!run.telemetry!.finalizedAt) {
+        try {
+          await this.logs.finishTest(run.id);
+        } catch (error) {
+          const message = `Nie udało się zapisać lub zamknąć logu testu: ${String(error)}`;
+          run.error = run.error ? `${run.error} ${message}` : message;
+          if (run.phase === "passed") run.phase = "failed";
+          this.logs.controller("test_log.finalization_failed", { runId: run.id, error: String(error) });
+        }
+        this.telemetry.mark(run, "finalizedAt");
       }
       this.persistNow(run);
+      this.telemetry.forget(run.id);
       this.active.delete(run.id);
-      this.preparing.delete(run.id);
+      if (!this.preparationPromises.has(run.id)) this.preparing.delete(run.id);
       this.logs.controller("test_run.finished", { runId: run.id, projectId: run.projectId, phase: run.phase, exitCode: run.exitCode });
       void this.pruneLogs();
     })().finally(() => {
@@ -419,6 +514,12 @@ export class TestJobManager {
     });
     this.finalizations.set(run.id, completion);
     return completion;
+  }
+
+  private recordPersistenceFailure(run: TestRun, error: unknown): void {
+    this.persistenceFailure ??= error;
+    this.closed = true;
+    this.logs.controller("test_run.persistence_failed", { runId: run.id, error: String(error) });
   }
 
   private appendChunk(run: TestRun, chunk: Buffer): void {
@@ -465,17 +566,23 @@ export class TestJobManager {
     if (this.logPersistence.has(run.id)) return;
     const timeout = setTimeout(() => {
       this.logPersistence.delete(run.id);
-      this.store.saveTestRun(run);
+      if (run.phase !== "queued" && run.phase !== "running" && this.active.has(run.id)) return;
+      try { this.persistNow(run); } catch { /* Failure is latched and surfaced by shutdown. */ }
     }, LOG_PERSISTENCE_INTERVAL_MS);
     timeout.unref();
     this.logPersistence.set(run.id, timeout);
+  }
+
+  private checkpoint(run: TestRun): void {
+    try { this.persistNow(run); } catch { /* Latched, logged and surfaced by shutdown; still clean up owned processes. */ }
   }
 
   private persistNow(run: TestRun): void {
     const pending = this.logPersistence.get(run.id);
     if (pending) clearTimeout(pending);
     this.logPersistence.delete(run.id);
-    this.store.saveTestRun(run);
+    try { this.store.saveTestRun(run); }
+    catch (error) { this.recordPersistenceFailure(run, error); throw error; }
   }
 
   private notifyOutput(projectId: string): void {

@@ -3,7 +3,7 @@ import { type LogWriter } from "@/server/log-writer";
 import { resolveTestEnvironment } from "@/server/modules/environments";
 import type { StateStore } from "@/server/state-store";
 import type { ProjectTestCommandResolver } from "@/server/test-command";
-import type { TestJobManager } from "@/server/test-job-manager";
+import type { VerificationJobs } from "./verification-jobs";
 import type { Project, TestQueueStatus, TestRun, WorktreeTestPresets } from "@/shared/contracts";
 import { testProfileFor } from "../environments";
 import { type LifecycleAccess, type OperationActor } from "../lifecycle";
@@ -15,7 +15,7 @@ export class VerificationService {
     private readonly logs: Pick<LogWriter, "controller">,
     private readonly testCommands: Pick<ProjectTestCommandResolver, "resolve" | "discover">,
     private readonly lifecycle: LifecycleAccess,
-    private readonly tests?: Pick<TestJobManager, "status" | "setLimit" | "enqueue" | "cancel"> & Partial<Pick<TestJobManager, "configureSourceObserver" | "replay">>,
+    private readonly tests?: VerificationJobs,
   ) {
     if (this.git.observe && this.tests?.configureSourceObserver) {
       this.tests.configureSourceObserver(async (run) => this.lifecycle.serialized(run.projectId, async () => {
