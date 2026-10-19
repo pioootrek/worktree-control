@@ -1,3 +1,4 @@
+import type { TestSummaryEntry, TestHistoryCoverage } from "@/shared/contracts/verification-history";
 import type { DevServerTlsMode, EnvironmentProfile, LaunchPreset, Project, Reservation, ServerCapacitySettings, TestEnvironmentProfile, TestQueueSettings, TestRun, WorktreeStorageHistoryPoint, WorktreeStorageSnapshot } from "@/shared/contracts";
 
 export interface WorktreeStorageSample extends WorktreeStorageHistoryPoint {
@@ -47,7 +48,18 @@ export interface ReservationRequest {
   idempotencyKey?: string;
 }
 
+export interface TestHistoryPosition { queuedAt: string; runId: string }
+export interface TestHistoryScan {
+  projectId: string; from: string; to: string; before?: TestHistoryPosition; ceiling?: TestHistoryPosition;
+}
+export interface TestHistoryScanResult {
+  items: TestSummaryEntry[]; scanned: number; more: boolean;
+  last?: TestHistoryPosition; ceiling?: TestHistoryPosition;
+}
 export interface StateStore {
+  scanTestHistory(input: TestHistoryScan, scanLimit: number, accept: (entry: TestSummaryEntry) => boolean, matchLimit: number): TestHistoryScanResult;
+  getTestSummary(projectId: string, runId: string): TestSummaryEntry | null;
+  getTestHistoryCoverage(projectId: string): TestHistoryCoverage;
   listProjects(): Project[];
   getProject(id: string): Project | null;
   addProject(input: ProjectRegistration): Project;

@@ -7,7 +7,7 @@ import { KnowledgeService, type KnowledgeHistoryEntry, type KnowledgeHistoryOpti
 import { leaseTokenHash, type OperationActor, ProjectLifecycle } from "./modules/lifecycle";
 import { RuntimeService } from "./modules/runtime";
 import { StatusService, type CompactProjectStatus, type CompactTestStatus, type CompactEnvelope } from "./modules/status";
-import { VerificationService } from "./modules/verification";
+import { VerificationService, VerificationHistoryService } from "./modules/verification";
 
 import type {
   CacheDeletionResult,
@@ -62,6 +62,7 @@ export class ControlService {
   private readonly runtime: RuntimeService;
   private readonly environments: EnvironmentService;
   private readonly verification: VerificationService;
+  private readonly verificationHistory: VerificationHistoryService;
   private readonly dashboardQueries: DashboardQueryService;
   private readonly statusQueries: StatusService;
 
@@ -82,6 +83,7 @@ export class ControlService {
     this.storage?.assertLifecycle(this.lifecycle);
     this.runtime = new RuntimeService(store, git, processes, logs, commands, this.lifecycle);
     this.environments = new EnvironmentService(store, logs, this.lifecycle, this.runtime);
+    this.verificationHistory = new VerificationHistoryService(store);
     this.verification = new VerificationService(store, git, logs, testCommands, this.lifecycle, tests);
     this.dashboardQueries = new DashboardQueryService({
       store,
@@ -216,6 +218,11 @@ export class ControlService {
   cancelTest(runId: string, actor: OperationActor = { owner: "local-user" }): Promise<TestRun> {
     return this.verification.cancelTest(runId, actor);
   }
+
+  listTestHistory(input: unknown) { return this.verificationHistory.list(input); }
+  testRunSummary(input: unknown) { return this.verificationHistory.summary(input); }
+  testMetrics(input: unknown) { return this.verificationHistory.metrics(input); }
+  compareTestRuns(input: unknown) { return this.verificationHistory.compare(input); }
 
   testRun(runId: string): TestRun {
     return this.verification.testRun(runId);

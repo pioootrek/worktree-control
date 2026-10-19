@@ -137,6 +137,10 @@ list_worktrees
 list_test_presets
 run_test
 get_test_run
+list_test_runs
+get_test_run_summary
+get_test_metrics
+compare_test_runs
 get_test_run_status
 wait_for_status_change
 cancel_test_run
@@ -352,3 +356,22 @@ session itself closes; a client then starts a new session and must claim again.
 - Optional stdio compatibility proxy.
 - Client-specific configuration helpers beyond the generic JSON output.
 - Remote authorization and user accounts.
+
+## Retained verification analysis
+
+`list_test_runs`, `get_test_run_summary`, `get_test_metrics` and
+`compare_test_runs` read compact summaries without log tails, arguments or
+profile values. The existing `get_test_run` still requires retained detail.
+These tools share the verification runtime authority boundary; a project-scoped
+Knowledge credential cannot list or call them.
+
+History and metrics require a project and inclusive enqueue-time `from`/`to`
+interval of at most 31 days. History returns up to 50 summaries and scans at
+most 1,000 candidates per page. Follow `nextCursor` even if filters produced an
+empty page. Metrics analyze at most the newest 5,000 candidates before filters,
+reporting truncation and project retention coverage. Missing durations remain
+null and censored outcomes have separate populations. Comparison reports
+identity differences and duration deltas without inferring duplicate tests,
+flakiness or equivalent environments. CPU/RSS and runner lock waiting remain
+unavailable. The [API contract](verification-history-api.md) defines the exact
+filters, statistical method, HTTP equivalents and cursor consistency.

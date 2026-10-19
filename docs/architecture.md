@@ -239,7 +239,12 @@ same owner connection and transaction as each run checkpoint. Migration 29
 backfills only retained details with `legacy_unknown` timing; pruned history
 cannot be reconstructed. Project removal cascades both summaries and coverage
 accounting under the existing project operation. `get_test_run` supplies additive
-`telemetry` for retained runs; historical summary reads belong to stage 2.
+`telemetry` for retained runs. `VerificationHistoryService` supplies retained
+summary history, single-summary lookup, metrics and comparison through the
+`ControlService` facade to HTTP and MCP. It uses the same runtime authentication
+boundary as verification detail reads; scoped Knowledge grants do not authorize
+verification. See [verification history API](verification-history-api.md) for
+filters, keyset consistency, statistics and query limits.
 
 Telemetry uses wall timestamps for correlation and same-controller monotonic
 intervals for duration. `admittedAt` ends queue residence and begins preparation;
