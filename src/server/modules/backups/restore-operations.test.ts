@@ -1,5 +1,6 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SqliteStateStore } from "@/server/sqlite-store";
 import { requestControllerRestore } from "@/server/restore-requests";
@@ -11,7 +12,7 @@ import { RestoreOperations, recoverBackupHandoff, finishBackupHandoff, assertBac
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 async function fixture(restartFailure?: string) {
-  const root = mkdtempSync(join(dirname(process.cwd()), ".s4a-restore-")), database = join(root, "state.sqlite3"), attachments = join(root, "attachments");
+  const root = mkdtempSync(join(tmpdir(), ".s4a-restore-")), database = join(root, "state.sqlite3"), attachments = join(root, "attachments");
   const store = new SqliteStateStore(database), authentication = new AuthenticationService(store);
   const oldToken = authentication.generateToken("fixture").token;
   const identity = new IdentityService(store, undefined, undefined, undefined, authentication);

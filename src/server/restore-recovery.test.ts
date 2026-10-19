@@ -4,11 +4,12 @@ import { once } from "node:events";
 import * as fs from "node:fs";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "./controller-backup";
-import { acquireDatabaseOwnership, SqliteStateStore } from "./infrastructure/sqlite";
+import { acquireDatabaseOwnership, SqliteStateStore, SUPPORTED_SCHEMA_VERSION } from "./infrastructure/sqlite";
 import { IdentityService } from "./modules/identity";
 import { KnowledgeAttachmentService, KnowledgeService } from "./modules/knowledge";
 import { BACKUP_LIMITS, hashFile } from "./infrastructure/sqlite";
@@ -21,7 +22,7 @@ afterEach(() => { vi.restoreAllMocks(); roots.splice(0).forEach(root => rmSync(r
 const actor = { actorId: "operator", backupId: "catalog-one", idempotencyKey: "confirmed-one" };
 const bytes = Buffer.from("new attachment bytes"), sha = createHash("sha256").update(bytes).digest("hex");
 async function fixture() {
-  const root = mkdtempSync(join(dirname(process.cwd()), ".restore-crash-")); roots.push(root);
+  const root = mkdtempSync(join(tmpdir(), ".restore-crash-")); roots.push(root);
   const source = join(root, "source.sqlite3"), database = join(root, "state.sqlite3"), attachments = join(root, "attachments"), backup = join(root, "backup");
   const store = new SqliteStateStore(source);
   try {
@@ -141,7 +142,7 @@ describe("strict restore validation before replacement", () => {
       if (invalid === "duplicate") manifest.attachments.push(manifest.attachments[0]);
       if (invalid === "type") manifest.database.size = String(manifest.database.size);
       if (invalid === "unknown") manifest.command = "unexpected";
-      if (invalid === "version") manifest.database.schemaVersion = 29;
+      if (invalid === "version") manifest.database.schemaVersion = SUPPORTED_SCHEMA_VERSION + 1;
       if (invalid === "size") manifest.database.size = BACKUP_LIMITS.fileBytes + 1;
       if (invalid === "hash") manifest.database.sha256 = "0".repeat(64);
       if (invalid === "incomplete") manifest.attachments = [];

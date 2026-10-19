@@ -1,7 +1,8 @@
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { expect, it } from "vitest";
 import { SqliteStateStore } from "@/server/sqlite-store";
@@ -9,7 +10,7 @@ import { AuthenticationService } from "@/server/modules/authentication";
 import { BackupOperations, backupPolicySchema, finishBackupHandoff, recoverBackupHandoff } from "./index";
 
 it.each(["requested", "maintenance", "closed", "executing", "restore-intent", "restore-verified", "receipt"])("SIGKILL at %s keeps an old complete generation or resumes exactly one fenced restore", async point => {
-  const root = mkdtempSync(join(dirname(process.cwd()), ".s4a-handoff-crash-")), database = join(root, "state.sqlite3"), attachments = join(root, "attachments");
+  const root = mkdtempSync(join(tmpdir(), ".s4a-handoff-crash-")), database = join(root, "state.sqlite3"), attachments = join(root, "attachments");
   const policy = backupPolicySchema.parse({ directory: join(root, "copies"), uiActions: ["create", "restore"] });
   const source = new SqliteStateStore(database), auth = new AuthenticationService(source), oldToken = auth.generateToken("fixture").token;
   source.addProject({ name: "Before", repositoryPath: root, port: 4440, executable: "node", args: [] });

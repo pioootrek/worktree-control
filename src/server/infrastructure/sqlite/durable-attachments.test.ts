@@ -1,7 +1,8 @@
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { IdentityService } from "@/server/modules/identity";
@@ -14,7 +15,7 @@ afterEach(() => roots.splice(0).forEach(root => rmSync(root, { recursive: true, 
 describe("attachment publication process interruption", () => {
   for (const operation of ["upload", "hub", "project"]) {
     it.each(["before-file", "after-file", "before-commit"])(`${operation} recovers after SIGKILL at %s without a missing committed object`, async point => {
-      const root = mkdtempSync(join(dirname(process.cwd()), ".attachment-crash-")); roots.push(root);
+      const root = mkdtempSync(join(tmpdir(), ".attachment-crash-")); roots.push(root);
       const child = fork(fileURLToPath(new URL("./fixtures/attachment-crash-worker.ts", import.meta.url)), [root, operation, point], {
         execArgv: ["--import", "tsx"], stdio: ["ignore", "ignore", "pipe", "ipc"],
       });
