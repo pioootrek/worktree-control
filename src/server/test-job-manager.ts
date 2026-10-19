@@ -169,7 +169,9 @@ export class TestJobManager {
       return this.store.getTestRun(run.id) ?? run;
     }
     if (!active || run.phase !== "running") return run;
-    if (!active.exited) {
+    // A timeout that already initiated teardown remains the stop cause, even
+    // when cancellation or shutdown arrives before the process exits.
+    if (!active.exited && !active.timedOut) {
       active.cancellationRequested = true;
       active.run.telemetry!.termination = "cancel";
       this.telemetry.mark(active.run, "stopRequestedAt");
