@@ -251,7 +251,9 @@ sampling ends conservatively because group continuity cannot be established.
 RSS is sampled summed process RSS, and
 CPU describes only deltas between observed matching generations (100% is one
 core), never complete job totals. Missing/partial/unsupported/legacy quality
-and denominators travel with the peaks. No cgroups, resource enforcement or
+and denominators travel with the peaks. Explained churn and final-read gaps
+permit descriptive comparisons; identity/read integrity failures exclude both
+resource deltas and counter gaps exclude CPU deltas. No cgroups, resource enforcement or
 exporter is introduced. See [resource semantics](verification-history-api.md#passive-per-run-resources).
 `VerificationHistoryService` supplies retained
 summary history, single-summary lookup, metrics and comparison through the

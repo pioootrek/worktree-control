@@ -75,6 +75,8 @@ export interface ProcessGroupSnapshot {
   cpuCount: number;
   observedAtMs: number;
   incomplete: boolean;
+  /** A process vanished during global stat enumeration; membership is unknown. */
+  processChurn?: boolean;
 }
 export interface OwnedResourceIdentity {
   pid: number;
@@ -94,7 +96,7 @@ export interface OwnedResourceSampler {
  */
 export class LinuxProcessResourceSampler implements ProcessResourceSampler, OwnedResourceSampler {
   readonly supported = process.platform === "linux";
-  private scan: Promise<{ records: ProcessStat[]; hostCpuTicks: number; cpuCount: number; observedAtMs: number; incomplete: boolean }> | null = null;
+  private scan: Promise<{ records: ProcessStat[]; hostCpuTicks: number; cpuCount: number; observedAtMs: number; incomplete: boolean; processChurn: boolean }> | null = null;
   private scanAt = -Infinity;
   private scanGeneration = 0;
   private cachedGeneration = 0;
@@ -145,7 +147,7 @@ export class LinuxProcessResourceSampler implements ProcessResourceSampler, Owne
     const ids = entries.filter(entry => entry.isDirectory() && /^\d+$/.test(entry.name)).map(entry => entry.name);
     if (ids.length > 32768) throw new Error("Process enumeration exceeds the read limit.");
     const records: ProcessStat[] = [];
-    let next = 0, incomplete = false;
+    let next = 0, incomplete = false, processChurn = false;
     let recordError: ProcessRecordTooLargeError | undefined;
     await Promise.all(Array.from({ length: Math.min(8, ids.length) }, async () => {
       while (next < ids.length) {
@@ -154,8 +156,10 @@ export class LinuxProcessResourceSampler implements ProcessResourceSampler, Owne
           const stat = await this.read(async buffer => parseProcessStat(await readProcessFile(`/proc/${id}/stat`, buffer)));
           if (stat) records.push(stat); else incomplete = true;
         } catch (error) {
-          // Even disappearing unrelated processes leave scan completeness unknown.
-          incomplete = true;
+          // ENOENT is expected global churn, with unknown membership. Other
+          // errors leave integrity uncertain and must not qualify comparisons.
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") processChurn = true;
+          else incomplete = true;
           if (error instanceof ProcessRecordTooLargeError) recordError ??= error;
         }
       }
@@ -163,7 +167,7 @@ export class LinuxProcessResourceSampler implements ProcessResourceSampler, Owne
     if (recordError) throw recordError;
     const hostCpuTicks = parseHostCpuTicks(hostStat);
     if (!Number.isFinite(hostCpuTicks)) throw new Error("Host CPU counters unavailable.");
-    return { records, hostCpuTicks, cpuCount: Math.max(1, cpus().length), observedAtMs: performance.now(), incomplete };
+    return { records, hostCpuTicks, cpuCount: Math.max(1, cpus().length), observedAtMs: performance.now(), incomplete, processChurn };
   }
 
   async snapshot(processGroupId: number, minimumScanGeneration = 0): Promise<ProcessGroupSnapshot> {
@@ -192,7 +196,7 @@ export class LinuxProcessResourceSampler implements ProcessResourceSampler, Owne
       }
     }));
     if (recordError) throw recordError;
-    return { members, hostCpuTicks: scan.hostCpuTicks, cpuCount: scan.cpuCount, observedAtMs: scan.observedAtMs, incomplete };
+    return { members, hostCpuTicks: scan.hostCpuTicks, cpuCount: scan.cpuCount, observedAtMs: scan.observedAtMs, incomplete, processChurn: scan.processChurn };
   }
 
   private readonly runtimeSamples = new Map<number, Promise<RawResourceSample>>();

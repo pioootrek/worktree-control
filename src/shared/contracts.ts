@@ -120,7 +120,8 @@ export interface TestRunResources {
 }
 export type TestResourceReason = "not_started" | "legacy_unknown" | "unsupported" | "identity_unavailable"
   | "identity_lost" | "read_failed" | "incomplete_scan" | "membership_changed" | "counter_gap"
-  | "no_cpu_interval" | "inflight_discarded" | "controller_interrupted";
+  | "no_cpu_interval" | "inflight_discarded" | "controller_interrupted"
+  | "process_churn" | "group_exited";
 
 /** Bounded history without command arguments, environment values, log tails or free-form errors. */
 export interface TestRunSummary {

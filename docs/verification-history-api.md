@@ -152,9 +152,18 @@ or external services. Profile digests identify policy selection, not secret
 values. No comparison declares flaky tests, unnecessary repeats or equivalent
 environments. Resource comparisons return `left`, `right` and right-minus-left
 `delta`, labelled `descriptive_sampled_peaks_only`. Deltas require both runs in
-`completed_execution`, both resource states `sampled`, and identical source and
-interval. Otherwise deltas are null while individually observed peaks remain
-visible. Matching cadence does not ensure matching coverage or workload.
+`completed_execution`, compatible version/source/coverage/CPU normalization,
+and identical positive intervals. States may be `sampled` or an explained
+`partial`. Membership changes, vanished processes during global enumeration,
+an observed empty group after child exit, and a discarded final in-flight read
+permit descriptive deltas while preserving all quality reasons and counts.
+These gaps do not establish complete coverage. Identity loss, read failures,
+incomplete scans, controller interruption, unknown reasons and unexplained old
+partial summaries exclude both deltas. Counter gaps exclude CPU deltas but
+permit RSS; no CPU interval leaves only the RSS delta available. Old stored
+`incomplete_scan` reasons remain excluded because they do not distinguish
+process churn from read failures. Individually observed peaks remain visible.
+Matching cadence does not ensure matching coverage or workload.
 Runner wait remains unavailable.
 
 ## Passive per-run resources
@@ -170,6 +179,9 @@ The observer starts only from a freshly spawned detached child and captures
 its `/proc/PID/stat` start ticks. Each accepted snapshot must contain that
 same leader generation or a previously observed surviving member generation.
 A reused leader or loss of every known member permanently ends observation.
+An empty, readable group after the spawned child exited ends observation with
+`group_exited` when earlier samples established ownership. It adds no zero
+sample and does not accept an unanchored nonempty group.
 PID/PGID alone and persisted PIDs never establish sampling identity. Children
 that leave the process group are outside coverage. Process stopping keeps its
 existing ownership and retry behavior.
@@ -183,7 +195,11 @@ not a promise of exactly one sample per second. `firstSampledAt`,
 the largest observed group. `status` is `pending`, `sampled`, `partial`,
 `unavailable`, `unsupported` or `legacy_unknown`. `sampled` means no detected
 read/identity gaps, not complete temporal coverage. Bounded `reasons` report
-gaps, churn, identity loss and interrupted/discarded reads.
+gaps, churn, identity loss and interrupted/discarded reads. `process_churn`
+means an enumerated process vanished before its stat read, with unknown group
+membership. It makes coverage partial without claiming a read integrity error.
+Missing/unreadable owned candidates during RSS/stat validation and other global
+read failures retain `incomplete_scan`, which excludes comparison deltas.
 
 `peakSampledRssBytes` is the largest sampled sum of member RSS. Shared resident
 pages count once per process, so the sum can double count memory. Reads are
@@ -193,8 +209,9 @@ page-cache accounting nor a complete job peak.
 
 CPU uses only nonnegative deltas between adjacent observations of the same
 PID **and start ticks**. New/dead/reused members never add or subtract lifetime
-CPU counters. Missing snapshots break the CPU interval. Valid member deltas
-are summed and divided by host CPU-tick deltas, multiplied by the logical CPU
+CPU counters. Missing snapshots break the CPU interval. Any regressed or
+invalid counter discards the entire interval, including other valid pairs, and
+requires fresh endpoints before another CPU interval. Valid member deltas are summed and divided by host CPU-tick deltas, multiplied by the logical CPU
 count; 100% represents one core and values may exceed 100%.
 `peakSampledCpuPercent` is the largest observed interval value,
 `cpuIntervalCount` its denominator and `observedCpuWindowMs` the sum of these

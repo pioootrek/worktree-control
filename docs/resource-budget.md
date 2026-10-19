@@ -190,8 +190,10 @@ open process-file readers globally, reusing eight 8 KiB buffers, with at most
 256 waiting readers, 32,768 enumerated records and 4,096 candidate members per
 group. Over-budget scans fail as missing measurements. RSS is read only for
 requested group members and followed by another stat read to reject identity
-changes during the read. Disappearing/unreadable records make job snapshots
-partial. Oversized records reject the sample. Repeated runtime ticks coalesce
+changes during the read. Vanished processes during global stat enumeration
+mark coverage partial with `process_churn`; their membership is unknown.
+Other global read failures and missing/unreadable owned RSS/stat candidates
+remain `incomplete_scan`. Oversized records reject the sample. Repeated runtime ticks coalesce
 while a previous sample is pending; finite jobs schedule their next attempt
 only after the preceding one completes.
 
@@ -223,7 +225,13 @@ fresh Node workers: baseline, one sampled group and three sampled groups. All
 arms have three idle two-process fixture groups, six one-second intervals and
 an initial sample. It records each RSS point, user+system CPU, actual elapsed
 time, scan latency, environment/load and baseline deltas. Cleanup uses only
-freshly spawned owned groups and failure fails the probe. It starts no server
+freshly spawned owned groups. SIGTERM/SIGINT request cancellation in both
+parent and worker; the parent awaits worker termination and the worker awaits
+all group cleanup attempts, even if one fails. Interruption and cleanup failure
+exit unsuccessfully without reporting confirmed probe cleanup. Fixtures have
+20-second lifetimes and close when their worker pipe disappears. These provide
+bounded fallback after abrupt worker death, not synchronous SIGKILL cleanup or
+an OS failure guarantee. It starts no server
 or service and touches no supervised project. This short sampler-only probe
 cannot certify controller release budgets, database/UI overhead, busy child
 churn, accuracy, or long-duration behavior. Keep the full JSON and all runs;

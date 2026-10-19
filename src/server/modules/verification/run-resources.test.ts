@@ -47,6 +47,21 @@ describe("per-generation observed resources", () => {
     expect(summary.reasons).toContain("counter_gap");
     expect(summary.peakSampledCpuPercent).toBeNull();
   });
+
+  it.each(["regressed", "nonfinite", "host_gap", "clock_gap", "cpu_count"])("discards a %s interval and primes fresh endpoints before recovery", mode => {
+    const summary = emptyRunResources("pending"), a = new RunResourceAccumulator(summary, { pid: 42, startTicks: 100 });
+    a.add(snapshot([member(), member(43, 101)]), "t0");
+    const broken = snapshot([member(42, 100, mode === "regressed" ? 4 : mode === "nonfinite" ? NaN : 15), member(43, 101, 15)], 1000);
+    if (mode === "host_gap") broken.hostCpuTicks = 100;
+    if (mode === "clock_gap") broken.observedAtMs = 0;
+    if (mode === "cpu_count") broken.cpuCount = 4;
+    a.add(broken, "t1");
+    a.add(snapshot([member(42, 100, 25), member(43, 101, 25)], 2000), "t2");
+    expect(summary).toMatchObject({ cpuIntervalCount: 0, peakSampledCpuPercent: null, peakSampledRssBytes: 200 });
+    a.add(snapshot([member(42, 100, 35), member(43, 101, 35)], 3000), "t3");
+    expect(summary).toMatchObject({ cpuIntervalCount: 1, observedCpuWindowMs: 1000, peakSampledCpuPercent: 40 });
+    expect(summary.reasons).toContain("counter_gap");
+  });
 });
 
 function sampler(): OwnedResourceSampler {

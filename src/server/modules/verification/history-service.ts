@@ -133,7 +133,7 @@ export class VerificationHistoryService {
       timings[key] = { leftMs, rightMs, deltaMs: leftMs === null || rightMs === null ? null : rightMs - leftMs };
     }
     if (durations.some(k => timings[k].deltaMs === null)) caveats.push("Missing timing observations remain null; no duration is inferred from wall timestamps.");
-    caveats.push("Resources are sampled peaks of summed RSS and observed per-generation CPU deltas (100% = one core), not complete job totals. Shared pages, missed processes/peaks and variable coverage limit comparisons. Partial, missing, incompatible-cadence and censored runs have null resource deltas.");
+    caveats.push("Resources are sampled peaks of summed RSS and observed per-generation CPU deltas (100% = one core), not complete job totals. Shared pages, missed processes/peaks and variable coverage limit comparisons. Explained membership/process churn, observed group exit and discarded final reads permit descriptive deltas with partial coverage. Identity/read failures, unknown quality, incompatible source/cadence and censored runs have null resource deltas; counter gaps exclude CPU deltas only. Inspect each summary's reasons and sample/interval counts.");
     return { left, right, differences, timings, populations, caveats,
       resources: compareResources(a, b, populations.left === "completed_execution" && populations.right === "completed_execution") };
   }

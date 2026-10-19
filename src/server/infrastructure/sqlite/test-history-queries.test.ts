@@ -331,12 +331,16 @@ async function transports() {
 describe("HTTP/MCP verification history parity through real handlers", () => {
   it("shares validated history, metrics, comparison and pruned-summary semantics", async () => {
     const f = await transports(), a = f.run(), b = f.run();
-    a.telemetry!.resources = { ...emptyRunResources("partial", 1000), sampleCount: 2, peakSampledRssBytes: 1234, missingSampleCount: 1 };
+    a.telemetry!.resources = { ...emptyRunResources("partial", 1000), sampleCount: 2, peakSampledRssBytes: 1234, missingSampleCount: 1,
+      cpuIntervalCount: 1, peakSampledCpuPercent: 20, reasons: ["membership_changed", "process_churn", "group_exited"] };
+    b.telemetry!.resources = { ...a.telemetry!.resources, peakSampledRssBytes: 2234, peakSampledCpuPercent: 40, reasons: ["inflight_discarded"] };
     a.queuedAt = f.at(-1); f.store.saveTestRun(a); f.store.saveTestRun(b);
     for (let i = 0; i < 50; i++) f.store.saveTestRun(f.run({ queuedAt: f.at(120_000 + i) }));
     expect(f.service.testRunSummary({ projectId: f.project.id, runId: a.id }).detailAvailable).toBe(false);
     expect(() => f.service.testRun(a.id)).toThrow("Nie znaleziono uruchomienia testu.");
     expect((await f.client.callTool({ name: "get_test_run", arguments: { runId: a.id } })).isError).toBe(true);
+    expect(f.history.compare({ projectId: f.project.id, leftRunId: a.id, rightRunId: b.id }).resources).toMatchObject({ rss: { delta: 1000 }, cpu: { delta: 20 } });
+    expect(f.history.summary({ projectId: f.project.id, runId: a.id }).summary.telemetry.resources).toEqual(a.telemetry!.resources);
     const { projectId: _projectId, ...query } = f.filter; void _projectId;
     const pairs = [
       ["test-runs", "list_test_runs", query], ["test-metrics", "get_test_metrics", query],

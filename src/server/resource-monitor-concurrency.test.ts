@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const fixture = vi.hoisted(() => ({ active: 0, peak: 0, reads: 0, scans: 0, spawned: false, pauseListing: null as (() => Promise<void>) | null, hostTicks: 10, buffers: new Set<Buffer>(), recordPath: "", recordSize: 0, reusedPid: 0, missingRssPid: 0, statReads: new Map<number, number>() }));
+const fixture = vi.hoisted(() => ({ active: 0, peak: 0, reads: 0, scans: 0, spawned: false, pauseListing: null as (() => Promise<void>) | null, hostTicks: 10, buffers: new Set<Buffer>(), recordPath: "", recordSize: 0, reusedPid: 0, missingRssPid: 0, missingStatCode: "ENOENT", statReads: new Map<number, number>() }));
 vi.mock("node:fs/promises", () => ({
   readdir: async () => {
     fixture.scans++;
@@ -16,7 +16,7 @@ vi.mock("node:fs/promises", () => ({
   open: async (path: string) => {
     const pid = Number(path.split("/")[2]);
     if (path.endsWith("/stat")) { fixture.reads++; fixture.statReads.set(pid, (fixture.statReads.get(pid) ?? 0) + 1); }
-    if (pid === 3) throw Object.assign(new Error("process exited"), { code: "ENOENT" });
+    if (pid === 3) throw Object.assign(new Error("process unavailable"), { code: fixture.missingStatCode });
     const fields = Array<string>(20).fill("0");
     fields[0] = "S"; fields[2] = pid > 120 ? "121" : pid <= 2 ? "42" : "99";
     fields[11] = "10"; fields[12] = "5"; fields[19] = pid === fixture.reusedPid && (fixture.statReads.get(pid) ?? 0) > 1 ? "999" : "100";
@@ -54,6 +54,7 @@ describe.skipIf(process.platform !== "linux")("bounded process inspection", () =
     fixture.active = 0; fixture.peak = 0; fixture.reads = 0; fixture.scans = 0;
     fixture.spawned = false; fixture.pauseListing = null; fixture.hostTicks = 10;
     fixture.buffers.clear(); fixture.recordPath = ""; fixture.recordSize = 0; fixture.reusedPid = 0; fixture.missingRssPid = 0; fixture.statReads.clear();
+    fixture.missingStatCode = "ENOENT";
   });
   afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
@@ -109,7 +110,7 @@ describe.skipIf(process.platform !== "linux")("bounded process inspection", () =
     const sampler = new LinuxProcessResourceSampler();
     const samples = await Promise.all([sampler.snapshot(42), sampler.snapshot(99), sampler.sample(42)]);
     expect(fixture.scans).toBe(1);
-    expect(samples[0]).toMatchObject({ members: expect.any(Array), incomplete: true });
+    expect(samples[0]).toMatchObject({ members: expect.any(Array), incomplete: false, processChurn: true });
     expect(fixture.peak).toBeLessThanOrEqual(8);
     expect(fixture.active).toBe(0);
     expect(fixture.buffers.size).toBe(8);
@@ -123,6 +124,14 @@ describe.skipIf(process.platform !== "linux")("bounded process inspection", () =
     expect(sample.incomplete).toBe(true);
     expect(sample.members.map(m => m.pid)).toEqual([2]);
     expect(sample.members[0].rssBytes).toBe(123 * 1024);
+    expect(fixture.active).toBe(0);
+  });
+
+  it("keeps non-ENOENT enumeration errors distinct from vanished-process coverage", async () => {
+    fixture.missingStatCode = "EACCES";
+    const sample = await new LinuxProcessResourceSampler().snapshot(42);
+    expect(sample).toMatchObject({ incomplete: true, processChurn: false });
+    expect(sample.members).toHaveLength(2);
     expect(fixture.active).toBe(0);
   });
 

@@ -28,12 +28,23 @@ export function resourceMetrics(groups: Record<TestMetricPopulation, TestRunSumm
 }
 export function compareResources(a: TestRunSummary, b: TestRunSummary, completed: boolean): TestRunComparison["resources"] {
   const left = a.telemetry.resources ?? emptyRunResources(), right = b.telemetry.resources ?? emptyRunResources();
-  const compatible = completed && left.status === "sampled" && right.status === "sampled"
-    && left.intervalMs === right.intervalMs && left.source === right.source;
+  const compatible = completed && left.intervalMs !== null && left.intervalMs > 0 && left.intervalMs === right.intervalMs
+    && left.version === right.version && left.source === right.source
+    && left.coverage === right.coverage && left.cpuNormalization === right.cpuNormalization;
   const metric = (key: "peakSampledRssBytes" | "peakSampledCpuPercent") => {
     const l = value(left, key), r = value(right, key);
-    return { left: l, right: r, delta: compatible && l !== null && r !== null ? r - l : null,
+    return { left: l, right: r, delta: compatible && comparable(left, key) && comparable(right, key) && l !== null && r !== null ? r - l : null,
       interpretation: "descriptive_sampled_peaks_only" as const };
   };
   return { cpu: metric("peakSampledCpuPercent"), rss: metric("peakSampledRssBytes"), runnerWait: "unavailable" };
+}
+
+function comparable(s: TestRunResources, key: "peakSampledRssBytes" | "peakSampledCpuPercent"): boolean {
+  if (s.status !== "sampled" && s.status !== "partial") return false;
+  if (s.status === "partial" && !s.reasons.length) return false;
+  // Allow only explained sampling coverage gaps. Old incomplete_scan records
+  // remain conservative because they cannot distinguish churn from read errors.
+  return s.reasons.every(reason => reason === "membership_changed" || reason === "process_churn"
+    || reason === "group_exited" || reason === "inflight_discarded"
+    || (key === "peakSampledRssBytes" && (reason === "counter_gap" || reason === "no_cpu_interval")));
 }

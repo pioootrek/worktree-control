@@ -37,30 +37,34 @@ export class RunResourceAccumulator {
     const s = this.summary;
     const members = snapshot.members;
     const current = new Map(members.map(m => [m.pid, m.startTicks]));
-    let partial = snapshot.incomplete;
+    let partial = snapshot.incomplete || !!snapshot.processChurn;
     if (snapshot.incomplete) resourceReason(s, "incomplete_scan");
+    if (snapshot.processChurn) resourceReason(s, "process_churn");
     const previous = this.previous;
+    let counterGap = false;
     if (previous) {
       const previousMembers = new Map(previous.members.map(m => [m.pid, m]));
       const changed = current.size !== this.known.size || members.some(m => this.known.get(m.pid) !== m.startTicks);
       if (changed) { partial = true; resourceReason(s, "membership_changed"); }
       const hostDelta = snapshot.hostCpuTicks - previous.hostCpuTicks;
       const elapsed = snapshot.observedAtMs - previous.observedAtMs;
-      let ticks = 0, pairs = 0;
+      let ticks = 0, pairs = 0, invalidCounter = false;
       for (const member of members) {
         const before = previousMembers.get(member.pid);
         if (!before || before.startTicks !== member.startTicks) continue;
         const delta = member.cpuTicks - before.cpuTicks;
-        if (delta < 0) { partial = true; resourceReason(s, "counter_gap"); continue; }
+        if (!Number.isFinite(delta) || delta < 0) { invalidCounter = true; continue; }
         ticks += delta; pairs++;
       }
-      if (pairs && hostDelta > 0 && elapsed > 0 && snapshot.cpuCount === previous.cpuCount) {
+      if (!invalidCounter && pairs && Number.isFinite(hostDelta) && hostDelta > 0 && Number.isFinite(elapsed) && elapsed > 0
+        && snapshot.cpuCount > 0 && snapshot.cpuCount === previous.cpuCount) {
         const percent = ticks / hostDelta * snapshot.cpuCount * 100;
         if (Number.isFinite(percent)) {
           s.peakSampledCpuPercent = Math.max(s.peakSampledCpuPercent ?? 0, percent);
           s.cpuIntervalCount++; s.observedCpuWindowMs += elapsed;
-        }
-      } else { partial = true; resourceReason(s, "counter_gap"); }
+        } else counterGap = true;
+      } else counterGap = true;
+      if (counterGap) { partial = true; resourceReason(s, "counter_gap"); }
     }
     const rss = members.reduce((sum, m) => sum + m.rssBytes, 0);
     s.peakSampledRssBytes = Math.max(s.peakSampledRssBytes ?? 0, rss);
@@ -69,7 +73,7 @@ export class RunResourceAccumulator {
     if (partial) s.partialSampleCount++;
     s.firstSampledAt ??= wallNow; s.lastSampledAt = wallNow;
     s.status = s.partialSampleCount || s.missingSampleCount ? "partial" : "sampled";
-    this.known = current; this.previous = snapshot;
+    this.known = current; this.previous = counterGap ? null : snapshot;
     return true;
   }
 }
@@ -119,6 +123,12 @@ export function observeRunResources(
       }
       const snapshot = await sampler.snapshot(pid, minimumScanGeneration);
       if (stopped) return;
+      // No peak is added for an empty group after the spawned child exited.
+      // An unanchored nonempty/reused group or an incomplete read still fails
+      // identity validation, even after leader exit.
+      if (summary.sampleCount && !snapshot.members.length && !snapshot.incomplete && !isSpawnedChild()) {
+        accumulator.missing("group_exited"); inflight = false; stop(); notify(); return;
+      }
       if (!accumulator.add(snapshot, wallNow())) {
         inflight = false; stop(); notify(); return;
       }
