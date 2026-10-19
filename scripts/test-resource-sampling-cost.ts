@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
 import { cpus, loadavg, release } from "node:os";
 import { fileURLToPath } from "node:url";
-import { LinuxProcessResourceSampler } from "../src/server/resource-monitor";
+import { LinuxProcessResourceSampler, type OwnedResourceIdentity } from "../src/server/resource-monitor";
 import { OwnedProcessGroup } from "../src/server/owned-process-group";
 
 const intervals = 6, intervalMs = 1000, repeats = 3;
@@ -22,7 +22,7 @@ async function worker(mode: string) {
     }
     await sleep(300);
     const pids = children.map(child => child.pid!);
-    const identities = [];
+    const identities: OwnedResourceIdentity[] = [];
     for (const pid of pids) identities.push(await sampler.capture(pid));
     const hostProcessCount = readdirSync("/proc").filter(name => /^\d+$/.test(name)).length;
     const cpu = process.cpuUsage(), start = performance.now(), samples = [], scanMs = [];
