@@ -681,6 +681,26 @@ export function createControllerServer(options: {
           json(response, 200, { testQueue });
           return;
         }
+        const testHistoryMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/(test-runs|test-metrics|test-run-comparison)(?:\/([^/]+))?$/);
+        if (request.method === "GET" && testHistoryMatch) {
+          const [, encodedProject, operation, encodedRun] = testHistoryMatch;
+          const projectId = decodeURIComponent(encodedProject);
+          if (url.search.length > 8192) throw new Error("Invalid verification history request.");
+          const input: Record<string, unknown> = { projectId };
+          for (const [key, value] of url.searchParams) {
+            if (key === "projectId" || key === "runId" || Object.hasOwn(input, key)) throw new Error("Invalid verification history request.");
+            input[key] = key === "limit" && /^\d{1,2}$/.test(value) ? Number(value)
+              : key === "dirty" && (value === "true" || value === "false") ? value === "true" : value;
+          }
+          let result;
+          if (encodedRun && operation === "test-runs") result = options.service.testRunSummary({ ...input, runId: decodeURIComponent(encodedRun) });
+          else if (encodedRun) throw new Error("Invalid verification history request.");
+          else if (operation === "test-runs") result = options.service.listTestHistory(input);
+          else if (operation === "test-metrics") result = options.service.testMetrics(input);
+          else result = options.service.compareTestRuns(input);
+          json(response, 200, result);
+          return;
+        }
         const testRunMatch = url.pathname.match(/^\/api\/test-runs\/([^/]+)$/);
         if (request.method === "GET" && testRunMatch) {
           const run = options.service.testRun(decodeURIComponent(testRunMatch[1]));

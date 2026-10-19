@@ -153,3 +153,30 @@ acceptance still needs its browser and owner-workflow evidence.
 Measured evidence for the implementation incorporating PR #20 is recorded in
 [the 2026-09-09 acceptance report](backlog/notes/NOTE-20260909-controller-resource-budget/findings.md),
 including raw samples, failed candidates, margin and the negative control.
+
+## Verification history reads
+
+Summary analysis borrows the existing SQLite connection. Project/enqueue-time
+range reads use `test_summaries_project_history`; there is no analytics database
+or background scanner. A history page parses at most 1,000 summary candidates
+and stops earlier after 50 matches. Metrics parse at most 5,000 candidates,
+then calculate exact per-run percentiles in memory. Both permit one additional
+unparsed lookahead row. Single-summary reads use the primary run ID index and
+check project identity; comparison performs two such lookups. Detailed-run
+availability uses indexed existence checks without decoding log tails.
+
+The enqueue-time window is at most 31 days. Each summary has the existing
+8 KiB serialized budget, giving a history page at most 400 KiB of compact
+summary JSON plus wrappers and coverage. MCP pretty-printing adds whitespace.
+Metrics can examine at most 40 MiB of serialized summary payload per request;
+JavaScript object and sorting overhead are additional bounded costs. Results
+contain only fixed outcome/population/duration groups. The limit applies before
+identity filters, so a rare filter can yield an empty, truncated selection.
+Every response exposes the relevant selection and retention limits. These are
+logical budgets; they do not claim a physical SQLite disk or process RSS cap.
+
+The isolated SQLite verification fixture exercises 5,000 summaries per project
+and 50,000 globally, prints query plans, elapsed times and response sizes, and
+asserts indexed access and candidate limits without a machine-speed threshold.
+See [verification history API](verification-history-api.md) for consistency and
+statistical semantics. Existing summary retention policy remains unchanged.

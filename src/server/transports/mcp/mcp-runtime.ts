@@ -1,3 +1,4 @@
+import { testHistorySchema, testMetricsSchema, testSummarySchema, testComparisonSchema } from "@/server/modules/verification";
 import type { McpDiagnosticsSnapshot, McpSessionDiagnostics } from "@/shared/contracts/mcp-diagnostics";
 import { registerKnowledgeTools } from "./knowledge-tools";
 import { McpDiagnostics, type McpSessionObservation, type McpCloseReason } from "../../mcp-diagnostics";
@@ -568,6 +569,27 @@ export class McpRuntime {
       const run = await english(() => this.service.testRun(runId));
       return jsonContent({ ...run, error: run.error ? localizeServerMessage(run.error, "en") : null });
     });
+
+    server.registerTool("list_test_runs", {
+      description: "Page retained compact summaries by enqueue time [from,to], maximum 31 days. Exact filters; up to 50 results, 1000 scanned candidates. Follow nextCursor even on an empty filtered page. Live keyset, not a snapshot; retention can remove rows.",
+      inputSchema: testHistorySchema,
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    }, async input => jsonContent(await english(() => this.service.listTestHistory(input))));
+    server.registerTool("get_test_run_summary", {
+      description: "Read one retained compact summary within a project, even after detailed test-run pruning. No logs or raw command/environment data.",
+      inputSchema: testSummarySchema,
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    }, async input => jsonContent(await english(() => this.service.testRunSummary(input))));
+    server.registerTool("get_test_metrics", {
+      description: "Analyze up to 5000 newest retained candidates in project enqueue window [from,to] (maximum 31 days), before exact filters. Separate outcome/source axes and censored populations; explicit truncation, retention and missing samples. CPU/RSS unavailable.",
+      inputSchema: testMetricsSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    }, async input => jsonContent(await english(() => this.service.testMetrics(input))));
+    server.registerTool("compare_test_runs", {
+      description: "Compare two retained summaries in one project. Right-minus-left duration deltas, identity differences and comparability caveats; no automatic regression, duplicate or flakiness verdict.",
+      inputSchema: testComparisonSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    }, async input => jsonContent(await english(() => this.service.compareTestRuns(input))));
 
     server.registerTool("get_test_run_status", {
       description: "Read a cheap bounded test phase, placement, process result, and explicitly qualified source summary.",

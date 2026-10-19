@@ -1,3 +1,4 @@
+import { TestHistoryQueries } from "./test-history-queries";
 import { snapshotAttachments } from "./schema-inspection";
 import type { KnowledgeTaskPage, KnowledgeReplyPage, KnowledgeRelationDestination } from "@/shared/contracts/knowledge";
 import type { KnowledgeMemory, KnowledgeSearchHit, KnowledgeSearchOptions } from "@/shared/contracts/knowledge-memory";
@@ -630,6 +631,16 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
         VALUES ('test_queue.updated', 'local-user', ?, ?)
       `).run(JSON.stringify(settings), now);
     })();
+  }
+
+  scanTestHistory(...args: Parameters<StateStore["scanTestHistory"]>) {
+    return new TestHistoryQueries(this.database).scan(...args);
+  }
+  getTestSummary(projectId: string, runId: string) {
+    return new TestHistoryQueries(this.database).get(projectId, runId);
+  }
+  getTestHistoryCoverage(projectId: string) {
+    return new TestHistoryQueries(this.database).coverage(projectId);
   }
 
   countTestRuns(phases: TestRunPhase[], projectId?: string, worktreePath?: string): number {
