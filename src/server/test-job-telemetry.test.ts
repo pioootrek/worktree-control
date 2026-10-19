@@ -359,11 +359,13 @@ describe("queue phase telemetry with independent wall and monotonic clocks", () 
   it("surfaces final durable-write failure and does not release the slot as a successful finalization", async () => {
     const f = fixture(); const run = f.enqueue(); await drain(); f.child.emit("spawn");
     const save = f.store.saveTestRun.bind(f.store);
-    vi.spyOn(f.store, "saveTestRun").mockImplementation((value, key) => { if (value.telemetry?.finalizedAt) throw Error("disk full"); save(value, key); });
+    const persistence = vi.spyOn(f.store, "saveTestRun").mockImplementation((value, key) => { if (value.telemetry?.finalizedAt) throw Error("disk full"); save(value, key); });
     f.exit(); await drain();
     expect(f.store.getTestRun(run.id)?.phase).toBe("running");
     expect(f.manager.status().running).toBe(1);
     expect(() => f.enqueue()).toThrow("Kolejka testów jest zamknięta.");
+    const snapshot = structuredClone(persistence.mock.calls.at(-1)![0].telemetry!.resources);
     await expect(f.manager.shutdown()).rejects.toThrow("disk full");
+    expect(persistence.mock.calls.at(-1)![0].telemetry!.resources).toEqual(snapshot);
   });
 });

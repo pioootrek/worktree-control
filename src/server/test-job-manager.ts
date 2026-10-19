@@ -207,7 +207,8 @@ export class TestJobManager {
       for (const active of this.active.values()) {
         active.resources?.stop();
         const resources = active.run.telemetry?.resources;
-        if (resources && resources.status !== "legacy_unknown" && resources.status !== "unsupported") {
+        if (resources && !active.run.telemetry?.finalizedAt
+          && resources.status !== "legacy_unknown" && resources.status !== "unsupported") {
           resourceReason(resources, "controller_interrupted");
           resources.status = resources.sampleCount ? "partial" : "unavailable";
         }
