@@ -134,7 +134,7 @@ test("summary, run detail and two-run comparison use the history API with honest
   await expect(table.getByRole("checkbox", { name: /^Select node:lint/ })).toBeDisabled();
   await screen.getByRole("button", { name: "Compare", exact: true }).click();
   const comparison = screen.locator("[data-analysis-comparison]");
-  await expect(comparison.getByRole("heading", { name: "Comparison" })).toBeFocused();
+  await expect(comparison.getByRole("heading", { name: "Comparison", exact: true })).toBeFocused();
   const comparisonRead = reads.find((url) => url.pathname.endsWith("/test-run-comparison"))!;
   expect(comparisonRead.searchParams.get("leftRunId")).toBe(pilotLeft.summary.runId);
   expect(comparisonRead.searchParams.get("rightRunId")).toBe(pilotRight.summary.runId);
