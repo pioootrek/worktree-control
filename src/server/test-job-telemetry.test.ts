@@ -143,6 +143,23 @@ describe("queue phase telemetry with independent wall and monotonic clocks", () 
     expect(f.store.getTestRun(run.id)).toMatchObject({ phase: "passed", source: { processOutcome: "passed" }, telemetry: { availability: "partial", durations: { processMs: null, cleanupMs: null, totalMs: null } } });
   });
 
+  it("retries the final snapshot without losing a log failure or re-running finalization", async () => {
+    const f = fixture(); const run = f.enqueue(); await drain(); f.child.emit("spawn");
+    f.finishLog.mockRejectedValueOnce(Error("log disk failure"));
+    const save = f.store.saveTestRun.bind(f.store);
+    const persistence = vi.spyOn(f.store, "saveTestRun").mockImplementation((value, key) => {
+      if (value.telemetry?.finalizedAt) throw Error("summary disk full");
+      save(value, key);
+    });
+    f.exit(); await drain();
+    expect(f.store.getTestRun(run.id)?.phase).toBe("running");
+    persistence.mockRestore();
+    await expect(f.manager.shutdown()).rejects.toThrow("summary disk full");
+    expect(f.finishLog).toHaveBeenCalledTimes(1);
+    expect(f.store.getTestRun(run.id)).toMatchObject({ phase: "failed", error: expect.stringContaining("log disk failure"), source: { processOutcome: "passed" } });
+    expect(f.manager.status().running).toBe(0);
+  });
+
   it("surfaces final durable-write failure and does not release the slot as a successful finalization", async () => {
     const f = fixture(); const run = f.enqueue(); await drain(); f.child.emit("spawn");
     const save = f.store.saveTestRun.bind(f.store);
