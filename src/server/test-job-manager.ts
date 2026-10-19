@@ -6,7 +6,7 @@ import type { LogWriter } from "./log-writer";
 import type { StateStore } from "./state-store";
 
 import { OwnedProcessGroup } from "./owned-process-group";
-import { emptyTelemetry, RunTelemetryRecorder, verificationClock, type VerificationClock, type EnqueueTestInput } from "./modules/verification";
+import { emptyTelemetry, emptyRunResources, resourceReason, observeRunResources, TEST_RESOURCE_INTERVAL_MS, type RunResourceObservation, type RunResourceOptions, RunTelemetryRecorder, verificationClock, type VerificationClock, type EnqueueTestInput } from "./modules/verification";
 import { compareSource, legacySourceEvidence, pendingSourceEvidence, qualifySource, type TestSourceObserver } from "./test-source-attribution";
 
 const MAX_LOG_LINES = 200;
@@ -19,6 +19,7 @@ const OUTPUT_CLOSE_GRACE_MS = 1_000;
 
 interface ActiveRun {
   child: ChildProcess;
+  resources: RunResourceObservation | null;
   group: OwnedProcessGroup;
   closed: Promise<void>;
   completion: Promise<void> | null;
@@ -55,6 +56,7 @@ export class TestJobManager {
     private readonly logs: LogWriter,
     private readonly onChange: (projectId?: string) => void = () => undefined,
     private readonly clock: VerificationClock = verificationClock,
+    private readonly resourceOptions: RunResourceOptions = {},
   ) {
     this.telemetry = new RunTelemetryRecorder(clock);
     this.store.markInterruptedTestRuns();
@@ -131,7 +133,7 @@ export class TestJobManager {
       environmentProfile: input.environment.profile,
       inheritedServerProfile: input.environment.inheritedServerProfile,
       environmentVariableNames: input.environment.variableNames,
-      telemetry: emptyTelemetry("observed"),
+      telemetry: { ...emptyTelemetry("observed"), resources: emptyRunResources("pending", this.resourceOptions.intervalMs ?? TEST_RESOURCE_INTERVAL_MS) },
       source: input.sourceObservation ? pendingSourceEvidence(input.sourceObservation) : legacySourceEvidence(),
     };
     this.telemetry.mark(run, "queuedAt");
@@ -331,7 +333,7 @@ export class TestJobManager {
     }, this.timeouts.get(run.id) ?? 15 * 60_000);
     timeout.unref();
     const active: ActiveRun = {
-      child, run, timeout, cancellationRequested: false, timedOut: false,
+      child, run, timeout, resources: null, cancellationRequested: false, timedOut: false,
       worktreePath: run.worktreePath, group: new OwnedProcessGroup(child), completion: null,
       executionError: null, exited: false,
       closed: new Promise<void>((resolve) => child.once("close", () => resolve())),
@@ -339,6 +341,17 @@ export class TestJobManager {
     this.active.set(run.id, active);
     child.once("spawn", () => {
       this.telemetry.mark(run, "spawnedAt");
+      if (child.pid && !active.completion) {
+        let checkpointAt: number | null = null;
+        active.resources = observeRunResources(run.telemetry!.resources!, child.pid,
+          () => !active.exited && child.exitCode === null && child.signalCode === null,
+          () => {
+            // At most one resource-only checkpoint per ten seconds. Existing
+            // log/lifecycle checkpoints and finalization also retain the summary.
+            if (checkpointAt !== null && performance.now() - checkpointAt < 10_000) return;
+            checkpointAt = performance.now(); this.checkpoint(run);
+          }, { ...this.resourceOptions, wallNow: this.resourceOptions.wallNow ?? this.clock.wallNow });
+      }
       this.checkpoint(run);
     });
     child.stdout?.on("data", (chunk: Buffer) => this.appendChunk(run, chunk));
@@ -381,6 +394,7 @@ export class TestJobManager {
         run.telemetry!.cleanup = "pending";
         this.checkpoint(run);
         await this.stopWithRetries(active.group);
+        active.resources?.stop();
         this.telemetry.mark(run, "cleanupFinishedAt");
         run.telemetry!.cleanup = "confirmed";
         this.telemetry.mark(run, "finalizationStartedAt");
@@ -486,7 +500,11 @@ export class TestJobManager {
     const existing = this.finalizations.get(run.id);
     if (existing) return existing;
     const active = this.active.get(run.id);
-    if (active) clearTimeout(active.timeout);
+    if (active) { clearTimeout(active.timeout); active.resources?.stop(); }
+    if (run.telemetry?.resources?.status === "pending") {
+      run.telemetry.resources.status = "unavailable";
+      resourceReason(run.telemetry.resources, "not_started");
+    }
     this.cleanup(run.id);
     this.telemetry.mark(run, "finalizationStartedAt");
     const completion = (async () => {

@@ -1,7 +1,6 @@
 import type Database from "better-sqlite3";
-import type { TestRunSummary } from "@/shared/contracts";
 import type { TestHistoryCoverage, TestSummaryEntry } from "@/shared/contracts/verification-history";
-import { TestSummaryQueries } from "./test-summary-queries";
+import { TestSummaryQueries, parseTestSummary } from "./test-summary-queries";
 
 import type { TestHistoryPosition as HistoryPosition, TestHistoryScan as HistoryScan } from "@/server/state-store";
 /** Index range and LIMIT bound visited project rows before any JSON filter is evaluated. */
@@ -33,7 +32,7 @@ export class TestHistoryQueries {
         if (scanned >= scanLimit || items.length >= matchLimit) { more = true; break; }
         ceiling ??= { queuedAt: row.queued_at, runId: row.run_id };
         scanned++; last = { queuedAt: row.queued_at, runId: row.run_id };
-        const entry = { summary: JSON.parse(row.summary_json) as TestRunSummary, detailAvailable: !!row.detail_available };
+        const entry = { summary: parseTestSummary(row.summary_json), detailAvailable: !!row.detail_available };
         if (accept(entry)) items.push(entry);
       }
     } finally { iterator.return?.(); }
@@ -46,7 +45,7 @@ export class TestHistoryQueries {
       FROM test_run_summaries s WHERE s.run_id=? AND s.project_id=?`).get(runId, projectId) as {
         summary_json: string; detail_available: number;
       } | undefined;
-    return row ? { summary: JSON.parse(row.summary_json) as TestRunSummary, detailAvailable: !!row.detail_available } : null;
+    return row ? { summary: parseTestSummary(row.summary_json), detailAvailable: !!row.detail_available } : null;
   }
 
   coverage(projectId: string): TestHistoryCoverage {

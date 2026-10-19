@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { TestRun, TestRunSummary } from "@/shared/contracts";
-import { emptyTelemetry } from "@/server/modules/verification";
+import { emptyTelemetry, emptyRunResources } from "@/server/modules/verification";
 
 // Local stage-1 defaults, to be calibrated. Caps can shorten the time horizon.
 export const TEST_SUMMARY_POLICY = {
@@ -37,8 +37,15 @@ export function summarizeTestRun(run: TestRun): TestRunSummary {
     phase: run.phase, processOutcome: run.source.processOutcome, attribution: run.source.attribution,
     sourceReasonCodes: [...new Set(run.source.reasonCodes.map(code => SOURCE_REASON_CODES.has(code) ? code : "source_evidence_incomplete"))].slice(0, 12),
     exitCode: run.exitCode, signal: run.signal?.slice(0, 32) ?? null,
-    telemetry: run.telemetry ?? emptyTelemetry(),
+    telemetry: { ...(run.telemetry ?? emptyTelemetry()), resources: run.telemetry?.resources ?? emptyRunResources() },
   };
+}
+
+/** Older version-1 JSON has no resource field; absence always means unknown. */
+export function parseTestSummary(json: string): TestRunSummary {
+  const summary = JSON.parse(json) as TestRunSummary;
+  summary.telemetry.resources ??= emptyRunResources();
+  return summary;
 }
 
 /** Borrows the existing owner connection. All mutations run inside its caller's transaction. */
@@ -66,7 +73,7 @@ export class TestSummaryQueries {
 
   get(runId: string): TestRunSummary | null {
     const row = this.database.prepare("SELECT summary_json FROM test_run_summaries WHERE run_id=?").get(runId) as { summary_json: string } | undefined;
-    return row ? JSON.parse(row.summary_json) as TestRunSummary : null;
+    return row ? parseTestSummary(row.summary_json) : null;
   }
 
   coverage(projectId: string) {

@@ -96,7 +96,9 @@
     "test:ui:mcp-sessions": "playwright test tests/ui/mcp-sessions.spec.ts",
     "test:mcp-diagnostics": "vitest run src/server/mcp-diagnostics-http.test.ts src/features/mcp/session-summary.test.ts src/server/mcp-diagnostics.test.ts src/server/mcp-http-server.test.ts src/server/modules/mcp-sessions src/server/transports/mcp src/cli/mcp-session-options.test.ts src/server/admin-socket.test.ts src/server/modules/status/status-service.test.ts",
     "test:integration:mcp-diagnostics": "node scripts/build-fingerprint.mjs --check && vitest run --config vitest.integration.config.ts tests/integration/mcp-diagnostics.test.ts",
-    "bench:mcp-resources": "node scripts/build-fingerprint.mjs --check && tsx scripts/mcp-resource-benchmark.mjs"
+    "bench:mcp-resources": "node scripts/build-fingerprint.mjs --check && tsx scripts/mcp-resource-benchmark.mjs",
+    "test:verification-resources": "vitest run src/server/resource-monitor.test.ts src/server/resource-monitor-concurrency.test.ts src/server/modules/verification/run-resources.test.ts src/server/test-job-telemetry.test.ts src/server/test-job-manager.test.ts src/server/infrastructure/sqlite/test-history-queries.test.ts",
+    "test:resource-sampling-cost": "tsx scripts/test-resource-sampling-cost.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",

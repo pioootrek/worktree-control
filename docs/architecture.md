@@ -122,9 +122,11 @@ controller must be event-driven and have bounded memory use:
   when the display queue is full;
 - runtime log tails capped at 400 lines per project and 4,000 characters per
   line; disk output batched into 64 KiB writes while preserving rotation;
-- one five-second resource sampler per active Linux process group, with at
-  most 60 in-memory RAM points and eight workers per scan, each reusing an
-  8 KiB process-file buffer; no sampler for stopped projects;
+- one five-second runtime resource observer per active Linux process group,
+  with at most 60 in-memory RAM points; passive finite-job observers use a
+  one-second delay after each completed attempt. Both share a single-flight
+  process enumeration with a 250 ms cache and eight bounded file readers;
+  no observer timer runs for stopped projects or completed jobs;
 - one serialized filesystem scan queue for worktree disk usage, refreshed no
   more than once per six hours unless a user explicitly requests it, with a
   30-second cooldown measured from a failed attempt;
@@ -140,7 +142,7 @@ The [resource budget](resource-budget.md) defines the reproducible three-run
 procedure, retained-log limits and negative control. The old absolute 50 MiB
 RSS target is superseded; managed-server memory is measured separately.
 
-The Linux resource adapter aggregates `/proc` counters for every member of the
+The Linux resource adapter aggregates `/proc` counters for observed members of the
 detached process group created by the controller. This covers the package
 manager, Next.js, and worker children without trusting unrelated PIDs. A
 lightweight authenticated endpoint serves the in-memory snapshots so GUI
@@ -239,7 +241,15 @@ same owner connection and transaction as each run checkpoint. Migration 29
 backfills only retained details with `legacy_unknown` timing; pruned history
 cannot be reconstructed. Project removal cascades both summaries and coverage
 accounting under the existing project operation. `get_test_run` supplies additive
-`telemetry` for retained runs. `VerificationHistoryService` supplies retained
+`telemetry` for retained runs. Stage 3 nests a versioned passive resource
+summary inside that existing JSON, preserving schema 29 and summary retention.
+A fresh spawn's PID/start ticks and surviving observed generations establish
+sampling identity; PGID alone does not. RSS is sampled summed process RSS, and
+CPU describes only deltas between observed matching generations (100% is one
+core), never complete job totals. Missing/partial/unsupported/legacy quality
+and denominators travel with the peaks. No cgroups, resource enforcement or
+exporter is introduced. See [resource semantics](verification-history-api.md#passive-per-run-resources).
+ `VerificationHistoryService` supplies retained
 summary history, single-summary lookup, metrics and comparison through the
 `ControlService` facade to HTTP and MCP. It uses the same runtime authentication
 boundary as verification detail reads; scoped Knowledge grants do not authorize

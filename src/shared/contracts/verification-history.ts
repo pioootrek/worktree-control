@@ -1,4 +1,4 @@
-import type { TestProcessOutcome, TestRunSummary, TestSourceAttribution, TestRunTelemetry } from "../contracts";
+import type { TestProcessOutcome, TestRunSummary, TestSourceAttribution, TestRunTelemetry, TestRunResources } from "../contracts";
 
 /** Enqueue-time interval [from,to], at most 31 days. Filters are exact identities. */
 export interface TestHistoryFilter {
@@ -42,7 +42,7 @@ export interface TestMetrics {
   sourceAttributions: Record<TestSourceAttribution, number>;
   populations: Record<TestMetricPopulation, { count: number; durations: Record<TestDurationKey, TestDurationStatistic> }>;
   method: { median: "sorted_midpoint_mean"; p95: "nearest_rank_ceil_0.95_n"; missing: "excluded_not_zero"; population: "per_run_not_daily_percentiles" };
-  resources: { cpu: "unavailable"; rss: "unavailable"; runnerWait: "unavailable" };
+  resources: TestResourceMetrics;
   coverage: TestHistoryCoverage;
 }
 export interface TestRunComparison {
@@ -52,5 +52,24 @@ export interface TestRunComparison {
   timings: Record<TestDurationKey, { leftMs: number | null; rightMs: number | null; deltaMs: number | null }>;
   populations: { left: TestMetricPopulation; right: TestMetricPopulation };
   caveats: string[];
-  resources: { cpu: "unavailable"; rss: "unavailable"; runnerWait: "unavailable" };
+  resources: {
+    cpu: TestResourceComparison;
+    rss: TestResourceComparison;
+    runnerWait: "unavailable";
+  };
+}
+
+export interface TestResourceStatistic {
+  median: number | null; p95: number | null; valid: number; missing: number; denominator: number;
+  statuses: Record<TestRunResources["status"], number>;
+  sampleCount: number; cpuIntervalCount: number;
+}
+export interface TestResourceMetrics {
+  cpu: { metric: "peak_sampled_cpu_percent"; unit: "percent_one_core"; populations: Record<TestMetricPopulation, TestResourceStatistic> };
+  rss: { metric: "peak_sampled_summed_rss"; unit: "bytes"; populations: Record<TestMetricPopulation, TestResourceStatistic> };
+  runnerWait: "unavailable";
+}
+export interface TestResourceComparison {
+  left: number | null; right: number | null; delta: number | null;
+  interpretation: "descriptive_sampled_peaks_only";
 }
