@@ -15,7 +15,10 @@ const finiteDuration = (value: number | null) => typeof value === "number" && Nu
 export function metricPopulation(s: TestRunSummary): TestMetricPopulation {
   const t = s.telemetry;
   // Recovery/cancellation can retain a passed process outcome. Its run is still censored.
-  if (s.phase === "queued" || s.phase === "running") return "in_progress";
+  // Match the summary writer's terminal rule. Legacy timing gaps cannot tell us
+  // that a historical terminal run still has finalization work outstanding.
+  if (s.phase === "queued" || s.phase === "running"
+    || (t.availability !== "legacy_unknown" && !t.finalizedAt && !t.recoveredAt)) return "in_progress";
   if (s.phase === "cancelled" || s.phase === "timed_out" || s.phase === "interrupted") return s.phase;
   if (t.termination === "rejected" || t.termination === "spawn_error") return "rejected";
   if ((s.processOutcome === "passed" || s.processOutcome === "failed") && t.termination === "exit"

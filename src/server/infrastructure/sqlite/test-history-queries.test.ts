@@ -136,6 +136,71 @@ describe("verification history on the existing SQLite owner", () => {
     expect(metrics.resources).toEqual({ cpu: "unavailable", rss: "unavailable", runnerWait: "unavailable" });
   });
 
+  it.each([
+    ["queued", "observed", "unfinished", "exit", "in_progress", false],
+    ["running", "observed", "unfinished", "exit", "in_progress", false],
+    ["passed", "observed", "unfinished", "exit", "in_progress", false],
+    ["failed", "observed", "unfinished", "exit", "in_progress", false],
+    ["cancelled", "observed", "unfinished", "cancel", "in_progress", false],
+    ["timed_out", "observed", "unfinished", "timeout", "in_progress", false],
+    ["interrupted", "partial", "unfinished", "interruption", "in_progress", false],
+    ["passed", "partial", "unfinished", "exit", "in_progress", false],
+    ["failed", "partial", "unfinished", "rejected", "in_progress", false],
+    ["failed", "observed", "unfinished", "spawn_error", "in_progress", false],
+    ["passed", "observed", "finalized", "exit", "completed_execution", true],
+    ["failed", "observed", "finalized", "exit", "completed_execution", true],
+    ["cancelled", "observed", "finalized", "cancel", "cancelled", true],
+    ["timed_out", "observed", "finalized", "timeout", "timed_out", true],
+    ["interrupted", "partial", "recovered", "interruption", "interrupted", true],
+    ["cancelled", "partial", "recovered", "cancel", "cancelled", true],
+    ["timed_out", "partial", "recovered", "timeout", "timed_out", true],
+    ["failed", "partial", "recovered", "unknown", "other_incomplete", true],
+    ["failed", "observed", "finalized", "rejected", "rejected", true],
+    ["failed", "observed", "finalized", "spawn_error", "rejected", true],
+    ["passed", "legacy_unknown", "unfinished", "unknown", "other_incomplete", true],
+    ["failed", "legacy_unknown", "unfinished", "unknown", "other_incomplete", true],
+    ["cancelled", "legacy_unknown", "unfinished", "unknown", "cancelled", true],
+    ["timed_out", "legacy_unknown", "unfinished", "unknown", "timed_out", true],
+    ["interrupted", "legacy_unknown", "unfinished", "unknown", "interrupted", true],
+    ["queued", "legacy_unknown", "unfinished", "unknown", "in_progress", false],
+    ["running", "legacy_unknown", "unfinished", "unknown", "in_progress", false],
+  ] as const)("keeps SQLite terminal, metrics and comparison consistent for %s/%s/%s/%s", (phase, availability, milestone, termination, population, terminal) => {
+    const f = fixture(), baseline = f.run(), run = f.run({ phase });
+    if (availability === "legacy_unknown") {
+      run.telemetry = emptyTelemetry();
+      run.source = legacySourceEvidence();
+    } else {
+      run.telemetry = { ...run.telemetry!, availability, termination,
+        finalizedAt: milestone === "finalized" ? f.at() : null,
+        recoveredAt: milestone === "recovered" ? f.at() : null };
+    }
+    f.store.saveTestRun(baseline); f.store.saveTestRun(run);
+    const persisted = f.owned.database.prepare("SELECT terminal FROM test_run_summaries WHERE run_id=?").get(run.id) as { terminal: number };
+    expect(persisted.terminal).toBe(terminal ? 1 : 0);
+    const metrics = f.history.metrics(f.filter);
+    const completed = population === "completed_execution";
+    expect(metrics.selection.matched).toBe(2);
+    expect(metrics.populations.completed_execution.count).toBe(completed ? 2 : 1);
+    expect(metrics.populations[population].count).toBe(completed ? 2 : 1);
+    expect(Object.values(metrics.populations).reduce((sum, p) => sum + p.count, 0)).toBe(2);
+    expect(metrics.populations.completed_execution.durations.processMs).toMatchObject({ valid: completed ? 2 : 1, denominator: completed ? 2 : 1, medianMs: 3 });
+    const comparison = f.history.compare({ projectId: f.project.id, leftRunId: baseline.id, rightRunId: run.id });
+    expect(comparison.populations).toEqual({ left: "completed_execution", right: population });
+    expect(comparison.caveats.some(c => c.includes("do not compare as completed execution"))).toBe(!completed);
+  });
+
+  it("preserves historical terminal populations when telemetry is absent", () => {
+    const f = fixture();
+    for (const phase of ["passed", "failed", "cancelled", "timed_out", "interrupted"] as const) {
+      f.store.saveTestRun(f.run({ phase, telemetry: undefined, source: legacySourceEvidence() }));
+    }
+    const metrics = f.history.metrics(f.filter);
+    expect(metrics.populations.in_progress.count).toBe(0);
+    expect(metrics.populations.other_incomplete.count).toBe(2);
+    for (const population of ["cancelled", "timed_out", "interrupted"] as const) expect(metrics.populations[population].count).toBe(1);
+    expect(metrics.populations.completed_execution.count).toBe(0);
+  });
+
   it("reports retention independently from selection and handles pruned summaries safely", () => {
     const f = fixture(), run = f.run({ queuedAt: "2000-01-01T00:00:00.000Z" });
     f.store.saveTestRun(run); f.store.pruneTestSummaryHistory();
