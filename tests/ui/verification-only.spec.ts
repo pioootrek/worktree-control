@@ -26,6 +26,8 @@ for (const locale of ["en", "pl"] as Locale[]) for (const width of [390, 1440]) 
     await expect(details.getByText(t("project.unusedPort"), { exact: true })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(row.getByRole("button")).toBeFocused();
+    await page.screenshot({ path: test.info().outputPath(`godot-no-server-${locale}-${width}.png`), fullPage: true, animations: "disabled" });
+    if (width < 768) await page.getByRole("button", { name: t("dashboard.toggleNavigation"), exact: true }).click();
     await page.getByRole("navigation").getByRole("button", { name: t("dashboard.navTests"), exact: true }).click();
     await page.getByRole("button", { name: t("tests.run"), exact: true }).click();
     const dialog = page.getByRole("dialog");
