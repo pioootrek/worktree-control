@@ -265,3 +265,18 @@ describe("project management CLI", () => {
     expect(checked).toEqual([3001, 3002]);
   });
 });
+
+describe("verification-only CLI registration", () => {
+  it.each(["none", "auto"])("registers Godot with --preset %s and lists no_server", async preset => {
+    const repository = temporaryDirectory("wtc-cli-godot-");
+    execFileSync("git", ["init", "--quiet", repository]);
+    writeFileSync(join(repository, "project.godot"), "config_version=5\n");
+    const paths = resolveAppPaths(temporaryDirectory("wtc-cli-data-"), temporaryDirectory("wtc-cli-state-"));
+    const gateway = await openProjectGateway(paths, "en"); const output: string[] = [];
+    try {
+      await runProjectCommand(["add", repository, "--preset", preset, "--port", "3210"], gateway, "en", { write: line => output.push(line) });
+      await runProjectCommand(["list", "--json"], gateway, "en", { write: line => output.push(line) });
+      expect(JSON.parse(output.at(-1)!)).toMatchObject([{ launchPreset: "none", runtimePhase: "no_server", port: 3210 }]);
+    } finally { await gateway.close(); }
+  });
+});

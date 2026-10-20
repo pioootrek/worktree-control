@@ -187,3 +187,21 @@ describe("ProjectLaunchCommandResolver", () => {
     expect(new ProjectLaunchCommandResolver().resolve(directory, 8000, "django").preset).toBe("django");
   });
 });
+
+describe("verification-only launch preset", () => {
+  it("allows explicit none without a manifest, detects root Godot and preserves Node validation", () => {
+    const directory = mkdtempSync(join(tmpdir(), "no-server-")); directories.push(directory);
+    const resolver = new ProjectLaunchCommandResolver();
+    expect(() => resolver.resolve(directory, 3210)).toThrow("Nie wykryto");
+    expect(resolver.resolve(directory, 3210, "none")).toMatchObject({ preset: "none", executable: "", args: [], portMethod: "none" });
+    writeFileSync(join(directory, "project.godot"), "config_version=5\n");
+    expect(resolver.resolve(directory, 3210).preset).toBe("none");
+    writeFileSync(join(directory, "package.json"), '{"scripts":{}}');
+    expect(() => resolver.resolve(directory, 3210)).toThrow("skryptu dev");
+    expect(resolver.resolve(directory, 3210, "none").preset).toBe("none");
+    rmSync(join(directory, "package.json"));
+    writeFileSync(join(directory, "manage.py"), "fixture");
+    expect(resolver.resolve(directory, 3210).preset).toBe("django");
+    expect(() => resolver.resolve(directory, 3210, "none", { mode: "generated", keyPath: null, certPath: null, caPath: null })).toThrow("no managed server");
+  });
+});

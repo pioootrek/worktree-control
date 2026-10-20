@@ -7,7 +7,7 @@ Queue builds and tests, see which code they checked, and keep the tasks,
 discussions and decisions that the next session will need.
 
 Worktree Control runs on your machine with a browser dashboard, CLI and MCP
-server. It supports Node.js and Django projects, stores state in SQLite, and
+server. It supports Node.js and Django servers and verification-only projects such as Godot, stores state in SQLite, and
 needs no hosted account. It is MIT licensed.
 
 [Website](https://pioootrek.github.io/worktree-control/) · [Why I built it](https://pioootrek.github.io/worktree-control/blog/managing-the-agents/) · [Try it locally](#quick-start) · [Connect your agent](#mcp-for-coding-agents) · [Project knowledge](#keep-project-context-between-sessions) · [Documentation](#documentation)
@@ -285,6 +285,23 @@ and revisions, not a model-generated summary, and are not project backups.
 | Vite, Astro and Nuxt | Passes the framework's supported port arguments |
 | Angular | Uses `dev: ng serve` or the standard `start: ng serve` |
 | Django | Runs a root-level `manage.py` with `.venv/bin/python`, `venv/bin/python` or `python3` |
+| Godot / verification only | No managed server; finite verification presets run through the test queue |
+
+Use `worktree-control project add /path/to/repo --preset none` for a
+verification-only repository, including one without `package.json` or `manage.py`.
+Automatic detection chooses `none` for a root `project.godot` when neither
+Node.js nor Django is detected. The configured port remains reserved in project
+configuration but is unused. The dashboard shows **No server** and offers no
+server controls or HTTPS settings. Runtime operations and MCP `claim_project`
+(which starts a server) refuse these projects before acquiring a lease or capacity.
+Run tests directly without a runtime claim; existing reservations still apply.
+
+For Godot, a root `project.godot` and `scripts/project.sh` expose `godot:check`
+and `godot:export-macos`. They execute `bash scripts/project.sh check` and
+`bash scripts/project.sh export-macos` in the exact worktree, preserving the
+public script's setup and resource guards. Without that script there are no
+Godot presets. Worktree Control does not locate Godot or start an editor.
+Use a test environment profile for script inputs such as `GODOT_BIN`.
 
 Each worktree needs its own installed dependencies and runtime setup. Server
 profiles provide named environment overrides. Tests have separate environment

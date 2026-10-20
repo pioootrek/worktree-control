@@ -380,15 +380,15 @@ describe("controller access boundary", () => {
     expect(await response.json()).toEqual({ error: "The project is locked by agent:test." });
   });
 
-  it("accepts an explicit Django launch preset", async () => {
+  it.each(["django", "none"])("accepts an explicit %s launch preset", async (launchPreset) => {
     const { addProject, base } = await fixture();
     const response = await fetch(`${base}/api/projects`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Worktree-Control-Token": "test-access-token" },
-      body: JSON.stringify({ name: "API", repositoryPath: "/tmp/api", port: 8000, launchPreset: "django" }),
+      body: JSON.stringify({ name: "API", repositoryPath: "/tmp/api", port: 8000, launchPreset }),
     });
     expect(response.status).toBe(201);
-    expect(addProject).toHaveBeenCalledWith({ name: "API", repositoryPath: "/tmp/api", port: 8000, launchPreset: "django" });
+    expect(addProject).toHaveBeenCalledWith({ name: "API", repositoryPath: "/tmp/api", port: 8000, launchPreset });
   });
 
   it("removes a project through the authenticated controller API", async () => {

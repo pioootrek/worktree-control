@@ -1,5 +1,5 @@
-import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, relative } from "node:path";
 
 import type { TestAdapterKind, TestPreset } from "@/shared/contracts";
 import { detectPackageManager } from "./launch-command";
@@ -85,8 +85,32 @@ export class DjangoTestCommandAdapter implements TestCommandAdapter {
   }
 }
 
+function worktreeFile(worktreePath: string, filename: string): boolean {
+  try {
+    const root = realpathSync(worktreePath);
+    const file = realpathSync(join(root, filename));
+    const path = relative(root, file);
+    return path !== ".." && !path.startsWith("../") && !isAbsolute(path) && statSync(file).isFile();
+  } catch { return false; }
+}
+
+export class GodotTestCommandAdapter implements TestCommandAdapter {
+  readonly kind = "godot" as const;
+
+  discover(worktreePath: string): TestPreset[] {
+    if (!worktreeFile(worktreePath, "project.godot") || !worktreeFile(worktreePath, "scripts/project.sh")) return [];
+    return ["check", "export-macos"].map((name) => ({ id: `godot:${name}`, name, adapter: this.kind, timeoutMs: 15 * 60_000 }));
+  }
+
+  resolve(worktreePath: string, presetId: string): TestCommand {
+    const preset = this.discover(worktreePath).find(({ id }) => id === presetId);
+    if (!preset) throw new Error("Wybrany preset testowy Godot nie istnieje już w tym worktree.");
+    return { preset, executable: "bash", args: ["scripts/project.sh", preset.name], cwd: worktreePath };
+  }
+}
+
 export class ProjectTestCommandResolver {
-  constructor(private readonly adapters: TestCommandAdapter[] = [new NodeTestCommandAdapter(), new DjangoTestCommandAdapter()]) {}
+  constructor(private readonly adapters: TestCommandAdapter[] = [new NodeTestCommandAdapter(), new DjangoTestCommandAdapter(), new GodotTestCommandAdapter()]) {}
 
   discover(worktreePath: string): TestPreset[] {
     return this.adapters.flatMap((adapter) => adapter.discover(worktreePath));

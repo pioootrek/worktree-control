@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { applyRegistryMigration, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { applyTelemetryMigration } from "./test-summary-migration";
+import { applyVerificationProjectMigration, rebuildTable } from "./verification-project-migration";
 import { validateDatabase } from "./database-validation";
 
 /** Built-in test profiles every project starts with; see `test-environment.ts`. */
@@ -347,6 +348,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyMigrations(database, fresh);
       applyRegistryMigration(database);
       applyTelemetryMigration(database);
+      applyVerificationProjectMigration(database);
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();
@@ -776,25 +778,6 @@ function applyMigrations(database: Database.Database, fresh: boolean): void {
 
 /** Frozen copy of the installation principal ID so migration 25 never follows later code changes. */
 const INSTALLATION_PRINCIPAL_ID = "installation";
-
-/** Replaces one table constraint; skips tables already carrying it so repaired migration records can rerun safely. */
-function rebuildTable(database: Database.Database, table: string, from: string, to: string): void {
-  const current = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql: string } | undefined;
-  if (!current) throw new Error(`Missing table ${table}.`);
-  if (current.sql.includes(to)) return;
-  if (!current.sql.includes(from)) throw new Error(`Unexpected ${table} definition; refusing to rebuild it.`);
-  const next = current.sql.replace(from, to);
-  const indexes = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL")
-    .all(table) as Array<{ sql: string }>;
-  const replacement = `${table}_rebuild`;
-  database.exec(next.replace(/^CREATE TABLE (?:IF NOT EXISTS )?"?\w+"?/, `CREATE TABLE ${replacement}`));
-  database.exec(`
-    INSERT INTO ${replacement} SELECT * FROM ${table};
-    DROP TABLE ${table};
-    ALTER TABLE ${replacement} RENAME TO ${table};
-  `);
-  for (const index of indexes) database.exec(index.sql);
-}
 
 function ensureLaunchPresetColumn(database: Database.Database): void {
   const columns = new Set((database.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string }>).map(({ name }) => name));

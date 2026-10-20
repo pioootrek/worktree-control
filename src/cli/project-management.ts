@@ -79,7 +79,7 @@ export async function runProjectCommand(
         port: project.port,
         launchPreset: project.launchPreset,
         selectedWorktreePath: project.selectedWorktreePath,
-        runtimePhase: runtime.phase,
+        runtimePhase: project.launchPreset === "none" ? "no_server" : runtime.phase,
         reservedBy: reservation?.owner ?? null,
         discoveryError: discoveryError ?? null,
       })), null, 2));
@@ -91,7 +91,7 @@ export async function runProjectCommand(
     }
     write(translate(locale, "cli.project.listHeader"));
     for (const { project, runtime } of dashboard.projects) {
-      write([project.id, project.name, project.port, project.launchPreset, runtime.phase, project.selectedWorktreePath ?? "-"].join("\t"));
+      write([project.id, project.name, project.port, project.launchPreset, project.launchPreset === "none" ? "no_server" : runtime.phase, project.selectedWorktreePath ?? "-"].join("\t"));
     }
     return;
   }
@@ -100,7 +100,7 @@ export async function runProjectCommand(
     const repositoryPath = positionalArgument(args, 1, ["--name", "--port", "--preset"]);
     if (!repositoryPath) throw new Error(translate(locale, "cli.project.addUsage"));
     const preset = optionValue(args, "--preset", locale) ?? "auto";
-    if (preset !== "auto" && preset !== "node" && preset !== "django") {
+    if (preset !== "auto" && preset !== "node" && preset !== "django" && preset !== "none") {
       throw new Error(translate(locale, "cli.project.invalidPreset"));
     }
     const dashboard = await gateway.dashboard();
@@ -115,7 +115,7 @@ export async function runProjectCommand(
       try {
         port = await findAvailablePort(
           new Set(configuredPorts.keys()),
-          dependencies.isPortAvailable ?? isPortAvailable,
+          preset === "none" ? async () => true : dependencies.isPortAvailable ?? isPortAvailable,
         );
       } catch {
         throw new Error(translate(locale, "cli.project.noAvailablePort"));

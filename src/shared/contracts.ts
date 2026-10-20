@@ -1,7 +1,7 @@
 export type RuntimePhase = "stopped" | "starting" | "running" | "stopping" | "failed";
 export type DevServerTlsMode = "off" | "generated" | "custom";
-export type LaunchPreset = "auto" | "node" | "django";
-export type TestAdapterKind = "node" | "django";
+export type LaunchPreset = "auto" | "node" | "django" | "none";
+export type TestAdapterKind = "node" | "django" | "godot";
 export type TestRunPhase = "queued" | "running" | "passed" | "failed" | "cancelled" | "timed_out" | "interrupted";
 export type TestSourceComparison = "match" | "changed" | "unknown";
 export type TestSourceAttribution = "pending" | "observed_match" | "changed" | "uncertain" | "legacy_unknown";

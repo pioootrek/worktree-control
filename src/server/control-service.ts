@@ -30,7 +30,7 @@ import type {
   TestRun,
 } from "@/shared/contracts";
 import type { GitWorktreeReader } from "./git-worktrees";
-import { type LaunchCommandResolver, type NextTlsConfiguration, ProjectLaunchCommandResolver } from "./launch-command";
+import { NO_SERVER_MESSAGE, type LaunchCommandResolver, type NextTlsConfiguration, ProjectLaunchCommandResolver } from "./launch-command";
 import { type LogWriter, nullLogWriter } from "./log-writer";
 import { ProcessManager } from "./process-manager";
 import type { NewProject, ReservationRequest, StateStore } from "./state-store";
@@ -407,6 +407,7 @@ export class ControlService {
       if (!input.idempotencyKey.trim() || input.idempotencyKey.length > 120) throw new Error("Invalid idempotency key.");
 
       const project = this.lifecycle.requireProject(input.projectId);
+      if (project.launchPreset === "none") throw new Error(`${NO_SERVER_MESSAGE} Queue tests without a runtime claim.`);
       const worktrees = await this.git.list(project.repositoryPath);
       const selected = this.lifecycle.resolveWorktree(project, worktrees, input.worktreePath);
       const leaseToken = existingLeaseToken ?? randomBytes(32).toString("base64url");

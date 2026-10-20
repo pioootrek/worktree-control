@@ -84,3 +84,19 @@ describe("resolveTestEnvironment", () => {
     })).toThrow("E2E_RESET_DB_CONFIRM");
   });
 });
+
+describe("verification-only metadata", () => {
+  it("does not advertise a server port or URL under either metadata prefix", () => {
+    const resolved = resolveTestEnvironment({
+      project: { id: "godot", launchPreset: "none", port: 3210, tlsMode: "off" } as Project,
+      worktree: worktreeOf("/code/godot"), profile: profile({ name: "tooling", nodeEnv: null }),
+      controllerEnvironment: { PATH: "/usr/bin", WORKTREE_CONTROL_SERVER_URL: "http://wrong" },
+    });
+    expect(resolved.environment.WORKTREE_CONTROL_PROJECT_ID).toBe("godot");
+    for (const prefix of ["WORKTREE_CONTROL", "WORKTREE_SWITCHER"]) {
+      expect(resolved.environment[`${prefix}_SERVER_URL`]).toBeUndefined();
+      expect(resolved.environment[`${prefix}_SERVER_PORT`]).toBeUndefined();
+    }
+    expect(resolved.environment.NODE_ENV).toBeUndefined();
+  });
+});

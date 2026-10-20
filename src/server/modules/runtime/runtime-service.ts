@@ -1,5 +1,5 @@
 import type { GitWorktreeReader } from "@/server/git-worktrees";
-import { type LaunchCommandResolver, type NextTlsConfiguration } from "@/server/launch-command";
+import { NO_SERVER_MESSAGE, type LaunchCommandResolver, type NextTlsConfiguration } from "@/server/launch-command";
 import { type LogWriter } from "@/server/log-writer";
 import type { ProcessManager } from "@/server/process-manager";
 import type { StateStore } from "@/server/state-store";
@@ -45,6 +45,7 @@ export class RuntimeService {
       let outcome: ClaimedRuntimeReceipt["outcome"] = "completed";
       let operationError: ClaimedRuntimeReceipt["error"] = null;
       try {
+        if (project.launchPreset === "none") throw new ClaimedRuntimeOperationError("no_managed_server", NO_SERVER_MESSAGE);
         if (initial.pid && initial.worktreePath !== claim.worktreePath) {
           throw new ClaimedRuntimeOperationError("runtime_worktree_mismatch", "The managed runtime does not match the claimed worktree.");
         }
@@ -184,6 +185,7 @@ export class RuntimeService {
     actor: OperationActor,
   ): Promise<void> {
     const project = this.lifecycle.requireProject(projectId);
+    if (project.launchPreset === "none") throw new Error(NO_SERVER_MESSAGE);
     if (operation === "stop") {
       this.lifecycle.assertReservationAllows(
         projectId,
@@ -228,6 +230,7 @@ export class RuntimeService {
   async setProjectTls(projectId: string, input: NextTlsConfiguration): Promise<void> {
     await this.lifecycle.serialized(projectId, async () => {
       const project = this.lifecycle.requireProject(projectId);
+      if (project.launchPreset === "none") throw new Error(NO_SERVER_MESSAGE);
       const phase = this.processes.snapshot(projectId).phase;
       if (phase === "running" || phase === "starting" || phase === "stopping") {
         throw new Error("Zatrzymaj serwer przed zmianą ustawień HTTPS.");

@@ -72,6 +72,7 @@ export function AddProjectDialog({ open, onOpenChange, mutate, token, showTrigge
                 <SelectItem value="auto">{t("preset.auto")}</SelectItem>
                 <SelectItem value="node">{t("preset.node")}</SelectItem>
                 <SelectItem value="django">{t("preset.django")}</SelectItem>
+                <SelectItem value="none">{t("preset.none")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
