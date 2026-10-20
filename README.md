@@ -322,7 +322,7 @@ Windows process-tree and service management are unsupported.
 **Test analysis** shows retained verification history, phase timings and passive
 per-run Linux RAM/CPU observations. Process outcomes and source evidence remain
 separate; missing or partial measurements are labelled. See the
-[history API and resource semantics](docs/verification-history-api.md).
+[history API and resource semantics](https://github.com/pioootrek/worktree-control/blob/main/docs/verification-history-api.md).
 
 ## Self-hosting and HTTPS
 
@@ -733,7 +733,7 @@ workflow are not yet available. See the [remote verification plan](https://githu
 
 Optional account login, agent-fleet coordination and maintainer-operated hosting
 are planned. There is no hosted signup or pricing offer today. Self-hosting is
-intended to remain complete and independent. Read Knowledge memory `570757852db162a0d3c6d2c252b26e7e` and its `implementation-plan.md` attachment through the [knowledge workflow](docs/knowledge/AGENTS.md).
+intended to remain complete and independent. Read Knowledge memory `570757852db162a0d3c6d2c252b26e7e` and its `implementation-plan.md` attachment through the [knowledge workflow](https://github.com/pioootrek/worktree-control/blob/main/docs/knowledge/AGENTS.md).
 
 ## Documentation
 
