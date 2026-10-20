@@ -13,6 +13,7 @@ import { detectLaunchPreset } from "../server/launch-command";
 import { nullLogWriter } from "../server/log-writer";
 import type { AppPaths } from "../server/paths";
 import { ProcessManager } from "../server/process-manager";
+import { discoverProjectRegistrationTarget } from "../server/project-registration";
 import { SqliteStateStore } from "../server/sqlite-store";
 import { controllerAccessToken, localDashboardEndpoint, readServiceAccess } from "./service-access";
 
@@ -114,7 +115,16 @@ export async function runProjectCommand(
       const assignedProject = configuredPorts.get(port);
       if (assignedProject) throw new Error(translate(locale, "cli.project.portAssigned", { port, name: assignedProject }));
     } else {
-      const resolvedPreset = preset === "auto" ? detectLaunchPreset(resolvedPath) : preset;
+      let resolvedPreset = preset;
+      if (preset === "auto") {
+        const git = new SystemGitWorktreeReader();
+        try {
+          const { selectedWorktree } = await discoverProjectRegistrationTarget(git, resolvedPath);
+          resolvedPreset = detectLaunchPreset(selectedWorktree.path);
+        } finally {
+          git.close();
+        }
+      }
       try {
         port = await findAvailablePort(
           new Set(configuredPorts.keys()),

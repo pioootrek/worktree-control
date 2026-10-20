@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { resolve } from "node:path";
 import { DashboardQueryService } from "./modules/dashboard";
 import { EnvironmentService, redactProject } from "./modules/environments";
 import type { AuthenticatedPrincipal } from "./modules/identity";
@@ -33,6 +32,7 @@ import type { GitWorktreeReader } from "./git-worktrees";
 import { NO_SERVER_MESSAGE, type LaunchCommandResolver, type NextTlsConfiguration, ProjectLaunchCommandResolver } from "./launch-command";
 import { type LogWriter, nullLogWriter } from "./log-writer";
 import { ProcessManager } from "./process-manager";
+import { discoverProjectRegistrationTarget } from "./project-registration";
 import type { NewProject, ReservationRequest, StateStore } from "./state-store";
 import { ProjectTestCommandResolver } from "./test-command";
 import type { TestJobManager } from "./test-job-manager";
@@ -252,10 +252,7 @@ export class ControlService {
     if (!Number.isInteger(input.port) || input.port < 1024 || input.port > 65535) {
       throw new Error("Port musi być liczbą od 1024 do 65535.");
     }
-    const repositoryPath = await this.git.canonicalRepositoryPath(resolve(input.repositoryPath));
-    const worktrees = await this.git.list(repositoryPath);
-    const selected = worktrees[0];
-    if (!selected) throw new Error("Repozytorium nie ma dostępnego worktree.");
+    const { repositoryPath, selectedWorktree: selected } = await discoverProjectRegistrationTarget(this.git, input.repositoryPath);
     const launchPreset = input.launchPreset ?? "auto";
     const command = this.commands.resolve(selected.path, input.port, launchPreset);
     const project = this.store.addProject({
