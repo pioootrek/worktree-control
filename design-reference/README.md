@@ -19,8 +19,8 @@ The application still owns its React components and behavior.
 
 ## What is authoritative
 
-The [owner decision](../docs/backlog/notes/NOTE-20260911-approved-gui-direction/direction.md)
-and its [approved image](../docs/backlog/notes/NOTE-20260911-approved-gui-direction/approved-project-worktrees.png)
+The [owner decision](../docs/knowledge/AGENTS.md) (Knowledge attachment `860fe2f28d0548b78c8227f6b1583b09`)
+and its [approved image](../docs/knowledge/AGENTS.md) (Knowledge attachment `c1323b553ff099fab5f6a51f6b3b8b8c`)
 are the governing reference. The catalog links to that exact image rather than
 creating another copy. WinPath is a process reference only; its appearance must
 not be copied.

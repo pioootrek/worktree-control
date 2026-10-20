@@ -1,8 +1,0 @@
-{
-  "backlog_dir": "docs/backlog",
-  "backlog_ref": "main",
-  "github_repo": "pioootrek/REPLACE_WITH_REPO_NAME",
-  "id": "secret-runtime",
-  "name": "Secret Runtime",
-  "repo_url": "git@github.com:pioootrek/REPLACE_WITH_REPO_NAME.git"
-}

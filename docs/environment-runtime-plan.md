@@ -15,11 +15,11 @@ secret resolution, and delivery to approved processes. This is planned work,
 not a claim that Worktree Control already provides a vault or secret-reference broker.
 Existing literal profiles and separate test environments remain the baseline.
 
-The [source note](backlog/notes/NOTE-20260905-secret-runtime-proposal/integration-context.md)
+The [source note](knowledge/AGENTS.md) (Knowledge attachment `2356069c892acf5e1160da52a3cab688`)
 preserves the supplied archive and its six milestone proposals. Original stack
 choices and priorities are historical proposals, not requirements for this
 integration. Follow the existing
-[environment profiles item](backlog/feature/FEAT-20260829-launch-environment-profiles.json)
+[environment profiles item](knowledge/AGENTS.md) (Knowledge task `92e7dab563aa6d7ee110ec007a65bfd6`)
 and [remote verification plan](remote-verification-plan.md); split a bounded
 implementation slice before coding. Existing urgent reliability repairs keep
 priority. Remote unit checks without secrets need not wait for this module.

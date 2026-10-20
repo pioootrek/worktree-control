@@ -42,9 +42,8 @@ Shared human/agent memory, discussions, tasks, attachments and Hub import are
 implemented on `main`; see [shared project memory](shared-project-memory-plan.md)
 for delivered stages and remaining pilot/cutover work. Knowledge has a durable
 project identity independent of runtime ownership. This repository's current
-work lives in Knowledge project `k7a-worktree-switcher`; the repository-backed
-records remain its import archive. Other projects follow their own explicit
-migration decisions; see [the workflow](backlog/AGENTS.md).
+work lives in Knowledge project `k7a-worktree-switcher`; the original repository records remain in Knowledge provenance and Git
+history. Other projects follow their own explicit migration decisions; see [the workflow](knowledge/AGENTS.md).
 The subsequent [agent coordination plan](agent-fleet-coordination-plan.md)
 adds assignments, messages, and evidence across sessions. Agent coordination
 and autonomous execution remain planned; delivered knowledge does not imply an
@@ -201,7 +200,7 @@ remain deferred until real usage justifies their maintenance.
 ## Interface system
 
 The owner-approved redesign direction is recorded in
-[Approved GUI direction](backlog/notes/NOTE-20260911-approved-gui-direction/direction.md),
+[Approved GUI direction](knowledge/AGENTS.md) (Knowledge attachment `860fe2f28d0548b78c8227f6b1583b09`),
 including the canonical project-detail mock. Subsequent GUI design follows its
 charcoal and restrained lime visual system. WinPath may inform the component
 development process only; copying its appearance is explicitly prohibited.

@@ -4,7 +4,7 @@ This procedure rehearses the knowledge import, a human/two-agent workflow and
 recovery on an isolated copy. It never writes the live controller database and
 never switches a project to the new store: the Git-backed backlog stays the
 source of truth. The latest run and its limits are recorded in
-[the knowledge item](../docs/backlog/feature/FEAT-20260905-shared-project-memory.json).
+[the knowledge item](../docs/knowledge/AGENTS.md) (Knowledge task `61fe18411b58fa4cbc7ff2f6a90bcd28`).
 Do not treat any pilot result as approval to migrate the live backlog.
 
 Run from the repository root of a clean, committed revision after installing

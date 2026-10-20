@@ -147,8 +147,8 @@ Offline full restore preserves snapshot credentials. Inspect and revoke stale
 sessions, agent tokens and grants before exposing the recovered installation.
 Online/catalog restore applies its separate credential invalidation fence.
 A real destination, recoverable keys, operator trial and rollout remain separate
-acceptance steps. The storage-safety plan and dated evidence under `docs/backlog/`
-record the isolated checks and the later operational and project-cutover procedure.
+acceptance steps. The imported storage-safety plan and dated evidence in Knowledge record the
+isolated checks and the later operational and project-cutover procedure.
 
 ## Remove the installation
 
