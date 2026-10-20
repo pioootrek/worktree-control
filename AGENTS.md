@@ -16,8 +16,8 @@ Read only the references relevant to the task:
 - Remote workers, memory, or coordination: [expansion assessment](docs/architecture-effort-assessment.md)
   and its linked feature plan. Planned features are not implemented contracts.
 - Before non-trivial work: read current tasks and relevant memory in Knowledge
-  project `k7a-worktree-switcher`, following [the workflow](docs/backlog/AGENTS.md).
-  The file backlog is an imported archive. Verify design examples against code.
+  project `k7a-worktree-switcher`, following [the workflow](docs/knowledge/AGENTS.md).
+  Verify design examples against code; imported notes are available in Knowledge.
 
 ## Code boundaries
 
@@ -76,13 +76,12 @@ that server require a separate claim for the same worktree. Use the
 ## Backlog and documentation
 
 Tasks, discussions and durable findings live in Knowledge project
-`k7a-worktree-switcher`. Read [the workflow](docs/backlog/AGENTS.md) before
+`k7a-worktree-switcher`. Read [the workflow](docs/knowledge/AGENTS.md) before
 writing them. Complete tasks with saved validation evidence and persist useful
-findings before compaction. Preserve the imported JSON records and note
-payloads under `docs/backlog/`; there is no two-way synchronization.
+findings before compaction. Imported sources and historical attachments are
+available through Knowledge; Git retains their pre-retirement history.
 
-Product documentation stays in Git. After editing top-level documents under
-`docs/` or the backlog guide, run the canonical Hub `fmt` and `validate`
-commands from that guide. Never hand-edit `index.json`. Treat open
-`backlog-feedback` issues as human input and record accepted changes in
-Knowledge using the imported legacy ID to find the current record.
+Product documentation stays in Git. After documentation changes, run
+`python3 scripts/docs.py fmt`, `python3 scripts/docs.py check`, and
+`git diff --check`, using available managed verification presets. Treat open
+`backlog-feedback` issues as human input and find their records by legacy ID.

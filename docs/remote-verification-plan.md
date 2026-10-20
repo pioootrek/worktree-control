@@ -14,7 +14,7 @@ operations and exact-SHA workspace preparation are implemented with tests.
 Enrollment and worker credentials, outbound dispatch, finite-queue execution,
 reconnect/cancellation and caller transports remain incomplete. The workflow
 below is the acceptance target, not a currently available remote command.
-See the [remaining implementation slices](backlog/notes/NOTE-20260909-self-hosted-saas-plan/remote-verification-implementation.md).
+See the [remaining implementation slices](knowledge/AGENTS.md) (Knowledge attachment `64ab7a29d6c4ae015d5cd794c58a8a68`).
 
 ## Owner need and priority
 
@@ -30,7 +30,7 @@ paid SaaS, or remote agent launching. Memory can later link tasks and
 discussions to run results. Existing urgent runtime reliability fixes keep
 priority; queue reliability and truthful source attribution are foundations.
 Track delivery in
-[FEAT-20260905-remote-commit-verification](backlog/feature/FEAT-20260905-remote-commit-verification.json).
+[FEAT-20260905-remote-commit-verification](knowledge/AGENTS.md) (Knowledge task `0e2204a2e0e0945eee4f754b2f932eed`).
 
 The complete connected-worker workflow remains planned; its foundations alone
 do not constitute a deployed remote service. Other people's willingness to
@@ -130,7 +130,7 @@ completion of the original check.
 
 ## Delivery and verification
 
-The [implementation slices and acceptance gates](backlog/notes/NOTE-20260909-self-hosted-saas-plan/remote-verification-implementation.md)
+The [implementation slices and acceptance gates](knowledge/AGENTS.md) (Knowledge attachment `64ab7a29d6c4ae015d5cd794c58a8a68`)
 expand this direction against baseline `d429eb9`: automatic worker-owned source
 preparation, six delivery slices, early failure tests and explicit recovery rules.
 Worker source updates do not update its own executable or move a dev checkout.

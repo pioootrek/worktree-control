@@ -23,7 +23,7 @@ wait for autonomous launching or the complete fleet module. Reuse its run
 evidence in future coordination flows.
 
 Track this stage in
-[FEAT-20260905-agent-fleet-coordination](backlog/feature/FEAT-20260905-agent-fleet-coordination.json).
+[FEAT-20260905-agent-fleet-coordination](knowledge/AGENTS.md) (Knowledge task `79564676493d7dc93a092c58938f7514`).
 It follows the basic memory, discussion, task, and identity services; it does
 not require completing optional instruction generation or commercial hosting.
 Existing urgent runtime fixes retain priority. The first goal is cooperation

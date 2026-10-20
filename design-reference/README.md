@@ -2,7 +2,8 @@
 
 Open `index.html` directly in a browser. It uses local files only and needs no
 installation, build, development server, API, credentials or network connection.
-Keep it beside `docs/` when copying it so the approved image link still works.
+Keep the directory's assets together when copying it. The Knowledge workflow
+link additionally needs the sibling `docs/` directory.
 
 Use **Motyw: Ciemny / Jasny** in the header to compare themes. Both share the
 lime action fill; light mode uses darker accent text, status colors and focus
@@ -19,10 +20,11 @@ The application still owns its React components and behavior.
 
 ## What is authoritative
 
-The [owner decision](../docs/backlog/notes/NOTE-20260911-approved-gui-direction/direction.md)
-and its [approved image](../docs/backlog/notes/NOTE-20260911-approved-gui-direction/approved-project-worktrees.png)
-are the governing reference. The catalog links to that exact image rather than
-creating another copy. WinPath is a process reference only; its appearance must
+The [owner decision](../docs/knowledge/AGENTS.md) (Knowledge attachment `860fe2f28d0548b78c8227f6b1583b09`)
+and its [approved image](approved-project-worktrees.png) (Knowledge attachment `c1323b553ff099fab5f6a51f6b3b8b8c`)
+are the governing reference. The exact image was moved here when the file
+backlog was retired; its bytes are unchanged. Retrieve the decision attachment
+using the linked Knowledge workflow. WinPath is a process reference only; its appearance must
 not be copied.
 
 `tokens.css` and the HTML specimens are **working interpretations**, not newly

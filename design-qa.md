@@ -2,7 +2,8 @@
 
 **Source visual truth**
 
-- `docs/backlog/notes/NOTE-20260911-approved-gui-direction/approved-project-worktrees.png`
+- [Approved reference](design-reference/approved-project-worktrees.png), moved
+  unchanged from the retired file backlog.
 - Source pixels: 1487 × 1058, 1× density.
 
 **Implementation evidence**

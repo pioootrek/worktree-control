@@ -302,7 +302,8 @@ unfinished-finalization summaries are excluded. Active data and a maintenance
 backlog can temporarily exceed targets. Internal coverage reports retained
 count/bytes, oldest/newest enqueue, eviction count, last pruning time, policy
 and pending maintenance. SQLite indexes/pages/WAL overhead is outside the logical
-JSON budget. There is no new detailed-trace retention or resource sampler.
+JSON budget. These stage-1 retention rules do not retain detailed traces.
+Passive per-run resource sampling was added in stage 3, as described above.
 
 Accounts would also require authentication, authorization, ownership,
 and audit semantics; SQLite alone does not make the application multi-user.
