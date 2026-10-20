@@ -1,6 +1,6 @@
 ---
 audience: "owner, contributors, and coding agents"
-last_reviewed: "2026-10-05"
+last_reviewed: "2026-10-20"
 source_of_truth: "shared project memory direction and phased delivery plan from the owner discussion on 2026-09-05"
 status: "active"
 ---
@@ -12,7 +12,7 @@ status: "active"
 Latest owner decision on 2026-09-13: deliver the working flow on SQLite first.
 Migration to PostgreSQL is deferred and does not gate K1 or the first SQLite
 workflow. This supersedes the earlier PostgreSQL-first direction; see
-[the database decision](backlog/notes/NOTE-20260913-knowledge-backlog-implementation/database-portability.md).
+[the database decision](knowledge/AGENTS.md) (Knowledge attachment `2fba165db94c44d22016c91ab5e9af0e`).
 
 
 The owner wants Worktree Control to provide shared memory for humans and
@@ -24,17 +24,18 @@ including threads/replies/tasks, revisioned memory and approval, search/context,
 attachments, backup/restore, logical project transfer and resumable Hub import.
 Find current acceptance and migration work in Knowledge project
 `k7a-worktree-switcher`, using the legacy ID from the archived record
-[FEAT-20260905-shared-project-memory](backlog/feature/FEAT-20260905-shared-project-memory.json).
+[FEAT-20260905-shared-project-memory](knowledge/AGENTS.md) (Knowledge task `61fe18411b58fa4cbc7ff2f6a90bcd28`).
 
-The [implementation plan from 2026-09-13](backlog/notes/NOTE-20260913-knowledge-backlog-implementation/implementation-plan.md)
+The [implementation plan from 2026-09-13](knowledge/AGENTS.md) (Knowledge attachment `2d893be0da0b24797411afb9c8a019af`)
 breaks this direction into K0-K9 delivery stages with code entry points,
 recommended contracts, Hub data mapping, test cases, and cutover/rollback
-gates. Its current-status section distinguishes delivered K0–K6 work from
-K7 pilot/cutover acceptance and future K8/K9 instruction workflows. The local
+gates. Its stage descriptions are historical planning context: K0–K6 and this
+repository's K7 cutover are delivered; K8/K9 instruction workflows remain
+future work. The local file backlog was retired on 2026-10-10. The local
 cutover uses token-mode access to runtime and Knowledge through one installation
 token. This repository now writes its backlog to Knowledge project
-`k7a-worktree-switcher`; existing Git records are its import archive. Follow
-[the current workflow](backlog/AGENTS.md) rather than the historical file-write
+`k7a-worktree-switcher`; the imported source is retained in Knowledge and Git history. Follow
+[the current workflow](knowledge/AGENTS.md) rather than the historical file-write
 instructions in imported plans.
 
 The priority is usefulness to the owner, then cooperation between the owner's
@@ -277,11 +278,11 @@ The owner also requested a later coordination stage for multiple agents:
 durable identities, task assignments, addressed messages, handoffs, incremental
 context, and owner visibility. The scope and acceptance workflow are in the
 [Agent fleet coordination plan](agent-fleet-coordination-plan.md), tracked by
-[FEAT-20260905-agent-fleet-coordination](backlog/feature/FEAT-20260905-agent-fleet-coordination.json).
+[FEAT-20260905-agent-fleet-coordination](knowledge/AGENTS.md) (Knowledge task `79564676493d7dc93a092c58938f7514`).
 It follows the core memory/discussion services and is independent of optional
 hosting and instruction generation. Autonomous launching and scheduling remain
 deferred until cooperative execution is proven. This broadens the product
-toward an operations hub; no renaming is decided.
+toward an operations hub; no further renaming is decided.
 
 ## Optional paid hosting
 
@@ -308,11 +309,11 @@ actual deployment and workload rather than assumed to scale unchanged.
 
 ## Deferred work and open questions
 
-- Exact user/agent identity and approval model for the first local version.
-- Shared versus separate database file, attachment storage, and backup policy.
-- Minimal relation model and API/MCP vocabulary; precise task promotion UX.
-- Knowledge-project identity independent of runtime registration, including
-  future projects without a local checkout and cross-project retrieval scope.
+- Playbook health, instruction-source inspection, and approved instruction
+  assembly described above.
+- Hosted membership, tenant isolation, approval authority, and cross-project
+  retrieval scope. Local identities, approval, relations, independent Knowledge
+  projects, attachment storage and backup/restore are already implemented.
 - Hosted deployment topology, pricing, and packaging; whether the broader
   product eventually needs a name beyond Worktree Control.
 

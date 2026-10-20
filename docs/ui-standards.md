@@ -9,8 +9,8 @@ status: "active"
 
 Apply these standards to new or changed dashboard flows. They are a working
 contract for the GUI rework, not a claim that every existing screen complies.
-The [approved visual direction](backlog/notes/NOTE-20260911-approved-gui-direction/direction.md)
-remains authoritative. The [layout proposal](backlog/notes/NOTE-20260928-knowledge-reading-audit/layout-direction.md)
+The [approved visual direction](knowledge/AGENTS.md) (Knowledge attachment `860fe2f28d0548b78c8227f6b1583b09`)
+remains authoritative. The [layout proposal](knowledge/AGENTS.md) (Knowledge attachment `df45f3da40867eb291156f9ac000a92c`)
 explains the audit evidence and staged adoption.
 
 ## Composition

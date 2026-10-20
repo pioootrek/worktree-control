@@ -146,12 +146,12 @@ the run. It never treats an occupied port or a recycled PID as ownership.
 It does not install, restart or reconfigure a user service, change host resource
 guards, or use a registered project's development port.
 
-Record fresh release evidence under `docs/backlog/notes/`. Historical RSS values
+Record fresh release evidence as Knowledge memory and attachments. Historical RSS values
 remain dated observations, not current promises. Broader multi-project
 acceptance still needs its browser and owner-workflow evidence.
 
 Measured evidence for the implementation incorporating PR #20 is recorded in
-[the 2026-09-09 acceptance report](backlog/notes/NOTE-20260909-controller-resource-budget/findings.md),
+[the 2026-09-09 acceptance report](knowledge/AGENTS.md) (Knowledge attachment `8d5f9cb12b7fa38d04798240b6605be8`),
 including raw samples, failed candidates, margin and the negative control.
 
 ## Verification history reads

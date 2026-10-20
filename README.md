@@ -302,6 +302,11 @@ Logs can be filtered, searched, paused and exported. macOS reports unavailable
 process metrics, and its service lifecycle still needs real-host verification.
 Windows process-tree and service management are unsupported.
 
+**Test analysis** shows retained verification history, phase timings and passive
+per-run Linux RAM/CPU observations. Process outcomes and source evidence remain
+separate; missing or partial measurements are labelled. See the
+[history API and resource semantics](https://github.com/pioootrek/worktree-control/blob/main/docs/verification-history-api.md).
+
 ## Self-hosting and HTTPS
 
 One Node.js controller serves the exported dashboard, owns SQLite, and manages
@@ -711,7 +716,7 @@ workflow are not yet available. See the [remote verification plan](https://githu
 
 Optional account login, agent-fleet coordination and maintainer-operated hosting
 are planned. There is no hosted signup or pricing offer today. Self-hosting is
-intended to remain complete and independent. See the [self-hosted and SaaS plan](https://github.com/pioootrek/worktree-control/blob/main/docs/backlog/notes/NOTE-20260909-self-hosted-saas-plan/implementation-plan.md).
+intended to remain complete and independent. Read Knowledge memory `570757852db162a0d3c6d2c252b26e7e` and its `implementation-plan.md` attachment through the [knowledge workflow](https://github.com/pioootrek/worktree-control/blob/main/docs/knowledge/AGENTS.md).
 
 ## Documentation
 
@@ -727,7 +732,7 @@ intended to remain complete and independent. See the [self-hosted and SaaS plan]
 | [Knowledge evidence](docs/knowledge-evidence.md) | Attachment policy, logical capacity, preflight and evidence bundles |
 | [Architecture](https://github.com/pioootrek/worktree-control/blob/main/docs/architecture.md) | Controller, persistence and module boundaries |
 | [UI standards](https://github.com/pioootrek/worktree-control/blob/main/docs/ui-standards.md) | Layout, readers, focus and interaction rules |
-| [Backlog workflow](https://github.com/pioootrek/worktree-control/blob/main/docs/backlog/AGENTS.md) | Current work in Knowledge; JSON records remain the import archive |
+| [Backlog workflow](https://github.com/pioootrek/worktree-control/blob/main/docs/knowledge/AGENTS.md) | Tasks, discussions and historical sources in Knowledge |
 
 ## Contributing and feedback
 

@@ -1,6 +1,6 @@
 ---
 audience: "contributors and coding agents"
-last_reviewed: "2026-10-05"
+last_reviewed: "2026-10-20"
 source_of_truth: "product intent and initial architecture of Worktree Control"
 status: "active"
 ---
@@ -40,11 +40,10 @@ servers.
 
 Shared human/agent memory, discussions, tasks, attachments and Hub import are
 implemented on `main`; see [shared project memory](shared-project-memory-plan.md)
-for delivered stages and remaining pilot/cutover work. Knowledge has a durable
+for delivered stages and remaining instruction workflows. Knowledge has a durable
 project identity independent of runtime ownership. This repository's current
-work lives in Knowledge project `k7a-worktree-switcher`; the repository-backed
-records remain its import archive. Other projects follow their own explicit
-migration decisions; see [the workflow](backlog/AGENTS.md).
+work lives in Knowledge project `k7a-worktree-switcher`; the original repository records remain in Knowledge provenance and Git
+history. Other projects follow their own explicit migration decisions; see [the workflow](knowledge/AGENTS.md).
 The subsequent [agent coordination plan](agent-fleet-coordination-plan.md)
 adds assignments, messages, and evidence across sessions. Agent coordination
 and autonomous execution remain planned; delivered knowledge does not imply an
@@ -68,6 +67,15 @@ The [architecture and effort assessment](architecture-effort-assessment.md)
 records the expected structural changes, indicative effort, exclusions, and
 delivery uncertainty. It recommends an incremental remote-verification slice,
 not a rewrite or a committed launch schedule.
+
+## Delivered verification telemetry
+
+Stages 1–4 provide phase timing, bounded verification history through HTTP/MCP,
+passive Linux RAM/CPU observations, and the dashboard's Test analysis view.
+Process outcomes and source attribution remain separate. Missing measurements
+and partial sampling are visible rather than represented as zero usage.
+Detailed framework reporters, OTLP export and per-job resource enforcement
+remain future work. See [verification history](verification-history-api.md).
 
 ## Initial architecture
 
@@ -170,12 +178,14 @@ alias for the same executable. The product was called Worktree Switcher until
 2026-10-05, when it was renamed because the npm name `worktree-switcher` had
 been taken that day by an unrelated Windows-only project; `worktree-switcher`
 on npm is not this product. A global user-level installation registered as an operating-system user service is the
-recommended daily-use path. The package remains private and unpublished; use
-the verified tarball or a source build for foreground evaluation and diagnostics.
+recommended daily-use path. Version `0.1.1` is published on npm; verified
+tarballs and source builds also support foreground evaluation and diagnostics.
 Running `worktree-control` or `worktree-control start`
 starts one foreground controller, opens the browser, and owns its managed child
-processes. New installations first require `auth token generate`; existing
-installations retain legacy mode until explicitly migrated. `--no-open` supports
+processes. An interactive first start or service installation can generate the
+installation token; explicit `auth token generate` supports advance setup.
+Existing installations retain their authentication mode until explicitly
+migrated. `--no-open` supports
 headless use. See [authentication](authentication.md) for CLI access and migration.
 
 The CLI installs a systemd user service on Linux or a LaunchAgent on macOS
@@ -201,11 +211,13 @@ remain deferred until real usage justifies their maintenance.
 ## Interface system
 
 The owner-approved redesign direction is recorded in
-[Approved GUI direction](backlog/notes/NOTE-20260911-approved-gui-direction/direction.md),
+[Approved GUI direction](knowledge/AGENTS.md) (Knowledge attachment `860fe2f28d0548b78c8227f6b1583b09`),
 including the canonical project-detail mock. Subsequent GUI design follows its
 charcoal and restrained lime visual system. WinPath may inform the component
 development process only; copying its appearance is explicitly prohibited.
-This approval records a design target, not a shipped redesign.
+The project/worktree interface has since adopted this direction; the approved
+mock remains a design reference rather than a claim that every proposed flow
+has shipped.
 
 The dashboard uses shadcn/ui source components with the `new-york` style,
 Radix primitives, Tailwind CSS, and CSS-variable design tokens. It is dark-first

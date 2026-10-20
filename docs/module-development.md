@@ -122,7 +122,7 @@ Extract these when their next workflow needs it, using the same lifecycle.
 
 Cache deletion already shares lifecycle serialization with runtime, reservations,
 project removal and test admission. That race was fixed in
-[DONE-20260908-cache-lifecycle-serialization](backlog/done/DONE-20260908-cache-lifecycle-serialization.json).
+[DONE-20260908-cache-lifecycle-serialization](knowledge/AGENTS.md) (Knowledge task `0b0a441e853543691b7148f730062518`).
 Preserve the shared authority during further extraction.
 Dashboard event classification and browser reconciliation live at the existing
 event/feature boundaries; feature composition still has one SSE subscription

@@ -1,10 +1,12 @@
 # K7a: self-import pilot
 
-This procedure rehearses the knowledge import, a human/two-agent workflow and
-recovery on an isolated copy. It never writes the live controller database and
-never switches a project to the new store: the Git-backed backlog stays the
-source of truth. The latest run and its limits are recorded in
-[the knowledge item](../docs/backlog/feature/FEAT-20260905-shared-project-memory.json).
+This historical procedure rehearses the knowledge import, a human/two-agent
+workflow and recovery on an isolated copy. It never writes the live controller
+database or performs a cutover. This repository retired its file backlog on
+2026-10-10; current work lives in Knowledge. Reproducing the import requires a
+historical source checkout containing `docs/backlog`, from before that retirement.
+The pilot results and their limits are recorded in
+[the knowledge item](../docs/knowledge/AGENTS.md) (Knowledge task `61fe18411b58fa4cbc7ff2f6a90bcd28`).
 Do not treat any pilot result as approval to migrate the live backlog.
 
 Run from the repository root of a clean, committed revision after installing
@@ -125,4 +127,5 @@ Successful assertions establish this dataset's import/recovery and the selected
 live workflow. They do not approve cutover, prove arbitrary import mappings,
 complete historical author/date presentation, or measure SaaS capacity. Inspect
 unresolved references, archived items and original payload presentation before
-moving the write source. Keep the report in the canonical backlog on `main`.
+moving another project's write source. Save new reports in the project's
+current Knowledge task.
