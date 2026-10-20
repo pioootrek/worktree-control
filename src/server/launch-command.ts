@@ -128,6 +128,20 @@ function djangoPython(worktreePath: string): string {
   return "python3";
 }
 
+export function detectLaunchPreset(worktreePath: string): Exclude<LaunchPreset, "auto"> {
+  const hasNode = existsSync(join(worktreePath, "package.json"));
+  const managePyPath = join(worktreePath, "manage.py");
+  const hasDjango = existsSync(managePyPath) && statSync(managePyPath).isFile();
+  if (hasNode && hasDjango) {
+    throw new Error("Repozytorium zawiera package.json i manage.py. Wybierz preset Node.js albo Django.");
+  }
+  const godotPath = join(worktreePath, "project.godot");
+  const hasGodot = existsSync(godotPath) && statSync(godotPath).isFile();
+  const preset = hasNode ? "node" : hasDjango ? "django" : hasGodot ? "none" : null;
+  if (!preset) throw new Error("Nie wykryto obsługiwanego projektu. Oczekiwano package.json albo manage.py.");
+  return preset;
+}
+
 export class ProjectLaunchCommandResolver implements LaunchCommandResolver {
   resolve(
     worktreePath: string,
@@ -137,15 +151,7 @@ export class ProjectLaunchCommandResolver implements LaunchCommandResolver {
   ): LaunchCommand {
     const packageJsonPath = join(worktreePath, "package.json");
     const managePyPath = join(worktreePath, "manage.py");
-    const hasNode = existsSync(packageJsonPath);
-    const hasDjango = existsSync(managePyPath) && statSync(managePyPath).isFile();
-    if (preset === "auto" && hasNode && hasDjango) {
-      throw new Error("Repozytorium zawiera package.json i manage.py. Wybierz preset Node.js albo Django.");
-    }
-    const godotPath = join(worktreePath, "project.godot");
-    const hasGodot = existsSync(godotPath) && statSync(godotPath).isFile();
-    const resolvedPreset = preset === "auto" ? (hasNode ? "node" : hasDjango ? "django" : hasGodot ? "none" : null) : preset;
-    if (!resolvedPreset) throw new Error("Nie wykryto obsługiwanego projektu. Oczekiwano package.json albo manage.py.");
+    const resolvedPreset = preset === "auto" ? detectLaunchPreset(worktreePath) : preset;
 
     if (resolvedPreset === "none") {
       if (tlsInput.mode !== "off") throw new Error(NO_SERVER_MESSAGE);
@@ -153,7 +159,7 @@ export class ProjectLaunchCommandResolver implements LaunchCommandResolver {
     }
 
     if (resolvedPreset === "django") {
-      if (!hasDjango) throw new Error("Nie znaleziono manage.py w katalogu głównym worktree.");
+      if (!existsSync(managePyPath) || !statSync(managePyPath).isFile()) throw new Error("Nie znaleziono manage.py w katalogu głównym worktree.");
       if (tlsInput.mode !== "off") throw new Error("HTTPS zarządzany przez Worktree Control jest obecnie obsługiwany tylko dla Next.js.");
       return {
         preset: "django",
@@ -164,7 +170,7 @@ export class ProjectLaunchCommandResolver implements LaunchCommandResolver {
       };
     }
 
-    if (!hasNode) throw new Error("Nie znaleziono package.json w katalogu głównym worktree.");
+    if (!existsSync(packageJsonPath)) throw new Error("Nie znaleziono package.json w katalogu głównym worktree.");
 
     let packageJson: PackageJson;
     try {

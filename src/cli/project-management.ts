@@ -9,6 +9,7 @@ import { type Locale, translate } from "../i18n/messages";
 import { ControlService } from "../server/control-service";
 import { acquireControllerLock, ControllerAlreadyRunningError, type ControllerLock } from "../server/controller-lock";
 import { SystemGitWorktreeReader } from "../server/git-worktrees";
+import { detectLaunchPreset } from "../server/launch-command";
 import { nullLogWriter } from "../server/log-writer";
 import type { AppPaths } from "../server/paths";
 import { ProcessManager } from "../server/process-manager";
@@ -106,22 +107,23 @@ export async function runProjectCommand(
     const dashboard = await gateway.dashboard();
     const requestedPort = optionValue(args, "--port", locale);
     const configuredPorts = new Map(dashboard.projects.map(({ project }) => [project.port, project.name]));
+    const resolvedPath = resolve(repositoryPath);
     let port: number;
     if (requestedPort) {
       port = parseProjectPort(requestedPort, locale);
       const assignedProject = configuredPorts.get(port);
       if (assignedProject) throw new Error(translate(locale, "cli.project.portAssigned", { port, name: assignedProject }));
     } else {
+      const resolvedPreset = preset === "auto" ? detectLaunchPreset(resolvedPath) : preset;
       try {
         port = await findAvailablePort(
           new Set(configuredPorts.keys()),
-          preset === "none" ? async () => true : dependencies.isPortAvailable ?? isPortAvailable,
+          resolvedPreset === "none" ? async () => true : dependencies.isPortAvailable ?? isPortAvailable,
         );
       } catch {
         throw new Error(translate(locale, "cli.project.noAvailablePort"));
       }
     }
-    const resolvedPath = resolve(repositoryPath);
     const project = await gateway.addProject({
       name: optionValue(args, "--name", locale) ?? basename(resolvedPath),
       repositoryPath: resolvedPath,
