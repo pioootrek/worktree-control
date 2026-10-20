@@ -12,6 +12,12 @@ const sourceFailed: TestSummaryEntry = { detailAvailable: false, summary: pilotS
   runId: "5a1c0000-0000-4000-8000-000000000001", presetId: "node:test:integration", queuedAt: "2026-10-19T17:40:00.000Z",
   phase: "failed", processOutcome: "passed", attribution: "changed", sourceReasonCodes: ["source_changed_during_execution"],
 }) };
+// finish() retains the successful command/source facts when finishTest() fails to close the log.
+// TestRunSummary has no error field; this phase/outcome/attribution combination is its retained evidence.
+const finalizationFailed: TestSummaryEntry = { detailAvailable: false, summary: pilotSummary({
+  runId: "5a1c0000-0000-4000-8000-000000000003", presetId: "node:build", queuedAt: "2026-10-19T17:42:00.000Z",
+  phase: "failed", processOutcome: "passed", attribution: "observed_match", sourceReasonCodes: [], exitCode: 0, signal: null,
+}) };
 const legacy: TestSummaryEntry = { detailAvailable: false, summary: pilotSummary({
   runId: "5a1c0000-0000-4000-8000-000000000002", presetId: "node:lint", queuedAt: "2026-10-18T15:08:51.782Z",
   telemetry: { ...pilotSummary().telemetry, resources: undefined, availability: "legacy_unknown", durations: { queueMs: null, prepareMs: null, processMs: null, cleanupMs: null, finalizationMs: null, totalMs: null, runnerWaitMs: null } },
@@ -154,6 +160,45 @@ test("summary, run detail and two-run comparison use the history API with honest
   expect(errors).toEqual([]);
   await page.screenshot({ path: test.info().outputPath("analysis-1440.png"), fullPage: true, animations: "disabled" });
 });
+
+for (const width of [1440, 390]) {
+  for (const locale of ["en", "pl"] as const) {
+    test(`finalization failure stays visible in the run list at ${width}px in ${locale}`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 1000 });
+      const entries = [finalizationFailed, sourceFailed, pilotLeft];
+      const { handler } = api((url) => ({ json: url.pathname.endsWith("/test-metrics") ? metricsFor(entries) : historyPage(entries) }));
+      const { errors } = await mountDashboard(page, dashboardFixture(), { readApi: handler });
+      const screen = await openAnalysis(page, width);
+      if (locale === "pl") await selectLanguage(page);
+
+      const runs = screen.locator(width < 1024 ? "[data-analysis-run]" : "[data-analysis-runs] tbody tr");
+      const failed = runs.filter({ hasText: "node:build" });
+      const source = runs.filter({ hasText: "node:test:integration" });
+      const passed = runs.filter({ hasText: "node:typecheck" });
+      const finalizationWarning = locale === "en"
+        ? "The command itself succeeded, but its result could not be saved, so the run is marked failed."
+        : "Samo polecenie zakończyło się sukcesem, ale nie udało się zapisać jego wyniku, więc uruchomienie oznaczono jako nieudane.";
+      const sourceWarning = locale === "en" ? "Run failed on the source check" : "Uruchomienie nieudane przez kontrolę źródła";
+      const commandLabel = locale === "en" ? "Passed" : "Zaliczony";
+      const sourceLabel = locale === "en" ? "Matched" : "Zgodne";
+      await expect(failed.getByText(finalizationWarning, { exact: true })).toBeVisible();
+      await expect(failed.getByText(commandLabel, { exact: true })).toBeVisible();
+      await expect(failed.getByText(sourceLabel, { exact: true })).toBeVisible();
+      await expect(failed).not.toContainText(sourceWarning);
+      await expect(source.getByText(sourceWarning, { exact: true })).toBeVisible();
+      await expect(source.getByText(commandLabel, { exact: true })).toBeVisible();
+      await expect(source.getByText(locale === "en" ? "Changed" : "Zmienione", { exact: true })).toBeVisible();
+      await expect(source).not.toContainText(finalizationWarning);
+      await expect(passed.getByText(commandLabel, { exact: true })).toBeVisible();
+      await expect(passed.getByText(sourceLabel, { exact: true })).toBeVisible();
+      await expect(passed).not.toContainText(finalizationWarning);
+      await expect(passed).not.toContainText(sourceWarning);
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+      expect(errors).toEqual([]);
+    });
+  }
+}
 
 test("comparison explains a null resource delta without disabling other measures", async ({ page }) => {
   const comparison = pilotComparison();

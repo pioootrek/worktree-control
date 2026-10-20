@@ -159,7 +159,7 @@ function TelemetryView({ snapshot, token }: { snapshot: ProjectSnapshot; token: 
                       <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{dateTime(summary.queuedAt)}</TableCell>
                       <TableCell className="max-w-64"><p className="truncate font-medium" title={summary.presetId}>{summary.presetId}</p><p className="truncate text-xs text-muted-foreground" title={summary.worktreePath}>{worktreeName(summary.worktreePath)}</p></TableCell>
                       <TableCell><CommandBadge result={facts.command} />{summary.exitCode !== null ? <p className="mt-1 text-xs text-muted-foreground">{t("analysis.exitCode", { code: summary.exitCode })}</p> : null}</TableCell>
-                      <TableCell><SourceBadge source={facts.source} />{facts.note === "source_overrode_command" ? <p className="mt-1 text-xs text-warning-foreground">{t("analysis.runFailedBySource")}</p> : null}</TableCell>
+                      <TableCell><SourceBadge source={facts.source} />{facts.note === "source_overrode_command" || facts.note === "finalization_overrode_command" ? <p className="mt-1 text-xs text-warning-foreground">{t(facts.note === "source_overrode_command" ? "analysis.runFailedBySource" : "analysis.note.finalization_overrode_command")}</p> : null}</TableCell>
                       <TableCell className="text-right"><Value text={formatDuration(summary.telemetry.durations.totalMs, locale)} /></TableCell>
                       <TableCell className="text-right"><Value text={formatDuration(summary.telemetry.durations.processMs, locale)} /></TableCell>
                       <TableCell className="text-right"><Value text={formatBytes(resources?.peakSampledRssBytes)} />{resources?.status === "partial" ? <p className="text-xs text-warning-foreground">{t("analysis.resourceStatus.partial")}</p> : null}</TableCell>
@@ -207,7 +207,7 @@ function RunCard({ entry, worktree, when, selected, selectionFull, onToggle, onO
       <div className="min-w-0 flex-1 space-y-2">
         <div className="min-w-0"><p className="break-all font-medium">{summary.presetId}</p><p className="break-all text-xs text-muted-foreground">{worktree} · {when}</p></div>
         <div className="flex flex-wrap gap-1.5"><CommandBadge result={facts.command} /><SourceBadge source={facts.source} /></div>
-        {facts.note === "source_overrode_command" ? <p className="text-xs text-warning-foreground">{t("analysis.runFailedBySource")}</p> : null}
+        {facts.note === "source_overrode_command" || facts.note === "finalization_overrode_command" ? <p className="text-xs text-warning-foreground">{t(facts.note === "source_overrode_command" ? "analysis.runFailedBySource" : "analysis.note.finalization_overrode_command")}</p> : null}
         <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
           <div><dt className="text-muted-foreground">{t("analysis.duration.totalMs")}</dt><dd><Value text={formatDuration(summary.telemetry.durations.totalMs, locale)} /></dd></div>
           <div><dt className="text-muted-foreground">{t("analysis.duration.processMs")}</dt><dd><Value text={formatDuration(summary.telemetry.durations.processMs, locale)} /></dd></div>
