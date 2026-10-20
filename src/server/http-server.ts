@@ -60,7 +60,7 @@ function parseAddProject(value: unknown) {
   const port = record.port;
   if (typeof port !== "number" || !Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Nieprawidłowe pole port.");
   const launchPreset = record.launchPreset ?? "auto";
-  if (launchPreset !== "auto" && launchPreset !== "node" && launchPreset !== "django") throw new Error("Nieprawidłowy preset uruchomienia.");
+  if (launchPreset !== "auto" && launchPreset !== "node" && launchPreset !== "django" && launchPreset !== "none") throw new Error("Nieprawidłowy preset uruchomienia.");
   return {
     name: requiredString(record, "name", 80),
     repositoryPath: requiredString(record, "repositoryPath", 4096),

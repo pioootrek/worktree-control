@@ -55,3 +55,31 @@ describe("ProjectTestCommandResolver", () => {
     expect(() => resolver.resolve(directory, "shell:anything")).toThrow("adapter");
   });
 });
+
+describe("Godot public verification entrypoint", () => {
+  it("discovers only the fixed finite script operations and revalidates removal", () => {
+    const directory = fixture();
+    writeFileSync(join(directory, "project.godot"), "config_version=5\n");
+    const resolver = new ProjectTestCommandResolver();
+    expect(resolver.discover(directory)).toEqual([]);
+    mkdirSync(join(directory, "scripts"));
+    writeFileSync(join(directory, "scripts/project.sh"), "# public project script\n");
+    expect(resolver.discover(directory).map(p => [p.id, p.adapter])).toEqual([["godot:check", "godot"], ["godot:export-macos", "godot"]]);
+    for (const name of ["check", "export-macos"]) {
+      expect(resolver.resolve(directory, `godot:${name}`)).toMatchObject({ executable: "bash", args: ["scripts/project.sh", name], cwd: directory });
+    }
+    expect(() => resolver.resolve(directory, "godot:editor")).toThrow("nie istnieje");
+    rmSync(join(directory, "scripts/project.sh"));
+    expect(() => resolver.resolve(directory, "godot:check")).toThrow("nie istnieje");
+  });
+
+  it("does not follow project script symlinks outside the discovered worktree", async () => {
+    const { symlinkSync } = await import("node:fs");
+    const directory = fixture(), outside = fixture();
+    writeFileSync(join(directory, "project.godot"), "fixture");
+    writeFileSync(join(outside, "project.sh"), "exit 0\n");
+    mkdirSync(join(directory, "scripts"));
+    symlinkSync(join(outside, "project.sh"), join(directory, "scripts/project.sh"));
+    expect(new ProjectTestCommandResolver().discover(directory)).toEqual([]);
+  });
+});

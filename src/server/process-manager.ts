@@ -1,3 +1,4 @@
+import { NO_SERVER_MESSAGE } from "./launch-command";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
 import { networkInterfaces } from "node:os";
@@ -149,6 +150,7 @@ export class ProcessManager {
   }
 
   async start(project: Project, worktreePath: string, beforeSpawn?: () => void): Promise<void> {
+    if (project.launchPreset === "none") throw new Error(NO_SERVER_MESSAGE);
     this.assertStartAdmission();
     const current = this.runtimes.get(project.id) ?? emptyRuntime(project.id);
     if (current.group || current.cleanup) throw new Error("Serwer projektu już działa.");

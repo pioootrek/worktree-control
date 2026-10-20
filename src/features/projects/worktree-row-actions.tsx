@@ -54,7 +54,7 @@ export function WorktreeRowActions({ snapshot, worktree, busy, pendingPath, onOp
   };
 
   return <div className="flex flex-wrap items-center justify-end gap-1.5 max-md:justify-start">
-    <Button size="sm" variant="outline" aria-describedby={targetDescriptionId} disabled={progress || (running && located ? busy : blocked)} title={reservation ? t("row.reserved") : undefined}
+    {project.launchPreset !== "none" && <Button size="sm" variant="outline" aria-describedby={targetDescriptionId} disabled={progress || (running && located ? busy : blocked)} title={reservation ? t("row.reserved") : undefined}
       onClick={(event) => {
         if (running && located) openServer();
         else if (running) { dialogOrigin.current = event.currentTarget; setDialog("switch"); }
@@ -64,7 +64,7 @@ export function WorktreeRowActions({ snapshot, worktree, busy, pendingPath, onOp
         : running && located ? <><ExternalLink aria-hidden />{t("row.open")}</>
           : running ? <><RefreshCw aria-hidden />{t("row.switch")}</>
             : <><Play aria-hidden />{t("row.start")}</>}
-    </Button>
+    </Button>}
     <span id={targetDescriptionId} className="sr-only">{t("worktreeLayout.actionTarget", { project: project.name, branch })}</span>
     {located && runtime.phase === "failed" ? <Button size="sm" variant="outline" aria-label={t("worktreeLayout.serverFailureLogsFor", { project: project.name, branch })} onClick={onOpenLogs}><ScrollText aria-hidden />{t("worktreeLayout.serverFailureLogs")}</Button> : null}
     {reservation && !(running && located) ? <span className="text-xs text-muted-foreground">{t("row.reserved")}</span> : null}
@@ -72,7 +72,7 @@ export function WorktreeRowActions({ snapshot, worktree, busy, pendingPath, onOp
       <DropdownMenuTrigger asChild><Button ref={menuTrigger} variant="ghost" size="icon-sm" aria-label={t("worktreeLayout.moreForProject", { branch, project: project.name })}><MoreHorizontal aria-hidden /></Button></DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuItem onSelect={() => { dialogOrigin.current = menuTrigger.current; setDialog("details"); }}><Info aria-hidden />{t("row.details")}</DropdownMenuItem>
-        {running && located ? <>
+        {project.launchPreset !== "none" && running && located ? <>
           <DropdownMenuSeparator />
           <DropdownMenuItem disabled={blocked} onSelect={() => onOperate("restart", worktree.path)}><RotateCcw aria-hidden />{t("row.restart")}</DropdownMenuItem>
           <DropdownMenuItem disabled={blocked} onSelect={() => onOperate("stop", worktree.path)}><Square aria-hidden />{t("row.stop")}</DropdownMenuItem>
@@ -102,9 +102,9 @@ export function WorktreeRowActions({ snapshot, worktree, busy, pendingPath, onOp
         <p className="break-all text-xs text-muted-foreground">{t("worktreeLayout.fullCommit")}: <span className="font-mono">{worktree.head}</span></p>
         <dl className="grid min-w-0 grid-cols-2 gap-4 text-sm">
           <Metric label={t("project.commit")} value={worktree.shortHead} mono />
-          <Metric label={t("project.runtimeState")} value={located ? t(`phase.${runtime.phase}`) : t("phase.stopped")} />
-          <Metric label={t("project.port")} value={String(project.port)} />
-          <Metric label={t("project.protocol")} value={project.tlsMode === "off" ? "HTTP" : "HTTPS"} />
+          <Metric label={t("project.runtimeState")} value={project.launchPreset === "none" ? t("project.noServer") : located ? t(`phase.${runtime.phase}`) : t("phase.stopped")} />
+          <Metric label={t("project.port")} value={project.launchPreset === "none" ? t("project.unusedPort") : String(project.port)} />
+          <Metric label={t("project.protocol")} value={project.launchPreset === "none" ? "—" : project.tlsMode === "off" ? "HTTP" : "HTTPS"} />
           <Metric label={t("project.preset")} value={t(`preset.${project.launchPreset}`)} />
           <Metric label="PID" value={located && runtime.pid ? String(runtime.pid) : "—"} />
           <Metric label={t("project.started")} value={located && runtime.startedAt ? new Date(runtime.startedAt).toLocaleString(locale) : "—"} />
@@ -116,7 +116,7 @@ export function WorktreeRowActions({ snapshot, worktree, busy, pendingPath, onOp
         </dl>
         {details?.measuredAt ? <p className="text-xs text-muted-foreground">{t("worktreeLayout.measuredAt", { time: details.measuredAt })}</p> : null}
         {details?.mergeUnknown ? <p className="text-xs text-muted-foreground">{t("overview.mergeUnknown")}</p> : null}
-        <p className="break-all font-mono text-xs">{project.executable} {project.args.join(" ")}</p>
+        {project.launchPreset !== "none" && <p className="break-all font-mono text-xs">{project.executable} {project.args.join(" ")}</p>}
       </DialogContent>
     </Dialog>
   </div>;

@@ -9,9 +9,11 @@ import { type Locale, translate } from "../i18n/messages";
 import { ControlService } from "../server/control-service";
 import { acquireControllerLock, ControllerAlreadyRunningError, type ControllerLock } from "../server/controller-lock";
 import { SystemGitWorktreeReader } from "../server/git-worktrees";
+import { detectLaunchPreset } from "../server/launch-command";
 import { nullLogWriter } from "../server/log-writer";
 import type { AppPaths } from "../server/paths";
 import { ProcessManager } from "../server/process-manager";
+import { discoverProjectRegistrationTarget } from "../server/project-registration";
 import { SqliteStateStore } from "../server/sqlite-store";
 import { controllerAccessToken, localDashboardEndpoint, readServiceAccess } from "./service-access";
 
@@ -79,7 +81,7 @@ export async function runProjectCommand(
         port: project.port,
         launchPreset: project.launchPreset,
         selectedWorktreePath: project.selectedWorktreePath,
-        runtimePhase: runtime.phase,
+        runtimePhase: project.launchPreset === "none" ? "no_server" : runtime.phase,
         reservedBy: reservation?.owner ?? null,
         discoveryError: discoveryError ?? null,
       })), null, 2));
@@ -91,7 +93,7 @@ export async function runProjectCommand(
     }
     write(translate(locale, "cli.project.listHeader"));
     for (const { project, runtime } of dashboard.projects) {
-      write([project.id, project.name, project.port, project.launchPreset, runtime.phase, project.selectedWorktreePath ?? "-"].join("\t"));
+      write([project.id, project.name, project.port, project.launchPreset, project.launchPreset === "none" ? "no_server" : runtime.phase, project.selectedWorktreePath ?? "-"].join("\t"));
     }
     return;
   }
@@ -100,28 +102,38 @@ export async function runProjectCommand(
     const repositoryPath = positionalArgument(args, 1, ["--name", "--port", "--preset"]);
     if (!repositoryPath) throw new Error(translate(locale, "cli.project.addUsage"));
     const preset = optionValue(args, "--preset", locale) ?? "auto";
-    if (preset !== "auto" && preset !== "node" && preset !== "django") {
+    if (preset !== "auto" && preset !== "node" && preset !== "django" && preset !== "none") {
       throw new Error(translate(locale, "cli.project.invalidPreset"));
     }
     const dashboard = await gateway.dashboard();
     const requestedPort = optionValue(args, "--port", locale);
     const configuredPorts = new Map(dashboard.projects.map(({ project }) => [project.port, project.name]));
+    const resolvedPath = resolve(repositoryPath);
     let port: number;
     if (requestedPort) {
       port = parseProjectPort(requestedPort, locale);
       const assignedProject = configuredPorts.get(port);
       if (assignedProject) throw new Error(translate(locale, "cli.project.portAssigned", { port, name: assignedProject }));
     } else {
+      let resolvedPreset = preset;
+      if (preset === "auto") {
+        const git = new SystemGitWorktreeReader();
+        try {
+          const { selectedWorktree } = await discoverProjectRegistrationTarget(git, resolvedPath);
+          resolvedPreset = detectLaunchPreset(selectedWorktree.path);
+        } finally {
+          git.close();
+        }
+      }
       try {
         port = await findAvailablePort(
           new Set(configuredPorts.keys()),
-          dependencies.isPortAvailable ?? isPortAvailable,
+          resolvedPreset === "none" ? async () => true : dependencies.isPortAvailable ?? isPortAvailable,
         );
       } catch {
         throw new Error(translate(locale, "cli.project.noAvailablePort"));
       }
     }
-    const resolvedPath = resolve(repositoryPath);
     const project = await gateway.addProject({
       name: optionValue(args, "--name", locale) ?? basename(resolvedPath),
       repositoryPath: resolvedPath,

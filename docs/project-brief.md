@@ -146,7 +146,16 @@ consumes no slot until its server starts. Switching retains the current slot,
 failed starts release it, and lowering the limit never terminates existing
 processes.
 
-Registration offers automatic, Node.js, and Django launch presets. For Node.js
+Registration offers automatic, Node.js, Django, and verification-only (`none`)
+launch presets. `none` accepts repositories without a runtime manifest; automatic
+detection uses it for a root `project.godot` only when Node/Django is absent.
+These projects keep the configured port field but use no port or server capacity.
+Their dashboard shows no server and hides runtime/TLS controls. Queue tests
+without an MCP runtime claim. A Godot project with `scripts/project.sh` exposes
+`godot:check` and `godot:export-macos` through that public script; without it,
+there are no Godot presets.
+
+For Node.js
 projects, it detects `pnpm`, `npm`, `yarn`, or `bun` from
 `packageManager` and lockfiles. It requires a `dev` script, except that an
 Angular workspace identified by `angular.json` and `@angular/cli` may use the
@@ -245,7 +254,7 @@ text and an icon so meaning does not depend on color perception.
   agent lease.
 - Preserve a stable configured port per project.
 - Show readiness, failure details, and recent logs.
-- Discover, queue, cancel, and retain results for Node.js and Django test or verification presets per worktree.
+- Discover, queue, cancel, and retain results for Node.js, Django and Godot test or verification presets per worktree.
 - Install the controller as a persistent user-level service and prevent a
   second controller from taking ownership of the same state.
 - Allow a dirty worktree to run while showing a persistent warning.

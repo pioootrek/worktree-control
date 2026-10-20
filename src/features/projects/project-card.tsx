@@ -125,7 +125,7 @@ export function ProjectCard({
 
   const projectHeaderActions = <>
     <EnvironmentSettingsDialog project={project} phase={runtime.phase} mutate={mutate} setError={setError} />
-    {project.launchPreset !== "django" && <TlsSettingsDialog project={project} phase={runtime.phase} token={token} mutate={mutate} setError={setError} />}
+    {project.launchPreset !== "django" && project.launchPreset !== "none" && <TlsSettingsDialog project={project} phase={runtime.phase} token={token} mutate={mutate} setError={setError} />}
     <AlertDialog>
       <AlertDialogTrigger asChild>
         <Button variant="ghost" size="icon" disabled={isBusy} aria-label={t("project.remove")}><Trash2 aria-hidden /></Button>
@@ -184,15 +184,15 @@ export function ProjectCard({
           <div>
             <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">{t("project.runningServer")}</p>
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-              <RuntimeBadge phase={runtime.phase} />
+              <RuntimeBadge phase={runtime.phase} noServer={project.launchPreset === "none"} />
               <span className="flex min-w-0 items-center gap-2 font-mono text-sm font-medium">
                 <GitBranch className="size-4 text-muted-foreground" aria-hidden />
                 <span className="truncate">{worktrees.find((worktree) => worktree.path === runtime.worktreePath)?.branch ?? t("project.noRuntime")}</span>
               </span>
             </div>
           </div>
-          <Metric label={t("project.port")} value={String(project.port)} />
-          <Metric label={t("project.protocol")} value={project.tlsMode === "off" ? "HTTP" : "HTTPS"} />
+          <Metric label={t("project.port")} value={project.launchPreset === "none" ? t("project.unusedPort") : String(project.port)} />
+          <Metric label={t("project.protocol")} value={project.launchPreset === "none" ? "—" : project.tlsMode === "off" ? "HTTP" : "HTTPS"} />
         </div>}
 
         <div className={`px-5 sm:px-6 ${section === "worktrees" ? "py-3" : "py-5"}`}>
@@ -262,7 +262,7 @@ export function ProjectCard({
             </Select>
           </div>
           <div className="flex flex-wrap gap-2">
-            {runtime.phase === "running" ? (
+            {project.launchPreset !== "none" && <>{runtime.phase === "running" ? (
               <Button variant="outline" onClick={() => void act("stop")} disabled={isBusy}><Square aria-hidden />Stop</Button>
             ) : (
               <Button onClick={() => void act("start")} disabled={isBusy || !selected}><Play aria-hidden />Start</Button>
@@ -277,7 +277,7 @@ export function ProjectCard({
             </Tooltip>
             <Button variant="secondary" onClick={() => void act("switch")} disabled={isBusy || !selected || runtime.worktreePath === selected}>
               <RefreshCw aria-hidden />{t("project.switch")}
-            </Button>
+            </Button></>}
           </div>
         </div>
 
@@ -287,7 +287,7 @@ export function ProjectCard({
             <p className="mt-1 truncate font-mono text-sm font-medium" title={selectedWorktree?.path}>{selectedWorktree?.branch ?? t("project.noSelection")} <span className="text-muted-foreground">· {selectedWorktree?.shortHead ?? "—"}</span></p>
           </div>
           <p className="text-sm text-muted-foreground">
-            {!hasActiveRuntime
+            {project.launchPreset === "none" ? t("project.verificationOnly") : !hasActiveRuntime
               ? t("project.noActiveServer")
               : runtime.worktreePath && runtime.worktreePath !== selected
               ? t("project.transition", { from: worktrees.find((worktree) => worktree.path === runtime.worktreePath)?.branch ?? "—", to: selectedWorktree?.branch ?? "—" })

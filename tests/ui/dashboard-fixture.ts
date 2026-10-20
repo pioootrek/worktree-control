@@ -175,10 +175,11 @@ export async function mountDashboard(
           snapshot.runtime.worktreePath = body.worktreePath;
           break;
         case "/api/projects/web/tests": {
+          const preset = snapshot.testPresets.find(p => p.worktreePath === body.worktreePath)?.presets.find(p => p.id === body.presetId);
           const run: TestRun = {
             id: "run-1", projectId: "web", worktreePath, worktreeHead: "abcdef123456", worktreeBranch: "main", worktreeDirty: false,
-            presetId: "node:test", presetName: "test", adapter: "node", actor: "local-user", phase: "queued", queuePosition: 1,
-            executable: "pnpm", args: ["run", "test"], cwd: worktreePath, queuedAt: now, startedAt: null, finishedAt: null,
+            presetId: preset?.id ?? "node:test", presetName: preset?.name ?? "test", adapter: preset?.adapter ?? "node", actor: "local-user", phase: "queued", queuePosition: 1,
+            executable: preset?.adapter === "godot" ? "bash" : "pnpm", args: preset?.adapter === "godot" ? ["scripts/project.sh", preset.name] : ["run", "test"], cwd: worktreePath, queuedAt: now, startedAt: null, finishedAt: null,
             exitCode: null, signal: null, error: null, logs: ["fixture test output"], environmentMode: "clean", environmentProfile: "unit",
             inheritedServerProfile: null, environmentVariableNames: ["NODE_ENV"],
             source: { version: 1, scope: "git-observations", enqueue: null, preflight: null, finish: null, queueComparison: "unknown", executionComparison: "unknown", attribution: "legacy_unknown", reasonCodes: ["legacy_evidence_unavailable"], processOutcome: null },

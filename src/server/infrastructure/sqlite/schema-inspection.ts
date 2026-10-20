@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { verificationProjectChecksum, verificationProjectMigration } from "./verification-project-migration";
 import { telemetryChecksum, telemetryMigration } from "./test-summary-migration";
 import { initializeSchema } from "./migrations";
 
@@ -97,7 +98,8 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
     const entries = database.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version").all() as Array<{version:number;name:string|null;checksum:string|null}>;
     if (entries.some(x => x.version < 28 ? x.name !== null || x.checksum !== null
       : x.version === 28 ? x.name !== registryMigration.name || x.checksum !== registryChecksum
-      : x.name !== telemetryMigration.name || x.checksum !== telemetryChecksum)) refuse("migration checksum or name");
+      : x.version === 29 ? x.name !== telemetryMigration.name || x.checksum !== telemetryChecksum
+      : x.name !== verificationProjectMigration.name || x.checksum !== verificationProjectChecksum)) refuse("migration checksum or name");
   }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));
   if (objects.some(x => x.type === "view" || x.type === "trigger") || [...tables].some(x => !(x in tableVersions))) refuse();
@@ -117,6 +119,8 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
     // A known historical expression must not hide additional, unknown CHECKs.
     if (historicalLease && (actualChecks.length !== 2 || !actualChecks.includes("kindin('human','agent')"))) refuse("constraint in reservations: lease");
     for (let check of expected.checks) {
+      if (table === "projects" && version < 30) check = check.replace(",'none'", "");
+      if (table === "test_runs" && version < 30) check = check.replace(",'godot'", "");
       if (table === "remote_principals" && version < 25) check = check.replace(",'installation'", "");
       if (table === "knowledge_history" && version < 25) check = check.replace(",'installation_token','none'", "");
       if (table === "knowledge_history" && version < 20) check = check.replace(",'memory'", "").replace(",'approved','superseded'", "");

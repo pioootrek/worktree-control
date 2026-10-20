@@ -14,7 +14,7 @@ export type TestRunRow = {
   worktree_dirty: number;
   preset_id: string;
   preset_name: string;
-  adapter: "node" | "django";
+  adapter: TestRun["adapter"];
   actor: string;
   phase: TestRunPhase;
   queue_position: number | null;

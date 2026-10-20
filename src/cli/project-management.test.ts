@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { acquireControllerLock } from "../server/controller-lock";
 import { resolveAppPaths } from "../server/paths";
@@ -263,5 +263,85 @@ describe("project management CLI", () => {
     });
     expect(port).toBe(3002);
     expect(checked).toEqual([3001, 3002]);
+  });
+});
+
+describe("verification-only CLI registration", () => {
+  it.each([undefined, "auto", "none"])("selects an unassigned configured port without live probes for preset %s", async preset => {
+    const repository = temporaryDirectory("wtc-cli-no-server-");
+    execFileSync("git", ["init", "--quiet", repository]);
+    if (preset !== "none") writeFileSync(join(repository, "project.godot"), "config_version=5\n");
+    const paths = resolveAppPaths(temporaryDirectory("wtc-cli-data-"), temporaryDirectory("wtc-cli-state-"));
+    const gateway = await openProjectGateway(paths, "en");
+    const isPortAvailable = vi.fn(async () => false);
+    const dependencies = { isPortAvailable, write: () => undefined };
+    const presetArgs = preset ? ["--preset", preset] : [];
+    try {
+      await runProjectCommand(["add", createNodeRepository(), "--preset", "none", "--port", "3000", "--name", "Existing"], gateway, "en", dependencies);
+      await runProjectCommand(["add", repository, ...presetArgs], gateway, "en", dependencies);
+      expect((await gateway.dashboard()).projects.map(({ project }) => ({ port: project.port, preset: project.launchPreset })).sort((a, b) => a.port - b.port))
+        .toEqual([{ port: 3000, preset: "none" }, { port: 3001, preset: "none" }]);
+      await expect(runProjectCommand(["add", repository, ...presetArgs, "--port", "3000"], gateway, "en", dependencies))
+        .rejects.toThrow("Port 3000 is already assigned to project Existing.");
+      for (const port of ["1023", "65536", "3.5", "invalid"]) {
+        await expect(runProjectCommand(["add", repository, ...presetArgs, "--port", port], gateway, "en", dependencies))
+          .rejects.toThrow("Project port must be an integer between 1024 and 65535.");
+      }
+      expect((await gateway.dashboard()).projects).toHaveLength(2);
+      expect(isPortAvailable).not.toHaveBeenCalled();
+    } finally { await gateway.close(); }
+  });
+
+  it.each([
+    ["node", false], ["django", false], ["node", true], ["django", true],
+  ] as const)("keeps live-port checks for auto %s with Godot=%s", async (preset, godot) => {
+    const repository = preset === "node" ? createNodeRepository() : temporaryDirectory("wtc-cli-django-");
+    if (preset === "django") {
+      execFileSync("git", ["init", "--quiet", repository]);
+      writeFileSync(join(repository, "manage.py"), "");
+    }
+    if (godot) writeFileSync(join(repository, "project.godot"), "config_version=5\n");
+    const paths = resolveAppPaths(temporaryDirectory("wtc-cli-data-"), temporaryDirectory("wtc-cli-state-"));
+    const gateway = await openProjectGateway(paths, "en");
+    const isPortAvailable = vi.fn(async (port: number) => port === 3002);
+    const dependencies = { isPortAvailable, write: () => undefined };
+    try {
+      await runProjectCommand(["add", createNodeRepository(), "--preset", "none", "--port", "3000"], gateway, "en", dependencies);
+      await runProjectCommand(["add", repository, "--preset", "auto"], gateway, "en", dependencies);
+      expect(isPortAvailable.mock.calls).toEqual([[3001], [3002]]);
+      expect((await gateway.dashboard()).projects.find(({ project }) => project.port === 3002)?.project).toMatchObject({ port: 3002, launchPreset: preset });
+      isPortAvailable.mockClear();
+      isPortAvailable.mockResolvedValue(false);
+      await expect(runProjectCommand(["add", repository], gateway, "en", dependencies))
+        .rejects.toThrow("No free project port was found between 3000 and 3999.");
+      expect(isPortAvailable).toHaveBeenCalledTimes(998);
+      expect((await gateway.dashboard()).projects).toHaveLength(2);
+    } finally { await gateway.close(); }
+  });
+
+  it("preserves the ambiguous Node/Django error when Godot is also present", async () => {
+    const repository = createNodeRepository();
+    writeFileSync(join(repository, "manage.py"), "");
+    writeFileSync(join(repository, "project.godot"), "config_version=5\n");
+    const paths = resolveAppPaths(temporaryDirectory("wtc-cli-data-"), temporaryDirectory("wtc-cli-state-"));
+    const gateway = await openProjectGateway(paths, "en");
+    try {
+      await expect(runProjectCommand(["add", repository], gateway, "en", { isPortAvailable: async () => true, write: () => undefined }))
+        .rejects.toThrow("Wybierz preset Node.js albo Django.");
+      expect((await gateway.dashboard()).projects).toEqual([]);
+    } finally { await gateway.close(); }
+  });
+
+  it.each(["none", "auto"])("registers Godot with --preset %s and lists no_server", async preset => {
+    const repository = temporaryDirectory("wtc-cli-godot-");
+    execFileSync("git", ["init", "--quiet", repository]);
+    writeFileSync(join(repository, "project.godot"), "config_version=5\n");
+    const paths = resolveAppPaths(temporaryDirectory("wtc-cli-data-"), temporaryDirectory("wtc-cli-state-"));
+    const gateway = await openProjectGateway(paths, "en"); const output: string[] = [];
+    try {
+      await runProjectCommand(["add", repository, "--preset", preset, "--port", "3210"], gateway, "en", { write: line => output.push(line) });
+      await runProjectCommand(["list", "--json"], gateway, "en", { write: line => output.push(line) });
+      expect(JSON.parse(output.at(-1)!)).toMatchObject([{ launchPreset: "none", runtimePhase: "no_server", port: 3210 }]);
+    } finally { await gateway.close(); }
   });
 });

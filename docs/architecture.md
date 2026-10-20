@@ -1,6 +1,6 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-10-19"
+last_reviewed: "2026-10-20"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
@@ -84,8 +84,14 @@ reservation.
 Finite verification commands use a separate `TestJobManager`; they do not add
 phases to the long-lived development-server state machine. `NodeTestCommandAdapter`
 discovers allowlisted package scripts, while `DjangoTestCommandAdapter` resolves
-`manage.py test` with the interpreter belonging to the exact worktree. Both
-produce shell-free executable and argument arrays for the shared queue.
+`manage.py test` with the interpreter belonging to the exact worktree.
+`GodotTestCommandAdapter` requires a root `project.godot` and a worktree-contained
+`scripts/project.sh`, then exposes only `godot:check` and `godot:export-macos`.
+These resolve to `bash` plus `["scripts/project.sh", "check"]` or
+`["scripts/project.sh", "export-macos"]`. Discovery and execution revalidate the
+files; no script means no presets. All adapters produce shell-free executable
+and argument arrays for the shared queue; project scripts own their internal
+tool resolution and guards.
 
 The queue is FIFO, has a persisted global parallel limit from 1 through 16,
 and runs at most one job in a given worktree. Lowering the limit does not stop
@@ -366,8 +372,25 @@ controller environment. Secrets should remain in the managed project's normal
 environment mechanism and must not be copied into the database by default.
 
 Each project stores a validated launch preset. Existing records migrate to the
-Node.js preset. New registrations may select automatic detection, Node.js, or
-Django; automatic detection is resolved to a concrete preset before storage.
+Node.js preset. New registrations may select automatic detection, Node.js,
+Django, or `none`; automatic detection is resolved to a concrete preset before
+storage. A root `project.godot` resolves to `none` only when Node/Django detection
+is absent. Explicit `none` also accepts repositories without those manifests.
+These verification-only projects have no runtime command (stored executable is
+empty and arguments are empty), use no server capacity, and do not inspect or
+listen on their configured port. The port schema and uniqueness stay unchanged.
+Start, restart, switch, stop, TLS changes and claim-with-start refuse `none` at
+the application boundary; the process adapter also refuses a direct start.
+Claim refusal leaves no lease. Manual reservations retain their existing test
+admission semantics. Tests need no runtime claim and receive no controller
+server URL/port metadata for `none`. The dashboard derives its localized
+no-server status from the persisted preset, keeping finite job phases separate
+from the runtime state machine.
+
+Migration 30 expands `projects.launch_preset` and `test_runs.adapter` CHECKs
+through the existing table-rebuild helper, preserving rows, indexes and foreign
+keys. It runs on the sole owned connection in the ordered schema transaction,
+with FK validation before commit and migration provenance recorded together.
 The concrete executable and arguments are resolved against the selected
 worktree before every start. Django therefore uses a worktree-local `.venv` or
 `venv` when present and otherwise invokes `python3`, always through `shell:false`.
@@ -401,7 +424,7 @@ worktree-control auth token generate|rotate
 worktree-control auth mode set open|token|better-auth
 worktree-control config path
 worktree-control config mcp
-worktree-control project add <path> [--name <name>] [--port <port>] [--preset auto|node|django]
+worktree-control project add <path> [--name <name>] [--port <port>] [--preset auto|node|django|none]
 worktree-control project list [--json]
 worktree-control project remove <id>
 worktree-control doctor

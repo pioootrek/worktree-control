@@ -79,8 +79,10 @@ function controllerMetadata(project: Project, worktree: Worktree, profile: TestE
     _PROJECT_ID: project.id,
     _TEST_PROFILE: profile.name,
     _WORKTREE_PATH: worktree.path,
-    _SERVER_PORT: String(project.port),
-    _SERVER_URL: `${scheme}://127.0.0.1:${project.port}`,
+    ...(project.launchPreset === "none" ? {} : {
+      _SERVER_PORT: String(project.port),
+      _SERVER_URL: `${scheme}://127.0.0.1:${project.port}`,
+    }),
   };
   return Object.fromEntries(Object.entries(values).flatMap(([suffix, value]) => [
     [`WORKTREE_CONTROL${suffix}`, value],
@@ -102,5 +104,6 @@ const UNIT_SCRIPTS = new Set(["test", "test:unit"]);
  */
 export function defaultTestProfileName(preset: TestPreset): string {
   if (preset.adapter === "django") return "unit";
+  if (preset.adapter === "godot") return "tooling";
   return UNIT_SCRIPTS.has(preset.name) ? "unit" : "tooling";
 }

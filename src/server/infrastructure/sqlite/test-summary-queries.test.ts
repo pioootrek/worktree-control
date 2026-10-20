@@ -53,22 +53,22 @@ describe("durable bounded test summary history", () => {
     const f = fixture(); const run = f.run(); f.store.saveTestRun(run);
     f.store.close(); stores.splice(stores.indexOf(f.store), 1);
     const old = new Database(f.path);
-    old.exec("DROP TABLE test_run_summaries; DROP TABLE test_summary_coverage; ALTER TABLE test_runs DROP COLUMN telemetry_json; DELETE FROM schema_migrations WHERE version=29;");
+    old.exec("DROP TABLE test_run_summaries; DROP TABLE test_summary_coverage; ALTER TABLE test_runs DROP COLUMN telemetry_json; DELETE FROM schema_migrations WHERE version>=29;");
     expect(inspectSchema(old).version).toBe(28); old.close();
     const owned = new OwnedSqliteDatabase(f.path);
     const reopened = new SqliteStateStore(f.path, owned); stores.push(reopened);
-    expect(reopened.schemaVersion()).toBe(29);
+    expect(reopened.schemaVersion()).toBe(30);
     expect(reopened.getTestRun(run.id)?.telemetry).toMatchObject({ availability: "legacy_unknown", admittedAt: null, exitedAt: null });
     expect(new TestSummaryQueries(owned.database).get(run.id)?.telemetry.durations.processMs).toBeNull();
     expect(owned.database.prepare("SELECT name,checksum FROM schema_migrations WHERE version=29").get()).toEqual({ name: telemetryMigration.name, checksum: telemetryChecksum });
-    expect(inspectSchema(owned.database).version).toBe(29);
+    expect(inspectSchema(owned.database).version).toBe(30);
   });
 
   it("rolls migration 29 and its backfill back together, and rejects changed provenance", () => {
     const f = fixture(); const run = f.run(); f.store.saveTestRun(run);
     f.store.close(); stores.splice(stores.indexOf(f.store), 1);
     const old = new Database(f.path);
-    old.exec("DROP TABLE test_run_summaries; DROP TABLE test_summary_coverage; ALTER TABLE test_runs DROP COLUMN telemetry_json; DELETE FROM schema_migrations WHERE version=29;");
+    old.exec("DROP TABLE test_run_summaries; DROP TABLE test_summary_coverage; ALTER TABLE test_runs DROP COLUMN telemetry_json; DELETE FROM schema_migrations WHERE version>=29;");
     expect(() => initializeSchema(old, false, () => { throw Error("injected migration validation failure"); })).toThrow("injected migration");
     expect(inspectSchema(old).version).toBe(28);
     expect(old.prepare("SELECT 1 FROM sqlite_master WHERE name='test_run_summaries'").get()).toBeUndefined();

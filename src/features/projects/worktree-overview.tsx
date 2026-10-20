@@ -128,7 +128,7 @@ export function WorktreeOverview({ snapshots, aggregate = false, rowActions, bus
             </TableCell>
             <TableCell className="min-w-0 whitespace-normal align-top max-md:block max-md:px-3 max-md:py-1">
               <div className="flex flex-wrap items-center gap-1.5">
-                <RuntimeBadge phase={phase} />
+                <RuntimeBadge phase={phase} noServer={rowSnapshot.project.launchPreset === "none"} />
                 <Badge variant="outline" className={w.dirty ? "text-warning-foreground" : "text-muted-foreground"}>{w.dirty ? t("project.dirty") : t("project.clean")}</Badge>
                 {w.isDefaultBranch ? <Badge variant="secondary">{t("overview.defaultBranch")}</Badge> : w.merged === true ? <Badge variant="secondary" title={t("overview.mergedInto", { branch: w.mergedInto ?? "?" })}><GitMerge aria-hidden />{t("overview.filter.merged")}</Badge> : null}
                 {idle ? <Badge variant="outline"><Clock3 aria-hidden />{t("overview.filter.inactive")}</Badge> : null}
