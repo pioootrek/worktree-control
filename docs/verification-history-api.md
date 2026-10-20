@@ -167,6 +167,35 @@ process churn from read failures. Individually observed peaks remain visible.
 Matching cadence does not ensure matching coverage or workload.
 Runner wait remains unavailable.
 
+## Dashboard analysis view
+
+The dashboard's **Test analysis** section (`?view=analysis`) reads these HTTP
+routes for one selected project; it adds no endpoint or browser-side analytics
+backend. All-projects scope shows a project-selection state because history is
+project-scoped. The view anchors one enqueue window (24 hours, 7 or 30 days) at
+the moment of a user action and sends only set exact filters: preset,
+worktree, process outcome and attribution. It issues one metrics request and
+one 25-row history page per scope, then reads a comparison only on request.
+There is no timer, SSE trigger or automatic fetch of later pages. A newer
+request aborts its predecessor and stale responses are discarded.
+
+Changing project or filters clears the page trail, selection, open detail and
+comparison. Refresh re-anchors the window and restarts the listing because
+cursors are window-bound. Earlier pages are revisited by their recorded cursor.
+An empty filtered page with `nextCursor` offers to continue to older runs. An
+invalid cursor (for example after controller restart) offers to start over.
+Summary-only history remains usable after detail pruning.
+
+Presentation keeps the contract's distinctions: command result and source
+check are separate axes, and a passed command whose run failed is labelled with
+the reason. Populations, valid/missing counts and small samples (fewer than
+five valid values) are visible; null values render as unmeasured, never zero.
+Truncation, retention and eviction are stated. Resources are labelled as
+sampled peaks; resource deltas follow each metric's server comparability,
+so a partial `membership_changed` pair can still show both deltas. Raw CPU/RAM
+time series are not stored, so the view draws no resource charts over time.
+Known caveats are translated; unknown server caveats are shown verbatim.
+
 ## Passive per-run resources
 
 `get_test_run`, retained summaries and history entries expose

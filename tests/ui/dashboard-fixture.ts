@@ -36,11 +36,14 @@ export function dashboardFixture(): ControllerDashboardResponse {
   };
 }
 
+/** Optional extra GET routes, such as verification history; return null for the default 404. */
+export type FixtureReadApi = (url: URL) => Promise<{ status?: number; json: unknown } | null> | { status?: number; json: unknown } | null;
+
 /** Loads the real static export into Chromium; no HTTP listener or controller is started. */
 export async function mountDashboard(
   page: Page,
   data = dashboardFixture(),
-  options: { failDashboardRefreshAfterProjectRemoval?: boolean; metadataRefreshFailures?: number; accessToken?: string; openWithToken?: boolean; openMode?: boolean } = {},
+  options: { failDashboardRefreshAfterProjectRemoval?: boolean; metadataRefreshFailures?: number; accessToken?: string; openWithToken?: boolean; openMode?: boolean; readApi?: FixtureReadApi } = {},
 ) {
   const accessToken = options.accessToken ?? "ui-fixture-token";
   const openMode = options.openMode ?? false;
@@ -140,6 +143,9 @@ export async function mountDashboard(
           } });
         }
         if (url.pathname === "/api/metrics") return route.fulfill({ json: { projects: [] } });
+        const read = await options.readApi?.(url);
+        // The browser may abort a superseded read before a delayed fixture answers.
+        if (read) return route.fulfill({ status: read.status ?? 200, json: read.json }).catch(() => undefined);
         return route.fulfill({ status: 404, json: { error: "Unconfigured fixture read" } });
       }
       const body = request.postDataJSON();
