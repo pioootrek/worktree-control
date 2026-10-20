@@ -42,4 +42,3 @@ export function rebuildTable(database: Database.Database, table: string, from: s
   `);
   for (const index of indexes) database.exec(index.sql);
 }
-
