@@ -178,11 +178,19 @@ export class TestRunQueries {
     if (["passed", "failed", "cancelled", "timed_out", "interrupted"].includes(run.phase)
       && (!run.telemetry || run.telemetry.availability === "legacy_unknown" || run.telemetry.finalizedAt || run.telemetry.recoveredAt)) {
       summaries.prune(run.projectId);
+      // Keep remote completion evidence until its immutable report is durable,
+      // even if networking is stalled. At most 1000 receipts can pin extra rows.
       this.database.prepare(`
         DELETE FROM test_runs WHERE id IN (
           SELECT id FROM test_runs WHERE project_id = ? AND phase NOT IN ('queued', 'running')
           AND NOT EXISTS (SELECT 1 FROM test_run_summaries s WHERE s.run_id=test_runs.id AND s.terminal=0)
           ORDER BY queued_at DESC, id DESC LIMIT -1 OFFSET 50
+        )
+        AND id NOT IN (
+          SELECT json_extract(payload_json, '$.localRunId') FROM remote_worker_receipts
+          WHERE json_extract(payload_json, '$.localRunId') IS NOT NULL
+          AND coalesce(json_extract(payload_json, '$.reports[#-1].phase'), '')
+            NOT IN ('succeeded', 'failed', 'cancelled', 'uncertain')
         )
       `).run(run.projectId);
     }

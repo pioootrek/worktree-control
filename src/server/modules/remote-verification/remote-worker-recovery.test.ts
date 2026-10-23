@@ -159,6 +159,75 @@ it("retries a rejected attempt independently after its preset grant is revoked",
   } finally { await worker.close(); workerStore.close(); f.store.close(); }
 });
 
+it.each([
+  ["capacity", "worker_receipt_capacity_exhausted"],
+  ["conflict", "assignment_conflict"],
+  ["forbidden", "assignment_forbidden"],
+] as const)("uploads existing reports despite a repeated %s acceptance failure", async (kind, error) => {
+  const f = fixture(), workerStore = new SqliteStateStore(f.workerPath);
+  const assignment = f.receipt.assignment;
+  const reports = [report(assignment, 1, "preparing"), report(assignment, 2, "running"), report(assignment, 3, "succeeded")];
+  workerStore.remoteConnection.accept({ ...f.receipt, reports });
+  if (kind === "capacity") workerStore.remoteConnection.atomic(() => {
+    for (let index = 1; index < 1000; index++) {
+      const tombstone = { ...assignment, attemptId: `history-${index}`, requestId: `history-request-${index}` };
+      workerStore.remoteConnection.accept({ ...f.receipt, assignment: tombstone,
+        reports: [report(tombstone, 1, "preparing"), report(tombstone, 2, "running"), report(tombstone, 3, "succeeded")], acknowledgedSequence: 3,
+      });
+    }
+  });
+  const rejected = kind === "capacity" ? { ...assignment, attemptId: "over-capacity" }
+    : kind === "conflict" ? { ...assignment, commitSha: "d".repeat(40) }
+      : { ...assignment, workerId: "other-worker" };
+  const jobs = { enqueue: vi.fn(), cancel: vi.fn(), blockAdmission: vi.fn() }, execution = { resolve: vi.fn() };
+  const uploaded = vi.fn(async (input: RemoteWorkerReport) => { f.controller.report("worker", input, f.actor); });
+  const worker = new RemoteVerificationWorker("worker", workerStore.remoteConnection, jobs, () => null, execution, {
+    poll: async () => ({ version: 1, assignments: [rejected, assignment], cancellations: [] }), report: uploaded,
+  });
+  try {
+    await expect(worker.tick()).rejects.toThrow(error);
+    expect(uploaded.mock.calls.map(([input]) => input)).toEqual(reports);
+    expect(f.controller.status(f.request.id, f.owner).attempt?.phase).toBe("succeeded");
+    expect(workerStore.remoteConnection.receipt(assignment.attemptId)).toMatchObject({ reports, acknowledgedSequence: 3 });
+    uploaded.mockClear();
+    await expect(worker.tick()).rejects.toThrow(error);
+    expect(uploaded).not.toHaveBeenCalled();
+    expect(workerStore.remoteConnection.receipts()).toHaveLength(kind === "capacity" ? 1000 : 1);
+    expect(workerStore.remoteConnection.receipt("over-capacity")).toBeNull();
+    expect(jobs.enqueue).not.toHaveBeenCalled(); expect(execution.resolve).not.toHaveBeenCalled();
+  } finally { await worker.close(); workerStore.close(); f.store.close(); }
+}, 15_000);
+
+it("advances bounded delivery pages past more than 100 revoked presets without deleting requests or replaying uncertain work", () => {
+  const f = fixture();
+  let clock = Date.parse("2030-01-01T00:00:00.000Z");
+  const controller = new RemoteVerificationController(f.store, f.store.remoteConnection, f.identity, () => new Date(clock++).toISOString());
+  const pending = Array.from({ length: 120 }, (_, index) => controller.submit({
+    projectId: "project", workerId: "worker", presetId: "node:test", commitSha: "a".repeat(40), idempotencyKey: `revoked-${index}`,
+  }, f.owner));
+  const grant = f.store.getRemoteWorkerProjectGrant("worker", "project")!;
+  f.store.saveRemoteWorkerProjectGrant({ ...grant, presetIds: ["node:build"] }, "fixture");
+  const next = controller.submit({ projectId: "project", workerId: "worker", presetId: "node:build", commitSha: "d".repeat(40), idempotencyKey: "authorized-later" }, f.owner);
+  const pages = vi.spyOn(f.store.remoteConnection, "pendingRequests");
+  try {
+    expect(controller.poll("worker", f.actor).assignments).toEqual([]);
+    const assignment = controller.poll("worker", f.actor).assignments[0];
+    expect(assignment).toMatchObject({ requestId: next.id, presetId: "node:build", commitSha: next.commitSha });
+    expect(pages.mock.results.every(result => result.type === "return" && result.value.length <= 100)).toBe(true);
+    for (const request of pending) {
+      expect(f.store.getRemoteVerificationRequest(request.id)?.phase).toBe("pending");
+      expect(f.store.findRemoteVerificationAttemptForRequest(request.id)).toBeNull();
+    }
+    // Delivery authorization is still checked after a cursor wraps.
+    f.store.saveRemoteWorkerProjectGrant({ ...grant, presetIds: [] }, "fixture");
+    for (let index = 0; index < 3; index++) expect(controller.poll("worker", f.actor).assignments).toEqual([]);
+    f.store.saveRemoteWorkerProjectGrant({ ...grant, presetIds: ["node:build"] }, "fixture");
+    expect(controller.recover()).toBe(2);
+    for (let index = 0; index < 3; index++) expect(controller.poll("worker", f.actor).assignments).toEqual([]);
+    expect(controller.status(next.id, f.owner).attempt).toMatchObject({ id: assignment.attemptId, phase: "uncertain" });
+  } finally { f.store.close(); }
+});
+
 it("keeps a compact 1000-receipt replay index and reads only an unacknowledged report body on demand", async () => {
   const f = fixture();
   const workerStore = new SqliteStateStore(f.workerPath);

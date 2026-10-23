@@ -7,16 +7,35 @@ function payload<T>(row: unknown): T | null {
 }
 /** Borrows the singleton owner's SQLite connection. */
 export class RemoteConnectionQueries implements RemoteConnectionStore {
+  private readonly pendingCursors = new Map<string, [string, string]>();
   constructor(private readonly database: Database.Database) {}
   atomic<T>(operation: () => T): T { return this.database.transaction(operation).immediate(); }
   contact(workerId: string, at: string): void {
     this.database.prepare("UPDATE remote_workers SET last_contact_at=? WHERE id=?").run(at, workerId);
   }
   pendingRequests(workerId: string): string[] {
-    return (this.database.prepare(`SELECT id FROM remote_verification_requests r
-      WHERE worker_id=? AND (phase='pending' OR (phase='assigned' AND EXISTS
-      (SELECT 1 FROM remote_verification_attempts a WHERE a.request_id=r.id AND a.phase='assigned')))
-      ORDER BY created_at,id LIMIT 100`).all(workerId) as { id: string }[]).map(x => x.id);
+    // Seek through bounded pages even when every candidate is no longer authorized.
+    // Bound each indexed phase scan before filtering worker/attempt eligibility;
+    // historical assigned/uncertain work must not cause an unbounded scan either.
+    const page = (after: [string, string]) => this.database.prepare(`SELECT id,created_at,worker_id,
+      (phase='pending' OR EXISTS (SELECT 1 FROM remote_verification_attempts a
+        WHERE a.request_id=r.id AND a.phase='assigned')) deliverable
+      FROM (
+        SELECT * FROM (SELECT id,created_at,worker_id,phase FROM remote_verification_requests
+          WHERE phase='pending' AND (created_at,id)>(?,?) ORDER BY created_at,id LIMIT 100)
+        UNION ALL
+        SELECT * FROM (SELECT id,created_at,worker_id,phase FROM remote_verification_requests
+          WHERE phase='assigned' AND (created_at,id)>(?,?) ORDER BY created_at,id LIMIT 100)
+      ) r ORDER BY created_at,id LIMIT 100`).all(...after, ...after) as Array<{
+        id: string; created_at: string; worker_id: string; deliverable: number;
+      }>;
+    const cursor = this.pendingCursors.get(workerId);
+    let rows = page(cursor ?? ["", ""]);
+    if (!rows.length && cursor) rows = page(["", ""]);
+    const last = rows.at(-1);
+    if (last) this.pendingCursors.set(workerId, [last.created_at, last.id]);
+    else this.pendingCursors.delete(workerId);
+    return rows.filter(row => row.worker_id === workerId && row.deliverable).map(row => row.id);
   }
   cancellationAttempts(workerId: string): string[] {
     return (this.database.prepare(`SELECT a.id FROM remote_verification_attempts a

@@ -72,8 +72,15 @@ export class RemoteVerificationWorker {
       this.save(receipt);
       if (this.active.has(attemptId)) await this.jobs.cancel(receipt.localRunId, this.actor());
     }
-    for (const assignment of poll.assignments) await this.accept(assignment, poll.cancellations.includes(assignment.attemptId));
     let failure: unknown;
+    for (const assignment of poll.assignments) {
+      try {
+        await this.accept(assignment, poll.cancellations.includes(assignment.attemptId));
+      } catch (error) {
+        // Failed admission must not strand evidence for already accepted work.
+        failure ??= error;
+      }
+    }
     for (const summary of this.receipts.values()) {
       if (summary.acknowledgedSequence >= summary.reportCount) continue;
       const receipt = this.connection.receipt(summary.assignment.attemptId);

@@ -233,6 +233,72 @@ describe("connected remote verification (isolated fixtures, not real-worker acce
     expect(() => f.controller.report("worker", { ...result.result!, logs: ["changed"] }, f.workerActor)).toThrow("report_conflict");
   }, 30_000);
 
+  it.each(["poll", "report"] as const)("pins completion before its first collection while an HTTP %s is in flight, then recovers exact SHA evidence", async location => {
+    const f = await fixture();
+    const finishFile = join(f.root, "allow-finish");
+    const sha = f.commit(`const fs=require('node:fs');const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(finishFile)})){clearInterval(timer);console.log('PASS');}},10);`, "controlled completion");
+    git(f.seed, "push", "-q", "origin", "main");
+    const request = f.submit(sha);
+    const poll = f.transport.poll, upload = f.transport.report;
+    let hold = location === "report";
+    let entered!: () => void, release!: () => void;
+    const blocked = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const disconnectInFlight = async () => {
+      hold = false; entered(); await gate;
+      throw new Error("fixture in-flight disconnected");
+    };
+    f.transport.poll = async () => {
+      const result = await poll(); // Exercise the actual authenticated HTTP request.
+      if (location === "poll" && hold) await disconnectInFlight();
+      return result;
+    };
+    f.transport.report = async input => {
+      await upload(input);
+      if (location === "report" && hold) await disconnectInFlight();
+    };
+    if (location === "poll") { await f.worker.tick(); hold = true; }
+    const pending = expect(f.worker.tick()).rejects.toThrow("fixture in-flight disconnected");
+    let runId!: string, projectId!: string;
+    try {
+      await blocked;
+      writeFileSync(finishFile, "finish");
+      await vi.waitFor(() => expect(f.workerStore.listTestRuns()[0]?.telemetry?.finalizedAt).toBeTruthy(), { timeout: 10_000 });
+      const run = f.workerStore.listTestRuns()[0];
+      runId = run.id; projectId = run.projectId;
+      const receipt = f.workerStore.remoteConnection.receipts()[0];
+      expect(receipt.lastPhase).toBe("running");
+      // Normal retention runs BEFORE any network tick can collect the final run.
+      for (let index = 0; index < 51; index++) f.workerStore.saveTestRun({ ...run,
+        id: `newer-local-${index}`, actor: "local-user", queuedAt: new Date(Date.parse(run.queuedAt) + index + 1).toISOString(),
+      });
+      expect(f.workerStore.getTestRun(runId)).toMatchObject({ phase: "passed", telemetry: { cleanup: "confirmed" }, source: { finish: { head: sha } } });
+      expect(f.workerStore.listTestRuns(projectId, 500)).toHaveLength(51); // 50 normal details plus one bounded pin.
+      expect(f.workerStore.remoteConnection.receipt(receipt.assignment.attemptId)?.reports.at(-1)?.phase).toBe("running");
+    } finally { release(); await pending; }
+    await f.retireWorker();
+    const reopened = new SqliteStateStore(join(f.root, "worker.sqlite3"));
+    const jobs = { enqueue: vi.fn(), cancel: vi.fn(), blockAdmission: vi.fn() }, execution = { resolve: vi.fn() };
+    const restarted = new RemoteVerificationWorker("worker", reopened.remoteConnection, jobs, id => reopened.getTestRun(id), execution, { poll, report: upload });
+    try {
+      const receipt = reopened.remoteConnection.receipts()[0];
+      const terminal = reopened.remoteConnection.receipt(receipt.assignment.attemptId)!.reports.at(-1)!;
+      expect(terminal).toMatchObject({ phase: "succeeded", executedCommitSha: sha, localRunId: runId,
+        execution: { cleanup: "confirmed" }, source: { attribution: "observed_match", finishCommitSha: sha },
+      });
+      // Once the report is durable, retention can reclaim its pinned details.
+      const newest = reopened.listTestRuns(projectId)[0];
+      reopened.saveTestRun({ ...newest, id: "after-recovery", queuedAt: new Date(Date.parse(newest.queuedAt) + 1).toISOString() });
+      expect(reopened.getTestRun(runId)).toBeNull();
+      expect(reopened.listTestRuns(projectId, 500)).toHaveLength(50);
+      f.controller.recover();
+      await restarted.tick();
+      expect(f.controller.status(request.id, f.owner)).toMatchObject({ attempt: { phase: "succeeded", executedCommitSha: sha }, result: terminal });
+      expect(jobs.blockAdmission).not.toHaveBeenCalled();
+      expect(jobs.enqueue).not.toHaveBeenCalled(); expect(execution.resolve).not.toHaveBeenCalled();
+    } finally { await restarted.close(); reopened.close(); }
+  }, 30_000);
+
   it.each(["\0", "漢", "😀"])("bounds serialized envelopes for %j output before persistence and replays them over HTTP", async character => {
     const f = await fixture();
     const sha = f.commit(`for(let i=0;i<240;i++)console.log(${JSON.stringify(character)}.repeat(2100));`, "escaped or multibyte logs");
