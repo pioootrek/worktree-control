@@ -208,6 +208,7 @@ export interface Project {
   selectedEnvironmentProfile: string;
   testEnvironmentProfiles: TestEnvironmentProfile[];
   testPresetProfiles: Record<string, string>;
+  testPresetTimeouts: Record<string, number>;
   healthcheckPath: string;
   startupTimeoutMs: number;
   selectedWorktreePath: string | null;

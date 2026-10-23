@@ -19,7 +19,7 @@ export function dashboardFixture(): ControllerDashboardResponse {
         executable: "pnpm", args: ["run", "dev"], environment: {},
         environmentProfiles: [{ name: "default", environment: {} }], selectedEnvironmentProfile: "default",
         testEnvironmentProfiles: [{ name: "unit", policy: { mode: "clean", serverProfile: null }, variableNames: [], nodeEnv: "test", requiredVariables: [] }],
-        testPresetProfiles: {}, healthcheckPath: "/", startupTimeoutMs: 30_000,
+        testPresetProfiles: {}, testPresetTimeouts: {}, healthcheckPath: "/", startupTimeoutMs: 30_000,
         selectedWorktreePath: worktreePath, createdAt: now, updatedAt: now,
       },
       runtime: {

@@ -1,4 +1,4 @@
-import { testHistorySchema, testMetricsSchema, testSummarySchema, testComparisonSchema } from "@/server/modules/verification";
+import { testPresetTimeoutSchema, testHistorySchema, testMetricsSchema, testSummarySchema, testComparisonSchema } from "@/server/modules/verification";
 import type { McpDiagnosticsSnapshot, McpSessionDiagnostics } from "@/shared/contracts/mcp-diagnostics";
 import { registerKnowledgeTools } from "./knowledge-tools";
 import { McpDiagnostics, type McpSessionObservation, type McpCloseReason } from "../../mcp-diagnostics";
@@ -697,6 +697,15 @@ export class McpRuntime {
     }, async ({ projectId, name }) => {
       await english(() => this.service.deleteTestEnvironmentProfile(projectId, name, actorFor(projectId)));
       return jsonContent(await english(() => this.service.testEnvironmentProfiles(projectId)));
+    });
+
+    server.registerTool("set_test_preset_timeout", {
+      description: "Set a project-wide timeout for one preset (1–86400000 ms), or null to restore its 15-minute default. Applies to future enqueues across all worktrees; queued/running jobs keep their timeout.",
+      inputSchema: { projectId: z.string().uuid(), ...testPresetTimeoutSchema.shape },
+      annotations: { destructiveHint: true, idempotentHint: true },
+    }, async ({ projectId, presetId, timeoutMs }) => {
+      const project = await english(() => this.service.setTestPresetTimeout(projectId, presetId, timeoutMs, actorFor(projectId)));
+      return jsonContent({ projectId, presetTimeouts: project.testPresetTimeouts });
     });
 
     server.registerTool("assign_test_preset_profile", {

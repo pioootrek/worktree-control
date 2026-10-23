@@ -72,6 +72,7 @@ export interface StateStore {
   saveProjectTestEnvironmentProfile(projectId: string, profile: TestEnvironmentProfile, actor: string): void;
   deleteProjectTestEnvironmentProfile(projectId: string, profileName: string, actor: string): void;
   assignProjectTestPresetProfile(projectId: string, presetId: string, profileName: string | null, actor: string): void;
+  setProjectTestPresetTimeout(projectId: string, presetId: string, timeoutMs: number | null, actor: string): void;
   setSelectedWorktree(projectId: string, path: string): void;
   getServerCapacitySettings(): ServerCapacitySettings;
   setServerCapacitySettings(settings: ServerCapacitySettings): void;

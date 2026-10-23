@@ -1,16 +1,16 @@
 import type { GitWorktreeReader } from "@/server/git-worktrees";
 import { type LogWriter } from "@/server/log-writer";
-import { resolveTestEnvironment } from "@/server/modules/environments";
+import { projectTestPreset, testPresetTimeoutSchema } from "./preset-timeout";
+import { redactProject, resolveTestEnvironment, testProfileFor } from "../environments";
 import type { StateStore } from "@/server/state-store";
 import type { ProjectTestCommandResolver } from "@/server/test-command";
 import type { VerificationJobs } from "./verification-jobs";
 import type { Project, TestQueueStatus, TestRun, WorktreeTestPresets } from "@/shared/contracts";
-import { testProfileFor } from "../environments";
 import { type LifecycleAccess, type OperationActor } from "../lifecycle";
 
 export class VerificationService {
   constructor(
-    private readonly store: Pick<StateStore, "getTestQueueSettings" | "countTestRuns" | "getTestRun">,
+    private readonly store: Pick<StateStore, "getTestQueueSettings" | "countTestRuns" | "getTestRun" | "setProjectTestPresetTimeout">,
     private readonly git: Pick<GitWorktreeReader, "list"> & Partial<Pick<GitWorktreeReader, "observe">>,
     private readonly logs: Pick<LogWriter, "controller">,
     private readonly testCommands: Pick<ProjectTestCommandResolver, "resolve" | "discover">,
@@ -62,7 +62,8 @@ export class VerificationService {
         const repeated = this.tests.replay(actor.owner, idempotencyKey, projectId, worktree.path, presetId);
         if (repeated) return repeated;
       }
-      const command = this.testCommands.resolve(worktree.path, presetId);
+      const resolved = this.testCommands.resolve(worktree.path, presetId);
+      const command = { ...resolved, preset: projectTestPreset(project, resolved.preset) };
       const environment = resolveTestEnvironment({
         project,
         worktree,
@@ -93,6 +94,17 @@ export class VerificationService {
     });
   }
 
+  async setTestPresetTimeout(projectId: string, presetId: string, timeoutMs: number | null, actor: OperationActor = { owner: "local-user" }) {
+    const input = testPresetTimeoutSchema.parse({ presetId, timeoutMs });
+    return this.lifecycle.serialized(projectId, async () => {
+      const project = this.lifecycle.requireProject(projectId);
+      this.lifecycle.assertReservationAllows(projectId, project.selectedWorktreePath, actor);
+      this.store.setProjectTestPresetTimeout(projectId, input.presetId, input.timeoutMs, actor.owner);
+      this.logs.controller("project.test_preset_timeout_set", { projectId, ...input, actor: actor.owner });
+      return redactProject(this.lifecycle.requireProject(projectId));
+    });
+  }
+
   async cancelTest(runId: string, actor: OperationActor = { owner: "local-user" }): Promise<TestRun> {
     const run = this.store.getTestRun(runId);
     if (!run) throw new Error("Nie znaleziono uruchomienia testu.");
@@ -116,7 +128,7 @@ export class VerificationService {
   discoverPresets(project: Project, worktreePath: string): WorktreeTestPresets {
     try {
       const presets = this.testCommands.discover(worktreePath)
-        .map((preset) => ({ ...preset, profile: testProfileFor(project, preset).name }));
+        .map((preset) => ({ ...projectTestPreset(project, preset), profile: testProfileFor(project, preset).name }));
       return { worktreePath, presets, error: null };
     } catch (error) {
       return { worktreePath, presets: [], error: error instanceof Error ? error.message : String(error) };

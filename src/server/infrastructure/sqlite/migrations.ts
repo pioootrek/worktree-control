@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { applyRegistryMigration, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { applyTelemetryMigration } from "./test-summary-migration";
 import { applyVerificationProjectMigration, rebuildTable } from "./verification-project-migration";
+import { applyTestPresetTimeoutMigration } from "./test-preset-timeout-migration";
 import { validateDatabase } from "./database-validation";
 
 /** Built-in test profiles every project starts with; see `test-environment.ts`. */
@@ -349,6 +350,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyRegistryMigration(database);
       applyTelemetryMigration(database);
       applyVerificationProjectMigration(database);
+      applyTestPresetTimeoutMigration(database);
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();

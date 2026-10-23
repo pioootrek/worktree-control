@@ -36,7 +36,7 @@ const snapshot: ProjectSnapshot = {
       requiredVariables: [],
       variableNames: ["DATABASE_PASSWORD"],
     }],
-    testPresetProfiles: {},
+    testPresetProfiles: {}, testPresetTimeouts: {},
     healthcheckPath: "/",
     startupTimeoutMs: 45_000,
     selectedWorktreePath: "/code/web",
@@ -198,6 +198,7 @@ describe("MCP loopback server", () => {
       systemVariableNames: ["PATH"],
     }));
     const saveTestEnvironmentProfile = vi.fn(async () => snapshot.project);
+    const setTestPresetTimeout = vi.fn(async () => snapshot.project);
     const assignTestPresetProfile = vi.fn(async () => snapshot.project);
     const queuedRun = { id: "f70af07d-d065-41a7-8918-c61ca5a2b833", phase: "queued" as const };
     const enqueueTest = vi.fn(async () => queuedRun);
@@ -229,6 +230,7 @@ describe("MCP loopback server", () => {
       testEnvironmentProfiles,
       saveTestEnvironmentProfile,
       assignTestPresetProfile,
+      setTestPresetTimeout,
     } as unknown as ControlService;
     const controller = createMcpControllerServer({ service, port: 0, accessToken: "mcp-test-token-with-enough-entropy" });
     controllers.push(controller);
@@ -301,6 +303,7 @@ describe("MCP loopback server", () => {
       "list_test_environment_profiles",
       "save_test_environment_profile",
       "delete_test_environment_profile",
+      "set_test_preset_timeout",
       "assign_test_preset_profile",
       "claim_project",
       "start_project",
@@ -357,6 +360,18 @@ describe("MCP loopback server", () => {
     expect(assignTestPresetProfile).toHaveBeenCalledWith(projectId, "node:test", null, expect.objectContaining({
       owner: expect.stringMatching(/^agent:mcp:/),
     }));
+
+    for (const timeoutMs of [1_800_000, null]) {
+      const result = await client.callTool({ name: "set_test_preset_timeout", arguments: { projectId, presetId: "godot:check", timeoutMs } });
+      expect(result.isError).not.toBe(true);
+      expect(setTestPresetTimeout).toHaveBeenLastCalledWith(projectId, "godot:check", timeoutMs, expect.objectContaining({ owner: expect.stringMatching(/^agent:mcp:/) }));
+    }
+    setTestPresetTimeout.mockClear();
+    for (const timeoutMs of [0, -1, 1.5, 86_400_001, "1800000"]) {
+      const result = await client.callTool({ name: "set_test_preset_timeout", arguments: { projectId, presetId: "godot:check", timeoutMs } });
+      expect(result.isError).toBe(true);
+    }
+    expect(setTestPresetTimeout).not.toHaveBeenCalled();
 
     const statusResult = await client.callTool({ name: "get_project_status", arguments: { projectId } });
     const statusText = (statusResult as { content: Array<{ type: "text"; text: string }> }).content[0].text;
