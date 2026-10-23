@@ -1,3 +1,7 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ControlService } from "@/server/control-service";
+import { createMcpControllerServer } from "@/server/mcp-http-server";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,7 +28,7 @@ class FixtureNodeAdapter extends NodeTestCommandAdapter {
   override resolve(path: string, presetId: string) { const resolved = super.resolve(path, presetId); return { ...resolved, executable: process.execPath, args: ["check.cjs"] }; }
 }
 
-async function fixture() {
+async function fixture(realCommands = false) {
   const root = mkdtempSync(join(tmpdir(), "wtc-connected-remote-"));
   cleanup.push(async () => rmSync(root, { recursive: true, force: true }));
   const remote = join(root, "remote.git"), seed = join(root, "seed"), human = join(root, "human"), cache = join(root, "cache"), workspaces = join(root, "attempts");
@@ -71,7 +75,7 @@ async function fixture() {
   const jobs = new TestJobManager(workerStore, nullLogWriter);
   cleanup.push(async () => { await jobs.shutdown(); reader.close(); });
   const mappings = [{ projectId: "remote-project", localProjectId: local.id, sourceCachePath: cache, sourceRemote: "origin", presetIds: ["node:test"] }];
-  const execution = new SystemRemoteWorkerExecution("worker", mappings, workerStore, lifecycle, reader, new ProjectTestCommandResolver([new FixtureNodeAdapter()]), new SystemRemoteVerificationWorkspacePreparer(workspaces, admission), workspaces);
+  const execution = new SystemRemoteWorkerExecution("worker", mappings, workerStore, lifecycle, reader, new ProjectTestCommandResolver([realCommands ? new NodeTestCommandAdapter() : new FixtureNodeAdapter()]), new SystemRemoteVerificationWorkspacePreparer(workspaces, admission), workspaces);
   const httpTransport = new HttpRemoteWorkerTransport(origin, "worker", () => issued.token, true);
   let disconnected = false;
   let pollDisconnected = false;
@@ -91,11 +95,57 @@ async function fixture() {
     await vi.waitFor(async () => { await worker.tick(); expect(controller.status(requestId, owner).request.phase).toBe("completed"); }, { timeout: 15_000, interval: 40 });
     return controller.status(requestId, owner);
   };
-  return { root, seed, human, cache, workspaces, failedSha, fixedSha, controllerStore, workerStore, identity, owner, workerActor, issued, controller, server, origin, jobs, worker, transport, execution, mappings, submit, finish,
+  const connectMcp = async () => {
+    const service = new ControlService(controllerStore, reader, processes, nullLogWriter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, controller);
+    const mcp = createMcpControllerServer({ service, port: 0, accessToken: "fixture-legacy-unused", identity });
+    await new Promise<void>(resolve => mcp.server.listen(0, "127.0.0.1", resolve));
+    cleanup.push(mcp.close);
+    const endpoint = new URL(`http://127.0.0.1:${(mcp.server.address() as { port: number }).port}/mcp`);
+    const client = new Client({ name: "remote-verification-fixture", version: "1.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(endpoint, { requestInit: { headers: { Authorization: `Bearer ${ownerSession.token}` } } }));
+    cleanup.push(() => client.close());
+    return client;
+  };
+  return { root, seed, human, cache, workspaces, failedSha, fixedSha, connectMcp, controllerStore, workerStore, identity, owner, workerActor, issued, controller, server, origin, jobs, worker, transport, execution, mappings, submit, finish,
     disconnect: (value: boolean) => { disconnected = value; }, disconnectPoll: (value: boolean) => { pollDisconnected = value; }, loseAck: () => { loseAck = true; }, commit };
 }
 
 describe("connected remote verification (isolated fixtures, not real-worker acceptance)", () => {
+  it("submits failing/fixed pushed commits and reads their results/logs through an actual MCP client and default command adapter", async () => {
+    const f = await fixture(true);
+    const client = await f.connectMcp();
+    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(expect.arrayContaining([
+      "submit_remote_verification", "get_remote_verification", "get_remote_verification_logs", "cancel_remote_verification",
+    ]));
+    const call = async (name: string, args: Record<string, string>) => {
+      const result = await client.callTool({ name, arguments: args });
+      expect(result.isError).not.toBe(true);
+      const content = result.content as Array<{ type: string; text: string }>;
+      return JSON.parse(content[0].text);
+    };
+    const requests = [];
+    for (const [sha, expected] of [[f.failedSha, "failed"], [f.fixedSha, "succeeded"]]) {
+      const input = { projectId: "remote-project", workerId: "worker", commitSha: sha, presetId: "node:test", idempotencyKey: sha };
+      const request = await call("submit_remote_verification", input);
+      requests.push(request.id);
+      expect((await call("submit_remote_verification", input)).id).toBe(request.id);
+      await vi.waitFor(async () => {
+        await f.worker.tick();
+        const status = await call("get_remote_verification", { requestId: request.id });
+        expect(status.attempt).toMatchObject({ phase: expected, executedCommitSha: sha });
+      }, { timeout: 15_000, interval: 50 });
+      const output = await call("get_remote_verification_logs", { requestId: request.id });
+      expect(output.logs.join("\n")).toContain(expected === "failed" ? "FAIL:" : "PASS:");
+    }
+    expect(requests[0]).not.toBe(requests[1]);
+    expect(f.workerStore.listTestRuns()).toHaveLength(2);
+    const pending = await call("submit_remote_verification", { projectId: "remote-project", workerId: "worker", commitSha: f.fixedSha, presetId: "node:test", idempotencyKey: "cancel-before-delivery" });
+    expect(await call("cancel_remote_verification", { requestId: pending.id })).toMatchObject({ cancellationRequested: true });
+    await f.worker.tick();
+    expect((await call("get_remote_verification", { requestId: pending.id })).request.phase).toBe("cancelled");
+    expect(f.workerStore.listTestRuns()).toHaveLength(2);
+  }, 40_000);
+
   it("executes distinct pushed failing/fixed SHAs through the finite queue, preserves human work, bounds output and replays submissions/delivery", async () => {
     const f = await fixture(); vi.stubEnv("CONTROLLER_SECRET", "must-not-inherit");
     const failed = f.submit(f.failedSha);

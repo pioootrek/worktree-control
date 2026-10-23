@@ -24,12 +24,14 @@ export class RemoteVerificationWorker {
   constructor(
     private readonly workerId: string,
     private readonly connection: RemoteConnectionStore,
-    private readonly jobs: Pick<VerificationJobs, "enqueue" | "cancel">,
+    private readonly jobs: Pick<VerificationJobs, "enqueue" | "cancel"> & { blockAdmission(reason: string): void },
     private readonly run: (id: string) => TestRun | null,
     private readonly execution: RemoteWorkerExecution,
     private readonly transport: RemoteWorkerTransport,
   ) {
-    for (const receipt of connection.receipts()) {
+    const savedReceipts = connection.receipts();
+    if (hasUnconfirmedRemoteExecution(savedReceipts, run)) jobs.blockAdmission("remote_execution_cleanup_unconfirmed");
+    for (const receipt of savedReceipts) {
       if (receipt.assignment.workerId !== workerId) continue;
       this.receipts.set(receipt.assignment.attemptId, receipt);
       // Receipt presence never authorizes enqueue after restart. Recover only saved evidence.
@@ -129,3 +131,13 @@ export class RemoteVerificationWorker {
 }
 
 export function fingerprint(value: unknown): string { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
+
+/** A restarted queue cannot assume that an orphaned process tree has exited. */
+export function hasUnconfirmedRemoteExecution(receipts: WorkerReceipt[], run: (id: string) => TestRun | null): boolean {
+  return receipts.some(receipt => {
+    const last = receipt.reports.at(-1);
+    if (last && ["succeeded", "failed", "cancelled"].includes(last.phase)) return false;
+    const local = run(receipt.localRunId);
+    return !local?.telemetry?.finalizedAt || !["confirmed", "not_required"].includes(local.telemetry.cleanup);
+  });
+}

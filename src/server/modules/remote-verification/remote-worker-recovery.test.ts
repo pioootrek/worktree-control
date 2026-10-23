@@ -41,8 +41,8 @@ it("persists acceptance before enqueue and never reexecutes unknown work after b
   const controllerStore = new SqliteStateStore(f.path), reopened = new SqliteStateStore(f.workerPath);
   const identity = new IdentityService(controllerStore);
   const controller = new RemoteVerificationController(controllerStore, controllerStore.remoteConnection, identity);
-  const enqueue = vi.fn(), resolve = vi.fn(), cancel = vi.fn();
-  const worker = new RemoteVerificationWorker("worker", reopened.remoteConnection, { enqueue, cancel }, () => null, { resolve }, {
+  const enqueue = vi.fn(), resolve = vi.fn(), cancel = vi.fn(), blockAdmission = vi.fn();
+  const worker = new RemoteVerificationWorker("worker", reopened.remoteConnection, { enqueue, cancel, blockAdmission }, () => null, { resolve }, {
     poll: async () => controller.poll("worker", f.actor),
     report: async input => { controller.report("worker", input, f.actor); },
   });
@@ -53,6 +53,7 @@ it("persists acceptance before enqueue and never reexecutes unknown work after b
     expect(controller.status(f.request.id, f.owner).attempt?.phase).toBe("uncertain");
     expect(reopened.remoteConnection.receipts()[0]).toMatchObject({ localRunId: "stable-run", reports: [{ phase: "uncertain" }] });
     expect(enqueue).not.toHaveBeenCalled(); expect(resolve).not.toHaveBeenCalled();
+    expect(blockAdmission).toHaveBeenCalledWith("remote_execution_cleanup_unconfirmed");
   } finally { await worker.close(); reopened.close(); controllerStore.close(); }
 });
 
@@ -66,7 +67,7 @@ it("reopens and replays a durable terminal outbox after an ACK is lost, preservi
   const controllerStore = new SqliteStateStore(f.path), reopened = new SqliteStateStore(f.workerPath);
   const controller = new RemoteVerificationController(controllerStore, controllerStore.remoteConnection, new IdentityService(controllerStore));
   const enqueue = vi.fn(), resolve = vi.fn(), uploaded = vi.fn();
-  const worker = new RemoteVerificationWorker("worker", reopened.remoteConnection, { enqueue, cancel: vi.fn() }, () => null, { resolve }, {
+  const worker = new RemoteVerificationWorker("worker", reopened.remoteConnection, { enqueue, cancel: vi.fn(), blockAdmission: vi.fn() }, () => null, { resolve }, {
     poll: async () => controller.poll("worker", f.actor),
     report: async input => { uploaded(input); controller.report("worker", input, f.actor); },
   });

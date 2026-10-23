@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { loadRemoteVerificationConfig, runRemoteVerificationCommand } from "./remote-verification";
+import { hasUnconfirmedRemoteExecution } from "../server/modules/remote-verification";
 import { createRemoteVerificationRuntime } from "./remote-verification-runtime";
 import { controllerRestoreBoundary } from "../server/restore-requests";
 import { parseUserBackupOptions } from "./user-backup-options";
@@ -228,6 +229,10 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     kinds: ["tests", "controller"],
     ...(projectId ? { projectIds: [projectId] } : {}),
   }));
+  // Remains enforced even if the worker configuration is omitted on restart.
+  if (hasUnconfirmedRemoteExecution(store.remoteConnection.receipts(), id => store.getTestRun(id))) {
+    tests.blockAdmission("remote_execution_cleanup_unconfirmed");
+  }
   const identity = new IdentityService(store, undefined, undefined, undefined, authentication);
   try {
     const restoreBoundary = controllerRestoreBoundary(paths.databasePath);

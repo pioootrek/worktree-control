@@ -1,19 +1,28 @@
 ---
 audience: "owner, contributors, and coding agents"
-last_reviewed: "2026-10-05"
+last_reviewed: "2026-10-23"
 source_of_truth: "remote verification and worker direction from the owner discussion on 2026-09-05"
 status: "active"
 ---
 
 # Remote verification of pushed commits
 
-## Implementation status, 2026-09-27
+## Implementation status, 2026-10-23
 
-On `main` at `17d0c9d`, request authorization/persistence, attempt-state
-operations and exact-SHA workspace preparation are implemented with tests.
-Enrollment and worker credentials, outbound dispatch, finite-queue execution,
-reconnect/cancellation and caller transports remain incomplete. The workflow
-below is the acceptance target, not a currently available remote command.
+Request authorization/persistence, attempt-state operations and exact-SHA
+workspace preparation were already implemented on `main` at `17d0c9d`.
+The current development branch adds an opt-in worker protocol, durable worker
+receipts and reports, existing finite-queue execution, local provisioning and
+MCP submit/status/log/cancel operations. This is an experimental first fragment,
+not a deployed or accepted WinPath workflow.
+
+The fragment accepts dependency-free Node projects and clean profiles only.
+It does not install dependencies, upload artifacts or stream live logs. A
+manifest declaring dependencies is refused as setup failure; therefore this
+fragment cannot yet verify WinPath. Real worker selection, deployment approval,
+and the failed/fixed WinPath acceptance trial remain outstanding. Two-process
+crash recovery is a separate gate from database reopen and in-process fault tests.
+
 See the [remaining implementation slices](knowledge/AGENTS.md) (Knowledge attachment `64ab7a29d6c4ae015d5cd794c58a8a68`).
 
 ## Owner need and priority
@@ -32,9 +41,20 @@ priority; queue reliability and truthful source attribution are foundations.
 Track delivery in
 [FEAT-20260905-remote-commit-verification](knowledge/AGENTS.md) (Knowledge task `0e2204a2e0e0945eee4f754b2f932eed`).
 
-The complete connected-worker workflow remains planned; its foundations alone
-do not constitute a deployed remote service. Other people's willingness to
+The complete accepted worker workflow remains pending; implementation and
+fixture tests alone do not constitute a deployed remote service. Other people's willingness to
 pay remains a hypothesis; start with the owner's real workflow.
+
+On 2026-10-23 the owner explicitly started implementation before completion of
+the product-interest test, superseding the earlier ordering recorded in
+Knowledge task `0e2204a2e0e0945eee4f754b2f932eed`. WinPath is the reference
+project. The first scope is one owner-controlled Linux worker, one project,
+and one verification preset without application secrets. Protocol development
+and fault testing use isolated fixtures; no production worker has been selected.
+Implementation authorization includes tests, local commits and PR preparation,
+but excludes merging, deployment, service changes, host-limit changes and
+account configuration. Backup diagnostics and automatic-backup acceptance are
+separate work.
 
 ## First complete workflow
 
@@ -157,10 +177,77 @@ execution, restart recovery, stale attempt reports, cancellation with surviving
 descendants, setup failure, cache separation, bounded output, and safe cleanup.
 Test recovery of durable run metadata and expose artifact expiration.
 
+Keep fixture evidence separate from acceptance on the actual worker. For the
+owner trial, retain the failed pushed commit's request ID, attempt ID, requested
+and executed SHA, preset identity, result and bounded output. Push a correction
+and retain a distinct passing result with the same evidence. Also exercise
+disconnect, restart, duplicate submission and cancellation without duplicate
+execution. A protocol fixture alone does not close this gate. Select the target
+machine and agree its operational setup only when this actual trial is ready;
+implementation permission does not authorize deployment.
+
 Success means trustworthy remote evidence without manual SSH or copying logs
 into a conversation. Measure submission-to-result time, manual steps, failed
 recoveries, resource usage, and repeat use. A phone-driven demo does not replace
 failure-path verification. Use throwaway repos for development verification.
+
+## Experimental setup contract
+
+This contract describes the development slice, not an instruction to modify
+an existing installation. Use dedicated fixture data/state directories first.
+Each installation keeps its own SQLite owner and singleton lock. Provisioning
+requires a stopped installation and its local owner session credential;
+installation-wide and worker tokens cannot administer these grants.
+
+1. Register a local verification-only project on each installation with the
+   existing project command and the `none` launch preset.
+2. Prepare an independent worker-owned clone as the source cache, outside
+   registered project repositories. Keep the configured named remote there;
+   requests cannot supply repository URLs or filesystem paths.
+3. On the broker, run `remote-verification provision --file FILE`. The JSON
+   contains `project: {id, name, sourceRemote}`, `worker: {id, name}`,
+   `localProjectId`, `presetIds`, `callerPrincipalIds`, and `workerTokenFile`.
+   Caller IDs must refer to existing active owner/agent principals. The command
+   creates the token file exclusively with mode `0600` and prints identifiers,
+   including the worker principal and credential IDs, without the token.
+4. On the worker, provision the same project/worker IDs with its local project
+   ID, `worker.principalId` from the broker, and `callerPrincipalIds: []`.
+   Omit `workerTokenFile`; transfer the broker token through a private channel.
+5. Supply `start --remote-verification-config FILE` explicitly. The broker
+   configuration is `{version: 1, listener: {host, port, keyFile, certFile}}`.
+   The worker configuration is `{version: 1, worker: {workerId, origin,
+   tokenFile, workspaceRoot, mappings}}`. Each mapping contains `projectId`,
+   `localProjectId`, `sourceCachePath`, `sourceRemote` and `presetIds`. File
+   and directory paths are absolute, local configuration. Production transport
+   requires HTTPS; `allowLoopbackHttpFixture: true` permits HTTP only with a
+   numeric loopback origin/listener. Worker software supports Linux in this
+   trial; no worker service installer is introduced.
+6. Connect the existing MCP client with an owner/agent credential granted on
+   the broker. Call `submit_remote_verification` with `projectId`, `workerId`,
+   full `commitSha`, `presetId` and a stable `idempotencyKey`. Use the returned
+   request ID with `get_remote_verification`, `get_remote_verification_logs`
+   or `cancel_remote_verification`. A repeated identical submission returns
+   the original request. A correction uses a new SHA and idempotency key.
+7. Credential revocation uses `remote-verification revoke-token
+   --credential-id ID` under the same stopped-installation owner boundary.
+   Local active work may finish while disconnected; revocation does not prove
+   that a remote process has stopped.
+
+Status distinguishes setup failure, execution failure and uncertainty. The
+reported result includes requested/executed SHA, local run/attempt identity,
+preset/environment fingerprints, source observations, exit and cleanup evidence.
+Logs are the last uploaded tail, at most 200 lines of 2,000 characters. Live
+output and artifacts are not uploaded; an empty tail is not proof of no output.
+Cancellation intent can be read while the worker is offline; confirmation waits
+for owned-process cleanup. Terminal reports and acknowledgements survive
+reopening the databases and are replayed without creating a new execution.
+
+After a restart, accepted work with unknown process cleanup blocks new finite
+jobs in the worker installation, even if the remote configuration is omitted.
+This conservative block has no automatic release or operator reconciliation
+command in the first fragment. Do not delete receipts or assume a PID/port proves
+process ownership to clear it. A safe operator recovery workflow and actual
+process-crash acceptance remain required before routine worker use.
 
 ## SaaS path and open decisions
 

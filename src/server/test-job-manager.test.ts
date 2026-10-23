@@ -53,6 +53,15 @@ function fixture() {
 describe("TestJobManager", () => {
   const cleanSource = (): TestSourceObservation => ({ observedAt: new Date().toISOString(), head: "aaa", branch: "main", dirty: false, statusDigest: "empty", statusEntries: 0, complete: true, errorCode: null });
 
+  it("blocks all new execution after uncertain remote process recovery without signalling unknown processes", async () => {
+    const { store, project, manager, worktree, command } = fixture();
+    manager.blockAdmission("remote_execution_cleanup_unconfirmed");
+    expect(() => manager.enqueue({ projectId: project.id, worktree: worktree("/tmp/a"), command: command(10), environment: resolved(), actor: "local-user" })).toThrow("remote_execution_cleanup_unconfirmed");
+    manager.setLimit(16);
+    expect(manager.status().admissionBlockReason).toBe("remote_execution_cleanup_unconfirmed");
+    expect(store.listTestRuns()).toHaveLength(0);
+  });
+
   it("holds a finite queue slot through remote preparation, cancellation and disposal", async () => {
     const { store, project, manager, worktree, command } = fixture();
     manager.setLimit(1);

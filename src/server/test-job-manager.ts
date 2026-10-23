@@ -48,6 +48,7 @@ export class TestJobManager {
   private pruneOperation: Promise<void> | null = null;
   private pumping = false;
   private closed = false;
+  private admissionBlock: string | null = null;
   private outputNotification: NodeJS.Timeout | null = null;
   private readonly outputProjects = new Set<string>();
   private readonly logPersistence = new Map<string, NodeJS.Timeout>();
@@ -65,6 +66,12 @@ export class TestJobManager {
     this.summaryMaintenance = setInterval(() => this.pruneSummaries(), 60_000);
     this.summaryMaintenance.unref();
     void this.pruneLogs();
+  }
+
+  /** Fail closed after unconfirmed remote process recovery; only an explicit future reconciliation may release it. */
+  blockAdmission(reason: string): void {
+    this.admissionBlock ??= reason;
+    this.logs.controller("test_queue.admission_blocked", { reason: this.admissionBlock });
   }
 
   configureSourceObserver(observer: TestSourceObserver): void {
@@ -85,6 +92,7 @@ export class TestJobManager {
     const queuedPreparations = [...this.preparing].filter(id => this.store.getTestRun(id)?.phase === "queued").length;
     return {
       ...settings,
+      ...(this.admissionBlock ? { admissionBlockReason: this.admissionBlock } : {}),
       running: this.active.size + this.preparing.size,
       queued: Math.max(0, this.store.countTestRuns(["queued"]) - queuedPreparations),
     };
@@ -100,6 +108,7 @@ export class TestJobManager {
 
   enqueue(input: EnqueueTestInput): TestRun {
     if (this.closed) throw new Error("Kolejka testów jest zamknięta.");
+    if (this.admissionBlock) throw new Error(this.admissionBlock);
     if (input.idempotencyKey) {
       const repeated = this.replay(input.actor, input.idempotencyKey, input.projectId, input.worktree.path, input.command.preset.id);
       if (repeated) return repeated;
@@ -224,11 +233,11 @@ export class TestJobManager {
   private readonly timeouts = new Map<string, number>();
 
   private pump(): void {
-    if (this.pumping || this.closed) return;
+    if (this.pumping || this.closed || this.admissionBlock) return;
     this.pumping = true;
     queueMicrotask(() => {
       try {
-        if (this.closed) return;
+        if (this.closed || this.admissionBlock) return;
         const limit = this.store.getTestQueueSettings().limit;
         const queued = this.store.listPendingTestRuns()
           .filter(({ id, phase }) => phase === "queued" && !this.finalizations.has(id))
