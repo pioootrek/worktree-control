@@ -375,6 +375,12 @@ export class ControlService {
     return project;
   }
 
+  async setTestPresetTimeout(projectId: string, presetId: string, timeoutMs: number | null, actor: OperationActor = { owner: "local-user" }): Promise<ProjectView> {
+    const project = await this.verification.setTestPresetTimeout(projectId, presetId, timeoutMs, actor);
+    this.invalidateDashboardMetadata(projectId);
+    return project;
+  }
+
   async reserve(input: ReservationRequest): Promise<void> {
     await this.lifecycle.serialized(input.projectId, async () => {
       const project = this.lifecycle.requireProject(input.projectId);

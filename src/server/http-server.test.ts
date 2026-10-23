@@ -44,6 +44,7 @@ async function fixture(options: {
   };
   const saveTestEnvironmentProfile = vi.fn(async () => redactedTestProject);
   const deleteTestEnvironmentProfile = vi.fn(async () => redactedTestProject);
+  const setTestPresetTimeout = vi.fn(async () => redactedTestProject);
   const assignTestPresetProfile = vi.fn(async () => redactedTestProject);
   const setServerCapacity = vi.fn(() => capacity);
   const setTestQueueLimit = vi.fn(() => testQueue);
@@ -60,7 +61,7 @@ async function fixture(options: {
     directories: [{ name: "code", path: "/home/test/code" }],
     files: [],
   }));
-  const service = { addProject, assignTestPresetProfile, cancelTest, dashboard, dashboardLive, deleteEnvironmentProfile, deleteTestEnvironmentProfile, saveTestEnvironmentProfile, testEnvironmentProfiles, deleteWorktreeCache, enqueueTest, refreshProjectMetadata, refreshWorktreeStorage, removeProject, runtimeMetrics, saveEnvironmentProfile, selectEnvironmentProfile, setProjectEnvironment, setProjectTls, setServerCapacity, setTestQueueLimit, testRun } as unknown as ControlService;
+  const service = { addProject, setTestPresetTimeout, assignTestPresetProfile, cancelTest, dashboard, dashboardLive, deleteEnvironmentProfile, deleteTestEnvironmentProfile, saveTestEnvironmentProfile, testEnvironmentProfiles, deleteWorktreeCache, enqueueTest, refreshProjectMetadata, refreshWorktreeStorage, removeProject, runtimeMetrics, saveEnvironmentProfile, selectEnvironmentProfile, setProjectEnvironment, setProjectTls, setServerCapacity, setTestQueueLimit, testRun } as unknown as ControlService;
   const controller = createControllerServer({
     service,
     directoryBrowser: { list: listDirectories } as unknown as DirectoryBrowser,
@@ -86,7 +87,7 @@ async function fixture(options: {
     controller.server.listen(0, "127.0.0.1", resolve);
   });
   const address = controller.server.address() as AddressInfo;
-  return { addProject, assignTestPresetProfile, base: `http://127.0.0.1:${address.port}`, cancelTest, deleteTestEnvironmentProfile, saveTestEnvironmentProfile, testEnvironmentProfiles, dashboard, dashboardLive, deleteEnvironmentProfile, deleteWorktreeCache, enqueueTest, listDirectories, refreshProjectMetadata, refreshWorktreeStorage, removeProject, runtimeMetrics, saveEnvironmentProfile, selectEnvironmentProfile, setProjectEnvironment, setProjectTls, setServerCapacity, setTestQueueLimit, testRun };
+  return { addProject, setTestPresetTimeout, assignTestPresetProfile, base: `http://127.0.0.1:${address.port}`, cancelTest, deleteTestEnvironmentProfile, saveTestEnvironmentProfile, testEnvironmentProfiles, dashboard, dashboardLive, deleteEnvironmentProfile, deleteWorktreeCache, enqueueTest, listDirectories, refreshProjectMetadata, refreshWorktreeStorage, removeProject, runtimeMetrics, saveEnvironmentProfile, selectEnvironmentProfile, setProjectEnvironment, setProjectTls, setServerCapacity, setTestQueueLimit, testRun };
 }
 
 afterEach(async () => {
@@ -503,6 +504,27 @@ describe("controller access boundary", () => {
     expect(cancelled.status).toBe(200);
     expect(await cancelled.json()).toEqual({ run: { id: "run-1", phase: "cancelled" } });
     expect(cancelTest).toHaveBeenCalledWith("run-1");
+  });
+
+  it("validates and authorizes preset timeout changes and explicit resets", async () => {
+    const { base, setTestPresetTimeout } = await fixture();
+    const url = `${base}/api/projects/project-1/test-preset-timeouts`;
+    const headers = { "Content-Type": "application/json", "X-Worktree-Control-Token": "test-access-token" };
+    for (const timeoutMs of [1_800_000, null]) {
+      expect((await fetch(url, { method: "POST", headers, body: JSON.stringify({ presetId: "godot:check", timeoutMs }) })).status).toBe(200);
+      expect(setTestPresetTimeout).toHaveBeenLastCalledWith("project-1", "godot:check", timeoutMs);
+    }
+    setTestPresetTimeout.mockClear();
+    for (const body of [
+      { presetId: "godot:check" }, { presetId: "godot:check", timeoutMs: 0 },
+      { presetId: "godot:check", timeoutMs: "1800000" }, { presetId: "godot:check", timeoutMs: 86_400_001 },
+      { presetId: "godot:check", timeoutMs: 1.5 }, { presetId: "__proto__", timeoutMs: 1000 },
+      { presetId: "godot:check", timeoutMs: 1000, limit: 5 },
+    ]) {
+      expect((await fetch(url, { method: "POST", headers, body: JSON.stringify(body) })).status).toBe(400);
+    }
+    expect((await fetch(url, { method: "POST", body: JSON.stringify({ presetId: "godot:check", timeoutMs: 1000 }) })).status).toBe(401);
+    expect(setTestPresetTimeout).not.toHaveBeenCalled();
   });
 
   it("manages test environment profiles and preset assignments", async () => {

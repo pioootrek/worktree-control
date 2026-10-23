@@ -1,6 +1,6 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-10-20"
+last_reviewed: "2026-10-23"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
@@ -391,6 +391,14 @@ Migration 30 expands `projects.launch_preset` and `test_runs.adapter` CHECKs
 through the existing table-rebuild helper, preserving rows, indexes and foreign
 keys. It runs on the sole owned connection in the ordered schema transaction,
 with FK validation before commit and migration provenance recorded together.
+Migration 31 adds `projects.test_preset_timeouts_json` with an empty-object
+default, preserving existing project profiles and queue settings. The sole
+SQLite owner writes an override and its audit event in one transaction.
+Verification applies it both during preset discovery and when capturing a
+new run's timeout; adapters retain their 15-minute defaults. See
+[preset timeout configuration](reservations-and-mcp.md) for bounds and reset
+semantics.
+
 The concrete executable and arguments are resolved against the selected
 worktree before every start. Django therefore uses a worktree-local `.venv` or
 `venv` when present and otherwise invokes `python3`, always through `shell:false`.

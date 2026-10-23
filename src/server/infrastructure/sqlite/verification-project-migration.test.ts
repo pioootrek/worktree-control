@@ -34,7 +34,7 @@ function fixture() {
     db.exec(`INSERT INTO ${table}_old SELECT * FROM ${table}; DROP TABLE ${table}; ALTER TABLE ${table}_old RENAME TO ${table};`);
     for (const index of indexes) db.exec(index.sql);
   }
-  db.exec("DELETE FROM schema_migrations WHERE version=30"); db.close();
+  db.exec("DELETE FROM schema_migrations WHERE version>=30"); db.close();
   return { path };
 }
 function contents(db: Database.Database) {

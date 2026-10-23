@@ -519,6 +519,18 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     this.persistTestEnvironment(projectId, project.testEnvironmentProfiles, assignments, actor, "project.test_preset_profile_assigned", { presetId, profileName });
   }
 
+  setProjectTestPresetTimeout(projectId: string, presetId: string, timeoutMs: number | null, actor: string): void {
+    const project = this.requireProjectRow(projectId);
+    const timeouts = { ...project.testPresetTimeouts };
+    if (timeoutMs === null) delete timeouts[presetId];
+    else timeouts[presetId] = timeoutMs;
+    this.database.transaction(() => {
+      this.database.prepare("UPDATE projects SET test_preset_timeouts_json = ?, updated_at = ? WHERE id = ?")
+        .run(JSON.stringify(timeouts), new Date().toISOString(), projectId);
+      this.audit(projectId, "project.test_preset_timeout_set", actor, { presetId, timeoutMs });
+    })();
+  }
+
   private persistTestEnvironment(
     projectId: string,
     profiles: TestEnvironmentProfile[],

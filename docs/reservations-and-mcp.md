@@ -1,6 +1,6 @@
 ---
 audience: "product owner and contributors discussing agent coordination"
-last_reviewed: "2026-10-07"
+last_reviewed: "2026-10-23"
 source_of_truth: "implemented reservation and local MCP integration design"
 status: "active"
 ---
@@ -153,6 +153,7 @@ list_test_environment_profiles
 save_test_environment_profile
 delete_test_environment_profile
 assign_test_preset_profile
+set_test_preset_timeout
 claim_project
 start_project
 restart_project
@@ -236,6 +237,29 @@ worktree. `run_test` requires an idempotency key so transport retries cannot
 queue duplicate processes. A run respects an existing project reservation but
 does not claim or switch the development server. Only its originating MCP
 session or a local dashboard user may cancel it.
+
+Test presets default to 15 minutes. `set_test_preset_timeout` accepts
+`projectId`, `presetId`, and `timeoutMs`: an integer from 1 to 86,400,000
+milliseconds (24 hours), or explicit `null` to remove the override. The HTTP
+counterpart is `POST /api/projects/:id/test-preset-timeouts` with
+`{ "presetId": "godot:check", "timeoutMs": 1800000 }`. Both use the same
+validated, reservation-aware application operation. This configuration does
+not require starting a development server.
+
+Overrides belong to a project and preset ID, apply to all its discovered
+worktrees, and persist in SQLite. `list_test_presets` reports the effective
+`timeoutMs`; project snapshots expose `testPresetTimeouts`. Setting an override
+does not create a preset or authorize a command: enqueue still resolves only
+a supported command in an exact discovered worktree. An override can be
+removed even when that preset is no longer present.
+
+Each new enqueue captures the effective timeout. Updating or removing an
+override leaves already queued/running jobs unchanged, including idempotent
+replays. Timing starts when the controller launches the process, so waiting
+inside a project runner counts against it; residence in the controller queue
+does not. Controller restarts interrupt jobs rather than resume their timers.
+Timeout overrides do not change resource limits, environment profiles, host
+runner policies, queue parallelism, or per-worktree serialization.
 
 Test environments are separate from development-server profiles. A test
 process starts from a fixed allowlist of system variables and receives only

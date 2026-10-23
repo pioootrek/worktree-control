@@ -1,3 +1,4 @@
+import { testPresetTimeoutSchema } from "./modules/verification";
 import type { McpDiagnosticsResponse } from "@/shared/contracts/mcp-diagnostics";
 import { handleUserBackupHttp } from "./transports/user-backup-http";
 import { handleBackupHttp } from "./transports/backup-http";
@@ -797,6 +798,15 @@ export function createControllerServer(options: {
           const input = parseProfileSelection(await readJson(request));
           const project = await options.service.deleteTestEnvironmentProfile(decodeURIComponent(testProfilesMatch[1]), input.name);
           options.events.publish({ kinds: ["topology", "metadata"], projectIds: [decodeURIComponent(testProfilesMatch[1])] });
+          json(response, 200, { project });
+          return;
+        }
+        const testPresetTimeoutMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/test-preset-timeouts$/);
+        if (request.method === "POST" && testPresetTimeoutMatch) {
+          const input = testPresetTimeoutSchema.parse(await readJson(request));
+          const projectId = decodeURIComponent(testPresetTimeoutMatch[1]);
+          const project = await options.service.setTestPresetTimeout(projectId, input.presetId, input.timeoutMs);
+          options.events.publish({ kinds: ["topology", "metadata"], projectIds: [projectId] });
           json(response, 200, { project });
           return;
         }
