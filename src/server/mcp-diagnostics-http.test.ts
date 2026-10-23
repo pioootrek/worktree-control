@@ -45,7 +45,7 @@ async function fixture(mode: "token" | "legacy" | "open" = "token", publicOrigin
   if (mode === "legacy") store.saveAuthenticationPolicy({ ...store.getAuthenticationPolicy(), mode: "legacy" }, "test", "test");
   else authentication.setMode(mode, "test");
   const waits = { waiters: 2, waiterTimers: 2, targets: 1, samplerTimers: 1 };
-  const service = { statusWaitDiagnostics: (sessionKey?: string) => sessionKey ? { waiters: 1, waiterTimers: 1 } : waits } as unknown as ControlService;
+  const service = { remoteVerificationEnabled: () => false, statusWaitDiagnostics: (sessionKey?: string) => sessionKey ? { waiters: 1, waiterTimers: 1 } : waits } as unknown as ControlService;
   const mcp = createMcpControllerServer({ service, identity, authentication, accessToken: "mcp-pairing", port: 0 });
   cleanups.push(() => mcp.close());
   let reads = 0;

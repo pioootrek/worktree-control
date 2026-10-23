@@ -182,6 +182,7 @@ export interface TestQueueSettings {
 }
 
 export interface TestQueueStatus extends TestQueueSettings {
+  admissionBlockReason?: string;
   running: number;
   queued: number;
 }

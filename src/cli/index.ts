@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { loadRemoteVerificationConfig, runRemoteVerificationCommand } from "./remote-verification";
+import { hasUnconfirmedRemoteExecution } from "../server/modules/remote-verification";
+import { createRemoteVerificationRuntime } from "./remote-verification-runtime";
 import { controllerRestoreBoundary } from "../server/restore-requests";
 import { parseUserBackupOptions } from "./user-backup-options";
 import { UserSchedules, BackupOperations, RestoreOperations, recoverBackupHandoff, finishBackupHandoff, assertBackupHandoffCompleted } from "../server/modules/backups";
@@ -52,7 +55,7 @@ import { authenticationAdminHandler } from "../server/authentication-admin";
 import { IdentityService } from "../server/modules/identity";
 import { KnowledgeAttachmentService, loadAttachmentLimits, KnowledgeService, KnowledgeError, knowledgeFailure } from "../server/modules/knowledge";
 import { createMcpControllerServer } from "../server/mcp-http-server";
-import { SystemGitWorktreeReader } from "../server/git-worktrees";
+import { GitCommandAdmission, SystemGitWorktreeReader } from "../server/git-worktrees";
 import { createControllerServer } from "../server/http-server";
 import { resolveAppPaths } from "../server/paths";
 import { ProcessManager } from "../server/process-manager";
@@ -93,6 +96,9 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     const result = await runBackupMonitor(process.argv.slice(4));
     writeCliLine(JSON.stringify(result, null, 2)); process.exitCode = result.exitCode; return;
   }
+  const remoteVerificationConfigPath = option("--remote-verification-config");
+  if (process.argv.includes("--remote-verification-config") && (!remoteVerificationConfigPath || remoteVerificationConfigPath.startsWith("--"))) throw new Error("Missing --remote-verification-config file.");
+  const remoteVerificationConfig = command === "start" ? loadRemoteVerificationConfig(remoteVerificationConfigPath) : null;
   const backupPolicy = parseBackupPolicyOptions(process.argv.slice(2), command === "start");
   const remoteBackup = parseRemoteBackupOptions(process.argv.slice(2), command === "start");
   if (command === "start" && remoteBackup.loaded && !backupPolicy.directory) throw new Error("Remote backup transfer requires --backup-dir.");
@@ -104,7 +110,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const paths = knowledgeArgs
     ? resolveAppPaths(knowledgeArgs.dataDir, knowledgeArgs.stateDir)
     : resolveAppPaths(option("--data-dir"), option("--state-dir"));
-  if (["knowledge", "auth", "identity", "backup", "project", "doctor"].includes(command) || (command === "config" && process.argv[3] === "mcp")) assertBackupHandoffCompleted(paths.databasePath);
+  if (["remote-verification", "knowledge", "auth", "identity", "backup", "project", "doctor"].includes(command) || (command === "config" && process.argv[3] === "mcp")) assertBackupHandoffCompleted(paths.databasePath);
   if (command === "mcp" && process.argv[3] === "diagnostics") {
     if (withoutPathOptions(process.argv.slice(4)).length) throw new Error("Usage: mcp diagnostics [--data-dir PATH] [--state-dir PATH]");
     const result = await requestAdminSocket(paths.adminSocketPath, { command: "mcp-diagnostics" }, 5000, 64 * 1024);
@@ -121,6 +127,10 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   }
   if (command === "auth") {
     await runAuthCommand(withoutPathOptions(process.argv.slice(3)), paths, { write: writeCliLine });
+    return;
+  }
+  if (command === "remote-verification") {
+    await runRemoteVerificationCommand(withoutPathOptions(process.argv.slice(3)), paths, writeCliLine);
     return;
   }
   if (command === "identity") {
@@ -219,6 +229,10 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     kinds: ["tests", "controller"],
     ...(projectId ? { projectIds: [projectId] } : {}),
   }));
+  // Remains enforced even if the worker configuration is omitted on restart.
+  if (hasUnconfirmedRemoteExecution(store.remoteConnection.receipts(), id => store.getTestRun(id))) {
+    tests.blockAdmission("remote_execution_cleanup_unconfirmed");
+  }
   const identity = new IdentityService(store, undefined, undefined, undefined, authentication);
   try {
     const restoreBoundary = controllerRestoreBoundary(paths.databasePath);
@@ -238,7 +252,15 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   } catch (error) { userSchedules?.close(); await backups.close(); await logs.close(); store.close(); controllerLock.release(); throw error; }
   const attachments = new KnowledgeAttachmentService(store, identity, paths.knowledgeAttachmentDirectory, knowledgeLimits);
   const knowledge = new KnowledgeService(store, identity, undefined, undefined, events.publishKnowledge, attachments);
-  const service = new ControlService(store, new SystemGitWorktreeReader(), processes, logs, undefined, storage, undefined, undefined, tests, lifecycle, knowledge);
+  const gitAdmission = new GitCommandAdmission();
+  const git = new SystemGitWorktreeReader(gitAdmission);
+  let remoteVerification: ReturnType<typeof createRemoteVerificationRuntime>;
+  try {
+    remoteVerification = createRemoteVerificationRuntime(remoteVerificationConfig, { store, identity, jobs: tests, lifecycle, git, admission: gitAdmission });
+  } catch (error) {
+    userSchedules?.close(); await backups.close(); await tests.shutdown(); git.close(); await logs.close(); store.close(); controllerLock.release(); throw error;
+  }
+  const service = new ControlService(store, git, processes, logs, undefined, storage, undefined, undefined, tests, lifecycle, knowledge, remoteVerification?.controller);
   const restores = new RestoreOperations(backups, paths.databasePath, paths.knowledgeAttachmentDirectory, {
     authentication: () => store.getAuthenticationPolicy(),
     enterMaintenance: () => { maintenance = true; lifecycle.closeAdmission(); },
@@ -304,12 +326,14 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     backups, restores, userSchedules, maintenance: () => maintenance,
   });
   try {
+    await remoteVerification?.start();
     await listen(controller.server, port, host);
     if (mcp) await listen(mcp.server, mcpPort, "127.0.0.1");
   } catch (error) {
     userSchedules?.close(); await backups.close();
     await mcp?.close();
     await controller.close();
+    await remoteVerification?.close();
     await service.shutdown();
     controllerLock.release();
     throw error;
@@ -364,6 +388,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     userSchedules?.close(); await backups.close();
     await mcp?.close();
     await controller.close();
+    await remoteVerification?.close();
     await service.shutdown();
     controllerLock.release();
     throw error;
@@ -400,7 +425,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     try {
       let backupFailure: unknown = null;
       try { userSchedules?.close(); await backups.close(); } catch (error) { backupFailure = error; }
-      const listeners = await Promise.allSettled([mcp?.close(), controller.close(), adminSocket.close()]);
+      const listeners = await Promise.allSettled([remoteVerification?.close(), mcp?.close(), controller.close(), adminSocket.close()]);
       const listenerFailures = listeners.filter((result) => result.status === "rejected");
       let serviceFailure: unknown = null;
       try {

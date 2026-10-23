@@ -7,6 +7,7 @@ import { leaseTokenHash, type OperationActor, ProjectLifecycle } from "./modules
 import { RuntimeService } from "./modules/runtime";
 import { StatusService, type CompactProjectStatus, type CompactTestStatus, type CompactEnvelope } from "./modules/status";
 import { VerificationService, VerificationHistoryService } from "./modules/verification";
+import type { RemoteVerificationController } from "./modules/remote-verification";
 
 import type {
   CacheDeletionResult,
@@ -78,6 +79,7 @@ export class ControlService {
     private readonly tests?: TestJobManager,
     lifecycle?: ProjectLifecycle,
     private readonly knowledge?: KnowledgeService,
+    private readonly remoteVerification?: RemoteVerificationController,
   ) {
     this.lifecycle = lifecycle ?? new ProjectLifecycle(store, processes);
     this.storage?.assertLifecycle(this.lifecycle);
@@ -100,6 +102,15 @@ export class ControlService {
 
   executeKnowledge(input: unknown, actor: AuthenticatedPrincipal) {
     return this.requireKnowledge().execute(input, actor);
+  }
+
+  remoteVerificationEnabled(): boolean { return !!this.remoteVerification; }
+  submitRemoteVerification(input: unknown, actor: AuthenticatedPrincipal) { return this.requireRemoteVerification().submit(input, actor); }
+  getRemoteVerification(requestId: string, actor: AuthenticatedPrincipal) { return this.requireRemoteVerification().status(requestId, actor); }
+  cancelRemoteVerification(requestId: string, actor: AuthenticatedPrincipal) { return this.requireRemoteVerification().cancel(requestId, actor); }
+  private requireRemoteVerification(): RemoteVerificationController {
+    if (!this.remoteVerification) throw new Error("Remote verification is not enabled.");
+    return this.remoteVerification;
   }
 
   knowledgeThreads(projectId: string, actor: AuthenticatedPrincipal, options?: KnowledgePageOptions) {

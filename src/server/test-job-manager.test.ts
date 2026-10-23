@@ -53,6 +53,41 @@ function fixture() {
 describe("TestJobManager", () => {
   const cleanSource = (): TestSourceObservation => ({ observedAt: new Date().toISOString(), head: "aaa", branch: "main", dirty: false, statusDigest: "empty", statusEntries: 0, complete: true, errorCode: null });
 
+  it("blocks all new execution after uncertain remote process recovery without signalling unknown processes", async () => {
+    const { store, project, manager, worktree, command } = fixture();
+    manager.blockAdmission("remote_execution_cleanup_unconfirmed");
+    expect(() => manager.enqueue({ projectId: project.id, worktree: worktree("/tmp/a"), command: command(10), environment: resolved(), actor: "local-user" })).toThrow("remote_execution_cleanup_unconfirmed");
+    manager.setLimit(16);
+    expect(manager.status().admissionBlockReason).toBe("remote_execution_cleanup_unconfirmed");
+    expect(store.listTestRuns()).toHaveLength(0);
+  });
+
+  it("holds a finite queue slot through remote preparation, cancellation and disposal", async () => {
+    const { store, project, manager, worktree, command } = fixture();
+    manager.setLimit(1);
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const dispose = vi.fn(async () => undefined);
+    const preparing = vi.fn(async () => {
+      await barrier;
+      return { worktree: worktree("/tmp/owned-remote"), command: command(10), environment: resolved(), sourceObservation: cleanSource() };
+    });
+    const first = manager.enqueue({ projectId: project.id, worktree: worktree("/tmp/owned-remote"), command: command(10), environment: resolved(), actor: "local-user",
+      preparation: { prepare: preparing, observe: async () => cleanSource(), dispose } });
+    const second = manager.enqueue({ projectId: project.id, worktree: worktree("/tmp/other"), command: command(10), environment: resolved(), actor: "local-user" });
+    try {
+      await vi.waitFor(() => expect(preparing).toHaveBeenCalledOnce());
+      expect(manager.status()).toMatchObject({ running: 1, queued: 1 });
+      await manager.cancel(first.id, "local-user");
+      expect(dispose).not.toHaveBeenCalled();
+      expect(store.getTestRun(second.id)?.phase).toBe("queued");
+    } finally { release(); }
+    await vi.waitFor(() => expect(store.getTestRun(second.id)?.phase).toBe("passed"));
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(store.getTestRun(first.id)?.startedAt).toBeNull();
+    expect(store.getTestRun(first.id)?.telemetry?.finalizedAt).toBeTruthy();
+  });
+
   it("rejects a queued source change before spawning the command", async () => {
     const { store, project, manager, worktree, command } = fixture();
     const enqueueSource = { observedAt: new Date().toISOString(), head: "aaa", branch: "main", dirty: false, statusDigest: "empty", statusEntries: 0, complete: true, errorCode: null };

@@ -33,7 +33,7 @@ const TRANSITIONS: Record<RemoteVerificationAttemptPhase, ReadonlySet<RemoteVeri
   preparing: new Set(["running", "failed", "cancel_requested", "uncertain"]),
   running: new Set(["succeeded", "failed", "cancel_requested", "uncertain"]),
   cancel_requested: new Set(["cancelled", "failed", "uncertain"]),
-  uncertain: new Set(["preparing", "running", "succeeded", "failed", "cancel_requested", "cancelled"]),
+  uncertain: new Set(["uncertain", "preparing", "running", "succeeded", "failed", "cancel_requested", "cancelled"]),
   succeeded: new Set(),
   failed: new Set(),
   cancelled: new Set(),

@@ -110,7 +110,7 @@ describe("MCP loopback server", () => {
       })),
     };
     const controller = createMcpControllerServer({
-      service: {} as ControlService,
+      service: { remoteVerificationEnabled: () => false } as ControlService,
       port: 0,
       accessToken: "legacy-runtime-token",
       identity,

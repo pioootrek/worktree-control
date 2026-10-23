@@ -55,8 +55,15 @@ An existing LLM client or human requests a configured check for an exact SHA
 and receives its result. It follows urgent runtime reliability work and
 precedes autonomous fleet execution; a full forum or paid SaaS is not required.
 Request/attempt persistence and exact-SHA workspace preparation are implemented.
-Worker connectivity, queue execution and caller transports remain incomplete;
-there is no supported end-to-end remote endpoint yet.
+An experimental development slice adds outbound worker connectivity, queue
+execution and MCP access for dependency-free Node checks. Dependency setup and
+real WinPath worker acceptance remain incomplete; see the remote-verification
+plan for the current limits.
+The owner authorized this implementation stage on 2026-10-23 before the
+product-interest test finishes. Its initial scope is one Linux worker, WinPath
+as the reference project and one preset without application secrets. Isolated
+protocol fixtures precede a separately recorded acceptance trial on the chosen
+worker; no production machine or deployment is implied by this decision.
 
 The [environment runtime plan](environment-runtime-plan.md) incorporates the
 owner's Secret Runtime proposal through scoped worker-side credential delivery.

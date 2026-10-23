@@ -1,3 +1,5 @@
+import { RemoteConnectionQueries } from "./remote-connection-queries";
+import type { RemoteConnectionStore } from "@/server/modules/remote-verification";
 import { TestHistoryQueries } from "./test-history-queries";
 import { snapshotAttachments } from "./schema-inspection";
 import type { KnowledgeTaskPage, KnowledgeReplyPage, KnowledgeRelationDestination } from "@/shared/contracts/knowledge";
@@ -53,6 +55,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   private readonly testRuns: TestRunQueries;
   private readonly storage: StorageQueries;
   private readonly remoteVerification: RemoteVerificationQueries;
+  readonly remoteConnection: RemoteConnectionStore;
   private readonly identity: IdentityQueries;
   private readonly authentication: AuthenticationQueries;
   private readonly knowledge: KnowledgeQueries;
@@ -70,6 +73,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       this.testRuns = new TestRunQueries(this.database);
       this.storage = new StorageQueries(this.database);
       this.remoteVerification = new RemoteVerificationQueries(this.database);
+      this.remoteConnection = new RemoteConnectionQueries(this.database);
       this.identity = new IdentityQueries(this.database);
       this.authentication = new AuthenticationQueries(this.database);
       this.knowledge = new KnowledgeQueries(this.database);

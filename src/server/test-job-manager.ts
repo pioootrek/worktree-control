@@ -42,11 +42,13 @@ export class TestJobManager {
   private readonly finalizations = new Map<string, Promise<void>>();
   private readonly preparing = new Set<string>();
   private readonly preparationPromises = new Map<string, Promise<void>>();
+  private readonly preparations = new Map<string, NonNullable<EnqueueTestInput["preparation"]>>();
   private sourceObserver: TestSourceObserver | null = null;
   private logMaintenance: Promise<void> = Promise.resolve();
   private pruneOperation: Promise<void> | null = null;
   private pumping = false;
   private closed = false;
+  private admissionBlock: string | null = null;
   private outputNotification: NodeJS.Timeout | null = null;
   private readonly outputProjects = new Set<string>();
   private readonly logPersistence = new Map<string, NodeJS.Timeout>();
@@ -64,6 +66,12 @@ export class TestJobManager {
     this.summaryMaintenance = setInterval(() => this.pruneSummaries(), 60_000);
     this.summaryMaintenance.unref();
     void this.pruneLogs();
+  }
+
+  /** Fail closed after unconfirmed remote process recovery; only an explicit future reconciliation may release it. */
+  blockAdmission(reason: string): void {
+    this.admissionBlock ??= reason;
+    this.logs.controller("test_queue.admission_blocked", { reason: this.admissionBlock });
   }
 
   configureSourceObserver(observer: TestSourceObserver): void {
@@ -84,6 +92,7 @@ export class TestJobManager {
     const queuedPreparations = [...this.preparing].filter(id => this.store.getTestRun(id)?.phase === "queued").length;
     return {
       ...settings,
+      ...(this.admissionBlock ? { admissionBlockReason: this.admissionBlock } : {}),
       running: this.active.size + this.preparing.size,
       queued: Math.max(0, this.store.countTestRuns(["queued"]) - queuedPreparations),
     };
@@ -99,15 +108,17 @@ export class TestJobManager {
 
   enqueue(input: EnqueueTestInput): TestRun {
     if (this.closed) throw new Error("Kolejka testów jest zamknięta.");
+    if (this.admissionBlock) throw new Error(this.admissionBlock);
     if (input.idempotencyKey) {
       const repeated = this.replay(input.actor, input.idempotencyKey, input.projectId, input.worktree.path, input.command.preset.id);
       if (repeated) return repeated;
     }
+    if (input.runId && this.store.hasTestRun(input.runId)) throw new Error("Execution identity is already accepted.");
     if (this.store.countTestRuns(["queued"]) >= MAX_QUEUED_RUNS) {
       throw new Error(`Kolejka testów może zawierać najwyżej ${MAX_QUEUED_RUNS} oczekujących zadań.`);
     }
     const run: TestRun = {
-      id: randomUUID(),
+      id: input.runId ?? randomUUID(),
       projectId: input.projectId,
       worktreePath: input.worktree.path,
       worktreeHead: input.worktree.head,
@@ -140,6 +151,7 @@ export class TestJobManager {
     try { this.store.saveTestRun(run, input.idempotencyKey); }
     catch (error) { this.telemetry.forget(run.id); throw error; }
     this.environments.set(run.id, input.environment.environment);
+    if (input.preparation) this.preparations.set(run.id, input.preparation);
     this.timeouts.set(run.id, input.command.preset.timeoutMs);
     this.logs.openTest(run.id);
     this.write(run, `$ ${run.executable} ${run.args.join(" ")}`);
@@ -221,11 +233,11 @@ export class TestJobManager {
   private readonly timeouts = new Map<string, number>();
 
   private pump(): void {
-    if (this.pumping || this.closed) return;
+    if (this.pumping || this.closed || this.admissionBlock) return;
     this.pumping = true;
     queueMicrotask(() => {
       try {
-        if (this.closed) return;
+        if (this.closed || this.admissionBlock) return;
         const limit = this.store.getTestQueueSettings().limit;
         const queued = this.store.listPendingTestRuns()
           .filter(({ id, phase }) => phase === "queued" && !this.finalizations.has(id))
@@ -258,12 +270,26 @@ export class TestJobManager {
 
   private async prepare(run: TestRun): Promise<void> {
     try {
-      if (!this.sourceObserver || !run.source.enqueue) {
-        this.preparing.delete(run.id);
+      const preparation = this.preparations.get(run.id);
+      if (preparation) {
+        const input = await preparation.prepare();
+        if (this.closed || this.store.getTestRun(run.id)?.phase !== "queued") return;
+        run.executable = input.command.executable;
+        run.args = input.command.args;
+        run.cwd = input.command.cwd;
+        run.worktreeHead = input.worktree.head;
+        run.environmentVariableNames = input.environment.variableNames;
+        run.source = pendingSourceEvidence(input.sourceObservation);
+        this.environments.set(run.id, input.environment.environment);
+        this.timeouts.set(run.id, input.command.preset.timeoutMs);
+      }
+      const observer = preparation?.observe ?? this.sourceObserver;
+      if (!observer || !run.source.enqueue) {
+        if (!preparation) this.preparing.delete(run.id);
         this.start(run);
         return;
       }
-      run.source.preflight = await this.sourceObserver(run, "preflight");
+      run.source.preflight = await observer(run, "preflight");
       run.source.queueComparison = compareSource(run.source.enqueue, run.source.preflight);
       if (this.closed || this.store.getTestRun(run.id)?.phase !== "queued") return;
       this.persistNow(run);
@@ -275,12 +301,12 @@ export class TestJobManager {
         run.phase = "failed";
         run.finishedAt = this.clock.wallNow();
         run.error = run.source.queueComparison === "changed" ? "Źródło testu zmieniło się podczas oczekiwania w kolejce." : "Nie udało się potwierdzić źródła testu przed uruchomieniem.";
-        this.preparing.delete(run.id);
+        if (!preparation) this.preparing.delete(run.id);
         await this.finish(run);
         return;
       }
-      this.preparing.delete(run.id);
       if (this.closed || this.store.getTestRun(run.id)?.phase !== "queued") return;
+      if (!preparation) this.preparing.delete(run.id);
       this.start(run);
     } catch (error) {
       if (this.persistenceFailure) throw error;
@@ -307,6 +333,7 @@ export class TestJobManager {
   }
 
   private start(run: TestRun): void {
+    this.preparations.get(run.id)?.starting?.();
     this.telemetry.mark(run, "prepareFinishedAt");
     run.phase = "running";
     run.startedAt = this.clock.wallNow();
@@ -356,6 +383,13 @@ export class TestJobManager {
     this.active.set(run.id, active);
     child.once("spawn", () => {
       this.telemetry.mark(run, "spawnedAt");
+      try { this.preparations.get(run.id)?.started?.(); }
+      catch (error) {
+        this.recordPersistenceFailure(run, error);
+        active.executionError = "Execution acceptance could not be persisted.";
+        void this.complete(active);
+        return;
+      }
       if (child.pid && !active.completion) {
         let checkpointAt: number | null = null;
         active.resources = observeRunResources(run.telemetry!.resources!, child.pid,
@@ -430,9 +464,10 @@ export class TestJobManager {
         run.phase = active.cancellationRequested ? "cancelled" : active.timedOut ? "timed_out"
           : run.exitCode === 0 && !run.error ? "passed" : "failed";
         run.source.processOutcome = run.phase;
-        if (this.sourceObserver && run.source.enqueue) {
+        const observer = this.preparations.get(run.id)?.observe ?? this.sourceObserver;
+        if (observer && run.source.enqueue) {
           try {
-            run.source.finish = await this.sourceObserver(run, "finish");
+            run.source.finish = await observer(run, "finish");
           } catch {
             run.source.finish = {
               observedAt: this.clock.wallNow(), head: null, branch: null, dirty: null,
@@ -523,6 +558,11 @@ export class TestJobManager {
     this.cleanup(run.id);
     this.telemetry.mark(run, "finalizationStartedAt");
     const completion = (async () => {
+      const preparation = this.preparations.get(run.id);
+      if (preparation) {
+        await preparation.dispose();
+        this.preparations.delete(run.id);
+      }
       if (!run.telemetry!.finalizedAt) {
         try {
           await this.logs.finishTest(run.id);

@@ -46,6 +46,7 @@ type FixtureService = Record<string, ReturnType<typeof vi.fn>>;
 
 function fixtureService(overrides: FixtureService = {}): FixtureService {
   return {
+    remoteVerificationEnabled: vi.fn(() => false),
     claimProject: vi.fn(async () => ({ reservation, leaseToken: "owned-policy-lease-secret", snapshot: null, operationError: null, operationErrorCode: null })),
     compactProjectStatus: vi.fn(() => ({ status: { projectId } })),
     renewAgentClaim: vi.fn(() => reservation),
