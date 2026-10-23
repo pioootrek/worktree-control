@@ -24,9 +24,9 @@ export class BackupCatalog {
     try {
       for (;;) {
         const item = directory.readSync(); if (!item) break;
-        if (++visited > 4096) throw new BackupError("backup_limit");
+        if (++visited > 4096) throw new BackupError("backup_limit", 400, { reason: "catalog_scan", current: visited - 1, required: 1, maximum: 4096 });
         if (!backupIdSchema.safeParse(item.name).success) continue;
-        if (entries.length >= 1024) throw new BackupError("backup_limit");
+        if (entries.length >= 1024) throw new BackupError("backup_limit", 400, { reason: "catalog_entries", current: entries.length, required: 1, maximum: 1024 });
         try {
           const manifest = this.manifest(item.name);
           entries.push({ id: item.name, createdAt: manifest.createdAt, sizeBytes: manifestBytes(manifest), compatibility: "supported", verification: "unverified", protected: item.name.startsWith("pre-migration-") });
@@ -49,7 +49,7 @@ export class BackupCatalog {
   async verifyPathAsync(source: string): Promise<ControllerBackupManifest> {
     privateDirectory(source);
     const manifest = parseManifest(readBoundedJson(join(source, "manifest.json"), BACKUP_LIMITS.manifestBytes, true));
-    if (manifestBytes(manifest) > this.maxBytes) throw new BackupError("backup_limit");
+    if (manifestBytes(manifest) > this.maxBytes) throw new BackupError("backup_limit", 400, { reason: "snapshot_bytes", current: 0, required: manifestBytes(manifest), maximum: this.maxBytes });
     return this.verifier.verify(source);
   }
   async close(): Promise<void> { await this.verifier.close(); }

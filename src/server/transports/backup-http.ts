@@ -28,6 +28,6 @@ export async function handleBackupHttp(request: IncomingMessage, response: Serve
     }
   } catch (error) {
     const failure = error instanceof BackupError ? error : new BackupError("backup_failed");
-    reply(failure.status, { code: failure.code, error: failure.code });
+    reply(failure.status, { code: failure.code, error: failure.code, ...(failure.limit ? { limit: failure.limit } : {}) });
   }
 }

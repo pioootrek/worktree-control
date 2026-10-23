@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { acquireControllerLock } from "./controller-lock";
 import { listenAdminSocket } from "./admin-socket";
 import { resolveAppPaths } from "./paths";
@@ -24,6 +24,13 @@ it("routes active CLI backup through the private admin socket using the existing
     expect(JSON.parse(output[0]!).operationId).toBe(JSON.parse(output[1]!).operationId);
     expect(operations.overview("local-admin").copies).toHaveLength(1);
     expect(await probeBackupMonitor(paths.adminSocketPath, parseBackupMonitorOptions(["--enabled"]))).toMatchObject({ controller: "available", severity: "disabled", alerts: [], metadata: { local: { lastAttempt: { state: "succeeded" } } } });
+    vi.spyOn(store, "backupEstimateBytes").mockReturnValue(operations.policy.maxBytes + 1);
+    await runBackupCommand(["now", "--idempotency-key", "over-budget"], paths, "test", () => {});
+    await operations.drain();
+    await runBackupCommand(["status", "--idempotency-key", "over-budget"], paths, "test", line => output.push(line));
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ state: "failed", error: "backup_limit", limit: { reason: "catalog_bytes", required: operations.policy.maxBytes + 1, maximum: operations.policy.maxBytes } });
+    await runBackupCommand(["list"], paths, "test", line => output.push(line));
+    expect(JSON.parse(output.at(-1)!).operations[0].limit.reason).toBe("catalog_bytes");
     expect(() => new SqliteStateStore(paths.databasePath)).toThrow(/already running/);
     await admin.close();
     await expect(runBackupCommand(["now", "--idempotency-key", "no-channel"], paths, "test", () => {})).rejects.toThrow();

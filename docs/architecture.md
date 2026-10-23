@@ -231,6 +231,37 @@ The initial schema contains `schema_migrations`, `settings`, `projects`,
 metadata are not stored as relational history in the MVP. Database backup uses
 the SQLite backup API rather than copying live database/WAL files.
 
+Installation backup admission and preflight retain the stable `backup_limit`
+error code with optional bounded `limit` evidence: `reason`, `current`,
+`required`, and `maximum`. `catalog_bytes` means the recognized catalog plus
+the estimated new snapshot exceeds the configured byte budget.
+`filesystem_space` means destination space available to the controller is less
+than the estimate plus a 16 MiB reserve (`current: 0`, `maximum: available`).
+`manual_history`, `service_history`, `queue`, `catalog_scan`, and
+`catalog_entries` use counts; `snapshot_bytes` identifies an oversized snapshot
+at asynchronous verification. Remote-transfer limits remain separate.
+
+`worktree-control backup list`, `backup status --idempotency-key <key>`, and
+the authorized backup HTTP API expose recorded execution evidence on each
+operation. Missed scheduled admission records evidence in `schedule.limit`;
+`schedule.error` describes admission, while `schedule.lastOperation` describes
+the latest admitted attempt. A successful admission clears the previous
+admission evidence. Historical operations without evidence remain unknown;
+current capacity must not be presented as an old attempt's measurement.
+The optional fields survive controller restart in the checksummed operation
+ledger, without paths, identities, or keys in the public evidence. Older
+ledgers remain readable. Once new fields are written, an older binary with a
+strict ledger schema cannot read them; preserve the ledger and use a compatible
+binary rather than removing evidence to roll back.
+
+Retention runs only after a successful scheduled backup. Budget for the next
+full snapshot as well as retained copies, including recognized protected manual
+and pre-migration copies. The configured count governs scheduled copies, not
+all catalog entries. A failed preflight never deletes old recovery points or
+relaxes the budget. A successful standalone pre-migration copy does not prove
+that the scheduled catalog has headroom. When capacity prevents progress,
+operator recovery requires an explicit policy or protected-copy decision.
+
 Bounded worktree disk-usage samples are the one derived-history exception.
 They live in `worktree_storage_samples`, are keyed by project and canonical
 worktree path, and are discarded with their owning project.

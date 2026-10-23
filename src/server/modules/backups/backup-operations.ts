@@ -4,7 +4,7 @@ import { existsSync, lstatSync, rmSync, statfsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 import type { BackupOperation, BackupOverview } from "@/shared/contracts/backups";
-import { backupKeySchema } from "@/shared/contracts/backups";
+import { backupKeySchema, backupLimitSchema } from "@/shared/contracts/backups";
 import type { AuthenticatedPrincipal } from "@/server/modules/identity";
 import { createControllerBackup } from "@/server/controller-backup";
 import { privateDirectory, syncDirectory } from "@/server/private-storage";
@@ -23,12 +23,13 @@ const operationSchema = z.object({
   destination: z.string(), scheduled: z.boolean(), manifestHash: z.string().nullable(),
   // Do not default during parsing: defaults would change historical signed ledger payloads.
   remoteRequired: z.boolean().optional(),
+  limit: backupLimitSchema.optional(),
 }).strict();
 type Operation = z.infer<typeof operationSchema>;
 const MANUAL_HISTORY_LIMIT = 1024;
 // Maximum retained copies, recent retired deadlines and pending operations.
 const SERVICE_HISTORY_LIMIT = 1000 + 50 + 32;
-const ledgerSchema = z.object({ format: z.literal(1), nextAt: z.number().nullable(), intervalSeconds: z.number().nullable(), scheduledThrough: z.number().nullable().default(null), scheduleError: z.enum(["backup_failed", "backup_limit"]).nullable().default(null), retention: z.enum(["idle", "succeeded", "failed"]), operations: z.array(operationSchema).max(MANUAL_HISTORY_LIMIT + SERVICE_HISTORY_LIMIT) }).strict();
+const ledgerSchema = z.object({ format: z.literal(1), nextAt: z.number().nullable(), intervalSeconds: z.number().nullable(), scheduledThrough: z.number().nullable().default(null), scheduleError: z.enum(["backup_failed", "backup_limit"]).nullable().default(null), scheduleLimit: backupLimitSchema.optional(), retention: z.enum(["idle", "succeeded", "failed"]), operations: z.array(operationSchema).max(MANUAL_HISTORY_LIMIT + SERVICE_HISTORY_LIMIT) }).strict();
 type Ledger = z.infer<typeof ledgerSchema>;
 export type BackupActor = AuthenticatedPrincipal | "local-admin" | "scheduler";
 export interface BackupDependencies {
@@ -41,7 +42,7 @@ export interface BackupDependencies {
   clock?: () => number;
   remoteTransport?: RemoteBackupTransport;
 }
-const publicOperation = ({ operationId, backupId, state, createdAt, finishedAt, error }: Operation): BackupOperation => ({ operationId, backupId, state, createdAt, finishedAt, error });
+const publicOperation = ({ operationId, backupId, state, createdAt, finishedAt, error, limit }: Operation): BackupOperation => ({ operationId, backupId, state, createdAt, finishedAt, error, ...(limit ? { limit: { ...limit } } : {}) });
 const actorId = (actor: BackupActor) => typeof actor === "string" ? actor : `installation:${actor.credentialId}`;
 
 /** One bounded executor for service, web and local administration. No SQLite ownership here. */
@@ -119,7 +120,7 @@ export class BackupOperations {
       catch { return { ...copy, verification: "failed" as const, protected: true }; }
       return { ...copy, verification: "verified" as const, protected: !record.scheduled || protectedIds.has(copy.id) };
     });
-    return { policy: { ...policy, destinationConfigured: Boolean(directory) }, schedule: { nextAt: this.ledger.nextAt === null ? null : new Date(this.ledger.nextAt).toISOString(), lastOperation: this.lastScheduled(), error: this.ledger.scheduleError, retention: this.ledger.retention }, maintenance: this.deps.maintenance(), copies, operations: this.ledger.operations.slice(-50).reverse().map(publicOperation) };
+    return { policy: { ...policy, destinationConfigured: Boolean(directory) }, schedule: { nextAt: this.ledger.nextAt === null ? null : new Date(this.ledger.nextAt).toISOString(), lastOperation: this.lastScheduled(), error: this.ledger.scheduleError, ...(this.ledger.scheduleLimit ? { limit: { ...this.ledger.scheduleLimit } } : {}), retention: this.ledger.retention }, maintenance: this.deps.maintenance(), copies, operations: this.ledger.operations.slice(-50).reverse().map(publicOperation) };
   }
   /** CLI-only metadata; no catalog scan, manifest hydration, paths, identities or keys. */
   monitorMetadata(): BackupMonitorMetadata {
@@ -161,7 +162,11 @@ export class BackupOperations {
     if (actor === "scheduler" && (scheduledAt === null || scheduledAt <= (this.ledger.scheduledThrough ?? -1))) throw new BackupError("backup_invalid", 409);
     this.pruneScheduledHistory();
     const scheduled = actor === "scheduler";
-    if (this.ledger.operations.filter(operation => operation.scheduled === scheduled).length >= (scheduled ? SERVICE_HISTORY_LIMIT : MANUAL_HISTORY_LIMIT) || this.ledger.operations.filter(operation => operation.state === "queued" || operation.state === "running").length + this.exports.length + (this.exportOwner ? 1 : 0) >= this.policy.queueLimit) throw new BackupError("backup_limit", 409);
+    const history = this.ledger.operations.filter(operation => operation.scheduled === scheduled).length;
+    const historyLimit = scheduled ? SERVICE_HISTORY_LIMIT : MANUAL_HISTORY_LIMIT;
+    if (history >= historyLimit) throw new BackupError("backup_limit", 409, { reason: scheduled ? "service_history" : "manual_history", current: history, required: 1, maximum: historyLimit });
+    const queued = this.ledger.operations.filter(operation => operation.state === "queued" || operation.state === "running").length + this.exports.length + (this.exportOwner ? 1 : 0);
+    if (queued >= this.policy.queueLimit) throw new BackupError("backup_limit", 409, { reason: "queue", current: queued, required: 1, maximum: this.policy.queueLimit });
     const id = `backup-${randomUUID()}`;
     const operation: Operation = { operationId: randomUUID(), backupId: id, actorId: actorId(actor), key, state: "queued", createdAt: this.iso(), finishedAt: null, error: null, destination: destination ? resolve(destination) : join(this.policy.directory!, id), scheduled: actor === "scheduler", manifestHash: null, remoteRequired: !destination && this.remote.enabled };
     this.ledger.operations.push(operation);
@@ -189,9 +194,12 @@ export class BackupOperations {
     const deadline = this.ledger.nextAt;
     this.ledger.nextAt = this.now() + this.policy.intervalSeconds * 1000;
     this.save();
-    try { this.create("scheduler", `service:${deadline}`); this.ledger.scheduleError = null; this.save(); }
+    try { this.create("scheduler", `service:${deadline}`); this.ledger.scheduleError = null; delete this.ledger.scheduleLimit; this.save(); }
     catch (error) {
-      this.ledger.scheduleError = error instanceof BackupError && error.code === "backup_limit" ? "backup_limit" : "backup_failed"; this.save();
+      this.ledger.scheduleError = error instanceof BackupError && error.code === "backup_limit" ? "backup_limit" : "backup_failed";
+      delete this.ledger.scheduleLimit;
+      if (error instanceof BackupError && error.limit) this.ledger.scheduleLimit = error.limit;
+      this.save();
     }
   }
   async drain(): Promise<void> { while (this.active) await this.active; }
@@ -224,10 +232,15 @@ export class BackupOperations {
       const current = this.catalog.list().reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
       const parent = privateDirectory(resolve(operation.destination, ".."));
       const disk = statfsSync(parent);
-      if (estimate + current > this.policy.maxBytes || disk.bavail * disk.bsize < estimate + 16 * 1024 ** 2) throw new BackupError("backup_limit");
+      if (estimate + current > this.policy.maxBytes) throw new BackupError("backup_limit", 400, { reason: "catalog_bytes", current, required: estimate, maximum: this.policy.maxBytes });
+      const available = disk.bavail * disk.bsize;
+      if (available < estimate + 16 * 1024 ** 2) throw new BackupError("backup_limit", 400, { reason: "filesystem_space", current: 0, required: estimate + 16 * 1024 ** 2, maximum: available });
       const manifest = await createControllerBackup(this.deps.source, operation.destination, { applicationVersion: this.deps.applicationVersion, attachmentDirectory: this.deps.attachmentDirectory, maxBytes: this.policy.maxBytes - current, deadline, now: this.now });
       operation.manifestHash = recordHash(manifest); operation.state = "succeeded"; operation.error = null;
-    } catch (error) { operation.state = "failed"; operation.error = error instanceof BackupError && error.code === "backup_limit" ? "backup_limit" : "backup_failed"; }
+    } catch (error) {
+      operation.state = "failed"; operation.error = error instanceof BackupError && error.code === "backup_limit" ? "backup_limit" : "backup_failed";
+      if (error instanceof BackupError && error.limit) operation.limit = error.limit;
+    }
     operation.finishedAt = this.iso();
     try { this.save(); } catch { operation.state = "failed"; operation.error = "backup_failed"; this.persistenceFailed = true; return; }
     if (operation.state === "succeeded") { this.reconcileRemote(); this.remote.tick(); }
