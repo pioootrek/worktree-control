@@ -253,11 +253,14 @@ it("rotates bounded cancellation pages across uncertain work, wraps and reopens 
   const stale = staleCancellations(f);
   const connection = f.store.remoteConnection;
   const first = connection.cancellationAttempts("worker"), second = connection.cancellationAttempts("worker");
-  expect(first.length).toBeLessThanOrEqual(100);
-  expect(second.length).toBeLessThanOrEqual(100);
-  expect(new Set([...first, ...second])).toEqual(new Set(stale));
-  expect(connection.cancellationAttempts("worker")).toEqual(first);
-  expect(connection.cancellationAttempts("worker")).toEqual(second);
+  // The fixture's initial assignment poll already scanned its first request
+  // before cancellation existed. Its new intent is delivered after cursor wrap.
+  const wrappedFirst = connection.cancellationAttempts("worker"), wrappedSecond = connection.cancellationAttempts("worker");
+  for (const page of [first, second, wrappedFirst, wrappedSecond]) expect(page.length).toBeLessThanOrEqual(100);
+  expect(new Set([...first, ...second, ...wrappedFirst, ...wrappedSecond])).toEqual(new Set(stale));
+  expect(new Set([...wrappedFirst, ...wrappedSecond])).toEqual(new Set(stale));
+  expect(connection.cancellationAttempts("worker")).toEqual(wrappedFirst);
+  expect(connection.cancellationAttempts("worker")).toEqual(wrappedSecond);
   expect(connection.cancellationAttempts("other-worker")).toEqual([]);
   expect(() => f.controller.poll("worker", f.owner)).toThrow("worker_forbidden");
   for (const id of stale) expect(f.store.getRemoteVerificationAttempt(id)?.finishedAt).toBeNull();
@@ -266,8 +269,8 @@ it("rotates bounded cancellation pages across uncertain work, wraps and reopens 
   const controller = new RemoteVerificationController(reopened, reopened.remoteConnection, new IdentityService(reopened));
   try {
     controller.recover();
-    expect(reopened.remoteConnection.cancellationAttempts("worker")).toEqual(first);
-    expect(reopened.remoteConnection.cancellationAttempts("worker")).toEqual(second);
+    expect(reopened.remoteConnection.cancellationAttempts("worker")).toEqual(wrappedFirst);
+    expect(reopened.remoteConnection.cancellationAttempts("worker")).toEqual(wrappedSecond);
     for (let index = 0; index < 3; index++) expect(controller.poll("worker", f.actor).assignments).toEqual([]);
     for (const id of stale) {
       const attempt = reopened.getRemoteVerificationAttempt(id)!;
@@ -341,7 +344,8 @@ it("attaches durable cancellation to an assignment outside the general page and 
   expect(pages).toHaveBeenCalledExactlyOnceWith("worker", 99);
   expect(pages.mock.results[0].value).not.toContain(attempt.id);
   // Reserving a slot must not discard a general-page boundary item forever.
-  expect(new Set([...pages.mock.results[0].value, ...f.store.remoteConnection.cancellationAttempts("worker")]))
+  expect(new Set([...pages.mock.results[0].value, ...f.store.remoteConnection.cancellationAttempts("worker"),
+    ...f.store.remoteConnection.cancellationAttempts("worker")]))
     .toEqual(new Set([...stale, attempt.id]));
   const jobs = { enqueue: vi.fn(), cancel: vi.fn(), blockAdmission: vi.fn() }, execution = { resolve: vi.fn() };
   const transport = { poll: async () => poll,
