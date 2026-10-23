@@ -2,7 +2,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ControlService } from "@/server/control-service";
 import { createMcpControllerServer } from "@/server/mcp-http-server";
-import { execFileSync } from "node:child_process";
+import { once } from "node:events";
+import { fileURLToPath } from "node:url";
+import { execFileSync, fork } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -73,7 +75,8 @@ async function fixture(realCommands = false) {
   const admission = new GitCommandAdmission();
   const reader = new SystemGitWorktreeReader(admission);
   const jobs = new TestJobManager(workerStore, nullLogWriter);
-  cleanup.push(async () => { await jobs.shutdown(); reader.close(); });
+  let workerRetired = false;
+  cleanup.push(async () => { if (!workerRetired) await jobs.shutdown(); reader.close(); });
   const mappings = [{ projectId: "remote-project", localProjectId: local.id, sourceCachePath: cache, sourceRemote: "origin", presetIds: ["node:test"] }];
   const execution = new SystemRemoteWorkerExecution("worker", mappings, workerStore, lifecycle, reader, new ProjectTestCommandResolver([realCommands ? new NodeTestCommandAdapter() : new FixtureNodeAdapter()]), new SystemRemoteVerificationWorkspacePreparer(workspaces, admission), workspaces);
   const httpTransport = new HttpRemoteWorkerTransport(origin, "worker", () => issued.token, true);
@@ -95,6 +98,7 @@ async function fixture(realCommands = false) {
     await vi.waitFor(async () => { await worker.tick(); expect(controller.status(requestId, owner).request.phase).toBe("completed"); }, { timeout: 15_000, interval: 40 });
     return controller.status(requestId, owner);
   };
+  const retireWorker = async () => { await worker.close(); await jobs.shutdown(); workerStore.close(); workerRetired = true; };
   const connectMcp = async () => {
     const service = new ControlService(controllerStore, reader, processes, nullLogWriter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, controller);
     const mcp = createMcpControllerServer({ service, port: 0, accessToken: "fixture-legacy-unused", identity });
@@ -106,7 +110,7 @@ async function fixture(realCommands = false) {
     cleanup.push(() => client.close());
     return client;
   };
-  return { root, seed, human, cache, workspaces, failedSha, fixedSha, connectMcp, controllerStore, workerStore, identity, owner, workerActor, issued, controller, server, origin, jobs, worker, transport, execution, mappings, submit, finish,
+  return { root, seed, human, cache, workspaces, failedSha, fixedSha, connectMcp, retireWorker, controllerStore, workerStore, identity, owner, workerActor, issued, controller, server, origin, jobs, worker, transport, execution, mappings, submit, finish,
     disconnect: (value: boolean) => { disconnected = value; }, disconnectPoll: (value: boolean) => { pollDisconnected = value; }, loseAck: () => { loseAck = true; }, commit };
 }
 
@@ -145,6 +149,47 @@ describe("connected remote verification (isolated fixtures, not real-worker acce
     expect((await call("get_remote_verification", { requestId: pending.id })).request.phase).toBe("cancelled");
     expect(f.workerStore.listTestRuns()).toHaveLength(2);
   }, 40_000);
+
+  it("quarantines real worker process death and restart without replaying the accepted command", async () => {
+    const f = await fixture(true);
+    const startedFile = join(f.root, "executions"), finishedFile = join(f.root, "process-finished");
+    const sha = f.commit(`const fs=require('node:fs');fs.appendFileSync(${JSON.stringify(startedFile)},'run\\n');setTimeout(()=>fs.writeFileSync(${JSON.stringify(finishedFile)},'done'),3000);`, "crash fixture");
+    git(f.seed, "push", "-q", "origin", "main");
+    await f.retireWorker();
+    const tokenFile = join(f.root, "private-worker-token"), configFile = join(f.root, "worker-config.json");
+    writeFileSync(tokenFile, f.issued.token, { mode: 0o600 });
+    writeFileSync(configFile, JSON.stringify({ version: 1, worker: { workerId: "worker", origin: f.origin, tokenFile, workspaceRoot: f.workspaces, allowLoopbackHttpFixture: true, mappings: f.mappings } }));
+    const launch = async () => {
+      const child = fork(fileURLToPath(new URL("./fixtures/remote-worker-process.ts", import.meta.url)), [join(f.root, "worker.sqlite3"), join(f.root, "worker.lock"), configFile], { execArgv: ["--import", "tsx"], stdio: ["ignore", "ignore", "pipe", "ipc"] });
+      const exited = once(child, "exit");
+      let stderr = "";
+      child.stderr?.on("data", chunk => { stderr = (stderr + String(chunk)).slice(-2000); });
+      cleanup.push(async () => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        child.send("close");
+        await exited;
+      });
+      const ready = await Promise.race([
+        once(child, "message").then(([message]) => message as { ready: boolean; admissionBlockReason: string | null }),
+        exited.then(() => { throw new Error(`Worker fixture exited before ready: ${stderr}`); }),
+      ]);
+      expect(ready.ready).toBe(true);
+      return { child, exited, ready };
+    };
+    const request = f.submit(sha);
+    const first = await launch();
+    await vi.waitFor(() => expect(f.controller.status(request.id, f.owner).attempt?.phase).toBe("running"), { timeout: 10_000 });
+    first.child.kill("SIGKILL"); await first.exited;
+    // The test process deliberately ends itself; never signal an unknown PID after restart.
+    await vi.waitFor(() => expect(existsSync(finishedFile)).toBe(true), { timeout: 10_000 });
+    const second = await launch();
+    expect(second.ready.admissionBlockReason).toBe("remote_execution_cleanup_unconfirmed");
+    await vi.waitFor(() => expect(f.controller.status(request.id, f.owner).attempt?.phase).toBe("uncertain"), { timeout: 10_000 });
+    const next = f.submit(f.fixedSha, "after-worker-crash");
+    await vi.waitFor(() => expect(f.controller.status(next.id, f.owner).attempt).toMatchObject({ phase: "failed", failureKind: "setup" }), { timeout: 10_000 });
+    expect(readFileSync(startedFile, "utf8")).toBe("run\n");
+    second.child.send("close"); await second.exited;
+  }, 35_000);
 
   it("executes distinct pushed failing/fixed SHAs through the finite queue, preserves human work, bounds output and replays submissions/delivery", async () => {
     const f = await fixture(); vi.stubEnv("CONTROLLER_SECRET", "must-not-inherit");
