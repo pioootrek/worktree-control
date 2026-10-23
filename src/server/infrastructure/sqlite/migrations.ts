@@ -1,3 +1,4 @@
+import { applyRemoteConnectionMigration } from "./remote-connection-migration";
 import Database from "better-sqlite3";
 import { applyRegistryMigration, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { applyTelemetryMigration } from "./test-summary-migration";
@@ -351,6 +352,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyTelemetryMigration(database);
       applyVerificationProjectMigration(database);
       applyTestPresetTimeoutMigration(database);
+      applyRemoteConnectionMigration(database);
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();

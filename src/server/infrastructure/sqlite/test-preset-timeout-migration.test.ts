@@ -21,14 +21,14 @@ it("upgrades schema 30 with empty overrides, preserves policies, rolls back fail
   store.close();
   const db = new Database(path);
   try {
-    db.exec("ALTER TABLE projects DROP COLUMN test_preset_timeouts_json; DELETE FROM schema_migrations WHERE version=31;");
+    db.exec("ALTER TABLE projects DROP COLUMN test_preset_timeouts_json; DELETE FROM schema_migrations WHERE version>=31; DROP TABLE remote_verification_reports; DROP TABLE remote_verification_cancellations; DROP TABLE remote_worker_receipts;");
     expect(inspectSchema(db).version).toBe(30);
     const before = db.prepare("SELECT * FROM projects").get();
     expect(() => initializeSchema(db, false, () => { throw new Error("injected failure"); })).toThrow("injected failure");
     expect(inspectSchema(db).version).toBe(30);
     expect(db.prepare("SELECT * FROM projects").get()).toEqual(before);
     initializeSchema(db);
-    expect(inspectSchema(db).version).toBe(31);
+    expect(inspectSchema(db).version).toBe(32);
     expect(db.prepare("SELECT * FROM projects").get()).toEqual({ ...before as object, test_preset_timeouts_json: "{}" });
     expect(db.prepare("SELECT name,checksum FROM schema_migrations WHERE version=31").get()).toEqual({ name: testPresetTimeoutMigration.name, checksum: testPresetTimeoutChecksum });
     expect(db.pragma("foreign_key_check")).toEqual([]);

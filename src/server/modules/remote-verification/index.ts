@@ -31,3 +31,7 @@ export type {
   ReportRemoteVerificationAttemptInput,
   SubmitRemoteVerificationInput,
 } from "./contracts";
+
+export type { RemoteConnectionStore, RemoteControllerStore, WorkerReceipt } from "./connection-contracts";
+export { RemoteVerificationController, RemoteProtocolError } from "./remote-verification-controller";
+export { RemoteVerificationWorker, fingerprint, type RemoteWorkerExecution, type RemoteWorkerTransport } from "./remote-worker";

@@ -215,6 +215,26 @@ export class IdentityService {
     return { credential: publicCredential(issued.record), token: issued.token };
   }
 
+  createWorker(actor: AuthenticatedPrincipal): Principal {
+    this.requireOwnerSession(actor);
+    const principal: Principal = { id: this.id(), kind: "worker", status: "active" };
+    this.store.savePrincipal(principal, actor.principalId);
+    return principal;
+  }
+
+  issueWorkerToken(input: IssueAgentTokenInput, actor: AuthenticatedPrincipal): IssuedAgentToken {
+    this.requireOwnerSession(actor);
+    const principal = this.store.getPrincipal(input.principalId);
+    if (principal?.kind !== "worker" || principal.status !== "active") throw new IdentityError("principal_forbidden", "Active worker required.");
+    if (!input.label.trim() || input.label.length > 120) throw new IdentityError("invalid_request", "Invalid token label.");
+    const now = this.clock();
+    const expiresAt = input.expiresAt === undefined ? null : new Date(input.expiresAt).toISOString();
+    if (expiresAt && expiresAt <= now) throw new IdentityError("invalid_request", "Token expiry must be in the future.");
+    const issued = this.createTokenRecord(principal.id, "worker_token", input.label.trim(), now, expiresAt);
+    this.store.saveCredential(issued.record, actor.principalId);
+    return { credential: publicCredential(issued.record), token: issued.token };
+  }
+
   createAgent(actor: AuthenticatedPrincipal): Principal {
     this.requireOwnerSession(actor);
     const principal: Principal = { id: this.id(), kind: "agent", status: "active" };

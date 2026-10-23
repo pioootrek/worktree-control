@@ -1,0 +1,224 @@
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { SqliteStateStore } from "@/server/sqlite-store";
+import { IdentityService } from "@/server/modules/identity";
+import { ProjectLifecycle } from "@/server/modules/lifecycle";
+import { GitCommandAdmission, SystemGitWorktreeReader } from "@/server/git-worktrees";
+import { SystemRemoteVerificationWorkspacePreparer, SystemRemoteWorkerExecution } from "@/server/infrastructure/git";
+import { ProcessManager } from "@/server/process-manager";
+import { TestJobManager } from "@/server/test-job-manager";
+import { nullLogWriter } from "@/server/log-writer";
+import { NodeTestCommandAdapter, ProjectTestCommandResolver } from "@/server/test-command";
+import { createRemoteVerificationServer, HttpRemoteWorkerTransport } from "@/server/transports/remote-verification-http";
+import { RemoteVerificationController } from "./remote-verification-controller";
+import { RemoteVerificationWorker } from "./remote-worker";
+import type { RemoteWorkerReport } from "@/shared/contracts/remote-verification";
+
+const cleanup: Array<() => Promise<void>> = [];
+afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await dispose(); vi.unstubAllEnvs(); });
+const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+class FixtureNodeAdapter extends NodeTestCommandAdapter {
+  override resolve(path: string, presetId: string) { const resolved = super.resolve(path, presetId); return { ...resolved, executable: process.execPath, args: ["check.cjs"] }; }
+}
+
+async function fixture() {
+  const root = mkdtempSync(join(tmpdir(), "wtc-connected-remote-"));
+  cleanup.push(async () => rmSync(root, { recursive: true, force: true }));
+  const remote = join(root, "remote.git"), seed = join(root, "seed"), human = join(root, "human"), cache = join(root, "cache"), workspaces = join(root, "attempts");
+  execFileSync("git", ["init", "-q", "--bare", "--initial-branch=main", remote]);
+  execFileSync("git", ["init", "-q", "-b", "main", seed]);
+  git(seed, "config", "user.email", "fixture@example.invalid"); git(seed, "config", "user.name", "Fixture");
+  writeFileSync(join(seed, "package.json"), JSON.stringify({ scripts: { test: "node check.cjs" } }));
+  const commit = (script: string, message: string) => {
+    writeFileSync(join(seed, "check.cjs"), script); git(seed, "add", "."); git(seed, "commit", "-qm", message); return git(seed, "rev-parse", "HEAD");
+  };
+  const failedSha = commit("console.log('FAIL:'+process.env.CONTROLLER_SECRET);process.exit(1)", "failing check");
+  git(seed, "remote", "add", "origin", remote); git(seed, "push", "-q", "-u", "origin", "main");
+  execFileSync("git", ["clone", "-q", remote, human]); execFileSync("git", ["clone", "-q", "--no-checkout", remote, cache]);
+  const fixedSha = commit("for(let i=0;i<240;i++)console.log('x'.repeat(2100));console.log('PASS:'+process.env.CONTROLLER_SECRET);", "fixed check");
+  git(seed, "push", "-q", "origin", "main");
+  writeFileSync(join(human, "uncommitted.txt"), "preserve human work");
+  const controllerStore = new SqliteStateStore(join(root, "controller.sqlite3"));
+  const workerStore = new SqliteStateStore(join(root, "worker.sqlite3"));
+  cleanup.push(async () => { workerStore.close(); controllerStore.close(); });
+  const identity = new IdentityService(controllerStore);
+  const ownerSession = identity.bootstrapOwnerSession();
+  const owner = identity.authenticateBearer(ownerSession.token);
+  const workerPrincipal = identity.createWorker(owner);
+  const issued = identity.issueWorkerToken({ principalId: workerPrincipal.id, label: "fixture-only" }, owner);
+  const workerActor = identity.authenticateBearer(issued.token);
+  const local = workerStore.addProject({ name: "Worker fixture", repositoryPath: human, port: 3199, executable: "", args: [], launchPreset: "none" });
+  const brokerLocal = controllerStore.addProject({ name: "Broker fixture identity", repositoryPath: seed, port: 3198, executable: "", args: [], launchPreset: "none" });
+  for (const [store, localProjectId] of [[controllerStore, brokerLocal.id], [workerStore, local.id]] as const) {
+    if (store === workerStore) store.saveRemotePrincipal(workerPrincipal, "fixture");
+    store.saveRemoteProjectIdentity({ id: "remote-project", name: "Fixture", sourceRemote: "origin", status: "active" }, "fixture");
+    store.saveRemoteWorker({ id: "worker", principalId: workerPrincipal.id, name: "Fixture", status: "active", lastContactAt: null }, "fixture");
+    store.saveRemoteWorkerProjectGrant({ workerId: "worker", projectId: "remote-project", localProjectId, presetIds: ["node:test"], revokedAt: null }, "fixture");
+  }
+  controllerStore.saveRemotePrincipalProjectGrant({ principalId: owner.principalId, projectId: "remote-project", permissions: ["submit", "read"], revokedAt: null }, "fixture");
+  const controller = new RemoteVerificationController(controllerStore, controllerStore.remoteConnection, identity);
+  const server = createRemoteVerificationServer({ controller, identity, allowLoopbackHttpFixture: true });
+  await new Promise<void>(resolve => server.server.listen(0, "127.0.0.1", resolve));
+  cleanup.push(server.close);
+  const origin = `http://127.0.0.1:${(server.server.address() as { port: number }).port}`;
+  const processes = new ProcessManager(() => undefined, nullLogWriter);
+  const lifecycle = new ProjectLifecycle(workerStore, processes);
+  const admission = new GitCommandAdmission();
+  const reader = new SystemGitWorktreeReader(admission);
+  const jobs = new TestJobManager(workerStore, nullLogWriter);
+  cleanup.push(async () => { await jobs.shutdown(); reader.close(); });
+  const mappings = [{ projectId: "remote-project", localProjectId: local.id, sourceCachePath: cache, sourceRemote: "origin", presetIds: ["node:test"] }];
+  const execution = new SystemRemoteWorkerExecution("worker", mappings, workerStore, lifecycle, reader, new ProjectTestCommandResolver([new FixtureNodeAdapter()]), new SystemRemoteVerificationWorkspacePreparer(workspaces, admission), workspaces);
+  const httpTransport = new HttpRemoteWorkerTransport(origin, "worker", () => issued.token, true);
+  let disconnected = false;
+  let pollDisconnected = false;
+  let loseAck = false;
+  const transport = {
+    poll: () => { if (pollDisconnected) return Promise.reject(new Error("fixture poll disconnected")); return httpTransport.poll(); },
+    report: async (report: RemoteWorkerReport) => {
+      if (disconnected) throw new Error("fixture upload disconnected");
+      await httpTransport.report(report);
+      if (loseAck) { loseAck = false; throw new Error("fixture ACK lost"); }
+    },
+  };
+  const worker = new RemoteVerificationWorker("worker", workerStore.remoteConnection, jobs, id => workerStore.getTestRun(id), execution, transport);
+  cleanup.push(() => worker.close());
+  const submit = (sha: string, key = sha) => controller.submit({ projectId: "remote-project", workerId: "worker", commitSha: sha, presetId: "node:test", idempotencyKey: key }, owner);
+  const finish = async (requestId: string) => {
+    await vi.waitFor(async () => { await worker.tick(); expect(controller.status(requestId, owner).request.phase).toBe("completed"); }, { timeout: 15_000, interval: 40 });
+    return controller.status(requestId, owner);
+  };
+  return { root, seed, human, cache, workspaces, failedSha, fixedSha, controllerStore, workerStore, identity, owner, workerActor, issued, controller, server, origin, jobs, worker, transport, execution, mappings, submit, finish,
+    disconnect: (value: boolean) => { disconnected = value; }, disconnectPoll: (value: boolean) => { pollDisconnected = value; }, loseAck: () => { loseAck = true; }, commit };
+}
+
+describe("connected remote verification (isolated fixtures, not real-worker acceptance)", () => {
+  it("executes distinct pushed failing/fixed SHAs through the finite queue, preserves human work, bounds output and replays submissions/delivery", async () => {
+    const f = await fixture(); vi.stubEnv("CONTROLLER_SECRET", "must-not-inherit");
+    const failed = f.submit(f.failedSha);
+    expect(f.submit(f.failedSha).id).toBe(failed.id);
+    const failedResult = await f.finish(failed.id);
+    expect(failedResult.attempt).toMatchObject({ phase: "failed", executedCommitSha: f.failedSha, failureKind: "execution" });
+    expect(failedResult.result?.logs.join("\n")).toContain("FAIL:undefined");
+    const fixed = f.submit(f.fixedSha);
+    const fixedResult = await f.finish(fixed.id);
+    expect(fixedResult.attempt).toMatchObject({ phase: "succeeded", executedCommitSha: f.fixedSha });
+    expect(fixedResult.attempt?.localRunId).not.toBe(failedResult.attempt?.localRunId);
+    expect(fixedResult.result).toMatchObject({ presetFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/), environmentFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/), exitCode: 0 });
+    expect(fixedResult.result!.logs.length).toBeLessThanOrEqual(200);
+    expect(fixedResult.result!.logs.every(line => line.length <= 2000)).toBe(true);
+    expect(fixedResult.result!.logs.join("\n")).toContain("PASS:undefined");
+    expect(git(f.human, "rev-parse", "HEAD")).toBe(f.failedSha);
+    expect(readFileSync(join(f.human, "uncommitted.txt"), "utf8")).toBe("preserve human work");
+    expect(existsSync(join(f.workspaces, fixedResult.attempt!.id))).toBe(false);
+    expect(f.workerStore.listTestRuns()).toHaveLength(2);
+    await f.worker.tick(); expect(f.workerStore.listTestRuns()).toHaveLength(2);
+  }, 30_000);
+
+  it("durably retries a disconnected result and lost ACK without another execution, rejects changed terminal reports", async () => {
+    const f = await fixture(); const request = f.submit(f.fixedSha);
+    f.disconnect(true); await expect(f.worker.tick()).rejects.toThrow("disconnected");
+    await vi.waitFor(() => expect(f.workerStore.listTestRuns()[0]?.telemetry?.finalizedAt).toBeTruthy(), { timeout: 10_000 });
+    await expect(f.worker.tick()).rejects.toThrow();
+    const receipt = f.workerStore.remoteConnection.receipts()[0];
+    expect(receipt.reports.at(-1)?.phase).toBe("succeeded");
+    f.disconnect(false); f.loseAck(); await expect(f.worker.tick()).rejects.toThrow("ACK lost");
+    const result = await f.finish(request.id);
+    expect(result.attempt?.phase).toBe("succeeded");
+    expect(f.workerStore.listTestRuns()).toHaveLength(1);
+    expect(f.controller.report("worker", result.result!, f.workerActor)).toEqual({ acceptedSequence: result.result!.sequence });
+    expect(() => f.controller.report("worker", { ...result.result!, logs: ["changed"] }, f.workerActor)).toThrow("report_conflict");
+  }, 30_000);
+
+  it("rejects unpushed commits as setup failure without substituting branch HEAD", async () => {
+    const f = await fixture(); const missing = f.commit("process.exit(0)", "not pushed");
+    const result = await f.finish(f.submit(missing).id);
+    expect(result.attempt).toMatchObject({ phase: "failed", failureKind: "setup", executedCommitSha: null });
+    expect(f.workerStore.listTestRuns()[0].startedAt).toBeNull();
+  }, 30_000);
+
+  it("revalidates local presets/profiles and reservations, and never uses the human checkout as a source cache", async () => {
+    const f = await fixture();
+    const original = f.workerStore.getRemoteWorkerProjectGrant("worker", "remote-project")!;
+    f.workerStore.saveRemoteWorkerProjectGrant({ ...original, presetIds: [] }, "fixture");
+    const refused = await f.finish(f.submit(f.failedSha).id);
+    expect(refused.attempt).toMatchObject({ phase: "failed", failureKind: "setup" });
+    expect(f.workerStore.listTestRuns()).toHaveLength(0);
+    f.workerStore.saveRemoteWorkerProjectGrant(original, "fixture");
+    const local = f.workerStore.listProjects()[0];
+    f.workerStore.acquireReservation({ projectId: local.id, worktreePath: f.human, kind: "human", owner: "human-fixture" });
+    const reserved = await f.finish(f.submit(f.fixedSha).id);
+    expect(reserved.attempt).toMatchObject({ phase: "failed", failureKind: "setup" });
+    expect(f.workerStore.listTestRuns()[0].startedAt).toBeNull();
+    f.workerStore.releaseReservation(local.id, "human-fixture");
+    f.workerStore.saveProjectTestEnvironmentProfile(local.id, { name: "secret-profile", policy: { mode: "inherit-server-profile", serverProfile: "default" }, environment: {}, nodeEnv: null, requiredVariables: [] }, "fixture");
+    f.workerStore.assignProjectTestPresetProfile(local.id, "node:test", "secret-profile", "fixture");
+    const secretProfile = await f.finish(f.submit(f.fixedSha, "secret-profile").id);
+    expect(secretProfile.attempt).toMatchObject({ phase: "failed", failureKind: "setup" });
+    expect(f.workerStore.listTestRuns().every(run => run.startedAt === null)).toBe(true);
+    f.workerStore.assignProjectTestPresetProfile(local.id, "node:test", null, "fixture");
+    f.mappings[0].sourceCachePath = f.human;
+    const humanCache = await f.finish(f.submit(f.fixedSha, "human-cache-forbidden").id);
+    expect(humanCache.attempt).toMatchObject({ phase: "failed", failureKind: "setup" });
+    expect(f.workerStore.listTestRuns().every(run => run.startedAt === null)).toBe(true);
+    expect(git(f.human, "rev-parse", "HEAD")).toBe(f.failedSha);
+  }, 30_000);
+
+  it("retains offline cancellation through controller recovery and confirms descendant teardown", async () => {
+    const f = await fixture();
+    const sha = f.commit("const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});console.log('DESCENDANT:'+child.pid);setInterval(()=>{},1000);", "long check with descendant");
+    git(f.seed, "push", "-q", "origin", "main");
+    const request = f.submit(sha);
+    await f.worker.tick();
+    let descendant = 0;
+    await vi.waitFor(() => {
+      const run = f.workerStore.listTestRuns()[0];
+      const line = run?.logs.find(line => line.startsWith("DESCENDANT:"));
+      expect(line).toBeTruthy(); descendant = Number(line!.slice("DESCENDANT:".length));
+    }, { timeout: 10_000 });
+    f.disconnectPoll(true);
+    f.controller.cancel(request.id, f.owner);
+    expect(f.controller.status(request.id, f.owner)).toMatchObject({ cancellationRequested: true, request: { phase: "assigned" } });
+    expect(() => process.kill(descendant, 0)).not.toThrow();
+    const recovered = new RemoteVerificationController(f.controllerStore, f.controllerStore.remoteConnection, f.identity);
+    recovered.recover();
+    expect(recovered.status(request.id, f.owner).cancellationRequested).toBe(true);
+    await expect(f.worker.tick()).rejects.toThrow("poll disconnected");
+    f.disconnectPoll(false);
+    await vi.waitFor(async () => { await f.worker.tick(); expect(recovered.status(request.id, f.owner).attempt?.phase).toBe("cancelled"); }, { timeout: 10_000 });
+    expect(f.workerStore.listTestRuns()[0].telemetry?.cleanup).toBe("confirmed");
+    await vi.waitFor(() => {
+      try { process.kill(descendant, 0); }
+      catch (error) { expect((error as NodeJS.ErrnoException).code).toBe("ESRCH"); return; }
+      // Linux zombies cannot execute and are already excluded by the owned-tree verifier.
+      expect(readFileSync(`/proc/${descendant}/stat`, "utf8").split(") ")[1]?.startsWith("Z ")).toBe(true);
+    }, { timeout: 5000 });
+    expect(f.workerStore.listTestRuns()).toHaveLength(1);
+  }, 30_000);
+
+  it("fails closed on protocol/authentication/assignment/grant/revocation, including output reads", async () => {
+    const f = await fixture(); const request = f.submit(f.failedSha);
+    const agent = f.identity.createAgent(f.owner);
+    const token = f.identity.issueAgentToken({ principalId: agent.id, label: "no grant" }, f.owner);
+    const actor = f.identity.authenticateBearer(token.token);
+    expect(() => f.controller.status(request.id, actor)).toThrow("request_forbidden");
+    expect(() => f.controller.submit({ projectId: "remote-project", workerId: "worker", commitSha: f.failedSha, presetId: "node:test", idempotencyKey: "forbidden" }, actor)).toThrow();
+    const post = (bearer: string, version: number, workerId = "worker") => fetch(`${f.origin}/remote-verification/v1/poll`, { method: "POST", headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" }, body: JSON.stringify({ version, workerId }) });
+    expect((await post(token.token, 1)).status).toBe(401);
+    expect((await post(f.issued.token, 2)).status).toBe(400);
+    expect((await post(f.issued.token, 1, "other-worker")).status).toBe(400);
+    expect(() => f.controller.report("worker", { attemptId: "unassigned", sequence: 1, phase: "preparing", localRunId: "run" }, f.workerActor)).toThrow("assignment_forbidden");
+    expect(() => f.controller.submit({ projectId: "remote-project", workerId: "worker", commitSha: f.failedSha, presetId: "node:build", idempotencyKey: "wrong-preset" }, f.owner)).toThrow();
+    f.controllerStore.saveRemoteWorkerProjectGrant({ ...f.controllerStore.getRemoteWorkerProjectGrant("worker", "remote-project")!, revokedAt: new Date().toISOString() }, "fixture");
+    expect(f.controller.poll("worker", f.workerActor).assignments).toEqual([]);
+    f.identity.revokeCredential(f.issued.credential.id, f.owner);
+    expect((await post(f.issued.token, 1)).status).toBe(401);
+    expect(() => f.controller.poll("worker", f.workerActor)).toThrow();
+    f.controllerStore.saveRemotePrincipalProjectGrant({ ...f.controllerStore.getRemotePrincipalProjectGrant(f.owner.principalId, "remote-project")!, revokedAt: new Date().toISOString() }, "fixture");
+    expect(() => f.controller.status(request.id, f.owner)).toThrow("request_forbidden");
+    expect(() => new HttpRemoteWorkerTransport("http://example.invalid", "worker", () => "secret", true)).toThrow("https_required");
+  });
+});

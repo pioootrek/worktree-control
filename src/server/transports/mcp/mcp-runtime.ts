@@ -1,6 +1,7 @@
 import { testPresetTimeoutSchema, testHistorySchema, testMetricsSchema, testSummarySchema, testComparisonSchema } from "@/server/modules/verification";
 import type { McpDiagnosticsSnapshot, McpSessionDiagnostics } from "@/shared/contracts/mcp-diagnostics";
 import { registerKnowledgeTools } from "./knowledge-tools";
+import { registerRemoteVerificationTools } from "./remote-verification-tools";
 import { McpDiagnostics, type McpSessionObservation, type McpCloseReason } from "../../mcp-diagnostics";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -416,6 +417,7 @@ export class McpRuntime {
     if (session.authentication.kind !== "legacy") {
       const actor = session.authentication.actor;
       registerKnowledgeTools(server, this.service, actor);
+      registerRemoteVerificationTools(server, this.service, actor);
       server.registerTool("get_identity", {
         description: "Read the authenticated principal, credential metadata, and active knowledge grants.",
         annotations: { readOnlyHint: true, idempotentHint: true },
