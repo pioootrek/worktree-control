@@ -248,6 +248,14 @@ Cancellation intent can be read while the worker is offline; confirmation waits
 for owned-process cleanup. Terminal reports and acknowledgements survive
 reopening the databases and are replayed without creating a new execution.
 
+Each worker tick makes at most three report-upload calls before polling again,
+rotating among attempts so rejected reports cannot monopolize delivery. With
+the transport's 15-second timeout, upload waits contribute at most 45 seconds
+between polls regardless of backlog size. Polling, preparation and cleanup add
+their own time; this is not an end-to-end cancellation deadline. Cancellation
+pages also rotate, and each delivered assignment includes its own durable
+cancellation intent.
+
 Worker receipt retention currently stops new acceptance at 1,000 records;
 existing report delivery continues when that limit is reached. Local run details
 remain protected from normal history pruning until a durable receipt outcome
