@@ -101,8 +101,9 @@ required; an authorized Git source only needs to supply the requested commit.
 
 Each controller owns its local SQLite/runtime state. Do not share a database
 file across machines. A remote protocol reconciles durable request and attempt
-identities. Exact transport, enrollment, credential revocation/rotation, and
-storage layout remain design work. Existing pairing and loopback MCP are not
+identities. The experimental contract below defines transport, provisioning,
+revocation and local persistence. Credential rotation and operational enrollment
+remain open. Existing pairing and loopback MCP are not
 sufficient remote authorization.
 
 ## Initial execution scope
@@ -237,11 +238,19 @@ installation-wide and worker tokens cannot administer these grants.
 Status distinguishes setup failure, execution failure and uncertainty. The
 reported result includes requested/executed SHA, local run/attempt identity,
 preset/environment fingerprints, source observations, exit and cleanup evidence.
-Logs are the last uploaded tail, at most 200 lines of 2,000 characters. Live
+Logs are the last uploaded tail, at most 200 lines of 2,000 characters, further
+trimmed so the serialized report envelope stays within 512 KiB. Live
 output and artifacts are not uploaded; an empty tail is not proof of no output.
 Cancellation intent can be read while the worker is offline; confirmation waits
 for owned-process cleanup. Terminal reports and acknowledgements survive
 reopening the databases and are replayed without creating a new execution.
+
+Source preparation currently uses the existing per-command Git timeouts. The
+preset timeout starts with test execution; it is not an overall preparation
+deadline. Cancellation during preparation prevents the test from starting but
+waits for preparation to settle before cleanup and capacity release. Propagating
+cancellation through preparation, defining its overall deadline and exercising
+stalled-source failures remain required before the real-worker trial.
 
 After a restart, accepted work with unknown process cleanup blocks new finite
 jobs in the worker installation, even if the remote configuration is omitted.
@@ -265,7 +274,8 @@ Later [fleet adapters](agent-fleet-coordination-plan.md) may launch, wake, and
 cancel supported agent sessions. Ownership of development/test processes does
 not imply control of an external LLM client.
 
-Open choices include transport/reconnect protocol, worker access scopes,
-trusted-source policy, environment fingerprints, provisioning, retention, and
-offline cancellation. No provider, price, remote-client compatibility, or
-deployment is agreed by this plan.
+The experimental fragment makes initial choices for transport, access scopes,
+trusted sources, fingerprints, provisioning and offline cancellation. Operational
+enrollment, credential rotation, retention maintenance, preparation deadlines
+and safe recovery from unknown process ownership remain open. No provider,
+price, remote-client compatibility, or deployment is agreed by this plan.
