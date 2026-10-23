@@ -17,6 +17,9 @@ MCP submit/status/log/cancel operations. This is an experimental first fragment,
 not a deployed or accepted WinPath workflow.
 
 The fragment accepts dependency-free Node projects and clean profiles only.
+Verification uses the worker's Node executable directory plus fixed system
+directories in PATH, supporting a user-local Node installation without copying
+the controller's environment.
 It does not install dependencies, upload artifacts or stream live logs. A
 manifest declaring dependencies is refused as setup failure; therefore this
 fragment cannot yet verify WinPath. Real worker selection, deployment approval,

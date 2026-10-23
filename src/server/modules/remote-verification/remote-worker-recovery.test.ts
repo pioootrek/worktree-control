@@ -181,7 +181,7 @@ it("keeps a compact 1000-receipt replay index and reads only an unacknowledged r
   const enqueue = vi.fn(), resolve = vi.fn();
   const duplicate = summaries[0].assignment;
   let rejectReport = true;
-  const upload = vi.fn(async (_input: RemoteWorkerReport) => { if (rejectReport) throw new Error("retry later"); });
+  const upload = vi.fn<(input: RemoteWorkerReport) => Promise<void>>(async () => { if (rejectReport) throw new Error("retry later"); });
   const transport = { poll: async () => ({ version: 1 as const, assignments: [duplicate], cancellations: [] }), report: upload };
   const worker = new RemoteVerificationWorker("worker", reopened.remoteConnection, { enqueue, cancel: vi.fn(), blockAdmission: vi.fn() }, () => null, { resolve }, transport);
   try {

@@ -141,6 +141,10 @@ describe("connected remote verification (isolated fixtures, not real-worker acce
       }, { timeout: 15_000, interval: 50 });
       const output = await call("get_remote_verification_logs", { requestId: request.id });
       expect(output.logs.join("\n")).toContain(expected === "failed" ? "FAIL:" : "PASS:");
+      const result = await call("get_remote_verification", { requestId: request.id });
+      console.info("remote-fixture-result", JSON.stringify({ fixtureOnly: true, requestId: request.id,
+        attemptId: result.attempt.id, requestedCommitSha: sha, executedCommitSha: result.result.executedCommitSha,
+        phase: result.attempt.phase, exitCode: result.result.exitCode }));
     }
     expect(requests[0]).not.toBe(requests[1]);
     expect(f.workerStore.listTestRuns()).toHaveLength(2);

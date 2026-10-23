@@ -1,5 +1,5 @@
 import { lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
-import { isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import type { GitWorktreeReader } from "@/server/git-worktrees";
 import type { ProjectLifecycle } from "@/server/modules/lifecycle";
 import { testProfileFor } from "@/server/modules/environments";
@@ -34,8 +34,10 @@ export class SystemRemoteWorkerExecution implements RemoteWorkerExecution {
     const mapping = this.mapping(assignment);
     const path = join(this.workspaceRoot, assignment.attemptId);
     const worktree = { path, head: assignment.commitSha, shortHead: assignment.commitSha.slice(0, 8), branch: null, detached: true, dirty: false, locked: false, prunable: false };
+    // A user-local Node installation supplies the worker's trusted runtime and npm.
+    // Do not inherit the controller's arbitrary PATH entries into verification.
     const environment: ResolvedTestEnvironment = {
-      environment: { PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8", CI: "1", HOME: join(this.workspaceRoot, `.home-${assignment.attemptId}`), TMPDIR: join(this.workspaceRoot, `.tmp-${assignment.attemptId}`) },
+      environment: { PATH: `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`, LANG: "C.UTF-8", CI: "1", HOME: join(this.workspaceRoot, `.home-${assignment.attemptId}`), TMPDIR: join(this.workspaceRoot, `.tmp-${assignment.attemptId}`) },
       mode: "clean" as const, profile: "remote-secret-free-v1", inheritedServerProfile: null, variableNames: ["PATH", "LANG", "CI", "HOME", "TMPDIR"],
     };
     let workspace: RemoteVerificationWorkspace | null = null;
