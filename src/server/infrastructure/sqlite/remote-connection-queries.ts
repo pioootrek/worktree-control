@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { RemoteConnectionStore, WorkerReceipt } from "@/server/modules/remote-verification";
+import type { RemoteConnectionStore, WorkerReceipt, WorkerReceiptSummary } from "@/server/modules/remote-verification";
 import type { RemoteWorkerReport } from "@/shared/contracts/remote-verification";
 
 function payload<T>(row: unknown): T | null {
@@ -52,10 +52,24 @@ export class RemoteConnectionQueries implements RemoteConnectionStore {
       return receipt;
     });
   }
-  receipts(): WorkerReceipt[] {
-    const rows = this.database.prepare("SELECT payload_json FROM remote_worker_receipts LIMIT 1001").all();
+  receipt(attemptId: string): WorkerReceipt | null {
+    return payload(this.database.prepare("SELECT payload_json FROM remote_worker_receipts WHERE attempt_id=?").get(attemptId));
+  }
+  receipts(): WorkerReceiptSummary[] {
+    // Project in SQL: .all() must never materialize historical report/log bodies.
+    const rows = this.database.prepare(`SELECT
+      json_extract(payload_json, '$.assignment') assignment_json,
+      json_extract(payload_json, '$.localRunId') localRunId,
+      json_extract(payload_json, '$.cancellationRequested') cancellationRequested,
+      json_extract(payload_json, '$.acknowledgedSequence') acknowledgedSequence,
+      json_array_length(payload_json, '$.reports') reportCount,
+      json_extract(payload_json, '$.reports[#-1].phase') lastPhase,
+      json_extract(payload_json, '$.reports[#-1].execution.cleanup') cleanup
+      FROM remote_worker_receipts LIMIT 1001`).all() as Array<Omit<WorkerReceiptSummary, "assignment" | "cancellationRequested"> & { assignment_json: string; cancellationRequested: number }>;
     if (rows.length > 1000) throw new Error("worker_receipt_capacity_exhausted");
-    return rows.map(row => payload<WorkerReceipt>(row)!);
+    return rows.map(({ assignment_json, cancellationRequested, ...row }) => ({
+      ...row, assignment: JSON.parse(assignment_json), cancellationRequested: cancellationRequested === 1,
+    }));
   }
   saveReceipt(receipt: WorkerReceipt): void {
     this.database.prepare("UPDATE remote_worker_receipts SET payload_json=? WHERE attempt_id=?").run(JSON.stringify(receipt), receipt.assignment.attemptId);

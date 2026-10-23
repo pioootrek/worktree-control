@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { TestRun } from "@/shared/contracts";
-import { remoteAssignmentSchema, remoteReportSchema, type RemoteAssignment, type RemotePollResult, type RemoteWorkerReport } from "@/shared/contracts/remote-verification";
+import { REMOTE_REPORT_MAX_ENVELOPE_BYTES, remoteAssignmentSchema, remoteReportSchema, type RemoteAssignment, type RemotePollResult, type RemoteWorkerReport } from "@/shared/contracts/remote-verification";
 import type { EnqueueTestInput, VerificationJobs } from "@/server/modules/verification";
-import type { RemoteConnectionStore, WorkerReceipt } from "./connection-contracts";
+import { summarizeReceipt, type RemoteConnectionStore, type WorkerReceipt, type WorkerReceiptSummary } from "./connection-contracts";
 
 export interface RemoteWorkerTransport {
   poll(): Promise<RemotePollResult>;
@@ -16,7 +16,7 @@ const settled = new Set(["succeeded", "failed", "cancelled", "uncertain"]);
 
 /** Outbound delivery/retry loop; admission and execution belong exclusively to VerificationJobs. */
 export class RemoteVerificationWorker {
-  private readonly receipts = new Map<string, WorkerReceipt>();
+  private readonly receipts = new Map<string, WorkerReceiptSummary>();
   private readonly active = new Set<string>();
   private timer: NodeJS.Timeout | null = null;
   private pending: Promise<void> | null = null;
@@ -35,7 +35,10 @@ export class RemoteVerificationWorker {
       if (receipt.assignment.workerId !== workerId) continue;
       this.receipts.set(receipt.assignment.attemptId, receipt);
       // Receipt presence never authorizes enqueue after restart. Recover only saved evidence.
-      this.collect(receipt, true);
+      if (!receipt.lastPhase || !settled.has(receipt.lastPhase)) {
+        const body = this.connection.receipt(receipt.assignment.attemptId);
+        if (body) this.collect(body, true);
+      }
     }
   }
   start(intervalMs = 1000): void {
@@ -56,26 +59,46 @@ export class RemoteVerificationWorker {
   }
   private async synchronize(): Promise<void> {
     // Collect and persist before networking, including while disconnected.
-    for (const receipt of this.receipts.values()) this.collect(receipt);
+    for (const receipt of this.receipts.values()) {
+      if (receipt.lastPhase && settled.has(receipt.lastPhase)) continue;
+      const body = this.connection.receipt(receipt.assignment.attemptId);
+      if (body) this.collect(body);
+    }
     const poll = await this.transport.poll();
     for (const attemptId of poll.cancellations) {
-      const receipt = this.receipts.get(attemptId);
+      const receipt = this.receipts.has(attemptId) ? this.connection.receipt(attemptId) : null;
       if (!receipt) continue;
       receipt.cancellationRequested = true;
-      this.connection.saveReceipt(receipt);
+      this.save(receipt);
       if (this.active.has(attemptId)) await this.jobs.cancel(receipt.localRunId, this.actor());
     }
     for (const assignment of poll.assignments) await this.accept(assignment, poll.cancellations.includes(assignment.attemptId));
-    for (const receipt of this.receipts.values()) {
+    let failure: unknown;
+    for (const summary of this.receipts.values()) {
+      if (summary.acknowledgedSequence >= summary.reportCount) continue;
+      const receipt = this.connection.receipt(summary.assignment.attemptId);
+      if (!receipt) continue;
       this.collect(receipt);
       for (const report of receipt.reports) {
         if (report.sequence <= receipt.acknowledgedSequence) continue;
-        await this.transport.report(report);
-        receipt.acknowledgedSequence = report.sequence;
-        this.connection.saveReceipt(receipt);
+        try {
+          await this.transport.report(report);
+        } catch (error) {
+          // Keep rejected evidence immutable and ordered, but retry other attempts too.
+          failure ??= error;
+          break;
+        }
+        // Execution callbacks can append while a report is in flight. Merge the ACK
+        // into the current outbox instead of overwriting it with this snapshot.
+        const current = this.connection.receipt(receipt.assignment.attemptId);
+        if (!current) throw new Error("worker_receipt_missing");
+        current.acknowledgedSequence = Math.max(current.acknowledgedSequence, report.sequence);
+        this.save(current);
       }
     }
+    if (failure) throw failure;
   }
+
   private async accept(input: RemoteAssignment, cancelled: boolean): Promise<void> {
     const assignment = remoteAssignmentSchema.parse(input);
     if (assignment.workerId !== this.workerId) throw new Error("assignment_forbidden");
@@ -86,11 +109,15 @@ export class RemoteVerificationWorker {
     }
     const receipt = this.connection.accept({ assignment, localRunId: randomUUID(), cancellationRequested: cancelled, reports: [], acknowledgedSequence: 0 });
     if (fingerprint(receipt.assignment) !== fingerprint(assignment)) throw new Error("assignment_conflict");
-    this.receipts.set(assignment.attemptId, receipt);
+    this.receipts.set(assignment.attemptId, summarizeReceipt(receipt));
     this.append(receipt, { phase: "preparing" });
     if (cancelled) { this.append(receipt, { phase: "cancelled" }); return; }
     try {
-      const input = await this.execution.resolve(assignment, receipt, evidence => this.append(receipt, { ...evidence, phase: "running" }));
+      const input = await this.execution.resolve(assignment, receipt, evidence => {
+        const current = this.connection.receipt(assignment.attemptId);
+        if (!current) throw new Error("worker_receipt_missing");
+        this.append(current, { ...evidence, phase: "running" });
+      });
       if (this.stopped) { this.append(receipt, { phase: "uncertain" }); return; }
       this.jobs.enqueue({ ...input, runId: receipt.localRunId, actor: this.actor(), idempotencyKey: assignment.attemptId });
       this.active.add(assignment.attemptId);
@@ -123,9 +150,13 @@ export class RemoteVerificationWorker {
     this.active.delete(receipt.assignment.attemptId);
   }
   private append(receipt: WorkerReceipt, evidence: Partial<RemoteWorkerReport> & Pick<RemoteWorkerReport, "phase">): void {
-    const report = remoteReportSchema.parse({ ...evidence, attemptId: receipt.assignment.attemptId, localRunId: receipt.localRunId, sequence: receipt.reports.length + 1 });
-    this.connection.saveReceipt({ ...receipt, reports: [...receipt.reports, report] });
+    const report = boundReport(this.workerId, remoteReportSchema.parse({ ...evidence, attemptId: receipt.assignment.attemptId, localRunId: receipt.localRunId, sequence: receipt.reports.length + 1 }));
+    this.save({ ...receipt, reports: [...receipt.reports, report] });
     receipt.reports.push(report);
+  }
+  private save(receipt: WorkerReceipt): void {
+    this.connection.saveReceipt(receipt);
+    this.receipts.set(receipt.assignment.attemptId, summarizeReceipt(receipt));
   }
   private actor() { return `remote-worker:${this.workerId}`; }
 }
@@ -133,11 +164,30 @@ export class RemoteVerificationWorker {
 export function fingerprint(value: unknown): string { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 
 /** A restarted queue cannot assume that an orphaned process tree has exited. */
-export function hasUnconfirmedRemoteExecution(receipts: WorkerReceipt[], run: (id: string) => TestRun | null): boolean {
+export function hasUnconfirmedRemoteExecution(receipts: WorkerReceiptSummary[], run: (id: string) => TestRun | null): boolean {
   return receipts.some(receipt => {
-    const last = receipt.reports.at(-1);
-    if (last && ["succeeded", "failed", "cancelled"].includes(last.phase)) return false;
+    // A terminal uncertain outcome can still have confirmed process-tree cleanup.
+    // This durable evidence outlives the queue's retained local history.
+    if (["confirmed", "not_required"].includes(receipt.cleanup ?? "")) return false;
+    // Admission failures and cancellation before enqueue have no execution envelope.
+    // An explicit unknown/pending/failed cleanup must never use that exception.
+    if (receipt.cleanup === null && receipt.lastPhase && ["succeeded", "failed", "cancelled"].includes(receipt.lastPhase)) return false;
     const local = run(receipt.localRunId);
     return !local?.telemetry?.finalizedAt || !["confirmed", "not_required"].includes(local.telemetry.cleanup);
   });
+}
+
+/** Trim only before durable append. Retries always send the exact persisted report. */
+function boundReport(workerId: string, report: RemoteWorkerReport): RemoteWorkerReport {
+  const envelope = { version: 1, workerId, report: { ...report, logs: [] } };
+  let bytes = Buffer.byteLength(JSON.stringify(envelope));
+  const logs: string[] = [];
+  for (let index = report.logs.length - 1; index >= 0; index--) {
+    const line = report.logs[index];
+    const size = Buffer.byteLength(JSON.stringify(line)) + (logs.length ? 1 : 0);
+    if (bytes + size > REMOTE_REPORT_MAX_ENVELOPE_BYTES) break;
+    bytes += size;
+    logs.push(line);
+  }
+  return { ...report, logs: logs.reverse() };
 }

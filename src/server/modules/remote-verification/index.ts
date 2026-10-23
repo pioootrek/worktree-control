@@ -32,6 +32,8 @@ export type {
   SubmitRemoteVerificationInput,
 } from "./contracts";
 
-export type { RemoteConnectionStore, RemoteControllerStore, WorkerReceipt } from "./connection-contracts";
+export type { RemoteConnectionStore, RemoteControllerStore, WorkerReceipt, WorkerReceiptSummary } from "./connection-contracts";
 export { RemoteVerificationController, RemoteProtocolError } from "./remote-verification-controller";
 export { RemoteVerificationWorker, hasUnconfirmedRemoteExecution, fingerprint, type RemoteWorkerExecution, type RemoteWorkerTransport } from "./remote-worker";
+
+export { summarizeReceipt } from "./connection-contracts";

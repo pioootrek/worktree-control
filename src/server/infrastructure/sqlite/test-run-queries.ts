@@ -160,6 +160,8 @@ export class TestRunQueries {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         phase = excluded.phase, queue_position = excluded.queue_position,
+        executable = excluded.executable, args_json = excluded.args_json, cwd = excluded.cwd,
+        environment_variable_names_json = excluded.environment_variable_names_json,
         started_at = excluded.started_at, finished_at = excluded.finished_at,
         exit_code = excluded.exit_code, signal = excluded.signal, error = excluded.error,
         logs_json = excluded.logs_json, source_json = excluded.source_json, telemetry_json = excluded.telemetry_json

@@ -21,6 +21,7 @@ import { NodeTestCommandAdapter, ProjectTestCommandResolver } from "@/server/tes
 import { createRemoteVerificationServer, HttpRemoteWorkerTransport } from "@/server/transports/remote-verification-http";
 import { RemoteVerificationController } from "./remote-verification-controller";
 import { RemoteVerificationWorker } from "./remote-worker";
+import { REMOTE_REPORT_MAX_ENVELOPE_BYTES } from "@/shared/contracts/remote-verification";
 import type { RemoteWorkerReport } from "@/shared/contracts/remote-verification";
 
 const cleanup: Array<() => Promise<void>> = [];
@@ -218,7 +219,7 @@ describe("connected remote verification (isolated fixtures, not real-worker acce
     f.disconnect(true); await expect(f.worker.tick()).rejects.toThrow("disconnected");
     await vi.waitFor(() => expect(f.workerStore.listTestRuns()[0]?.telemetry?.finalizedAt).toBeTruthy(), { timeout: 10_000 });
     await expect(f.worker.tick()).rejects.toThrow();
-    const receipt = f.workerStore.remoteConnection.receipts()[0];
+    const receipt = f.workerStore.remoteConnection.receipt(f.workerStore.remoteConnection.receipts()[0].assignment.attemptId)!;
     expect(receipt.reports.at(-1)?.phase).toBe("succeeded");
     f.disconnect(false); f.loseAck(); await expect(f.worker.tick()).rejects.toThrow("ACK lost");
     const result = await f.finish(request.id);
@@ -226,6 +227,74 @@ describe("connected remote verification (isolated fixtures, not real-worker acce
     expect(f.workerStore.listTestRuns()).toHaveLength(1);
     expect(f.controller.report("worker", result.result!, f.workerActor)).toEqual({ acceptedSequence: result.result!.sequence });
     expect(() => f.controller.report("worker", { ...result.result!, logs: ["changed"] }, f.workerActor)).toThrow("report_conflict");
+  }, 30_000);
+
+  it.each(["\0", "漢", "😀"])("bounds serialized envelopes for %j output before persistence and replays them over HTTP", async character => {
+    const f = await fixture();
+    const sha = f.commit(`for(let i=0;i<240;i++)console.log(${JSON.stringify(character)}.repeat(2100));`, "escaped or multibyte logs");
+    git(f.seed, "push", "-q", "origin", "main");
+    const request = f.submit(sha);
+    f.disconnect(true);
+    await expect(f.worker.tick()).rejects.toThrow("disconnected");
+    await vi.waitFor(() => expect(f.workerStore.listTestRuns()[0]?.telemetry?.finalizedAt).toBeTruthy(), { timeout: 10_000 });
+    await expect(f.worker.tick()).rejects.toThrow("disconnected");
+    const assignment = f.workerStore.remoteConnection.receipts()[0].assignment;
+    const terminal = f.workerStore.remoteConnection.receipt(assignment.attemptId)!.reports.at(-1)!;
+    const envelope = (report: RemoteWorkerReport) => JSON.stringify({ version: 1, workerId: "worker", report });
+    const originalTail = f.workerStore.listTestRuns()[0].logs.slice(-200).map(line => line.slice(0, 2000));
+    expect(Buffer.byteLength(envelope({ ...terminal, logs: originalTail }))).toBeGreaterThan(REMOTE_REPORT_MAX_ENVELOPE_BYTES);
+    if (character === "\0") expect(Buffer.byteLength(envelope({ ...terminal, logs: originalTail }))).toBeGreaterThan(2 * 1024 * 1024);
+    expect(Buffer.byteLength(envelope(terminal))).toBeLessThanOrEqual(REMOTE_REPORT_MAX_ENVELOPE_BYTES);
+    expect(terminal.logs.length).toBeGreaterThan(0);
+    expect(terminal.logs).toEqual(originalTail.slice(-terminal.logs.length));
+    const immutable = JSON.stringify(terminal);
+    const upload = f.transport.report;
+    const replayed: string[] = [];
+    let loseTerminalAck = true;
+    f.transport.report = async input => {
+      await upload(input); // Actual authenticated HTTP listener and controller acceptance.
+      if (input.sequence === terminal.sequence) {
+        replayed.push(JSON.stringify(input));
+        if (loseTerminalAck) { loseTerminalAck = false; throw new Error("terminal ACK lost"); }
+      }
+    };
+    f.disconnect(false);
+    await expect(f.worker.tick()).rejects.toThrow("terminal ACK lost");
+    const result = await f.finish(request.id);
+    expect(result.attempt?.phase).toBe("succeeded");
+    expect(result.result).toEqual(terminal);
+    expect(replayed).toEqual([immutable, immutable]);
+    expect(JSON.stringify(f.workerStore.remoteConnection.receipt(assignment.attemptId)!.reports.at(-1))).toBe(immutable);
+  }, 30_000);
+
+  it("persists the resolved remote command and environment names before spawn and after reopening", async () => {
+    const f = await fixture();
+    const local = f.workerStore.listProjects()[0];
+    f.workerStore.saveProjectTestEnvironmentProfile(local.id, { name: "node-test", policy: { mode: "clean", serverProfile: null }, environment: {}, nodeEnv: "test", requiredVariables: [] }, "fixture");
+    f.workerStore.assignProjectTestPresetProfile(local.id, "node:test", "node-test", "fixture");
+    const original = f.execution.resolve.bind(f.execution);
+    let beforeSpawn: ReturnType<SqliteStateStore["getTestRun"]> = null;
+    vi.spyOn(f.execution, "resolve").mockImplementation(async (assignment, receipt, running) => {
+      const input = await original(assignment, receipt, running);
+      const starting = input.preparation!.starting;
+      input.preparation!.starting = () => {
+        starting?.();
+        // Preparation's preflight checkpoint must already contain the resolved command.
+        beforeSpawn = f.workerStore.getTestRun(receipt.localRunId);
+        expect(beforeSpawn).toMatchObject({ executable: process.execPath, args: ["check.cjs"], environmentVariableNames: expect.arrayContaining(["NODE_ENV"]) });
+      };
+      return input;
+    });
+    const result = await f.finish(f.submit(f.fixedSha).id);
+    expect(result.attempt?.phase).toBe("succeeded");
+    expect(beforeSpawn).not.toBeNull();
+    const runId = f.workerStore.listTestRuns()[0].id;
+    await f.retireWorker();
+    const reopened = new SqliteStateStore(join(f.root, "worker.sqlite3"));
+    try {
+      expect(reopened.getTestRun(runId)).toMatchObject({ executable: process.execPath, args: ["check.cjs"],
+        environmentVariableNames: ["CI", "HOME", "LANG", "NODE_ENV", "PATH", "TMPDIR"] });
+    } finally { reopened.close(); }
   }, 30_000);
 
   it("rejects unpushed commits as setup failure without substituting branch HEAD", async () => {

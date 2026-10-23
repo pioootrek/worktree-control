@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+/** UTF-8 JSON envelope budget, including escaping; below the 2 MiB HTTP body limit. */
+export const REMOTE_REPORT_MAX_ENVELOPE_BYTES = 512 * 1024;
+
 export const REMOTE_VERIFICATION_PROTOCOL = 1 as const;
 const identifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
 export const remoteSubmissionSchema = z.object({
