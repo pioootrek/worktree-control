@@ -20,8 +20,9 @@ The fragment accepts dependency-free Node projects and clean profiles only.
 It does not install dependencies, upload artifacts or stream live logs. A
 manifest declaring dependencies is refused as setup failure; therefore this
 fragment cannot yet verify WinPath. Real worker selection, deployment approval,
-and the failed/fixed WinPath acceptance trial remain outstanding. Two-process
-crash recovery is a separate gate from database reopen and in-process fault tests.
+and the failed/fixed WinPath acceptance trial remain outstanding. An isolated
+worker subprocess crash/restart test confirms quarantine and no repeated
+command; controller process-crash and operator recovery acceptance remain open.
 
 See the [remaining implementation slices](knowledge/AGENTS.md) (Knowledge attachment `64ab7a29d6c4ae015d5cd794c58a8a68`).
 
@@ -246,8 +247,11 @@ After a restart, accepted work with unknown process cleanup blocks new finite
 jobs in the worker installation, even if the remote configuration is omitted.
 This conservative block has no automatic release or operator reconciliation
 command in the first fragment. Do not delete receipts or assume a PID/port proves
-process ownership to clear it. A safe operator recovery workflow and actual
-process-crash acceptance remain required before routine worker use.
+process ownership to clear it. The subprocess fixture kills the worker after
+its running report, lets its finite child exit, and restarts against the same
+database: the old attempt remains uncertain and new execution is blocked.
+A safe operator recovery workflow and controller process-crash acceptance remain
+required before routine worker use.
 
 ## SaaS path and open decisions
 
