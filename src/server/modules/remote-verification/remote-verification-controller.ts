@@ -63,7 +63,13 @@ export class RemoteVerificationController {
         break;
       } catch { continue; }
     }
-    return { version: 1 as const, assignments, cancellations: this.connection.cancellationAttempts(workerId) };
+    // Cancellation and assignment pages advance independently. Always attach the
+    // durable intent for this delivery, including cancellation before acceptance.
+    const cancelledAssignments = assignments.filter(assignment => this.connection.cancellationRequested(assignment.requestId))
+      .map(assignment => assignment.attemptId);
+    const cancellations = [...new Set([...cancelledAssignments,
+      ...this.connection.cancellationAttempts(workerId, 100 - cancelledAssignments.length)])];
+    return { version: 1 as const, assignments, cancellations };
   }
   report(workerId: string, input: unknown, actor: AuthenticatedPrincipal) {
     this.authorizeWorker(workerId, actor);

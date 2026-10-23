@@ -8,6 +8,7 @@ function payload<T>(row: unknown): T | null {
 /** Borrows the singleton owner's SQLite connection. */
 export class RemoteConnectionQueries implements RemoteConnectionStore {
   private readonly pendingCursors = new Map<string, [string, string]>();
+  private readonly cancellationCursors = new Map<string, [string, string]>();
   constructor(private readonly database: Database.Database) {}
   atomic<T>(operation: () => T): T { return this.database.transaction(operation).immediate(); }
   contact(workerId: string, at: string): void {
@@ -37,11 +38,32 @@ export class RemoteConnectionQueries implements RemoteConnectionStore {
     else this.pendingCursors.delete(workerId);
     return rows.filter(row => row.worker_id === workerId && row.deliverable).map(row => row.id);
   }
-  cancellationAttempts(workerId: string): string[] {
-    return (this.database.prepare(`SELECT a.id FROM remote_verification_attempts a
-      JOIN remote_verification_cancellations c ON c.request_id=a.request_id
-      WHERE a.worker_id=? AND a.phase NOT IN ('succeeded','failed','cancelled') LIMIT 100`)
-      .all(workerId) as { id: string }[]).map(x => x.id);
+  cancellationAttempts(workerId: string, limit = 100): string[] {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new RangeError("invalid_cancellation_page_limit");
+    // Nonterminal attempts (including uncertain ones) retain assigned requests.
+    // Page the existing queue index before filtering, so neither old cancellations
+    // nor other workers' work can force an unbounded scan or starve later delivery.
+    const page = (after: [string, string]) => this.database.prepare(`SELECT
+      r.id,r.created_at,a.id attempt_id,a.worker_id,a.phase,c.request_id cancellation
+      FROM (SELECT id,created_at FROM remote_verification_requests
+        WHERE phase='assigned' AND (created_at,id)>(?,?)
+        ORDER BY created_at,id LIMIT ?) r
+      LEFT JOIN remote_verification_attempts a ON a.id=(
+        SELECT id FROM remote_verification_attempts WHERE request_id=r.id
+        ORDER BY sequence DESC LIMIT 1)
+      LEFT JOIN remote_verification_cancellations c ON c.request_id=r.id
+      ORDER BY r.created_at,r.id`).all(...after, limit) as Array<{
+        id: string; created_at: string; attempt_id: string | null; worker_id: string | null;
+        phase: string | null; cancellation: string | null;
+      }>;
+    const cursor = this.cancellationCursors.get(workerId);
+    let rows = page(cursor ?? ["", ""]);
+    if (!rows.length && cursor) rows = page(["", ""]);
+    const last = rows.at(-1);
+    if (last) this.cancellationCursors.set(workerId, [last.created_at, last.id]);
+    else this.cancellationCursors.delete(workerId);
+    return rows.flatMap(row => row.attempt_id && row.worker_id === workerId && row.cancellation
+      && !["succeeded", "failed", "cancelled"].includes(row.phase ?? "") ? [row.attempt_id] : []);
   }
   requestCancellation(requestId: string, at: string): void {
     this.atomic(() => {

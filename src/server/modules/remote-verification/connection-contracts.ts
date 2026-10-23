@@ -34,7 +34,8 @@ export interface RemoteConnectionStore {
   atomic<T>(operation: () => T): T;
   contact(workerId: string, at: string): void;
   pendingRequests(workerId: string): string[];
-  cancellationAttempts(workerId: string): string[];
+  /** Advances one bounded page; limit reserves poll capacity for assignment cancellation. */
+  cancellationAttempts(workerId: string, limit?: number): string[];
   requestCancellation(requestId: string, at: string): void;
   cancellationRequested(requestId: string): boolean;
   report(attemptId: string, sequence: number): RemoteWorkerReport | null;

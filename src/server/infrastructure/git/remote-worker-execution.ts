@@ -1,5 +1,5 @@
 import { lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { GitWorktreeReader } from "@/server/git-worktrees";
 import type { ProjectLifecycle } from "@/server/modules/lifecycle";
 import { testProfileFor } from "@/server/modules/environments";
@@ -57,9 +57,17 @@ export class SystemRemoteWorkerExecution implements RemoteWorkerExecution {
           // A linked human worktree has a .git file. Only an independent worker-owned clone is allowed.
           if (!(await lstat(join(cache, ".git"))).isDirectory()) throw new Error("independent_source_cache_required");
           for (const candidate of this.store.listProjects()) {
-            const repository = await realpath(candidate.repositoryPath);
-            const within = relative(repository, cache);
-            if (!within || !within.startsWith("..") && !isAbsolute(within)) throw new Error("independent_source_cache_required");
+            // Preserve lexical containment even if an unrelated registration has
+            // disappeared. Existing paths must also pass canonical/symlink checks.
+            this.assertIndependentCache(resolve(candidate.repositoryPath), resolve(mapping.sourceCachePath));
+            this.assertIndependentCache(resolve(candidate.repositoryPath), cache);
+            let repository: string;
+            try { repository = await realpath(candidate.repositoryPath); }
+            catch (error) {
+              if (candidate.id !== project.id && (error as NodeJS.ErrnoException).code === "ENOENT") continue;
+              throw error;
+            }
+            this.assertIndependentCache(repository, cache);
           }
           releaseWorkspace = this.lifecycle.acquireMaintenance(project.id, path);
           if (!releaseWorkspace) throw new Error("workspace_busy");
@@ -118,6 +126,10 @@ export class SystemRemoteWorkerExecution implements RemoteWorkerExecution {
         },
       },
     };
+  }
+  private assertIndependentCache(repository: string, cache: string): void {
+    const within = relative(repository, cache);
+    if (!within || (!isAbsolute(within) && within !== ".." && !within.startsWith(`..${sep}`))) throw new Error("independent_source_cache_required");
   }
   private mapping(assignment: RemoteAssignment): RemoteWorkerProjectMapping {
     const mapping = this.mappings.find(x => x.projectId === assignment.projectId);

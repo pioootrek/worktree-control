@@ -9,8 +9,9 @@ import { emptyTelemetry } from "@/server/modules/verification";
 import { legacySourceEvidence } from "@/server/test-source-attribution";
 import { SqliteStateStore } from "@/server/sqlite-store";
 import { IdentityService } from "@/server/modules/identity";
-import { remoteReportSchema, type RemoteAssignment } from "@/shared/contracts/remote-verification";
+import { remotePollResultSchema, remoteReportSchema, type RemoteAssignment } from "@/shared/contracts/remote-verification";
 import { RemoteVerificationController } from "./remote-verification-controller";
+import { RemoteVerificationAttemptService } from "./remote-verification-attempt-service";
 import { RemoteVerificationWorker } from "./remote-worker";
 import type { WorkerReceipt } from "./connection-contracts";
 
@@ -226,6 +227,139 @@ it("advances bounded delivery pages past more than 100 revoked presets without d
     for (let index = 0; index < 3; index++) expect(controller.poll("worker", f.actor).assignments).toEqual([]);
     expect(controller.status(next.id, f.owner).attempt).toMatchObject({ id: assignment.attemptId, phase: "uncertain" });
   } finally { f.store.close(); }
+});
+
+function staleCancellations(f: ReturnType<typeof fixture>) {
+  // Equal timestamps exercise the stable ID tie-breaker across wrap and restart.
+  const now = () => "2030-01-01T00:00:00.000Z";
+  const controller = new RemoteVerificationController(f.store, f.store.remoteConnection, f.identity, now);
+  const attempts = new RemoteVerificationAttemptService(f.store, now);
+  controller.cancel(f.request.id, f.owner);
+  const stale = Array.from({ length: 120 }, (_, index) => {
+    const request = controller.submit({ projectId: "project", workerId: "worker", presetId: "node:test",
+      commitSha: "a".repeat(40), idempotencyKey: `stale-cancel-${index}` }, f.owner);
+    const attempt = attempts.assign({ requestId: request.id, workerId: "worker" }, f.actor);
+    controller.cancel(request.id, f.owner);
+    return attempt.id;
+  });
+  controller.recover();
+  const first = f.store.getRemoteVerificationAttempt(stale[0])!;
+  attempts.report({ attemptId: first.id, expectedVersion: first.version, phase: "cancel_requested" }, f.actor);
+  return [f.receipt.assignment.attemptId, ...stale];
+}
+
+it("rotates bounded cancellation pages across uncertain work, wraps and reopens without losing intent or worker scope", () => {
+  const f = fixture();
+  const stale = staleCancellations(f);
+  const connection = f.store.remoteConnection;
+  const first = connection.cancellationAttempts("worker"), second = connection.cancellationAttempts("worker");
+  expect(first.length).toBeLessThanOrEqual(100);
+  expect(second.length).toBeLessThanOrEqual(100);
+  expect(new Set([...first, ...second])).toEqual(new Set(stale));
+  expect(connection.cancellationAttempts("worker")).toEqual(first);
+  expect(connection.cancellationAttempts("worker")).toEqual(second);
+  expect(connection.cancellationAttempts("other-worker")).toEqual([]);
+  expect(() => f.controller.poll("worker", f.owner)).toThrow("worker_forbidden");
+  for (const id of stale) expect(f.store.getRemoteVerificationAttempt(id)?.finishedAt).toBeNull();
+  f.store.close();
+  const reopened = new SqliteStateStore(f.path);
+  const controller = new RemoteVerificationController(reopened, reopened.remoteConnection, new IdentityService(reopened));
+  try {
+    controller.recover();
+    expect(reopened.remoteConnection.cancellationAttempts("worker")).toEqual(first);
+    expect(reopened.remoteConnection.cancellationAttempts("worker")).toEqual(second);
+    for (let index = 0; index < 3; index++) expect(controller.poll("worker", f.actor).assignments).toEqual([]);
+    for (const id of stale) {
+      const attempt = reopened.getRemoteVerificationAttempt(id)!;
+      expect(["uncertain", "cancel_requested"]).toContain(attempt.phase);
+      expect(attempt.finishedAt).toBeNull();
+    }
+  } finally { reopened.close(); }
+});
+
+it("delivers a live running cancellation beyond 100 stale cancels after controller recovery and waits for worker cleanup", async () => {
+  const f = fixture(), workerStore = new SqliteStateStore(f.workerPath);
+  staleCancellations(f);
+  let controller = new RemoteVerificationController(f.store, f.store.remoteConnection, f.identity, () => "2031-01-01T00:00:00.000Z");
+  const request = controller.submit({ projectId: "project", workerId: "worker", presetId: "node:test",
+    commitSha: "d".repeat(40), idempotencyKey: "live-after-stale-cancels" }, f.owner);
+  let run: TestRun | null = null;
+  const jobs = { enqueue: vi.fn((input: EnqueueTestInput) => {
+    run = localRun("local-project", "/fixture", { id: input.runId!, phase: "running", finishedAt: null,
+      telemetry: { ...emptyTelemetry("observed"), cleanup: "pending", finalizedAt: null } });
+    return run;
+  }), cancel: vi.fn(), blockAdmission: vi.fn() };
+  const execution = { resolve: vi.fn(async (assignment: RemoteAssignment, _receipt: WorkerReceipt, running: (evidence: Partial<RemoteWorkerReport>) => void) => {
+    running({ executedCommitSha: assignment.commitSha, presetFingerprint: "b".repeat(64), environmentFingerprint: "c".repeat(64) });
+    return {} as EnqueueTestInput;
+  }) };
+  const transport = { poll: async () => controller.poll("worker", f.actor),
+    report: async (input: RemoteWorkerReport) => { controller.report("worker", input, f.actor); } };
+  const worker = new RemoteVerificationWorker("worker", workerStore.remoteConnection, jobs, () => run, execution, transport);
+  let restarted: RemoteVerificationWorker | null = null;
+  try {
+    for (let index = 0; index < 3 && !jobs.enqueue.mock.calls.length; index++) await worker.tick();
+    expect(jobs.enqueue).toHaveBeenCalledOnce();
+    expect(controller.status(request.id, f.owner).attempt?.phase).toBe("running");
+    controller = new RemoteVerificationController(f.store, f.store.remoteConnection, f.identity);
+    controller.recover();
+    controller.cancel(request.id, f.owner);
+    for (let index = 0; index < 3 && !jobs.cancel.mock.calls.length; index++) await worker.tick();
+    const receipt = workerStore.remoteConnection.receipts()[0];
+    expect(jobs.cancel).toHaveBeenCalledExactlyOnceWith(receipt.localRunId, "remote-worker:worker");
+    expect(receipt.cancellationRequested).toBe(true);
+    expect(controller.status(request.id, f.owner).attempt).toMatchObject({ phase: "uncertain", finishedAt: null });
+    // The controller never infers process exit from cancellation delivery.
+    run = localRun("local-project", "/fixture", { id: receipt.localRunId });
+    await worker.tick();
+    expect(controller.status(request.id, f.owner).attempt?.phase).toBe("cancelled");
+    expect(workerStore.remoteConnection.receipt(receipt.assignment.attemptId)?.reports.at(-1)).toMatchObject({ phase: "cancelled", execution: { cleanup: "confirmed" } });
+    await worker.close();
+    restarted = new RemoteVerificationWorker("worker", workerStore.remoteConnection, jobs, () => run, execution, transport);
+    for (let index = 0; index < 3; index++) await restarted.tick();
+    expect(jobs.enqueue).toHaveBeenCalledOnce();
+    expect(execution.resolve).toHaveBeenCalledOnce();
+    expect(jobs.blockAdmission).not.toHaveBeenCalled();
+  } finally { await worker.close(); await restarted?.close(); workerStore.close(); f.store.close(); }
+});
+
+it("attaches durable cancellation to an assignment outside the general page and never executes it on replay or restart", async () => {
+  const f = fixture(), workerStore = new SqliteStateStore(f.workerPath);
+  const stale = staleCancellations(f);
+  const controller = new RemoteVerificationController(f.store, f.store.remoteConnection, f.identity, () => "2031-01-01T00:00:00.000Z");
+  const request = controller.submit({ projectId: "project", workerId: "worker", presetId: "node:test",
+    commitSha: "d".repeat(40), idempotencyKey: "cancel-before-accept-after-stale" }, f.owner);
+  const attempt = new RemoteVerificationAttemptService(f.store).assign({ requestId: request.id, workerId: "worker" }, f.actor);
+  controller.cancel(request.id, f.owner);
+  // Assignment delivery has advanced while the independent cancellation cursor has not.
+  expect(f.store.remoteConnection.pendingRequests("worker")).toEqual([]);
+  const pages = vi.spyOn(f.store.remoteConnection, "cancellationAttempts");
+  const poll = remotePollResultSchema.parse(controller.poll("worker", f.actor));
+  expect(poll.assignments).toMatchObject([{ requestId: request.id, attemptId: attempt.id }]);
+  expect(poll.cancellations).toHaveLength(100);
+  expect(poll.cancellations).toContain(attempt.id);
+  expect(pages).toHaveBeenCalledExactlyOnceWith("worker", 99);
+  expect(pages.mock.results[0].value).not.toContain(attempt.id);
+  // Reserving a slot must not discard a general-page boundary item forever.
+  expect(new Set([...pages.mock.results[0].value, ...f.store.remoteConnection.cancellationAttempts("worker")]))
+    .toEqual(new Set([...stale, attempt.id]));
+  const jobs = { enqueue: vi.fn(), cancel: vi.fn(), blockAdmission: vi.fn() }, execution = { resolve: vi.fn() };
+  const transport = { poll: async () => poll,
+    report: async (input: RemoteWorkerReport) => { controller.report("worker", input, f.actor); } };
+  const worker = new RemoteVerificationWorker("worker", workerStore.remoteConnection, jobs, () => null, execution, transport);
+  let restarted: RemoteVerificationWorker | null = null;
+  try {
+    await worker.tick(); await worker.tick();
+    expect(controller.status(request.id, f.owner).attempt?.phase).toBe("cancelled");
+    const saved = workerStore.remoteConnection.receipt(attempt.id);
+    expect(saved).toMatchObject({ cancellationRequested: true, acknowledgedSequence: 2, reports: [{ phase: "preparing" }, { phase: "cancelled" }] });
+    await worker.close();
+    restarted = new RemoteVerificationWorker("worker", workerStore.remoteConnection, jobs, () => null, execution, transport);
+    await restarted.tick();
+    expect(workerStore.remoteConnection.receipt(attempt.id)).toEqual(saved);
+    expect(jobs.enqueue).not.toHaveBeenCalled(); expect(execution.resolve).not.toHaveBeenCalled();
+    expect(jobs.cancel).not.toHaveBeenCalled(); expect(jobs.blockAdmission).not.toHaveBeenCalled();
+  } finally { await worker.close(); await restarted?.close(); workerStore.close(); f.store.close(); }
 });
 
 it("keeps a compact 1000-receipt replay index and reads only an unacknowledged report body on demand", async () => {
