@@ -13,6 +13,9 @@ export interface RemoteWorkerExecution {
   resolve(assignment: RemoteAssignment, receipt: WorkerReceipt, running: (evidence: Partial<RemoteWorkerReport>) => void): Promise<EnqueueTestInput>;
 }
 const settled = new Set(["succeeded", "failed", "cancelled", "uncertain"]);
+// Each call retains the transport's timeout. Bound successes and failures alike
+// so the next single-flight tick can poll cancellation independently of backlog.
+const MAX_REPORT_UPLOADS_PER_TICK = 3;
 
 /** Outbound delivery/retry loop; admission and execution belong exclusively to VerificationJobs. */
 export class RemoteVerificationWorker {
@@ -20,6 +23,7 @@ export class RemoteVerificationWorker {
   private readonly active = new Set<string>();
   private timer: NodeJS.Timeout | null = null;
   private pending: Promise<void> | null = null;
+  private uploadCursor: string | null = null;
   private stopped = false;
   constructor(
     private readonly workerId: string,
@@ -81,13 +85,22 @@ export class RemoteVerificationWorker {
         failure ??= error;
       }
     }
-    for (const summary of this.receipts.values()) {
+    const summaries = [...this.receipts.values()];
+    const start = summaries.findIndex(summary => summary.assignment.attemptId === this.uploadCursor) + 1;
+    let uploads = 0;
+    for (let offset = 0; offset < summaries.length && uploads < MAX_REPORT_UPLOADS_PER_TICK && !this.stopped; offset++) {
+      const summary = summaries[(start + offset) % summaries.length];
       if (summary.acknowledgedSequence >= summary.reportCount) continue;
       const receipt = this.connection.receipt(summary.assignment.attemptId);
       if (!receipt) continue;
       this.collect(receipt);
       for (const report of receipt.reports) {
         if (report.sequence <= receipt.acknowledgedSequence) continue;
+        if (uploads >= MAX_REPORT_UPLOADS_PER_TICK || this.stopped) break;
+        // Advance before awaiting, including rejection/ACK loss. The next tick
+        // starts at another receipt even if this one has more reports or appends.
+        this.uploadCursor = summary.assignment.attemptId;
+        uploads++;
         try {
           await this.transport.report(report);
         } catch (error) {

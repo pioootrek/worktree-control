@@ -149,6 +149,9 @@ it("retries a rejected attempt independently after its preset grant is revoked",
   const worker = new RemoteVerificationWorker("worker", workerStore.remoteConnection, jobs, () => null, execution, { poll: async () => f.controller.poll("worker", f.actor), report: uploaded });
   try {
     await expect(worker.tick()).rejects.toThrow("project_forbidden");
+    // The rejected upload consumes one of the three slots; finish the later
+    // attempt on the next tick rather than draining the entire backlog at once.
+    await expect(worker.tick()).rejects.toThrow("project_forbidden");
     expect(f.controller.status(next.id, f.owner).attempt?.phase).toBe("succeeded");
     expect(workerStore.remoteConnection.receipt(assignment.attemptId)?.acknowledgedSequence).toBe(3);
     expect(JSON.stringify(workerStore.remoteConnection.receipt(old.attemptId))).toBe(rejectedEvidence);
@@ -438,6 +441,170 @@ it("merges an ACK with execution evidence appended while the upload was in fligh
     expect(f.controller.status(f.request.id, f.owner).attempt?.phase).toBe("running");
     expect(enqueue).toHaveBeenCalledOnce();
   } finally { await worker.close(); workerStore.close(); f.store.close(); }
+});
+
+function terminalBacklog(receipt: WorkerReceipt, count: number, acknowledgedSequence = 0): WorkerReceipt[] {
+  return Array.from({ length: count }, (_, index) => {
+    const assignment = { ...receipt.assignment, attemptId: `backlog-${index}`, requestId: `backlog-request-${index}` };
+    return { ...receipt, assignment, acknowledgedSequence,
+      reports: [report(assignment, 1, "preparing"), report(assignment, 2, "running"), report(assignment, 3, "succeeded")],
+    };
+  });
+}
+
+it("polls live cancellation after three stalled uploads without draining historical receipts or executing twice", async () => {
+  const f = fixture(), workerStore = new SqliteStateStore(f.workerPath);
+  const backlog = terminalBacklog(f.receipt, 8, 2);
+  for (const receipt of backlog) workerStore.remoteConnection.accept(receipt);
+  const jobs = { enqueue: vi.fn(), cancel: vi.fn(), blockAdmission: vi.fn() };
+  const execution = { resolve: vi.fn(async () => ({} as EnqueueTestInput)) };
+  let cancelled = false;
+  const poll = vi.fn(async () => ({ version: 1 as const, assignments: [f.receipt.assignment],
+    cancellations: cancelled ? [f.receipt.assignment.attemptId] : [],
+  }));
+  const upload = vi.fn<(input: RemoteWorkerReport) => Promise<void>>(() => new Promise<void>((_resolve, reject) => {
+    setTimeout(() => reject(new Error("transport timeout")), 15_000);
+  }));
+  const worker = new RemoteVerificationWorker("worker", workerStore.remoteConnection, jobs, () => null, execution, { poll, report: upload });
+  vi.useFakeTimers();
+  try {
+    const first = worker.tick();
+    const firstResult = expect(first).rejects.toThrow("transport timeout");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(upload).toHaveBeenCalledTimes(1);
+    cancelled = true;
+    expect(worker.tick()).toBe(first);
+    for (let index = 0; index < 3; index++) await vi.advanceTimersByTimeAsync(15_000);
+    await firstResult;
+    expect(upload).toHaveBeenCalledTimes(3);
+    expect(poll).toHaveBeenCalledTimes(1);
+    expect(jobs.cancel).not.toHaveBeenCalled();
+
+    const nextResult = expect(worker.tick()).rejects.toThrow("transport timeout");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(poll).toHaveBeenCalledTimes(2);
+    const live = workerStore.remoteConnection.receipt(f.receipt.assignment.attemptId)!;
+    expect(live.cancellationRequested).toBe(true);
+    expect(jobs.cancel).toHaveBeenCalledExactlyOnceWith(live.localRunId, "remote-worker:worker");
+    expect(upload).toHaveBeenCalledTimes(4);
+    // Four historical outboxes have not even been attempted when cancel runs.
+    expect(upload.mock.calls.map(([input]) => input.attemptId)).toEqual(backlog.slice(0, 4).map(receipt => receipt.assignment.attemptId));
+    for (let index = 0; index < 3; index++) await vi.advanceTimersByTimeAsync(15_000);
+    await nextResult;
+    expect(upload).toHaveBeenCalledTimes(6);
+    expect(workerStore.remoteConnection.receipts().filter(receipt => receipt.acknowledgedSequence < receipt.reportCount)).toHaveLength(9);
+    expect(jobs.enqueue).toHaveBeenCalledOnce(); expect(execution.resolve).toHaveBeenCalledOnce();
+  } finally {
+    await vi.runAllTimersAsync();
+    await worker.close(); vi.useRealTimers(); workerStore.close(); f.store.close();
+  }
+});
+
+it("bounds successful uploads too and rotates past an outbox larger than one tick's budget", async () => {
+  const f = fixture(), workerStore = new SqliteStateStore(f.workerPath);
+  const backlog = terminalBacklog(f.receipt, 8);
+  backlog[0].reports = Array.from({ length: 7 }, (_, index) => report(backlog[0].assignment, index + 1,
+    index === 0 ? "preparing" : index === 6 ? "succeeded" : "running"));
+  for (const receipt of backlog) workerStore.remoteConnection.accept(receipt);
+  const jobs = { enqueue: vi.fn(), cancel: vi.fn(), blockAdmission: vi.fn() }, execution = { resolve: vi.fn() };
+  const poll = vi.fn(async () => ({ version: 1 as const, assignments: [backlog[0].assignment], cancellations: [] }));
+  const upload = vi.fn<(input: RemoteWorkerReport) => Promise<void>>(async () => undefined);
+  const worker = new RemoteVerificationWorker("worker", workerStore.remoteConnection, jobs, () => null, execution, { poll, report: upload });
+  try {
+    await worker.tick();
+    expect(upload.mock.calls.map(([input]) => input)).toEqual(backlog[0].reports.slice(0, 3));
+    expect(workerStore.remoteConnection.receipt("backlog-0")?.acknowledgedSequence).toBe(3);
+    await worker.tick();
+    expect(upload.mock.calls.slice(3).map(([input]) => input)).toEqual(backlog[1].reports);
+    expect(workerStore.remoteConnection.receipt("backlog-0")?.acknowledgedSequence).toBe(3);
+    for (let index = 0; index < 10; index++) {
+      const before = upload.mock.calls.length;
+      await worker.tick();
+      expect(upload.mock.calls.length - before).toBeLessThanOrEqual(3);
+    }
+    expect(poll).toHaveBeenCalledTimes(12);
+    for (const receipt of backlog) {
+      expect(upload.mock.calls.map(([input]) => input).filter(input => input.attemptId === receipt.assignment.attemptId)).toEqual(receipt.reports);
+      expect(workerStore.remoteConnection.receipt(receipt.assignment.attemptId)).toMatchObject({ reports: receipt.reports, acknowledgedSequence: receipt.reports.length });
+    }
+    expect(jobs.enqueue).not.toHaveBeenCalled(); expect(execution.resolve).not.toHaveBeenCalled();
+  } finally { await worker.close(); workerStore.close(); f.store.close(); }
+});
+
+it("keeps rotating past repeated rejection and ACK loss while new execution reports append", async () => {
+  const f = fixture(), workerStore = new SqliteStateStore(f.workerPath);
+  const backlog = terminalBacklog(f.receipt, 5);
+  for (const receipt of backlog) workerStore.remoteConnection.accept(receipt);
+  let running!: (evidence: Partial<RemoteWorkerReport>) => void;
+  let appended = false;
+  const jobs = { enqueue: vi.fn(), cancel: vi.fn(), blockAdmission: vi.fn() };
+  const execution = { resolve: vi.fn(async (_assignment: RemoteAssignment, _receipt: WorkerReceipt, started: typeof running) => {
+    running = started;
+    return {} as EnqueueTestInput;
+  }) };
+  const upload = vi.fn(async (input: RemoteWorkerReport) => {
+    if (!appended) {
+      appended = true;
+      running({ executedCommitSha: f.receipt.assignment.commitSha, presetFingerprint: "b".repeat(64), environmentFingerprint: "c".repeat(64) });
+    }
+    if (input.attemptId === "backlog-0") throw new Error("rejected");
+    if (input.attemptId === "backlog-1") throw new Error("ACK lost");
+  });
+  const worker = new RemoteVerificationWorker("worker", workerStore.remoteConnection, jobs, () => null, execution, {
+    poll: async () => ({ version: 1, assignments: [f.receipt.assignment], cancellations: [] }), report: upload,
+  });
+  try {
+    await expect(worker.tick()).rejects.toThrow("rejected");
+    expect(upload.mock.calls.map(([input]) => [input.attemptId, input.sequence])).toEqual([["backlog-0", 1], ["backlog-1", 1], ["backlog-2", 1]]);
+    expect(workerStore.remoteConnection.receipt(f.receipt.assignment.attemptId)).toMatchObject({ acknowledgedSequence: 0, reports: [{ phase: "preparing" }, { phase: "running" }] });
+    await worker.tick(); await worker.tick();
+    expect(upload.mock.calls.slice(3).map(([input]) => [input.attemptId, input.sequence])).toEqual([
+      ["backlog-3", 1], ["backlog-3", 2], ["backlog-3", 3], ["backlog-4", 1], ["backlog-4", 2], ["backlog-4", 3],
+    ]);
+    await expect(worker.tick()).rejects.toThrow("rejected");
+    expect(upload.mock.calls.slice(9).map(([input]) => [input.attemptId, input.sequence])).toEqual([
+      [f.receipt.assignment.attemptId, 1], [f.receipt.assignment.attemptId, 2], ["backlog-0", 1],
+    ]);
+    await expect(worker.tick()).rejects.toThrow("ACK lost");
+    expect(upload.mock.calls.slice(12).map(([input]) => [input.attemptId, input.sequence])).toEqual([["backlog-1", 1], ["backlog-2", 2], ["backlog-2", 3]]);
+    for (const receipt of backlog.slice(0, 2)) {
+      const retries = upload.mock.calls.map(([input]) => input).filter(input => input.attemptId === receipt.assignment.attemptId);
+      expect(retries).toEqual([receipt.reports[0], receipt.reports[0]]);
+      expect(workerStore.remoteConnection.receipt(receipt.assignment.attemptId)).toEqual(receipt);
+    }
+    for (const receipt of backlog.slice(2)) expect(workerStore.remoteConnection.receipt(receipt.assignment.attemptId)?.acknowledgedSequence).toBe(3);
+    expect(workerStore.remoteConnection.receipt(f.receipt.assignment.attemptId)?.acknowledgedSequence).toBe(2);
+    expect(jobs.enqueue).toHaveBeenCalledOnce(); expect(execution.resolve).toHaveBeenCalledOnce();
+  } finally { await worker.close(); workerStore.close(); f.store.close(); }
+});
+
+it.each([false, true])("shares the in-flight tick and drains only its current upload on shutdown (rejected: %s)", async rejected => {
+  const f = fixture(), workerStore = new SqliteStateStore(f.workerPath);
+  for (const receipt of terminalBacklog(f.receipt, 5)) workerStore.remoteConnection.accept(receipt);
+  let entered!: () => void, release!: () => void;
+  const blocked = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const upload = vi.fn<(input: RemoteWorkerReport) => Promise<void>>(async () => { entered(); await gate; if (rejected) throw new Error("rejected"); });
+  const poll = vi.fn(async () => ({ version: 1 as const, assignments: [], cancellations: [] }));
+  const jobs = { enqueue: vi.fn(), cancel: vi.fn(), blockAdmission: vi.fn() }, execution = { resolve: vi.fn() };
+  const worker = new RemoteVerificationWorker("worker", workerStore.remoteConnection, jobs, () => null, execution, { poll, report: upload });
+  try {
+    const pending = worker.tick();
+    const result = rejected ? expect(pending).rejects.toThrow("rejected") : expect(pending).resolves.toBeUndefined();
+    await blocked;
+    expect(worker.tick()).toBe(pending);
+    let closed = false;
+    const closing = worker.close().then(() => { closed = true; });
+    await worker.tick();
+    expect(closed).toBe(false);
+    release(); await result; await closing;
+    expect(closed).toBe(true);
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(poll).toHaveBeenCalledTimes(1);
+    expect(workerStore.remoteConnection.receipt("backlog-0")?.acknowledgedSequence).toBe(rejected ? 0 : 1);
+    await worker.tick();
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(jobs.enqueue).not.toHaveBeenCalled(); expect(execution.resolve).not.toHaveBeenCalled();
+  } finally { release(); await worker.close(); workerStore.close(); f.store.close(); }
 });
 
 it.each(["uncertain", "succeeded", "failed", "cancelled"] as const)("never treats explicit unknown cleanup in a %s receipt as confirmed", async phase => {
