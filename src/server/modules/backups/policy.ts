@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { BackupLimit } from "@/shared/contracts/backups";
 
 export const backupPolicySchema = z.object({
   directory: z.string().min(1).max(4096).optional(),
@@ -15,5 +16,5 @@ export const backupPolicySchema = z.object({
 });
 export type BackupPolicy = z.infer<typeof backupPolicySchema>;
 export class BackupError extends Error {
-  constructor(readonly code: "backup_forbidden" | "backup_busy" | "backup_limit" | "backup_invalid" | "backup_failed", readonly status = 400) { super(code); }
+  constructor(readonly code: "backup_forbidden" | "backup_busy" | "backup_limit" | "backup_invalid" | "backup_failed", readonly status = 400, readonly limit?: BackupLimit) { super(code); }
 }

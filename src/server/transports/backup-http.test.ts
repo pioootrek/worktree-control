@@ -56,6 +56,28 @@ it("coalesces double clicks/lost responses and rejects foreign origins", async (
   expect(status.state).toBe("succeeded");
   expect((await f.request("POST", input, f.token, "https://foreign.test")).status).toBe(403);
 });
+it("exposes safe limit evidence for execution and admission through HTTP", async () => {
+  const f = await fixture(["create"]);
+  vi.spyOn(f.store, "backupEstimateBytes").mockReturnValue(f.backups.policy.maxBytes + 1);
+  const input = { action: "create", idempotencyKey: "over-budget" };
+  await f.request("POST", input); await f.backups.drain();
+  const expected = { reason: "catalog_bytes", current: 0, required: f.backups.policy.maxBytes + 1, maximum: f.backups.policy.maxBytes };
+  const result = await (await f.request("POST", { action: "status", idempotencyKey: input.idempotencyKey })).json();
+  expect(result).toMatchObject({ state: "failed", error: "backup_limit", limit: expected });
+  expect((await (await f.request()).json()).operations[0].limit).toEqual(expected);
+  expect(JSON.stringify(result)).not.toContain(f.root);
+  expect(JSON.stringify(result)).not.toContain(f.token);
+  expect(JSON.stringify(result)).not.toContain(input.idempotencyKey);
+
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  try {
+    for (let i = 0; i < f.backups.policy.queueLimit; i++) f.backups.enqueueExport(`gate-${i}`, 1, () => gate, () => release());
+    const response = await f.request("POST", { action: "create", idempotencyKey: "queue-full" });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ code: "backup_limit", error: "backup_limit", limit: { reason: "queue", current: 4, required: 1, maximum: 4 } });
+  } finally { release(); await f.backups.drain(); }
+});
 it("returns the same safe not-found for unknown create and restore keys and still reauthorizes", async () => {
   const f = await fixture(["create", "restore"]);
   const missing = { action: "status", backupId: "backup-00000000-0000-4000-8000-000000000000", idempotencyKey: "unknown" };

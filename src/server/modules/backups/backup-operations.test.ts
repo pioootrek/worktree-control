@@ -1,4 +1,4 @@
-import { mkdtempSync, existsSync, rmSync, renameSync, symlinkSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, existsSync, rmSync, renameSync, symlinkSync, writeFileSync, readFileSync, statfsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,11 @@ import { backupPolicySchema } from "./policy";
 import { recordHash } from "./records";
 import type { AuthenticatedPrincipal } from "@/server/modules/identity";
 import { evaluateBackupMonitor, parseBackupMonitorOptions } from "@/cli/backup-monitor";
+
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, statfsSync: vi.fn(actual.statfsSync) };
+});
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -26,6 +31,64 @@ function fixture(options: Record<string, unknown> = {}) {
 }
 
 describe("service backup operations", () => {
+  it("explains a scheduled catalog-budget refusal and preserves its evidence across restart", async () => {
+    const f = fixture({ intervalSeconds: 60, maxBytes: 6_442_450_944 });
+    // Catalog and nearby snapshot sizes from the incident, with no production data.
+    vi.spyOn(f.deps, "estimateBytes").mockReturnValue(765_765_197);
+    const list = vi.spyOn(f.operations.catalog, "list").mockReturnValue([
+      { id: `backup-${crypto.randomUUID()}`, createdAt: null, sizeBytes: 6_361_245_145, compatibility: "supported", verification: "verified", protected: true },
+    ]);
+    const backup = vi.spyOn(f.store, "backup");
+    vi.mocked(statfsSync).mockReturnValueOnce({ ...statfsSync(f.root), bavail: 10_000_000, bsize: 4096 });
+    f.advance(60_000); f.operations.tick(); await f.operations.drain();
+    const expected = {
+      state: "failed", error: "backup_limit",
+      limit: { reason: "catalog_bytes", current: 6_361_245_145, required: 765_765_197, maximum: 6_442_450_944 },
+    };
+    expect(f.operations.overview(f.actor).schedule.lastOperation).toMatchObject(expected);
+    expect(backup).not.toHaveBeenCalled();
+    list.mockRestore();
+    await f.operations.close();
+    const restarted = new BackupOperations(f.policy, f.deps);
+    try {
+      expect(restarted.overview(f.actor).schedule.lastOperation).toMatchObject(expected);
+      expect(restarted.create("scheduler", `service:${f.deps.clock()}`)).toMatchObject(expected);
+      expect(backup).not.toHaveBeenCalled();
+    } finally { await restarted.close(); }
+  });
+  it("distinguishes disk headroom from catalog budget and succeeds at the next scheduled deadline", async () => {
+    const f = fixture({ intervalSeconds: 60 });
+    const required = f.deps.estimateBytes() + 16 * 1024 ** 2;
+    vi.mocked(statfsSync).mockReturnValueOnce({ ...statfsSync(f.root), bavail: required - 1, bsize: 1 });
+    const backup = vi.spyOn(f.store, "backup");
+    f.advance(60_000); f.operations.tick(); await f.operations.drain();
+    const failed = f.operations.overview(f.actor).schedule.lastOperation!;
+    expect(failed).toMatchObject({ state: "failed", error: "backup_limit", limit: { reason: "filesystem_space", current: 0, required, maximum: required - 1 } });
+    expect(backup).not.toHaveBeenCalled();
+    // Exactly enough destination space passes; the failed deadline is never replayed.
+    vi.mocked(statfsSync).mockReturnValueOnce({ ...statfsSync(f.root), bavail: required, bsize: 1 });
+    f.advance(60_000); f.operations.tick(); await f.operations.drain();
+    const overview = f.operations.overview(f.actor);
+    expect(overview.schedule.lastOperation).toMatchObject({ state: "succeeded", error: null });
+    expect(overview.schedule.lastOperation).not.toHaveProperty("limit");
+    expect(overview.schedule.retention).toBe("succeeded");
+    expect(overview.operations.find(op => op.operationId === failed.operationId)).toEqual(failed);
+    expect(backup).toHaveBeenCalledOnce();
+    expect(overview.copies).toHaveLength(1);
+    await expect(f.operations.catalog.verifyAsync(overview.copies[0].id)).resolves.toMatchObject({ formatVersion: 1 });
+  });
+  it("preserves existing manual and scheduled recovery points when the next snapshot cannot fit", async () => {
+    const f = fixture({ intervalSeconds: 60, retainCount: 1 });
+    f.operations.create(f.actor, "protected-manual"); await f.operations.drain();
+    f.advance(60_000); f.operations.tick(); await f.operations.drain();
+    const before = f.operations.overview(f.actor).copies;
+    const current = before.reduce((sum, copy) => sum + copy.sizeBytes!, 0);
+    vi.spyOn(f.deps, "estimateBytes").mockReturnValue(f.policy.maxBytes - current + 1);
+    f.advance(60_000); f.operations.tick(); await f.operations.drain();
+    expect(f.operations.overview(f.actor).schedule.lastOperation).toMatchObject({ state: "failed", limit: { reason: "catalog_bytes" } });
+    expect(f.operations.overview(f.actor).copies).toEqual(before);
+    expect(f.operations.status(f.actor, "protected-manual").state).toBe("succeeded");
+  });
   it("reports a later manual failure when scheduled priority overtakes its older admission", async () => {
     const f = fixture({ intervalSeconds: 60 });
     let release!: () => void;
@@ -77,6 +140,10 @@ describe("service backup operations", () => {
     try {
       expect(restarted.create(f.actor, "manual:0").operationId).toBe(firstId);
       expect(() => restarted.create(f.actor, "new-manual")).toThrow("backup_limit");
+      try { restarted.create(f.actor, "new-manual"); } catch (error) {
+        expect(error).toMatchObject({ limit: { reason: "manual_history", current: 1024, required: 1, maximum: 1024 } });
+      }
+      expect(restarted.create(f.actor, "manual:0")).not.toHaveProperty("limit");
       f.advance(60_000); restarted.tick(); await restarted.drain();
       expect(restarted.overview(f.actor).schedule.lastOperation?.state).toBe("succeeded");
       expect(restarted.overview(f.actor).schedule.error).toBeNull();
@@ -197,9 +264,17 @@ describe("service backup operations", () => {
   it("reports missed scheduled admission separately from retention", async () => {
     const f = fixture({ intervalSeconds: 60, queueLimit: 1 });
     f.operations.create(f.actor, "occupies-slot"); f.advance(60_000); f.operations.tick();
-    expect(f.operations.overview(f.actor).schedule).toMatchObject({ error: "backup_limit", retention: "idle" });
-    await f.operations.drain(); f.advance(60_000); f.operations.tick(); await f.operations.drain();
-    expect(f.operations.overview(f.actor).schedule.error).toBeNull();
+    const expected = { error: "backup_limit", limit: { reason: "queue", current: 1, required: 1, maximum: 1 }, retention: "idle" };
+    expect(f.operations.overview(f.actor).schedule).toMatchObject(expected);
+    await f.operations.drain(); await f.operations.close();
+    const restarted = new BackupOperations(f.policy, f.deps);
+    try {
+      expect(restarted.overview(f.actor).schedule).toMatchObject(expected);
+      f.advance(60_000); restarted.tick(); await restarted.drain();
+      expect(restarted.overview(f.actor).schedule.error).toBeNull();
+      expect(restarted.overview(f.actor).schedule).not.toHaveProperty("limit");
+      expect(restarted.overview(f.actor).schedule.lastOperation?.state).toBe("succeeded");
+    } finally { await restarted.close(); }
   });
   it("blocks new admission during maintenance and drains accepted backup material", async () => {
     const f = fixture(); f.operations.create(f.actor, "accepted"); f.maintain();
