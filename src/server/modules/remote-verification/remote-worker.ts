@@ -104,11 +104,11 @@ export class RemoteVerificationWorker {
     if (assignment.workerId !== this.workerId) throw new Error("assignment_forbidden");
     const existing = this.receipts.get(assignment.attemptId);
     if (existing) {
-      if (fingerprint(existing.assignment) !== fingerprint(assignment)) throw new Error("assignment_conflict");
+      if (fingerprint(remoteAssignmentSchema.parse(existing.assignment)) !== fingerprint(assignment)) throw new Error("assignment_conflict");
       return;
     }
     const receipt = this.connection.accept({ assignment, localRunId: randomUUID(), cancellationRequested: cancelled, reports: [], acknowledgedSequence: 0 });
-    if (fingerprint(receipt.assignment) !== fingerprint(assignment)) throw new Error("assignment_conflict");
+    if (fingerprint(remoteAssignmentSchema.parse(receipt.assignment)) !== fingerprint(assignment)) throw new Error("assignment_conflict");
     this.receipts.set(assignment.attemptId, summarizeReceipt(receipt));
     this.append(receipt, { phase: "preparing" });
     if (cancelled) { this.append(receipt, { phase: "cancelled" }); return; }
