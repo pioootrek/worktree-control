@@ -248,6 +248,12 @@ Cancellation intent can be read while the worker is offline; confirmation waits
 for owned-process cleanup. Terminal reports and acknowledgements survive
 reopening the databases and are replayed without creating a new execution.
 
+Worker receipt retention currently stops new acceptance at 1,000 records;
+existing report delivery continues when that limit is reached. Local run details
+remain protected from normal history pruning until a durable receipt outcome
+preserves their completion evidence. This can retain up to 1,000 additional run
+details while collection is delayed. Routine retention maintenance remains open.
+
 Source preparation currently uses the existing per-command Git timeouts. The
 preset timeout starts with test execution; it is not an overall preparation
 deadline. Cancellation during preparation prevents the test from starting but
