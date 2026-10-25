@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { basename, delimiter, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { GitCommandAdmission, SystemGitWorktreeReader, type GitCommandPriority } from "@/server/git-worktrees";
 import { LinuxWorkerRecoveryHost, SystemRemoteVerificationWorkspacePreparer, SystemRemoteWorkerExecution } from "@/server/infrastructure/git";
 import { ProjectLifecycle } from "@/server/modules/lifecycle";
@@ -25,17 +25,135 @@ class FixtureGitAdmission extends GitCommandAdmission {
   }
 }
 
+function pnpmDistribution(directory: string, expectedEntry?: string): { path: string; version: string } | undefined {
+  try {
+    const root = realpathSync(directory);
+    const manifest: { name?: unknown; version?: unknown; bin?: { pnpm?: unknown } | null } | null =
+      JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    const entry = manifest?.bin?.pnpm;
+    if (manifest?.name !== "pnpm" || typeof manifest.version !== "string" || !/^11\.[1-9][0-9]*\.\d+$/.test(manifest.version)
+      || typeof entry !== "string" || !["bin/pnpm.cjs", "bin/pnpm.mjs"].includes(entry)) return;
+    const path = realpathSync(join(root, entry));
+    if (path !== join(root, entry) || (expectedEntry && path !== expectedEntry) || !statSync(path).isFile()) return;
+    accessSync(path, constants.X_OK);
+    return { path, version: manifest.version };
+  } catch { /* Missing or unsupported distributions are not executable candidates. */ }
+}
+
 /** Resolve the installed pnpm distribution, never Corepack or a command which could download tooling. */
-function installedPnpm(): { path: string; version: string } {
-  for (const bin of (process.env.PATH ?? "").split(":")) {
-    try {
-      const path = realpathSync(join(bin, "pnpm"));
-      const manifest = JSON.parse(readFileSync(join(dirname(path), "..", "package.json"), "utf8"));
-      if (manifest.name === "pnpm" && /^11\.[1-9][0-9]*\.\d+$/.test(manifest.version)) return { path, version: manifest.version };
-    } catch { /* Keep looking past wrappers/shims. */ }
+function installedPnpm(searchPath = process.env.PATH ?? ""): { path: string; version: string } {
+  for (const bin of searchPath.split(delimiter)) {
+    let candidate: string;
+    try { candidate = realpathSync(join(bin, "pnpm")); } catch { continue; }
+    const directory = dirname(candidate);
+    const direct = pnpmDistribution(join(directory, ".."), candidate);
+    if (direct) return direct;
+    // pnpm/action-setup v4.1.0 installs a local dependency, exposing a regular
+    // node_modules/.bin/pnpm wrapper. Resolve only its adjacent pnpm package;
+    // never parse/execute the wrapper or search for tooling outside this layout.
+    // https://github.com/pnpm/action-setup/blob/a7487c7e89a18df4991f7f222e4898a00d66ddda/src/install-pnpm/run.ts
+    if (basename(directory) === ".bin" && basename(dirname(directory)) === "node_modules") {
+      const adjacent = pnpmDistribution(join(directory, "..", "pnpm"));
+      if (adjacent) return adjacent;
+    }
   }
   throw new Error("Fixture requires the preinstalled pnpm 11 distribution (not a Corepack shim) in PATH.");
 }
+
+describe("preinstalled pnpm discovery", () => {
+  function layout() {
+    const root = mkdtempSync(join(tmpdir(), "wtc-pnpm-discovery-"));
+    cleanup.push(async () => rmSync(root, { recursive: true, force: true }));
+    const distribution = join(root, "node_modules", ".pnpm", "pnpm@11.22.0", "node_modules", "pnpm");
+    const bin = join(root, "node_modules", ".bin");
+    mkdirSync(join(distribution, "bin"), { recursive: true });
+    mkdirSync(bin, { recursive: true });
+    symlinkSync(distribution, join(root, "node_modules", "pnpm"));
+    const manifestPath = join(distribution, "package.json");
+    const manifest = { name: "pnpm", version: "11.22.0", bin: { pnpm: "bin/pnpm.mjs" } };
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    const entry = join(distribution, manifest.bin.pnpm);
+    writeFileSync(entry, "#!/usr/bin/env node\nthrow new Error('Discovery must not execute fixture tooling');\n", { mode: 0o755 });
+    // The action installs pnpm as a dependency and cmd-shim writes a regular
+    // .bin/pnpm shell wrapper targeting ../pnpm/bin/pnpm.mjs, not a symlink.
+    const marker = join(root, "wrapper-executed");
+    writeFileSync(join(bin, "pnpm"), `#!/bin/sh\ntouch '${marker}'\nexec node "$(dirname "$0")/../pnpm/bin/pnpm.mjs" "$@"\n`, { mode: 0o755 });
+    return { root, distribution, bin, manifestPath, manifest, entry, marker };
+  }
+
+  it.each(["pnpm.cjs", "pnpm.mjs"])("resolves a PATH symlink to the declared %s distribution entrypoint", name => {
+    const f = layout();
+    const entry = join(f.distribution, "bin", name);
+    f.manifest.bin.pnpm = `bin/${name}`;
+    writeFileSync(f.manifestPath, JSON.stringify(f.manifest));
+    if (entry !== f.entry) writeFileSync(entry, readFileSync(f.entry), { mode: 0o755 });
+    const bin = join(f.root, "global-bin");
+    mkdirSync(bin); symlinkSync(entry, join(bin, "pnpm"));
+    expect(installedPnpm(bin)).toEqual({ path: entry, version: "11.22.0" });
+  });
+
+  it("resolves the action's adjacent package through its virtual-store symlink without running the wrapper", () => {
+    const f = layout();
+    expect(realpathSync(join(f.bin, "pnpm"))).toBe(join(f.bin, "pnpm"));
+    expect(existsSync(join(f.bin, "..", "package.json"))).toBe(false);
+    expect(installedPnpm(f.bin)).toEqual({ path: f.entry, version: "11.22.0" });
+    expect(existsSync(f.marker)).toBe(false);
+  });
+
+  it.each([
+    { name: "corepack" }, { version: "10.22.0" }, { version: "11.0.0" }, { version: "12.0.0" },
+    { version: "11.22.0-rc.1" }, { version: 11 }, { bin: null }, { bin: "bin/pnpm.mjs" },
+    { bin: { pnpm: "../download.mjs" } }, { bin: { pnpm: "/tools/pnpm.mjs" } }, { bin: { pnpm: "bin/corepack.cjs" } },
+  ])("rejects an unsupported adjacent manifest %j", override => {
+    const f = layout();
+    writeFileSync(f.manifestPath, JSON.stringify({ ...f.manifest, ...override }));
+    expect(() => installedPnpm(f.bin)).toThrow("preinstalled pnpm 11 distribution");
+    expect(existsSync(f.marker)).toBe(false);
+  });
+
+  it.each(["malformed-manifest", "null-manifest", "missing-package", "missing-entry", "directory-entry", "non-executable-entry", "redirected-entry"])("rejects %s without invoking the wrapper", kind => {
+    const f = layout();
+    if (kind === "malformed-manifest") writeFileSync(f.manifestPath, "{");
+    if (kind === "null-manifest") writeFileSync(f.manifestPath, "null");
+    if (kind === "missing-package") rmSync(f.distribution, { recursive: true });
+    if (kind === "missing-entry") rmSync(f.entry);
+    if (kind === "directory-entry") { rmSync(f.entry); mkdirSync(f.entry); }
+    if (kind === "non-executable-entry") chmodSync(f.entry, 0o644);
+    if (kind === "redirected-entry") {
+      const outside = join(f.root, "download.mjs");
+      writeFileSync(outside, readFileSync(f.entry), { mode: 0o755 });
+      rmSync(f.entry); symlinkSync(outside, f.entry);
+    }
+    expect(() => installedPnpm(f.bin)).toThrow("preinstalled pnpm 11 distribution");
+    expect(existsSync(f.marker)).toBe(false);
+  });
+
+  it("rejects a PATH target that is not the manifest's declared entrypoint", () => {
+    const f = layout();
+    const shim = join(f.distribution, "bin", "corepack.cjs");
+    writeFileSync(shim, readFileSync(f.entry), { mode: 0o755 });
+    rmSync(join(f.bin, "pnpm")); symlinkSync(shim, join(f.bin, "pnpm"));
+    expect(() => installedPnpm(f.bin)).toThrow("preinstalled pnpm 11 distribution");
+  });
+
+  it("does not search for a distribution beside arbitrary PATH wrappers", () => {
+    const f = layout();
+    const bin = join(f.root, "node_modules", "other-bin");
+    mkdirSync(bin); writeFileSync(join(bin, "pnpm"), readFileSync(join(f.bin, "pnpm")), { mode: 0o755 });
+    expect(() => installedPnpm(bin)).toThrow("preinstalled pnpm 11 distribution");
+    expect(existsSync(f.marker)).toBe(false);
+  });
+
+  it("continues past missing PATH entries and Corepack to a real installed distribution", () => {
+    const f = layout();
+    const corepack = join(f.root, "corepack");
+    mkdirSync(join(corepack, "bin"), { recursive: true });
+    writeFileSync(join(corepack, "package.json"), JSON.stringify({ ...f.manifest, name: "corepack" }));
+    writeFileSync(join(corepack, "bin", "pnpm"), "#!/bin/sh\nexit 99\n", { mode: 0o755 });
+    expect(installedPnpm([join(f.root, "missing"), join(corepack, "bin"), f.bin].join(delimiter)))
+      .toEqual({ path: f.entry, version: "11.22.0" });
+  });
+});
 
 function fixture(realPnpm = false) {
   const root = mkdtempSync(join(tmpdir(), "wtc-locked-preparation-"));
