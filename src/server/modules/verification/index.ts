@@ -2,6 +2,7 @@ export { projectTestPreset, testPresetTimeoutSchema } from "./preset-timeout";
 export { VerificationService } from "./verification-service";
 export { emptyTelemetry, RunTelemetryRecorder, verificationClock, type VerificationClock } from "./run-telemetry";
 export type { EnqueueTestInput, VerificationJobs, VerificationPreparation } from "./verification-jobs";
+export { PreparationSession, PreparationError, type VerificationPreparationContext, type PreparationCommand } from "./preparation-session";
 
 export { VerificationHistoryService } from "./history-service";
 export { testHistorySchema, testMetricsSchema, testSummarySchema, testComparisonSchema } from "./history-input";

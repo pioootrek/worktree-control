@@ -1,6 +1,6 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-10-23"
+last_reviewed: "2026-10-25"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
@@ -77,9 +77,9 @@ Dirty worktrees are valid development targets. The dashboard displays a
 persistent warning and the dirty-state timestamp but does not block start,
 restart, switch, or reservation.
 
-`autoStart` defaults to false. Project registration is explicit, dependency
-installation is never automatic, and stopping a server does not release its
-reservation.
+`autoStart` defaults to false. Project registration is explicit. Ordinary
+registered projects never install dependencies automatically, and stopping a
+server does not release its reservation.
 
 Finite verification commands use a separate `TestJobManager`; they do not add
 phases to the long-lived development-server state machine. `NodeTestCommandAdapter`
@@ -112,6 +112,16 @@ or incomplete evidence preserves the separate process outcome but cannot certify
 the queued revision. The status digest describes bounded Git status records, not
 file contents: edits restored between observations, ignored inputs, environment,
 and external services remain outside this source-attribution guarantee.
+
+Remote-worker preparation may explicitly enable a worker-local pinned pnpm 11
+policy for trusted exact-SHA repositories. Its cancellable Git/setup subprocesses
+use the same owned-process-group adapter, shared Git admission and finite queue
+slot. One admitted preparation deadline spans source fetch through preflight;
+execution keeps its separate preset timeout. Per-attempt HOME/TMP/cache and
+secret-free environment do not create a sandbox. Unknown process or workspace
+cleanup retains ownership and blocks finite admission, including after restart.
+See the [remote verification setup contract](remote-verification-plan.md) for
+policy fields, evidence and remaining acceptance gates.
 
 ## Resource policy
 

@@ -149,19 +149,20 @@ export class RemoteVerificationWorker {
     const previous = receipt.reports.at(-1);
     if (previous && settled.has(previous.phase)) return;
     const run = this.run(receipt.localRunId);
-    if (!run || run.phase === "interrupted" || recovering && ["queued", "running"].includes(run.phase)) {
+    if (!run || run.phase === "interrupted" && !run.telemetry?.finalizedAt || recovering && ["queued", "running"].includes(run.phase)) {
       if (recovering) this.append(receipt, { phase: "uncertain" });
       return;
     }
     if (["queued", "running"].includes(run.phase) || !run.telemetry?.finalizedAt) return;
     const executed = receipt.reports.find(report => report.phase === "running");
     let phase: RemoteWorkerReport["phase"] = run.phase === "passed" ? "succeeded" : "failed";
+    if (run.phase === "interrupted" || !["confirmed", "not_required"].includes(run.telemetry.cleanup)) phase = "uncertain";
     if (run.telemetry?.spawnedAt && !executed) phase = "uncertain";
-    if (run.phase === "cancelled") phase = receipt.cancellationRequested ? "cancelled" : "uncertain";
+    if (run.phase === "cancelled") phase = receipt.cancellationRequested && ["confirmed", "not_required"].includes(run.telemetry.cleanup) ? "cancelled" : "uncertain";
     this.append(receipt, {
       ...(executed ? { executedCommitSha: executed.executedCommitSha, presetFingerprint: executed.presetFingerprint, environmentFingerprint: executed.environmentFingerprint } : {}),
       phase,
-      ...(phase === "failed" ? { failureKind: executed ? "execution" as const : "setup" as const, errorCode: executed ? "test_failed" : "preparation_failed" } : {}),
+      ...(run.error && /^[a-z][a-z0-9_]{0,127}$/.test(run.error) ? { failureKind: executed ? "execution" as const : "setup" as const, errorCode: run.error } : phase === "failed" ? { failureKind: executed ? "execution" as const : "setup" as const, errorCode: executed ? "test_failed" : "preparation_failed" } : {}),
       exitCode: run.exitCode, signal: run.signal,
       execution: { queuedAt: run.queuedAt, startedAt: run.startedAt, finishedAt: run.finishedAt, termination: run.telemetry?.termination ?? "unknown", cleanup: run.telemetry?.cleanup ?? "unknown" },
       source: { attribution: run.source.attribution, finishCommitSha: run.source.finish?.head ?? null, queueComparison: run.source.queueComparison, executionComparison: run.source.executionComparison, reasonCodes: run.source.reasonCodes.slice(0, 12) },

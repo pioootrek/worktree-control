@@ -1,31 +1,29 @@
 ---
 audience: "owner, contributors, and coding agents"
-last_reviewed: "2026-10-23"
+last_reviewed: "2026-10-25"
 source_of_truth: "remote verification and worker direction from the owner discussion on 2026-09-05"
 status: "active"
 ---
 
 # Remote verification of pushed commits
 
-## Implementation status, 2026-10-23
+## Implementation status, 2026-10-25
 
 Request authorization/persistence, attempt-state operations and exact-SHA
 workspace preparation were already implemented on `main` at `17d0c9d`.
-The current development branch adds an opt-in worker protocol, durable worker
-receipts and reports, existing finite-queue execution, local provisioning and
-MCP submit/status/log/cancel operations. This is an experimental first fragment,
-not a deployed or accepted WinPath workflow.
+Merged PR105 adds an opt-in worker protocol, durable worker receipts and reports,
+existing finite-queue execution, local provisioning and MCP submit/status/log/cancel
+operations. The next backend slice adds explicit worker-local pnpm preparation
+and a preparation deadline with cancellation through Git and installation.
+This remains experimental, not a deployed or accepted WinPath workflow.
 
-The fragment accepts dependency-free Node projects and clean profiles only.
-Verification uses the worker's Node executable directory plus fixed system
-directories in PATH, supporting a user-local Node installation without copying
-the controller's environment.
-It does not install dependencies, upload artifacts or stream live logs. A
-manifest declaring dependencies is refused as setup failure; therefore this
-fragment cannot yet verify WinPath. Real worker selection, deployment approval,
-and the failed/fixed WinPath acceptance trial remain outstanding. An isolated
-worker subprocess crash/restart test confirms quarantine and no repeated
-command; controller process-crash and operator recovery acceptance remain open.
+Dependency-free Node projects remain supported without installation. Dependencies
+require an explicit mapping policy selecting an available pinned Node/pnpm 11
+toolchain, committed pnpm lockfile and setup-script trust. The setup contract
+below defines the boundary. Real worker selection, deployment approval and the
+failed/fixed cross-host WinPath trial remain outstanding. Isolated fixtures are
+not that acceptance. Controller process-crash and safe operator recovery
+acceptance also remain open.
 
 See the [remaining implementation slices](knowledge/AGENTS.md) (Knowledge attachment `64ab7a29d6c4ae015d5cd794c58a8a68`).
 
@@ -262,12 +260,106 @@ remain protected from normal history pruning until a durable receipt outcome
 preserves their completion evidence. This can retain up to 1,000 additional run
 details while collection is delayed. Routine retention maintenance remains open.
 
-Source preparation currently uses the existing per-command Git timeouts. The
-preset timeout starts with test execution; it is not an overall preparation
-deadline. Cancellation during preparation prevents the test from starting but
-waits for preparation to settle before cleanup and capacity release. Propagating
-cancellation through preparation, defining its overall deadline and exercising
-stalled-source failures remain required before the real-worker trial.
+### Worker-local dependency preparation
+
+Omitting `dependencySetup` preserves the dependency-free behavior. A mapping may
+explicitly add this privileged local configuration; assignments cannot supply or
+override any of its values:
+
+```json
+{
+  "preparationTimeoutMs": 600000,
+  "dependencySetup": {
+    "kind": "pnpm",
+    "nodeExecutable": "/opt/worker-tools/node/bin/node",
+    "nodeVersion": "24.15.0",
+    "pnpmEntryPoint": "/opt/worker-tools/pnpm/bin/pnpm.cjs",
+    "pnpmVersion": "11.5.2",
+    "scripts": "trusted-repository"
+  }
+}
+```
+
+These are illustrative local paths, not a toolchain installer. The worker must
+already have the executable Node binary and pnpm JavaScript entry point. Node
+must be at least 22 and match the configured exact version; pnpm must be an
+exact version in the supported 11.1+ major-11 range and match both its reported
+version and the committed `packageManager` pin. Missing or mismatched tools fail
+preparation. No Corepack, global installation, package-manager switching or
+repository-requested runtime download is allowed. Repositories declaring
+`devEngines.runtime` or `engines.runtime` are refused in this slice. pnpm checks
+engine compatibility with `engineStrict` enabled.
+
+Every attempt starts from a fresh exact-SHA clone with no borrowed or committed
+`node_modules`. A committed regular `pnpm-lock.yaml` with lockfile version 9.0
+is mandatory. Installation uses `--frozen-lockfile`, includes development
+dependencies, and does not fetch runtime entries. pnpm refuses an out-of-sync
+lockfile rather than updating it. The worker also checks dependency metadata
+hashes and complete Git source observations after setup and before execution;
+tracked source/lockfile changes prevent execution. Normal registered-project
+verification never installs dependencies automatically.
+
+Both policies require a trusted repository and trusted pushers. With
+`scripts: "ignore"`, pnpm skips lifecycle scripts and pnpmfile hooks. With
+`scripts: "trusted-repository"`, root lifecycle scripts, repository hooks and
+build scripts allowed by the repository's pnpm policy can execute code. This
+policy does not grant blanket permission to build every dependency. WinPath's
+committed `allowBuilds` remains the dependency build policy. Neither option is a
+sandbox: repository verification scripts still run with the worker account's
+filesystem and network permissions. Secret-free preparation cannot install from
+a registry that requires credentials under this contract.
+
+Git fetch, setup and execution receive an explicit secret-free environment,
+fresh attempt-owned HOME/TMP and XDG directories, and a private pnpm store/cache.
+Pinned Node/pnpm links precede fixed system directories in PATH. No controller
+PATH, environment, SSH agent, user Git configuration or registry credentials are
+copied. Inline auth/token/password settings in a root `.npmrc` are refused.
+Trusted source-cache Git configuration and committed repository configuration
+remain executable inputs; do not put secrets in them. Setup stdout/stderr is
+not published. Only stable bounded setup error codes are retained; normal test
+output retains the existing bounded-tail contract.
+
+The environment fingerprint includes setup policy, exact tool versions and
+paths, Node binary and pnpm entry-point hashes, install options, preparation
+budget and dependency metadata hashes. Metadata includes `package.json`,
+`pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` and pnpmfile files; other tracked
+inputs remain attributed to the exact source SHA. Attempt HOME/TMP paths are
+normalized. This records the supplied toolchain, not a complete digest of every
+file in its installed distribution or external service state.
+
+### Preparation deadline and cleanup evidence
+
+`preparationTimeoutMs` defaults to ten minutes and accepts one second through
+thirty minutes. It starts when the existing finite queue admits preparation,
+not while the job is waiting in that queue. It spans lifecycle/Git admission,
+fetch, checkout, tool checks, installation and preflight source checks. The
+preset's execution timeout starts separately with test execution. Git commands
+also keep their shorter per-command bounds. Deadline/cancellation stops new
+preparation steps and signals only freshly owned detached process groups,
+including their remaining descendants after launcher exit.
+
+Cancellation during lifecycle or Git admission removes/skips inert waiting
+work. Active Git/setup commands are drained and their owned groups stopped
+through the existing `OwnedProcessGroup` adapter. Cleanup can outlast the
+preparation budget: TERM has a 3.5-second grace period, followed by KILL and a
+one-second exit check, plus bounded process-inspection retries. The deadline is
+a stop request, not permission to discard process ownership or a guaranteed
+wall-clock response time for filesystem/kernel operations.
+
+Preparation retains the same shared queue slot and workspace exclusion until
+owned-process stop and workspace disposal are confirmed. Setup failures never
+start the verification command. Durable reports distinguish policy/lock/tool
+refusal, `dependency_install_failed`, `dependency_metadata_changed`,
+`preparation_timeout` and `preparation_cancelled`, with termination and cleanup
+evidence. Unconfirmed process or workspace cleanup produces `uncertain`, keeps
+ownership/capacity and blocks new finite execution. It must not be called a
+successful cancellation. Existing immutable receipt ordering, retry/ACK rules,
+protected run history and at most three uploads per tick remain in force.
+
+The added tests include isolated locked local dependencies with a real available
+pnpm distribution, failing/fixed revisions, lock/tool refusals and controlled
+fetch/install cancellation, timeout and cleanup failures. These are proposed
+regressions pending parent verification of this slice, not WinPath/VPS acceptance.
 
 After a restart, accepted work with unknown process cleanup blocks new finite
 jobs in the worker installation, even if the remote configuration is omitted.
@@ -293,6 +385,6 @@ not imply control of an external LLM client.
 
 The experimental fragment makes initial choices for transport, access scopes,
 trusted sources, fingerprints, provisioning and offline cancellation. Operational
-enrollment, credential rotation, retention maintenance, preparation deadlines
+enrollment, credential rotation, retention maintenance
 and safe recovery from unknown process ownership remain open. No provider,
 price, remote-client compatibility, or deployment is agreed by this plan.

@@ -53,8 +53,11 @@ it("reaches preparation with a valid selected project and an unrelated absent re
   const f = fixture();
   f.register(join(f.root, "absent"));
   await expect(f.prepare()).rejects.toThrow("preparer_reached");
-  expect(f.preparer.prepare).toHaveBeenCalledExactlyOnceWith({ requestId: f.assignment.attemptId,
-    repositoryPath: f.cache, sourceRemote: "origin", commitSha: f.assignment.commitSha });
+  expect(f.preparer.prepare).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ requestId: f.assignment.attemptId,
+    repositoryPath: f.cache, sourceRemote: "origin", commitSha: f.assignment.commitSha,
+    preparation: expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    environment: expect.objectContaining({ GIT_TERMINAL_PROMPT: "0", HOME: join(f.workspaces, ".home-attempt") }),
+  }));
   // Failure still releases both lifecycle permits through queue disposal.
   const releaseWorkspace = f.lifecycle.acquireMaintenance(f.local.id, join(f.workspaces, f.assignment.attemptId));
   const releaseCache = f.lifecycle.acquireMaintenance(f.local.id, f.cache);

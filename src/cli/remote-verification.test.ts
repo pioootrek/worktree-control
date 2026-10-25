@@ -11,6 +11,19 @@ const roots: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function directory() { const root = mkdtempSync(join(tmpdir(), "wtc-remote-cli-")); roots.push(root); return root; }
 
+it("validates worker-local pinned setup and preparation bounds while leaving older mappings disabled", () => {
+  const mapping = { projectId: "project", localProjectId: "local", sourceCachePath: "/fixture/cache", sourceRemote: "origin", presetIds: ["node:test"] };
+  const config = { version: 1, worker: { workerId: "worker", origin: "https://worker.invalid", tokenFile: "/fixture/token", workspaceRoot: "/fixture/attempts", mappings: [mapping] } };
+  expect(remoteVerificationConfigSchema.parse(config).worker!.mappings[0].dependencySetup).toBeUndefined();
+  const policy = { kind: "pnpm", nodeExecutable: "/tools/node", nodeVersion: "24.15.0", pnpmEntryPoint: "/tools/pnpm.cjs", pnpmVersion: "11.5.2", scripts: "trusted-repository" };
+  const parse = (extra: object) => remoteVerificationConfigSchema.safeParse({ ...config, worker: { ...config.worker, mappings: [{ ...mapping, ...extra }] } }).success;
+  expect(parse({ dependencySetup: policy, preparationTimeoutMs: 600_000 })).toBe(true);
+  for (const override of [{ scripts: undefined }, { scripts: "automatic" }, { nodeExecutable: "node" }, { pnpmEntryPoint: "https://example.invalid/pnpm" }, { pnpmVersion: "latest" }, { pnpmVersion: "10.0.0" }, { nodeVersion: ">=24" }, { command: "pnpm install" }]) {
+    expect(parse({ dependencySetup: { ...policy, ...override } })).toBe(false);
+  }
+  for (const preparationTimeoutMs of [0, 999, 1_800_001]) expect(parse({ preparationTimeoutMs })).toBe(false);
+});
+
 it("requires production TLS or an explicit numeric loopback fixture and rejects unknown configuration", () => {
   expect(remoteVerificationConfigSchema.safeParse({ version: 1, listener: { host: "0.0.0.0", port: 443, allowLoopbackHttpFixture: true } }).success).toBe(false);
   expect(remoteVerificationConfigSchema.safeParse({ version: 1, listener: { host: "127.0.0.1", port: 18000 } }).success).toBe(false);

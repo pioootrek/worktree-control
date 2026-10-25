@@ -6,7 +6,7 @@ import type { LogWriter } from "./log-writer";
 import type { StateStore } from "./state-store";
 
 import { OwnedProcessGroup } from "./owned-process-group";
-import { emptyTelemetry, emptyRunResources, resourceReason, observeRunResources, TEST_RESOURCE_INTERVAL_MS, type RunResourceObservation, type RunResourceOptions, RunTelemetryRecorder, verificationClock, type VerificationClock, type EnqueueTestInput } from "./modules/verification";
+import { emptyTelemetry, emptyRunResources, resourceReason, observeRunResources, TEST_RESOURCE_INTERVAL_MS, type RunResourceObservation, type RunResourceOptions, RunTelemetryRecorder, verificationClock, PreparationSession, PreparationError, type VerificationClock, type EnqueueTestInput } from "./modules/verification";
 import { compareSource, legacySourceEvidence, pendingSourceEvidence, qualifySource, type TestSourceObserver } from "./test-source-attribution";
 
 const MAX_LOG_LINES = 200;
@@ -43,6 +43,7 @@ export class TestJobManager {
   private readonly preparing = new Set<string>();
   private readonly preparationPromises = new Map<string, Promise<void>>();
   private readonly preparations = new Map<string, NonNullable<EnqueueTestInput["preparation"]>>();
+  private readonly preparationSessions = new Map<string, PreparationSession>();
   private sourceObserver: TestSourceObserver | null = null;
   private logMaintenance: Promise<void> = Promise.resolve();
   private pruneOperation: Promise<void> | null = null;
@@ -109,6 +110,8 @@ export class TestJobManager {
   enqueue(input: EnqueueTestInput): TestRun {
     if (this.closed) throw new Error("Kolejka testów jest zamknięta.");
     if (this.admissionBlock) throw new Error(this.admissionBlock);
+    const preparationTimeout = input.preparation?.timeoutMs;
+    if (preparationTimeout !== undefined && (!Number.isInteger(preparationTimeout) || preparationTimeout < 1 || preparationTimeout > 30 * 60_000)) throw new Error("invalid_preparation_timeout");
     if (input.idempotencyKey) {
       const repeated = this.replay(input.actor, input.idempotencyKey, input.projectId, input.worktree.path, input.command.preset.id);
       if (repeated) return repeated;
@@ -166,6 +169,12 @@ export class TestJobManager {
     const active = this.active.get(runId);
     const run = active?.run ?? persisted;
     if (actor !== "local-user" && run.actor !== actor) throw new Error("Tylko autor testu może go anulować.");
+    const session = this.preparationSessions.get(runId);
+    if (run.phase === "queued" && session) {
+      session.cancel();
+      // The abort listener updates the live preparation record, not this persisted snapshot.
+      return this.requireRun(runId);
+    }
     if (run.phase === "queued") {
       run.telemetry ??= emptyTelemetry();
       run.telemetry.termination = "cancel";
@@ -209,7 +218,7 @@ export class TestJobManager {
       await Promise.all([...this.active.values()].map((active) => this.complete(active)));
       await Promise.all(this.finalizations.values());
       await this.logMaintenance;
-      if (this.active.size && !this.persistenceFailure) throw new Error("Nie potwierdzono zakończenia wszystkich grup procesów testowych.");
+      if ((this.active.size || this.preparing.size) && !this.persistenceFailure) throw new Error("Nie potwierdzono zakończenia wszystkich grup procesów testowych.");
       const failures = cancellations.filter((result) => result.status === "rejected").map((result) => result.reason);
       if (failures.length) throw new AggregateError(failures, "Nie zakończono poprawnie anulowania zadań testowych.");
       if (this.persistenceFailure) throw this.persistenceFailure;
@@ -269,10 +278,23 @@ export class TestJobManager {
   }
 
   private async prepare(run: TestRun): Promise<void> {
+    const preparation = this.preparations.get(run.id);
+    const session = preparation ? new PreparationSession(preparation.timeoutMs ?? 10 * 60_000) : null;
+    if (session) this.preparationSessions.set(run.id, session);
+    const preparationStopped = () => {
+      if (run.phase !== "queued") return;
+      run.telemetry!.termination = session!.signal.reason?.code === "preparation_timeout" ? "timeout" : "cancel";
+      run.telemetry!.cleanup = "pending";
+      this.telemetry.mark(run, "stopRequestedAt");
+      this.telemetry.mark(run, "cleanupStartedAt");
+      this.checkpoint(run);
+      this.onChange(run.projectId);
+    };
+    session?.signal.addEventListener("abort", preparationStopped, { once: true });
     try {
-      const preparation = this.preparations.get(run.id);
       if (preparation) {
-        const input = await preparation.prepare();
+        const input = await preparation.prepare(session!);
+        session!.throwIfAborted();
         if (this.closed || this.store.getTestRun(run.id)?.phase !== "queued") return;
         run.executable = input.command.executable;
         run.args = input.command.args;
@@ -290,6 +312,7 @@ export class TestJobManager {
         return;
       }
       run.source.preflight = await observer(run, "preflight");
+      session?.throwIfAborted();
       run.source.queueComparison = compareSource(run.source.enqueue, run.source.preflight);
       if (this.closed || this.store.getTestRun(run.id)?.phase !== "queued") return;
       this.persistNow(run);
@@ -310,29 +333,53 @@ export class TestJobManager {
       this.start(run);
     } catch (error) {
       if (this.persistenceFailure) throw error;
+      if (session?.cleanupUnconfirmed || error instanceof PreparationError && error.cleanupUnconfirmed) {
+        // Keep the occupied slot and workspace permits. No automatic retry or disposal.
+        if (session) session.cleanupUnconfirmed = true;
+        run.telemetry!.cleanup = "failed";
+        run.telemetry!.termination = "unknown";
+        run.phase = "interrupted";
+        run.error = "preparation_cleanup_unconfirmed";
+        run.source.reasonCodes = [...new Set([...run.source.reasonCodes, "preparation_cleanup_unconfirmed"])];
+        this.telemetry.mark(run, "finalizedAt");
+        this.persistNow(run);
+        this.blockAdmission("remote_execution_cleanup_unconfirmed");
+        this.onChange(run.projectId);
+        return;
+      }
       if (this.store.getTestRun(run.id)?.phase === "queued") {
         run.source.reasonCodes = [...new Set([...run.source.reasonCodes, "source_preflight_failed"])];
         run.source = qualifySource(run.source);
         this.telemetry.mark(run, "prepareFinishedAt");
-        run.telemetry!.termination = "rejected";
-        run.telemetry!.cleanup = "not_required";
-        run.phase = "failed";
+        const cause = session?.signal.aborted ? session.signal.reason : error;
+        const code = cause instanceof PreparationError ? cause.code : "preparation_failed";
+        run.source.reasonCodes = [...new Set([...run.source.reasonCodes, code])];
+        run.telemetry!.termination = code === "preparation_cancelled" ? "cancel" : code === "preparation_timeout" ? "timeout" : "rejected";
+        run.telemetry!.cleanup = session ? "confirmed" : "not_required";
+        if (session?.signal.aborted) this.telemetry.mark(run, "cleanupFinishedAt");
+        run.phase = code === "preparation_cancelled" ? "cancelled" : code === "preparation_timeout" ? "timed_out" : "failed";
         run.finishedAt = this.clock.wallNow();
-        run.error = `Nie udało się sprawdzić źródła testu: ${String(error)}`;
+        run.error = session ? code : `Nie udało się sprawdzić źródła testu: ${String(error)}`;
         await this.finish(run);
       }
     } finally {
+      session?.close();
+      session?.signal.removeEventListener("abort", preparationStopped);
       const cancelled = this.store.getTestRun(run.id);
       if (cancelled?.phase === "cancelled" && !cancelled.telemetry?.finalizedAt) {
         this.telemetry.mark(cancelled, "prepareFinishedAt");
         await this.finish(cancelled);
       }
-      this.preparing.delete(run.id);
+      if (!session?.cleanupUnconfirmed && this.store.getTestRun(run.id)?.telemetry?.cleanup !== "failed") {
+        this.preparing.delete(run.id);
+        this.preparationSessions.delete(run.id);
+      }
       this.pump();
     }
   }
 
   private start(run: TestRun): void {
+    this.preparationSessions.get(run.id)?.throwIfAborted();
     this.preparations.get(run.id)?.starting?.();
     this.telemetry.mark(run, "prepareFinishedAt");
     run.phase = "running";
@@ -468,7 +515,16 @@ export class TestJobManager {
         if (observer && run.source.enqueue) {
           try {
             run.source.finish = await observer(run, "finish");
-          } catch {
+          } catch (error) {
+            if (error instanceof PreparationError && error.cleanupUnconfirmed) {
+              run.phase = "interrupted";
+              run.error = "preparation_cleanup_unconfirmed";
+              run.telemetry!.cleanup = "failed";
+              this.telemetry.mark(run, "finalizedAt");
+              this.persistNow(run);
+              this.blockAdmission("remote_execution_cleanup_unconfirmed");
+              return;
+            }
             run.source.finish = {
               observedAt: this.clock.wallNow(), head: null, branch: null, dirty: null,
               statusDigest: null, statusEntries: null, complete: false, errorCode: "source_finish_failed",
@@ -560,7 +616,18 @@ export class TestJobManager {
     const completion = (async () => {
       const preparation = this.preparations.get(run.id);
       if (preparation) {
-        await preparation.dispose();
+        try { await preparation.dispose(); }
+        catch {
+          const session = this.preparationSessions.get(run.id);
+          if (session) session.cleanupUnconfirmed = true;
+          run.phase = "interrupted";
+          run.error = "workspace_cleanup_failed";
+          run.telemetry!.cleanup = "failed";
+          this.telemetry.mark(run, "finalizedAt");
+          this.persistNow(run);
+          this.blockAdmission("remote_execution_cleanup_unconfirmed");
+          return;
+        }
         this.preparations.delete(run.id);
       }
       if (!run.telemetry!.finalizedAt) {

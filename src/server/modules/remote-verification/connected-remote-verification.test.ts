@@ -363,7 +363,9 @@ describe("connected remote verification (isolated fixtures, not real-worker acce
     const reopened = new SqliteStateStore(join(f.root, "worker.sqlite3"));
     try {
       expect(reopened.getTestRun(runId)).toMatchObject({ executable: process.execPath, args: ["check.cjs"],
-        environmentVariableNames: ["CI", "HOME", "LANG", "NODE_ENV", "PATH", "TMPDIR"] });
+        environmentVariableNames: ["CI", "COREPACK_ENABLE_NETWORK", "COREPACK_ENABLE_PROJECT_SPEC", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT",
+          "HOME", "LANG", "NODE_ENV", "PATH", "PNPM_HOME", "TEMP", "TMP", "TMPDIR", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+          "npm_config_cache", "npm_config_globalconfig", "npm_config_userconfig", "pnpm_config_engine_strict", "pnpm_config_pm_on_fail"].sort() });
     } finally { reopened.close(); }
   }, 30_000);
 

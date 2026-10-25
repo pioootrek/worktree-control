@@ -6,11 +6,14 @@ import { acquireControllerLock } from "@/server/controller-lock";
 import { SqliteStateStore } from "@/server/sqlite-store";
 import { cliCredential, OWNER_CREDENTIAL_VARIABLES, OWNER_CREDENTIAL_REQUIRED } from "./credentials";
 import { authenticateOfflineActor } from "./offline-actor";
+import { remoteDependencySetupSchema, remotePreparationTimeoutSchema } from "@/server/modules/remote-verification";
 
 const identifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
 const remoteName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const absolutePath = z.string().refine(isAbsolute, "Absolute path required");
-const mapping = z.object({ projectId: identifier, localProjectId: identifier, sourceCachePath: absolutePath, sourceRemote: remoteName, presetIds: z.array(identifier).min(1).max(16) }).strict();
+const mapping = z.object({ projectId: identifier, localProjectId: identifier, sourceCachePath: absolutePath, sourceRemote: remoteName, presetIds: z.array(identifier).min(1).max(16),
+  dependencySetup: remoteDependencySetupSchema.optional(), preparationTimeoutMs: remotePreparationTimeoutSchema.optional(),
+}).strict();
 const listener = z.object({
   host: z.string().min(1), port: z.number().int().min(1).max(65535),
   keyFile: absolutePath.optional(), certFile: absolutePath.optional(), allowLoopbackHttpFixture: z.boolean().default(false),

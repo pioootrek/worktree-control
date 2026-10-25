@@ -7,6 +7,7 @@ import type {
   RemoteVerificationWorkspace,
   RemoteVerificationWorkspacePreparer,
 } from "@/server/modules/remote-verification";
+import { PreparationError } from "@/server/modules/verification";
 import { GitCommandAdmission } from "@/server/git-worktrees";
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -62,7 +63,7 @@ export class SystemRemoteVerificationWorkspacePreparer implements RemoteVerifica
     try {
       return await this.prepareOwned(input);
     } catch (error) {
-      if (error instanceof RemoteVerificationWorkspaceError) throw error;
+      if (error instanceof RemoteVerificationWorkspaceError || error instanceof PreparationError) throw error;
       throw new RemoteVerificationWorkspaceError("workspace_invalid", "Nie udało się przygotować workspace dla zlecenia.");
     }
   }
@@ -71,7 +72,7 @@ export class SystemRemoteVerificationWorkspacePreparer implements RemoteVerifica
     try {
       await this.cleanupOwned(workspace);
     } catch (error) {
-      if (error instanceof RemoteVerificationWorkspaceError) throw error;
+      if (error instanceof RemoteVerificationWorkspaceError || error instanceof PreparationError) throw error;
       throw new RemoteVerificationWorkspaceError("cleanup_failed", "Nie udało się bezpiecznie usunąć workspace zlecenia.");
     }
   }
@@ -84,15 +85,19 @@ export class SystemRemoteVerificationWorkspacePreparer implements RemoteVerifica
       throw new RemoteVerificationWorkspaceError("invalid_input", "Wymagany jest pełny identyfikator commita Git.");
     }
 
-    const repositoryPath = await this.canonicalRepository(input.repositoryPath);
+    const git = (args: string[], timeout: number, priority: "operational" | "remote" = "operational") => this.git(args, timeout, priority, input);
+    input.preparation?.throwIfAborted();
+    const repositoryPath = await this.canonicalRepository(input.repositoryPath, input);
     const root = await this.ensureRoot();
     const target = join(root, requestId);
 
     let remotes: string[];
     try {
-      remotes = (await this.git(["-C", repositoryPath, "remote"], 5_000))
+      remotes = (await git(["-C", repositoryPath, "remote"], 5_000))
         .split(/\r?\n/).filter(Boolean);
-    } catch {
+    } catch (error) {
+      if (error instanceof PreparationError) throw error;
+      input.preparation?.throwIfAborted();
       throw new RemoteVerificationWorkspaceError("operation_unavailable", "Nie udało się odczytać źródeł skonfigurowanego projektu.");
     }
     if (!remotes.includes(sourceRemote)) {
@@ -100,28 +105,34 @@ export class SystemRemoteVerificationWorkspacePreparer implements RemoteVerifica
     }
 
     try {
-      await this.git(["-C", repositoryPath, "fetch", "--no-tags", "--prune", "--", sourceRemote], 120_000, "remote");
-    } catch {
+      await git(["-C", repositoryPath, "fetch", "--no-tags", "--prune", "--", sourceRemote], 120_000, "remote");
+    } catch (error) {
+      if (error instanceof PreparationError) throw error;
+      input.preparation?.throwIfAborted();
       throw new RemoteVerificationWorkspaceError("source_unavailable", "Nie udało się pobrać skonfigurowanego źródła projektu.");
     }
 
     let resolvedCommit: string;
     try {
-      resolvedCommit = (await this.git(
+      resolvedCommit = (await git(
         ["-C", repositoryPath, "rev-parse", "--verify", `${commitSha}^{commit}`],
         5_000,
         "remote",
       )).trim();
-    } catch {
+    } catch (error) {
+      if (error instanceof PreparationError) throw error;
+      input.preparation?.throwIfAborted();
       throw new RemoteVerificationWorkspaceError("commit_unavailable", "Żądany commit nie jest dostępny w skonfigurowanym źródle.");
     }
     let containingRefs: string;
     try {
-      containingRefs = (await this.git([
+      containingRefs = (await git([
         "-C", repositoryPath, "for-each-ref", "--format=%(refname)", `--contains=${resolvedCommit}`,
         `refs/remotes/${sourceRemote}/`,
       ], 10_000, "remote")).trim();
-    } catch {
+    } catch (error) {
+      if (error instanceof PreparationError) throw error;
+      input.preparation?.throwIfAborted();
       throw new RemoteVerificationWorkspaceError("operation_unavailable", "Nie udało się potwierdzić pochodzenia żądanego commita.");
     }
     if (!containingRefs) {
@@ -132,16 +143,17 @@ export class SystemRemoteVerificationWorkspacePreparer implements RemoteVerifica
       throw new RemoteVerificationWorkspaceError("workspace_conflict", "Workspace zlecenia jest już przygotowywany.");
     }
     activeWorkspaceTargets.add(target);
+    let cleanupUnconfirmed = false;
     try {
       if (await exists(target)) {
         await rm(target, { recursive: true, force: true });
       }
       await mkdir(target, { mode: 0o700 });
       try {
-        await this.git(["clone", "--quiet", "--no-checkout", "--", repositoryPath, target], 60_000, "remote");
-        await this.git(["-C", target, "checkout", "--quiet", "--detach", resolvedCommit], 30_000, "remote");
-        const executedCommitSha = (await this.git(["-C", target, "rev-parse", "HEAD"], 5_000, "remote")).trim().toLowerCase();
-        const status = await this.git(
+        await git(["clone", "--quiet", "--no-checkout", "--", repositoryPath, target], 60_000, "remote");
+        await git(["-C", target, "checkout", "--quiet", "--detach", resolvedCommit], 30_000, "remote");
+        const executedCommitSha = (await git(["-C", target, "rev-parse", "HEAD"], 5_000, "remote")).trim().toLowerCase();
+        const status = await git(
           ["-C", target, "status", "--porcelain=v1", "--untracked-files=all"],
           10_000,
           "remote",
@@ -158,12 +170,16 @@ export class SystemRemoteVerificationWorkspacePreparer implements RemoteVerifica
           executedCommitSha,
         };
       } catch (error) {
-        await rm(target, { recursive: true, force: true });
-        if (error instanceof RemoteVerificationWorkspaceError) throw error;
+        cleanupUnconfirmed = error instanceof PreparationError && error.cleanupUnconfirmed;
+        if (!cleanupUnconfirmed) {
+          try { await rm(target, { recursive: true, force: true }); }
+          catch { cleanupUnconfirmed = true; throw new PreparationError("workspace_cleanup_failed", true); }
+        }
+        if (error instanceof RemoteVerificationWorkspaceError || error instanceof PreparationError) throw error;
         throw new RemoteVerificationWorkspaceError("workspace_invalid", "Nie udało się przygotować workspace dla zlecenia.");
       }
     } finally {
-      activeWorkspaceTargets.delete(target);
+      if (!cleanupUnconfirmed) activeWorkspaceTargets.delete(target);
     }
   }
 
@@ -184,7 +200,7 @@ export class SystemRemoteVerificationWorkspacePreparer implements RemoteVerifica
     return value.trim();
   }
 
-  private async canonicalRepository(path: string): Promise<string> {
+  private async canonicalRepository(path: string, input: PrepareRemoteVerificationWorkspaceInput): Promise<string> {
     let canonical: string;
     try {
       canonical = await realpath(path);
@@ -193,8 +209,10 @@ export class SystemRemoteVerificationWorkspacePreparer implements RemoteVerifica
     }
     let topLevel: string;
     try {
-      topLevel = (await this.git(["-C", canonical, "rev-parse", "--show-toplevel"], 5_000)).trim();
-    } catch {
+      topLevel = (await this.git(["-C", canonical, "rev-parse", "--show-toplevel"], 5_000, "operational", input)).trim();
+    } catch (error) {
+      if (error instanceof PreparationError) throw error;
+      input.preparation?.throwIfAborted();
       throw new RemoteVerificationWorkspaceError("operation_unavailable", "Nie udało się sprawdzić skonfigurowanego repozytorium Git.");
     }
     try {
@@ -214,7 +232,11 @@ export class SystemRemoteVerificationWorkspacePreparer implements RemoteVerifica
     return realpath(this.root);
   }
 
-  private git(args: string[], timeout: number, priority: "operational" | "remote" = "operational"): Promise<string> {
-    return this.admission.run(priority, (signal) => executeGit(args, signal, timeout));
+  private git(args: string[], timeout: number, priority: "operational" | "remote" = "operational", input?: PrepareRemoteVerificationWorkspaceInput): Promise<string> {
+    const context = input?.preparation;
+    return this.admission.run(priority, (signal) => context ? context.command({
+      executable: "git", args, cwd: input!.repositoryPath, environment: input!.environment ?? {},
+      signal, timeoutMs: timeout, errorCode: "source_command_failed",
+    }) : executeGit(args, signal, timeout), { signal: context?.signal });
   }
 }

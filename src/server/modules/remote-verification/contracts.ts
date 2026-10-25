@@ -142,6 +142,8 @@ export interface PrepareRemoteVerificationWorkspaceInput {
   repositoryPath: string;
   sourceRemote: string;
   commitSha: string;
+  preparation?: import("@/server/modules/verification").VerificationPreparationContext;
+  environment?: Record<string, string>;
 }
 
 export interface RemoteVerificationWorkspace {
