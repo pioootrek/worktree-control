@@ -302,7 +302,7 @@ it.each(["package-manager", "runtime", "config-plugin"] as const)("prevents nest
     const result=cp.spawnSync('pnpm',['--config.offline=true','--dir',target,'run','probe'],{encoding:'utf8',timeout:5000,
       env:{...process.env,pnpm_config_registry:proxy,pnpm_config_fetch_retries:'0',http_proxy:proxy,https_proxy:proxy}});
     assert.ifError(result.error);assert.equal(result.status,${kind === "config-plugin" ? 0 : 1},result.stdout+result.stderr);
-    ${kind === "config-plugin" ? "" : `assert.match(result.stdout+result.stderr,/${kind === "package-manager" ? "ERR_PNPM_BAD_PM_VERSION" : "ERR_PNPM_BAD_RUNTIME_VERSION"}/);`}
+    ${kind === "config-plugin" ? "" : `assert((result.stdout+result.stderr).includes(${JSON.stringify(kind === "package-manager" ? "This project is configured to use 999.0.0 of pnpm" : "This project requires Node.js 999.0.0")}),result.stdout+result.stderr);`}
     assert(!fs.existsSync(path.join(target,'node_modules')));console.log('nested-toolchain-download-refused');`);
   const result = await f.terminal(await f.submit(sha));
   expect(result, result.logs.join("\n")).toMatchObject({ phase: "succeeded", exitCode: 0, source: { attribution: "observed_match" } });

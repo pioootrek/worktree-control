@@ -6,7 +6,9 @@ import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { SnapshotVerifier } from "./snapshot-verifier";
 
-vi.mock("node:child_process", () => ({ fork: vi.fn() }));
+vi.mock("node:child_process", async importOriginal => ({
+  ...await importOriginal<typeof import("node:child_process")>(), fork: vi.fn(),
+}));
 const roots: string[] = [];
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture() {
