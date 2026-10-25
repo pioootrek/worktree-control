@@ -33,6 +33,12 @@ function check(value, message) {
   return value;
 }
 
+export function packedTextContainsSecret(text) {
+  // Recognize npm/GitHub credentials as whole tokens, not identifier substrings
+  // such as pnpm_config_engine_strict. Keep key and sentinel checks independent.
+  return text.includes(SENTINEL) || /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?<![A-Za-z0-9_$])(?:ghp|github_pat|npm)_[A-Za-z0-9_]{20,}(?![A-Za-z0-9_$])|AKIA[A-Z0-9]{16}/.test(text);
+}
+
 async function step(name, task) {
   const start = Date.now();
   try {
@@ -201,7 +207,7 @@ async function main() {
       }
       if (!/\.(?:css|html|js|json|md|ya?ml)$/i.test(path)) continue;
       const text = await readFile(path, "utf8");
-      check(!text.includes(SENTINEL) && !/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?:ghp|github_pat|npm)_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16}/.test(text), `Packed text contains secret material: ${relative(extractedPackage, path)}`);
+      check(!packedTextContainsSecret(text), `Packed text contains secret material: ${relative(extractedPackage, path)}`);
       if (/^(?:dist|out)(?:\/|$)/.test(relative(extractedPackage, path))) {
         check(!/(?:\/home\/runner\/work\/|\/home\/pioootrek\/|\/Users\/[^/]+\/)/.test(text), `Packed runtime contains a builder-specific path: ${relative(extractedPackage, path)}`);
       }
@@ -514,31 +520,34 @@ async function main() {
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
 }
 
-try {
-  await main();
-} catch (error) {
-  failureMessage = redact(error instanceof Error ? error.message : String(error));
-  process.stderr.write(`Portable package smoke failed: ${failureMessage}\n`);
-  process.exitCode = 1;
-} finally {
-  try { await client?.close(); } catch {}
-  try { await stopController(); } catch { forcedCleanup = true; }
-  if (root) await rm(root, { recursive: true, force: true });
-  const reportPath = argument("--report");
-  if (failureMessage && reportPath) {
-    try {
-      await writeFile(resolve(reportPath), `${JSON.stringify({
-        ok: false,
-        error: failureMessage,
-        node: process.version,
-        platform: `${process.platform}-${process.arch}`,
-        steps,
-        cleanup: forcedCleanup ? "forced" : "graceful",
-        durationMs: Date.now() - startedAt,
-      }, null, 2)}\n`);
-    } catch (reportError) {
-      process.stderr.write(`Could not write failure report: ${redact(reportError instanceof Error ? reportError.message : String(reportError))}\n`);
+// Importing the scanner must not install a package or start its controller.
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  try {
+    await main();
+  } catch (error) {
+    failureMessage = redact(error instanceof Error ? error.message : String(error));
+    process.stderr.write(`Portable package smoke failed: ${failureMessage}\n`);
+    process.exitCode = 1;
+  } finally {
+    try { await client?.close(); } catch {}
+    try { await stopController(); } catch { forcedCleanup = true; }
+    if (root) await rm(root, { recursive: true, force: true });
+    const reportPath = argument("--report");
+    if (failureMessage && reportPath) {
+      try {
+        await writeFile(resolve(reportPath), `${JSON.stringify({
+          ok: false,
+          error: failureMessage,
+          node: process.version,
+          platform: `${process.platform}-${process.arch}`,
+          steps,
+          cleanup: forcedCleanup ? "forced" : "graceful",
+          durationMs: Date.now() - startedAt,
+        }, null, 2)}\n`);
+      } catch (reportError) {
+        process.stderr.write(`Could not write failure report: ${redact(reportError instanceof Error ? reportError.message : String(reportError))}\n`);
+      }
     }
+    if (forcedCleanup) process.exitCode = 1;
   }
-  if (forcedCleanup) process.exitCode = 1;
 }
