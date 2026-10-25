@@ -280,7 +280,7 @@ cacheDir: ${JSON.stringify(join(f.root, "escaped-cache"))}
     if(!ignored)assert.equal(fs.readFileSync('pretest-count.txt','utf8'),'pretest\\npretest\\n');
     console.log('outer-explicit-test-executed');`);
   const result = await f.terminal(await f.submit(sha), 45_000);
-  expect(result).toMatchObject({ phase: "succeeded", exitCode: 0, source: { attribution: "observed_match" } });
+  expect(result, result.logs.join("\n")).toMatchObject({ phase: "succeeded", exitCode: 0, source: { attribution: "observed_match" } });
   const output = result.logs.join("\n");
   expect(output.match(/nested-explicit-test-executed/g)).toHaveLength(2);
   expect(output).toContain("outer-explicit-test-executed");

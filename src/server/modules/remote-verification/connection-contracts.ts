@@ -1,4 +1,4 @@
-import type { WorkerRecoveryJournal } from "./worker-recovery";
+import type { WorkerRecoveryJournal } from "./recovery-contracts";
 import type { RemoteAssignment, RemoteWorkerReport } from "@/shared/contracts/remote-verification";
 import type { RemoteVerificationAttemptStore, RemoteVerificationStore } from "./contracts";
 
