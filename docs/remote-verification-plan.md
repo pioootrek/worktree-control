@@ -387,8 +387,10 @@ pnpm distribution, failing/fixed revisions, lock/tool refusals and controlled
 fetch/install cancellation, timeout and cleanup failures. Further regressions
 check both script policies, install counts, private store/cache settings,
 stale-state nested pnpm execution and refusal of nested toolchain downloads.
-These are proposed regressions pending parent verification of this slice,
-not WinPath/VPS acceptance.
+Parent verification passed these regressions in the full `pnpm check` run:
+1,558 Vitest tests across 136 files and 22 script tests, with lint and typecheck.
+This evidence covers local fixtures; cross-host WinPath/VPS acceptance remains
+required.
 
 After a restart, accepted work with unknown process cleanup blocks new finite
 jobs in the worker installation, even if the remote configuration is omitted.
