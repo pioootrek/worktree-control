@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { loadRemoteVerificationConfig, runRemoteVerificationCommand } from "./remote-verification";
-import { hasUnconfirmedRemoteExecution } from "../server/modules/remote-verification";
+import { LinuxWorkerRecoveryHost } from "../server/infrastructure/git";
+import { hasUnconfirmedRemoteExecution, WorkerRecoveryService } from "../server/modules/remote-verification";
 import { createRemoteVerificationRuntime } from "./remote-verification-runtime";
 import { controllerRestoreBoundary } from "../server/restore-requests";
 import { parseUserBackupOptions } from "./user-backup-options";
@@ -229,11 +230,13 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     kinds: ["tests", "controller"],
     ...(projectId ? { projectIds: [projectId] } : {}),
   }));
+  const identity = new IdentityService(store, undefined, undefined, undefined, authentication);
+  const recovery = new WorkerRecoveryService(store.remoteConnection, new LinuxWorkerRecoveryHost(paths.databasePath), identity);
+  tests.configurePathAdmission(paths => recovery.assertPathsAvailable(paths));
   // Remains enforced even if the worker configuration is omitted on restart.
-  if (hasUnconfirmedRemoteExecution(store.remoteConnection.receipts(), id => store.getTestRun(id))) {
+  if (hasUnconfirmedRemoteExecution(store.remoteConnection.receipts(), id => store.getTestRun(id), receipt => recovery.isReconciled(receipt))) {
     tests.blockAdmission("remote_execution_cleanup_unconfirmed");
   }
-  const identity = new IdentityService(store, undefined, undefined, undefined, authentication);
   try {
     const restoreBoundary = controllerRestoreBoundary(paths.databasePath);
     userSchedules = new UserSchedules(userBackupPolicy, backups, {
@@ -256,7 +259,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const git = new SystemGitWorktreeReader(gitAdmission);
   let remoteVerification: ReturnType<typeof createRemoteVerificationRuntime>;
   try {
-    remoteVerification = createRemoteVerificationRuntime(remoteVerificationConfig, { store, identity, jobs: tests, lifecycle, git, admission: gitAdmission });
+    remoteVerification = createRemoteVerificationRuntime(remoteVerificationConfig, { store, identity, jobs: tests, lifecycle, git, admission: gitAdmission, recovery });
   } catch (error) {
     userSchedules?.close(); await backups.close(); await tests.shutdown(); git.close(); await logs.close(); store.close(); controllerLock.release(); throw error;
   }

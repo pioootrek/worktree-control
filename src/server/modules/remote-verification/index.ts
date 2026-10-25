@@ -38,3 +38,6 @@ export { RemoteVerificationWorker, hasUnconfirmedRemoteExecution, fingerprint, t
 
 export { summarizeReceipt } from "./connection-contracts";
 export { remoteDependencySetupSchema, remotePreparationTimeoutSchema, type RemoteDependencySetupPolicy } from "./dependency-setup-policy";
+
+export { WorkerRecoveryService } from "./worker-recovery";
+export type { WorkerRecoveryJournal, WorkerRecoveryProvenance, WorkerRecoveryAudit, WorkerRecoveryHost, RecoveryAssessment, RecoveryPathIdentity } from "./worker-recovery";

@@ -1,4 +1,6 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { AuthenticationService } from "@/server/modules/authentication";
+import { acquireControllerLock } from "@/server/controller-lock";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -60,4 +62,48 @@ it("provisions a worker-only revocable token into a private file and never retur
   expect(readFileSync(file, "utf8")).not.toContain(token);
   chmodSync(tokenFile, 0o644); expect(() => readRemoteWorkerToken(tokenFile)).toThrow("owner-only");
   chmodSync(tokenFile, 0o600); symlinkSync(tokenFile, join(root, "token-link")); expect(() => readRemoteWorkerToken(join(root, "token-link"))).toThrow();
+});
+
+it("inspects offline with a real owner session without creating evidence, updating credentials or changing SQLite bytes", async () => {
+  const root = directory(), paths = resolveAppPaths(root);
+  const store = new SqliteStateStore(paths.databasePath), identity = new IdentityService(store);
+  const session = identity.bootstrapOwnerSession();
+  store.remoteConnection.accept({ assignment: { attemptId: "legacy-attempt", requestId: "request", projectId: "project", workerId: "worker", presetId: "node:test", commitSha: "a".repeat(40) },
+    localRunId: "missing-run", reports: [], acknowledgedSequence: 0, cancellationRequested: false });
+  store.close(); vi.stubEnv("WORKTREE_CONTROL_OWNER_TOKEN", session.token);
+  const before = readFileSync(paths.databasePath), lines: string[] = [];
+  await runRemoteVerificationCommand(["inspect"], paths, line => lines.push(line));
+  expect(JSON.parse(lines[0])).toEqual([expect.objectContaining({ attemptId: "legacy-attempt", blocked: true, recoverable: false, code: "recovery_provenance_missing" })]);
+  expect(readFileSync(paths.databasePath)).toEqual(before);
+  expect(lines.join("\n")).not.toContain(session.token);
+  expect(existsSync(`${paths.databasePath}.worker-recovery-key`)).toBe(false);
+  await expect(runRemoteVerificationCommand(["reconcile", "--attempt-id", "legacy-attempt", "--operation-id", "operation"], paths, () => undefined)).rejects.toThrow("recovery_provenance_missing");
+});
+
+it("rejects inspect and reconcile while the controller singleton lock is live", async () => {
+  const root = directory(), paths = resolveAppPaths(root);
+  const store = new SqliteStateStore(paths.databasePath), session = new IdentityService(store).bootstrapOwnerSession();
+  store.close(); vi.stubEnv("WORKTREE_CONTROL_OWNER_TOKEN", session.token);
+  const lock = acquireControllerLock(paths.controllerLockPath);
+  try {
+    await expect(runRemoteVerificationCommand(["inspect"], paths)).rejects.toThrow();
+    await expect(runRemoteVerificationCommand(["reconcile", "--attempt-id", "attempt", "--operation-id", "operation"], paths)).rejects.toThrow();
+  } finally { lock.release(); }
+});
+
+it("rejects agent, worker and install-wide credentials at the CLI boundary", async () => {
+  const root = directory(), paths = resolveAppPaths(root), store = new SqliteStateStore(paths.databasePath);
+  const identity = new IdentityService(store), owner = identity.authenticateBearer(identity.bootstrapOwnerSession().token);
+  const agent = identity.createAgent(owner), worker = identity.createWorker(owner);
+  const tokens = [identity.issueAgentToken({ principalId: agent.id, label: "fixture" }, owner).token,
+    identity.issueWorkerToken({ principalId: worker.id, label: "fixture" }, owner).token, new AuthenticationService(store).generateToken("fixture").token];
+  store.close();
+  for (const token of tokens) {
+    vi.stubEnv("WORKTREE_CONTROL_OWNER_TOKEN", token);
+    await expect(runRemoteVerificationCommand(["inspect"], paths)).rejects.toThrow();
+    await expect(runRemoteVerificationCommand(["reconcile", "--attempt-id", "attempt", "--operation-id", "operation"], paths)).rejects.toThrow();
+  }
+  vi.stubEnv("WORKTREE_CONTROL_OWNER_TOKEN", "");
+  await expect(runRemoteVerificationCommand(["inspect"], paths)).rejects.toThrow();
+  await expect(runRemoteVerificationCommand(["reconcile", "--attempt-id", "attempt", "--operation-id", "operation", "--yes"], paths)).rejects.toThrow("invalid_recovery_arguments");
 });

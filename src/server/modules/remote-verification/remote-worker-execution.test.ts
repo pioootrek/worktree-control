@@ -3,12 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { SystemRemoteWorkerExecution } from "@/server/infrastructure/git";
+import { LinuxWorkerRecoveryHost, SystemRemoteWorkerExecution } from "@/server/infrastructure/git";
 import { ProjectLifecycle } from "@/server/modules/lifecycle";
 import { SqliteStateStore } from "@/server/sqlite-store";
 import { ProjectTestCommandResolver } from "@/server/test-command";
 import type { RemoteAssignment } from "@/shared/contracts/remote-verification";
-import type { RemoteVerificationWorkspacePreparer, WorkerReceipt } from "./index";
+import { WorkerRecoveryService, type RemoteVerificationWorkspacePreparer, type WorkerReceipt } from "./index";
 
 vi.mock("node:fs/promises", async importOriginal => ({
   ...await importOriginal<typeof import("node:fs/promises")>(),
@@ -35,10 +35,11 @@ function fixture() {
   const preparer = { prepare: vi.fn<RemoteVerificationWorkspacePreparer["prepare"]>().mockRejectedValue(new Error("preparer_reached")), cleanup: vi.fn() };
   const mapping = { projectId: "remote-project", localProjectId: local.id, sourceCachePath: cache, sourceRemote: "origin", presetIds: ["node:test"] };
   const execution = new SystemRemoteWorkerExecution("worker", [mapping], store, lifecycle,
-    { canonicalRepositoryPath: vi.fn(), list: vi.fn(), observe: vi.fn() }, new ProjectTestCommandResolver([]), preparer, workspaces);
+    { canonicalRepositoryPath: vi.fn(), list: vi.fn(), observe: vi.fn() }, new ProjectTestCommandResolver([]), preparer, workspaces, new WorkerRecoveryService(store.remoteConnection, new LinuxWorkerRecoveryHost(join(root, "worker.sqlite3"))));
   const assignment: RemoteAssignment = { requestId: "request", attemptId: "attempt", projectId: "remote-project",
     workerId: "worker", presetId: "node:test", commitSha: "a".repeat(40) };
   const receipt: WorkerReceipt = { assignment, localRunId: "run", cancellationRequested: false, reports: [], acknowledgedSequence: 0 };
+  store.remoteConnection.accept(receipt);
   const prepare = async () => {
     const input = await execution.resolve(assignment, receipt, vi.fn());
     try { await input.preparation!.prepare(); }
@@ -111,4 +112,12 @@ it.each(["EACCES", "EIO", "ENOTDIR"])("does not swallow %s from an unrelated reg
   await expect(f.prepare()).rejects.toBe(error);
   expect(paths).toHaveBeenLastCalledWith(unrelated);
   expect(f.preparer.prepare).not.toHaveBeenCalled();
+});
+
+it("refuses to reach the first Git/setup adapter when the durable pre-work journal fails", async () => {
+  const f = fixture();
+  vi.spyOn(f.store.remoteConnection, "saveRecovery").mockImplementation(() => { throw new Error("journal_failed"); });
+  await expect(f.prepare()).rejects.toThrow("journal_failed");
+  expect(f.preparer.prepare).not.toHaveBeenCalled();
+  expect(f.store.remoteConnection.receipt(f.assignment.attemptId)?.recovery).toBeUndefined();
 });

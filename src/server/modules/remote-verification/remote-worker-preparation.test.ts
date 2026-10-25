@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, it, vi } from "vitest";
 import { GitCommandAdmission, SystemGitWorktreeReader, type GitCommandPriority } from "@/server/git-worktrees";
-import { SystemRemoteVerificationWorkspacePreparer, SystemRemoteWorkerExecution } from "@/server/infrastructure/git";
+import { LinuxWorkerRecoveryHost, SystemRemoteVerificationWorkspacePreparer, SystemRemoteWorkerExecution } from "@/server/infrastructure/git";
 import { ProjectLifecycle } from "@/server/modules/lifecycle";
 import { OwnedProcessGroup } from "@/server/owned-process-group";
 import { SqliteStateStore } from "@/server/sqlite-store";
@@ -12,7 +12,7 @@ import { TestJobManager } from "@/server/test-job-manager";
 import { nullLogWriter } from "@/server/log-writer";
 import { ProjectTestCommandResolver } from "@/server/test-command";
 import type { RemoteAssignment, RemoteWorkerReport } from "@/shared/contracts/remote-verification";
-import { RemoteVerificationWorker, hasUnconfirmedRemoteExecution, type RemoteDependencySetupPolicy } from "./index";
+import { WorkerRecoveryService, RemoteVerificationWorker, hasUnconfirmedRemoteExecution, type RemoteDependencySetupPolicy } from "./index";
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const dispose of cleanup.splice(0).reverse()) await dispose(); });
@@ -108,7 +108,7 @@ snapshots:
   let unknownCleanup = false;
   cleanup.push(async () => { if (unknownCleanup) await expect(jobs.shutdown()).rejects.toThrow(); else await jobs.shutdown(); reader.close(); });
   const preparer = new SystemRemoteVerificationWorkspacePreparer(workspaces, admission);
-  const execution = new SystemRemoteWorkerExecution("worker", [mapping], store, lifecycle, reader, new ProjectTestCommandResolver(), preparer, workspaces);
+  const execution = new SystemRemoteWorkerExecution("worker", [mapping], store, lifecycle, reader, new ProjectTestCommandResolver(), preparer, workspaces, new WorkerRecoveryService(store.remoteConnection, new LinuxWorkerRecoveryHost(join(root, "worker.sqlite3"))));
   let counter = 0;
   const reports: RemoteWorkerReport[] = [];
   let assignment: RemoteAssignment | null = null;

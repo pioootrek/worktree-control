@@ -394,13 +394,98 @@ required.
 
 After a restart, accepted work with unknown process cleanup blocks new finite
 jobs in the worker installation, even if the remote configuration is omitted.
-This conservative block has no automatic release or operator reconciliation
-command in the first fragment. Do not delete receipts or assume a PID/port proves
-process ownership to clear it. The subprocess fixture kills the worker after
-its running report, lets its finite child exit, and restarts against the same
-database: the old attempt remains uncertain and new execution is blocked.
-A safe operator recovery workflow and controller process-crash acceptance remain
-required before routine worker use.
+There is no automatic release. The owner recovery operation below can reconcile
+one attempt with sufficient evidence; all other unresolved attempts retain the
+block. Do not delete receipts or assume a PID/port proves process ownership.
+
+### Offline owner recovery on Linux
+
+The supported recovery evidence is a different kernel boot on the same Linux
+host and the original installation. Same-boot uncertainty remains blocked even
+if a launcher has exited, a saved PID has been reused, or no process can be seen
+at that PID. Recovery never signals a saved process, retries an assignment or
+changes its execution outcome. A reboot is an operator prerequisite, not an
+action performed by this command. This fragment does not provide a same-boot
+recovery procedure.
+
+With the controller stopped, use a current owner session credential through
+`WORKTREE_CONTROL_OWNER_TOKEN` and the installation's normal data/state options:
+
+```bash
+worktree-control remote-verification inspect
+worktree-control remote-verification inspect --attempt-id ATTEMPT
+worktree-control remote-verification reconcile --attempt-id ATTEMPT --operation-id OPERATION
+```
+
+`inspect` returns bounded receipt metadata, exact attempt/run identity, original
+cleanup/outcome, validated provenance, recovery prerequisites and any saved
+audit. Its `blocked` field conservatively describes receipt evidence without
+using retained local run details to infer cleanup. It opens SQLite read-only,
+performs no migrations, creates no recovery key or journal and does not update
+credential last-used timestamps. Both operations acquire the existing controller
+and database singleton locks. A live controller or another database owner causes
+refusal. Agent, worker, installation-wide and anonymous authority cannot recover
+or inspect through these operations. There is no `--yes` or force-clear option.
+
+Before the first Git, setup or test subprocess, the worker commits a local
+recovery journal through its existing SQLite connection with FULL durability.
+The journal records exact assignment/run identity, host and boot identity,
+workspace-root and source-cache directory identities, and three previously
+absent attempt slots for workspace, HOME and TMP. It precedes slot creation and
+covers a crash between spawning and recording process details, including
+remaining descendants after launcher death. A crash before this commit cannot
+leave an unjournaled subprocess from this preparation path. Missing or ambiguous
+journals still fail closed; they are never backfilled from saved PIDs.
+
+The adapter reads the root-managed `/etc/machine-id` and kernel
+`/proc/sys/kernel/random/boot_id`; neither comes from command arguments,
+configuration or receipt assertions. A private random key beside the database
+signs provenance and recovery audits. It is synchronized before work and bound
+to the canonical database path and database/key device/inode identity. Copying
+a receipt, database, or key to a different installation does not establish
+recovery authority. Missing keys, modified signatures, unreadable probes,
+different hosts, replaced roots/caches and symlinked paths cause refusal without
+signals or deletion. This proof assumes native Linux host identity and kernel
+boot semantics. Cloned machine identities, VM snapshot rollback and externally
+fabricated procfs identities are outside this supported proof. A restore or
+installation move does not preserve this recovery authority.
+
+Reconciliation records process exit separately from filesystem disposition.
+This fragment retains all artifact slots and the original source cache in place,
+without traversing their contents or claiming removal. Some slots may already
+be absent. The signed audit explicitly records `same-host-different-boot` and
+`retained-excluded`, the owner/credential IDs, operation ID, observed boot and
+time. It is local metadata alongside the receipt, outside report bodies and
+acknowledgements. The original uncertain report stays uncertain, and the broker
+continues to receive that immutable report. No result is upgraded to a pass.
+
+Retained paths are permanently excluded from finite-job working directories
+and worker preparation/cache selection. Checks run at enqueue and again before
+preparation/execution, including startup without remote configuration. Symlink
+aliases are refused. To run further remote checks, configure a new independent
+worker-owned source clone at a different path; the original source cache may
+contain interrupted Git state. New attempt slots can use the original workspace
+root when they do not overlap retained paths. Do not repurpose the retained
+paths. Removing artifacts, reclaiming receipt history and releasing these
+exclusions require a later maintenance design. These checks do not sandbox
+trusted repository code or constrain unrelated programs running as the account.
+
+Use the same operation ID to retry an identical recovery request. It returns the
+saved audit, including after reopen or a lost response. Reusing the ID for
+another attempt, or another operation ID for that attempt, is a conflict. The
+audit and provenance are monotonic; stale report callbacks cannot erase them.
+Failures before/during the transaction leave the attempt blocked. Recovery
+performs no filesystem cleanup, so there is no deletion/save crash window or
+partial cleanup to disguise. Missing local run history, revoked worker grants
+and omitted/changed remote configuration cannot select replacement paths or
+erase another attempt's blocker. Receipt metadata scans retain the 1,000-record
+cap; recovery and assignment metadata projections are also byte-bounded.
+
+This implementation adds simulated boot-transition tests, ownership/path and
+transaction regressions, and a subprocess crash fixture with a surviving finite
+descendant. These new checks await parent-managed verification. No machine
+restart was performed. Full controller process-crash acceptance and actual
+cross-host WinPath failing/fixed execution remain separate open gates.
 
 ## SaaS path and open decisions
 
@@ -416,6 +501,6 @@ not imply control of an external LLM client.
 
 The experimental fragment makes initial choices for transport, access scopes,
 trusted sources, fingerprints, provisioning and offline cancellation. Operational
-enrollment, credential rotation, retention maintenance
-and safe recovery from unknown process ownership remain open. No provider,
+enrollment, credential rotation, retention maintenance and same-boot recovery
+from unknown process ownership remain open. No provider,
 price, remote-client compatibility, or deployment is agreed by this plan.

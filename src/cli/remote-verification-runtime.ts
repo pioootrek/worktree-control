@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import type { GitCommandAdmission, GitWorktreeReader } from "@/server/git-worktrees";
 import type { IdentityService } from "@/server/modules/identity";
 import type { ProjectLifecycle } from "@/server/modules/lifecycle";
-import { RemoteVerificationController, RemoteVerificationWorker } from "@/server/modules/remote-verification";
+import { RemoteVerificationController, RemoteVerificationWorker, type WorkerRecoveryService } from "@/server/modules/remote-verification";
 import { SystemRemoteVerificationWorkspacePreparer, SystemRemoteWorkerExecution } from "@/server/infrastructure/git";
 import type { SqliteStateStore } from "@/server/sqlite-store";
 import { ProjectTestCommandResolver } from "@/server/test-command";
@@ -11,10 +11,11 @@ import { createRemoteVerificationServer, HttpRemoteWorkerTransport } from "@/ser
 import { readRemoteWorkerToken, type RemoteVerificationConfig } from "./remote-verification";
 
 export function createRemoteVerificationRuntime(config: RemoteVerificationConfig | null, dependencies: {
-  store: SqliteStateStore; identity: IdentityService; jobs: TestJobManager; lifecycle: ProjectLifecycle; git: GitWorktreeReader; admission: GitCommandAdmission;
+  store: SqliteStateStore; identity: IdentityService; jobs: TestJobManager; lifecycle: ProjectLifecycle; git: GitWorktreeReader; admission: GitCommandAdmission; recovery: WorkerRecoveryService;
 }) {
   if (!config) return null;
-  const { store, identity, jobs, lifecycle, git, admission } = dependencies;
+  const { store, identity, jobs, lifecycle, git, admission, recovery } = dependencies;
+  jobs.configurePathAdmission(paths => recovery.assertPathsAvailable(paths));
   const controller = new RemoteVerificationController(store, store.remoteConnection, identity);
   controller.recover();
   const listener = config.listener ? createRemoteVerificationServer({
@@ -25,8 +26,8 @@ export function createRemoteVerificationRuntime(config: RemoteVerificationConfig
   if (workerConfig) readRemoteWorkerToken(workerConfig.tokenFile);
   const worker = workerConfig ? new RemoteVerificationWorker(workerConfig.workerId, store.remoteConnection, jobs, id => store.getTestRun(id),
     new SystemRemoteWorkerExecution(workerConfig.workerId, workerConfig.mappings, store, lifecycle, git, new ProjectTestCommandResolver(),
-      new SystemRemoteVerificationWorkspacePreparer(workerConfig.workspaceRoot, admission), workerConfig.workspaceRoot),
-    new HttpRemoteWorkerTransport(workerConfig.origin, workerConfig.workerId, () => readRemoteWorkerToken(workerConfig.tokenFile), workerConfig.allowLoopbackHttpFixture)) : null;
+      new SystemRemoteVerificationWorkspacePreparer(workerConfig.workspaceRoot, admission), workerConfig.workspaceRoot, recovery),
+    new HttpRemoteWorkerTransport(workerConfig.origin, workerConfig.workerId, () => readRemoteWorkerToken(workerConfig.tokenFile), workerConfig.allowLoopbackHttpFixture), receipt => recovery.isReconciled(receipt)) : null;
   return {
     controller,
     async start() {

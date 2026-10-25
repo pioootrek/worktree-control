@@ -32,9 +32,10 @@ export class RemoteVerificationWorker {
     private readonly run: (id: string) => TestRun | null,
     private readonly execution: RemoteWorkerExecution,
     private readonly transport: RemoteWorkerTransport,
+    reconciled: (receipt: WorkerReceiptSummary) => boolean = () => false,
   ) {
     const savedReceipts = connection.receipts();
-    if (hasUnconfirmedRemoteExecution(savedReceipts, run)) jobs.blockAdmission("remote_execution_cleanup_unconfirmed");
+    if (hasUnconfirmedRemoteExecution(savedReceipts, run, reconciled)) jobs.blockAdmission("remote_execution_cleanup_unconfirmed");
     for (const receipt of savedReceipts) {
       if (receipt.assignment.workerId !== workerId) continue;
       this.receipts.set(receipt.assignment.attemptId, receipt);
@@ -185,8 +186,10 @@ export class RemoteVerificationWorker {
 export function fingerprint(value: unknown): string { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 
 /** A restarted queue cannot assume that an orphaned process tree has exited. */
-export function hasUnconfirmedRemoteExecution(receipts: WorkerReceiptSummary[], run: (id: string) => TestRun | null): boolean {
+export function hasUnconfirmedRemoteExecution(receipts: WorkerReceiptSummary[], run: (id: string) => TestRun | null, reconciled: (receipt: WorkerReceiptSummary) => boolean = () => false): boolean {
   return receipts.some(receipt => {
+    if (reconciled(receipt)) return false;
+    if (receipt.recovery?.audit) return true;
     // A terminal uncertain outcome can still have confirmed process-tree cleanup.
     // This durable evidence outlives the queue's retained local history.
     if (["confirmed", "not_required"].includes(receipt.cleanup ?? "")) return false;

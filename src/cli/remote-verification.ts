@@ -1,3 +1,5 @@
+import { LinuxWorkerRecoveryHost } from "@/server/infrastructure/git";
+import { openRemoteRecoveryInspection } from "@/server/infrastructure/sqlite";
 import { lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
@@ -6,7 +8,7 @@ import { acquireControllerLock } from "@/server/controller-lock";
 import { SqliteStateStore } from "@/server/sqlite-store";
 import { cliCredential, OWNER_CREDENTIAL_VARIABLES, OWNER_CREDENTIAL_REQUIRED } from "./credentials";
 import { authenticateOfflineActor } from "./offline-actor";
-import { remoteDependencySetupSchema, remotePreparationTimeoutSchema } from "@/server/modules/remote-verification";
+import { WorkerRecoveryService, remoteDependencySetupSchema, remotePreparationTimeoutSchema } from "@/server/modules/remote-verification";
 
 const identifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
 const remoteName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
@@ -57,7 +59,36 @@ const provisionSchema = z.object({
 export async function runRemoteVerificationCommand(args: string[], paths: AppPaths, write: (line: string) => void = console.log): Promise<void> {
   const option = (name: string) => { const i = args.indexOf(name); if (i < 0 || !args[i + 1]) throw new Error(`Missing ${name}.`); return args[i + 1]!; };
   const action = args[0];
-  if (action !== "provision" && action !== "revoke-token") throw new Error("Usage: remote-verification provision --file FILE | revoke-token --credential-id ID");
+  if (!["provision", "revoke-token", "inspect", "reconcile"].includes(action)) throw new Error("Usage: remote-verification provision --file FILE | revoke-token --credential-id ID | inspect [--attempt-id ID] | reconcile --attempt-id ID --operation-id ID");
+  if (action === "inspect" || action === "reconcile") {
+    const expected = action === "inspect" ? ["--attempt-id"] : ["--attempt-id", "--operation-id"];
+    for (let i = 1; i < args.length; i += 2) {
+      if (!expected.includes(args[i]) || !args[i + 1] || args.indexOf(args[i]) !== i) throw new Error("invalid_recovery_arguments");
+    }
+    const attemptId = action === "reconcile" || args.includes("--attempt-id") ? identifier.parse(option("--attempt-id")) : null;
+    const operationId = action === "reconcile" ? identifier.parse(option("--operation-id")) : null;
+    const lock = acquireControllerLock(paths.controllerLockPath);
+    try {
+      if (action === "inspect") {
+        const inspection = openRemoteRecoveryInspection(paths.databasePath);
+        try {
+          const credential = cliCredential(process.env, OWNER_CREDENTIAL_VARIABLES);
+          if (!credential) throw new Error(OWNER_CREDENTIAL_REQUIRED);
+          const actor = inspection.identity.authenticateBearer(credential);
+          const recovery = new WorkerRecoveryService(inspection.connection, new LinuxWorkerRecoveryHost(paths.databasePath), inspection.identity);
+          write(JSON.stringify(attemptId ? recovery.inspect(attemptId, actor) : recovery.inspectAll(actor)));
+        } finally { inspection.close(); }
+      } else {
+        const store = new SqliteStateStore(paths.databasePath);
+        try {
+          const { identity, actor } = authenticateOfflineActor(store, cliCredential(process.env, OWNER_CREDENTIAL_VARIABLES), OWNER_CREDENTIAL_REQUIRED);
+          const recovery = new WorkerRecoveryService(store.remoteConnection, new LinuxWorkerRecoveryHost(paths.databasePath), identity);
+          write(JSON.stringify(recovery.reconcile(attemptId!, operationId!, actor)));
+        } finally { store.close(); }
+      }
+    } finally { lock.release(); }
+    return;
+  }
   const input = action === "provision" ? provisionSchema.parse(JSON.parse(readFileSync(option("--file"), "utf8"))) : null;
   const lock = acquireControllerLock(paths.controllerLockPath);
   let store: SqliteStateStore | null = null;

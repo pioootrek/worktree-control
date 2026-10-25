@@ -44,6 +44,7 @@ export class TestJobManager {
   private readonly preparationPromises = new Map<string, Promise<void>>();
   private readonly preparations = new Map<string, NonNullable<EnqueueTestInput["preparation"]>>();
   private readonly preparationSessions = new Map<string, PreparationSession>();
+  private pathAdmission: (paths: string[]) => void = () => undefined;
   private sourceObserver: TestSourceObserver | null = null;
   private logMaintenance: Promise<void> = Promise.resolve();
   private pruneOperation: Promise<void> | null = null;
@@ -74,6 +75,9 @@ export class TestJobManager {
     this.admissionBlock ??= reason;
     this.logs.controller("test_queue.admission_blocked", { reason: this.admissionBlock });
   }
+
+  /** Installation recovery exclusions apply at enqueue and again before work. */
+  configurePathAdmission(check: (paths: string[]) => void): void { this.pathAdmission = check; }
 
   configureSourceObserver(observer: TestSourceObserver): void {
     this.sourceObserver = observer;
@@ -110,6 +114,7 @@ export class TestJobManager {
   enqueue(input: EnqueueTestInput): TestRun {
     if (this.closed) throw new Error("Kolejka testów jest zamknięta.");
     if (this.admissionBlock) throw new Error(this.admissionBlock);
+    this.pathAdmission([input.worktree.path, input.command.cwd]);
     const preparationTimeout = input.preparation?.timeoutMs;
     if (preparationTimeout !== undefined && (!Number.isInteger(preparationTimeout) || preparationTimeout < 1 || preparationTimeout > 30 * 60_000)) throw new Error("invalid_preparation_timeout");
     if (input.idempotencyKey) {
@@ -292,6 +297,7 @@ export class TestJobManager {
     };
     session?.signal.addEventListener("abort", preparationStopped, { once: true });
     try {
+      this.pathAdmission([run.worktreePath, run.cwd]);
       if (preparation) {
         const input = await preparation.prepare(session!);
         session!.throwIfAborted();
@@ -379,6 +385,7 @@ export class TestJobManager {
   }
 
   private start(run: TestRun): void {
+    this.pathAdmission([run.worktreePath, run.cwd]);
     this.preparationSessions.get(run.id)?.throwIfAborted();
     this.preparations.get(run.id)?.starting?.();
     this.telemetry.mark(run, "prepareFinishedAt");

@@ -120,8 +120,17 @@ slot. One admitted preparation deadline spans source fetch through preflight;
 execution keeps its separate preset timeout. Per-attempt HOME/TMP/cache and
 secret-free environment do not create a sandbox. Unknown process or workspace
 cleanup retains ownership and blocks finite admission, including after restart.
+A stopped-installation owner session can inspect an exact uncertain attempt and
+reconcile it after a different boot on the same Linux host. Signed provenance
+is committed before any Git/setup/execution subprocess and binds host, boot,
+installation and original directory identities. Recovery records a separate
+monotonic local audit, preserves uncertain reports, and retains/excludes artifact
+slots and the source cache. Same-boot or insufficient evidence stays blocked.
+The finite queue rechecks retained-path exclusions before work, even without
+remote configuration. This operation uses the existing singleton connection and
+locks; it adds no process signalling, database owner or report protocol.
 See the [remote verification setup contract](remote-verification-plan.md) for
-policy fields, evidence and remaining acceptance gates.
+commands, proof assumptions, retained artifacts and remaining acceptance gates.
 
 ## Resource policy
 

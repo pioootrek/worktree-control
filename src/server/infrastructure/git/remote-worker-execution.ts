@@ -4,7 +4,7 @@ import type { GitWorktreeReader } from "@/server/git-worktrees";
 import type { ProjectLifecycle } from "@/server/modules/lifecycle";
 import { testProfileFor } from "@/server/modules/environments";
 import type { ResolvedTestEnvironment } from "@/server/modules/environments";
-import { fingerprint, type RemoteControllerStore, type RemoteVerificationWorkspace, type RemoteVerificationWorkspacePreparer, type RemoteWorkerExecution, type WorkerReceipt, remoteDependencySetupSchema, remotePreparationTimeoutSchema, type RemoteDependencySetupPolicy } from "@/server/modules/remote-verification";
+import { fingerprint, type RemoteControllerStore, type RemoteVerificationWorkspace, type RemoteVerificationWorkspacePreparer, type RemoteWorkerExecution, type WorkerRecoveryService, type WorkerReceipt, remoteDependencySetupSchema, remotePreparationTimeoutSchema, type RemoteDependencySetupPolicy } from "@/server/modules/remote-verification";
 import type { StateStore } from "@/server/state-store";
 import type { ProjectTestCommandResolver, TestCommand } from "@/server/test-command";
 import type { RemoteAssignment, RemoteWorkerReport } from "@/shared/contracts/remote-verification";
@@ -33,6 +33,7 @@ export class SystemRemoteWorkerExecution implements RemoteWorkerExecution {
     private readonly commands: ProjectTestCommandResolver,
     private readonly preparer: RemoteVerificationWorkspacePreparer,
     private readonly workspaceRoot: string,
+    private readonly recovery: WorkerRecoveryService,
   ) {}
   async resolve(assignment: RemoteAssignment, receipt: WorkerReceipt, running: (evidence: Partial<RemoteWorkerReport>) => void): Promise<EnqueueTestInput> {
     const mapping = this.mapping(assignment);
@@ -102,6 +103,9 @@ export class SystemRemoteWorkerExecution implements RemoteWorkerExecution {
             }
             await mkdir(this.workspaceRoot, { recursive: true, mode: 0o700 });
             if (!(await lstat(this.workspaceRoot)).isDirectory() || (await lstat(this.workspaceRoot)).isSymbolicLink()) throw new PreparationError("workspace_root_invalid");
+            // Commit boot/installation/path provenance before any Git/setup command
+            // or execution can spawn, including the launcher-death crash window.
+            this.recovery.recordStart(receipt, this.workspaceRoot, cache);
             await mkdir(home, { mode: 0o700 });
             ownsHome = true;
             await mkdir(temporary, { mode: 0o700 });
