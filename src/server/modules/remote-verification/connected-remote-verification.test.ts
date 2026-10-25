@@ -159,8 +159,14 @@ describe("connected remote verification (isolated fixtures, not real-worker acce
   it("quarantines real worker process death and restart without replaying the accepted command", async () => {
     const f = await fixture(true);
     const startedFile = join(f.root, "executions"), finishedFile = join(f.root, "process-finished"), descendantFile = join(f.root, "descendant-alive"), launcherFile = join(f.root, "launcher-finished");
-    const descendant = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(descendantFile)},'alive');setTimeout(()=>fs.writeFileSync(${JSON.stringify(finishedFile)},'done'),7000);`;
-    const sha = f.commit(`const fs=require('node:fs');fs.appendFileSync(${JSON.stringify(startedFile)},'run\\n');require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:'ignore'});setTimeout(()=>{fs.writeFileSync(${JSON.stringify(launcherFile)},'done');process.exit(0)},500);`, "crash fixture");
+    const releaseLauncher = join(f.root, "release-launcher"), releaseDescendant = join(f.root, "release-descendant");
+    let workerCrashed = false;
+    cleanup.push(async () => {
+      writeFileSync(releaseLauncher, "release"); writeFileSync(releaseDescendant, "release");
+      if (workerCrashed && existsSync(descendantFile)) await vi.waitFor(() => expect(existsSync(finishedFile)).toBe(true), { timeout: 10_000 });
+    });
+    const descendant = `const fs=require('node:fs');setInterval(()=>{fs.writeFileSync(${JSON.stringify(descendantFile)},String(Date.now()));if(fs.existsSync(${JSON.stringify(releaseDescendant)})){fs.writeFileSync(${JSON.stringify(finishedFile)},'done');process.exit(0)}},50);setTimeout(()=>process.exit(2),60000);`;
+    const sha = f.commit(`const fs=require('node:fs');fs.appendFileSync(${JSON.stringify(startedFile)},'run\\n');require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:'ignore'});setInterval(()=>{if(fs.existsSync(${JSON.stringify(releaseLauncher)})){fs.writeFileSync(${JSON.stringify(launcherFile)},'done');process.exit(0)}},50);setTimeout(()=>process.exit(2),60000);`, "crash fixture");
     git(f.seed, "push", "-q", "origin", "main");
     await f.retireWorker();
     const tokenFile = join(f.root, "private-worker-token"), configFile = join(f.root, "worker-config.json");
@@ -186,11 +192,16 @@ describe("connected remote verification (isolated fixtures, not real-worker acce
     const request = f.submit(sha);
     const first = await launch();
     await vi.waitFor(() => expect(f.controller.status(request.id, f.owner).attempt?.phase).toBe("running"), { timeout: 10_000 });
-    first.child.kill("SIGKILL"); await first.exited;
-    // A real descendant outlives both the killed worker and its finite launcher.
-    // Never signal saved PIDs; it ends itself on its own bounded timer.
     await vi.waitFor(() => expect(existsSync(descendantFile)).toBe(true), { timeout: 10_000 });
+    first.child.kill("SIGKILL"); await first.exited;
+    workerCrashed = true;
+    // A real descendant outlives both the killed worker and its finite launcher.
+    // Hold the launcher until after the crash so ordinary owned cleanup cannot
+    // win the race. Only fixture control files release the surviving processes.
+    writeFileSync(releaseLauncher, "release");
     await vi.waitFor(() => expect(existsSync(launcherFile)).toBe(true), { timeout: 10_000 });
+    const heartbeat = readFileSync(descendantFile, "utf8");
+    await vi.waitFor(() => expect(readFileSync(descendantFile, "utf8")).not.toBe(heartbeat), { timeout: 10_000 });
     expect(existsSync(finishedFile)).toBe(false);
     const inspectionStore = new SqliteStateStore(join(f.root, "worker.sqlite3"));
     const localIdentity = new IdentityService(inspectionStore);
@@ -207,6 +218,7 @@ describe("connected remote verification (isolated fixtures, not real-worker acce
     const next = f.submit(f.fixedSha, "after-worker-crash");
     await vi.waitFor(() => expect(f.controller.status(next.id, f.owner).attempt).toMatchObject({ phase: "failed", failureKind: "setup" }), { timeout: 10_000 });
     expect(readFileSync(startedFile, "utf8")).toBe("run\n");
+    writeFileSync(releaseDescendant, "release");
     await vi.waitFor(() => expect(existsSync(finishedFile)).toBe(true), { timeout: 10_000 });
     second.child.send("close"); await second.exited;
   }, 35_000);
