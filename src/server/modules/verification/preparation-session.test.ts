@@ -44,9 +44,9 @@ it("keeps cleanup uncertain when owned-tree stop cannot be confirmed", async () 
   const root = directory(), marker = join(root, "pid");
   const session = new PreparationSession(5_000);
   const original = OwnedProcessGroup.prototype.stop;
-  let owned: OwnedProcessGroup | undefined;
+  let stopOwned: (() => Promise<void>) | undefined;
   vi.spyOn(OwnedProcessGroup.prototype, "stop").mockImplementationOnce(function (this: OwnedProcessGroup) {
-    owned = this; return Promise.reject(new Error("fixture inspection unavailable"));
+    stopOwned = original.bind(this); return Promise.reject(new Error("fixture inspection unavailable"));
   });
   try {
     const command = session.command({ executable: process.execPath, args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},String(process.pid));setInterval(()=>{},1000)`], cwd: root, environment: {}, errorCode: "install_failed" });
@@ -57,6 +57,6 @@ it("keeps cleanup uncertain when owned-tree stop cannot be confirmed", async () 
     expect(alive(Number(readFileSync(marker, "utf8")))).toBe(true);
   } finally {
     session.close(); vi.restoreAllMocks();
-    if (owned) await original.call(owned);
+    await stopOwned?.();
   }
 });

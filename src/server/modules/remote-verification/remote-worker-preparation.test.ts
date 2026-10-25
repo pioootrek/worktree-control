@@ -305,7 +305,7 @@ it.each(["package-manager", "runtime", "config-plugin"] as const)("prevents nest
     ${kind === "config-plugin" ? "" : `assert.match(result.stdout+result.stderr,/${kind === "package-manager" ? "ERR_PNPM_BAD_PM_VERSION" : "ERR_PNPM_BAD_RUNTIME_VERSION"}/);`}
     assert(!fs.existsSync(path.join(target,'node_modules')));console.log('nested-toolchain-download-refused');`);
   const result = await f.terminal(await f.submit(sha));
-  expect(result).toMatchObject({ phase: "succeeded", exitCode: 0, source: { attribution: "observed_match" } });
+  expect(result, result.logs.join("\n")).toMatchObject({ phase: "succeeded", exitCode: 0, source: { attribution: "observed_match" } });
   expect(result.logs.join("\n")).toContain("nested-toolchain-download-refused");
 }, 30_000);
 
@@ -362,8 +362,8 @@ it("retains workspace and capacity and reports durable uncertainty if cleanup ca
   const attempt = await f.submit(f.commit());
   await vi.waitFor(() => expect(existsSync(marker)).toBe(true), { timeout: 10_000 });
   const original = OwnedProcessGroup.prototype.stop;
-  let owned: OwnedProcessGroup | undefined;
-  vi.spyOn(OwnedProcessGroup.prototype, "stop").mockImplementationOnce(function (this: OwnedProcessGroup) { owned = this; return Promise.reject(new Error("fixture cleanup unavailable")); });
+  let stopOwned: (() => Promise<void>) | undefined;
+  vi.spyOn(OwnedProcessGroup.prototype, "stop").mockImplementationOnce(function (this: OwnedProcessGroup) { stopOwned = original.bind(this); return Promise.reject(new Error("fixture cleanup unavailable")); });
   f.expectUnknownCleanup();
   try {
     await f.cancel(attempt);
@@ -374,7 +374,7 @@ it("retains workspace and capacity and reports durable uncertainty if cleanup ca
     expect(f.lifecycle.acquireMaintenance(f.local.id, join(f.workspaces, attempt.attemptId))).toBeNull();
     expect(f.receipt(attempt).reports.at(-1)?.phase).toBe("uncertain");
     expect(hasUnconfirmedRemoteExecution(f.store.remoteConnection.receipts(), () => null)).toBe(true);
-  } finally { vi.restoreAllMocks(); if (owned) await original.call(owned); }
+  } finally { vi.restoreAllMocks(); await stopOwned?.(); }
 }, 20_000);
 
 it("cancels while waiting for the existing Git admission slot and never starts the queued operation", async () => {
