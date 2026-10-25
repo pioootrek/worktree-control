@@ -132,7 +132,7 @@ export class LinuxWorkerRecoveryHost implements WorkerRecoveryHost {
     for (const receipt of receipts) {
       if (!receipt.recovery?.audit) continue;
       const assessment = this.assess(receipt);
-      if (!assessment.reconciled || !assessment.provenance) fail("recovery_exclusion_unavailable");
+      if (!assessment.reconciled || !assessment.provenance) throw new Error("recovery_exclusion_unavailable");
       for (const input of paths) {
         const path = resolve(input);
         safePath(path, true);
