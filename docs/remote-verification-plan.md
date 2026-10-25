@@ -483,9 +483,14 @@ cap; recovery and assignment metadata projections are also byte-bounded.
 
 This implementation adds simulated boot-transition tests, ownership/path and
 transaction regressions, and a subprocess crash fixture with a surviving finite
-descendant. These new checks await parent-managed verification. No machine
-restart was performed. Full controller process-crash acceptance and actual
-cross-host WinPath failing/fixed execution remain separate open gates.
+descendant. Parent verification exercised these checks on an isolated Linux VPS.
+The full suite required focused rechecks after a crash-fixture synchronization
+fix; an existing SQLite stress test also exceeded its five-second default on
+the prior baseline and passed with a fifteen-second test budget. Exact results
+and failed runs are retained in Knowledge. There was no clean single full-suite
+pass on this VPS run. No machine restart was performed. Full controller
+process-crash acceptance and actual cross-host WinPath failing/fixed execution
+remain separate open gates.
 
 ## SaaS path and open decisions
 
