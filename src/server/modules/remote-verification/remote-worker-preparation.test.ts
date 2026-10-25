@@ -47,6 +47,7 @@ function fixture(realPnpm = false) {
       const fs=require('node:fs'), cp=require('node:child_process'), path=require('node:path');
       const args=process.argv.slice(2);
       if(args.includes('--version')){console.log('${pnpm.version}');process.exit(0)}
+      if(args.includes('config')&&args.includes('get')&&args.includes('configDependencies'))process.exit(0);
       if(args.includes('install')){
         if(!args.includes('--frozen-lockfile')||!args.includes('--pm-on-fail=error')||!args.includes('--no-runtime'))process.exit(89);
         require(path.resolve('setup.cjs'));
@@ -121,8 +122,8 @@ snapshots:
     assignment = { projectId: "project", workerId: "worker", presetId: "node:test", commitSha: sha, requestId: `request-${++counter}`, attemptId: `attempt-${counter}` };
     await worker.tick(); return assignment;
   };
-  const terminal = async (attempt: RemoteAssignment) => {
-    await vi.waitFor(async () => { await worker.tick(); expect(reports.some(report => report.attemptId === attempt.attemptId && ["succeeded", "failed", "cancelled", "uncertain"].includes(report.phase))).toBe(true); }, { timeout: 20_000, interval: 30 });
+  const terminal = async (attempt: RemoteAssignment, timeout = 20_000) => {
+    await vi.waitFor(async () => { await worker.tick(); expect(reports.some(report => report.attemptId === attempt.attemptId && ["succeeded", "failed", "cancelled", "uncertain"].includes(report.phase))).toBe(true); }, { timeout, interval: 30 });
     return reports.filter(report => report.attemptId === attempt.attemptId).at(-1)!;
   };
   const receipt = (attempt: RemoteAssignment) => store.remoteConnection.receipt(attempt.attemptId)!;
@@ -192,10 +193,23 @@ it("reports a real frozen-lock mismatch as setup failure", async () => {
   expect(result).toMatchObject({ phase: "failed", failureKind: "setup", errorCode: "dependency_install_failed", execution: { startedAt: null } });
 }, 30_000);
 
+it("refuses pnpm config plugins before installation without starting verification", async () => {
+  const f = fixture(true);
+  writeFileSync(join(f.seed, "pnpm-workspace.yaml"), "configDependencies:\n  fixture-must-not-download: 999.0.0\n");
+  const result = await f.terminal(await f.submit(f.commit()));
+  expect(result).toMatchObject({ phase: "failed", failureKind: "setup", errorCode: "dependency_config_plugins_unsupported", execution: { startedAt: null, cleanup: "confirmed" } });
+  expect(result.logs.join("\n")).not.toContain("EXECUTED");
+}, 30_000);
+
 it("honors the ignore-script policy with real pnpm and fingerprints that policy separately", async () => {
   const f = fixture(true);
+  writeFileSync(join(f.seed, ".gitignore"), "node_modules/\ninstalled.txt\ninstall-count.txt\n");
+  writeFileSync(join(f.seed, "postinstall.cjs"), "require('node:fs').appendFileSync('install-count.txt','install\\n');require('node:fs').writeFileSync('installed.txt','real-pnpm-postinstall');console.log('setup-only-output');");
   f.mapping.dependencySetup!.scripts = "ignore";
-  const sha = f.commit("require('fixture-dep');console.log(require('node:fs').existsSync('installed.txt')?'scripts-trusted':'scripts-ignored')");
+  const sha = f.commit(`const fs=require('node:fs'),assert=require('node:assert/strict');require('fixture-dep');
+    const count=fs.existsSync('install-count.txt')?fs.readFileSync('install-count.txt','utf8'):'';
+    assert.equal(count,process.env.pnpm_config_ignore_scripts==='true'?'':'install\\n');
+    console.log(fs.existsSync('installed.txt')?'scripts-trusted':'scripts-ignored');`);
   const result = await f.terminal(await f.submit(sha));
   expect(result).toMatchObject({ phase: "succeeded", exitCode: 0 });
   expect(result.logs.join("\n")).toContain("scripts-ignored");
@@ -204,6 +218,95 @@ it("honors the ignore-script policy with real pnpm and fingerprints that policy 
   expect(trusted).toMatchObject({ phase: "succeeded", presetFingerprint: result.presetFingerprint });
   expect(trusted.logs.join("\n")).toContain("scripts-trusted");
   expect(trusted.environmentFingerprint).not.toBe(result.environmentFingerprint);
+  for (const report of [result, trusted]) expect(report.logs.join("\n")).not.toMatch(/Recreating |Lockfile is up to date|setup-only-output|Done in .*pnpm/);
+}, 30_000);
+
+it.each(["ignore", "trusted-repository"] as const)("preserves %s policy, private cache and prepared modules across genuine nested pnpm calls", async scripts => {
+  const f = fixture(true);
+  f.mapping.dependencySetup!.scripts = scripts;
+  const manifest = JSON.parse(readFileSync(join(f.seed, "package.json"), "utf8"));
+  manifest.scripts["test:unit"] = "node nested.cjs";
+  manifest.scripts["pretest:unit"] = "node pretest.cjs";
+  writeFileSync(join(f.seed, "package.json"), JSON.stringify(manifest));
+  writeFileSync(join(f.seed, ".gitignore"), "node_modules/\ninstalled.txt\ninstall-count.txt\nhook-count.txt\npretest-count.txt\n");
+  writeFileSync(join(f.seed, "postinstall.cjs"), "require('node:fs').appendFileSync('install-count.txt','install\\n');console.log('setup-only-output');");
+  writeFileSync(join(f.seed, "pretest.cjs"), "require('node:fs').appendFileSync('pretest-count.txt','pretest\\n');");
+  if (scripts === "ignore") writeFileSync(join(f.seed, ".pnpmfile.cjs"), "require('node:fs').appendFileSync('hook-count.txt','hook\\n');module.exports={hooks:{readPackage:pkg=>pkg}};");
+  // These repository settings must not override the worker's script, cache,
+  // automatic-install or runtime-download policy in a nested invocation.
+  writeFileSync(join(f.seed, "pnpm-workspace.yaml"), `packages: ['.']
+verifyDepsBeforeRun: install
+ignoreScripts: false
+ignorePnpmfile: false
+enablePrePostScripts: true
+pmOnFail: download
+runtimeOnFail: download
+cacheDir: ${JSON.stringify(join(f.root, "escaped-cache"))}
+`);
+  const assertPolicy = `const fs=require('node:fs'),assert=require('node:assert/strict'),path=require('node:path'),cp=require('node:child_process');
+    const ignored=${scripts === "ignore"};
+    const count=()=>fs.existsSync('install-count.txt')?fs.readFileSync('install-count.txt','utf8'):'';
+    const check=()=>{assert.equal(require('fixture-dep'),'installed-from-committed-source');assert.equal(count(),ignored?'':'install\\n');
+      if(ignored){assert(!fs.existsSync('hook-count.txt'));assert(!fs.existsSync('pretest-count.txt'));}};
+    const run=(executable,args)=>{const result=cp.spawnSync(executable,args,{encoding:'utf8',timeout:15000});
+      assert.ifError(result.error);assert.equal(result.status,0,result.stdout+result.stderr);return result.stdout.trim();};
+    check();
+    assert.equal(run('pnpm',['--version']),${JSON.stringify(f.mapping.dependencySetup!.pnpmVersion)});
+    for(const [key,directory] of [['store-dir','pnpm-store'],['cache-dir','pnpm-cache']]){
+      const expected=path.join(process.env.HOME,directory);
+      assert.equal(run('pnpm',['config','get',key]),expected);
+      assert.equal(process.env['pnpm_config_'+key.replaceAll('-','_')],expected);
+    }
+    assert(run('pnpm',['store','path']).startsWith(path.join(process.env.HOME,'pnpm-store')+path.sep));
+    assert(fs.readFileSync('node_modules/.modules.yaml','utf8').includes(path.join(process.env.HOME,'pnpm-store')));
+    for(const [key,value] of [['verify-deps-before-run','false'],['pm-on-fail','error'],['runtime-on-fail','error'],['ignore-scripts',String(ignored)],['ignore-pnpmfile',String(ignored)],['configDependencies','null']]){
+      assert.equal(run('pnpm',['config','get',key]),value);
+    }
+    check();`;
+  writeFileSync(join(f.seed, "nested.cjs"), `${assertPolicy}
+    assert.equal(fs.readFileSync('node_modules/install-sentinel','utf8'),'prepared-modules');
+    assert(!fs.existsSync('node_modules/.pnpm-workspace-state-v1.json'));
+    console.log('nested-explicit-test-executed');`);
+  const sha = f.commit(`${assertPolicy}
+    fs.writeFileSync('node_modules/install-sentinel','prepared-modules');
+    // Force pnpm's freshness check to fail while retaining installed dependencies.
+    // Both the PATH shorthand and npm_execpath route must still run the test,
+    // without silently reinstalling or restoring pnpm's removed state file.
+    fs.rmSync('node_modules/.pnpm-workspace-state-v1.json',{force:true});
+    console.log(run('pnpm',['test:unit']));
+    console.log(run(process.execPath,[process.env.npm_execpath,'run','test:unit']));
+    check();assert(!fs.existsSync('node_modules/.pnpm-workspace-state-v1.json'));
+    assert.equal(fs.readFileSync('node_modules/install-sentinel','utf8'),'prepared-modules');
+    if(!ignored)assert.equal(fs.readFileSync('pretest-count.txt','utf8'),'pretest\\npretest\\n');
+    console.log('outer-explicit-test-executed');`);
+  const result = await f.terminal(await f.submit(sha), 45_000);
+  expect(result).toMatchObject({ phase: "succeeded", exitCode: 0, source: { attribution: "observed_match" } });
+  const output = result.logs.join("\n");
+  expect(output.match(/nested-explicit-test-executed/g)).toHaveLength(2);
+  expect(output).toContain("outer-explicit-test-executed");
+  expect(output).not.toMatch(/Recreating |Lockfile is up to date|setup-only-output|Done in .*pnpm/);
+  expect(existsSync(join(f.root, "escaped-cache"))).toBe(false);
+}, 60_000);
+
+it.each(["package-manager", "runtime", "config-plugin"] as const)("prevents nested %s downloads with genuine pnpm", async kind => {
+  const f = fixture(true);
+  const sha = f.commit(`const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),cp=require('node:child_process');
+    const target=path.join(process.env.TMPDIR,'nested-toolchain');fs.mkdirSync(target);
+    fs.writeFileSync(path.join(target,'package.json'),JSON.stringify({name:'nested-toolchain',version:'1.0.0',
+      ${kind === "package-manager" ? "devEngines:{packageManager:{name:'pnpm',version:'999.0.0',onFail:'download'}}," : kind === "runtime" ? "devEngines:{runtime:{name:'node',version:'999.0.0',onFail:'download'}}," : ""}
+      scripts:{probe:'node -e "process.exit(${kind === "config-plugin" ? 0 : 99})"'}}));
+    fs.writeFileSync(path.join(target,'pnpm-workspace.yaml'),'pmOnFail: download\\nruntimeOnFail: download\\nverifyDepsBeforeRun: install\\n${kind === "config-plugin" ? "configDependencies:\\n  fixture-must-not-download: 999.0.0\\n" : ""}');
+    // A broken download policy must fail against loopback/offline inputs rather
+    // than contact the public package registry or Node distribution service.
+    const proxy='http://127.0.0.1:9';
+    const result=cp.spawnSync('pnpm',['--config.offline=true','--dir',target,'run','probe'],{encoding:'utf8',timeout:5000,
+      env:{...process.env,pnpm_config_registry:proxy,pnpm_config_fetch_retries:'0',http_proxy:proxy,https_proxy:proxy}});
+    assert.ifError(result.error);assert.equal(result.status,${kind === "config-plugin" ? 0 : 1},result.stdout+result.stderr);
+    ${kind === "config-plugin" ? "" : `assert.match(result.stdout+result.stderr,/${kind === "package-manager" ? "ERR_PNPM_BAD_PM_VERSION" : "ERR_PNPM_BAD_RUNTIME_VERSION"}/);`}
+    assert(!fs.existsSync(path.join(target,'node_modules')));console.log('nested-toolchain-download-refused');`);
+  const result = await f.terminal(await f.submit(sha));
+  expect(result).toMatchObject({ phase: "succeeded", exitCode: 0, source: { attribution: "observed_match" } });
+  expect(result.logs.join("\n")).toContain("nested-toolchain-download-refused");
 }, 30_000);
 
 it.each(["fetch", "install"] as const)("cancels during %s and waits for owned descendants before releasing capacity", async stage => {

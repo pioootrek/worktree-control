@@ -1,7 +1,8 @@
-import { access, lstat, mkdir, readFile, realpath, symlink } from "node:fs/promises";
+import { access, lstat, mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { constants, createReadStream } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { remoteDependencySetupSchema, fingerprint, type RemoteDependencySetupPolicy } from "@/server/modules/remote-verification";
 import { PreparationError, type VerificationPreparationContext } from "@/server/modules/verification";
 
@@ -67,20 +68,48 @@ export async function preparePnpmDependencies(input: {
   } catch { throw new PreparationError("worker_toolchain_unavailable"); }
   await mkdir(toolDirectory, { mode: 0o700 });
   await symlink(node, join(toolDirectory, "node"));
-  await symlink(pnpm, join(toolDirectory, "pnpm"));
   environment.PATH = `${toolDirectory}:/usr/local/bin:/usr/bin:/bin`;
-  environment.pnpm_config_node_version = policy.nodeVersion;
-  environment.pnpm_config_ignore_pnpmfile = String(policy.scripts === "ignore");
+  const settings: Record<string, string> = {
+    store_dir: join(environment.HOME, "pnpm-store"), cache_dir: join(environment.HOME, "pnpm-cache"),
+    node_version: policy.nodeVersion, engine_strict: "true", pm_on_fail: "error", runtime_on_fail: "error",
+    ignore_scripts: String(policy.scripts === "ignore"), ignore_pnpmfile: String(policy.scripts === "ignore"),
+    verify_deps_before_run: "false",
+    ...(policy.scripts === "ignore" ? { enable_pre_post_scripts: "false" } : {}),
+  };
+  for (const [key, value] of Object.entries(settings)) environment[`pnpm_config_${key}`] = value;
+  const policyArgs = Object.entries(settings).map(([key, value]) => `--config.${key.replaceAll("_", "-")}=${value}`);
+  const launcherArgs = [...policyArgs, "--config.config-dependencies=null", "--pm-on-fail=error"];
+  // pnpm 11 defaults verifyDepsBeforeRun to "install". Its spawned install does
+  // not retain install-only CLI options. Environment alone is also insufficient:
+  // repository YAML can override it. Keep CLI policy on ordinary nested pnpm
+  // calls and npm_execpath calls without spawning a second process/owned tree.
+  const launcher = join(toolDirectory, "pnpm.cjs");
+  const launcherSource = `#!/usr/bin/env node\nif (process.argv.length === 3 && ["--version", "-v", "--help", "-h"].includes(process.argv[2])) process.chdir(__dirname);\nprocess.argv.splice(2, 0, ...${JSON.stringify(launcherArgs)});\nimport(${JSON.stringify(pathToFileURL(pnpm).href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`;
+  await writeFile(launcher, launcherSource, { mode: 0o700, flag: "wx" });
+  await symlink(launcher, join(toolDirectory, "pnpm"));
   const common = { cwd: path, environment, maxOutputBytes: 4096 };
   if ((await context.command({ ...common, executable: node, args: ["--version"], errorCode: "worker_node_unavailable" })).trim() !== `v${policy.nodeVersion}`) throw new PreparationError("worker_node_mismatch");
-  if ((await context.command({ ...common, executable: node, args: [pnpm, "--version"], errorCode: "worker_pnpm_unavailable" })).trim() !== policy.pnpmVersion) throw new PreparationError("worker_pnpm_mismatch");
-  const args = [pnpm, "install", "--frozen-lockfile", "--no-runtime", "--prod=false", "--pm-on-fail=error",
-    `--ignore-scripts=${policy.scripts === "ignore"}`, "--config.engine-strict=true",
-    `--config.node-version=${policy.nodeVersion}`,
-    ...(policy.scripts === "ignore" ? ["--ignore-pnpmfile"] : []),
-    "--store-dir", join(environment.HOME, "pnpm-store"), "--cache-dir", join(environment.HOME, "pnpm-cache")];
+  // pnpm's --version parser drops non-global CLI options. Probe outside the
+  // repository so version discovery cannot load its hooks or configuration.
+  if ((await context.command({ ...common, cwd: toolDirectory, executable: node, args: [pnpm, "--version"], errorCode: "worker_pnpm_unavailable" })).trim() !== policy.pnpmVersion) throw new PreparationError("worker_pnpm_mismatch");
+  // pnpm bootstraps configDependencies before command dispatch, independently of
+  // verifyDepsBeforeRun. Refuse that unsupported plugin contract, using pnpm's
+  // own config parser without repository hooks, network or lockfile writes.
+  // The launcher also disables bootstrap for nested calls in other directories.
+  const configDeps = (await context.command({ ...common, executable: node,
+    args: [pnpm, ...policyArgs.map(arg => arg.startsWith("--config.ignore-pnpmfile=") ? "--config.ignore-pnpmfile=true" : arg),
+      "--config.offline=true", "--config.frozen-lockfile=true", "config", "get", "configDependencies", "--json"],
+    errorCode: "dependency_config_plugins_unsupported" })).trim();
+  if (configDeps) {
+    let value: unknown;
+    try { value = JSON.parse(configDeps); } catch { throw new PreparationError("dependency_config_plugins_unsupported"); }
+    if (value !== null && (typeof value !== "object" || Array.isArray(value) || Object.keys(value).length)) throw new PreparationError("dependency_config_plugins_unsupported");
+  }
+  const args = [launcher, "install", "--frozen-lockfile", "--no-runtime", "--prod=false", "--pm-on-fail=error"];
   // Setup output is intentionally not published. Even trusted scripts can print credentials/URLs.
   await context.command({ ...common, executable: node, args, maxOutputBytes: 0, errorCode: "dependency_install_failed" });
   if (before !== await dependencyIdentity(path)) throw new PreparationError("dependency_metadata_changed");
-  return { fingerprint: fingerprint({ policy, nodeHash, pnpmHash, metadata: before, installArgs: args.map(arg => arg.startsWith(environment.HOME) ? arg.replace(environment.HOME, "fresh-home") : arg) }), executable: node, args: [pnpm, "--pm-on-fail=error", "run"] };
+  const normalize = (value: string) => value.replaceAll(environment.HOME, "fresh-home");
+  return { fingerprint: fingerprint({ policy, nodeHash, pnpmHash, metadata: before, launcher: normalize(launcherSource),
+    installArgs: args.map(normalize), executionArgs: ["run"] }), executable: node, args: [launcher, "run"] };
 }

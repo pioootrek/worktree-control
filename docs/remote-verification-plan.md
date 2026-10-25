@@ -290,6 +290,13 @@ repository-requested runtime download is allowed. Repositories declaring
 `devEngines.runtime` or `engines.runtime` are refused in this slice. pnpm checks
 engine compatibility with `engineStrict` enabled.
 
+pnpm `configDependencies` plugins are unsupported in this slice. An offline,
+frozen configuration probe with repository hooks disabled refuses configured
+plugins as `dependency_config_plugins_unsupported` before verification. The
+launcher also disables config-dependency bootstrap in nested invocations, so
+it cannot install plugins before dispatching a verification script. Repository
+pnpmfile hooks remain available under `trusted-repository`.
+
 Every attempt starts from a fresh exact-SHA clone with no borrowed or committed
 `node_modules`. A committed regular `pnpm-lock.yaml` with lockfile version 9.0
 is mandatory. Installation uses `--frozen-lockfile`, includes development
@@ -300,7 +307,9 @@ tracked source/lockfile changes prevent execution. Normal registered-project
 verification never installs dependencies automatically.
 
 Both policies require a trusted repository and trusted pushers. With
-`scripts: "ignore"`, pnpm skips lifecycle scripts and pnpmfile hooks. With
+`scripts: "ignore"`, pnpm skips installation lifecycle scripts, implicit
+pre/post script hooks and pnpmfile hooks. Explicitly requested verification
+scripts still execute, including scripts they delegate to with pnpm. With
 `scripts: "trusted-repository"`, root lifecycle scripts, repository hooks and
 build scripts allowed by the repository's pnpm policy can execute code. This
 policy does not grant blanket permission to build every dependency. WinPath's
@@ -311,17 +320,34 @@ a registry that requires credentials under this contract.
 
 Git fetch, setup and execution receive an explicit secret-free environment,
 fresh attempt-owned HOME/TMP and XDG directories, and a private pnpm store/cache.
-Pinned Node/pnpm links precede fixed system directories in PATH. No controller
-PATH, environment, SSH agent, user Git configuration or registry credentials are
-copied. Inline auth/token/password settings in a root `.npmrc` are refused.
+The private Node link and pnpm launcher precede fixed system directories in PATH.
+No controller PATH, environment, SSH agent, user Git configuration or registry
+credentials are copied. Inline auth/token/password settings in a root `.npmrc`
+are refused.
 Trusted source-cache Git configuration and committed repository configuration
 remain executable inputs; do not put secrets in them. Setup stdout/stderr is
 not published. Only stable bounded setup error codes are retained; normal test
 output retains the existing bounded-tail contract.
 
+The attempt-owned pnpm launcher applies the same explicit store/cache, engine,
+script and hook settings during installation, verification and ordinary nested
+pnpm calls, including the `npm_execpath` route. CLI settings prevent repository
+YAML from overriding this worker policy. `verifyDepsBeforeRun` is disabled:
+verification uses the dependencies prepared under the preparation deadline,
+even if pnpm's freshness state is missing or stale. It must not run a second
+implicit install during execution. Package-manager and runtime mismatch policy
+is `error` for both top-level and nested calls, preventing implicit toolchain
+downloads. Tool version discovery runs outside the checked-out repository so
+it cannot load that repository's hooks. The launcher loads the pinned pnpm
+entry point in the same Node process; process ownership and cancellation do
+not gain another subprocess layer. This is configuration enforcement for
+trusted repository scripts, which retain their account permissions and can
+explicitly run other tools or commands.
+
 The environment fingerprint includes setup policy, exact tool versions and
-paths, Node binary and pnpm entry-point hashes, install options, preparation
-budget and dependency metadata hashes. Metadata includes `package.json`,
+paths, Node binary and pnpm entry-point hashes, normalized launcher contents,
+install/execution options, preparation budget and dependency metadata hashes.
+Metadata includes `package.json`,
 `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` and pnpmfile files; other tracked
 inputs remain attributed to the exact source SHA. Attempt HOME/TMP paths are
 normalized. This records the supplied toolchain, not a complete digest of every
@@ -358,8 +384,11 @@ protected run history and at most three uploads per tick remain in force.
 
 The added tests include isolated locked local dependencies with a real available
 pnpm distribution, failing/fixed revisions, lock/tool refusals and controlled
-fetch/install cancellation, timeout and cleanup failures. These are proposed
-regressions pending parent verification of this slice, not WinPath/VPS acceptance.
+fetch/install cancellation, timeout and cleanup failures. Further regressions
+check both script policies, install counts, private store/cache settings,
+stale-state nested pnpm execution and refusal of nested toolchain downloads.
+These are proposed regressions pending parent verification of this slice,
+not WinPath/VPS acceptance.
 
 After a restart, accepted work with unknown process cleanup blocks new finite
 jobs in the worker installation, even if the remote configuration is omitted.
