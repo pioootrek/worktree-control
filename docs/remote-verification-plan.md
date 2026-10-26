@@ -1,29 +1,31 @@
 ---
 audience: "owner, contributors, and coding agents"
-last_reviewed: "2026-10-25"
+last_reviewed: "2026-10-26"
 source_of_truth: "remote verification and worker direction from the owner discussion on 2026-09-05"
 status: "active"
 ---
 
 # Remote verification of pushed commits
 
-## Implementation status, 2026-10-25
+## Implementation status, 2026-10-26
 
 Request authorization/persistence, attempt-state operations and exact-SHA
 workspace preparation were already implemented on `main` at `17d0c9d`.
 Merged PR105 adds an opt-in worker protocol, durable worker receipts and reports,
 existing finite-queue execution, local provisioning and MCP submit/status/log/cancel
-operations. The next backend slice adds explicit worker-local pnpm preparation
-and a preparation deadline with cancellation through Git and installation.
-This remains experimental, not a deployed or accepted WinPath workflow.
+operations. Merged PR106 adds explicit worker-local pnpm preparation, a
+preparation deadline with cancellation through Git and installation, and
+owner recovery operations. This remains experimental; real Angular cross-host
+acceptance has not run.
 
 Dependency-free Node projects remain supported without installation. Dependencies
 require an explicit mapping policy selecting an available pinned Node/pnpm 11
 toolchain, committed pnpm lockfile and setup-script trust. The setup contract
-below defines the boundary. Real worker selection, deployment approval and the
-failed/fixed cross-host WinPath trial remain outstanding. Isolated fixtures are
-not that acceptance. Controller process-crash and safe operator recovery
-acceptance also remain open.
+below defines the boundary. The owner selected the existing Angular fixture
+for the next failed/fixed cross-host trial, replacing WinPath. Trial tooling
+and its prerequisites are in the [finite acceptance runbook](../scripts/remote-worker-acceptance.md).
+Isolated fixtures are not that acceptance. Controller process-crash and safe
+operator recovery acceptance also remain open.
 
 See the [remaining implementation slices](knowledge/AGENTS.md) (Knowledge attachment `64ab7a29d6c4ae015d5cd794c58a8a68`).
 
@@ -49,10 +51,13 @@ pay remains a hypothesis; start with the owner's real workflow.
 
 On 2026-10-23 the owner explicitly started implementation before completion of
 the product-interest test, superseding the earlier ordering recorded in
-Knowledge task `0e2204a2e0e0945eee4f754b2f932eed`. WinPath is the reference
-project. The first scope is one owner-controlled Linux worker, one project,
-and one verification preset without application secrets. Protocol development
-and fault testing use isolated fixtures; no production worker has been selected.
+Knowledge task `0e2204a2e0e0945eee4f754b2f932eed`. On 2026-10-26 the owner
+changed the acceptance target to the existing Angular fixture to exercise
+pnpm dependency setup. The first scope is one owner-controlled Linux worker,
+one project and one verification preset without application secrets, plus a finite slow
+check for disconnect/cancel observation. Protocol development and fault testing
+use isolated fixtures. The separate two-host trial uses disposable installations;
+its operator provisions tools, private Git access, TLS and an SSH tunnel.
 Implementation authorization includes tests, local commits and PR preparation,
 but excludes merging, deployment, service changes, host-limit changes and
 account configuration. Backup diagnostics and automatic-backup acceptance are
@@ -389,7 +394,7 @@ check both script policies, install counts, private store/cache settings,
 stale-state nested pnpm execution and refusal of nested toolchain downloads.
 Parent verification passed these regressions in the full `pnpm check` run:
 1,558 Vitest tests across 136 files and 22 script tests, with lint and typecheck.
-This evidence covers local fixtures; cross-host WinPath/VPS acceptance remains
+This evidence covers local fixtures; cross-host Angular acceptance remains
 required.
 
 After a restart, accepted work with unknown process cleanup blocks new finite
@@ -489,7 +494,7 @@ fix; an existing SQLite stress test also exceeded its five-second default on
 the prior baseline and passed with a fifteen-second test budget. Exact results
 and failed runs are retained in Knowledge. There was no clean single full-suite
 pass on this VPS run. No machine restart was performed. Full controller
-process-crash acceptance and actual cross-host WinPath failing/fixed execution
+process-crash acceptance and actual cross-host Angular failing/fixed execution
 remain separate open gates.
 
 ## SaaS path and open decisions
