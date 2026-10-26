@@ -1,14 +1,18 @@
 # Angular cross-host acceptance
 
-This is a prepared trial, with no execution result yet. It targets the existing
-Angular fixture on two Linux hosts. It does not close controller-crash, reboot
-or general customer acceptance. Angular replaces the earlier WinPath target.
-The parent owns publication,
-infrastructure, foreground processes, serial verification and Knowledge writes.
+The finite Angular trial completed on two Linux machines on 2026-10-26. It
+exercised failed/fixed commits, real disconnection, offline cancellation and
+terminal replay through an actual MCP SDK client. Controller-crash, reboot
+and general customer acceptance remain open. Angular replaced the earlier
+WinPath target. This document records the result and the reusable procedure.
+The parent owns publication, infrastructure, foreground processes, serial
+verification and Knowledge writes.
 
 ## Fixed inputs and boundaries
 
-- WTC implementation baseline: `681c0c1a763cb7e2659c35755fdbf696e90cb77a`.
+- Merged WTC product baseline: `681c0c1a763cb7e2659c35755fdbf696e90cb77a`.
+- Validated WTC source and acceptance tooling:
+  `bb56f485ac75481297a3dcf3aa5688f459576a1f`, based on that product baseline.
   Use the same reviewed WTC revision and matching built CLI/assets on both hosts.
 - Angular baseline: `a5cea6ea5a19ab07ad24bb780738a8f81513d8be`.
 - Failing Angular SHA: `f3055ed4bc5e401b8e5bd8c6004ae6171471802b`.
@@ -16,22 +20,72 @@ infrastructure, foreground processes, serial verification and Knowledge writes.
 - Failed/fixed preset: `node:test:remote`. It imports installed RxJS and checks
   `[2, 4, 6]`; the failing commit deliberately expects `[2, 4, 7]`.
 - Disconnect/cancel preset: `node:test:remote:slow` at the fixed SHA. Its two
-  owned processes finish within 120 seconds without cancellation. It accepts
+  owned processes run for about 120 seconds without cancellation. It accepts
   no release paths, external PIDs or secrets.
 
 The source Angular checkout, its untracked instruction files, the Django fixture,
-and both hosts' production WTC installations stay outside the trial. Publish only
-the reviewed Angular tracked baseline and test branch to the owner's private
-repository. The fixture branch has no remote until the parent configures one.
-No dependency versions or lock/workspace policies were changed. Node engines
-metadata is not required by the worker policy. Existing `allowBuilds` and
-`onlyBuiltDependencies` settings remain; actual frozen installation is unverified.
+and both hosts' production WTC installations stayed outside the trial. The
+parent published the reviewed Angular tracked baseline and test branch to a
+private repository; both fixture commits were reachable. No dependency versions
+or lock/workspace policies were changed. Node engines metadata is not required
+by the worker policy. Existing `allowBuilds` and `onlyBuiltDependencies` settings
+remained; actual frozen dependency installation passed with `scripts: "ignore"`
+and the test imported installed RxJS.
 
 The scripts invoke the real CLI's offline owner bootstrap, project registration,
 remote grants and runtime bootstrap. The CLI owns each database, queue, worker,
 transport and process tree. The audit takes that installation's singleton lock
 only after shutdown and uses public store/recovery APIs. It does not implement a
 second queue or worker protocol and never signals a PID from a file.
+
+## Completed trial evidence
+
+The trial used Node **24.19.0**, genuine pnpm **11.22.0**, and matching built
+artifact SHA-256 `98bcbe2fb1d39d6b2bc5754fcf961bf834312ed58466aef398587dff1e817365`
+on both machines. Results belong to WTC revision `bb56f48` above; later
+documentation commits do not inherit that execution provenance. The private
+manifest and per-case evidence were checked against Knowledge project
+`k7a-worktree-switcher`, thread `4aa80e3623977202ad6fa9a39dfbb170`, completion
+reply `f7c90101-30e3-4b1e-b7d5-a7b17f797474`.
+
+- The failing Angular SHA returned a real assertion failure, exit **1**;
+  the fixed SHA returned exit **0**. Both reported `observed_match` for their
+  exact requested SHA, with identical preset and environment fingerprints.
+- During the real tunnel cut, the broker reported `executionUncertain` while
+  the test was running. The interruption lasted over four minutes, longer than
+  the intended roughly 40 seconds. The finite test completed offline, and its
+  same result arrived after reconnect. This covers eventual result delivery;
+  it does not demonstrate reconnect before completion or lost-ACK injection.
+- A separate cancellation intent was durably accepted while disconnected.
+  The tunnel was restored while the test was still active. Cancellation
+  delivered SIGTERM before natural completion and stopped both owned fixture
+  processes, including the descendant.
+- All four terminal replays retained the original request, attempt, local run
+  and result. The stopped worker audit found exactly **4 receipts and 4 runs**,
+  one execution per case, final sequence **3** acknowledged for every case,
+  exact SHAs/fingerprints and matching signed provenance. Cleanup was confirmed,
+  no fixture process was executing, and the workspace root was empty. Both
+  controller exits were **0**, with no shutdown timeout; the broker audit passed.
+
+The initial `r1` setup was refused before Git/test execution because the cloned
+cache directory was group-writable (`0775`). Its result was `preparation_failed`,
+with no executed SHA and confirmed cleanup. It is separate from the deliberate
+assertion failure. Only disposable clone directory modes were corrected to
+`0700`, and the trial process umask was set to `022` for fresh `r2` installations.
+No host permission policy was changed and no uncertain-state recovery was used.
+
+After the audits, both `r1` and `r2` trial installations and their secrets were
+removed. The owned tunnel stopped; the trial repository deploy key was revoked
+and its absence verified. Source checkouts and tool distributions were retained.
+Evidence includes per-case wait/replay records, network events, the setup
+refusal, both audits, source-checkout observations and teardown confirmation.
+Keep these files private: even allowlisted JSON includes infrastructure identity.
+Publish only a sanitized summary such as this one, never raw evidence or logs.
+
+The SDK client exercised the disposable broker's four remote tools. The
+interactive T3 MCP connection was not repointed or validated. No controller
+crash/reboot, resource benchmark or whole-feature completion is claimed.
+Manual provisioning and tunnel management remain part of this procedure.
 
 ## Parent prerequisites
 
@@ -76,6 +130,15 @@ Prepare these before starting either foreground process:
    uses a fresh store/HOME, frozen lockfile, `scripts: "ignore"`, no runtime or
    package-manager download, and a ten-minute preparation deadline. Registry
    failures are setup failures and cannot count as the deliberate failed test.
+8. Owner-only (`0700`) disposable `repository` and worker `cache` directories,
+   owned by the trial user, with canonical paths and no symlink components.
+   Inspect the clones after creation; Git may create a clone directory as
+   group-writable under the invoking umask. Recovery provenance refuses unsafe
+   group/other-writable path components before execution. Use a process-local
+   `umask 022` for trial commands and correct only the exact disposable clone
+   directories to `0700` when needed. Do not use recursive chmod or change host
+   policy. If an ancestor is unsafe, choose a compliant trial parent rather
+   than changing an unrelated directory.
 
 Transport supports a real external MCP caller. The four remote tools appear only
 when the broker is started with its explicit remote configuration. The existing
@@ -146,6 +209,8 @@ remote as named `origin`, not a local working tree or linked worktree. Keep
 the failed/fixed commits reachable on the pushed test branch. The parent
 provisions fetch authentication for `cache` and verifies it with the clean
 environment described above. No trial script creates or publishes a Git remote.
+Check both clones' ownership, modes and canonical paths against prerequisite 8
+before provisioning or starting the controllers.
 
 Provision the **broker first**:
 
@@ -158,9 +223,10 @@ them, registers one verification-only project, grants its owner submit/read, and
 creates the runtime configuration. Offline `auth token generate` and token mode
 allow the later non-TTY foreground start without a first-run token prompt. Owner
 sessions last one hour; provision shortly before the trial. A failed CLI step
-leaves bounded diagnostics in `provision-failure-private.json`, outside shareable
-evidence. Transfer broker `provision-result.json` privately to
-worker `broker-provision.json`, and broker `worker.token` to worker `worker.token`,
+leaves bounded diagnostics in `provision-failure-private.json`, separate from
+the structured evidence. Both remain private. Transfer broker
+`provision-result.json` privately to worker `broker-provision.json`, and broker
+`worker.token` to worker `worker.token`,
 both `0600`. Run the same provision command on the worker. It imports the stable
 broker worker principal ID, creates its own project mapping and local owner,
 and issues no replacement broker credential. Never retry partial provisioning
@@ -214,7 +280,9 @@ cannot satisfy `failed`. `replay` resubmits through MCP, waits four seconds and
 requires unchanged request/attempt/run/result. The final worker audit checks the
 entire execution count, not just the broker's visible replay result.
 
-For the disconnect case:
+For the disconnect case, the intended short-interruption procedure is below.
+The completed trial's longer interruption and narrower observation are recorded
+in [Completed trial evidence](#completed-trial-evidence).
 
 ```bash
 "$trial_node" scripts/remote-worker-acceptance.client.mjs --root "$trial_root" --case disconnect --action submit
@@ -232,8 +300,10 @@ While it is cut, observe the broker's actual stale-contact uncertainty:
 
 Restore the same tunnel promptly; run `--case disconnect --action wait`, then
 `--case disconnect --action replay`. The worker reports its actual finite result
-after reconnect, without a new execution. This demonstrates a real network cut,
-not simulated transport exceptions or a claimed lost-ACK scenario.
+after reconnect, without a new execution. Record whether it completed before or
+after restoration. If the cut outlasts the fixture, report eventual delivery
+only; do not claim reconnect before completion. This procedure does not inject
+a lost acknowledgement.
 
 For cancellation, repeat submit/wait-running/tunnel cut/wait-disconnected with
 `--case cancel`, then **while disconnected** run:
@@ -252,9 +322,9 @@ The protocol uploads bounded logs at terminal collection; the `running` report
 does not stream live output. Before completion the MCP log operation may return
 an empty tail. The driver still calls the real log tool. Final evidence keeps
 only validated fixture markers, line/byte counts and structured result fields,
-not raw setup output or arbitrary TAP text. Markers identify actual hostname,
-boot, PID/start ticks, SHA, Node version, execution ID and time. The broker has
-no worker PID signaling capability.
+not raw setup output or arbitrary TAP text. These files are still private.
+Markers identify actual hostname, boot, PID/start ticks, SHA, Node version,
+execution ID and time. The broker has no worker PID signaling capability.
 
 ## Audit and teardown
 
@@ -277,10 +347,12 @@ not reconcile, reboot, clear uncertainty, delete files or signal a saved PID.
 Any failure preserves the roots, including blocked state. A stopped controller
 with uncertain work is not safe teardown.
 
-After both audits succeed, the parent saves only shareable `evidence/*.json`
-outside the trial roots, confirms its owned tunnel has exited, and deletes only
-the two exact roots it created and the trial's separately owned credentials/TLS
-files. Keep source checkouts, tool distributions and production installations.
+After both audits succeed, the parent preserves `evidence/*.json` privately
+outside the trial roots and prepares a sanitized summary for publication.
+Confirm the owned tunnel has exited, revoke the trial repository credential
+and verify revocation, then delete only the exact trial roots and separately
+owned credentials/TLS files. Keep source checkouts, tool distributions and
+production installations.
 No recursive deletion command is generated from evidence or user-supplied logs.
 
 Record timestamps for infrastructure preparation, each tunnel cut/restoration,
@@ -293,18 +365,30 @@ passing Angular trial closes only the gates actually observed here.
 
 ## Validation handoff
 
-The implementation child ran syntax checks and documentation validation only.
-It ran no dependency install, test suite, lint, build, browser, controller or SSH
-session. Parent checks, serially and through managed presets where available:
+Parent-managed verification passed on exact WTC source
+`bb56f485ac75481297a3dcf3aa5688f459576a1f`, with `observed_match`:
+
+- `node:check`, run `b2b5b994-0b66-467e-ae87-ce30b516dbb6`: lint, typecheck,
+  **1,606 Vitest tests and 62 script tests** passed.
+- `node:build`, run `62eeb9b7-b733-4ba2-a827-a070da8f59ce`: build passed.
+- The two-host trial and stopped audits above used that source and the matching
+  artifact digest. These results do not assert a trial on a later docs commit.
+
+For documentation-only follow-ups, inspect managed presets and use a matching
+standalone preset if available. Otherwise run the lightweight checks directly:
 
 ```bash
 node --check scripts/remote-worker-acceptance.mjs
 node --check scripts/remote-worker-acceptance.client.mjs
 node --check scripts/remote-worker-acceptance.audit.mjs
-pnpm check
+python3 scripts/docs.py fmt
+python3 scripts/docs.py check
+git diff --check
 ```
 
-Build the reviewed CLI/assets with the supported `pnpm build` if an exact
-artifact is not already available. This adds no production module or bundle
-change. Run the acceptance phases above only after review, toolchain and private
-source prerequisites are satisfied. Report every failed/unverified phase as such.
+The implementation child ran only syntax/documentation/whitespace checks.
+Parent verification and trial execution are recorded separately above. This
+tooling adds no production module or bundle change. A future code change needs
+its own scoped managed verification; a future two-host trial needs reviewed
+matching artifacts and all private prerequisites again. Preserve the historical
+results and report every failed or unverified phase as such.
