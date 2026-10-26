@@ -246,12 +246,17 @@ unused MCP listener. It does not claim/start/switch any development server. Raw
 controller output stays in `controller-private.log`, which can contain bootstrap
 credentials and is never shareable evidence. A `spawned` event is not readiness.
 The foreground supervisor requests shutdown after 30 minutes and forwards
-its first SIGINT/SIGTERM as one SIGTERM to its live child. The child has a
-separate process group so terminal Ctrl-C reaches only the supervisor. This
+its first SIGINT, SIGTERM or SIGHUP as one SIGTERM to its live child. The child
+has a separate process group so terminal Ctrl-C or a terminal/SSH hangup reaches
+the supervisor, which waits for the child's asynchronous cleanup and exit. This
 prevents a second signal from terminating the CLI after it removes its signal
 handlers for asynchronous cleanup. The supervisor retains and awaits the
 live ChildProcess; `detached` does not mean abandoned or unreferenced here.
-Repeated stop requests and the deadline do not send another signal.
+Repeated stop signals and the deadline share the same idempotent stop; all
+three signal handlers are removed after exit. Closing a terminal may make the
+supervisor's output unavailable. Check the private `controller-exit.json` and
+`controller-private.log` rather than treating missing terminal output as a clean
+exit. SIGKILL and abrupt machine failure cannot run this graceful shutdown.
 If shutdown exceeds 45 seconds it marks
 the run failed and remains attached until the child exits. It never escalates
 to force kill, abandons a running child or restarts the CLI. Such a shutdown
@@ -281,8 +286,8 @@ evidence is preserved rather than silently overwritten.
 
 `wait` defaults to 900 seconds including dependency preparation. It requires the
 expected executed SHA, phase, fingerprints, source attribution, owned cleanup,
-and fixture markers from a different host/boot than the broker. A setup failure
-cannot satisfy `failed`. `replay` resubmits through MCP, waits four seconds and
+and fixture markers with the requested SHA and a different boot from the broker.
+A setup failure cannot satisfy `failed`. `replay` resubmits through MCP, waits four seconds and
 requires unchanged request/attempt/run/result. The final worker audit checks the
 entire execution count, not just the broker's visible replay result.
 
@@ -355,8 +360,14 @@ acknowledged; confirmed local cleanup; different broker machine and boot
 identities; matching signed recovery provenance; and no executing fixture PID with its
 original start ticks. It also requires an empty trial workspace root. It does
 not reconcile, reboot, clear uncertainty, delete files or signal a saved PID.
-Any failure preserves the roots, including blocked state. A stopped controller
-with uncertain work is not safe teardown.
+Any failure preserves the roots, including blocked state. Local gate failures
+append one diagnostic code of at most 80 characters to the entrypoint's generic
+error context, for example `co_located_trial_rejected`, `cleanup_unconfirmed`,
+`unacknowledged_outbox` or `retained_workspace_preserve_root`. Only errors
+created by local assertions carry a trusted code; filesystem, SDK and other
+external errors retain the generic context without raw messages, paths or
+tokens. A code identifies the failed gate, not permission to clear state.
+A stopped controller with uncertain work is not safe teardown.
 
 The worker audit still requires each start marker's hostname, boot and SHA to
 match the worker's actual observations. Spoofing different hostnames cannot
@@ -381,14 +392,15 @@ passing Angular trial closes only the gates actually observed here.
 ## Validation handoff
 
 The process-group isolation and shared-hostname correction were made after the
-`bb56f48` trial.
+`bb56f48` trial. SIGHUP handling and safe gate diagnostics were corrected
+after `d994079`; their regressions still require parent execution.
 That trial's four case results and observed clean exits remain historical
 evidence for that revision. They do not rule out the shutdown scheduling race
-or validate either correction on two hosts.
+or validate these later corrections on two hosts.
 
 `remote-worker-acceptance.test.mjs` exercises the actual harness entrypoint with
-a finite, inert temporary CLI on Linux. It sends SIGINT to a newly owned
-supervisor group, holds cleanup after both child handlers are removed, and
+a finite, inert temporary CLI on Linux. It sends SIGINT or SIGHUP to a newly
+owned supervisor group, holds cleanup after both child handlers are removed, and
 checks repeated stops, the lifetime deadline, shutdown timeout and actual exit
 evidence. Only supervisor timers are virtual; process creation, signals and
 child exits are real. Each fake child has an independent eight-second lifetime.
@@ -416,10 +428,16 @@ boots. Negative cases retain SHA, boot and cleanup rejection. The actual stopped
 worker audit also runs against inert store/recovery adapters and rejects a shared
 machine identity despite a spoofed hostname and different boot, or a shared boot
 despite a different machine identity. These fixtures open no network connection,
-database or real controller and do not claim a cross-host trial.
+database or real controller and do not claim a cross-host trial. Gate tests
+assert the actual entrypoint stderr using the production assertion function.
+They cover co-location, cleanup, outbox acknowledgement and retained-workspace
+failures, plus successful stopped-audit evidence. Unknown dependency errors
+include a synthetic credential, a gate-code impersonation and a long private
+path; stderr must remain bounded and contain only generic context.
 
 For the hostname regression, use the pre-fix client with the same new test.
-The shared-hostname cases must fail specifically at `cross_host_marker_mismatch`:
+The old client rejects otherwise valid shared-hostname fixtures; its generic
+stderr does not expose the failing gate:
 
 ```bash
 identity_regression_dir=$(mktemp -d /tmp/wtc-identity-regression-XXXXXX)
@@ -428,6 +446,25 @@ cp scripts/remote-worker-acceptance.mjs scripts/remote-worker-acceptance.client.
 node --test --test-name-pattern='client (wait|replay) accepts shared hostnames' "$identity_regression_dir/remote-worker-acceptance.client.test.mjs"
 # Expected red: both shared-hostname cases are rejected by the old client.
 node --test scripts/remote-worker-acceptance.client.test.mjs
+```
+
+For the two round-2 findings, use the exact pre-fix `d994079` production
+scripts with the new tests in one disposable directory. No real controller,
+network or database is used. These commands belong to the parent; the child
+has not executed them:
+
+```bash
+round2_regression_dir=$(mktemp -d /tmp/wtc-round2-regression-XXXXXX)
+for acceptance_file in remote-worker-acceptance.mjs remote-worker-acceptance.client.mjs remote-worker-acceptance.audit.mjs; do
+  git show "d994079efee98c2b7e4f2c7e82e99226751778ae:scripts/$acceptance_file" > "$round2_regression_dir/$acceptance_file"
+done
+cp scripts/remote-worker-acceptance.test.mjs scripts/remote-worker-acceptance.client.test.mjs "$round2_regression_dir/"
+node --test --test-name-pattern='terminal process-group SIGHUP' "$round2_regression_dir/remote-worker-acceptance.test.mjs"
+# Expected red: the old supervisor exits on SIGHUP before owned cleanup/exit evidence.
+node --test --test-name-pattern='client rejects|stopped worker audit rejects' "$round2_regression_dir/remote-worker-acceptance.client.test.mjs"
+# Expected red: the old client/audit stderr omits the asserted local gate code.
+node --test --test-concurrency=1 scripts/remote-worker-acceptance.test.mjs scripts/remote-worker-acceptance.client.test.mjs
+# Expected green on the corrected checkout, including external-error non-disclosure.
 ```
 
 Run the commands serially and preserve their output as new validation evidence.

@@ -3,7 +3,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { assert, failedSha, fixedSha, hostIdentity, json, load, markers, privateFile, save } from './remote-worker-acceptance.mjs';
+import { assert, failureDiagnostic, failedSha, fixedSha, hostIdentity, json, load, markers, privateFile, save } from './remote-worker-acceptance.mjs';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -126,4 +126,4 @@ async function main() {
     console.log(JSON.stringify(safe));
   } finally { await client.close(); }
 }
-main().catch(() => { console.error('acceptance_client_failed_preserve_state (check phase, prerequisites and private controller log)'); process.exitCode = 1; });
+main().catch(error => { console.error(failureDiagnostic(error, 'acceptance_client_failed_preserve_state (check phase, prerequisites and private controller log)')); process.exitCode = 1; });

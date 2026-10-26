@@ -6,7 +6,7 @@ import { SqliteStateStore } from '../src/server/sqlite-store.ts';
 import { IdentityService } from '../src/server/modules/identity/index.ts';
 import { WorkerRecoveryService } from '../src/server/modules/remote-verification/index.ts';
 import { LinuxWorkerRecoveryHost } from '../src/server/infrastructure/git/index.ts';
-import { assert, fixedSha, failedSha, hostIdentity, json, load, markers, privateFile, processIdentity, save } from './remote-worker-acceptance.mjs';
+import { assert, failureDiagnostic, fixedSha, failedSha, hostIdentity, json, load, markers, privateFile, processIdentity, save } from './remote-worker-acceptance.mjs';
 
 function exited(root) {
   const owned = json(join(root, 'controller-process.json'));
@@ -92,4 +92,4 @@ async function main() {
     console.log(JSON.stringify(result));
   } finally { store?.close(); lock.release(); }
 }
-main().catch(() => { console.error('acceptance_audit_failed_preserve_roots (no cleanup or recovery performed)'); process.exitCode = 1; });
+main().catch(error => { console.error(failureDiagnostic(error, 'acceptance_audit_failed_preserve_roots (no cleanup or recovery performed)')); process.exitCode = 1; });

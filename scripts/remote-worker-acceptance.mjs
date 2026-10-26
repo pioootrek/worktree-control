@@ -11,7 +11,19 @@ export const fixtureBaseline = 'a5cea6ea5a19ab07ad24bb780738a8f81513d8be';
 export const failedSha = 'f3055ed4bc5e401b8e5bd8c6004ae6171471802b';
 export const fixedSha = 'f6fbceed97875ab5d13755b37020599d5c185ff8';
 export const presets = ['node:test:remote', 'node:test:remote:slow'];
-export const assert = (condition, code) => { if (!condition) throw new Error(code); };
+// Only errors created by local gates may contribute a public diagnostic code.
+// Never classify filesystem, SDK or dependency errors by their message/name/code.
+const localFailures = new WeakMap();
+function localFailure(code) {
+  const error = new Error(code);
+  if (/^[a-z][a-z0-9_]{0,79}$/.test(code)) localFailures.set(error, code);
+  return error;
+}
+export const assert = (condition, code) => { if (!condition) throw localFailure(code); };
+export function failureDiagnostic(error, context) {
+  const code = localFailures.get(error);
+  return code ? `${context}: ${code}` : context;
+}
 export const json = path => JSON.parse(readFileSync(path, 'utf8'));
 export function privateFile(path) {
   const stat = lstatSync(path);
@@ -159,23 +171,23 @@ async function run(config) {
     child.kill('SIGTERM'); // The live ChildProcess we just spawned; never a saved PID.
     timer = setTimeout(() => { shutdownTimedOut = true; console.error('trial_shutdown_unconfirmed_preserve_root'); process.exitCode = 1; }, 45_000);
   };
-  process.on('SIGINT', stop); process.on('SIGTERM', stop);
+  process.on('SIGINT', stop); process.on('SIGTERM', stop); process.on('SIGHUP', stop);
   const deadline = setTimeout(stop, 30 * 60_000);
   try {
     await new Promise((resolveExit, reject) => {
-      child.once('error', () => reject(new Error('trial_controller_spawn_failed')));
+      child.once('error', () => reject(localFailure('trial_controller_spawn_failed')));
       child.once('spawn', () => {
         save(join(root, 'controller-process.json'), { ...hostIdentity(), ...processIdentity(child.pid), role: config.role });
         console.log(JSON.stringify({ phase: 'spawned', role: config.role, ready: false }));
       });
       child.once('exit', (code, signal) => {
         save(join(root, 'controller-exit.json'), { code, signal, shutdownTimedOut, at: new Date().toISOString() });
-        if (code === 0 && !signal) resolveExit(); else reject(new Error('trial_controller_failed_preserve_root'));
+        if (code === 0 && !signal) resolveExit(); else reject(localFailure('trial_controller_failed_preserve_root'));
       });
     });
   } finally {
     clearTimeout(timer); clearTimeout(deadline);
-    process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop);
+    process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); process.removeListener('SIGHUP', stop);
   }
 }
 
@@ -186,8 +198,8 @@ async function main() {
   const config = load(value);
   if (phase === 'provision') return provision(config);
   if (phase === 'run') return run(config);
-  throw new Error('unknown_trial_phase');
+  throw localFailure('unknown_trial_phase');
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().catch(error => { console.error(/^[a-z0-9_]+$/.test(error.message) ? error.message : 'acceptance_phase_failed_preserve_root'); process.exitCode = 1; });
+  main().catch(error => { console.error(failureDiagnostic(error, 'acceptance_phase_failed_preserve_root')); process.exitCode = 1; });
 }

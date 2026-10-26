@@ -145,49 +145,55 @@ await import(pathToFileURL(process.argv[1]).href);
   };
 }
 
-test('terminal process-group SIGINT permits exactly one graceful child stop', options, async t => {
-  const trial = await startTrial(t);
-  const { root, supervisor, controller } = trial;
-  // Put the lifetime deadline just after the interrupt, within the graceful
-  // shutdown window, so exercising it does not also expire that window.
-  await trial.advance(30 * 60_000 - 1);
-  // Hold the supervisor so that, with the original shared-group spawn, the
-  // child's SIGINT handler definitely removes its handlers BEFORE forwarding.
-  // With isolation the child never receives this terminal-like group signal.
-  const childGroup = processStat(controller.pid).group;
-  assert.equal(supervisor.kill('SIGSTOP'), true);
-  await waitFor(() => processStat(supervisor.pid)?.state === 'T', 'paused supervisor');
-  process.kill(-supervisor.pid, 'SIGINT'); // Only this test's newly spawned group.
-  if (childGroup === supervisor.pid) {
-    await waitFor(() => existsSync(join(root, 'cleanup-start.json')), 'original shared-group interrupt');
-  }
-  assert.equal(supervisor.kill('SIGCONT'), true);
-  await waitFor(() => existsSync(join(root, 'cleanup-start.json')), 'graceful cleanup start');
-  if (childGroup === supervisor.pid) {
-    // Keep cleanup gated until the original harness has recorded the forwarded
-    // second signal's actual result. This makes the red run independent of how
-    // quickly an assertion failure would otherwise release the fake controller.
+for (const signal of ['SIGINT', 'SIGHUP']) {
+  test(`terminal process-group ${signal} permits exactly one graceful child stop`, options, async t => {
+    const trial = await startTrial(t);
+    const { root, supervisor, controller } = trial;
+    // Put the lifetime deadline just after the signal, within the graceful
+    // shutdown window, so exercising it does not also expire that window.
+    await trial.advance(30 * 60_000 - 1);
+    // Hold the supervisor so that, with the original shared-group spawn, the
+    // child's SIGINT handler definitely removes its handlers BEFORE forwarding.
+    // With isolation the child never receives this terminal-like group signal.
+    const childGroup = processStat(controller.pid).group;
+    assert.equal(supervisor.kill('SIGSTOP'), true);
+    await waitFor(() => processStat(supervisor.pid)?.state === 'T', 'paused supervisor');
+    process.kill(-supervisor.pid, signal); // Only this test's newly spawned group.
+    if (childGroup === supervisor.pid) {
+      await waitFor(() => existsSync(join(root, 'cleanup-start.json')), 'original shared-group interrupt');
+    }
+    assert.equal(supervisor.kill('SIGCONT'), true);
+    await waitFor(() => {
+      trial.alive();
+      return existsSync(join(root, 'cleanup-start.json'));
+    }, 'graceful cleanup start');
+    if (childGroup === supervisor.pid) {
+      // Keep cleanup gated until the original harness has recorded the forwarded
+      // second signal's actual result. This makes the red run independent of how
+      // quickly an assertion failure would otherwise release the fake controller.
+      const result = await trial.result();
+      assert.equal(result.child.signal, null, `Cleanup interrupted: ${JSON.stringify(result.child)}`);
+    }
+    trial.alive();
+    assert.deepEqual(readJson(join(root, 'cleanup-start.json')), { signal: 'SIGTERM' });
+    assert.equal(existsSync(join(root, 'cleanup-done.json')), false);
+    assert.equal(existsSync(join(root, 'controller-exit.json')), false);
+    // Repeated stop signals and the lifetime deadline must not signal the child
+    // again while its handlers are removed and cleanup is deliberately pending.
+    supervisor.kill('SIGINT');
+    supervisor.kill('SIGTERM');
+    supervisor.kill('SIGHUP');
+    await trial.advance(1);
+    trial.alive();
+    trial.release();
     const result = await trial.result();
-    assert.equal(result.child.signal, null, `Cleanup interrupted: ${JSON.stringify(result.child)}`);
-  }
-  trial.alive();
-  assert.deepEqual(readJson(join(root, 'cleanup-start.json')), { signal: 'SIGTERM' });
-  assert.equal(existsSync(join(root, 'cleanup-done.json')), false);
-  assert.equal(existsSync(join(root, 'controller-exit.json')), false);
-  // Repeated stop signals and the lifetime deadline must not signal the child
-  // again while its handlers are removed and cleanup is deliberately pending.
-  supervisor.kill('SIGINT');
-  supervisor.kill('SIGTERM');
-  await trial.advance(1);
-  trial.alive();
-  trial.release();
-  const result = await trial.result();
-  assert.deepEqual(result.supervisor, { code: 0, signal: null });
-  assert.equal(result.child.code, 0);
-  assert.equal(result.child.signal, null);
-  assert.equal(result.child.shutdownTimedOut, false);
-  assert.deepEqual(readJson(join(root, 'cleanup-done.json')), { completed: true });
-});
+    assert.deepEqual(result.supervisor, { code: 0, signal: null });
+    assert.equal(result.child.code, 0);
+    assert.equal(result.child.signal, null);
+    assert.equal(result.child.shutdownTimedOut, false);
+    assert.deepEqual(readJson(join(root, 'cleanup-done.json')), { completed: true });
+  });
+}
 
 test('deadline stop remains attached after shutdown timeout and retains failure evidence', options, async t => {
   const trial = await startTrial(t);
@@ -197,6 +203,7 @@ test('deadline stop remains attached after shutdown timeout and retains failure 
   await trial.advance(45_000);
   trial.supervisor.kill('SIGINT');
   trial.supervisor.kill('SIGTERM');
+  trial.supervisor.kill('SIGHUP');
   await trial.advance(45_000);
   trial.alive();
   assert.equal(existsSync(join(trial.root, 'controller-exit.json')), false);
