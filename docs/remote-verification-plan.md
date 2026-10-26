@@ -1,29 +1,43 @@
 ---
 audience: "owner, contributors, and coding agents"
-last_reviewed: "2026-10-25"
+last_reviewed: "2026-10-26"
 source_of_truth: "remote verification and worker direction from the owner discussion on 2026-09-05"
 status: "active"
 ---
 
 # Remote verification of pushed commits
 
-## Implementation status, 2026-10-25
+## Implementation status, 2026-10-26
 
 Request authorization/persistence, attempt-state operations and exact-SHA
 workspace preparation were already implemented on `main` at `17d0c9d`.
 Merged PR105 adds an opt-in worker protocol, durable worker receipts and reports,
 existing finite-queue execution, local provisioning and MCP submit/status/log/cancel
-operations. The next backend slice adds explicit worker-local pnpm preparation
-and a preparation deadline with cancellation through Git and installation.
-This remains experimental, not a deployed or accepted WinPath workflow.
+operations. Merged PR106 adds explicit worker-local pnpm preparation, a
+preparation deadline with cancellation through Git and installation, and
+owner recovery operations. This remains experimental. A finite Angular trial
+completed on two Linux machines on 2026-10-26, using WTC source
+`bb56f485ac75481297a3dcf3aa5688f459576a1f` on merged product baseline
+`681c0c1a763cb7e2659c35755fdbf696e90cb77a`.
 
 Dependency-free Node projects remain supported without installation. Dependencies
 require an explicit mapping policy selecting an available pinned Node/pnpm 11
 toolchain, committed pnpm lockfile and setup-script trust. The setup contract
-below defines the boundary. Real worker selection, deployment approval and the
-failed/fixed cross-host WinPath trial remain outstanding. Isolated fixtures are
-not that acceptance. Controller process-crash and safe operator recovery
-acceptance also remain open.
+below defines the boundary. The owner selected the existing Angular fixture,
+replacing WinPath. The [finite acceptance runbook](../scripts/remote-worker-acceptance.md)
+records exact revisions, artifact digest, prerequisites and sanitized results.
+The actual MCP SDK client observed a real assertion failure at the failed SHA,
+a pass at the fixed SHA, eventual delivery after a real network cut, offline
+cancellation before natural completion, and unchanged terminal replays. Both
+stopped-controller audits passed with four executions and confirmed cleanup.
+The initial cache-permission setup refusal is recorded separately.
+
+The completed trial used frozen dependency setup with installed RxJS. It did
+not validate the existing interactive T3 MCP connection, controller process-crash
+or reboot recovery, or resource/performance targets. Those gates remain open,
+and later documentation commits do not inherit the tested revision's provenance.
+Completion evidence is in Knowledge thread `4aa80e3623977202ad6fa9a39dfbb170`,
+reply `f7c90101-30e3-4b1e-b7d5-a7b17f797474`, project `k7a-worktree-switcher`.
 
 See the [remaining implementation slices](knowledge/AGENTS.md) (Knowledge attachment `64ab7a29d6c4ae015d5cd794c58a8a68`).
 
@@ -43,16 +57,20 @@ priority; queue reliability and truthful source attribution are foundations.
 Track delivery in
 [FEAT-20260905-remote-commit-verification](knowledge/AGENTS.md) (Knowledge task `0e2204a2e0e0945eee4f754b2f932eed`).
 
-The complete accepted worker workflow remains pending; implementation and
-fixture tests alone do not constitute a deployed remote service. Other people's willingness to
-pay remains a hypothesis; start with the owner's real workflow.
+The complete accepted worker workflow remains pending beyond this finite trial.
+Disposable trial installations were removed after audits; this is not a deployed
+remote service. Other people's willingness to pay remains a hypothesis; start
+with the owner's real workflow.
 
 On 2026-10-23 the owner explicitly started implementation before completion of
 the product-interest test, superseding the earlier ordering recorded in
-Knowledge task `0e2204a2e0e0945eee4f754b2f932eed`. WinPath is the reference
-project. The first scope is one owner-controlled Linux worker, one project,
-and one verification preset without application secrets. Protocol development
-and fault testing use isolated fixtures; no production worker has been selected.
+Knowledge task `0e2204a2e0e0945eee4f754b2f932eed`. On 2026-10-26 the owner
+changed the acceptance target to the existing Angular fixture to exercise
+pnpm dependency setup. The first scope is one owner-controlled Linux worker,
+one project and one verification preset without application secrets, plus a finite slow
+check for disconnect/cancel observation. Protocol development and fault testing
+use isolated fixtures. The separate two-host trial uses disposable installations;
+its operator provisions tools, private Git access, TLS and an SSH tunnel.
 Implementation authorization includes tests, local commits and PR preparation,
 but excludes merging, deployment, service changes, host-limit changes and
 account configuration. Backup diagnostics and automatic-backup acceptance are
@@ -185,8 +203,12 @@ owner trial, retain the failed pushed commit's request ID, attempt ID, requested
 and executed SHA, preset identity, result and bounded output. Push a correction
 and retain a distinct passing result with the same evidence. Also exercise
 disconnect, restart, duplicate submission and cancellation without duplicate
-execution. A protocol fixture alone does not close this gate. Select the target
-machine and agree its operational setup only when this actual trial is ready;
+execution. A protocol fixture alone does not close this gate. The completed
+Angular trial covers failed/fixed execution, disconnect, duplicate submission
+and cancellation through an actual SDK client. Its cut outlasted the finite
+test, so reconnect before completion remains unobserved. Restart recovery and
+the existing interactive client remain separate acceptance work. Future trials
+need explicit agreement on their target machine and operational setup;
 implementation permission does not authorize deployment.
 
 Success means trustworthy remote evidence without manual SSH or copying logs
@@ -207,6 +229,10 @@ installation-wide and worker tokens cannot administer these grants.
 2. Prepare an independent worker-owned clone as the source cache, outside
    registered project repositories. Keep the configured named remote there;
    requests cannot supply repository URLs or filesystem paths.
+   The finite trial requires owner-only clone directories (`0700`), canonical
+   paths without symlinks and safe ancestor permissions. A group-writable cache
+   was refused before execution. See the runbook's prerequisites; correct only
+   disposable clone modes, without recursive chmod or host policy changes.
 3. On the broker, run `remote-verification provision --file FILE`. The JSON
    contains `project: {id, name, sourceRemote}`, `worker: {id, name}`,
    `localProjectId`, `presetIds`, `callerPrincipalIds`, and `workerTokenFile`.
@@ -389,8 +415,10 @@ check both script policies, install counts, private store/cache settings,
 stale-state nested pnpm execution and refusal of nested toolchain downloads.
 Parent verification passed these regressions in the full `pnpm check` run:
 1,558 Vitest tests across 136 files and 22 script tests, with lint and typecheck.
-This evidence covers local fixtures; cross-host WinPath/VPS acceptance remains
-required.
+This historical evidence covers local fixtures. The later Angular trial at
+`bb56f48` separately passed real cross-host frozen setup and failed/fixed checks;
+its full managed check passed 1,606 Vitest tests and 62 script tests. See the
+runbook for exact source attribution and run IDs.
 
 After a restart, accepted work with unknown process cleanup blocks new finite
 jobs in the worker installation, even if the remote configuration is omitted.
@@ -489,8 +517,9 @@ fix; an existing SQLite stress test also exceeded its five-second default on
 the prior baseline and passed with a fifteen-second test budget. Exact results
 and failed runs are retained in Knowledge. There was no clean single full-suite
 pass on this VPS run. No machine restart was performed. Full controller
-process-crash acceptance and actual cross-host WinPath failing/fixed execution
-remain separate open gates.
+process-crash and actual reboot recovery acceptance remain open. Actual
+cross-host Angular failing/fixed execution passed later at `bb56f48`, as
+recorded above; it does not change the historical VPS run results.
 
 ## SaaS path and open decisions
 
