@@ -55,6 +55,23 @@ jobs:
           echo "ee886eceda0ff9f30610d3be9b5b594026591e19add6b3961a341c72abe468e5eac9d7c2c2450bbb8420db1f827b954521f9336be4872f81090b8618adf8815a  $RUNNER_TEMP/caddy/caddy.tar.gz" | sha512sum --check
           tar -xzf "$RUNNER_TEMP/caddy/caddy.tar.gz" -C "$RUNNER_TEMP/caddy" caddy
           echo "CADDY_BIN=$RUNNER_TEMP/caddy/caddy" >> "$GITHUB_ENV"
+      - name: Use Ubuntu HTTPS mirrors for browser dependencies
+        shell: bash
+        run: |
+          # Azure's mirror delivered ~26 MB at ~40 kB/s in both attempts of run 40330287767.
+          # Keep the runner image's HTTPS fallbacks and its existing archive trust configuration.
+          # Layout: actions/runner-images, ubuntu24/20261012.334, configure-apt-sources.sh.
+          mirrors=/etc/apt/apt-mirrors.txt
+          sources=/etc/apt/sources.list.d/ubuntu.sources
+          if ! grep -Fxq 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' "$sources" ||
+             ! cmp -s "$mirrors" <(printf '%s\t%s\n' \
+               'http://azure.archive.ubuntu.com/ubuntu/' 'priority:1' \
+               'https://archive.ubuntu.com/ubuntu/' 'priority:2' \
+               'https://security.ubuntu.com/ubuntu/' 'priority:3'); then
+            echo '::error::Unsupported Ubuntu APT mirror layout; review the runner image before changing package sources.'
+            exit 1
+          fi
+          sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' "$mirrors"
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:https
       - run: pnpm test:integration
