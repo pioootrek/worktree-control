@@ -108,7 +108,8 @@ async function main() {
         assert(parsed.filter(item => item.role === role && item.event === 'start').length === 1, 'execution_marker_count_mismatch');
         if (expected === 'succeeded') assert(parsed.filter(item => item.role === role && item.event === 'passed').length === 1, 'completion_marker_missing');
       }
-      assert(parsed.every(item => item.sha === input.commitSha && item.host !== config.identity.host && item.boot !== config.identity.boot), 'cross_host_marker_mismatch');
+      // Hostnames are display data; the stopped worker audit proves distinct machines.
+      assert(parsed.every(item => item.sha === input.commitSha && item.boot !== config.identity.boot), 'cross_host_marker_mismatch');
     }
     const safe = {
       case: caseName, action, observedAt: new Date().toISOString(), elapsedMs: Date.now() - started,

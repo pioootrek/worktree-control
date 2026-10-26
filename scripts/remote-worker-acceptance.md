@@ -331,6 +331,11 @@ only validated fixture markers, line/byte counts and structured result fields,
 not raw setup output or arbitrary TAP text. These files are still private.
 Markers identify actual hostname, boot, PID/start ticks, SHA, Node version,
 execution ID and time. The broker has no worker PID signaling capability.
+Hostnames are display and consistency data, not unique machine identities.
+Two independent machines may both be named `ubuntu`. Terminal wait and replay
+require markers for the requested SHA and a different boot from the broker.
+Markers contain no machine identity; host separation is proved by the stopped
+worker audit, not by the client's marker check.
 
 ## Audit and teardown
 
@@ -346,12 +351,16 @@ replays have completed. Copy the broker's `evidence` directory into worker
 The broker audit checks stopped database outcomes and its child exit. The worker
 audit requires exactly four receipts and four runs; matching immutable
 request/attempt/run/SHA/preset identities and fingerprints; all outbox sequences
-acknowledged; confirmed local cleanup; a different broker machine identity;
-matching signed recovery provenance; and no executing fixture PID with its
+acknowledged; confirmed local cleanup; different broker machine and boot
+identities; matching signed recovery provenance; and no executing fixture PID with its
 original start ticks. It also requires an empty trial workspace root. It does
 not reconcile, reboot, clear uncertainty, delete files or signal a saved PID.
 Any failure preserves the roots, including blocked state. A stopped controller
 with uncertain work is not safe teardown.
+
+The worker audit still requires each start marker's hostname, boot and SHA to
+match the worker's actual observations. Spoofing different hostnames cannot
+make a co-located trial pass the machine-identity check.
 
 After both audits succeed, the parent preserves `evidence/*.json` privately
 outside the trial roots and prepares a sanitized summary for publication.
@@ -371,10 +380,11 @@ passing Angular trial closes only the gates actually observed here.
 
 ## Validation handoff
 
-The process-group isolation is a correction made after the `bb56f48` trial.
+The process-group isolation and shared-hostname correction were made after the
+`bb56f48` trial.
 That trial's four case results and observed clean exits remain historical
 evidence for that revision. They do not rule out the shutdown scheduling race
-or validate the correction on two hosts.
+or validate either correction on two hosts.
 
 `remote-worker-acceptance.test.mjs` exercises the actual harness entrypoint with
 a finite, inert temporary CLI on Linux. It sends SIGINT to a newly owned
@@ -397,6 +407,27 @@ cp scripts/remote-worker-acceptance.test.mjs "$signal_regression_dir/remote-work
 node --test "$signal_regression_dir/remote-worker-acceptance.test.mjs"
 # Expected red: forwarded SIGTERM interrupts shared-group SIGINT cleanup.
 node --test scripts/remote-worker-acceptance.test.mjs
+```
+
+`remote-worker-acceptance.client.test.mjs` copies the actual client entrypoint
+unchanged into temporary fixtures with inert SDK responses and synthetic host
+observations. Wait and replay cover shared and distinct hostnames with different
+boots. Negative cases retain SHA, boot and cleanup rejection. The actual stopped
+worker audit also runs against inert store/recovery adapters and rejects a shared
+machine identity despite a spoofed hostname and different boot, or a shared boot
+despite a different machine identity. These fixtures open no network connection,
+database or real controller and do not claim a cross-host trial.
+
+For the hostname regression, use the pre-fix client with the same new test.
+The shared-hostname cases must fail specifically at `cross_host_marker_mismatch`:
+
+```bash
+identity_regression_dir=$(mktemp -d /tmp/wtc-identity-regression-XXXXXX)
+git show b589ad3d1f300a9c5b83bafbcf1845f7f92d9b0b:scripts/remote-worker-acceptance.client.mjs > "$identity_regression_dir/remote-worker-acceptance.client.mjs"
+cp scripts/remote-worker-acceptance.mjs scripts/remote-worker-acceptance.client.test.mjs "$identity_regression_dir/"
+node --test --test-name-pattern='client (wait|replay) accepts shared hostnames' "$identity_regression_dir/remote-worker-acceptance.client.test.mjs"
+# Expected red: both shared-hostname cases are rejected by the old client.
+node --test scripts/remote-worker-acceptance.client.test.mjs
 ```
 
 Run the commands serially and preserve their output as new validation evidence.
