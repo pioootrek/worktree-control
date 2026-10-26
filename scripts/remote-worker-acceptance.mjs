@@ -145,6 +145,9 @@ async function run(config) {
     '--web-root', config.webRoot, '--browse-root', root, '--remote-verification-config', join(root, 'runtime.json')], {
     env: { PATH: `${dirname(config.nodeExecutable)}:/usr/local/bin:/usr/bin:/bin`, HOME: join(root, 'home'), LANG: 'C.UTF-8',
       ...(config.role === 'worker' ? { NODE_EXTRA_CA_CERTS: config.caFile } : {}) }, stdio: ['ignore', fd, fd],
+    // Terminal signals reach only the supervisor; it sends one graceful stop.
+    // Keep the ChildProcess referenced and await its exit even after a timeout.
+    detached: true,
   });
   closeSync(fd);
   let timer;

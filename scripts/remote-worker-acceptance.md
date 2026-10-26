@@ -43,7 +43,7 @@ second queue or worker protocol and never signals a PID from a file.
 The trial used Node **24.19.0**, genuine pnpm **11.22.0**, and matching built
 artifact SHA-256 `98bcbe2fb1d39d6b2bc5754fcf961bf834312ed58466aef398587dff1e817365`
 on both machines. Results belong to WTC revision `bb56f48` above; later
-documentation commits do not inherit that execution provenance. The private
+revisions do not inherit that execution provenance. The private
 manifest and per-case evidence were checked against Knowledge project
 `k7a-worktree-switcher`, thread `4aa80e3623977202ad6fa9a39dfbb170`, completion
 reply `f7c90101-30e3-4b1e-b7d5-a7b17f797474`.
@@ -246,7 +246,13 @@ unused MCP listener. It does not claim/start/switch any development server. Raw
 controller output stays in `controller-private.log`, which can contain bootstrap
 credentials and is never shareable evidence. A `spawned` event is not readiness.
 The foreground supervisor requests shutdown after 30 minutes and forwards
-SIGINT/SIGTERM only to its live child. If shutdown exceeds 45 seconds it marks
+its first SIGINT/SIGTERM as one SIGTERM to its live child. The child has a
+separate process group so terminal Ctrl-C reaches only the supervisor. This
+prevents a second signal from terminating the CLI after it removes its signal
+handlers for asynchronous cleanup. The supervisor retains and awaits the
+live ChildProcess; `detached` does not mean abandoned or unreferenced here.
+Repeated stop requests and the deadline do not send another signal.
+If shutdown exceeds 45 seconds it marks
 the run failed and remains attached until the child exits. It never escalates
 to force kill, abandons a running child or restarts the CLI. Such a shutdown
 timeout also fails the later audit, even if the child eventually exits.
@@ -364,6 +370,40 @@ parent then attaches validation evidence to the owning Knowledge task. A
 passing Angular trial closes only the gates actually observed here.
 
 ## Validation handoff
+
+The process-group isolation is a correction made after the `bb56f48` trial.
+That trial's four case results and observed clean exits remain historical
+evidence for that revision. They do not rule out the shutdown scheduling race
+or validate the correction on two hosts.
+
+`remote-worker-acceptance.test.mjs` exercises the actual harness entrypoint with
+a finite, inert temporary CLI on Linux. It sends SIGINT to a newly owned
+supervisor group, holds cleanup after both child handlers are removed, and
+checks repeated stops, the lifetime deadline, shutdown timeout and actual exit
+evidence. Only supervisor timers are virtual; process creation, signals and
+child exits are real. Each fake child has an independent eight-second lifetime.
+No database, real controller, network listener or private trial fixture is used.
+The existing `test:resources` script discovers these tests without package changes.
+
+The parent owns regression execution. For a red/green comparison without
+changing either checkout or the historical commit, copy the new test beside
+the old harness in a disposable directory, run it there expecting failure, then
+run the corrected checkout's test expecting success:
+
+```bash
+signal_regression_dir=$(mktemp -d /tmp/wtc-signal-regression-XXXXXX)
+git show 49a4f5f365737f07100e3300b27be9670ef5510f:scripts/remote-worker-acceptance.mjs > "$signal_regression_dir/remote-worker-acceptance.mjs"
+cp scripts/remote-worker-acceptance.test.mjs "$signal_regression_dir/remote-worker-acceptance.test.mjs"
+node --test "$signal_regression_dir/remote-worker-acceptance.test.mjs"
+# Expected red: forwarded SIGTERM interrupts shared-group SIGINT cleanup.
+node --test scripts/remote-worker-acceptance.test.mjs
+```
+
+Run the commands serially and preserve their output as new validation evidence.
+The red/green procedure is not an executed result. Then use managed
+`node:test:resources` for script-test discovery and `node:lint` for the changed
+scripts on the exact reviewed worktree/head. No build or GUI verification is
+needed for this script-only correction.
 
 Parent-managed verification passed on exact WTC source
 `bb56f485ac75481297a3dcf3aa5688f459576a1f`, with `observed_match`:
