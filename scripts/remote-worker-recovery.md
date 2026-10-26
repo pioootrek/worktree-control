@@ -16,6 +16,11 @@ remain separate evidence; do not overwrite their roots, histories or results.
 
 ## Queue the crash test
 
+This acceptance suite is explicitly opt-in through
+`vitest.remote-recovery.config.ts`; the ordinary integration suite excludes it.
+The focused suite skips on non-Linux. It intentionally preserves the uncertain
+worker installation, so it is not part of every CI integration run.
+
 1. Commit the intended implementation. Through Worktree Control, obtain the
    registered project, exact checkout from `list_worktrees`, and available
    presets from `list_test_presets`. The parent prepares dependencies and runs
@@ -89,6 +94,21 @@ delete receipts, or infer exit from a reused PID.
    root to make it persistent destroys the required installation/directory
    identity. Use a separately prepared durable disposable installation if
    needed, and record that as a distinct acceptance run.
+
+   Before running the focused command, set `WTC_RECOVERY_PARENT` to an existing
+   absolute, canonical, owner-only directory on persistent storage. The fixture
+   validates ownership, permissions and path components and creates its new
+   installation there from the beginning. For example, on an isolated worker
+   without an available managed preset:
+
+   ```bash
+   WTC_RECOVERY_PARENT=/absolute/private/durable/trials pnpm test:integration:remote-recovery
+   ```
+
+   On a managed project the variable must be supplied through an authorized test
+   environment profile; do not bypass the queue. Roots under `/tmp` from ordinary
+   local runs are not reboot evidence. Verify the selected filesystem survives
+   reboot; the environment override alone does not prove persistence.
 2. Before the consented reboot, stop the disposable controllers through their
    live supervisors. Preserve the original broker and worker data/state, remote
    configuration, assignment, exact submission, immutable uncertain result,
@@ -106,8 +126,21 @@ delete receipts, or infer exit from a reused PID.
    export WORKTREE_CONTROL_OWNER_TOKEN
    ```
 
-   Renew an existing owner session through supported identity operations before
-   expiry if necessary. Other credentials cannot perform this recovery.
+   Renew a still-valid owner session with `identity renew-owner`. If it has
+   expired, the local stopped installation supports `identity recover-owner`.
+   It prints a new owner token as JSON, so capture it privately without terminal
+   echo. Use the installation's normal data/state paths:
+
+   ```bash
+   set +x
+   (umask 077; node "$RECOVERY_CLI" identity recover-owner --label 'Reboot acceptance' \
+     --lifetime-seconds 3600 --data-dir "$RECOVERY_DATA" --state-dir "$RECOVERY_STATE" \
+     > "$PRIVATE_OWNER_JSON")
+   ```
+
+   Use a previously absent private output file and read its `token` field through
+   a private environment in the operator's driver. Never echo it or include it
+   in shared evidence. Other credential types cannot perform reconciliation.
    Define `RECOVERY_CLI`, `RECOVERY_DATA`, `RECOVERY_STATE`, `ATTEMPT`, and
    `OPERATION` from the private run record. Use the same stable `OPERATION` for
    every retry of this reconciliation, including after a lost response.

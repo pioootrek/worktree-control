@@ -1,9 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -57,7 +57,7 @@ export async function identityEnded(identity: ProcessIdentity): Promise<boolean>
   try {
     const fields = (await readFile(`/proc/${identity.pid}/stat`, "utf8")).split(") ").at(-1)!.split(" ");
     return fields[0] === "Z" || fields[19] !== identity.start;
-  } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; }
+  } catch (error) { if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) return true; throw error; }
 }
 
 export class RecoveryMcp {
@@ -87,6 +87,7 @@ export class RecoveryInstallation {
   private current?: OwnedChild;
   private generation = 0;
   private failures = 0;
+  private stopping?: Promise<void>;
   private clients: RecoveryMcp[] = [];
   constructor(readonly root: string, readonly httpPort: number, readonly mcpPort: number, private readonly fixture: RemoteCliRecoveryFixture) {}
   private environment(): NodeJS.ProcessEnv {
@@ -121,16 +122,20 @@ export class RecoveryInstallation {
     return JSON.parse((await this.cli(["remote-verification", "provision", "--file", join(this.root, "provision.json")])).stdout) as { workerPrincipalId: string };
   }
   async start(remote = true) {
+    if (this.fixture.closing) throw new Error("fixture_closing");
     if (this.current) throw new Error("fixture_controller_already_started");
     await this.fixture.releasePorts([this.httpPort, this.mcpPort]);
     if (this === this.fixture.broker) await this.fixture.releasePorts([this.fixture.remotePort]);
+    if (this.fixture.closing) throw new Error("fixture_closing");
     // Stale access files are not readiness. Wait for this new process to publish its PID.
     const handle = owned(process.execPath, [cliEntry, "start", "--service-mode", "--host", "127.0.0.1", "--port", String(this.httpPort),
       "--mcp-port", String(this.mcpPort), "--no-open", "--data-dir", join(this.root, "data"), "--state-dir", join(this.root, "state"),
       "--browse-root", this.fixture.root, "--web-root", join(recoveryRepository, "out"),
       ...(remote ? ["--remote-verification-config", join(this.root, "runtime.json")] : [])], recoveryRepository, this.environment());
     this.current = handle; this.generation++;
+    try {
     await waitFor(async () => {
+      if (this.fixture.closing) throw new Error("fixture_closing");
       if (handle.child.exitCode !== null || handle.child.signalCode !== null) throw new Error("fixture_controller_exited_before_ready");
       try {
         const access = JSON.parse(await readFile(join(this.root, "state/service-access.json"), "utf8"));
@@ -139,6 +144,11 @@ export class RecoveryInstallation {
     }, DEADLINE, () => "fixture_controller_readiness_deadline");
     // A real MCP handshake also proves the intended port is serving our credentials.
     await this.mcp();
+    if (this.fixture.closing) throw new Error("fixture_closing");
+    } catch (error) {
+      if (this.fixture.closing) await this.stop();
+      throw error;
+    }
   }
   async mcp(installation = false) {
     const client = new Client({ name: "full-cli-recovery-fixture", version: "1" });
@@ -151,6 +161,11 @@ export class RecoveryInstallation {
     return mcp;
   }
   async stop(crash = false) {
+    if (this.stopping) return this.stopping;
+    this.stopping = this.stopCurrent(crash);
+    try { await this.stopping; } finally { this.stopping = undefined; }
+  }
+  private async stopCurrent(crash: boolean) {
     const clients = await Promise.allSettled(this.clients.splice(0).map(client => client.close()));
     const handle = this.current;
     if (!handle) return;
@@ -169,6 +184,7 @@ export class RemoteCliRecoveryFixture {
   sha = "";
   remotePort = 0;
   preserve = false;
+  closing = false;
   private leases = new Map<number, Server>();
   get human() { return join(this.root, "human"); }
   get cache() { return join(this.root, "cache"); }
@@ -186,8 +202,20 @@ export class RemoteCliRecoveryFixture {
     await new Promise<void>((resolveListen, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolveListen); });
     const port = (server.address() as { port: number }).port; this.leases.set(port, server); return port;
   }
-  static async create() {
-    const fixture = new RemoteCliRecoveryFixture(await mkdtemp(join(tmpdir(), "wtc-full-cli-recovery-")));
+  static async create(register?: (fixture: RemoteCliRecoveryFixture) => void) {
+    const parent = process.env.WTC_RECOVERY_PARENT;
+    if (parent) {
+      if (!isAbsolute(parent) || resolve(parent) !== parent || await realpath(parent) !== parent) throw new Error("fixture_private_canonical_parent_required");
+      for (let path = parent; ; path = dirname(path)) {
+        const info = await lstat(path);
+        if (!info.isDirectory() || info.isSymbolicLink() || (info.mode & 0o022) && !(info.mode & 0o1000)
+          || path === parent && (info.uid !== process.getuid?.() || (info.mode & 0o077))) throw new Error("fixture_private_canonical_parent_required");
+        if (dirname(path) === path) break;
+      }
+    }
+    const fixture = new RemoteCliRecoveryFixture(await mkdtemp(join(parent ?? tmpdir(), "wtc-full-cli-recovery-")));
+    // Let teardown own partial setup too if Vitest times out during provisioning.
+    register?.(fixture);
     try { await fixture.prepare(); return fixture; }
     catch (error) {
       fixture.preserve = true;
@@ -235,6 +263,7 @@ const timer = setInterval(() => {
     await git(["add", "."], seed); await git(["commit", "-m", "Bounded dependency-free CLI recovery fixture"], seed);
     this.sha = await git(["rev-parse", "HEAD"], seed);
     await git(["remote", "add", "origin", join(this.root, "remote.git")], seed); await git(["push", "-u", "origin", "main"], seed);
+    await mkdir(this.cache, { mode: 0o700 });
     await git(["clone", join(this.root, "remote.git"), this.human]); await git(["clone", "--no-checkout", join(this.root, "remote.git"), this.cache]);
     await writeFile(join(this.human, "uncommitted.txt"), "preserve human work\n");
     this.broker = new RecoveryInstallation(join(this.root, "broker"), await this.port(), await this.port(), this);
@@ -278,6 +307,7 @@ const timer = setInterval(() => {
     const metadata = await stat(path, { bigint: true }); return { path, device: String(metadata.dev), inode: String(metadata.ino), uid: Number(metadata.uid) };
   }
   async close() {
+    this.closing = true;
     let failure: unknown;
     try {
       await this.release();

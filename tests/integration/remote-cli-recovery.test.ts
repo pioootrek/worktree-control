@@ -1,17 +1,17 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, beforeAll, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { RemoteVerificationAttempt, RemoteVerificationRequest } from "../../src/server/modules/remote-verification/contracts";
 import type { RemoteWorkerReport } from "../../src/shared/contracts/remote-verification";
 import type { TestQueueStatus, WorktreeTestPresets } from "../../src/shared/contracts";
 import { waitFor } from "../support/controller-fixture";
-import { identityEnded, observeWorkerTicks, recoveryCommand, recoveryRepository, RemoteCliRecoveryFixture, type Inspection, type RecoveryMcp } from "../support/remote-cli-recovery-fixture";
+import { identityEnded, observeWorkerTicks, recoveryCommand, RemoteCliRecoveryFixture, type Inspection, type RecoveryMcp } from "../support/remote-cli-recovery-fixture";
 
 type Status = { request: RemoteVerificationRequest; attempt: RemoteVerificationAttempt | null; result: RemoteWorkerReport | null; executionUncertain: boolean };
+describe.skipIf(process.platform !== "linux")("full CLI recovery acceptance", () => {
 let fixture: RemoteCliRecoveryFixture | undefined;
 beforeAll(async () => {
-  expect(process.platform, "Full CLI recovery acceptance requires native Linux host/boot identity").toBe("linux");
   // Keep direct vitest invocation behind the same artifact guard as the public script.
   expect((await recoveryCommand(process.execPath, ["scripts/build-fingerprint.mjs", "--check"])).code, "Run the managed build preset before this acceptance preset").toBe(0);
 });
@@ -53,7 +53,7 @@ async function singleExecution(f: RemoteCliRecoveryFixture, attemptId: string) {
 }
 
 it("recovers a full broker CLI SIGKILL, replays the exact request and receives the original command result", async () => {
-  const f = fixture = await RemoteCliRecoveryFixture.create();
+  const f = await RemoteCliRecoveryFixture.create(value => { fixture = value; });
   let client = await f.broker.mcp();
   const input = submission(f, "broker-cli-crash");
   const request = await client.call<RemoteVerificationRequest>("submit_remote_verification", input);
@@ -88,7 +88,7 @@ it("recovers a full broker CLI SIGKILL, replays the exact request and receives t
 }, 180_000);
 
 it("quarantines a full worker CLI SIGKILL, refuses same-boot owner recovery and blocks finite admission without remote configuration", async () => {
-  const f = fixture = await RemoteCliRecoveryFixture.create();
+  const f = await RemoteCliRecoveryFixture.create(value => { fixture = value; });
   // Keep original signed installation, artifacts and private diagnostics for independent review.
   f.preserve = true;
   const client = await f.broker.mcp(), input = submission(f, "worker-cli-crash");
@@ -144,3 +144,15 @@ it("quarantines a full worker CLI SIGKILL, refuses same-boot owner recovery and 
   await f.evidence("worker-cli-crash", { requestId: request.id, attemptId, localRunId: running.result!.localRunId, executedCommitSha: f.sha,
     phase: uncertain.result!.phase, admissionBlockReason: "remote_execution_cleanup_unconfirmed", actualRebootExecuted: false });
 }, 180_000);
+it("refuses a pending controller restart once fixture teardown begins", async () => {
+  const f = await RemoteCliRecoveryFixture.create(value => { fixture = value; });
+  await f.worker.stop();
+  const restart = f.worker.start(false);
+  const closed = f.close();
+  await expect(restart).rejects.toThrow("fixture_closing");
+  await closed;
+  await expect(f.worker.start()).rejects.toThrow("fixture_closing");
+  await expect(f.broker.start()).rejects.toThrow("fixture_closing");
+  fixture = undefined;
+}, 90_000);
+});
