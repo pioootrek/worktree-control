@@ -6,8 +6,9 @@ is `c981669dc7758ada8c1ff1daca0d7592351cd5bc`. The parent owns execution and
 Knowledge evidence for task `0e2204a2e0e0945eee4f754b2f932eed` and discussion
 `4aa80e3623977202ad6fa9a39dfbb170` in project `k7a-worktree-switcher`.
 
-The new integration test has not been executed during implementation. A passing
-run proves crashes of the real built `dist/cli/index.js start` processes using
+The focused suite passed locally and on the selected remote host on 2026-10-26;
+the real reboot continuation also passed (see execution evidence below). A passing
+suite proves crashes of the real built `dist/cli/index.js start` processes using
 an actual MCP SDK client and authenticated outbound remote HTTP over loopback.
 The dependency-free fixture uses a committed local bare Git repository. It
 does not establish cross-host, TLS, Angular, interactive T3, or real reboot
@@ -80,7 +81,7 @@ the original databases/key and command markers in `events.jsonl` describe the ev
 Broker roots are removed only after successful teardown. This fixture does not
 operate production units, databases, ports, or managed development servers.
 
-## Real reboot continuation, still unexecuted
+## Real reboot continuation
 
 A real machine reboot needs separate explicit consent. The crash-test
 authorization does not authorize it. The parent handles consent, operations
@@ -109,6 +110,14 @@ delete receipts, or infer exit from a reused PID.
    environment profile; do not bypass the queue. Roots under `/tmp` from ordinary
    local runs are not reboot evidence. Verify the selected filesystem survives
    reboot; the environment override alone does not prove persistence.
+
+   Keep the durable parent short: the resulting
+   `<fixture>/broker/state/admin.sock` and worker socket must fit the native Unix
+   socket pathname limit. An overly long parent fails controller startup with
+   `listen EINVAL`. Create a new fixture under a shorter durable parent; do not
+   move an existing installation. When reusing a separately verified dependency
+   tree, disable any package-manager automatic install-before-run behavior
+   explicitly; the acceptance command must not silently replace dependencies.
 2. Before the consented reboot, stop the disposable controllers through their
    live supervisors. Preserve the original broker and worker data/state, remote
    configuration, assignment, exact submission, immutable uncertain result,
@@ -181,6 +190,11 @@ delete receipts, or infer exit from a reused PID.
    fixture worktrees where applicable. Expect refusal before execution.
 8. Restore remote configuration pointing first to the original excluded cache.
    A distinct request must fail setup without executing the fixture command.
+   The remote report can expose the generic `preparation_failed` code; require
+   `failureKind: setup`, no execution start or command markers, and confirmed
+   cleanup. Direct finite admission to a retained worktree exposes
+   `recovery_artifacts_excluded`. Do not require that detailed code in the remote
+   report, or count an arbitrary setup failure alone as proof of exclusion.
    Configure a fresh independent worker-owned clone at a different path, while
    preserving the original cache. Submit a distinct idempotency key and require
    one new exact-SHA execution in new attempt/HOME/TMP slots with confirmed
@@ -197,3 +211,36 @@ delete receipts, or infer exit from a reused PID.
 The interactive T3 gate remains separate: use the existing T3 MCP connection
 to submit/read a real request and verify its displayed source/result evidence.
 An SDK fixture or successful reboot cannot establish that client behavior.
+
+## Execution evidence, 2026-10-26
+
+Tested source was `49a01e4dfdb1db47b886681c4d516d3c31ec0e88` on baseline
+`c981669`. The managed build passed as run
+`876ef175-5437-4f3c-affa-3b731ec1ecf5`; the local crash preset passed all three
+cases as `072c5cf9-7e40-4f6c-9e21-8a1d08420020`, with observed matching source.
+The unchanged focused suite then passed all three cases on the selected native
+Linux remote host with its original fixture created on persistent storage.
+
+After explicit user consent, one actual host reboot changed the native boot ID
+while retaining machine identity. Offline recovery of the original uncertain
+attempt validated its signature and directory identities, produced a signed
+`same-host-different-boot` / `retained-excluded` audit, replayed that identical
+audit, and rejected a conflicting operation ID. The original outcome and cleanup
+remained uncertain. Runtime continuation verified:
+
+- finite admission unblocked with remote configuration omitted;
+- the retained registered worktree rejected before execution;
+- the original cache and a symlink alias rejected during remote setup without
+  new command markers;
+- a fresh independent cache enabled one new exact-SHA success with observed
+  source attribution and confirmed cleanup;
+- replay retained the original request, attempt, local run and uncertain result,
+  without another execution;
+- all four retained directory identities remained unchanged, fresh execution
+  slots were removed, and disposable controllers and finite processes stopped.
+
+The host's 17 previously running containers returned, all five healthchecks
+passed, and its existing CI runner returned online. Detailed private evidence,
+failed preparation attempts and driver assertion corrections are recorded in the
+linked Knowledge discussion. No production code changed. This evidence does
+not complete the separate interactive T3 MCP acceptance gate.
