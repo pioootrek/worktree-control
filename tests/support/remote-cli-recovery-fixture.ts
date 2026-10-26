@@ -46,7 +46,7 @@ async function boundedClose(handle: OwnedChild, milliseconds: number): Promise<E
     return await Promise.race([handle.closed, new Promise<null>(resolveTimeout => { timer = setTimeout(() => resolveTimeout(null), milliseconds); })]);
   } finally { clearTimeout(timer); }
 }
-export async function recoveryCommand(executable: string, args: string[], cwd = recoveryRepository, env: NodeJS.ProcessEnv = { PATH: process.env.PATH, LANG: "C.UTF-8" }): Promise<{ stdout: string; code: number | null; sameBootRefused: boolean; privateOutput: string }> {
+export async function recoveryCommand(executable: string, args: string[], cwd = recoveryRepository, env: NodeJS.ProcessEnv = { PATH: process.env.PATH, LANG: "C.UTF-8", NODE_ENV: "production" }): Promise<{ stdout: string; code: number | null; sameBootRefused: boolean; privateOutput: string }> {
   const handle = owned(executable, args, cwd, env);
   const exit = await boundedClose(handle, DEADLINE);
   if (!exit) { await drain(handle, "SIGKILL"); throw new Error("fixture_command_deadline_preserve_root"); }
@@ -91,7 +91,7 @@ export class RecoveryInstallation {
   private clients: RecoveryMcp[] = [];
   constructor(readonly root: string, readonly httpPort: number, readonly mcpPort: number, private readonly fixture: RemoteCliRecoveryFixture) {}
   private environment(): NodeJS.ProcessEnv {
-    return { PATH: `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`, LANG: "C.UTF-8", HOME: join(this.root, "home"),
+    return { PATH: `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`, NODE_ENV: "production", LANG: "C.UTF-8", HOME: join(this.root, "home"),
       WORKTREE_CONTROL_DATA_DIR: join(this.root, "data"), WORKTREE_CONTROL_STATE_DIR: join(this.root, "state"),
       WORKTREE_CONTROL_OWNER_TOKEN: this.owner || undefined, WORKTREE_CONTROL_TOKEN: this.installationToken || undefined };
   }
@@ -225,7 +225,7 @@ export class RemoteCliRecoveryFixture {
   }
   private async prepare() {
     const git = async (args: string[], cwd = this.root) => {
-      const result = await recoveryCommand("git", args, cwd, { PATH: `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`, HOME: this.root, LANG: "C.UTF-8",
+      const result = await recoveryCommand("git", args, cwd, { NODE_ENV: "production", PATH: `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`, HOME: this.root, LANG: "C.UTF-8",
         GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" });
       if (result.code !== 0) throw new Error("fixture_git_failed"); return result.stdout.trim();
     };
