@@ -157,7 +157,7 @@ export class RecoveryInstallation {
       requestInit: { headers: { Authorization: `Bearer ${installation ? this.installationToken : this.owner}` } },
     }), { timeout: 10_000 });
     const names = (await client.listTools(undefined, { timeout: 10_000 })).tools.map(tool => tool.name);
-    if (!names.includes("run_test")) throw new Error("fixture_mcp_tools_missing");
+    if (!names.includes(installation ? "run_test" : "get_identity")) throw new Error("fixture_mcp_tools_missing");
     return mcp;
   }
   async stop(crash = false) {
