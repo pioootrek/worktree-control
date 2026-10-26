@@ -37,3 +37,8 @@ export { RemoteVerificationController, RemoteProtocolError } from "./remote-veri
 export { RemoteVerificationWorker, hasUnconfirmedRemoteExecution, fingerprint, type RemoteWorkerExecution, type RemoteWorkerTransport } from "./remote-worker";
 
 export { summarizeReceipt } from "./connection-contracts";
+export { remoteDependencySetupSchema, remotePreparationTimeoutSchema, type RemoteDependencySetupPolicy } from "./dependency-setup-policy";
+
+export { WorkerRecoveryService } from "./worker-recovery";
+export type { WorkerRecoveryHost, RecoveryAssessment } from "./worker-recovery";
+export type { WorkerRecoveryJournal, WorkerRecoveryProvenance, WorkerRecoveryAudit, RecoveryPathIdentity } from "./recovery-contracts";

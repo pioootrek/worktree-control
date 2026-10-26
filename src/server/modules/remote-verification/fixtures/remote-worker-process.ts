@@ -1,3 +1,5 @@
+import { LinuxWorkerRecoveryHost } from "@/server/infrastructure/git";
+import { WorkerRecoveryService } from "@/server/modules/remote-verification";
 // Isolated crash fixture: its own SQLite owner, worker, queue and source clone.
 import { readFileSync } from "node:fs";
 import { acquireControllerLock } from "@/server/controller-lock";
@@ -21,6 +23,7 @@ const processes = new ProcessManager(() => undefined, nullLogWriter);
 const lifecycle = new ProjectLifecycle(store, processes);
 const runtime = createRemoteVerificationRuntime(remoteVerificationConfigSchema.parse(JSON.parse(readFileSync(configPath, "utf8"))), {
   store, identity: new IdentityService(store), jobs, lifecycle, git, admission,
+  recovery: new WorkerRecoveryService(store.remoteConnection, new LinuxWorkerRecoveryHost(databasePath)),
 });
 await runtime!.start();
 process.send?.({ ready: true, admissionBlockReason: jobs.status().admissionBlockReason ?? null });

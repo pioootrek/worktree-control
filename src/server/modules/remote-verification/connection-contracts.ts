@@ -1,7 +1,9 @@
+import type { WorkerRecoveryJournal } from "./recovery-contracts";
 import type { RemoteAssignment, RemoteWorkerReport } from "@/shared/contracts/remote-verification";
 import type { RemoteVerificationAttemptStore, RemoteVerificationStore } from "./contracts";
 
 export interface WorkerReceipt {
+  recovery?: WorkerRecoveryJournal;
   assignment: RemoteAssignment;
   localRunId: string;
   cancellationRequested: boolean;
@@ -12,6 +14,7 @@ export interface WorkerReceipt {
 
 /** Replay/cleanup index: report bodies stay in SQLite and are read one attempt at a time. */
 export interface WorkerReceiptSummary {
+  recovery?: WorkerRecoveryJournal;
   assignment: RemoteAssignment;
   localRunId: string;
   cancellationRequested: boolean;
@@ -23,6 +26,7 @@ export interface WorkerReceiptSummary {
 export function summarizeReceipt(receipt: WorkerReceipt): WorkerReceiptSummary {
   const last = receipt.reports.at(-1);
   return {
+    ...(receipt.recovery ? { recovery: receipt.recovery } : {}),
     assignment: receipt.assignment, localRunId: receipt.localRunId,
     cancellationRequested: receipt.cancellationRequested, acknowledgedSequence: receipt.acknowledgedSequence,
     reportCount: receipt.reports.length, lastPhase: last?.phase ?? null, cleanup: last?.execution?.cleanup ?? null,
@@ -47,5 +51,7 @@ export interface RemoteConnectionStore {
   /** Read one durable outbox on demand, including immutable acknowledged evidence. */
   receipt(attemptId: string): WorkerReceipt | null;
   saveReceipt(receipt: WorkerReceipt): void;
+  /** Monotonic local recovery journal; never alters report or acknowledgement bytes. */
+  saveRecovery(attemptId: string, journal: WorkerRecoveryJournal): void;
 }
 export type RemoteControllerStore = RemoteVerificationStore & RemoteVerificationAttemptStore;

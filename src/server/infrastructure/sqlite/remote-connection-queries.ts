@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
-import type { RemoteConnectionStore, WorkerReceipt, WorkerReceiptSummary } from "@/server/modules/remote-verification";
-import type { RemoteWorkerReport } from "@/shared/contracts/remote-verification";
+import type { RemoteConnectionStore, WorkerReceipt, WorkerReceiptSummary, WorkerRecoveryJournal } from "@/server/modules/remote-verification";
+import { remoteAssignmentSchema, type RemoteWorkerReport } from "@/shared/contracts/remote-verification";
 
 function payload<T>(row: unknown): T | null {
   return row ? JSON.parse((row as { payload_json: string }).payload_json) as T : null;
@@ -99,20 +99,46 @@ export class RemoteConnectionQueries implements RemoteConnectionStore {
   receipts(): WorkerReceiptSummary[] {
     // Project in SQL: .all() must never materialize historical report/log bodies.
     const rows = this.database.prepare(`SELECT
-      json_extract(payload_json, '$.assignment') assignment_json,
+      substr(json_extract(payload_json, '$.recovery'),1,32769) recovery_json,
+      substr(json_extract(payload_json, '$.assignment'),1,4097) assignment_json,
       json_extract(payload_json, '$.localRunId') localRunId,
       json_extract(payload_json, '$.cancellationRequested') cancellationRequested,
       json_extract(payload_json, '$.acknowledgedSequence') acknowledgedSequence,
       json_array_length(payload_json, '$.reports') reportCount,
       json_extract(payload_json, '$.reports[#-1].phase') lastPhase,
       json_extract(payload_json, '$.reports[#-1].execution.cleanup') cleanup
-      FROM remote_worker_receipts LIMIT 1001`).all() as Array<Omit<WorkerReceiptSummary, "assignment" | "cancellationRequested"> & { assignment_json: string; cancellationRequested: number }>;
+      FROM remote_worker_receipts LIMIT 1001`).all() as Array<Omit<WorkerReceiptSummary, "assignment" | "cancellationRequested"> & { assignment_json: string; recovery_json: string | null; cancellationRequested: number }>;
     if (rows.length > 1000) throw new Error("worker_receipt_capacity_exhausted");
-    return rows.map(({ assignment_json, cancellationRequested, ...row }) => ({
-      ...row, assignment: JSON.parse(assignment_json), cancellationRequested: cancellationRequested === 1,
-    }));
+    try {
+      return rows.map(({ assignment_json, recovery_json, cancellationRequested, ...row }) => {
+        if (assignment_json?.length > 4096 || recovery_json && recovery_json.length > 32768
+          || typeof row.localRunId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(row.localRunId)
+          || !Number.isInteger(row.reportCount) || row.reportCount < 0 || row.reportCount > 8
+          || !Number.isInteger(row.acknowledgedSequence) || row.acknowledgedSequence < 0 || row.acknowledgedSequence > row.reportCount
+          || ![0, 1].includes(cancellationRequested)
+          || row.lastPhase !== null && !["preparing", "running", "succeeded", "failed", "cancelled", "uncertain"].includes(row.lastPhase)
+          || row.reportCount === 0 && row.lastPhase !== null || row.reportCount > 0 && row.lastPhase === null
+          || row.cleanup !== null && (typeof row.cleanup !== "string" || row.cleanup.length > 64)) throw new Error("metadata_invalid");
+        return { ...row, ...(recovery_json ? { recovery: JSON.parse(recovery_json) } : {}),
+          assignment: remoteAssignmentSchema.parse(JSON.parse(assignment_json)), cancellationRequested: cancellationRequested === 1 };
+      });
+    } catch { throw new Error("worker_receipt_metadata_invalid"); }
+  }
+  saveRecovery(attemptId: string, journal: WorkerRecoveryJournal): void {
+    this.atomic(() => {
+      const receipt = this.receipt(attemptId);
+      if (!receipt) throw new Error("worker_receipt_missing");
+      if (receipt.recovery && (JSON.stringify(receipt.recovery.provenance) !== JSON.stringify(journal.provenance)
+        || receipt.recovery.audit && JSON.stringify(receipt.recovery.audit) !== JSON.stringify(journal.audit))) throw new Error("recovery_journal_conflict");
+      this.database.prepare("UPDATE remote_worker_receipts SET payload_json=json_set(payload_json, '$.recovery', json(?)) WHERE attempt_id=?")
+        .run(JSON.stringify(journal), attemptId);
+    });
   }
   saveReceipt(receipt: WorkerReceipt): void {
-    this.database.prepare("UPDATE remote_worker_receipts SET payload_json=? WHERE attempt_id=?").run(JSON.stringify(receipt), receipt.assignment.attemptId);
+    // A callback holding an older receipt must not erase independent recovery evidence.
+    this.database.prepare(`UPDATE remote_worker_receipts SET payload_json=CASE
+      WHEN json_type(payload_json, '$.recovery') IS NOT NULL
+      THEN json_set(?, '$.recovery', json_extract(payload_json, '$.recovery')) ELSE ? END
+      WHERE attempt_id=?`).run(JSON.stringify(receipt), JSON.stringify(receipt), receipt.assignment.attemptId);
   }
 }

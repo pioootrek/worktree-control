@@ -1,31 +1,29 @@
 ---
 audience: "owner, contributors, and coding agents"
-last_reviewed: "2026-10-23"
+last_reviewed: "2026-10-25"
 source_of_truth: "remote verification and worker direction from the owner discussion on 2026-09-05"
 status: "active"
 ---
 
 # Remote verification of pushed commits
 
-## Implementation status, 2026-10-23
+## Implementation status, 2026-10-25
 
 Request authorization/persistence, attempt-state operations and exact-SHA
 workspace preparation were already implemented on `main` at `17d0c9d`.
-The current development branch adds an opt-in worker protocol, durable worker
-receipts and reports, existing finite-queue execution, local provisioning and
-MCP submit/status/log/cancel operations. This is an experimental first fragment,
-not a deployed or accepted WinPath workflow.
+Merged PR105 adds an opt-in worker protocol, durable worker receipts and reports,
+existing finite-queue execution, local provisioning and MCP submit/status/log/cancel
+operations. The next backend slice adds explicit worker-local pnpm preparation
+and a preparation deadline with cancellation through Git and installation.
+This remains experimental, not a deployed or accepted WinPath workflow.
 
-The fragment accepts dependency-free Node projects and clean profiles only.
-Verification uses the worker's Node executable directory plus fixed system
-directories in PATH, supporting a user-local Node installation without copying
-the controller's environment.
-It does not install dependencies, upload artifacts or stream live logs. A
-manifest declaring dependencies is refused as setup failure; therefore this
-fragment cannot yet verify WinPath. Real worker selection, deployment approval,
-and the failed/fixed WinPath acceptance trial remain outstanding. An isolated
-worker subprocess crash/restart test confirms quarantine and no repeated
-command; controller process-crash and operator recovery acceptance remain open.
+Dependency-free Node projects remain supported without installation. Dependencies
+require an explicit mapping policy selecting an available pinned Node/pnpm 11
+toolchain, committed pnpm lockfile and setup-script trust. The setup contract
+below defines the boundary. Real worker selection, deployment approval and the
+failed/fixed cross-host WinPath trial remain outstanding. Isolated fixtures are
+not that acceptance. Controller process-crash and safe operator recovery
+acceptance also remain open.
 
 See the [remaining implementation slices](knowledge/AGENTS.md) (Knowledge attachment `64ab7a29d6c4ae015d5cd794c58a8a68`).
 
@@ -262,22 +260,237 @@ remain protected from normal history pruning until a durable receipt outcome
 preserves their completion evidence. This can retain up to 1,000 additional run
 details while collection is delayed. Routine retention maintenance remains open.
 
-Source preparation currently uses the existing per-command Git timeouts. The
-preset timeout starts with test execution; it is not an overall preparation
-deadline. Cancellation during preparation prevents the test from starting but
-waits for preparation to settle before cleanup and capacity release. Propagating
-cancellation through preparation, defining its overall deadline and exercising
-stalled-source failures remain required before the real-worker trial.
+### Worker-local dependency preparation
+
+Omitting `dependencySetup` preserves the dependency-free behavior. A mapping may
+explicitly add this privileged local configuration; assignments cannot supply or
+override any of its values:
+
+```json
+{
+  "preparationTimeoutMs": 600000,
+  "dependencySetup": {
+    "kind": "pnpm",
+    "nodeExecutable": "/opt/worker-tools/node/bin/node",
+    "nodeVersion": "24.15.0",
+    "pnpmEntryPoint": "/opt/worker-tools/pnpm/bin/pnpm.cjs",
+    "pnpmVersion": "11.5.2",
+    "scripts": "trusted-repository"
+  }
+}
+```
+
+These are illustrative local paths, not a toolchain installer. The worker must
+already have the executable Node binary and pnpm JavaScript entry point. Node
+must be at least 22 and match the configured exact version; pnpm must be an
+exact version in the supported 11.1+ major-11 range and match both its reported
+version and the committed `packageManager` pin. Missing or mismatched tools fail
+preparation. No Corepack, global installation, package-manager switching or
+repository-requested runtime download is allowed. Repositories declaring
+`devEngines.runtime` or `engines.runtime` are refused in this slice. pnpm checks
+engine compatibility with `engineStrict` enabled.
+
+pnpm `configDependencies` plugins are unsupported in this slice. An offline,
+frozen configuration probe with repository hooks disabled refuses configured
+plugins as `dependency_config_plugins_unsupported` before verification. The
+launcher also disables config-dependency bootstrap in nested invocations, so
+it cannot install plugins before dispatching a verification script. Repository
+pnpmfile hooks remain available under `trusted-repository`.
+
+Every attempt starts from a fresh exact-SHA clone with no borrowed or committed
+`node_modules`. A committed regular `pnpm-lock.yaml` with lockfile version 9.0
+is mandatory. Installation uses `--frozen-lockfile`, includes development
+dependencies, and does not fetch runtime entries. pnpm refuses an out-of-sync
+lockfile rather than updating it. The worker also checks dependency metadata
+hashes and complete Git source observations after setup and before execution;
+tracked source/lockfile changes prevent execution. Normal registered-project
+verification never installs dependencies automatically.
+
+Both policies require a trusted repository and trusted pushers. With
+`scripts: "ignore"`, pnpm skips installation lifecycle scripts, implicit
+pre/post script hooks and pnpmfile hooks. Explicitly requested verification
+scripts still execute, including scripts they delegate to with pnpm. With
+`scripts: "trusted-repository"`, root lifecycle scripts, repository hooks and
+build scripts allowed by the repository's pnpm policy can execute code. This
+policy does not grant blanket permission to build every dependency. WinPath's
+committed `allowBuilds` remains the dependency build policy. Neither option is a
+sandbox: repository verification scripts still run with the worker account's
+filesystem and network permissions. Secret-free preparation cannot install from
+a registry that requires credentials under this contract.
+
+Git fetch, setup and execution receive an explicit secret-free environment,
+fresh attempt-owned HOME/TMP and XDG directories, and a private pnpm store/cache.
+The private Node link and pnpm launcher precede fixed system directories in PATH.
+No controller PATH, environment, SSH agent, user Git configuration or registry
+credentials are copied. Inline auth/token/password settings in a root `.npmrc`
+are refused.
+Trusted source-cache Git configuration and committed repository configuration
+remain executable inputs; do not put secrets in them. Setup stdout/stderr is
+not published. Only stable bounded setup error codes are retained; normal test
+output retains the existing bounded-tail contract.
+
+The attempt-owned pnpm launcher applies the same explicit store/cache, engine,
+script and hook settings during installation, verification and ordinary nested
+pnpm calls, including the `npm_execpath` route. CLI settings prevent repository
+YAML from overriding this worker policy. `verifyDepsBeforeRun` is disabled:
+verification uses the dependencies prepared under the preparation deadline,
+even if pnpm's freshness state is missing or stale. It must not run a second
+implicit install during execution. Package-manager and runtime mismatch policy
+is `error` for both top-level and nested calls, preventing implicit toolchain
+downloads. Tool version discovery runs outside the checked-out repository so
+it cannot load that repository's hooks. The launcher loads the pinned pnpm
+entry point in the same Node process; process ownership and cancellation do
+not gain another subprocess layer. This is configuration enforcement for
+trusted repository scripts, which retain their account permissions and can
+explicitly run other tools or commands.
+
+The environment fingerprint includes setup policy, exact tool versions and
+paths, Node binary and pnpm entry-point hashes, normalized launcher contents,
+install/execution options, preparation budget and dependency metadata hashes.
+Metadata includes `package.json`,
+`pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` and pnpmfile files; other tracked
+inputs remain attributed to the exact source SHA. Attempt HOME/TMP paths are
+normalized. This records the supplied toolchain, not a complete digest of every
+file in its installed distribution or external service state.
+
+### Preparation deadline and cleanup evidence
+
+`preparationTimeoutMs` defaults to ten minutes and accepts one second through
+thirty minutes. It starts when the existing finite queue admits preparation,
+not while the job is waiting in that queue. It spans lifecycle/Git admission,
+fetch, checkout, tool checks, installation and preflight source checks. The
+preset's execution timeout starts separately with test execution. Git commands
+also keep their shorter per-command bounds. Deadline/cancellation stops new
+preparation steps and signals only freshly owned detached process groups,
+including their remaining descendants after launcher exit.
+
+Cancellation during lifecycle or Git admission removes/skips inert waiting
+work. Active Git/setup commands are drained and their owned groups stopped
+through the existing `OwnedProcessGroup` adapter. Cleanup can outlast the
+preparation budget: TERM has a 3.5-second grace period, followed by KILL and a
+one-second exit check, plus bounded process-inspection retries. The deadline is
+a stop request, not permission to discard process ownership or a guaranteed
+wall-clock response time for filesystem/kernel operations.
+
+Preparation retains the same shared queue slot and workspace exclusion until
+owned-process stop and workspace disposal are confirmed. Setup failures never
+start the verification command. Durable reports distinguish policy/lock/tool
+refusal, `dependency_install_failed`, `dependency_metadata_changed`,
+`preparation_timeout` and `preparation_cancelled`, with termination and cleanup
+evidence. Unconfirmed process or workspace cleanup produces `uncertain`, keeps
+ownership/capacity and blocks new finite execution. It must not be called a
+successful cancellation. Existing immutable receipt ordering, retry/ACK rules,
+protected run history and at most three uploads per tick remain in force.
+
+The added tests include isolated locked local dependencies with a real available
+pnpm distribution, failing/fixed revisions, lock/tool refusals and controlled
+fetch/install cancellation, timeout and cleanup failures. Further regressions
+check both script policies, install counts, private store/cache settings,
+stale-state nested pnpm execution and refusal of nested toolchain downloads.
+Parent verification passed these regressions in the full `pnpm check` run:
+1,558 Vitest tests across 136 files and 22 script tests, with lint and typecheck.
+This evidence covers local fixtures; cross-host WinPath/VPS acceptance remains
+required.
 
 After a restart, accepted work with unknown process cleanup blocks new finite
 jobs in the worker installation, even if the remote configuration is omitted.
-This conservative block has no automatic release or operator reconciliation
-command in the first fragment. Do not delete receipts or assume a PID/port proves
-process ownership to clear it. The subprocess fixture kills the worker after
-its running report, lets its finite child exit, and restarts against the same
-database: the old attempt remains uncertain and new execution is blocked.
-A safe operator recovery workflow and controller process-crash acceptance remain
-required before routine worker use.
+There is no automatic release. The owner recovery operation below can reconcile
+one attempt with sufficient evidence; all other unresolved attempts retain the
+block. Do not delete receipts or assume a PID/port proves process ownership.
+
+### Offline owner recovery on Linux
+
+The supported recovery evidence is a different kernel boot on the same Linux
+host and the original installation. Same-boot uncertainty remains blocked even
+if a launcher has exited, a saved PID has been reused, or no process can be seen
+at that PID. Recovery never signals a saved process, retries an assignment or
+changes its execution outcome. A reboot is an operator prerequisite, not an
+action performed by this command. This fragment does not provide a same-boot
+recovery procedure.
+
+With the controller stopped, use a current owner session credential through
+`WORKTREE_CONTROL_OWNER_TOKEN` and the installation's normal data/state options:
+
+```bash
+worktree-control remote-verification inspect
+worktree-control remote-verification inspect --attempt-id ATTEMPT
+worktree-control remote-verification reconcile --attempt-id ATTEMPT --operation-id OPERATION
+```
+
+`inspect` returns bounded receipt metadata, exact attempt/run identity, original
+cleanup/outcome, validated provenance, recovery prerequisites and any saved
+audit. Its `blocked` field conservatively describes receipt evidence without
+using retained local run details to infer cleanup. It opens SQLite read-only,
+performs no migrations, creates no recovery key or journal and does not update
+credential last-used timestamps. Both operations acquire the existing controller
+and database singleton locks. A live controller or another database owner causes
+refusal. Agent, worker, installation-wide and anonymous authority cannot recover
+or inspect through these operations. There is no `--yes` or force-clear option.
+
+Before the first Git, setup or test subprocess, the worker commits a local
+recovery journal through its existing SQLite connection with FULL durability.
+The journal records exact assignment/run identity, host and boot identity,
+workspace-root and source-cache directory identities, and three previously
+absent attempt slots for workspace, HOME and TMP. It precedes slot creation and
+covers a crash between spawning and recording process details, including
+remaining descendants after launcher death. A crash before this commit cannot
+leave an unjournaled subprocess from this preparation path. Missing or ambiguous
+journals still fail closed; they are never backfilled from saved PIDs.
+
+The adapter reads the root-managed `/etc/machine-id` and kernel
+`/proc/sys/kernel/random/boot_id`; neither comes from command arguments,
+configuration or receipt assertions. A private random key beside the database
+signs provenance and recovery audits. It is synchronized before work and bound
+to the canonical database path and database/key device/inode identity. Copying
+a receipt, database, or key to a different installation does not establish
+recovery authority. Missing keys, modified signatures, unreadable probes,
+different hosts, replaced roots/caches and symlinked paths cause refusal without
+signals or deletion. This proof assumes native Linux host identity and kernel
+boot semantics. Cloned machine identities, VM snapshot rollback and externally
+fabricated procfs identities are outside this supported proof. A restore or
+installation move does not preserve this recovery authority.
+
+Reconciliation records process exit separately from filesystem disposition.
+This fragment retains all artifact slots and the original source cache in place,
+without traversing their contents or claiming removal. Some slots may already
+be absent. The signed audit explicitly records `same-host-different-boot` and
+`retained-excluded`, the owner/credential IDs, operation ID, observed boot and
+time. It is local metadata alongside the receipt, outside report bodies and
+acknowledgements. The original uncertain report stays uncertain, and the broker
+continues to receive that immutable report. No result is upgraded to a pass.
+
+Retained paths are permanently excluded from finite-job working directories
+and worker preparation/cache selection. Checks run at enqueue and again before
+preparation/execution, including startup without remote configuration. Symlink
+aliases are refused. To run further remote checks, configure a new independent
+worker-owned source clone at a different path; the original source cache may
+contain interrupted Git state. New attempt slots can use the original workspace
+root when they do not overlap retained paths. Do not repurpose the retained
+paths. Removing artifacts, reclaiming receipt history and releasing these
+exclusions require a later maintenance design. These checks do not sandbox
+trusted repository code or constrain unrelated programs running as the account.
+
+Use the same operation ID to retry an identical recovery request. It returns the
+saved audit, including after reopen or a lost response. Reusing the ID for
+another attempt, or another operation ID for that attempt, is a conflict. The
+audit and provenance are monotonic; stale report callbacks cannot erase them.
+Failures before/during the transaction leave the attempt blocked. Recovery
+performs no filesystem cleanup, so there is no deletion/save crash window or
+partial cleanup to disguise. Missing local run history, revoked worker grants
+and omitted/changed remote configuration cannot select replacement paths or
+erase another attempt's blocker. Receipt metadata scans retain the 1,000-record
+cap; recovery and assignment metadata projections are also byte-bounded.
+
+This implementation adds simulated boot-transition tests, ownership/path and
+transaction regressions, and a subprocess crash fixture with a surviving finite
+descendant. Parent verification exercised these checks on an isolated Linux VPS.
+The full suite required focused rechecks after a crash-fixture synchronization
+fix; an existing SQLite stress test also exceeded its five-second default on
+the prior baseline and passed with a fifteen-second test budget. Exact results
+and failed runs are retained in Knowledge. There was no clean single full-suite
+pass on this VPS run. No machine restart was performed. Full controller
+process-crash acceptance and actual cross-host WinPath failing/fixed execution
+remain separate open gates.
 
 ## SaaS path and open decisions
 
@@ -293,6 +506,6 @@ not imply control of an external LLM client.
 
 The experimental fragment makes initial choices for transport, access scopes,
 trusted sources, fingerprints, provisioning and offline cancellation. Operational
-enrollment, credential rotation, retention maintenance, preparation deadlines
-and safe recovery from unknown process ownership remain open. No provider,
+enrollment, credential rotation, retention maintenance and same-boot recovery
+from unknown process ownership remain open. No provider,
 price, remote-client compatibility, or deployment is agreed by this plan.

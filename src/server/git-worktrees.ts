@@ -11,6 +11,8 @@ interface AdmissionJob<T> {
   operation: (signal: AbortSignal) => Promise<T>;
   resolve: (value: T) => void;
   reject: (error: unknown) => void;
+  dispose?: () => void;
+  signal?: AbortSignal;
 }
 
 export class GitCommandAdmission {
@@ -28,7 +30,8 @@ export class GitCommandAdmission {
     private readonly remoteLimit = 1,
   ) {}
 
-  run<T>(priority: GitCommandPriority, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  run<T>(priority: GitCommandPriority, operation: (signal: AbortSignal) => Promise<T>, options: { signal?: AbortSignal } = {}): Promise<T> {
+    if (options.signal?.aborted) return Promise.reject(options.signal.reason);
     if (this.closed) return Promise.reject(new Error("Obsługa poleceń Git jest zamknięta."));
     const queue = priority === "operational" ? this.operational
       : priority === "remote" ? this.remote : this.background;
@@ -36,7 +39,16 @@ export class GitCommandAdmission {
       return Promise.reject(new Error("Kolejka poleceń Git jest zajęta. Spróbuj ponownie później."));
     }
     return new Promise<T>((resolve, reject) => {
-      const job = { priority, operation, resolve, reject } as AdmissionJob<T>;
+      const job = { priority, operation, resolve, reject, signal: options.signal } as AdmissionJob<T>;
+      const abort = () => {
+        const index = queue.indexOf(job as AdmissionJob<unknown>);
+        if (index < 0) return; // An admitted operation owns cleanup before its promise settles.
+        queue.splice(index, 1);
+        job.dispose?.();
+        reject(options.signal!.reason);
+      };
+      job.dispose = () => options.signal?.removeEventListener("abort", abort);
+      options.signal?.addEventListener("abort", abort, { once: true });
       queue.push(job as AdmissionJob<unknown>);
       this.pump();
     });
@@ -45,7 +57,7 @@ export class GitCommandAdmission {
   close(): void {
     this.closed = true;
     const error = new Error("Obsługa poleceń Git została zamknięta.");
-    for (const job of [...this.operational.splice(0), ...this.remote.splice(0), ...this.background.splice(0)]) job.reject(error);
+    for (const job of [...this.operational.splice(0), ...this.remote.splice(0), ...this.background.splice(0)]) { job.dispose?.(); job.reject(error); }
     for (const controller of this.controllers) controller.abort();
   }
 
@@ -55,11 +67,12 @@ export class GitCommandAdmission {
         ?? (this.remoteRunning < this.remoteLimit ? this.remote.shift() : undefined)
         ?? this.background.shift();
       if (!job) return;
+      job.dispose?.();
       this.running += 1;
       if (job.priority === "remote") this.remoteRunning += 1;
       const controller = new AbortController();
       this.controllers.add(controller);
-      void job.operation(controller.signal).then(job.resolve, job.reject).finally(() => {
+      void job.operation(job.signal ? AbortSignal.any([controller.signal, job.signal]) : controller.signal).then(job.resolve, job.reject).finally(() => {
         this.controllers.delete(controller);
         this.running -= 1;
         if (job.priority === "remote") this.remoteRunning -= 1;
@@ -85,8 +98,13 @@ function execute(
 export interface GitWorktreeReader {
   canonicalRepositoryPath(path: string): Promise<string>;
   list(repositoryPath: string, options?: { priority?: GitCommandPriority; includeInsights?: boolean }): Promise<Worktree[]>;
-  observe(worktreePath: string): Promise<TestSourceObservation>;
+  observe(worktreePath: string, options?: GitObservationOptions): Promise<TestSourceObservation>;
   close?(): void;
+}
+export interface GitObservationOptions {
+  signal?: AbortSignal;
+  /** Trusted queue-owned execution, used when observation is part of remote preparation. */
+  execute?: (args: string[], signal: AbortSignal) => Promise<string>;
 }
 export function parseWorktreePorcelain(output: string): Omit<Worktree, "dirty">[] {
   const records = output.split("\0\0").filter(Boolean);
@@ -178,18 +196,18 @@ export class SystemGitWorktreeReader implements GitWorktreeReader {
     return result;
   }
 
-  async observe(worktreePath: string): Promise<TestSourceObservation> {
+  async observe(worktreePath: string, options: GitObservationOptions = {}): Promise<TestSourceObservation> {
     const observedAt = new Date().toISOString();
     try {
       const canonical = await realpath(worktreePath);
-      const read = (args: string[]) => this.admission.run("operational", (signal) => execute(
-        "git", ["-C", canonical, ...args], { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024, signal },
-      ));
+      const read = (args: string[]) => this.admission.run("operational", async (signal) => options.execute
+        ? { stdout: await options.execute(["-C", canonical, ...args], signal) }
+        : execute("git", ["-C", canonical, ...args], { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024, signal }), { signal: options.signal });
       const optionalRead = async (args: string[], fallback: string) => {
         try {
           return (await read(args)).stdout;
         } catch (error) {
-          if ((error as { code?: string | number }).code === 1) return fallback;
+          if ((error as { code?: string | number }).code === 1 || (error as { exitCode?: number }).exitCode === 1) return fallback;
           throw error;
         }
       };
@@ -205,6 +223,7 @@ export class SystemGitWorktreeReader implements GitWorktreeReader {
       const errorCode = before !== after ? "unstable_head" : sparse ? "sparse_checkout_unsupported" : unsupportedIndex ? "index_flags_unsupported" : null;
       return { observedAt, head: after || null, branch, dirty: records.length > 0, statusDigest: createHash("sha256").update(records.join("\0")).digest("hex"), statusEntries: records.length, complete, errorCode };
     } catch (error) {
+      if (options.signal?.aborted || (error as { cleanupUnconfirmed?: boolean }).cleanupUnconfirmed) throw error;
       const code = (error as NodeJS.ErrnoException).code;
       return { observedAt, head: null, branch: null, dirty: null, statusDigest: null, statusEntries: null, complete: false, errorCode: code === "ENOENT" ? "missing_worktree" : code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? "status_limit_exceeded" : "source_observation_failed" };
     }

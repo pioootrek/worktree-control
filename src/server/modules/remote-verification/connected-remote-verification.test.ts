@@ -1,3 +1,4 @@
+import { WorkerRecoveryService } from "./index";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ControlService } from "@/server/control-service";
@@ -13,7 +14,7 @@ import { SqliteStateStore } from "@/server/sqlite-store";
 import { IdentityService } from "@/server/modules/identity";
 import { ProjectLifecycle } from "@/server/modules/lifecycle";
 import { GitCommandAdmission, SystemGitWorktreeReader } from "@/server/git-worktrees";
-import { SystemRemoteVerificationWorkspacePreparer, SystemRemoteWorkerExecution } from "@/server/infrastructure/git";
+import { LinuxWorkerRecoveryHost, SystemRemoteVerificationWorkspacePreparer, SystemRemoteWorkerExecution } from "@/server/infrastructure/git";
 import { ProcessManager } from "@/server/process-manager";
 import { TestJobManager } from "@/server/test-job-manager";
 import { nullLogWriter } from "@/server/log-writer";
@@ -79,7 +80,7 @@ async function fixture(realCommands = false) {
   let workerRetired = false;
   cleanup.push(async () => { if (!workerRetired) await jobs.shutdown(); reader.close(); });
   const mappings = [{ projectId: "remote-project", localProjectId: local.id, sourceCachePath: cache, sourceRemote: "origin", presetIds: ["node:test"] }];
-  const execution = new SystemRemoteWorkerExecution("worker", mappings, workerStore, lifecycle, reader, new ProjectTestCommandResolver([realCommands ? new NodeTestCommandAdapter() : new FixtureNodeAdapter()]), new SystemRemoteVerificationWorkspacePreparer(workspaces, admission), workspaces);
+  const execution = new SystemRemoteWorkerExecution("worker", mappings, workerStore, lifecycle, reader, new ProjectTestCommandResolver([realCommands ? new NodeTestCommandAdapter() : new FixtureNodeAdapter()]), new SystemRemoteVerificationWorkspacePreparer(workspaces, admission), workspaces, new WorkerRecoveryService(workerStore.remoteConnection, new LinuxWorkerRecoveryHost(join(root, "worker.sqlite3"))));
   const httpTransport = new HttpRemoteWorkerTransport(origin, "worker", () => issued.token, true);
   let disconnected = false;
   let pollDisconnected = false;
@@ -157,8 +158,15 @@ describe("connected remote verification (isolated fixtures, not real-worker acce
 
   it("quarantines real worker process death and restart without replaying the accepted command", async () => {
     const f = await fixture(true);
-    const startedFile = join(f.root, "executions"), finishedFile = join(f.root, "process-finished");
-    const sha = f.commit(`const fs=require('node:fs');fs.appendFileSync(${JSON.stringify(startedFile)},'run\\n');setTimeout(()=>fs.writeFileSync(${JSON.stringify(finishedFile)},'done'),3000);`, "crash fixture");
+    const startedFile = join(f.root, "executions"), finishedFile = join(f.root, "process-finished"), descendantFile = join(f.root, "descendant-alive"), launcherFile = join(f.root, "launcher-finished");
+    const releaseLauncher = join(f.root, "release-launcher"), releaseDescendant = join(f.root, "release-descendant");
+    let workerCrashed = false;
+    cleanup.push(async () => {
+      writeFileSync(releaseLauncher, "release"); writeFileSync(releaseDescendant, "release");
+      if (workerCrashed && existsSync(descendantFile)) await vi.waitFor(() => expect(existsSync(finishedFile)).toBe(true), { timeout: 10_000 });
+    });
+    const descendant = `const fs=require('node:fs');setInterval(()=>{fs.writeFileSync(${JSON.stringify(descendantFile)},String(Date.now()));if(fs.existsSync(${JSON.stringify(releaseDescendant)})){fs.writeFileSync(${JSON.stringify(finishedFile)},'done');process.exit(0)}},50);setTimeout(()=>process.exit(2),60000);`;
+    const sha = f.commit(`const fs=require('node:fs');fs.appendFileSync(${JSON.stringify(startedFile)},'run\\n');require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:'ignore'});setInterval(()=>{if(fs.existsSync(${JSON.stringify(releaseLauncher)})){fs.writeFileSync(${JSON.stringify(launcherFile)},'done');process.exit(0)}},50);setTimeout(()=>process.exit(2),60000);`, "crash fixture");
     git(f.seed, "push", "-q", "origin", "main");
     await f.retireWorker();
     const tokenFile = join(f.root, "private-worker-token"), configFile = join(f.root, "worker-config.json");
@@ -184,15 +192,34 @@ describe("connected remote verification (isolated fixtures, not real-worker acce
     const request = f.submit(sha);
     const first = await launch();
     await vi.waitFor(() => expect(f.controller.status(request.id, f.owner).attempt?.phase).toBe("running"), { timeout: 10_000 });
+    await vi.waitFor(() => expect(existsSync(descendantFile)).toBe(true), { timeout: 10_000 });
     first.child.kill("SIGKILL"); await first.exited;
-    // The test process deliberately ends itself; never signal an unknown PID after restart.
-    await vi.waitFor(() => expect(existsSync(finishedFile)).toBe(true), { timeout: 10_000 });
+    workerCrashed = true;
+    // A real descendant outlives both the killed worker and its finite launcher.
+    // Hold the launcher until after the crash so ordinary owned cleanup cannot
+    // win the race. Only fixture control files release the surviving processes.
+    writeFileSync(releaseLauncher, "release");
+    await vi.waitFor(() => expect(existsSync(launcherFile)).toBe(true), { timeout: 10_000 });
+    const heartbeat = readFileSync(descendantFile, "utf8");
+    await vi.waitFor(() => expect(readFileSync(descendantFile, "utf8")).not.toBe(heartbeat), { timeout: 10_000 });
+    expect(existsSync(finishedFile)).toBe(false);
+    const inspectionStore = new SqliteStateStore(join(f.root, "worker.sqlite3"));
+    const localIdentity = new IdentityService(inspectionStore);
+    const localOwner = localIdentity.authenticateBearer(localIdentity.bootstrapOwnerSession().token);
+    const recovery = new WorkerRecoveryService(inspectionStore.remoteConnection, new LinuxWorkerRecoveryHost(join(f.root, "worker.sqlite3")), localIdentity);
+    try {
+      const attemptId = inspectionStore.remoteConnection.receipts()[0].assignment.attemptId;
+      expect(recovery.inspect(attemptId, localOwner)).toMatchObject({ blocked: true, recoverable: false, code: "recovery_same_boot_unconfirmed" });
+      expect(() => recovery.reconcile(attemptId, "same-boot-refused", localOwner)).toThrow("recovery_same_boot_unconfirmed");
+    } finally { inspectionStore.close(); }
     const second = await launch();
     expect(second.ready.admissionBlockReason).toBe("remote_execution_cleanup_unconfirmed");
     await vi.waitFor(() => expect(f.controller.status(request.id, f.owner).attempt?.phase).toBe("uncertain"), { timeout: 10_000 });
     const next = f.submit(f.fixedSha, "after-worker-crash");
     await vi.waitFor(() => expect(f.controller.status(next.id, f.owner).attempt).toMatchObject({ phase: "failed", failureKind: "setup" }), { timeout: 10_000 });
     expect(readFileSync(startedFile, "utf8")).toBe("run\n");
+    writeFileSync(releaseDescendant, "release");
+    await vi.waitFor(() => expect(existsSync(finishedFile)).toBe(true), { timeout: 10_000 });
     second.child.send("close"); await second.exited;
   }, 35_000);
 
@@ -363,7 +390,9 @@ describe("connected remote verification (isolated fixtures, not real-worker acce
     const reopened = new SqliteStateStore(join(f.root, "worker.sqlite3"));
     try {
       expect(reopened.getTestRun(runId)).toMatchObject({ executable: process.execPath, args: ["check.cjs"],
-        environmentVariableNames: ["CI", "HOME", "LANG", "NODE_ENV", "PATH", "TMPDIR"] });
+        environmentVariableNames: ["CI", "COREPACK_ENABLE_NETWORK", "COREPACK_ENABLE_PROJECT_SPEC", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT",
+          "HOME", "LANG", "NODE_ENV", "PATH", "PNPM_HOME", "TEMP", "TMP", "TMPDIR", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+          "npm_config_cache", "npm_config_globalconfig", "npm_config_userconfig", "pnpm_config_engine_strict", "pnpm_config_pm_on_fail"].sort() });
     } finally { reopened.close(); }
   }, 30_000);
 
