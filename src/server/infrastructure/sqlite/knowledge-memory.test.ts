@@ -328,7 +328,7 @@ describe("K4 memory and session context", () => {
     expect(Buffer.byteLength(JSON.stringify(context.supersessionHistory))).toBeLessThanOrEqual(32768);
     expect(context.nextOffset).toBeNull();
     const huge = f.call<KnowledgeMutationResult<KnowledgeMemory>>("create_memory", { ...f.input, idempotencyKey: "huge",
-      sources: Array.from({ length: 20 }, (_, i) => ({ kind: "external", label: `source-${i}`, url: `https://example.test/${"ą".repeat(1800)}` })) }).value;
+      sources: Array.from({ length: 16 }, (_, i) => ({ kind: "external", label: `source-${i}`, url: `https://example.test/${"ą".repeat(1800)}` })) }).value;
     const newest = f.change("approve_memory", f.create({ idempotencyKey: "newest" }));
     f.change("supersede_memory", huge, { replacementId: newest.id, replacementRevision: newest.revision });
     for (const format of ["json", "markdown"] as const) {
@@ -372,7 +372,7 @@ describe("K4 memory and session context", () => {
       sources: [{ kind: "external", label: "Private", url: "https://private.test" }] }, f.owner).value;
     // Simulate an imported cross-project pointer; the public mutation API rejects this edge.
     f.store.saveMemory({ ...foreign, revision: 2, status: "superseded", supersededBy: { id: current.id, revision: current.revision } }, 1,
-      "supersede_memory", { projectId: foreign.projectId, actor: f.owner, idempotencyKey: "import-edge", requestHash: "import-edge" });
+      "supersede_memory", { projectId: foreign.projectId, actor: f.owner, idempotencyKey: "import-edge", requestHash: "a".repeat(64) });
     const input = { taskId: f.task.id, includeSuperseded: true };
     expect(f.call<KnowledgeTaskContext>("task_context", input).supersessionHistory?.chains[0]).toMatchObject({ predecessors: [], truncated: false });
     expect(() => f.call("task_context", { ...input, projectId: f.privateProject.id })).toThrowError(expect.objectContaining({ code: "knowledge_forbidden" }));
