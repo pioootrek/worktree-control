@@ -40,6 +40,7 @@ export interface KnowledgeSupersessionHistory {
   maxDepth: number;
   maxItems: number;
   maxBytes: number;
+  truncated: boolean;
   chains: Array<{ decisionId: string; predecessors: KnowledgeContextMemory[]; truncated: boolean }>;
 }
 export interface KnowledgeTaskContext {

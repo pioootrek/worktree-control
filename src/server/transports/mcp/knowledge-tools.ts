@@ -4,7 +4,7 @@ import type { ControlService } from "@/server/control-service";
 import type { AuthenticatedPrincipal } from "@/server/modules/identity";
 import { knowledgeFailure } from "@/server/modules/knowledge";
 
-const attachmentDescriptions: Record<string, string> = {
+const operationDescriptions: Record<string, string> = {
   task_context: "Read a bounded task context page. Optional includeSuperseded=true adds supersessionHistory for this page's approved decisions: superseded predecessors, revisions, dates and replacement pointers, separate from current decisions/proposals. History is capped at depth 8, 50 predecessors and 32 KiB per page; each chain reports truncated. Follow nextOffset for current entries; inspect full memories for truncated history. Default output is unchanged. No runtime claim or server operation.",
   export_context: "Export task context as json or markdown. Optional includeSuperseded=true includes bounded, explicitly superseded predecessor history for this page's approved decisions (depth 8, 50 predecessors, 32 KiB per page). History never counts as current decisions or proposals; each chain reports truncated. Follow nextOffset for current entries; inspect full memories for omitted history. Exports remain limited to 256 KiB; request a smaller page if needed. Default output is unchanged. Requires knowledge:read and knowledge:export.",
   check_context_export: "Check a task-context fingerprint against current project records. Use the same limit, offset and includeSuperseded option as the original context/export; history is included in the fingerprint only when requested. No runtime claim or server operation.",
@@ -18,7 +18,7 @@ export function registerKnowledgeTools(server: McpServer, service: ControlServic
   for (const [operation, schema] of Object.entries(knowledgeSchemas)) {
     const readOnly = ["project", "projects", "threads", "thread", "replies", "reply", "tasks", "task", "relations", "history", "memories", "memory", "search", "task_context", "export_context", "check_context_export", "attachments", "attachment", "attachment_policy", "check_attachment_batch"].includes(operation);
     server.registerTool(`knowledge_${operation}`, {
-      description: attachmentDescriptions[operation] ?? `${operation.replaceAll("_", " ")} in project knowledge. Writes require a stable idempotencyKey; reuse it for an identical retry. Read pages expose nextOffset. No runtime claim or server operation.`,
+      description: operationDescriptions[operation] ?? `${operation.replaceAll("_", " ")} in project knowledge. Writes require a stable idempotencyKey; reuse it for an identical retry. Read pages expose nextOffset. No runtime claim or server operation.`,
       inputSchema: schema,
       annotations: { readOnlyHint: readOnly, idempotentHint: true, destructiveHint: false, openWorldHint: false },
     }, async (input: unknown) => {

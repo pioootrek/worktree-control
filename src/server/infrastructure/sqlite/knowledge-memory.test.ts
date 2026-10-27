@@ -339,6 +339,32 @@ describe("K4 memory and session context", () => {
     expect(withHuge.supersessionHistory?.chains.find(chain => chain.decisionId === newest.id)).toMatchObject({ truncated: true, predecessors: [] });
   });
 
+  it("bounds chain metadata for pages with long Unicode record IDs", () => {
+    const f = setup();
+    const template = f.change("approve_memory", f.create());
+    const items = Array.from({ length: 100 }, (_, index) => ({ ...template, id: `${index}${"界".repeat(155)}` }));
+    vi.spyOn(f.store, "listMemories").mockReturnValue({ items, nextOffset: null });
+    const plain = f.call<KnowledgeTaskContext>("task_context", { taskId: f.task.id, limit: 100 });
+    const context = f.call<KnowledgeTaskContext>("task_context", { taskId: f.task.id, limit: 100, includeSuperseded: true });
+    expect(context.decisions).toEqual(plain.decisions);
+    expect(context.nextOffset).toEqual(plain.nextOffset);
+    expect(context.supersessionHistory?.truncated).toBe(true);
+    expect(context.supersessionHistory!.chains.length).toBeLessThan(context.decisions.length);
+    expect(Buffer.byteLength(JSON.stringify(context.supersessionHistory))).toBeLessThanOrEqual(32768);
+    expect(Buffer.byteLength(JSON.stringify(context))).toBeLessThanOrEqual(262144);
+  });
+
+  it("stops on a repeated predecessor instead of recursively duplicating it", () => {
+    const f = setup();
+    const current = f.change("approve_memory", f.create());
+    const old = f.create({ idempotencyKey: "old" });
+    const superseded = f.change("supersede_memory", old, { replacementId: current.id, replacementRevision: current.revision });
+    const read = vi.spyOn(f.store, "listSupersededPredecessors").mockReturnValue({ items: [superseded], nextOffset: null });
+    const context = f.call<KnowledgeTaskContext>("task_context", { taskId: f.task.id, includeSuperseded: true });
+    expect(context.supersessionHistory?.chains[0]).toMatchObject({ truncated: true, predecessors: [expect.objectContaining({ id: old.id })] });
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps predecessor reads project-scoped and enforces current read/export grants", () => {
     const f = setup();
     const current = f.change("approve_memory", f.create());

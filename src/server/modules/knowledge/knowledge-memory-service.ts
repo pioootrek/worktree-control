@@ -1,7 +1,7 @@
 import { knowledgeSourceHref } from "@/shared/contracts/knowledge-links";
 import { createHash } from "node:crypto";
 import type { AuthenticatedPrincipal, IdentityService } from "@/server/modules/identity";
-import type { KnowledgeSource, KnowledgeMemory, MemoryRequest, KnowledgeTaskContext, KnowledgeContextMemory, KnowledgeSourceState, KnowledgeExport } from "@/shared/contracts/knowledge-memory";
+import type { KnowledgeSource, KnowledgeMemory, MemoryRequest, KnowledgeTaskContext, KnowledgeContextMemory, KnowledgeSourceState, KnowledgeExport, KnowledgeSupersessionHistory } from "@/shared/contracts/knowledge-memory";
 import type { KnowledgeStore, KnowledgeMutationContext } from "./contracts";
 import { KnowledgeError } from "./knowledge-error";
 
@@ -152,11 +152,20 @@ export class KnowledgeMemoryService {
   }
 
   private appendSupersessionHistory(data: Omit<KnowledgeTaskContext, "fingerprint">) {
-    const history = data.supersessionHistory = { maxDepth: 8, maxItems: 50, maxBytes: 32768,
-      chains: data.decisions.map(decision => ({ decisionId: decision.id, predecessors: [] as KnowledgeContextMemory[], truncated: false })) };
+    const history: KnowledgeSupersessionHistory = { maxDepth: 8, maxItems: 50, maxBytes: 32768, truncated: false, chains: [] };
+    data.supersessionHistory = history;
+    const exceedsBudget = () => Buffer.byteLength(JSON.stringify(history), "utf8") > history.maxBytes
+      || Buffer.byteLength(JSON.stringify(data), "utf8") > 250000;
     let remaining = history.maxItems;
     let budgetReached = false;
-    for (const chain of history.chains) {
+    for (const decision of data.decisions) {
+      const chain = { decisionId: decision.id, predecessors: [] as KnowledgeContextMemory[], truncated: false };
+      history.chains.push(chain);
+      if (exceedsBudget()) {
+        history.chains.pop();
+        history.truncated = true;
+        break;
+      }
       const visited = new Set([chain.decisionId]);
       const pending = [{ id: chain.decisionId, depth: 0 }];
       // Breadth-first traversal keeps nearest replacements first and bounds branching too.
@@ -173,8 +182,7 @@ export class KnowledgeMemoryService {
           if (visited.has(memory.id)) { chain.truncated = true; continue; }
           visited.add(memory.id);
           chain.predecessors.push(this.contextMemory(data.projectId, memory));
-          if (Buffer.byteLength(JSON.stringify(history), "utf8") > history.maxBytes
-            || Buffer.byteLength(JSON.stringify(data), "utf8") > 250000) {
+          if (exceedsBudget()) {
             chain.predecessors.pop();
             chain.truncated = true;
             budgetReached = true;
@@ -184,6 +192,7 @@ export class KnowledgeMemoryService {
           pending.push({ id: memory.id, depth: current.depth + 1 });
         }
       }
+      history.truncated ||= chain.truncated;
     }
   }
 
@@ -240,6 +249,7 @@ export class KnowledgeMemoryService {
       ]), "## Evidence", quote(JSON.stringify(context.evidence)),
       ...(context.supersessionHistory ? ["## Superseded history (not current decisions or proposals)",
         `Limits: depth ${context.supersessionHistory.maxDepth}; predecessors ${context.supersessionHistory.maxItems}; bytes ${context.supersessionHistory.maxBytes} per page`,
+        `History truncated (including omitted chains): ${context.supersessionHistory.truncated}`,
         ...context.supersessionHistory.chains.flatMap(chain => [
           quote(`Current decision: ${chain.decisionId}; history truncated: ${chain.truncated}`),
           ...chain.predecessors.flatMap(item => [quote(item.title),

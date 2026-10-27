@@ -27,8 +27,9 @@ Replacement revisions may have advanced since that pointer was recorded.
 
 Follow `nextOffset` with the same option for subsequent current entries.
 History is bounded to depth 8, 50 predecessors and 32 KiB across the page,
-nearest predecessors first. Check each chain's `truncated` flag and read full
-memories separately when more history is needed. History truncation does not
+nearest predecessors first. Check the history's and each chain's `truncated`
+flags; the former also covers omitted chains. Read full memories separately
+when more history is needed. History truncation does not
 advance `nextOffset`; the flag also covers detected repeated records.
 Exports retain the 256 KiB limit; reduce the page size if an export exceeds it.
 Use the same `includeSuperseded`, `limit` and `offset` when calling
