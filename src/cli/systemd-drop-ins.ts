@@ -34,6 +34,13 @@ const resourceDropInKeys = new Set([
   "LimitNICE", "LimitNOFILE", "LimitNPROC", "LimitRSS", "LimitRTPRIO", "LimitRTTIME", "LimitSIGPENDING", "LimitSTACK",
 ]);
 
+function stripSpaceAndTab(value: string): string {
+  let start = 0, end = value.length;
+  while (start < end && (value[start] === " " || value[start] === "\t")) start++;
+  while (end > start && (value[end - 1] === " " || value[end - 1] === "\t")) end--;
+  return value.slice(start, end);
+}
+
 function assignments(contents: string): Array<[string, string]> {
   // systemd v255 WHITESPACE/strstrip only recognize space, tab, CR and LF.
   // Refuse other JS whitespace even in values/comments rather than erase policy differences.
@@ -42,13 +49,13 @@ function assignments(contents: string): Array<[string, string]> {
   const result: Array<[string, string]> = [];
   for (const source of contents.split(/\r?\n/)) {
     // A deliberately restricted grammar. No continuations, substitutions or ignored sections.
-    const line = source.replace(/^[ \t]+|[ \t]+$/g, "");
+    const line = stripSpaceAndTab(source);
     if (/[\0\r]/.test(source) || line.endsWith("\\")) refuse();
     if (!line || /^[#;]/.test(line)) continue;
     if (line === "[Service]") { section = "Service"; continue; }
     const match = /^([A-Za-z][A-Za-z0-9]*)[ \t]*=(.*)$/.exec(line);
     if (section !== "Service" || !match || !resourceDropInKeys.has(match[1])) refuse();
-    const value = match[2].replace(/^[ \t]+|[ \t]+$/g, "");
+    const value = stripSpaceAndTab(match[2]);
     if (value.includes("$") || (value.includes("%") && !/^[0-9]+(?:\.[0-9]+)?%$/.test(value))) refuse();
     result.push([match[1], value]);
   }
