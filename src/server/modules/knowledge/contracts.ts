@@ -4,6 +4,8 @@ import type { AuthenticatedPrincipal, KnowledgeProject, KnowledgeProjectRuntimeL
 
 import type { KnowledgeRecordKind, KnowledgeThread, KnowledgeReply, KnowledgeReplyPage, KnowledgeTask, KnowledgeRelation, KnowledgeRelationDestination, KnowledgeHistoryEntry, KnowledgeMutationResult, KnowledgePage, KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
 import type { KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
+import type { KnowledgeTaskStateView, TaskCurrentState } from "@/shared/contracts/knowledge-task-state";
+import type { TaskStateFacts } from "./task-state-assessment";
 export type { KnowledgeRecordKind, KnowledgeTaskStatus, KnowledgeTaskPriority, KnowledgeRelationType, KnowledgeThread, KnowledgeReply, KnowledgeTask, KnowledgeRelation, KnowledgeHistoryEntry, KnowledgeMutationResult, KnowledgePage, KnowledgePageOptions, KnowledgeHistoryOptions, KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
 
 export interface KnowledgeMutationContext {
@@ -73,6 +75,13 @@ export interface KnowledgeStore {
   createReply(reply: KnowledgeReply, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeReply>;
   createTaskFromThread(task: KnowledgeTask, relation: KnowledgeRelation, context: KnowledgeMutationContext): KnowledgeMutationResult<{ task: KnowledgeTask; relation: KnowledgeRelation }>;
   updateTask(task: KnowledgeTask, expectedRevision: number, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeTask>;
+  /** Raw stored JSON: undefined when the task is missing, null when no state was recorded. */
+  getTaskStateJson(projectId: string, taskId: string): string | null | undefined;
+  updateTaskState(task: KnowledgeTask, state: TaskCurrentState, expectedRevision: number, context: KnowledgeMutationContext): KnowledgeMutationResult<{ task: KnowledgeTask; state: TaskCurrentState }>;
+  taskStateFacts(projectId: string, task: KnowledgeTask, state: TaskCurrentState): TaskStateFacts;
+  taskSystemFacts(projectId: string, taskId: string): KnowledgeTaskStateView["systemFacts"];
+  /** True when every revision after `sinceRevision` is a state write, which keeps a citation of the task current. */
+  taskChangedOnlyByState(projectId: string, taskId: string, sinceRevision: number): boolean;
   updateKnowledgeProject(project: KnowledgeProject, expectedRevision: number, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeProject>;
   setKnowledgeProjectRuntimeLink(link: KnowledgeProjectRuntimeLink, expectedRevision: number, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeRuntimeLinkResult>;
 }

@@ -57,7 +57,7 @@ describe("durable SQLite initialization and migration", () => {
         VALUES('active','kept','/code/kept','agent','agent','now','later','maximum',printf('%064d',0),'request');
     `));
     const store = new SqliteStateStore(f.path);
-    try { expect(store.schemaVersion()).toBe(32); expect(store.getProject("kept")?.name).toBe("Kept"); }
+    try { expect(store.schemaVersion()).toBe(34); expect(store.getProject("kept")?.name).toBe("Kept"); }
     finally { store.close(); }
     new SqliteStateStore(f.path).close();
     raw(f.path, db => {
@@ -100,7 +100,7 @@ describe("durable SQLite initialization and migration", () => {
     const store = new SqliteStateStore(f.path, owned);
     try {
       assertDurability(owned.database);
-      expect(store.schemaVersion()).toBe(32);
+      expect(store.schemaVersion()).toBe(34);
       expect(store.getAuthenticationPolicy().mode).toBe(version && version < 25 ? "legacy" : "token");
       expect(owned.database.prepare("SELECT name,checksum FROM schema_migrations WHERE version<28").all()).toEqual(Array.from({length:27},()=>({name:null,checksum:null})));
       expect(owned.database.prepare("SELECT name,checksum FROM schema_migrations WHERE version=28").get()).toEqual({name:registryMigration.name,checksum:registryChecksum});
@@ -113,7 +113,7 @@ describe("durable SQLite initialization and migration", () => {
   it.each(["checksum", "name", "gap", "legacy-provenance", "missing-policy", "future"])("rejects inconsistent %s without resetting auth or data", variant => {
     const f=fixture(); new SqliteStateStore(f.path).close();
     raw(f.path,db=>{
-      if(variant==="future") db.exec("INSERT INTO schema_migrations(version,applied_at,name,checksum) VALUES(33,'future','unknown','unknown')");
+      if(variant==="future") db.exec("INSERT INTO schema_migrations(version,applied_at,name,checksum) VALUES(35,'future','unknown','unknown')");
       if(variant==="checksum") db.exec("UPDATE schema_migrations SET checksum='wrong' WHERE version=28");
       if(variant==="name") db.exec("UPDATE schema_migrations SET name='wrong' WHERE version=28");
       if(variant==="gap") db.exec("DELETE FROM schema_migrations WHERE version=7");
@@ -154,7 +154,7 @@ describe("durable SQLite initialization and migration", () => {
     try {
       const [message]=await once(child,"message",{signal:AbortSignal.timeout(5000)});expect(message).toEqual({interrupted:true});
     } finally { const ended=once(child,"exit");child.kill("SIGKILL");await ended; }
-    const retry=new SqliteStateStore(f.path);try{expect(retry.schemaVersion()).toBe(32);expect(retry.getAuthenticationPolicy().mode).toBe("token");}finally{retry.close();}
+    const retry=new SqliteStateStore(f.path);try{expect(retry.schemaVersion()).toBe(34);expect(retry.getAuthenticationPolicy().mode).toBe("token");}finally{retry.close();}
     released(f.path);
   },10000);
 

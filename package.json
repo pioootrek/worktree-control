@@ -39,6 +39,8 @@
     "out",
     "skills",
     "docs/authentication.md",
+    "docs/dev-environment-vault.md",
+    "docs/environment-runtime-plan.md",
     "docs/controller-https.md",
     "docs/dependency-licenses.md",
     "docs/package-trial.md",
@@ -89,7 +91,7 @@
     "test:integration:remote-rebind": "node scripts/build-fingerprint.mjs --check && node scripts/require-restic-fixture.mjs && vitest run --config vitest.integration.config.ts tests/integration/remote-rebind.test.ts",
     "test:package:remote-rebind": "node scripts/build-fingerprint.mjs --check && node scripts/require-restic-fixture.mjs && node scripts/package-smoke.mjs --verification-script scripts/package-remote-rebind.mjs",
     "test:package:tools": "node --test scripts/package-artifact.test.mjs scripts/package-install.test.mjs scripts/package-lifecycle-trial.test.mjs",
-    "test:service-safety": "vitest run src/cli/service-options.test.ts src/cli/service-install.test.ts src/cli/service-manager.test.ts src/cli/backup-management.test.ts",
+    "test:service-safety": "vitest run src/cli/service-options.test.ts src/cli/service-install.test.ts src/cli/service-manager.test.ts src/cli/systemd-drop-ins.test.ts src/cli/backup-management.test.ts",
     "test:integration:service-safety": "node scripts/build-fingerprint.mjs --check && vitest run --config vitest.integration.config.ts tests/integration/service-safety.test.ts tests/integration/backup-operations.test.ts",
     "test:package:upgrade:driver": "node scripts/build-fingerprint.mjs --check && node scripts/require-restic-fixture.mjs && node scripts/package-upgrade-trial.mjs --driver-only",
     "test:package:upgrade": "node scripts/build-fingerprint.mjs --check && node scripts/require-restic-fixture.mjs && node scripts/package-upgrade-trial.mjs",
@@ -100,7 +102,10 @@
     "bench:mcp-resources": "node scripts/build-fingerprint.mjs --check && tsx scripts/mcp-resource-benchmark.mjs",
     "test:verification-resources": "vitest run src/server/modules/verification/resource-statistics.test.ts src/server/modules/verification/resource-cost-cleanup.test.ts src/server/resource-monitor.test.ts src/server/resource-monitor-concurrency.test.ts src/server/modules/verification/run-resources.test.ts src/server/test-job-telemetry.test.ts src/server/test-job-manager.test.ts src/server/infrastructure/sqlite/test-history-queries.test.ts",
     "test:resource-sampling-cost": "tsx scripts/test-resource-sampling-cost.ts",
-    "test:remote-verification": "vitest run src/server/modules/remote-verification src/server/infrastructure/git/remote-verification-workspace.test.ts src/server/infrastructure/sqlite/remote-verification-queries.test.ts src/server/transports/remote-verification-http.test.ts src/cli/remote-verification.test.ts src/server/test-job-manager.test.ts"
+    "test:remote-verification": "vitest run src/server/modules/remote-verification src/server/infrastructure/git/remote-verification-workspace.test.ts src/server/infrastructure/sqlite/remote-verification-queries.test.ts src/server/transports/remote-verification-http.test.ts src/cli/remote-verification.test.ts src/server/test-job-manager.test.ts",
+    "test:dev-vault": "vitest run src/server/modules/dev-vault src/server/infrastructure/dev-vault src/server/infrastructure/sqlite/dev-vault-queries.test.ts src/server/infrastructure/sqlite/dev-vault-migration.test.ts src/server/dev-vault-transports.test.ts src/cli/dev-vault.test.ts src/features/dev-vault src/architecture.test.ts",
+    "test:ui:dev-vault": "playwright test tests/ui/dev-vault.spec.ts",
+    "test:docs": "python3 scripts/docs.py fmt && python3 scripts/docs.py check && git diff --check"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",

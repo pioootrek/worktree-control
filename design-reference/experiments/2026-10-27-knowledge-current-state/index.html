@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="pl" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prototyp: aktualny stan zadania przed historią</title>
+<style>
+/* Working interpretation of the approved charcoal/restrained-lime image; copied from ../../tokens.css so the file opens alone. */
+:root{color-scheme:dark;--background:#181a18;--foreground:#ecefe6;--surface:#202320;--muted:#292d28;--muted-foreground:#b1b8ad;--primary:#c5e76c;--primary-foreground:#181a18;--accent-foreground:#c5e76c;--selected:#303a22;--border:#444b40;--ring:#c5e76c;--success:#a4d883;--warning:#f1c56c;--destructive:#ff9592;--radius:4px;--font-sans:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--font-mono:ui-monospace,"Cascadia Code","SFMono-Regular",Consolas,monospace}
+:root[data-theme="light"]{color-scheme:light;--background:#f6f7f2;--foreground:#20251b;--surface:#fff;--muted:#e9ecdf;--muted-foreground:#535e4d;--accent-foreground:#4f641b;--selected:#e6edcf;--border:#c9d0be;--ring:#4f641b;--success:#346425;--warning:#805109;--destructive:#ad3035}
+*{box-sizing:border-box}
+body{margin:0;background:var(--background);color:var(--foreground);font:15px/1.5 var(--font-sans)}
+a{color:inherit}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+.mono{font-family:var(--font-mono);font-size:.92em}
+.muted{color:var(--muted-foreground)}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+/* Prototype controls: outside the mocked application */
+.controls{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:end;padding:12px 16px;border-bottom:1px dashed var(--border);background:var(--muted)}
+.controls label{display:grid;gap:2px;font-size:12px;color:var(--muted-foreground)}
+.controls select{font:inherit;font-size:14px;color:var(--foreground);background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:5px 8px;min-height:34px}
+.controls .note{flex-basis:100%;font-size:12px;color:var(--muted-foreground);margin:0}
+.stage{padding:16px;display:flex;justify-content:center}
+/* Mocked application frame */
+.app{display:grid;grid-template-columns:84px 1fr;width:100%;max-width:1440px;min-height:860px;border:1px solid var(--border);background:var(--background)}
+.app.mobile{grid-template-columns:1fr;max-width:390px}
+.app.narrow{max-width:320px}
+.side{border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px 6px}
+.side .logo{color:var(--accent-foreground);font-weight:700;margin-bottom:12px}
+.side .nav{display:grid;justify-items:center;gap:2px;font-size:12px;padding:10px 4px;border-radius:var(--radius);width:72px;color:var(--muted-foreground)}
+.side .nav.on{background:var(--selected);color:var(--accent-foreground);box-shadow:inset 3px 0 var(--primary)}
+.mobile .side{display:none}
+.main{display:flex;flex-direction:column;min-width:0}
+.top{display:flex;align-items:center;gap:8px;padding:12px 24px;border-bottom:1px solid var(--border);font-size:14px}
+.top .crumb{color:var(--muted-foreground)}
+.tabs{display:flex;gap:4px;padding:0 24px;border-bottom:1px solid var(--border)}
+.tabs span{padding:10px 12px;font-size:14px;color:var(--muted-foreground)}
+.tabs span.on{color:var(--foreground);box-shadow:inset 0 -2px var(--primary);font-weight:600}
+.mobile .top,.mobile .tabs{padding-left:14px;padding-right:14px}
+.work{display:grid;grid-template-columns:340px 1fr;flex:1;min-height:0}
+.mobile .work{grid-template-columns:1fr}
+.list{border-right:1px solid var(--border);margin:0;padding:0;list-style:none}
+.mobile .list{display:none}
+.list li a{display:block;padding:14px 16px;border-left:2px solid transparent;text-decoration:none;border-bottom:1px solid var(--border)}
+.list li a[aria-current]{border-left-color:var(--primary);background:var(--selected)}
+.list .t{display:block;font-weight:500}
+.list .s{font-size:12px;color:var(--muted-foreground)}
+.reader{min-width:0;overflow:auto}
+.readerbar{display:none;padding:8px 10px;border-bottom:1px solid var(--border)}
+.mobile .readerbar{display:block}
+article{max-width:896px;margin:0 auto;padding:24px 28px 48px}
+.mobile article{padding:16px 14px 40px}
+.badges{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:12px}
+.badge{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:999px;padding:2px 10px}
+.badge.blocked{border-color:color-mix(in srgb,var(--warning) 50%,transparent);color:var(--warning)}
+.badge.done{color:var(--success)}
+h1.title{font-size:26px;line-height:1.2;margin:10px 0 18px;letter-spacing:-.01em}
+.mobile h1.title{font-size:21px}
+/* Current state panel */
+.state{border:1px solid var(--border);border-radius:6px;background:var(--surface);padding:18px 20px}
+.mobile .state{padding:14px}
+.state-head{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;justify-content:space-between}
+.label{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted-foreground);margin:0;font-weight:600}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:13px;border:1px solid var(--border);border-radius:999px;padding:2px 10px;background:none;color:inherit;font:inherit;font-size:13px;cursor:pointer;min-height:30px}
+.chip.ok{color:var(--success)}
+.chip.warn{color:var(--warning);border-color:color-mix(in srgb,var(--warning) 45%,transparent)}
+.meta{font-size:12px;color:var(--muted-foreground);margin:4px 0 0;flex-basis:100%}
+.banner{margin:14px 0 0;border:1px solid color-mix(in srgb,var(--warning) 45%,transparent);border-radius:var(--radius);padding:10px 12px;font-size:14px}
+.banner ul{margin:6px 0 0;padding-left:18px}
+.result{margin:16px 0 0}
+.result dt{font-size:12px;color:var(--muted-foreground)}
+.result dd{margin:2px 0 0;font-size:18px;line-height:1.45;max-width:70ch}
+.mobile .result dd{font-size:16px}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:16px 0 0;padding:0}
+@media (max-width:1100px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.mobile .grid{grid-template-columns:1fr}
+.cell{border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;min-width:0;margin:0}
+.cell dt{font-size:12px;color:var(--muted-foreground);display:flex;align-items:center;gap:6px}
+.cell dd{margin:4px 0 0;font-size:14px;overflow-wrap:anywhere}
+.cell.warn{border-color:color-mix(in srgb,var(--warning) 60%,transparent)}
+.cell.bad{border-color:color-mix(in srgb,var(--destructive) 60%,transparent)}
+.cell .sub{display:block;font-size:12px;color:var(--muted-foreground);margin-top:4px}
+.tone-ok{color:var(--success)}.tone-warn{color:var(--warning)}.tone-bad{color:var(--destructive)}.tone-unknown{color:var(--muted-foreground)}
+.ico{display:inline-block;width:15px;height:15px;flex:none;vertical-align:-2px}
+h2.sec{font-size:13px;margin:20px 0 6px;font-weight:600}
+.delivery{margin:0;display:grid;grid-template-columns:max-content max-content 1fr max-content;gap:0 16px;font-size:14px}
+.delivery>div{display:contents}
+.delivery dt,.delivery dd{padding:7px 0;border-top:1px solid var(--border);margin:0}
+.delivery dt{color:var(--muted-foreground)}
+.delivery .st{display:flex;gap:6px;align-items:center}
+.mobile .delivery{grid-template-columns:1fr auto}
+.mobile .delivery .ver{grid-column:1 / -1;border-top:0;padding-top:0}
+.mobile .delivery .src{grid-column:1 / -1;border-top:0;padding-top:0}
+.summary-line{font-size:13px;color:var(--muted-foreground);margin:8px 0 0}
+.findings{margin:16px 0 0;border-top:1px solid var(--border);padding-top:12px}
+.findings ul{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:8px}
+.findings li{display:flex;gap:8px;font-size:14px}
+.findings li .kind{font-weight:600}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 0}
+.btn{font:inherit;font-size:14px;min-height:36px;padding:6px 12px;border-radius:var(--radius);border:1px solid var(--border);background:none;color:inherit;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+.btn.primary{background:var(--primary);color:var(--primary-foreground);border-color:var(--primary);font-weight:600}
+.mobile .btn{min-height:44px}
+.srclink{font-size:12px;color:var(--muted-foreground);text-decoration:underline;text-underline-offset:2px;display:inline-flex;align-items:center;min-height:24px}
+.mobile .srclink{min-height:44px}
+.sources{margin:10px 0 0;padding-left:18px;font-size:13px}
+.sources li{margin:3px 0}
+/* History */
+.history{margin:28px 0 0;border-top:1px solid var(--border);padding-top:16px}
+.history h2{font-size:18px;margin:0 0 10px}
+.history h3{font-size:14px;margin:18px 0 6px}
+.desc{white-space:pre-wrap;max-width:75ch;font-size:15px;line-height:1.7;margin:0}
+.resolved li,.superseded li{font-size:14px;margin:4px 0}
+.source-view{border:1px solid var(--border);border-radius:6px;padding:18px;background:var(--surface)}
+.empty-facts{margin:14px 0 0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.mobile .empty-facts{grid-template-columns:1fr 1fr}
+.empty-facts div{border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;font-size:13px}
+.empty-facts b{display:block;font-size:18px}
+.footer{display:flex;justify-content:space-between;padding:8px 24px;border-top:1px solid var(--border);font-size:12px;color:var(--muted-foreground)}
+[hidden]{display:none!important}
+/* Narrow embeds behave like the app: reader without the list or sidebar. */
+@media (max-width:900px){.app{grid-template-columns:1fr}.side,.list{display:none}.work{grid-template-columns:1fr}.readerbar{display:block}.stage{padding:0}}
+</style>
+</head>
+<body>
+<form class="controls" aria-label="Ustawienia prototypu" onsubmit="return false">
+  <label>Scenariusz / Scenario
+    <select id="scenario">
+      <option value="A">A — rozwiązana blokada</option>
+      <option value="B">B — nowa blokada po sukcesie</option>
+      <option value="C">C — brak i sprzeczność danych</option>
+      <option value="D" selected>D — scalone bez wdrożenia</option>
+      <option value="E">E — brak zgody właściciela</option>
+      <option value="F">F — nieaktualne podsumowanie</option>
+      <option value="G">G — brak zapisanego stanu</option>
+      <option value="H">H — blokady jeszcze niesprawdzone</option>
+      <option value="I">I — kilka otwartych blokad</option>
+    </select></label>
+  <label id="approvalWrap" hidden>Zatwierdzenie decyzji (E)
+    <select id="approval">
+      <option value="none" selected>brak zatwierdzenia</option>
+      <option value="installation_token">token instalacji</option>
+      <option value="owner_session">sesja właściciela</option>
+    </select></label>
+  <label id="policyWrap" hidden>Polityka zgody (E)
+    <select id="policy">
+      <option value="current" selected>obecna: token instalacji = właściciel</option>
+      <option value="future">po rozdzieleniu: tylko sesja właściciela</option>
+    </select></label>
+  <label>Język / Language <select id="lang"><option value="pl">PL</option><option value="en">EN</option></select></label>
+  <label>Motyw / Theme <select id="theme"><option value="dark">Ciemny / Dark</option><option value="light">Jasny / Light</option></select></label>
+  <label>Szerokość / Width <select id="width"><option value="desktop">Desktop 1440</option><option value="mobile">Mobile 390</option><option value="narrow">Mobile 320</option></select></label>
+  <p class="note">Prototyp do przeglądu — dane fikcyjne (Customer Portal). Ocena stanu (świeżość, sprzeczności, zgoda) jest liczona funkcją <code>assess()</code> według reguł z docs/knowledge-current-state-design.md, a nie wpisana ręcznie. Nie jest to komponent produkcyjny ani zatwierdzony wygląd.</p>
+</form>
+<div class="stage"><div id="app" class="app"></div></div>
+<script>
+"use strict";
+var SHA = { a: "a31f92c5e0d1b7f4c2a9e8d6b5c4a3f2e1d0c9b8", m: "c672be1a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c", o: "9d18bca7e6f5d4c3b2a1f0e9d8c7b6a5f4e3d2c1" };
+var L = function (pl, en) { return { pl: pl, en: en }; };
+var T = {
+  pl: { nav: "Wiedza", crumb: "Wiedza / Worktree Portal / Backlog", tabs: ["Backlog", "Dyskusje", "Pamięć"], back: "Wróć do listy",
+    panel: "Aktualny stan", result: "Rezultat", blocker: "Blokada", noBlocker: "Brak otwartych blokad", resolvedN: "rozwiązane: {n}", unblockedBy: "odblokowuje: {a}", until: "warunek: {c}",
+    nextStep: "Następny krok", none: "Brak", ownerDecision: "Decyzja właściciela", evidence: "Dowody", delivery: "Dostarczenie", unknown: "Nieznane", na: "Nie dotyczy",
+    current: "Aktualne", changed: "Zmiany od podsumowania: {n}", missing: "Brak zapisanego stanu", attention: "Do sprawdzenia: {n}", conflict: "Sprzeczność", attn: "Uwaga",
+    sources: "Źródła: {n}", hideSources: "Ukryj źródła", history: "Przejdź do historii", update: "Aktualizuj stan", source: "źródło", checked: "sprawdzono {t}",
+    meta: "r{r} · {t} · zapisano: {auth} · deklaruje: {who}", installation: "token instalacji", ownerSession: "sesja właściciela",
+    bannerTitle: "Późniejsze zmiany nieuwzględnione w podsumowaniu: {n}", bannerHelp: "Podsumowanie pozostaje czytelne, ale może nie odpowiadać bieżącemu stanowi.",
+    ch: { taskRevisions: "Nowe rewizje zadania: {n}", statusChanged: "status zmieniony na „{s}”", descriptionChanged: "opis edytowany", memoriesChanged: "Zmienione ustalenia: {n}", attachmentsAdded: "Nowe załączniki: {n}", repliesAdded: "Nowe odpowiedzi w dyskusji: {n}", staleSources: "Źródła w nowszej rewizji: {n}", inactiveSources: "Źródła zastąpione lub zarchiwizowane: {n}" },
+    actors: { owner: "właściciel", agent: "agent", operator: "operator", external: "strona zewnętrzna" },
+    consent: { not_needed: "Niepotrzebna", needed: "Potrzebna decyzja", unknown: "Nieznane", proposal_only: "Propozycja agenta — brak zgody właściciela", approved: "Decyzja właściciela · zatwierdzono: {method}", approved_method_not_accepted: "Zatwierdzono metodą, która nie potwierdza właściciela: {method}", approval_invalidated: "Zatwierdzenie nieaktualne" },
+    methods: { installation_token: "token instalacji", owner_session: "sesja właściciela" },
+    agentReport: "Zgłoszenie agenta: {t}",
+    ev: { listed: "{p} z {n} załączników", missing: "brak załącznika: {id}" },
+    d: { merge: "Scalenie", ci: "CI", review: "Przegląd", evidence: "Dowody", deploy: "Wdrożenie" },
+    s: { merge: { not_started: "Nie rozpoczęte", pr_open: "PR otwarty", merged: "Scalone", closed_unmerged: "Zamknięte bez scalenia" },
+      ci: { not_run: "Nie uruchomione", running: "W toku", passed: "Zielone", failed: "Czerwone" },
+      review: { not_requested: "Nie zlecony", in_progress: "W toku", findings_open: "Otwarte uwagi: {n}", findings_closed: "Uwagi zamknięte" },
+      evidence: { none: "Brak", stored: "Zapisane, niezweryfikowane", verified: "Zweryfikowane (deklaruje: {who})" },
+      deploy: { not_planned: "Nieplanowane", pending: "Oczekuje — osobny etap", done: "Wdrożone", failed: "Nieudane" } },
+    short: { merged: "scalone", pr_open: "PR otwarty", passed: "CI zielone", failed_ci: "CI czerwone", findings_closed: "uwagi zamknięte", findings_open: "otwarte uwagi", verified: "dowody zweryfikowane", stored: "dowody zapisane, niezweryfikowane", pending: "wdrożenie oczekuje (osobny etap)", done: "wdrożone", failed_deploy: "wdrożenie nieudane" },
+    f: { done_with_open_blocker: "Zadanie ma status „zakończone”, a blokada „{b}” jest otwarta.", blocked_without_blocker: "Status „zablokowane”, ale żadna blokada nie jest otwarta.", open_blocker_not_blocked: "Blokada „{b}” jest otwarta, a status zadania to „{s}”.", deploy_without_merge: "Wdrożenie oznaczone jako wykonane, a zmiana nie jest scalona.", ci_not_merged_head: "CI dotyczy {c}, a scalono {m}.", deploy_not_merged_head: "Wdrożono {d}, co nie odpowiada scalonej wersji {m}.", evidence_missing: "Wskazany załącznik {id} nie istnieje przy tym zadaniu.", claim_without_source: "{f}: deklaracja bez źródła.", source_stale: "Źródło ma nowszą rewizję niż cytowana.", source_inactive: "Cytowane ustalenie zostało zastąpione.", consent_missing: "Decyzja nie jest zatwierdzona; zgłoszenie agenta nie jest zgodą.", consent_method_not_accepted: "Zatwierdzenie metodą „{method}” nie potwierdza właściciela w obecnej polityce.", next_step_on_done: "Zadanie zakończone, a następny krok nadal jest wpisany." },
+    histTitle: "Opis i historia", resolvedTitle: "Rozwiązane blokady", supersededTitle: "Zastąpione ustalenia", descTitle: "Opis zadania (bez zmian)", resolvedItem: "{t} — rozwiązana {d}: {r}", supersededItem: "{t} → zastąpione przez „{n}”",
+    backToState: "Wróć do stanu zadania", srcView: "Widok źródła (symulacja nawigacji do istniejącej trasy rekordu)", externalNote: "Odnośnik zewnętrzny: w aplikacji zwykły link z rel=noreferrer, bez pobierania treści.",
+    gTitle: "Nie zapisano jeszcze aktualnego stanu tego zadania.", gHelp: "Poniżej tylko fakty znane systemowi. Rezultat, blokady, następny krok i dostarczenie pozostają nieznane, dopóki agent lub właściciel ich nie zapisze.", gFacts: ["Status", "Ostatnia zmiana", "Zatwierdzone decyzje", "Propozycje", "Otwarte pytania", "Załączniki"],
+    statuses: { open: "Otwarte", in_progress: "W toku", blocked: "Zablokowane", done: "Zakończone" }, prio: { now: "Teraz", next: "Następne", later: "Później" }, footer: "Makieta · przykładowe dane · 2026-10-27" },
+  en: { nav: "Knowledge", crumb: "Knowledge / Worktree Portal / Backlog", tabs: ["Backlog", "Discussions", "Memory"], back: "Back to list",
+    panel: "Current state", result: "Result", blocker: "Blocker", noBlocker: "No open blockers", resolvedN: "resolved: {n}", unblockedBy: "unblocked by: {a}", until: "condition: {c}",
+    nextStep: "Next step", none: "None", ownerDecision: "Owner decision", evidence: "Evidence", delivery: "Delivery", unknown: "Unknown", na: "Not applicable",
+    current: "Current", changed: "Changes since this summary: {n}", missing: "No current state recorded", attention: "Needs attention: {n}", conflict: "Conflict", attn: "Attention",
+    sources: "Sources: {n}", hideSources: "Hide sources", history: "Go to history", update: "Update state", source: "source", checked: "checked {t}",
+    meta: "r{r} · {t} · written with: {auth} · declared by: {who}", installation: "installation token", ownerSession: "owner session",
+    bannerTitle: "Later changes not reflected in this summary: {n}", bannerHelp: "The summary stays readable but may not match the current state.",
+    ch: { taskRevisions: "New task revisions: {n}", statusChanged: "status changed to “{s}”", descriptionChanged: "description edited", memoriesChanged: "Changed findings: {n}", attachmentsAdded: "New attachments: {n}", repliesAdded: "New discussion replies: {n}", staleSources: "Sources at a newer revision: {n}", inactiveSources: "Sources superseded or archived: {n}" },
+    actors: { owner: "owner", agent: "agent", operator: "operator", external: "external party" },
+    consent: { not_needed: "Not needed", needed: "Decision needed", unknown: "Unknown", proposal_only: "Agent proposal — owner has not approved", approved: "Owner decision · approved with: {method}", approved_method_not_accepted: "Approved with a method that does not confirm the owner: {method}", approval_invalidated: "Approval no longer applies" },
+    methods: { installation_token: "installation token", owner_session: "owner session" },
+    agentReport: "Agent report: {t}",
+    ev: { listed: "{p} of {n} attachments", missing: "missing attachment: {id}" },
+    d: { merge: "Merge", ci: "CI", review: "Review", evidence: "Evidence", deploy: "Deployment" },
+    s: { merge: { not_started: "Not started", pr_open: "PR open", merged: "Merged", closed_unmerged: "Closed without merge" },
+      ci: { not_run: "Not run", running: "Running", passed: "Passed", failed: "Failed" },
+      review: { not_requested: "Not requested", in_progress: "In progress", findings_open: "Open findings: {n}", findings_closed: "Findings closed" },
+      evidence: { none: "None", stored: "Stored, not verified", verified: "Verified (declared by {who})" },
+      deploy: { not_planned: "Not planned", pending: "Pending — separate stage", done: "Deployed", failed: "Failed" } },
+    short: { merged: "merged", pr_open: "PR open", passed: "CI passed", failed_ci: "CI failed", findings_closed: "findings closed", findings_open: "open findings", verified: "evidence verified", stored: "evidence stored, not verified", pending: "deployment pending (separate stage)", done: "deployed", failed_deploy: "deployment failed" },
+    f: { done_with_open_blocker: "Task status is “done” while blocker “{b}” is open.", blocked_without_blocker: "Status is “blocked” but no blocker is open.", open_blocker_not_blocked: "Blocker “{b}” is open while task status is “{s}”.", deploy_without_merge: "Deployment is marked done but the change is not merged.", ci_not_merged_head: "CI ran on {c}, but {m} was merged.", deploy_not_merged_head: "Deployed {d}, which does not match merged {m}.", evidence_missing: "Listed attachment {id} does not exist on this task.", claim_without_source: "{f}: claim without a source.", source_stale: "A source has a newer revision than cited.", source_inactive: "A cited finding was superseded.", consent_missing: "The decision is not approved; an agent report is not consent.", consent_method_not_accepted: "Approval with “{method}” does not confirm the owner under the current policy.", next_step_on_done: "Task is done but a next step is still set." },
+    histTitle: "Description and history", resolvedTitle: "Resolved blockers", supersededTitle: "Superseded findings", descTitle: "Task description (unchanged)", resolvedItem: "{t} — resolved {d}: {r}", supersededItem: "{t} → superseded by “{n}”",
+    backToState: "Back to task state", srcView: "Source view (simulated navigation to the existing record route)", externalNote: "External reference: an ordinary link with rel=noreferrer in the app; content is never fetched.",
+    gTitle: "No current state has been recorded for this task.", gHelp: "Only facts known to the system are shown. Result, blockers, next step and delivery stay unknown until an agent or the owner records them.", gFacts: ["Status", "Last change", "Approved decisions", "Proposals", "Open questions", "Attachments"],
+    statuses: { open: "Open", in_progress: "In progress", blocked: "Blocked", done: "Done" }, prio: { now: "Now", next: "Next", later: "Later" }, footer: "Mock · sample data · 2026-10-27" }
+};
+function fmt(s, v) { return String(s).replace(/\{(\w+)\}/g, function (_, k) { return v && v[k] !== undefined ? v[k] : "{" + k + "}"; }); }
+function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+var mem = function (id, rev, title) { return { kind: "memory", id: id, revision: rev, title: title }; };
+var ext = function (label, url) { return { kind: "external", label: label, url: url }; };
+var att = function (id, title) { return { kind: "attachment", id: id, title: title }; };
+var reply = function (id, rev, title) { return { kind: "reply", id: id, revision: rev, title: title }; };
+var TITLE = L("Eksport raportu zgodności do CSV", "Export the compliance report to CSV");
+var DESC = L(
+  "Źródło: prośba właściciela z 2026-10-20.\nZakres: eksport CSV raportu zgodności z filtrami z widoku.\n\n2026-10-22 — agent: rozpoczęto na feat/csv-export.\n2026-10-24 — agent: blokada, runner CI bez dostępu do bazy testowej.\n2026-10-26 — agent: odblokowane, sekret przywrócony; CI zielone.\n2026-10-26 — agent: PR #112 otwarty, przegląd w toku.",
+  "Source: owner request from 2026-10-20.\nScope: CSV export of the compliance report using the view's filters.\n\n2026-10-22 — agent: started on feat/csv-export.\n2026-10-24 — agent: blocked, CI runner cannot reach the test database.\n2026-10-26 — agent: unblocked, secret restored; CI passed.\n2026-10-26 — agent: PR #112 opened, review in progress.");
+var RES_BLOCKER = { key: "ci-runner", text: L("Runner CI bez dostępu do bazy testowej", "CI runner cannot reach the test database"), unblockedBy: "operator", condition: L("Przywrócić sekret bazy w CI", "Restore the database secret in CI"), since: "2026-10-24", state: "resolved", resolvedAt: "2026-10-26", resolution: L("sekret przywrócony, CI zielone", "secret restored, CI passed"), sources: [reply("r-41", 1, L("Odpowiedź agenta 26.10", "Agent reply 26 Oct"))] };
+var PR = ext("PR #112", "https://example.invalid/pr/112"), CIRUN = ext("CI run 4471", "https://example.invalid/ci/4471");
+function base(o) { return Object.assign({ task: { status: "in_progress", priority: "next", revision: 7 }, facts: { attachments: ["att-1", "att-2", "att-3"], superseded: [] } }, o); }
+var S = {
+  A: base({ state: { taskRevision: 7, statusAtWrite: "in_progress", writtenAt: "26.10 16:05", declaredBy: "codex · T3", auth: "installation_token",
+      changeNote: L("CI zielone po przywróceniu sekretu; blokada ci-runner rozwiązana", "CI passed after the secret was restored; blocker ci-runner resolved"),
+      outcome: { known: true, text: L("Eksport CSV działa na gałęzi feat/csv-export; PR #112 jest w przeglądzie.", "CSV export works on feat/csv-export; PR #112 is in review."), sources: [PR] },
+      blockers: [RES_BLOCKER],
+      nextStep: { known: true, action: L("Odpowiedzieć na 2 uwagi przeglądu", "Address 2 review findings"), actor: "agent", sources: [PR] },
+      ownerDecision: { state: "not_needed" },
+      delivery: { merge: { applies: true, state: "pr_open", ref: PR, commit: SHA.a, observedAt: "26.10 16:00" }, ci: { applies: true, state: "passed", commit: SHA.a, ref: CIRUN, observedAt: "26.10 15:58" },
+        review: { applies: true, state: "findings_open", openFindings: 2, ref: PR, observedAt: "26.10 16:00" }, evidence: { applies: true, state: "stored", attachments: ["att-1", "att-2"], observedAt: "26.10 16:02" }, deploy: { applies: true, state: "not_planned", observedAt: "26.10 16:00", sources: [] } } } }),
+  B: base({ task: { status: "blocked", priority: "now", revision: 9 }, state: { taskRevision: 9, statusAtWrite: "blocked", writtenAt: "27.10 09:40", declaredBy: "codex · T3", auth: "installation_token",
+      changeNote: L("Wdrożenie staging nieudane; nowa blokada staging-health", "Staging deployment failed; new blocker staging-health"),
+      outcome: { known: true, text: L("PR #112 scalony do main (c672be1); wdrożenie na staging nie przechodzi kontroli zdrowia.", "PR #112 merged to main (c672be1); the staging deployment fails its health check."), sources: [PR, ext("Deploy 88", "https://example.invalid/deploy/88")] },
+      blockers: [RES_BLOCKER, { key: "staging-health", text: L("Staging: /health zwraca 503 po migracji", "Staging: /health returns 503 after the migration"), unblockedBy: "operator", condition: L("Przywrócić DATABASE_URL na staging", "Restore DATABASE_URL on staging"), since: "2026-10-27", state: "open", sources: [ext("Deploy 88", "https://example.invalid/deploy/88")] }],
+      nextStep: { known: true, action: L("Przywrócić zmienną i ponowić wdrożenie", "Restore the variable and redeploy"), actor: "operator", sources: [] },
+      ownerDecision: { state: "not_needed" },
+      delivery: { merge: { applies: true, state: "merged", ref: PR, commit: SHA.a, detail: SHA.m, observedAt: "27.10 09:10" }, ci: { applies: true, state: "passed", commit: SHA.a, ref: CIRUN, observedAt: "26.10 17:30" },
+        review: { applies: true, state: "findings_closed", openFindings: 0, ref: PR, observedAt: "27.10 09:05" }, evidence: { applies: true, state: "verified", attachments: ["att-1", "att-2", "att-3"], observedAt: "27.10 09:15" }, deploy: { applies: true, state: "failed", target: "staging", commit: SHA.m, ref: ext("Deploy 88", "https://example.invalid/deploy/88"), observedAt: "27.10 09:38" } } } }),
+  C: base({ task: { status: "done", priority: "next", revision: 8 }, facts: { attachments: ["att-1", "att-2"], superseded: [] }, state: { taskRevision: 8, statusAtWrite: "done", writtenAt: "27.10 08:12", declaredBy: "kimi · n8n", auth: "installation_token",
+      changeNote: L("Oznaczono jako zakończone", "Marked as done"),
+      outcome: { known: true, text: L("Eksport CSV zakończony.", "CSV export finished."), sources: [] },
+      blockers: [{ key: "headers", text: L("Brak zgody na format nagłówków", "Header format not approved"), unblockedBy: "owner", condition: L("Właściciel wybiera format", "Owner chooses the format"), since: "2026-10-25", state: "open", sources: [] }],
+      nextStep: { known: false },
+      ownerDecision: { state: "unknown" },
+      delivery: { merge: { applies: true, state: "merged", ref: PR, commit: SHA.a, observedAt: "27.10 08:00" }, ci: { applies: true, state: "passed", commit: SHA.o, ref: CIRUN, observedAt: "25.10 12:00" },
+        review: { known: false }, evidence: { applies: true, state: "stored", attachments: ["att-1", "att-3"], observedAt: "27.10 08:10" }, deploy: { known: false } } } }),
+  D: base({ state: { taskRevision: 7, statusAtWrite: "in_progress", writtenAt: "27.10 10:20", declaredBy: "codex · T3", auth: "installation_token",
+      changeNote: L("PR #112 scalony; dowody zweryfikowane; wdrożenie produkcyjne osobnym etapem", "PR #112 merged; evidence verified; production deployment is a separate stage"),
+      outcome: { known: true, text: L("Scalone do main; czeka na osobne wdrożenie produkcyjne.", "Merged to main; waiting for a separate production deployment."), sources: [PR] },
+      blockers: [RES_BLOCKER],
+      nextStep: { known: true, action: L("Zaplanować okno wdrożenia produkcyjnego", "Schedule the production deployment window"), actor: "owner", sources: [] },
+      ownerDecision: { state: "not_needed" },
+      delivery: { merge: { applies: true, state: "merged", ref: PR, commit: SHA.a, detail: SHA.m, observedAt: "27.10 10:05" }, ci: { applies: true, state: "passed", commit: SHA.a, ref: CIRUN, observedAt: "26.10 17:30" },
+        review: { applies: true, state: "findings_closed", openFindings: 0, ref: PR, observedAt: "27.10 10:00" }, evidence: { applies: true, state: "verified", attachments: ["att-1", "att-2", "att-3"], observedAt: "27.10 10:15" }, deploy: { applies: true, state: "pending", target: "production", observedAt: "27.10 10:20", sources: [] } } } }),
+  E: base({ task: { status: "blocked", priority: "now", revision: 7 }, state: { taskRevision: 7, statusAtWrite: "blocked", writtenAt: "27.10 11:02", declaredBy: "claude · T3", auth: "installation_token",
+      changeNote: L("Agent: właściciel zgodził się w rozmowie na wariant B (niepotwierdzone w Knowledge)", "Agent: the owner agreed to option B in chat (not confirmed in Knowledge)"),
+      outcome: { known: true, text: L("Przygotowano dwa warianty nagłówków CSV; wybór należy do właściciela.", "Two CSV header variants are ready; the owner chooses."), sources: [mem("m-17", 2, L("Warianty nagłówków CSV", "CSV header variants"))] },
+      blockers: [{ key: "headers", text: L("Czekamy na wybór formatu nagłówków", "Waiting for the header format choice"), unblockedBy: "owner", condition: L("Właściciel zatwierdza wariant w sesji właściciela", "Owner approves a variant in an owner session"), since: "2026-10-26", state: "open", sources: [mem("m-17", 2, L("Warianty nagłówków CSV", "CSV header variants"))] }],
+      nextStep: { known: true, action: L("Wybrać wariant A lub B", "Choose variant A or B"), actor: "owner", sources: [] },
+      ownerDecision: { state: "recorded", decisionRef: mem("m-17", 2, L("Wariant B nagłówków CSV", "CSV header variant B")) },
+      delivery: { merge: { applies: true, state: "not_started", observedAt: "27.10 11:00", sources: [] }, ci: { applies: true, state: "not_run", observedAt: "27.10 11:00", sources: [] },
+        review: { applies: true, state: "not_requested", observedAt: "27.10 11:00", sources: [] }, evidence: { applies: true, state: "stored", attachments: ["att-1"], observedAt: "27.10 11:00" }, deploy: { applies: false } } } }),
+  F: base({ task: { status: "done", priority: "next", revision: 9 }, facts: { attachments: ["att-1", "att-2", "att-3"], changes: { taskRevisions: 2, statusChanged: true, descriptionChanged: true, repliesAdded: 2, inactiveSources: 1 }, superseded: [{ title: L("Format daty: ISO bez strefy", "Date format: ISO without zone"), next: L("Format daty: ISO ze strefą", "Date format: ISO with zone") }] } }),
+  G: { task: { status: "in_progress", priority: "later", revision: 3 }, state: null, facts: { counts: [null, "25.10", 1, 2, 1, 4] } }
+};
+S.F.state = JSON.parse(JSON.stringify(S.D.state));
+S.F.state.outcome.sources = [PR, mem("m-9", 1, L("Format daty: ISO bez strefy", "Date format: ISO without zone"))];
+S.F.state.taskRevision = 7;
+S.H = JSON.parse(JSON.stringify(S.D));
+S.H.state.blockers = { known: false, reason: L("Blokady nie zostały jeszcze sprawdzone", "Blockers have not been checked yet") };
+S.I = JSON.parse(JSON.stringify(S.B));
+S.I.state.blockers.push({ key: "deployment-approval", text: L("Brak zgody na ponowne wdrożenie", "Redeployment approval missing"), unblockedBy: "owner", condition: L("Zatwierdzić ponowne wdrożenie po naprawie", "Approve redeployment after the repair"), since: "2026-10-27", state: "open", sources: [mem("m-18", 1, L("Zgoda na wdrożenie", "Deployment approval"))] });
+
+// Deterministic assessment — mirrors the finding table in the design document.
+// Owner decision 2026-10-27: the shared installation token counts as the owner for now.
+var CONSENT_POLICIES = { current: ["owner_session", "installation_token"], future: ["owner_session"] };
+function assess(sc, approval, policy) {
+  var st = sc.state, t = sc.task, f = sc.facts, out = { freshness: "missing", changes: {}, total: 0, findings: [], consent: "unknown", evidence: null };
+  if (!st) return out;
+  var ch = Object.assign({ taskRevisions: Math.max(0, t.revision - st.taskRevision), statusChanged: t.status !== st.statusAtWrite, descriptionChanged: false, memoriesChanged: 0, attachmentsAdded: 0, repliesAdded: 0, staleSources: 0, inactiveSources: 0 }, f.changes || {});
+  out.changes = ch;
+  out.total = ch.taskRevisions + ch.memoriesChanged + ch.attachmentsAdded + ch.repliesAdded + ch.staleSources + ch.inactiveSources;
+  out.freshness = out.total === 0 ? "current" : "changed_since";
+  var open = (Array.isArray(st.blockers) ? st.blockers : []).filter(function (b) { return b.state === "open"; }), d = st.delivery;
+  var add = function (code, sev, v, src) { out.findings.push({ code: code, severity: sev, v: v || {}, sources: src || [] }); };
+  if (t.status === "done" && open.length) add("done_with_open_blocker", "conflict", { b: open[0].text });
+  if (t.status === "blocked" && Array.isArray(st.blockers) && !open.length) add("blocked_without_blocker", "conflict");
+  if (open.length && t.status !== "blocked" && t.status !== "done") add("open_blocker_not_blocked", "attention", { b: open[0].text, s: t.status });
+  var app = function (x) { return x && x.applies; };
+  if (app(d.deploy) && d.deploy.state === "done" && app(d.merge) && d.merge.state !== "merged") add("deploy_without_merge", "conflict");
+  if (app(d.ci) && app(d.merge) && d.ci.commit && d.merge.commit && d.ci.commit !== d.merge.commit) add("ci_not_merged_head", "attention", { c: d.ci.commit.slice(0, 7), m: d.merge.commit.slice(0, 7) }, [d.ci.ref, d.merge.ref]);
+  if (app(d.deploy) && app(d.merge) && d.deploy.commit && d.merge.commit && d.deploy.commit !== d.merge.commit && d.deploy.commit !== d.merge.detail) add("deploy_not_merged_head", "attention", { d: d.deploy.commit.slice(0, 7), m: d.merge.commit.slice(0, 7) });
+  if (app(d.evidence) && d.evidence.attachments) {
+    var missing = d.evidence.attachments.filter(function (id) { return f.attachments.indexOf(id) < 0; });
+    out.evidence = { listed: d.evidence.attachments.length, present: d.evidence.attachments.length - missing.length, missing: missing };
+    missing.forEach(function (id) { add("evidence_missing", "conflict", { id: id }); });
+  }
+  var positive = { merged: 1, passed: 1, findings_closed: 1, stored: 1, verified: 1, done: 1 };
+  ["merge", "ci", "review", "evidence", "deploy"].forEach(function (k) { var x = d[k]; if (app(x) && positive[x.state] && !x.ref && !(x.sources && x.sources.length) && !(x.attachments && x.attachments.length)) add("claim_without_source", "attention", { f: k }); });
+  if (st.outcome.known && !st.outcome.sources.length) add("claim_without_source", "attention", { f: "outcome" });
+  if (ch.staleSources) add("source_stale", "attention");
+  if (ch.inactiveSources) add("source_inactive", "attention");
+  var od = st.ownerDecision;
+  if (od.state === "recorded") {
+    var accepted = CONSENT_POLICIES[policy || "current"];
+    out.approvalMethod = approval === "none" ? null : approval;
+    if (!out.approvalMethod) { out.consent = "proposal_only"; add("consent_missing", "attention", {}, [od.decisionRef]); }
+    else if (accepted.indexOf(out.approvalMethod) >= 0) out.consent = "approved";
+    else { out.consent = "approved_method_not_accepted"; add("consent_method_not_accepted", "attention", { method: out.approvalMethod }, [od.decisionRef]); }
+  } else out.consent = od.state;
+  if (t.status === "done" && st.nextStep.known && st.nextStep.action) add("next_step_on_done", "attention");
+  out.findings.sort(function (a, b) { return (a.severity === "conflict" ? 0 : 1) - (b.severity === "conflict" ? 0 : 1); });
+  return out;
+}
+
+var ICONS = { ok: '<path d="M20 6 9 17l-5-5"/>', bad: '<path d="M18 6 6 18M6 6l12 12"/>', warn: '<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>', unknown: '<circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/>', neutral: '<circle cx="12" cy="12" r="9"/>', half: '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/>', clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', na: '<circle cx="12" cy="12" r="9"/><path d="M8 12h8"/>', ext: '<path d="M7 17 17 7M8 7h9v9"/>' };
+function icon(k, label) { return '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"' + (label ? ' role="img" aria-label="' + esc(label) + '"' : ' aria-hidden="true"') + ">" + ICONS[k] + "</svg>"; }
+var TONE = { merged: "ok", passed: "ok", findings_closed: "ok", verified: "ok", done: "ok", failed: "bad", closed_unmerged: "bad", findings_open: "warn", stored: "half", pending: "clock", running: "clock", in_progress: "clock", pr_open: "clock" };
+function toneClass(k) { return k === "ok" ? "tone-ok" : k === "bad" ? "tone-bad" : k === "warn" ? "tone-warn" : k === "unknown" || k === "na" ? "tone-unknown" : ""; }
+
+var ui = { scenario: "D", lang: "pl", theme: "dark", width: "desktop", approval: "none", policy: "current", sourcesOpen: false, sourceView: null, returnId: null };
+var app = document.getElementById("app");
+var linkSeq = 0, linkTargets = {};
+function src(s, lang) {
+  if (!s) return "";
+  var id = "src-" + (++linkSeq); linkTargets[id] = s;
+  var label = s.kind === "external" ? s.label : (s.title ? s.title[lang] : s.id) + (s.revision ? " · r" + s.revision : "");
+  return ' <a class="srclink" href="#' + id + '" data-src="' + id + '">' + (s.kind === "external" ? icon("ext") : "") + esc(label) + "</a>";
+}
+function srcs(list, lang) { return (list || []).filter(Boolean).map(function (s) { return src(s, lang); }).join(""); }
+function render() {
+  linkSeq = 0; linkTargets = {};
+  var t = T[ui.lang], lang = ui.lang, sc = S[ui.scenario], a = assess(sc, ui.approval, ui.policy);
+  document.documentElement.lang = lang; document.documentElement.dataset.theme = ui.theme;
+  document.getElementById("approvalWrap").hidden = ui.scenario !== "E";
+  document.getElementById("policyWrap").hidden = ui.scenario !== "E";
+  app.className = "app" + (ui.width === "desktop" ? "" : " mobile") + (ui.width === "narrow" ? " narrow" : "");
+  var list = Object.keys(S).map(function (k) { var x = S[k]; return '<li><a href="#" data-pick="' + k + '"' + (k === ui.scenario ? ' aria-current="true"' : "") + '><span class="t">' + esc(TITLE[lang]) + " (" + k + ')</span><span class="s">' + esc(t.statuses[x.task.status]) + " · " + esc(t.prio[x.task.priority]) + "</span></a></li>"; }).join("");
+  var body = ui.sourceView ? sourceView(t, lang) : reader(sc, a, t, lang);
+  app.innerHTML = '<nav class="side" aria-label="Główna nawigacja"><span class="logo">WC</span><span class="nav">Projekty</span><span class="nav on" aria-current="page">' + esc(t.nav) + '</span><span class="nav">Testy</span></nav>' +
+    '<div class="main"><div class="top"><span class="crumb">' + esc(t.crumb) + '</span></div><div class="tabs" aria-hidden="true">' + t.tabs.map(function (x, i) { return '<span class="' + (i === 0 ? "on" : "") + '">' + esc(x) + "</span>"; }).join("") + "</div>" +
+    '<div class="work"><ul class="list" aria-label="Zadania">' + list + '</ul><div class="reader" role="region" aria-label="Czytnik"><div class="readerbar"><button class="btn" type="button">← ' + esc(t.back) + "</button></div>" + body + "</div></div>" +
+    '<div class="footer"><span>● ' + (lang === "pl" ? "Połączono" : "Connected") + "</span><span>" + esc(t.footer) + "</span></div></div>";
+}
+function sourceView(t, lang) {
+  var s = ui.sourceView, label = s.kind === "external" ? s.label : (s.title ? s.title[lang] : s.id);
+  return '<article><div class="source-view"><p class="label">' + esc(s.kind) + (s.revision ? " · r" + s.revision : "") + '</p><h1 class="title" tabindex="-1" id="srcHeading">' + esc(label) + '</h1><p class="muted">' + esc(s.kind === "external" ? t.externalNote : t.srcView) + '</p><p><button class="btn primary" type="button" id="backToState">← ' + esc(t.backToState) + "</button></p></div></article>";
+}
+function cell(label, iconKey, value, sub, cls) {
+  return '<div class="cell ' + (cls || "") + '"><dt>' + icon(iconKey) + esc(label) + "</dt><dd>" + value + (sub ? '<span class="sub">' + sub + "</span>" : "") + "</dd></div>";
+}
+function reader(sc, a, t, lang) {
+  var st = sc.state, task = sc.task;
+  var head = '<div class="badges"><span class="badge ' + task.status + '">' + esc(t.statuses[task.status]) + '</span><span class="muted">' + esc(t.prio[task.priority]) + '</span></div><h1 class="title" tabindex="-1">' + esc(TITLE[lang]) + "</h1>";
+  var panel;
+  if (!st) {
+    var c = sc.facts.counts.slice(); c[0] = t.statuses[task.status];
+    panel = '<section class="state" aria-labelledby="stateHeading"><div class="state-head"><h2 class="label" id="stateHeading">' + esc(t.panel) + '</h2><span class="chip">' + icon("unknown") + esc(t.missing) + '</span></div><p class="result"><strong>' + esc(t.gTitle) + '</strong><br><span class="muted">' + esc(t.gHelp) + '</span></p><div class="empty-facts">' + t.gFacts.map(function (l, i) { return "<div><b>" + esc(c[i]) + "</b>" + esc(l) + "</div>"; }).join("") + '</div><div class="actions"><a class="btn" href="#history" data-history>' + esc(t.history) + '</a><button class="btn primary" type="button">' + esc(t.update) + "</button></div></section>";
+    return "<article>" + head + panel + history(sc, t, lang) + "</article>";
+  }
+  var fresh = a.freshness === "current" ? '<span class="chip ok">' + icon("ok") + esc(t.current) + "</span>" : '<a class="chip warn" href="#freshBanner">' + icon("warn") + esc(fmt(t.changed, { n: a.total })) + "</a>";
+  var meta = '<p class="meta">' + esc(fmt(t.meta, { r: st.taskRevision, t: st.writtenAt, auth: st.auth === "owner_session" ? t.ownerSession : t.installation, who: st.declaredBy })) + "</p>";
+  var banner = "";
+  if (a.freshness === "changed_since") {
+    var ch = a.changes, items = [];
+    if (ch.taskRevisions) items.push(fmt(t.ch.taskRevisions, { n: ch.taskRevisions }) + (ch.statusChanged ? " — " + fmt(t.ch.statusChanged, { s: t.statuses[task.status] }) : "") + (ch.descriptionChanged ? ", " + t.ch.descriptionChanged : ""));
+    ["memoriesChanged", "attachmentsAdded", "repliesAdded", "staleSources", "inactiveSources"].forEach(function (k) { if (ch[k]) items.push(fmt(t.ch[k], { n: ch[k] })); });
+    banner = '<div class="banner" id="freshBanner" tabindex="-1" role="note"><strong>' + esc(fmt(t.bannerTitle, { n: a.total })) + "</strong> " + esc(t.bannerHelp) + "<ul>" + items.map(function (x) { return "<li>" + esc(x) + ' <a class="srclink" href="#history" data-history>' + esc(t.history) + "</a></li>"; }).join("") + "</ul></div>";
+  }
+  var outcome = st.outcome.known ? esc(st.outcome.text[lang]) + srcs(st.outcome.sources, lang) : '<span class="tone-unknown">' + icon("unknown") + " " + esc(t.unknown) + "</span>";
+  var open = (Array.isArray(st.blockers) ? st.blockers : []).filter(function (b) { return b.state === "open"; }), resolved = (Array.isArray(st.blockers) ? st.blockers : []).filter(function (b) { return b.state === "resolved"; });
+  var bCell = !Array.isArray(st.blockers)
+    ? cell(t.blocker, "unknown", esc(t.unknown), st.blockers.reason ? esc(st.blockers.reason[lang]) : "")
+    : open.length
+      ? cell(t.blocker, "warn", '<ul style="margin:0;padding-left:1rem">' + open.map(function (b) {
+          return '<li><span class="tone-warn">' + esc(b.text[lang]) + '</span>' + srcs(b.sources, lang) + '<div class="muted">' + esc(fmt(t.unblockedBy, { a: t.actors[b.unblockedBy] })) + ' · ' + esc(fmt(t.until, { c: b.condition[lang] })) + '</div></li>';
+        }).join("") + '</ul>', "", "warn")
+      : cell(t.blocker, "ok", esc(t.noBlocker), resolved.length ? '<a class="srclink" href="#resolved" data-history="resolved">' + esc(fmt(t.resolvedN, { n: resolved.length })) + "</a>" : "");
+  var ns = st.nextStep, nCell = !ns.known ? cell(t.nextStep, "unknown", '<span class="tone-unknown">' + esc(t.unknown) + "</span>") : ns.none ? cell(t.nextStep, "na", esc(t.none)) : cell(t.nextStep, "clock", "<strong>" + esc(t.actors[ns.actor]) + "</strong> — " + esc(ns.action[lang]) + srcs(ns.sources, lang));
+  var od = st.ownerDecision, cons = fmt(t.consent[a.consent], { method: a.approvalMethod ? t.methods[a.approvalMethod] : "" }), dCls = a.consent === "needed" || a.consent === "proposal_only" || a.consent === "approved_method_not_accepted" ? "warn" : "";
+  var dIcon = a.consent === "approved" ? "ok" : a.consent === "not_needed" ? "na" : a.consent === "unknown" ? "unknown" : "warn";
+  var dVal = '<span class="' + (dIcon === "warn" ? "tone-warn" : dIcon === "ok" ? "tone-ok" : dIcon === "unknown" ? "tone-unknown" : "") + '">' + esc(cons) + "</span>" + (od.decisionRef ? srcs([od.decisionRef], lang) : "");
+  var dSub = /zgodził|agreed/.test(st.changeNote[lang]) ? esc(fmt(t.agentReport, { t: st.changeNote[lang] })) : "";
+  var dCell = cell(t.ownerDecision, dIcon, dVal, dSub, dCls);
+  var ev = st.delivery.evidence, eCell;
+  if (!ev.applies) eCell = cell(t.evidence, ev.known === false ? "unknown" : "na", '<span class="tone-unknown">' + esc(ev.known === false ? t.unknown : t.na) + "</span>");
+  else {
+    var evText = fmt(t.s.evidence[ev.state], { who: st.declaredBy }), bad = a.evidence && a.evidence.missing.length;
+    eCell = cell(t.evidence, bad ? "bad" : TONE[ev.state] || "neutral", '<span class="' + (bad ? "tone-bad" : toneClass(TONE[ev.state])) + '">' + esc(evText) + "</span>", a.evidence ? esc(fmt(t.ev.listed, { p: a.evidence.present, n: a.evidence.listed })) + (bad ? " · " + esc(fmt(t.ev.missing, { id: a.evidence.missing.join(", ") })) : "") + srcs(ev.attachments.map(function (id) { return att(id, L(id, id)); }).slice(0, 3), lang) : "", bad ? "bad" : "");
+  }
+  var rows = ["merge", "ci", "review", "evidence", "deploy"].map(function (k) {
+    var x = st.delivery[k], name = esc(t.d[k]);
+    if (!x.applies) { var unk = x.known === false; return "<div><dt>" + name + '</dt><dd class="st ' + (unk ? "tone-unknown" : "tone-unknown") + '">' + icon(unk ? "unknown" : "na") + esc(unk ? t.unknown : t.na) + '</dd><dd class="ver"></dd><dd class="src"></dd></div>'; }
+    var tone = TONE[x.state] || "neutral", label = fmt(t.s[k][x.state], { n: x.openFindings, who: st.declaredBy });
+    var ver = (x.commit ? '<span class="mono">' + x.commit.slice(0, 7) + "</span>" : "") + (x.detail ? ' → <span class="mono">' + x.detail.slice(0, 7) + "</span>" : "") + (x.target ? " · " + esc(x.target) : "");
+    return "<div><dt>" + name + '</dt><dd class="st ' + toneClass(tone) + '">' + icon(tone) + esc(label) + '</dd><dd class="ver">' + ver + '</dd><dd class="src muted">' + esc(fmt(t.checked, { t: x.observedAt })) + srcs([x.ref], lang) + "</dd></div>";
+  }).join("");
+  var d = st.delivery, parts = [];
+  var push = function (x, key, alt) { if (x.applies && t.short[alt || x.state]) parts.push(t.short[alt || x.state]); };
+  push(d.merge, "merge"); push(d.ci, "ci", d.ci.state === "failed" ? "failed_ci" : null); push(d.review, "review"); push(d.evidence, "evidence"); push(d.deploy, "deploy", d.deploy.state === "failed" ? "failed_deploy" : null);
+  var line = parts.length ? '<p class="summary-line">' + esc(parts.join(" · ")) + "</p>" : "";
+  var findings = a.findings.length ? '<details class="findings" open><summary><strong>' + icon("warn") + " " + esc(fmt(t.attention, { n: a.findings.length })) + "</strong></summary><ul>" + a.findings.map(function (f) {
+    var v = Object.assign({}, f.v); if (v.b && v.b[lang]) v.b = v.b[lang]; if (v.s) v.s = t.statuses[v.s]; if (v.f) v.f = v.f === "outcome" ? t.result : t.d[v.f]; if (v.method) v.method = t.consent && t.methods[v.method];
+    return '<li class="' + (f.severity === "conflict" ? "tone-bad" : "tone-warn") + '">' + icon(f.severity === "conflict" ? "bad" : "warn") + '<span><span class="kind">' + esc(f.severity === "conflict" ? t.conflict : t.attn) + ":</span> <span style=\"color:var(--foreground)\">" + esc(fmt(t.f[f.code], v)) + "</span>" + srcs(f.sources, lang) + ' <span class="muted mono">' + f.code + "</span></span></li>";
+  }).join("") + "</ul></details>" : "";
+  var all = [].concat(st.outcome.sources || [], open.reduce(function (s, b) { return s.concat(b.sources); }, []), od.decisionRef ? [od.decisionRef] : [], ["merge", "ci", "review", "deploy"].map(function (k) { return st.delivery[k].ref; }).filter(Boolean));
+  var seen = {}, uniq = all.filter(function (s) { var k = s.kind + (s.id || s.url); if (seen[k]) return false; seen[k] = 1; return true; });
+  var sourcesList = ui.sourcesOpen ? '<ul class="sources" id="sourcesList">' + uniq.map(function (s) { return "<li>" + esc(s.kind) + ":" + src(s, lang) + "</li>"; }).join("") + "</ul>" : "";
+  panel = '<section class="state" aria-labelledby="stateHeading"><div class="state-head"><h2 class="label" id="stateHeading">' + esc(t.panel) + "</h2>" + fresh + meta + "</div>" + banner +
+    '<dl class="result"><dt>' + esc(t.result) + "</dt><dd>" + outcome + "</dd></dl>" +
+    '<dl class="grid">' + bCell + nCell + dCell + eCell + "</dl>" +
+    '<h3 class="sec">' + esc(t.delivery) + '</h3><dl class="delivery">' + rows + "</dl>" + line + findings +
+    '<div class="actions"><button class="btn" type="button" id="toggleSources" aria-expanded="' + ui.sourcesOpen + '" aria-controls="sourcesList">' + esc(ui.sourcesOpen ? t.hideSources : fmt(t.sources, { n: uniq.length })) + '</button><a class="btn" href="#history" data-history>' + esc(t.history) + '</a><button class="btn primary" type="button">' + esc(t.update) + "</button></div>" + sourcesList + "</section>";
+  return "<article>" + head + panel + history(sc, t, lang) + "</article>";
+}
+function history(sc, t, lang) {
+  var st = sc.state, resolved = st ? (Array.isArray(st.blockers) ? st.blockers : []).filter(function (b) { return b.state === "resolved"; }) : [], sup = sc.facts.superseded || [];
+  return '<section class="history" aria-labelledby="historyHeading"><h2 id="historyHeading" tabindex="-1">' + esc(t.histTitle) + "</h2>" +
+    (resolved.length ? '<h3 id="resolved" tabindex="-1">' + esc(t.resolvedTitle) + '</h3><ul class="resolved">' + resolved.map(function (b) { return "<li>" + icon("ok") + " " + esc(fmt(t.resolvedItem, { t: b.text[lang], d: b.resolvedAt, r: b.resolution[lang] })) + srcs(b.sources, lang) + "</li>"; }).join("") + "</ul>" : "") +
+    (sup.length ? "<h3>" + esc(t.supersededTitle) + '</h3><ul class="superseded">' + sup.map(function (s) { return '<li><span class="muted">' + esc(fmt(t.supersededItem, { t: s.title[lang], n: s.next[lang] })) + "</span></li>"; }).join("") + "</ul>" : "") +
+    "<h3>" + esc(t.descTitle) + '</h3><p class="desc">' + esc(DESC[lang]) + "</p></section>";
+}
+function focusEl(sel) { var el = app.querySelector(sel); if (el) { el.focus(); el.scrollIntoView({ block: "nearest" }); } }
+app.addEventListener("click", function (e) {
+  var a = e.target.closest("a,button"); if (!a) return;
+  if (a.dataset.pick) { e.preventDefault(); ui.scenario = a.dataset.pick; document.getElementById("scenario").value = ui.scenario; ui.sourceView = null; render(); focusEl("h1.title"); return; }
+  if (a.dataset.src) { e.preventDefault(); ui.sourceView = linkTargets[a.dataset.src]; ui.returnId = a.dataset.src; render(); focusEl("#srcHeading"); return; }
+  if (a.id === "backToState") { var id = ui.returnId; ui.sourceView = null; render(); focusEl('[data-src="' + id + '"]'); return; }
+  if (a.id === "toggleSources") { ui.sourcesOpen = !ui.sourcesOpen; render(); focusEl("#toggleSources"); return; }
+  if (a.hasAttribute("data-history")) { e.preventDefault(); focusEl(a.dataset.history === "resolved" ? "#resolved" : "#historyHeading"); return; }
+  if (a.getAttribute("href") === "#freshBanner") { e.preventDefault(); focusEl("#freshBanner"); }
+});
+["scenario", "lang", "theme", "width", "approval", "policy"].forEach(function (k) { document.getElementById(k).addEventListener("change", function (e) { ui[k] = e.target.value; ui.sourceView = null; render(); }); });
+render();
+</script>
+</body>
+</html>

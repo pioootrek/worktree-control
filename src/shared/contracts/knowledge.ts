@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { memorySchemas } from "./knowledge-memory-schemas";
+import { taskStateInputSchema } from "./knowledge-task-state";
 
 export interface KnowledgeProject {
   id: string;
@@ -190,6 +191,8 @@ export const knowledgeSchemas = {
   create_task: z.strictObject({ ...project, ...write, title, description: body, priority: knowledgePriority.optional() }),
   task_from_thread: z.strictObject({ ...project, ...write, threadId: id, title, description: body, priority: knowledgePriority.optional() }),
   update_task: z.strictObject({ ...project, ...write, ...revision, taskId: id, title, description: body, priority: knowledgePriority, status: knowledgeStatus }),
+  task_state: z.strictObject({ ...project, taskId: id }),
+  update_task_state: z.strictObject({ ...project, ...write, ...revision, taskId: id, state: taskStateInputSchema, status: z.enum(["open", "in_progress", "blocked", "done"]).optional() }),
   archive_project: z.strictObject({ ...project, ...write, ...revision }),
   restore_project: z.strictObject({ ...project, ...write, ...revision }),
   link_runtime: z.strictObject({ ...project, ...write, ...revision, runtimeProjectId: id.nullable() }),

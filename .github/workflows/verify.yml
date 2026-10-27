@@ -100,6 +100,45 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  systemd-drop-in-acceptance:
+    # This job mutates service scopes and must stay on its own disposable hosted VM.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: 11.22.0
+          run_install: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.23.2
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Start disposable user service manager
+        shell: bash
+        run: |
+          USER_ID=$(id -u)
+          sudo systemctl start "user@$USER_ID.service"
+          test -S "/run/user/$USER_ID/bus"
+          echo "XDG_RUNTIME_DIR=/run/user/$USER_ID" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$USER_ID/bus" >> "$GITHUB_ENV"
+          printf '%s\n' 'worktree-control test fixture only' | sudo tee /run/worktree-control-disposable-systemd >/dev/null
+      - name: Verify inspected drop-ins against the real disposable manager
+        env:
+          WORKTREE_CONTROL_ISOLATED_SYSTEMD_ACCEPTANCE: disposable
+        run: pnpm exec tsx scripts/systemd-drop-in-acceptance.ts --report systemd-drop-in-acceptance-report.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: systemd-drop-in-acceptance-report
+          path: systemd-drop-in-acceptance-report.json
+          retention-days: 7
+          if-no-files-found: error
+
   package-smoke:
     needs: check-build
     runs-on: ubuntu-24.04

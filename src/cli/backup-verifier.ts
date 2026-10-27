@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { verifyBackupSnapshot } from "../server/infrastructure/sqlite";
+import { verifyBackupSnapshot } from "../server/infrastructure/sqlite/backup-verification";
 
 // This child has no controller store, singleton ownership or transport listener.
 // Its only SQLite connection belongs to a disposable verification clone.
