@@ -132,6 +132,8 @@ h2.sec{font-size:13px;margin:20px 0 6px;font-weight:600}
       <option value="E">E — brak zgody właściciela</option>
       <option value="F">F — nieaktualne podsumowanie</option>
       <option value="G">G — brak zapisanego stanu</option>
+      <option value="H">H — blokady jeszcze niesprawdzone</option>
+      <option value="I">I — kilka otwartych blokad</option>
     </select></label>
   <label id="approvalWrap" hidden>Zatwierdzenie decyzji (E)
     <select id="approval">
@@ -266,6 +268,10 @@ var S = {
 S.F.state = JSON.parse(JSON.stringify(S.D.state));
 S.F.state.outcome.sources = [PR, mem("m-9", 1, L("Format daty: ISO bez strefy", "Date format: ISO without zone"))];
 S.F.state.taskRevision = 7;
+S.H = JSON.parse(JSON.stringify(S.D));
+S.H.state.blockers = { known: false, reason: L("Blokady nie zostały jeszcze sprawdzone", "Blockers have not been checked yet") };
+S.I = JSON.parse(JSON.stringify(S.B));
+S.I.state.blockers.push({ key: "deployment-approval", text: L("Brak zgody na ponowne wdrożenie", "Redeployment approval missing"), unblockedBy: "owner", condition: L("Zatwierdzić ponowne wdrożenie po naprawie", "Approve redeployment after the repair"), since: "2026-10-27", state: "open", sources: [mem("m-18", 1, L("Zgoda na wdrożenie", "Deployment approval"))] });
 
 // Deterministic assessment — mirrors the finding table in the design document.
 // Owner decision 2026-10-27: the shared installation token counts as the owner for now.
@@ -277,10 +283,10 @@ function assess(sc, approval, policy) {
   out.changes = ch;
   out.total = ch.taskRevisions + ch.memoriesChanged + ch.attachmentsAdded + ch.repliesAdded + ch.staleSources + ch.inactiveSources;
   out.freshness = out.total === 0 ? "current" : "changed_since";
-  var open = st.blockers.filter(function (b) { return b.state === "open"; }), d = st.delivery;
+  var open = (Array.isArray(st.blockers) ? st.blockers : []).filter(function (b) { return b.state === "open"; }), d = st.delivery;
   var add = function (code, sev, v, src) { out.findings.push({ code: code, severity: sev, v: v || {}, sources: src || [] }); };
   if (t.status === "done" && open.length) add("done_with_open_blocker", "conflict", { b: open[0].text });
-  if (t.status === "blocked" && !open.length) add("blocked_without_blocker", "conflict");
+  if (t.status === "blocked" && Array.isArray(st.blockers) && !open.length) add("blocked_without_blocker", "conflict");
   if (open.length && t.status !== "blocked" && t.status !== "done") add("open_blocker_not_blocked", "attention", { b: open[0].text, s: t.status });
   var app = function (x) { return x && x.applies; };
   if (app(d.deploy) && d.deploy.state === "done" && app(d.merge) && d.merge.state !== "merged") add("deploy_without_merge", "conflict");
@@ -331,7 +337,7 @@ function render() {
   document.getElementById("approvalWrap").hidden = ui.scenario !== "E";
   document.getElementById("policyWrap").hidden = ui.scenario !== "E";
   app.className = "app" + (ui.width === "desktop" ? "" : " mobile") + (ui.width === "narrow" ? " narrow" : "");
-  var list = ["A", "B", "C", "D", "E", "F", "G"].map(function (k) { var x = S[k]; return '<li><a href="#" data-pick="' + k + '"' + (k === ui.scenario ? ' aria-current="true"' : "") + '><span class="t">' + esc(TITLE[lang]) + " (" + k + ')</span><span class="s">' + esc(t.statuses[x.task.status]) + " · " + esc(t.prio[x.task.priority]) + "</span></a></li>"; }).join("");
+  var list = Object.keys(S).map(function (k) { var x = S[k]; return '<li><a href="#" data-pick="' + k + '"' + (k === ui.scenario ? ' aria-current="true"' : "") + '><span class="t">' + esc(TITLE[lang]) + " (" + k + ')</span><span class="s">' + esc(t.statuses[x.task.status]) + " · " + esc(t.prio[x.task.priority]) + "</span></a></li>"; }).join("");
   var body = ui.sourceView ? sourceView(t, lang) : reader(sc, a, t, lang);
   app.innerHTML = '<nav class="side" aria-label="Główna nawigacja"><span class="logo">WC</span><span class="nav">Projekty</span><span class="nav on" aria-current="page">' + esc(t.nav) + '</span><span class="nav">Testy</span></nav>' +
     '<div class="main"><div class="top"><span class="crumb">' + esc(t.crumb) + '</span></div><div class="tabs" aria-hidden="true">' + t.tabs.map(function (x, i) { return '<span class="' + (i === 0 ? "on" : "") + '">' + esc(x) + "</span>"; }).join("") + "</div>" +
@@ -364,10 +370,14 @@ function reader(sc, a, t, lang) {
     banner = '<div class="banner" id="freshBanner" tabindex="-1" role="note"><strong>' + esc(fmt(t.bannerTitle, { n: a.total })) + "</strong> " + esc(t.bannerHelp) + "<ul>" + items.map(function (x) { return "<li>" + esc(x) + ' <a class="srclink" href="#history" data-history>' + esc(t.history) + "</a></li>"; }).join("") + "</ul></div>";
   }
   var outcome = st.outcome.known ? esc(st.outcome.text[lang]) + srcs(st.outcome.sources, lang) : '<span class="tone-unknown">' + icon("unknown") + " " + esc(t.unknown) + "</span>";
-  var open = st.blockers.filter(function (b) { return b.state === "open"; }), resolved = st.blockers.filter(function (b) { return b.state === "resolved"; });
-  var bCell = open.length
-    ? cell(t.blocker, "warn", '<span class="tone-warn">' + esc(open[0].text[lang]) + "</span>" + srcs(open[0].sources, lang), esc(fmt(t.unblockedBy, { a: t.actors[open[0].unblockedBy] })) + " · " + esc(fmt(t.until, { c: open[0].condition[lang] })) + (open.length > 1 ? " · +" + (open.length - 1) : ""), "warn")
-    : cell(t.blocker, "ok", esc(t.noBlocker), resolved.length ? '<a class="srclink" href="#resolved" data-history="resolved">' + esc(fmt(t.resolvedN, { n: resolved.length })) + "</a>" : "");
+  var open = (Array.isArray(st.blockers) ? st.blockers : []).filter(function (b) { return b.state === "open"; }), resolved = (Array.isArray(st.blockers) ? st.blockers : []).filter(function (b) { return b.state === "resolved"; });
+  var bCell = !Array.isArray(st.blockers)
+    ? cell(t.blocker, "unknown", esc(t.unknown), st.blockers.reason ? esc(st.blockers.reason[lang]) : "")
+    : open.length
+      ? cell(t.blocker, "warn", '<ul style="margin:0;padding-left:1rem">' + open.map(function (b) {
+          return '<li><span class="tone-warn">' + esc(b.text[lang]) + '</span>' + srcs(b.sources, lang) + '<div class="muted">' + esc(fmt(t.unblockedBy, { a: t.actors[b.unblockedBy] })) + ' · ' + esc(fmt(t.until, { c: b.condition[lang] })) + '</div></li>';
+        }).join("") + '</ul>', "", "warn")
+      : cell(t.blocker, "ok", esc(t.noBlocker), resolved.length ? '<a class="srclink" href="#resolved" data-history="resolved">' + esc(fmt(t.resolvedN, { n: resolved.length })) + "</a>" : "");
   var ns = st.nextStep, nCell = !ns.known ? cell(t.nextStep, "unknown", '<span class="tone-unknown">' + esc(t.unknown) + "</span>") : ns.none ? cell(t.nextStep, "na", esc(t.none)) : cell(t.nextStep, "clock", "<strong>" + esc(t.actors[ns.actor]) + "</strong> — " + esc(ns.action[lang]) + srcs(ns.sources, lang));
   var od = st.ownerDecision, cons = fmt(t.consent[a.consent], { method: a.approvalMethod ? t.methods[a.approvalMethod] : "" }), dCls = a.consent === "needed" || a.consent === "proposal_only" || a.consent === "approved_method_not_accepted" ? "warn" : "";
   var dIcon = a.consent === "approved" ? "ok" : a.consent === "not_needed" ? "na" : a.consent === "unknown" ? "unknown" : "warn";
@@ -406,7 +416,7 @@ function reader(sc, a, t, lang) {
   return "<article>" + head + panel + history(sc, t, lang) + "</article>";
 }
 function history(sc, t, lang) {
-  var st = sc.state, resolved = st ? st.blockers.filter(function (b) { return b.state === "resolved"; }) : [], sup = sc.facts.superseded || [];
+  var st = sc.state, resolved = st ? (Array.isArray(st.blockers) ? st.blockers : []).filter(function (b) { return b.state === "resolved"; }) : [], sup = sc.facts.superseded || [];
   return '<section class="history" aria-labelledby="historyHeading"><h2 id="historyHeading" tabindex="-1">' + esc(t.histTitle) + "</h2>" +
     (resolved.length ? '<h3 id="resolved" tabindex="-1">' + esc(t.resolvedTitle) + '</h3><ul class="resolved">' + resolved.map(function (b) { return "<li>" + icon("ok") + " " + esc(fmt(t.resolvedItem, { t: b.text[lang], d: b.resolvedAt, r: b.resolution[lang] })) + srcs(b.sources, lang) + "</li>"; }).join("") + "</ul>" : "") +
     (sup.length ? "<h3>" + esc(t.supersededTitle) + '</h3><ul class="superseded">' + sup.map(function (s) { return '<li><span class="muted">' + esc(fmt(t.supersededItem, { t: s.title[lang], n: s.next[lang] })) + "</span></li>"; }).join("") + "</ul>" : "") +

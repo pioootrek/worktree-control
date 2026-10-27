@@ -20,7 +20,7 @@ and the primary action only. Nothing is taken from WinPath.
 Open `index.html` directly in a browser; no server, network or build is needed.
 The controls above the mocked application choose:
 
-- scenario A–G from the design's acceptance table, plus, for scenario E, the
+- scenario A–I from the design's acceptance table, plus, for scenario E, the
   approval method (none, installation token, owner session) and the consent
   policy (current: the installation token counts as the owner, per the owner's
   2026-10-27 decision; future: owner session only);
@@ -56,3 +56,13 @@ approval method, policy and language rendered the expected wording.
 Not verified: full keyboard traversal in a real browser, screen-reader output,
 200 % zoom and the light theme's contrast. These checks belong to the
 production component's acceptance in the implementation slice.
+
+Review fixes: scenarios H and I cover an unknown blocker list and two open
+blockers with different actors, conditions and sources. Arrays remain the
+known representation, including `[]` for confirmed absence. Unknown is never
+rendered as an all-clear; every open blocker is shown without a disclosure.
+
+After these fixes, the Node harness passed all 54 combinations (A–I × PL/EN ×
+desktop/mobile/narrow) and checked that H never says "No open blockers", I
+contains both blockers and their actors/conditions, and unknown blockers do
+not trigger `blocked_without_blocker`. Script syntax and docs fmt/check passed.
