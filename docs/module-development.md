@@ -1,6 +1,6 @@
 ---
 audience: "contributors developing and testing application modules"
-last_reviewed: "2026-10-19"
+last_reviewed: "2026-10-27"
 source_of_truth: "implemented module entry points and focused verification workflow"
 status: "active"
 ---
@@ -27,6 +27,7 @@ modules still share the facade's lifecycle dependencies.
 | MCP session admission, idle cleanup and claim renewal policy | `src/server/modules/mcp-sessions/`, wired by `src/server/transports/mcp/mcp-runtime.ts` | None | `pnpm test src/server/modules/mcp-sessions src/server/transports/mcp src/server/mcp-http-server.test.ts src/server/mcp-diagnostics.test.ts` |
 | Schema upgrade | `src/server/infrastructure/sqlite/migrations.ts` | None | `pnpm test src/server/infrastructure/sqlite` |
 | Test analysis dashboard (history, metrics, comparison) | `src/server/modules/verification/history-service.ts` (read-only contract) | `src/features/telemetry/` | `pnpm test src/features/telemetry`; `pnpm build` followed by `pnpm test:ui tests/ui/telemetry.spec.ts` |
+| DEV vault operations and owner approval | `src/server/modules/dev-vault/`; signing text in `src/shared/contracts/dev-vault-signing.ts` | `src/features/dev-vault/` | `pnpm test:dev-vault`; `pnpm build` followed by `pnpm test:ui:dev-vault` |
 | Session, event subscription, dashboard refresh | `src/features/dashboard/use-dashboard.ts` | `src/features/dashboard/dashboard.tsx` | `pnpm build` followed by `pnpm test:ui` |
 | Dashboard read projection and Git refresh admission | `src/server/modules/dashboard/` and `src/server/git-worktrees.ts` | `src/features/dashboard/use-dashboard.ts` | `pnpm test src/server/modules/dashboard src/server/control-service-dashboard.test.ts src/server/events.test.ts` |
 
@@ -62,6 +63,15 @@ and migrations, and lends the connection to query helpers. Helpers do not close
 it. Reservation and profile transactions stay with the owner; storage retention
 keeps its existing transaction. `src/server/sqlite-store.ts` remains a compatible
 public entry point. SQL mapping types are internal persistence records.
+
+The snapshot verifier child imports the narrow public entry
+`src/server/infrastructure/sqlite/backup-verification/index.ts`. Keep that entry
+limited to snapshot validation. The main SQLite barrel also loads controller
+store, Knowledge and restore dependencies on every child launch. Those repeated
+loads dominated the remote-backup continuation test
+(task `878b9330-cbfb-47fc-9e12-80f075916b94`). Verification still runs in a fresh
+child against a disposable clone, with the same schema, checksum, integrity and
+foreign-key checks.
 
 `RemoteVerificationService` accepts an authenticated principal supplied by a
 future transport and checks both principal and worker grants before persisting a

@@ -20,6 +20,7 @@ import { writeServiceAccess } from "../cli/service-access";
 import type { AppPaths } from "./paths";
 import type { KnowledgeTask, KnowledgeThread, KnowledgePage } from "@/shared/contracts/knowledge";
 import { importedRecordId } from "./infrastructure/sqlite/knowledge-thread-presentation";
+import type { KnowledgeTaskContext } from "@/shared/contracts/knowledge-memory";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -109,6 +110,39 @@ describe("real knowledge HTTP, MCP and CLI", () => {
     const project = f.store.getKnowledgeProject(projectId)!;
     knowledge.archiveProject(projectId, project.revision, { idempotencyKey: "archive-legacy-project" }, f.owner);
     expect(await search({ projectId, legacyId: "A" })).toMatchObject({ items: [{ id: taskId }, { id: threadId }] });
+  });
+
+  it("shares opt-in supersession history and fingerprint checks across HTTP, MCP and CLI", async () => {
+    const f = await setup(), projectId = f.project.id;
+    f.identity.setKnowledgeGrant({ principalId: f.owner.principalId, projectId, permissions: ["knowledge:read", "knowledge:write", "knowledge:approve", "knowledge:export"] }, f.owner);
+    f.identity.setKnowledgeGrant({ principalId: f.agents[0], projectId, permissions: ["knowledge:read", "knowledge:write", "knowledge:export"] }, f.owner);
+    const task = (await f.call(0, "create_task", { projectId, title: "Task", description: "History", idempotencyKey: "history-task" })).value.value;
+    const memory = { projectId, body: "Decision body", category: "decision", tags: [], legacyId: null, sources: [{ kind: "task", id: task.id, revision: task.revision }] };
+    const a = (await f.call(0, "create_memory", { ...memory, title: "A", idempotencyKey: "a" })).value.value;
+    const b = (await f.call(0, "create_memory", { ...memory, title: "B", idempotencyKey: "b" })).value.value;
+    await f.call(0, "supersede_memory", { projectId, memoryId: a.id, expectedRevision: a.revision, replacementId: b.id, replacementRevision: b.revision, idempotencyKey: "replace" });
+    expect((await f.http("approve_memory", { projectId, memoryId: b.id, expectedRevision: b.revision, idempotencyKey: "approve" })).status).toBe(200);
+    const input = { projectId, taskId: task.id, limit: 1, offset: 0, includeSuperseded: true };
+    const context = await (await f.http("task_context", input)).json() as KnowledgeTaskContext;
+    expect(context.supersessionHistory?.chains[0]).toMatchObject({ decisionId: b.id, predecessors: [expect.objectContaining({ id: a.id, status: "superseded" })], truncated: false });
+    const mcp = await f.call(0, "export_context", { ...input, format: "json" });
+    expect(JSON.parse(mcp.value.content).supersessionHistory).toEqual(context.supersessionHistory);
+    expect(mcp.value.fingerprint).toBe(context.fingerprint);
+    const lines: string[] = [];
+    await runKnowledgeCommand(["export_context", "--json", JSON.stringify({ ...input, format: "markdown" })], f.paths,
+      { environment: { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: line => lines.push(line) });
+    expect(JSON.parse(lines[0])).toMatchObject({ fingerprint: context.fingerprint, content: expect.stringContaining("## Superseded history") });
+    expect((await f.call(0, "check_context_export", { ...input, fingerprint: context.fingerprint })).value.current).toBe(true);
+    const tools = (await f.clients[0].listTools()).tools;
+    for (const name of ["knowledge_task_context", "knowledge_export_context", "knowledge_check_context_export"]) {
+      expect(tools.find(tool => tool.name === name)?.description).toContain("includeSuperseded");
+      expect(tools.find(tool => tool.name === name)?.inputSchema.properties).toHaveProperty("includeSuperseded");
+    }
+    expect((await f.http("task_context", { ...input, includeSuperseded: "true" })).status).toBe(400);
+    expect((await f.call(0, "task_context", { ...input, projectId: f.privateProject.id })).value.code).toBe("knowledge_forbidden");
+    expect((await f.call(1, "export_context", { ...input, format: "json" })).value.code).toBe("knowledge_forbidden");
+    f.identity.revokeKnowledgeGrant(f.agents[0], projectId, f.owner);
+    expect((await f.call(0, "task_context", input)).value.code).toBe("knowledge_forbidden");
   });
 
   it("preflights a whole manifest above 1 MiB consistently across transports", async () => {

@@ -272,7 +272,7 @@ describe("K6b Hub import execution",()=>{
     const f=fixture(),path=join(f.root,"state.sqlite3");f.store.close();
     const legacy=new Database(path);stripMigrationProvenance(legacy); legacy.exec("DROP INDEX knowledge_import_sources_target; DELETE FROM schema_migrations WHERE version >= 27");legacy.close();
     const reopened=new SqliteStateStore(path),db=new Database(path);
-    expect(reopened.schemaVersion()).toBe(32);
+    expect(reopened.schemaVersion()).toBe(34);
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='knowledge_import_sources_target'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM schema_migrations WHERE version=27").get()).toBeTruthy();
     db.close();reopened.close();
@@ -527,7 +527,7 @@ describe("K6b Hub import execution",()=>{
     expect((old.prepare("SELECT count(*) AS count FROM knowledge_import_batches").get() as {count:number}).count).toBe(2);
     old.close();
     const store=new SqliteStateStore(path),identity=new IdentityService(store,()=>NOW);
-    expect(store.schemaVersion()).toBe(32);
+    expect(store.schemaVersion()).toBe(34);
     expect(store.getHubImport(publishedInput.batchId)).toMatchObject({status:"published",authenticationMethod:"legacy_unknown"});
     expect(store.getHubImport(stagedInput.batchId)).toMatchObject({status:"staging",cursor:1,authenticationMethod:"legacy_unknown"});
     expect(execute(store,identity,f.owner,publishedInput).authenticationMethod).toBe("legacy_unknown");
@@ -546,7 +546,7 @@ describe("K6b Hub import execution",()=>{
     damaged.close();
 
     const repaired=new SqliteStateStore(path);
-    expect(repaired.schemaVersion()).toBe(32);
+    expect(repaired.schemaVersion()).toBe(34);
     expect(repaired.getHubImport("current-batch")).toEqual(current);
     expect(repaired.getHubImport("legacy-batch")).toMatchObject({actorPrincipalId:f.owner.principalId,authenticationMethod:"legacy_unknown"});
     repaired.close();

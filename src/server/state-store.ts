@@ -63,6 +63,8 @@ export interface StateStore {
   listProjects(): Project[];
   getProject(id: string): Project | null;
   addProject(input: ProjectRegistration): Project;
+  /** Check durable deletion restrictions before stopping a managed runtime. */
+  assertProjectRemovalAllowed(projectId: string): void;
   removeProject(projectId: string, actor: string): void;
   updateProjectLaunch(projectId: string, input: ProjectLaunchUpdate): void;
   updateProjectEnvironment(projectId: string, environment: Record<string, string>, actor: string): void;

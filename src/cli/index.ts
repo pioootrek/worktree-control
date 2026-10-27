@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { createDevVault } from "../server/bootstrap/dev-vault";
+import { runDevVaultCommand } from "./dev-vault";
 import { loadRemoteVerificationConfig, runRemoteVerificationCommand } from "./remote-verification";
 import { LinuxWorkerRecoveryHost } from "../server/infrastructure/git";
 import { hasUnconfirmedRemoteExecution, WorkerRecoveryService } from "../server/modules/remote-verification";
@@ -134,6 +136,10 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     await runRemoteVerificationCommand(withoutPathOptions(process.argv.slice(3)), paths, writeCliLine);
     return;
   }
+  if (command === "vault") {
+    await runDevVaultCommand(withoutPathOptions(process.argv.slice(3)), { write: writeCliLine });
+    return;
+  }
   if (command === "identity") {
     await runIdentityCommand(process.argv.slice(3), paths, { write: writeCliLine });
     return;
@@ -231,6 +237,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     ...(projectId ? { projectIds: [projectId] } : {}),
   }));
   const identity = new IdentityService(store, undefined, undefined, undefined, authentication);
+  const devVault = createDevVault(store.devVault, identity, paths, lifecycle);
   const recovery = new WorkerRecoveryService(store.remoteConnection, new LinuxWorkerRecoveryHost(paths.databasePath), identity);
   tests.configurePathAdmission(paths => recovery.assertPathsAvailable(paths));
   // Remains enforced even if the worker configuration is omitted on restart.
@@ -284,6 +291,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     accessToken: loadOrCreateSecret(paths.mcpTokenPath),
     sessionLimits: mcpSessionLimits(mcpSessionOptions),
     identity,
+    devVault,
     authentication: {
       mode: () => maintenance ? "better-auth" : authentication.mode(),
       authenticateInstallation: token => maintenance ? null : authentication.authenticateInstallation(token),
@@ -324,6 +332,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     port,
     accessToken,
     identity,
+    devVault,
     authentication,
     publicOrigin,
     backups, restores, userSchedules, maintenance: () => maintenance,

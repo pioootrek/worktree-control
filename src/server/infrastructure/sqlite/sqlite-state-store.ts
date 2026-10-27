@@ -1,3 +1,5 @@
+import { DevVaultQueries } from "./dev-vault-queries";
+import type { DevVaultStore } from "@/server/modules/dev-vault";
 import { RemoteConnectionQueries } from "./remote-connection-queries";
 import type { RemoteConnectionStore } from "@/server/modules/remote-verification";
 import { TestHistoryQueries } from "./test-history-queries";
@@ -43,6 +45,8 @@ import { configureDurability, assertDurability } from "./database-validation";
 import { OwnedSqliteDatabase } from "./owned-database";
 import { IdentityQueries } from "./identity-queries";
 import { KnowledgeQueries } from "./knowledge-queries";
+import type { KnowledgeTaskStateView, TaskCurrentState } from "@/shared/contracts/knowledge-task-state";
+import type { TaskStateFacts } from "@/server/modules/knowledge";
 import { mapProject, type ProjectRow } from "./project-mapping";
 import { equalHash, mapReservation, type ReservationRow } from "./reservation-mapping";
 import { AuthenticationQueries } from "./authentication-queries";
@@ -56,6 +60,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   private readonly storage: StorageQueries;
   private readonly remoteVerification: RemoteVerificationQueries;
   readonly remoteConnection: RemoteConnectionStore;
+  readonly devVault: DevVaultStore;
   private readonly identity: IdentityQueries;
   private readonly authentication: AuthenticationQueries;
   private readonly knowledge: KnowledgeQueries;
@@ -74,6 +79,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       this.storage = new StorageQueries(this.database);
       this.remoteVerification = new RemoteVerificationQueries(this.database);
       this.remoteConnection = new RemoteConnectionQueries(this.database);
+      this.devVault = new DevVaultQueries(this.database);
       this.identity = new IdentityQueries(this.database);
       this.authentication = new AuthenticationQueries(this.database);
       this.knowledge = new KnowledgeQueries(this.database);
@@ -335,7 +341,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
         knowledge_projects:["id","name","status","revision","created_at","updated_at"],
         knowledge_threads:["id","project_id","title","body","revision","created_by","created_at","updated_at"],
         knowledge_replies:["id","project_id","thread_id","body","revision","created_by","created_at","updated_at"],
-        knowledge_tasks:["id","project_id","title","description","status","priority","revision","created_by","created_at","updated_at"],
+        knowledge_tasks:["id","project_id","title","description","status","priority","revision","created_by","created_at","updated_at","current_state_json"],
         knowledge_memories:["id","project_id","title","body","category","tags_json","legacy_id","sources_json","status","superseded_by_json","approval_json","revision","created_by","created_at","updated_at"],
         knowledge_relations:["id","project_id","type","source_kind","source_id","target_kind","target_id","revision","created_by","created_at"],
         knowledge_history:["ordinal","project_id","record_kind","record_id","operation","previous_json","principal_id","authentication_method","revision","created_at"],
@@ -344,7 +350,9 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       };
       const insert = (table: string, rows: Array<Record<string, unknown>>) => {
         const expected=columns[table]!;
-        for (const row of rows) {
+        for (const original of rows) {
+          // Exports before schema 33 have no task state column; a missing state means none was recorded.
+          const row=table==="knowledge_tasks"&&!("current_state_json" in original)?{...original,current_state_json:null}:original;
           if(Object.keys(row).sort().join("\0")!==[...expected].sort().join("\0")) throw new KnowledgeError("invalid_request", `Invalid ${table} record shape.`);
           if(table!=="knowledge_projects"&&row.project_id!==projectId) throw new KnowledgeError("invalid_request", `Foreign project record in ${table}.`);
           const inserted=table==="knowledge_history"?expected.filter(column=>column!=="ordinal"):expected;
@@ -389,9 +397,16 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     return this.getProject(id)!;
   }
 
+  assertProjectRemovalAllowed(projectId: string): void {
+    if (this.database.prepare("SELECT 1 FROM dev_environment_vaults WHERE project_id = ?").get(projectId)) {
+      throw new Error("Project has an encrypted DEV vault; removal requires a dedicated owner-authorized vault deletion workflow.");
+    }
+  }
+
   removeProject(projectId: string, actor: string): void {
     const project = this.getProject(projectId);
     if (!project) throw new Error("Nie znaleziono projektu.");
+    this.assertProjectRemovalAllowed(projectId);
     const now = new Date().toISOString();
     this.database.transaction(() => {
       const cancellationRequestedAttempts = this.database.prepare(`
@@ -796,6 +811,9 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   saveMemory(memory: KnowledgeMemory, expectedRevision: number | null, operation: string, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeMemory> {
     return this.knowledge.saveMemory(memory, expectedRevision, operation, context);
   }
+  listSupersededPredecessors(projectId: string, replacementId: string, limit: number): KnowledgePage<KnowledgeMemory> {
+    return this.knowledge.listSupersededPredecessors(projectId, replacementId, limit);
+  }
   searchKnowledge(projectId: string, limit: number, offset: number, options: KnowledgeSearchOptions): KnowledgePage<KnowledgeSearchHit> {
     return this.knowledge.searchKnowledge(projectId, limit, offset, options);
   }
@@ -861,6 +879,26 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
 
   updateTask(task: KnowledgeTask, expectedRevision: number, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeTask> {
     return this.knowledge.updateTask(task, expectedRevision, context);
+  }
+
+  getTaskStateJson(projectId: string, taskId: string): string | null | undefined {
+    return this.knowledge.getTaskStateJson(projectId, taskId);
+  }
+
+  updateTaskState(task: KnowledgeTask, state: TaskCurrentState, expectedRevision: number, context: KnowledgeMutationContext): KnowledgeMutationResult<{ task: KnowledgeTask; state: TaskCurrentState }> {
+    return this.knowledge.updateTaskState(task, state, expectedRevision, context);
+  }
+
+  taskStateFacts(projectId: string, task: KnowledgeTask, state: TaskCurrentState): TaskStateFacts {
+    return this.knowledge.taskStateFacts(projectId, task, state);
+  }
+
+  taskSystemFacts(projectId: string, taskId: string): KnowledgeTaskStateView["systemFacts"] {
+    return this.knowledge.taskSystemFacts(projectId, taskId);
+  }
+
+  taskChangedOnlyByState(projectId: string, taskId: string, sinceRevision: number): boolean {
+    return this.knowledge.taskChangedOnlyByState(projectId, taskId, sinceRevision);
   }
 
   updateKnowledgeProject(project: KnowledgeProject, expectedRevision: number, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeProject> {

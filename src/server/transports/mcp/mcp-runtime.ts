@@ -1,3 +1,5 @@
+import type { DevVaultOperations } from "@/server/modules/dev-vault";
+import { registerDevVaultTools } from "./dev-vault-tools";
 import { testPresetTimeoutSchema, testHistorySchema, testMetricsSchema, testSummarySchema, testComparisonSchema } from "@/server/modules/verification";
 import type { McpDiagnosticsSnapshot, McpSessionDiagnostics } from "@/shared/contracts/mcp-diagnostics";
 import { registerKnowledgeTools } from "./knowledge-tools";
@@ -111,6 +113,7 @@ export class McpRuntime {
     private readonly identity?: Pick<IdentityService, "describeIdentity">,
     private readonly diagnostics = new McpDiagnostics(),
     private readonly governor = new McpSessionGovernor(),
+    private readonly devVault?: DevVaultOperations,
   ) {}
 
   private get clock() { return this.governor.clock; }
@@ -417,6 +420,7 @@ export class McpRuntime {
     if (session.authentication.kind !== "legacy") {
       const actor = session.authentication.actor;
       registerKnowledgeTools(server, this.service, actor);
+      registerDevVaultTools(server, this.devVault, actor);
       registerRemoteVerificationTools(server, this.service, actor);
       server.registerTool("get_identity", {
         description: "Read the authenticated principal, credential metadata, and active knowledge grants.",

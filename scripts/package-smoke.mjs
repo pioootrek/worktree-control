@@ -34,9 +34,14 @@ function check(value, message) {
 }
 
 export function packedTextContainsSecret(text) {
+  // PEM markers also occur in parsers/documentation. Require payload after a
+  // line break, including JSON/JS escaped newlines and legacy encryption headers.
+  // No footer is required, so a truncated key still fails the audit.
+  const pemText = text.replace(/\\r\\n|\\n|\\r/g, "\n");
+  const privateKey = /-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----[ \t]*\r?\n(?:[A-Za-z-]+:[^\r\n]*\r?\n)*[ \t\r\n]*[A-Za-z0-9+/=]{16,}/.test(pemText);
   // Recognize npm/GitHub credentials as whole tokens, not identifier substrings
   // such as pnpm_config_engine_strict. Keep key and sentinel checks independent.
-  return text.includes(SENTINEL) || /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?<![A-Za-z0-9_$])(?:ghp|github_pat|npm)_[A-Za-z0-9_]{20,}(?![A-Za-z0-9_$])|AKIA[A-Z0-9]{16}/.test(text);
+  return privateKey || text.includes(SENTINEL) || /(?<![A-Za-z0-9_$])(?:ghp|github_pat|npm)_[A-Za-z0-9_]{20,}(?![A-Za-z0-9_$])|AKIA[A-Z0-9]{16}/.test(text);
 }
 
 async function step(name, task) {

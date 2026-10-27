@@ -43,10 +43,12 @@ export type FixtureReadApi = (url: URL) => Promise<{ status?: number; json: unkn
 export async function mountDashboard(
   page: Page,
   data = dashboardFixture(),
-  options: { failDashboardRefreshAfterProjectRemoval?: boolean; metadataRefreshFailures?: number; accessToken?: string; openWithToken?: boolean; openMode?: boolean; readApi?: FixtureReadApi } = {},
+  options: { failDashboardRefreshAfterProjectRemoval?: boolean; metadataRefreshFailures?: number; accessToken?: string; openWithToken?: boolean; openMode?: boolean; readApi?: FixtureReadApi; origin?: string } = {},
 ) {
   const accessToken = options.accessToken ?? "ui-fixture-token";
   const openMode = options.openMode ?? false;
+  // A loopback origin is a secure context, which Web Crypto requires; requests are still intercepted.
+  const origin = options.origin ?? "http://switcher.test";
   const webRoot = resolve("out");
   if (!existsSync(resolve(webRoot, "index.html"))) throw new Error("Run pnpm build before pnpm test:ui.");
   const requests: Array<{ path: string; method: string; body: unknown }> = [];
@@ -115,7 +117,7 @@ export async function mountDashboard(
   }, { accessToken, openMode });
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
-    if (url.origin !== "http://switcher.test") return route.abort();
+    if (url.origin !== origin) return route.abort();
     if (url.pathname.startsWith("/api/")) {
       const request = route.request();
       if (!openMode && request.headers()["x-worktree-control-token"] !== accessToken) {
@@ -196,7 +198,7 @@ export async function mountDashboard(
     if (!file.startsWith(webRoot + sep) || !existsSync(file)) return route.fulfill({ status: 404, body: "Missing static asset" });
     return route.fulfill({ path: file });
   });
-  await page.goto(options.openWithToken === false ? "http://switcher.test/" : `http://switcher.test/#token=${accessToken}`);
+  await page.goto(options.openWithToken === false ? `${origin}/` : `${origin}/#token=${accessToken}`);
   return { requests, errors };
 }
 

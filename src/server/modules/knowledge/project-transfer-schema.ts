@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { knowledgeSourceSchema } from "@/shared/contracts/knowledge-memory-schemas";
+import { taskCurrentStateSchema } from "@/shared/contracts/knowledge-task-state";
 import type { KnowledgeProjectExportManifest, KnowledgeProjectSnapshot } from "./contracts";
 
 const id = z.string().min(1).max(160);
@@ -20,7 +21,8 @@ const recordKind = z.enum(["thread", "reply", "task", "memory"]);
 const project = z.strictObject({ id, name: z.string().min(1).max(120), status: z.enum(["active", "archived"]), revision, created_at: timestamp, updated_at: timestamp });
 const thread = z.strictObject({ ...record, title: z.string().min(1).max(200), body: z.string().min(1).max(65536), revision, ...authored, updated_at: timestamp });
 const reply = z.strictObject({ ...record, thread_id: id, body: z.string().min(1).max(65536), revision, ...authored, updated_at: timestamp });
-const task = z.strictObject({ ...record, title: z.string().min(1).max(200), description: z.string().min(1).max(65536), status: z.enum(["open", "in_progress", "blocked", "done", "archived"]), priority: z.enum(["now", "next", "later"]), revision, ...authored, updated_at: timestamp });
+const task = z.strictObject({ ...record, title: z.string().min(1).max(200), description: z.string().min(1).max(65536), status: z.enum(["open", "in_progress", "blocked", "done", "archived"]), priority: z.enum(["now", "next", "later"]), revision, ...authored, updated_at: timestamp,
+  current_state_json: nullableJson(taskCurrentStateSchema).optional() });
 const memory = z.strictObject({ ...record, title: z.string().min(1).max(200), body: z.string().min(1).max(65536), category: z.enum(["decision", "question", "note"]),
   tags_json: json(z.array(z.string().max(100)).max(100)), legacy_id: z.string().max(160).nullable(), sources_json: json(z.array(knowledgeSourceSchema).max(100)),
   status: z.enum(["active", "archived", "superseded"]), superseded_by_json: nullableJson(z.strictObject({ id, revision })),

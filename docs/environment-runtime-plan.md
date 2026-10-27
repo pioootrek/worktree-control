@@ -1,6 +1,6 @@
 ---
 audience: "owner, contributors, and coding agents"
-last_reviewed: "2026-10-05"
+last_reviewed: "2026-10-27"
 source_of_truth: "Secret Runtime proposal integration direction for Worktree Control"
 status: "active"
 ---
@@ -11,14 +11,21 @@ status: "active"
 
 Integrate the useful execution-facing part of the owner's Secret Runtime v2
 proposal into Worktree Control: environment profiles, required-input checks, scoped
-secret resolution, and delivery to approved processes. This is planned work,
-not a claim that Worktree Control already provides a vault or secret-reference broker.
-Existing literal profiles and separate test environments remain the baseline.
+secret resolution, and delivery to approved processes. The first backend slice
+now provides encrypted DEV profiles, bounded dotenv import, and owner-approved
+agent read/write/use grant records. Read and write work through HTTP, MCP and
+CLI. Execution use remains unavailable because local source observations do not
+provide immutable execution isolation. There is no remote secret delivery or
+vault GUI. See the [backend contract](dev-environment-vault.md) for implemented
+operations, separate owner authentication, key provisioning and limits.
+Existing literal profiles and separate test environments remain unchanged and
+unencrypted; nothing automatically imports them into the vault.
 
 The [source note](knowledge/AGENTS.md) (Knowledge attachment `2356069c892acf5e1160da52a3cab688`)
 preserves the supplied archive and its six milestone proposals. Original stack
 choices and priorities are historical proposals, not requirements for this
-integration. Follow the existing
+integration. Owner authorization on 2026-10-27 selected backend task
+`731c4878-e19d-4acb-90e8-ea1340e94a78` as a concrete DEV-only slice of the existing
 [environment profiles item](knowledge/AGENTS.md) (Knowledge task `92e7dab563aa6d7ee110ec007a65bfd6`)
 and [remote verification plan](remote-verification-plan.md); split a bounded
 implementation slice before coding. Existing urgent reliability repairs keep
@@ -99,7 +106,7 @@ values; synchronization is not blanket promotion of dev credentials to prod.
 For write-only provider APIs, successful delivery is not proof of current value
 equality. Show unknown/unverifiable observations honestly.
 
-A central secret vault, Vercel/GitHub target adapters, and automated provider
+A hosted secret vault, Vercel/GitHub target adapters, and automated provider
 rotation remain optional later designs. Choose whether a hosted service can
 decrypt before promising client-only encryption or unattended server-side sync.
 Rotation follows create, distribute, verify, then revoke with explicit recovery
@@ -119,6 +126,8 @@ threat model, key-management/recovery design, and security verification.
    exposure, and cleanup. Document runtime visibility limits rather than making
    an absolute claim that the LLM can never obtain a secret.
 
-The current task only incorporates documentation. It does not import actual
-credentials, rotate keys, alter runtime environments, migrate databases, or
-register the historical standalone project.
+The backend slice adds ciphertext-only SQLite persistence and a numbered schema
+migration. It does not provision host keys, import real credentials, rotate
+provider credentials, alter runtime/test environments, or register the historical
+standalone project. GUI approval and source-isolated local use need separate
+implementation and acceptance; remote delivery remains a later slice.

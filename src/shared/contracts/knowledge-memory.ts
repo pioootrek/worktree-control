@@ -36,6 +36,13 @@ export interface KnowledgeSearchHit {
 }
 export interface KnowledgeSourceState { href: string; source: KnowledgeSource; currentRevision: number | null; stale: boolean; inactive: boolean }
 export interface KnowledgeContextMemory extends KnowledgeMemorySummary { href: string; excerpt: string; bodyTruncated: boolean; sourceStates: KnowledgeSourceState[] }
+export interface KnowledgeSupersessionHistory {
+  maxDepth: number;
+  maxItems: number;
+  maxBytes: number;
+  truncated: boolean;
+  chains: Array<{ decisionId: string; predecessors: KnowledgeContextMemory[]; truncated: boolean }>;
+}
 export interface KnowledgeTaskContext {
   formatVersion: 1;
   generatedAt: string;
@@ -49,6 +56,7 @@ export interface KnowledgeTaskContext {
   proposals: KnowledgeContextMemory[];
   openQuestions: KnowledgeContextMemory[];
   evidence: KnowledgeSourceState[];
+  supersessionHistory?: KnowledgeSupersessionHistory;
   nextOffset: number | null;
   fingerprint: string;
 }
