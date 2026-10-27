@@ -133,6 +133,7 @@ describe("legacyId search provenance", () => {
     const queries = new KnowledgeQueries(db);
     try {
       const task = db.prepare(`INSERT INTO knowledge_tasks
+        (id,project_id,title,description,status,priority,revision,created_by,created_at,updated_at)
         SELECT ?,project_id,title,description,status,priority,revision,created_by,created_at,updated_at
         FROM knowledge_tasks WHERE id=?`);
       const thread = db.prepare(`INSERT INTO knowledge_threads
