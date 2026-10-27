@@ -80,7 +80,9 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
     chunks.push(buffer);
   }
   if (chunks.length === 0) return undefined;
-  const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  let body;
+  try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+  catch { throw new Error("MCP request JSON is invalid."); }
   const limit = body?.method === "tools/call" && body?.params?.name === "knowledge_create_attachment" ? ATTACHMENT_BODY_LIMIT
     : body?.method === "tools/call" && body?.params?.name === "knowledge_check_attachment_batch" ? MANIFEST_BODY_LIMIT : BODY_LIMIT;
   if (size > limit) throw new Error("MCP request is too large.");

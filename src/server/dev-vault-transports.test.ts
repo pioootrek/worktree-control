@@ -19,19 +19,29 @@ async function setup() {
   const authentication = new AuthenticationService(f.store);
   const installationToken = authentication.generateToken("fixture").token;
   const events = new EventStream(); cleanups.push(() => events.close());
+  const diagnostics: unknown[] = [];
   const service = new ControlService(f.store, { list: vi.fn(() => { throw new Error("Vault must not inspect or run source"); }) } as never, new ProcessManager());
   const web = createControllerServer({ service, identity: f.identity, authentication, devVault: f.vault, events,
     directoryBrowser: {} as DirectoryBrowser, webRoot: f.root, host: "127.0.0.1", port: 0, accessToken: "legacy-pairing",
     mcpStatus: () => ({ phase: "disabled", endpoint: null, transport: "streamable-http", network: "loopback", authentication: "bearer", activeSessions: 0 }) });
-  const mcp = createMcpControllerServer({ service, identity: f.identity, authentication, devVault: f.vault, port: 0, accessToken: "legacy-mcp" });
+  const mcp = createMcpControllerServer({ service, identity: f.identity, authentication, devVault: f.vault, port: 0, accessToken: "legacy-mcp",
+    onDiagnostic: (message, details) => diagnostics.push({ message, details }) });
   for (const controller of [web, mcp]) { await new Promise<void>(resolve => controller.server.listen(0, "127.0.0.1", resolve)); cleanups.push(() => controller.close()); }
   const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
   const endpoint = new URL(`http://127.0.0.1:${(mcp.server.address() as AddressInfo).port}/mcp`);
   const call = (body: unknown, token?: string) => fetch(`${base}/api/dev-vault`, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
-  return { f, authentication, installationToken, base, endpoint, call };
+  return { f, authentication, installationToken, base, endpoint, call, diagnostics };
 }
 
 describe("vault HTTP, MCP and CLI", () => {
+  it("never logs malformed JSON input fragments in MCP diagnostics", async () => {
+    const { f, endpoint, diagnostics } = await setup();
+    const response = await fetch(endpoint, { method: "POST", headers: { Authorization: `Bearer ${f.first.token}`, "Content-Type": "application/json" }, body: "FAKE_MALFORMED_DEV_PAYLOAD" });
+    expect(response.status).toBe(500);
+    expect(await response.text()).not.toContain("FAKE_MALFORMED_DEV_PAYLOAD");
+    expect(JSON.stringify(diagnostics)).not.toContain("FAKE_MALFORMED_DEV_PAYLOAD");
+    expect(JSON.stringify(diagnostics)).toContain("MCP request JSON is invalid.");
+  });
   it("denies owner-token-only, installation/open authority and requester role claims", async () => {
     const { f, call, authentication, installationToken } = await setup();
     const cmd = f.command({ operation: "list" });
