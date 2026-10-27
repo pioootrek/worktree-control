@@ -211,5 +211,10 @@ key management remain unfinished.
 
 Migration 33 is local to this branch's base. The parallel Knowledge
 task-current-state branch also uses 33; integration must renumber/rebase one
-migration and rerun migration, backup/restore, check and build verification. Do
-not apply either branch to the other branch's live database as a workaround.
+migration and rerun migration, backup/restore, check and build verification.
+On 2026-10-27, remote `main` at `b5da139` still supports schema 32, and
+Knowledge PR #113 is open against `docs/knowledge-current-state-design` with
+its own migration 33. Integration needs an approved base containing whichever
+migration lands first before the other can become 34. Do not skip 33 or copy
+the unmerged migration to manufacture that base. Do not apply either branch
+to the other branch's live database as a workaround.

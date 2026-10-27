@@ -1,6 +1,6 @@
 ---
 audience: "contributors developing and testing application modules"
-last_reviewed: "2026-10-19"
+last_reviewed: "2026-10-27"
 source_of_truth: "implemented module entry points and focused verification workflow"
 status: "active"
 ---
@@ -62,6 +62,15 @@ and migrations, and lends the connection to query helpers. Helpers do not close
 it. Reservation and profile transactions stay with the owner; storage retention
 keeps its existing transaction. `src/server/sqlite-store.ts` remains a compatible
 public entry point. SQL mapping types are internal persistence records.
+
+The snapshot verifier child imports the narrow public entry
+`src/server/infrastructure/sqlite/backup-verification/index.ts`. Keep that entry
+limited to snapshot validation. The main SQLite barrel also loads controller
+store, Knowledge and restore dependencies on every child launch. Those repeated
+loads dominated the remote-backup continuation test
+(task `878b9330-cbfb-47fc-9e12-80f075916b94`). Verification still runs in a fresh
+child against a disposable clone, with the same schema, checksum, integrity and
+foreign-key checks.
 
 `RemoteVerificationService` accepts an authenticated principal supplied by a
 future transport and checks both principal and worker grants before persisting a
