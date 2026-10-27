@@ -73,8 +73,9 @@ function acceptance() {
   const configRoot = join(resolve(process.env.XDG_CONFIG_HOME ?? join(home, ".config")), "systemd/user");
   const runtimeRoot = join(resolve(process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid!()}`), "systemd/user");
   const dataRoot = join(resolve(process.env.XDG_DATA_HOME ?? join(home, ".local/share")), "systemd/user");
-  const roots = parseSystemdPathList(systemctl("show", "--property=UnitPath", "--value"));
-  assert.ok(roots?.length, "Manager must advertise a parseable UnitPath");
+  const parsedRoots = parseSystemdPathList(systemctl("show", "--property=UnitPath", "--value"));
+  assert.ok(parsedRoots?.length, "Manager must advertise a parseable UnitPath");
+  const roots: string[] = parsedRoots;
   report.unitPath = roots;
   report.fixtureRoots = { config: configRoot, runtime: runtimeRoot, data: dataRoot };
   const ownedRoots = [configRoot, runtimeRoot, dataRoot];
@@ -82,7 +83,7 @@ function acceptance() {
     assert.equal(new Set(ownedRoots).size, 3);
     for (const root of ownedRoots) {
       assert.ok(roots.includes(root), `Required user-owned root missing from UnitPath: ${root}`);
-      let ancestor = root;
+      let ancestor: string = root;
       while (!present(ancestor)) ancestor = dirname(ancestor);
       assert.equal(lstatSync(ancestor).uid, process.getuid!(), `Not user-owned: ${ancestor}`);
       assert.equal(realpathSync(ancestor), ancestor, `Aliased fixture root: ${ancestor}`);
