@@ -25,7 +25,7 @@ The controller accepts two explicit external file paths at startup:
 
 - `WORKTREE_CONTROL_DEV_VAULT_KEY_FILE` points to exactly 32 binary bytes for
   AES-256-GCM. The file must be regular, private (no group/other permissions),
-  and outside controller data and state directories.
+  and outside Git checkouts and controller data and state directories.
 - `WORKTREE_CONTROL_DEV_VAULT_OWNER_PUBLIC_KEY_FILE` points to an Ed25519 public
   PEM file outside those directories. It must not be group/other writable.
 

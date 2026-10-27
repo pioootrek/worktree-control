@@ -36,7 +36,7 @@ export function vaultFixture() {
   function proof(command: DevVaultCommand, actor: AuthenticatedPrincipal = owner, issuedAt = now) {
     return { issuedAt, signature: sign(null, devOwnerSigningMessage(command, actor, issuedAt), pair.privateKey).toString("base64") };
   }
-  function execute(input: Record<string, unknown> | DevVaultCommand, actor = owner): unknown {
+  function execute(input: Record<string, unknown>, actor = owner): unknown {
     const cmd = "operationId" in input ? input as DevVaultCommand : command(input);
     return vault.execute({ command: cmd, ...(actor === owner ? { proof: proof(cmd) } : {}) }, actor).result;
   }

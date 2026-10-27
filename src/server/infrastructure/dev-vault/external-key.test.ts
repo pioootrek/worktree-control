@@ -30,6 +30,14 @@ describe("external vault key files", () => {
     writeFileSync(path, randomBytes(32)); expect(() => provider.key()).toThrow("vault_unavailable");
     rmSync(path); expect(() => provider.key()).toThrow("vault_unavailable");
   });
+  it("rejects symlink aliases of data roots and keys inside a Git checkout", () => {
+    const root = setup(), data = join(root, "data"), alias = join(root, "data-alias");
+    mkdirSync(data); symlinkSync(data, alias);
+    const path = join(data, "fake-key"); writeFileSync(path, randomBytes(32), { mode: 0o600 });
+    expect(() => new ExternalFileDevVaultKeyProvider(path, [alias]).key()).toThrow("vault_unavailable");
+    mkdirSync(join(root, ".git"));
+    expect(() => new ExternalFileDevVaultKeyProvider(path, []).key()).toThrow("vault_unavailable");
+  });
   it("bounds public/signing files and sanitizes filenames from errors", () => {
     const root = setup(), path = join(root, "FAKE_FILE_NAME_SECRET");
     expect(() => readExternalVaultFile(path, [], false, 8192)).toThrow(/^vault_unavailable$/);
