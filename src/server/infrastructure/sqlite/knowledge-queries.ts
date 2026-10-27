@@ -317,6 +317,28 @@ export class KnowledgeQueries implements KnowledgeStore {
     // verified imported-topic projection, which is needed only for discussions.
     const kinds = options.kind ? [options.kind] : ["thread", "reply", "task", "memory"];
     const needsTopic = kinds.includes("thread") || kinds.includes("reply");
+    // Filter sources once, before looking up targets. Correlating this scan to
+    // each record makes missing-ID searches quadratic in the project size.
+    // Keep provenance out of unfiltered search, including its text matching.
+    const needsLegacy = options.legacyId !== undefined && (kinds.includes("task") || kinds.includes("thread"));
+    const legacyMatches = needsLegacy ? `legacy_sources AS MATERIALIZED (
+        SELECT project_id,source_id,source_path,target_kind,target_id FROM knowledge_import_sources
+        WHERE project_id=@projectId AND legacy_id=@legacyId
+          AND target_kind IN ('task','task_completion','thread') AND target_id IS NOT NULL
+      ), legacy_matches(kind,id) AS MATERIALIZED (
+        SELECT CASE WHEN target_kind='task_completion' THEN 'task' ELSE target_kind END,target_id
+        FROM legacy_sources
+        ${kinds.includes("thread") ? `UNION ALL
+        SELECT 'thread',relation.target_id FROM legacy_sources s
+        JOIN knowledge_tasks task ON task.project_id=s.project_id AND task.id=s.target_id
+        JOIN knowledge_relations relation ON relation.project_id=s.project_id
+          AND relation.id=knowledge_import_record_id(s.project_id,s.source_id,s.source_path,'task-thread')
+          AND relation.type='derived_from' AND relation.source_kind='task' AND relation.source_id=task.id
+          AND relation.target_kind='thread'
+          AND relation.target_id=knowledge_import_record_id(s.project_id,s.source_id,s.source_path,'thread')
+        WHERE s.target_kind='task'
+          AND task.id=knowledge_import_record_id(s.project_id,s.source_id,s.source_path,'task')` : ""}
+      ),` : "";
     const arms = [] as string[];
     if (kinds.includes("thread")) arms.push(`SELECT t.id, t.project_id, 'thread' AS kind, coalesce(v.display_title,t.title) title, t.title raw_title, t.body, t.revision, 'active' AS status, t.updated_at, NULL AS thread_id, '[]' AS tags_json, NULL AS legacy_id
       FROM knowledge_threads t LEFT JOIN verified v ON v.thread_id=t.id WHERE t.project_id=@projectId`);
@@ -325,13 +347,13 @@ export class KnowledgeQueries implements KnowledgeStore {
       LEFT JOIN verified v ON v.thread_id=t.id WHERE r.project_id=@projectId`);
     if (kinds.includes("task")) arms.push("SELECT id, project_id, 'task', title, title, description, revision, status, updated_at, NULL, '[]', NULL FROM knowledge_tasks WHERE project_id = @projectId");
     if (kinds.includes("memory")) arms.push("SELECT id, project_id, 'memory', title, title, body, revision, status, updated_at, NULL, tags_json, legacy_id FROM knowledge_memories WHERE project_id = @projectId");
-    const rows = this.database.prepare(`WITH ${needsTopic ? `verified AS (${verifiedThreadSourceSql(false)}),` : ""}
+    const rows = this.database.prepare(`WITH ${legacyMatches} ${needsTopic ? `verified AS (${verifiedThreadSourceSql(false)}),` : ""}
       records(id,project_id,kind,title,raw_title,body,revision,status,updated_at,thread_id,tags_json,legacy_id)
       AS (${arms.join(" UNION ALL ")})
       SELECT id, project_id AS projectId, kind, title, body, raw_title AS rawTitle, revision, status, updated_at AS updatedAt, thread_id AS threadId FROM records
       WHERE (@inactive OR @status IN ('archived', 'superseded') OR status NOT IN ('archived', 'superseded'))
       AND (@kind IS NULL OR kind = @kind) AND (@status IS NULL OR status = @status)
-      AND (@legacyId IS NULL OR legacy_id = @legacyId)
+      AND (@legacyId IS NULL OR legacy_id = @legacyId ${needsLegacy ? "OR (kind,id) IN (SELECT kind,id FROM legacy_matches)" : ""})
       AND (@tag IS NULL OR EXISTS(SELECT 1 FROM json_each(tags_json) WHERE knowledge_fold(value) = knowledge_fold(@tag)))
       AND instr(knowledge_fold(title || char(10) || raw_title || char(10) || body || char(10) || coalesce((SELECT group_concat(value, char(10)) FROM json_each(tags_json)), '') || char(10) || coalesce(legacy_id, '')), knowledge_fold(@query)) > 0
       ORDER BY updatedAt DESC, kind, id LIMIT @limit OFFSET @offset`).all({ projectId, limit: limit + 1, offset,
