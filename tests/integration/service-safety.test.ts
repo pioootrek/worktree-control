@@ -147,6 +147,11 @@ else if (args.includes('--property=FragmentPath')) {
 
   it("loads safe vendor type-wide/prefix policy and rolls back a differing destination without interrupting the fixture PID", async () => {
     const manager = await isolatedManager();
+    // Model an existing installation, so first-run token bootstrap does not stop the CLI
+    // before the destination drop-in preflight. The ephemeral token is never logged.
+    await exec(process.execPath, [cli, "auth", "token", "generate",
+      "--data-dir", join(root, "installed-data"), "--state-dir", join(root, "installed-state")],
+    { env: environment, cwd: repository, timeout: 10000 });
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
     try {
       expect(child.pid).toBeGreaterThan(0);
