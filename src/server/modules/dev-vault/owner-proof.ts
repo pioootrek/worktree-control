@@ -2,11 +2,10 @@ import { createPublicKey, verify, type KeyObject } from "node:crypto";
 import type { AuthenticatedPrincipal } from "../identity";
 import type { DevOwnerProof, DevVaultCommand } from "@/shared/contracts/dev-vault";
 import type { DevVaultOwnerVerifier } from "./contracts";
-import { canonicalJson } from "./crypto";
+import { devOwnerSigningText } from "@/shared/contracts/dev-vault-signing";
 
 export function devOwnerSigningMessage(command: DevVaultCommand, actor: Pick<AuthenticatedPrincipal, "principalId" | "credentialId">, issuedAt: string): Buffer {
-  return Buffer.from(canonicalJson({ context: "worktree-control-dev-vault-owner-v1", principalId: actor.principalId,
-    credentialId: actor.credentialId, issuedAt, command }));
+  return Buffer.from(devOwnerSigningText(command, actor, issuedAt), "utf8");
 }
 /** External public key, never a DB setting writable by installation authority. */
 export class Ed25519DevVaultOwnerVerifier implements DevVaultOwnerVerifier {

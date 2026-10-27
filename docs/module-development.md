@@ -27,6 +27,7 @@ modules still share the facade's lifecycle dependencies.
 | MCP session admission, idle cleanup and claim renewal policy | `src/server/modules/mcp-sessions/`, wired by `src/server/transports/mcp/mcp-runtime.ts` | None | `pnpm test src/server/modules/mcp-sessions src/server/transports/mcp src/server/mcp-http-server.test.ts src/server/mcp-diagnostics.test.ts` |
 | Schema upgrade | `src/server/infrastructure/sqlite/migrations.ts` | None | `pnpm test src/server/infrastructure/sqlite` |
 | Test analysis dashboard (history, metrics, comparison) | `src/server/modules/verification/history-service.ts` (read-only contract) | `src/features/telemetry/` | `pnpm test src/features/telemetry`; `pnpm build` followed by `pnpm test:ui tests/ui/telemetry.spec.ts` |
+| DEV vault operations and owner approval | `src/server/modules/dev-vault/`; signing text in `src/shared/contracts/dev-vault-signing.ts` | `src/features/dev-vault/` | `pnpm test:dev-vault`; `pnpm build` followed by `pnpm test:ui:dev-vault` |
 | Session, event subscription, dashboard refresh | `src/features/dashboard/use-dashboard.ts` | `src/features/dashboard/dashboard.tsx` | `pnpm build` followed by `pnpm test:ui` |
 | Dashboard read projection and Git refresh admission | `src/server/modules/dashboard/` and `src/server/git-worktrees.ts` | `src/features/dashboard/use-dashboard.ts` | `pnpm test src/server/modules/dashboard src/server/control-service-dashboard.test.ts src/server/events.test.ts` |
 

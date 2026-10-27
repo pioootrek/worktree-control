@@ -1,13 +1,9 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { canonicalJson } from "@/shared/contracts/dev-vault-signing";
 import { DevVaultError, type DevVaultKeyProvider } from "./contracts";
 
 /** Canonical JSON for signatures and encrypted idempotency comparisons, never a value hash. */
-export function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") return `{${Object.entries(value).filter(([, v]) => v !== undefined)
-    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
-  return JSON.stringify(value) ?? "null";
-}
+export { canonicalJson };
 
 export class DevVaultCipher {
   constructor(private readonly provider: DevVaultKeyProvider) {}

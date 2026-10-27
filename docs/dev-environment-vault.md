@@ -1,18 +1,20 @@
 ---
 audience: "owner, backend contributors, and coding agents"
 last_reviewed: "2026-10-27"
-source_of_truth: "implemented DEV vault backend operations and security limits"
+source_of_truth: "implemented DEV vault operations, dashboard owner workflow and security limits"
 status: "active"
 ---
 
-# DEV environment vault backend
+# DEV environment vault
 
-This backend stores encrypted DEV environment profiles and supports explicit
-owner approval of agent requests. It has no GUI or remote secret delivery.
-Execution use is unavailable. A saved use grant does not prove a test received
+The vault stores encrypted DEV environment profiles and supports explicit
+owner approval of agent requests from the CLI or the dashboard **DEV vault**
+section. It has no remote secret delivery. Execution use is unavailable. A saved use grant does not prove a test received
 an environment, and no endpoint returns resolved values as a use operation.
 Task `731c4878-e19d-4acb-90e8-ea1340e94a78` records owner authorization and
-verification; parent `92e7dab563aa6d7ee110ec007a65bfd6` remains the broader plan.
+verification of the backend, and task `561ca263-c901-4f57-80f8-a0a15aaabb02`
+the dashboard owner workflow. Parent `92e7dab563aa6d7ee110ec007a65bfd6`
+remains the broader plan.
 
 DEV credentials only. Never import staging or production credentials. The
 command requires `environment: "DEV"`; values cannot reliably establish their
@@ -45,7 +47,10 @@ needs only its public key. The signature binds the full canonical command,
 principal ID, credential ID, issued-at timestamp and domain string
 `worktree-control-dev-vault-owner-v1`. JSON object keys are recursively sorted;
 arrays retain order. The proof expires after 60 seconds and cannot be dated in
-the future. `devOwnerSigningMessage` is the shared signing implementation.
+the future. The browser-safe `devOwnerSigningText` in
+`src/shared/contracts/dev-vault-signing.ts` defines the exact text; the
+controller's and CLI's `devOwnerSigningMessage` is its UTF-8 encoding. Tests
+check that the browser signer produces byte-identical signatures.
 
 Existing owner sessions alone are insufficient: legacy installation access can
 bootstrap those sessions. Neither an installation bearer, open mode, CLI, TTY,
@@ -176,6 +181,57 @@ values to the caller, so protect redirected output and shell history. MCP tool
 arguments and client transcripts may retain submitted values; do not submit real
 credentials through an LLM conversation.
 
+## Dashboard owner workflow
+
+The **DEV vault** section manages the selected runtime project. It shows the
+DEV-only disclaimer, the agent request contract and the controller's notice.
+Owner proof follows the same contract as the CLI; there is no signing endpoint.
+
+1. The owner pastes a `wts_` owner session token and chooses an unencrypted
+   PKCS#8 Ed25519 private key PEM file. Encrypted keys are refused; use the
+   CLI for those. The dashboard checks `/api/identity` and accepts only an
+   `owner` principal with an `owner_session` credential. Installation and
+   agent tokens are refused before any signing.
+2. The browser imports the key with Web Crypto as a non-extractable signing key
+   and overwrites the decoded DER. The PEM text, key and session token stay in
+   that tab's memory only: never in local/session storage, IndexedDB, caches
+   or a request. The controller receives only the owner session bearer and a
+   signature over each exact command.
+3. Signing locks on **Lock owner signing**, after 10 minutes without a vault
+   operation, when the section unmounts, on reload or on dashboard sign-out.
+   JavaScript strings, including the PEM text, cannot be reliably erased.
+
+Web Crypto requires a secure context, so signing works only over HTTPS or a
+loopback address and in browsers with Ed25519 support. Elsewhere the section
+says signing is unavailable and offers no fallback. The proof timestamp is
+dated one second in the past. It is corrected from the controller's `Date`
+header only for an offset above three seconds.
+
+Every list, reveal, import, inspection and decision is a separately signed
+command. Profile and request lists contain metadata only. Values appear only
+after an explicit **Reveal values** confirmation for that revision. They are
+dropped on hide, lock, project change, a newer revision or leaving the section.
+A write proposal appears only after a signed inspection, which must precede
+signing its approval.
+
+Approval shows the exact operation, agent principal and credential, the
+credential's owner-assigned label when the read-only identity listing provides
+it, the requested and current revision, expiry and any use binding. It states
+the effect of the chosen lifetime. A write applies its immutable patch at most
+once to that revision and is not general edit access; read and use stop at a
+newer revision. A use approval is labelled as a saved grant, not delivery.
+Expired, stale, missing-profile and revoked-credential requests cannot be
+approved, and the controller re-checks these conditions when the signed
+approval arrives. Rejection, revocation and the bounded audit log are also
+available. Profile update and deletion are not.
+
+Errors show fixed text for the response code only, never server text, names
+or values. A transport failure keeps the operation ID, so retrying the same
+action replays a committed receipt instead of repeating it. While signing is
+unlocked, script running in the dashboard origin could use the loaded key to
+sign commands without extracting it. Unlock only on a trusted device and lock
+signing when finished.
+
 ## Backup, restore and remaining execution work
 
 Full controller backup/restore retains the ciphertext table through the existing
@@ -205,9 +261,10 @@ secret-free unless explicitly approved.
 
 Code that eventually receives credentials can print or transmit them. Expiry and
 revocation block future access; they cannot erase copies or revoke provider
-credentials. JavaScript strings cannot be promised reliable zeroization. GUI
-approval, provider rotation, remote delivery, deletion/reclamation and operational
-key management remain unfinished.
+credentials. JavaScript strings cannot be promised reliable zeroization.
+Provider rotation, remote delivery, deletion/reclamation, encrypted-key browser
+signing, hardware-backed owner keys and operational key management remain
+unfinished.
 
 Migration 33 is local to this branch's base. The parallel Knowledge
 task-current-state branch also uses 33; integration must renumber/rebase one
