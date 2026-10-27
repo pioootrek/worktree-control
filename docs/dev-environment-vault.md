@@ -90,7 +90,9 @@ Legacy `projects.environment_profiles_json` and
 Their shapes, runtime behavior and exports do not include encrypted profiles.
 There is no automatic migration or selection of vault profiles through those
 APIs. Runtime-project deletion is restricted while its vault row exists, so
-generic deletion cannot silently discard encrypted data. A dedicated owner
+generic deletion cannot silently discard encrypted data. An existing vault is
+checked before the managed server is stopped, and the database constraint remains
+the final deletion guard. A dedicated owner
 deletion/reclamation workflow remains follow-up work.
 
 ## Operations and grants

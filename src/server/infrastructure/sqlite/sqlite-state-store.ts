@@ -393,9 +393,16 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     return this.getProject(id)!;
   }
 
+  assertProjectRemovalAllowed(projectId: string): void {
+    if (this.database.prepare("SELECT 1 FROM dev_environment_vaults WHERE project_id = ?").get(projectId)) {
+      throw new Error("Project has an encrypted DEV vault; removal requires a dedicated owner-authorized vault deletion workflow.");
+    }
+  }
+
   removeProject(projectId: string, actor: string): void {
     const project = this.getProject(projectId);
     if (!project) throw new Error("Nie znaleziono projektu.");
+    this.assertProjectRemovalAllowed(projectId);
     const now = new Date().toISOString();
     this.database.transaction(() => {
       const cancellationRequestedAttempts = this.database.prepare(`

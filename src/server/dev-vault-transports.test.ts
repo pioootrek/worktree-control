@@ -34,6 +34,22 @@ async function setup() {
 }
 
 describe("vault HTTP, MCP and CLI", () => {
+  it("rejects deleting an existing vault project before stopping its managed runtime", async () => {
+    const f = vaultFixture(); cleanups.push(() => f.close());
+    const processes = new ProcessManager();
+    const stop = vi.spyOn(processes, "stop");
+    vi.spyOn(processes, "snapshot").mockReturnValue({
+      ...processes.snapshot(f.project.id), phase: "running", worktreePath: f.root, pid: 12345,
+    });
+    const service = new ControlService(f.store, {} as never, processes);
+    const ciphertext = f.store.devVault.load(f.project.id);
+    await expect(service.removeProject(f.project.id)).rejects.toThrow("encrypted DEV vault");
+    expect(stop).not.toHaveBeenCalled();
+    expect(f.store.getProject(f.project.id)).not.toBeNull();
+    expect(f.store.devVault.load(f.project.id)).toEqual(ciphertext);
+    expect(() => f.store.removeProject(f.project.id, "fixture")).toThrow("encrypted DEV vault");
+  });
+
   it("never logs malformed JSON input fragments in MCP diagnostics", async () => {
     const { f, endpoint, diagnostics } = await setup();
     const response = await fetch(endpoint, { method: "POST", headers: { Authorization: `Bearer ${f.first.token}`, "Content-Type": "application/json" }, body: "FAKE_MALFORMED_DEV_PAYLOAD" });
