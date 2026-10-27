@@ -57,7 +57,7 @@ export function TaskCurrentState({ token, projectId, taskId, changeVersion, onSh
     <div>{historyButton}</div>
   </>);
 
-  const source = (item: TaskStateSource, index: number) => <SourceLink key={index} projectId={projectId} source={item} />;
+  const source = (item: TaskStateSource, index: number) => <SourceLink key={index} projectId={projectId} source={item} replyThreadId={item.kind === "reply" ? view.replyThreadIds[item.id] : undefined} />;
   const sources = (items: TaskStateSource[]) => items.length ? <span className="ml-1 inline-flex flex-wrap gap-x-2">{items.map(source)}</span> : null;
   const open = (Array.isArray(state.blockers) ? state.blockers : []).filter(blocker => blocker.state === "open");
   const resolved = (Array.isArray(state.blockers) ? state.blockers : []).filter(blocker => blocker.state === "resolved");
@@ -160,13 +160,13 @@ function DeliveryValue({ state, stage }: { state: TaskCurrentState; stage: TaskD
   return <span className={`inline-flex items-center gap-1.5 ${toneClass[tone]}`}><Icon aria-hidden className="size-4 shrink-0" />{t(key(`taskState.state.${stage}.${fact.state}`), { count: fact.openFindings ?? 0, who: state.declaredBy ?? state.writtenBy.principalId })}</span>;
 }
 
-function SourceLink({ projectId, source }: { projectId: string; source: TaskStateSource }) {
+function SourceLink({ projectId, source, replyThreadId }: { projectId: string; source: TaskStateSource; replyThreadId?: string }) {
   const { t } = useI18n();
   const className = "text-xs text-muted-foreground underline underline-offset-2";
   if (source.kind === "external") return <a className={`${className} inline-flex items-center gap-1`} href={source.url} target="_blank" rel="noreferrer"><ExternalLink aria-hidden className="size-3" />{source.label}</a>;
   if (source.kind === "repository") return <span className="text-xs text-muted-foreground">{source.sourceId} · <span className="font-mono">{short(source.commit)}</span>:{source.path}</span>;
   if (source.kind === "attachment") return <span className="text-xs text-muted-foreground">{t("taskState.attachmentSource", { id: source.id })}</span>;
-  const href = knowledgeSourceHref(projectId, source);
+  const href = knowledgeSourceHref(projectId, source, replyThreadId);
   const label = t("taskState.recordSource", { kind: t(key(`taskState.kind.${source.kind}`)), revision: source.revision });
   return href ? <a className={className} href={href}>{label}</a> : <span className="text-xs text-muted-foreground">{label}</span>;
 }
