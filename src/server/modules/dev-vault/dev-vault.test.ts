@@ -184,6 +184,13 @@ describe("vault authorization, persistence and versioning", () => {
     expect(() => f.execute(cmd, f.first.actor)).toThrow("vault_denied");
     expect(f.execute({ operation: "read", ...f.imported })).toMatchObject({ environment: { FAKE_DEV_KEY_NAME: "FAKE_DEV_ONLY_VALUE_987654321" } });
   });
+  it.each(["2026-10-27T12:00:00Z", "2026-10-27T12:00:00.1Z", "2026-10-27T12:00:00.5Z", "2026-10-27T12:00:00.5000Z"])("denies owner proofs at or before the restore instant regardless of precision (%#)", issuedAt => {
+    const f = fixture(), cmd = f.command({ operation: "read", ...f.imported });
+    f.advance(500); f.restoreFence(); f.advance(100); f.reopen();
+    expect(() => f.vault.execute({ command: cmd, proof: f.proof(cmd, f.owner, issuedAt) }, f.owner)).toThrow("vault_denied");
+    expect(f.vault.execute({ command: cmd, proof: f.proof(cmd, f.owner, "2026-10-27T12:00:00.6Z") }, f.owner).result)
+      .toMatchObject({ environment: { FAKE_DEV_KEY_NAME: "FAKE_DEV_ONLY_VALUE_987654321" } });
+  });
   it("preserves existing plaintext literal profile shapes and values without importing them", () => {
     const f = fixture();
     f.store.saveProjectEnvironmentProfile(f.project.id, { name: "literal-fixture", environment: { LITERAL_TEST_FLAG: "fake-literal" } }, "fixture");

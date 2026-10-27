@@ -90,7 +90,7 @@ describe("owner GUI vault flow against the controller service", () => {
     expect(String((failure as Error).message)).toBe("vault_invalid_request");
   });
 
-  it("inspects a write patch under owner proof, approves it once per revision and reports it as applied", async () => {
+  it("inspects a write patch and conservatively marks its timed grant stale after the revision advances", async () => {
     const { f, run, code } = await connected();
     const request = f.request("write", { dotenv: FAKE_PATCH, source: "inline-dotenv" });
     const listed = vaultRequestsSchema.parse(await run("requests", { operation: "requests" }));
@@ -107,13 +107,25 @@ describe("owner GUI vault flow against the controller service", () => {
     const after = vaultRequestsSchema.parse(await run("requests", { operation: "requests" }));
     const profiles = vaultListSchema.parse(await run("list", { operation: "list" })).profiles;
     expect(profiles.find(profile => profile.profileId === f.imported.profileId)!.revision).toBe(2);
-    expect(grantState(after.grants.find(item => item.id === grant.id)!, after.requests.find(item => item.id === request.id), profiles, Date.parse(f.now))).toBe("applied");
+    expect(grantState(after.grants.find(item => item.id === grant.id)!, after.requests.find(item => item.id === request.id), profiles, Date.parse(f.now))).toBe("stale");
     // A request whose revision was overtaken by an owner update is stale; approval conflicts.
     const late = vaultRequestSchema.parse(f.request("read", { revision: 2 }));
     await run("update", { operation: "update", profileId: f.imported.profileId, revision: 2, dotenv: "FAKE_OWNER_UPDATE=FAKE_OWNER_VALUE" });
     const updated = vaultListSchema.parse(await run("list", { operation: "list" })).profiles;
     expect(requestState(late, updated, Date.parse(f.now))).toBe("stale");
     expect(await code(run("approve-late", { operation: "approve", requestId: late.id, revision: 2, lifetime: "once" }))).toBe("vault_conflict");
+  });
+
+  it.each(["once", "15-minutes", "until-revoked"] as const)("does not claim an unused %s write was applied after an owner update", async lifetime => {
+    const { f, run } = await connected();
+    const request = f.request("write", { dotenv: FAKE_PATCH, source: "inline-dotenv" });
+    const grant = f.approve(request, lifetime);
+    await run("update", { operation: "update", ...f.imported, dotenv: "FAKE_OWNER_UPDATE=FAKE_OWNER_VALUE" });
+    const after = vaultRequestsSchema.parse(await run("requests", { operation: "requests" }));
+    const profiles = vaultListSchema.parse(await run("list", { operation: "list" })).profiles;
+    const currentGrant = after.grants.find(item => item.id === grant.id)!;
+    expect(currentGrant.consumedBy).toBeNull();
+    expect(grantState(currentGrant, after.requests.find(item => item.id === request.id), profiles, Date.parse(f.now))).toBe("stale");
   });
 
   it("keeps read, write and use independent, and rejects, revokes and expires safely", async () => {

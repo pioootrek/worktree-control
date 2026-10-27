@@ -26,7 +26,15 @@ describe("DEV vault view model", () => {
     expect(grantState(grant({ lifetime: "15-minutes", consumedBy: "op" }), request(), [profile], now)).toBe("active");
     expect(grantState(grant({ expiresAt: "2026-10-27T11:59:59.000Z" }), request(), [profile], now)).toBe("expired");
     expect(grantState(grant({ lifetime: "until-revoked", expiresAt: null }), request({ revision: 1 }), [profile], now)).toBe("stale");
-    expect(grantState(grant({ lifetime: "until-revoked", expiresAt: null }), request({ revision: 1, permission: "write" }), [profile], now)).toBe("applied");
+    expect(grantState(grant({ lifetime: "until-revoked", expiresAt: null }), request({ revision: 1, permission: "write" }), [profile], now)).toBe("stale");
+  });
+
+  it("requires recorded once consumption before reporting a write as applied", () => {
+    const write = request({ revision: 1, permission: "write" });
+    for (const lifetime of ["once", "15-minutes", "until-revoked"] as const) {
+      expect(grantState(grant({ lifetime }), write, [profile], now)).toBe("stale");
+    }
+    expect(grantState(grant({ consumedBy: "successful-write" }), write, [profile], now)).toBe("applied");
   });
 
   it("maps only known server codes and dates proofs safely in the controller's past", () => {

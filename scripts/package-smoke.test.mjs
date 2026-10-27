@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,12 +60,34 @@ test("keeps existing prefixed-token minimum lengths and rejects identifier subst
   }
 });
 
-test("retains sentinel and every supported private-key header detection", () => {
+test("accepts PEM parsing syntax and marker-only documentation, but retains the sentinel", () => {
   assert.equal(packedTextContainsSecret("prefix-portable-smoke-secret-must-not-leak-suffix"), true);
-  for (const kind of ["", "RSA ", "EC ", "OPENSSH "]) {
-    assert.equal(packedTextContainsSecret(`prefix-----BEGIN ${kind}PRIVATE KEY-----suffix`), true, "private-key header remains detected");
+  for (const kind of ["", "RSA ", "EC ", "OPENSSH ", "ENCRYPTED "]) {
+    assert.equal(packedTextContainsSecret(`Supported input: -----BEGIN ${kind}PRIVATE KEY-----`), false);
   }
+  const parser = String.raw`/^-----BEGIN PRIVATE KEY-----\r?\n([A-Za-z0-9+/=\r\n]+)-----END PRIVATE KEY-----\s*$/`;
+  assert.equal(packedTextContainsSecret(parser), false);
   assert.equal(packedTextContainsSecret("ordinary package documentation"), false);
+});
+
+test("detects private-key payloads in plain text and serialized bundles, including truncated blocks", () => {
+  // Ephemeral fixtures only; assertion diagnostics never include their contents.
+  const ed = generateKeyPairSync("ed25519").privateKey;
+  const keys = [
+    ed.export({ format: "pem", type: "pkcs8" }).toString(),
+    ed.export({ format: "pem", type: "pkcs8", cipher: "aes-256-cbc", passphrase: "fixture-only" }).toString(),
+    generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey.export({ format: "pem", type: "pkcs1" }).toString(),
+    generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey.export({ format: "pem", type: "sec1" }).toString(),
+    generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey.export({ format: "pem", type: "sec1", cipher: "aes-256-cbc", passphrase: "fixture-only" }).toString(),
+    `-----BEGIN OPENSSH PRIVATE KEY-----\n${"YWJj".repeat(16)}\n-----END OPENSSH PRIVATE KEY-----`,
+  ];
+  for (const key of keys) {
+    for (const value of [key, key.replaceAll("\n", "\r\n"), key.split("-----END")[0]]) {
+      for (const text of [value, JSON.stringify({ key: value }), `const key = ${JSON.stringify(value)};`]) {
+        assert.equal(packedTextContainsSecret(text), true, "key payload must fail the packed-text audit");
+      }
+    }
+  }
 });
 
 test("scanner imports from the delivered smoke and installer pair without running the smoke", async () => {

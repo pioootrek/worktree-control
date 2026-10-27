@@ -64,8 +64,9 @@ export type GrantState = "active" | "consumed" | "expired" | "stale" | "applied"
 export function grantState(grant: VaultGrant, request: VaultRequest | undefined, profiles: readonly VaultProfile[], now: number): GrantState {
   if (grant.expiresAt !== null && Date.parse(grant.expiresAt) <= now) return "expired";
   const profile = request && profiles.find(candidate => candidate.profileId === request.profileId);
-  // A write grant pins its base revision; after the patch advances the profile it cannot write again.
-  if (request?.permission === "write" && profile && profile.revision > request.revision) return "applied";
+  // A newer revision may come from an owner update, not this patch. Only once
+  // grants expose consumption; timed write grants conservatively become stale.
+  if (request?.permission === "write" && grant.lifetime === "once" && grant.consumedBy !== null && profile && profile.revision > request.revision) return "applied";
   if (request && profile && profile.revision !== request.revision) return "stale";
   if (grant.lifetime === "once" && grant.consumedBy !== null) return "consumed";
   return "active";

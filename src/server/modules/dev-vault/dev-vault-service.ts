@@ -75,7 +75,7 @@ export class DevVaultService {
     const snapshot = this.store.load(command.projectId);
     const state = snapshot ? this.cipher.open<VaultState>(snapshot.ciphertext, command.projectId, "state", snapshot.version) : empty();
     const fence = this.restoreBoundary();
-    if (owner && fence !== null && (!proof || proof.issuedAt <= fence)) return denied();
+    if (owner && fence !== null && (!proof || !(Date.parse(proof.issuedAt) > Date.parse(fence)))) return denied();
     const current = (createdAt: string) => fence === null || createdAt > fence;
     // Expired state can never authorize a request after reopen. Keep active grants and their requests.
     state.grants = state.grants.filter(g => !g.revokedAt && (!g.expiresAt || g.expiresAt > now) && current(g.createdAt));

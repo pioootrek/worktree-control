@@ -185,7 +185,7 @@ test("import, explicit reveal, write inspection and approval, rejection, stale r
   await expect(laterRow).toContainText(translate("en", "vault.requestState.stale"));
   await expect(laterRow.getByRole("button", { name: translate("en", "vault.review") })).toBeDisabled();
   await expect(laterRow).toContainText(translate("en", "vault.requestReason.stale"));
-  await expect(page.locator("[data-vault-grant]")).toContainText(translate("en", "vault.grantState.applied"));
+  await expect(page.locator("[data-vault-grant]")).toContainText(translate("en", "vault.grantState.stale"));
 
   await page.locator("[data-vault-grant]").getByRole("button", { name: translate("en", "vault.revoke") }).click();
   await page.getByRole("dialog").getByRole("button", { name: translate("en", "vault.revokeConfirm") }).click();
