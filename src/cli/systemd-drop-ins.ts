@@ -35,17 +35,20 @@ const resourceDropInKeys = new Set([
 ]);
 
 function assignments(contents: string): Array<[string, string]> {
+  // systemd v255 WHITESPACE/strstrip only recognize space, tab, CR and LF.
+  // Refuse other JS whitespace even in values/comments rather than erase policy differences.
+  if (/[^\S \t\r\n]/.test(contents)) refuse();
   let section = "";
   const result: Array<[string, string]> = [];
   for (const source of contents.split(/\r?\n/)) {
     // A deliberately restricted grammar. No continuations, substitutions or ignored sections.
-    if (/[\0\r]/.test(source) || source.trimEnd().endsWith("\\")) refuse();
-    const line = source.trim();
+    const line = source.replace(/^[ \t]+|[ \t]+$/g, "");
+    if (/[\0\r]/.test(source) || line.endsWith("\\")) refuse();
     if (!line || /^[#;]/.test(line)) continue;
     if (line === "[Service]") { section = "Service"; continue; }
-    const match = /^([A-Za-z][A-Za-z0-9]*)\s*=(.*)$/.exec(line);
+    const match = /^([A-Za-z][A-Za-z0-9]*)[ \t]*=(.*)$/.exec(line);
     if (section !== "Service" || !match || !resourceDropInKeys.has(match[1])) refuse();
-    const value = match[2].trim();
+    const value = match[2].replace(/^[ \t]+|[ \t]+$/g, "");
     if (value.includes("$") || (value.includes("%") && !/^[0-9]+(?:\.[0-9]+)?%$/.test(value))) refuse();
     result.push([match[1], value]);
   }

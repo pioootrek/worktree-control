@@ -243,6 +243,37 @@ function acceptance() {
       try { return assertRefusal(legacy); }
       finally { rmSync(path); systemctl("daemon-reload"); }
     });
+    for (const [label, whitespace] of [["NBSP", "\u00a0"], ["VT", "\v"], ["FF", "\f"]]) {
+      check(`ignored ${label} destination directive refuses migration and preserves legacy memory limit and PID`, () => {
+        const originalPid = pid(legacy);
+        const sourceContents = resource("MemoryMax", "512M"), targetContents = `[Service]\n${whitespace}MemoryMax=512M\n`;
+        const source = put(configRoot, legacy, "95-whitespace.conf", sourceContents);
+        const target = put(configRoot, current, "95-whitespace.conf", targetContents);
+        try {
+          // Load a candidate definition only to observe real systemd parsing; never start it.
+          writeFileSync(manager.definitionPath, renderSystemdUnit(options), { flag: "wx" });
+          systemctl("daemon-reload");
+          assert.equal(property(current, "FragmentPath"), manager.definitionPath);
+          assert.ok(parseSystemdPathList(property(current, "DropInPaths"))?.includes(target));
+          assert.equal(property(current, "MemoryMax"), "469762048", "Malformed destination directive must be ignored, leaving the common 448M limit");
+          assert.equal(property(current, "MainPID"), "0", "Probe must never start a second controller");
+          assert.equal(property(legacy, "MemoryMax"), "536870912", "Valid legacy directive must impose 512M");
+          rmSync(manager.definitionPath); systemctl("daemon-reload");
+
+          const evidence = assertRefusal(legacy);
+          assert.equal(pid(legacy), originalPid);
+          assert.equal(property(legacy, "MemoryMax"), "536870912");
+          assert.equal(readFileSync(source, "utf8"), sourceContents);
+          assert.equal(readFileSync(target, "utf8"), targetContents);
+          assert.equal(systemctl("is-enabled", legacy), "enabled");
+          assert.notEqual(runner.run("systemctl", ["--user", "is-enabled", current]).status, 0);
+          return { ...evidence, whitespace: label, ignoredDestinationMemoryMax: "469762048", preservedLegacyMemoryMax: "536870912" };
+        } finally {
+          rmSync(manager.definitionPath, { force: true });
+          rmSync(source); rmSync(target); systemctl("daemon-reload");
+        }
+      });
+    }
     for (const scope of ["service", "worktree-.service"]) {
       check(`unsafe ${scope}.d refuses without lifecycle calls or PID change`, () => {
         const path = put(configRoot, scope, "91-unsafe.conf", "[Service]\nEnvironment=WTC_FIXTURE=1\n");

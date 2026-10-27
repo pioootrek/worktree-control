@@ -667,6 +667,44 @@ describe("legacy worktree-switcher service migration", () => {
     expect(existsSync(manager.legacyDefinitionPath)).toBe(true);
   });
 
+  it.each(["\u00a0", "\v", "\f"])("refuses an existing same-name destination with non-systemd whitespace %j before lifecycle calls", whitespace => {
+    const { manager, calls } = linuxHome({ legacy: true });
+    const sourceDirectory = `${manager.legacyDefinitionPath}.d`, targetDirectory = `${manager.definitionPath}.d`;
+    mkdirSync(sourceDirectory); mkdirSync(targetDirectory);
+    const source = join(sourceDirectory, "limits.conf"), target = join(targetDirectory, "limits.conf");
+    const sourceContents = "[Service]\nMemoryMax=512M\n", targetContents = `[Service]\n${whitespace}MemoryMax=512M\n`;
+    writeFileSync(source, sourceContents, { mode: 0o640 });
+    writeFileSync(target, targetContents, { mode: 0o600 });
+    const sourceMode = statSync(source).mode, targetMode = statSync(target).mode;
+
+    expect(() => manager.install(installOptions)).toThrow("Inspect and reconcile");
+
+    expect(calls).toEqual([]);
+    expect(readFileSync(manager.legacyDefinitionPath, "utf8")).toBe(legacyUnit);
+    expect(readFileSync(source, "utf8")).toBe(sourceContents);
+    expect(readFileSync(target, "utf8")).toBe(targetContents);
+    expect(statSync(source).mode).toBe(sourceMode);
+    expect(statSync(target).mode).toBe(targetMode);
+    expect(readdirSync(sourceDirectory)).toEqual(["limits.conf"]);
+    expect(readdirSync(targetDirectory)).toEqual(["limits.conf"]);
+    expect(existsSync(manager.definitionPath)).toBe(false);
+  });
+
+  it("migrates to an existing equivalent destination formatted with spaces, tabs and CRLF", () => {
+    const { manager } = linuxHome({ legacy: true });
+    mkdirSync(`${manager.legacyDefinitionPath}.d`); mkdirSync(`${manager.definitionPath}.d`);
+    writeFileSync(join(`${manager.legacyDefinitionPath}.d`, "limits.conf"), "[Service]\nMemoryMax=512M\n");
+    const target = join(`${manager.definitionPath}.d`, "limits.conf");
+    const formatted = " \t[Service]\t\r\n \tMemoryMax \t= \t512M\t \r\n";
+    writeFileSync(target, formatted);
+
+    manager.install(installOptions);
+
+    expect(readFileSync(target, "utf8")).toBe(formatted);
+    expect(existsSync(manager.legacyDefinitionPath)).toBe(false);
+    expect(existsSync(manager.definitionPath)).toBe(true);
+  });
+
   it("inherits start arguments from the legacy unit until the new unit exists", () => {
     const { manager } = linuxHome({ legacy: true });
     expect(manager.readStartArguments()).toEqual(installOptions.startArguments);

@@ -69,6 +69,39 @@ describe("bounded systemd effective drop-in inspection", () => {
     expect(inspect).toThrow("Inspect and reconcile");
   });
 
+  it.each(["\n", "\r\n"])("preserves space/tab formatting, comments, resets and value contents with %j lines", newline => {
+    const { put, inspect } = fixture();
+    put(0, unit, "limits.conf", [" \t# resource policy", "\t; comment", " \t", " \t[Service]\t ",
+      " \tMemoryMax \t= \t512M\t ", "IOReadBandwidthMax = /dev/disk\t 1M ", "IOReadBandwidthMax = \t", "\tCPUQuota = 50%", ""].join(newline));
+    const formatted = inspect();
+    expect(formatted.assignments).toEqual([["MemoryMax", "512M"], ["IOReadBandwidthMax", "/dev/disk\t 1M"], ["IOReadBandwidthMax", ""], ["CPUQuota", "50%"]]);
+    put(0, unit, "limits.conf", "[Service]\nMemoryMax=512M\nIOReadBandwidthMax=/dev/disk\t 1M\nIOReadBandwidthMax=\nCPUQuota=50%\n");
+    expect(sameSystemdPolicy(formatted, inspect())).toBe(true);
+  });
+
+  const extraWhitespace = [0x0b, 0x0c, 0x00a0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004,
+    0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff];
+  it.each(extraWhitespace.map(code => [`U+${code.toString(16).toUpperCase().padStart(4, "0")}`, String.fromCodePoint(code)]))(
+    "refuses %s throughout directives, keys, values and sections", (_, whitespace) => {
+      const { put, inspect } = fixture();
+      for (const contents of [
+        `[Service]\n${whitespace}MemoryMax=512M\n`, `[Service]\nMemoryMax${whitespace}=512M\n`,
+        `[Service]\nMemoryMax=${whitespace}512M\n`, `[Service]\nMemoryMax=512M${whitespace}\n`,
+        `[Service]\nMemoryMax=5${whitespace}12M\n`, `${whitespace}[Service]\nMemoryMax=512M\n`,
+        `[Service]${whitespace}\nMemoryMax=512M\n`, `[${whitespace}Service]\nMemoryMax=512M\n`,
+        `[Service${whitespace}]\nMemoryMax=512M\n`, `[Service]\n${whitespace}\nMemoryMax=512M\n`,
+        `[Service]\n${whitespace}# comment\nMemoryMax=512M\n`, `[Service]\n# comment${whitespace}\nMemoryMax=512M\n`,
+      ]) {
+        put(0, unit, "limits.conf", contents);
+        expect(inspect, JSON.stringify(contents)).toThrow("Inspect and reconcile");
+      }
+    });
+
+  it.each(["[ Service]", "[Service ]", "[Service\t]", "[Service] # comment", "Memory Max=512M", "MemoryMax=512M\rTasksMax=64", "MemoryMax=512M\\ \t", "MemoryMax=${LIMIT}"])("keeps unsupported grammar refused: %s", line => {
+    const { put, inspect } = fixture(); put(0, unit, "limits.conf", `[Service]\n${line}\n`);
+    expect(inspect).toThrow("Inspect and reconcile");
+  });
+
   it.each(["symlink", "fifo", "directory", "unreadable", "invalid UTF-8", "BOM", "oversize"])("refuses %s without unbounded reads", kind => {
     const { put, inspect } = fixture();
     const path = put(0, "service", "policy.conf");
