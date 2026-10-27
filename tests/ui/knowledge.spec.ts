@@ -98,7 +98,8 @@ test("task reader shows the current state before the description and keeps histo
   const f = await mountKnowledge(page);
   f.records.push({ id: "state-task", projectId: "knowledge-only", title: "Export CSV", description: "2026-10-22 started\n2026-10-24 blocked\n2026-10-26 unblocked", status: "blocked", priority: "now", revision: 7, createdBy: "owner" });
   f.taskStates.set("state-task", currentStateView("state-task"));
-  await page.getByRole("tab", { name: "Backlog", exact: true }).click();
+  // Backlog is already loaded; refresh reads the records added after mounting.
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
   await page.getByRole("link", { name: "Export CSV", exact: true }).click();
   const panel = page.getByRole("region", { name: "Current state", exact: true });
   await expect(panel.getByText("PR #112 merged to main; staging deployment fails its health check.", { exact: true })).toBeVisible();
@@ -131,7 +132,8 @@ test("a task without a recorded state says so on a narrow reader without horizon
   await page.setViewportSize({ width: 390, height: 844 });
   const f = await mountKnowledge(page);
   f.records.push({ id: "plain-task", projectId: "knowledge-only", title: "Plain task", description: "Only a description", status: "open", priority: "later", revision: 1, createdBy: "owner" });
-  await page.getByRole("tab", { name: "Backlog", exact: true }).click();
+  // Backlog is already loaded; refresh reads the records added after mounting.
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
   await page.getByRole("link", { name: "Plain task", exact: true }).click();
   const panel = page.getByRole("region", { name: "Current state", exact: true });
   await expect(panel.getByText("No current state recorded", { exact: true })).toBeVisible();
