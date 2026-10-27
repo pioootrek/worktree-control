@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { readSystemdDropInDirectory, inspectSystemdDropIns, matchesSystemdDropInPaths, parseSystemdPathList, sameSystemdPolicy, type SystemdDropInPolicy } from "./systemd-drop-ins";
 
 export const SYSTEMD_UNIT_NAME = "worktree-control.service";
 export const LAUNCHD_LABEL = "dev.worktree-control.controller";
@@ -187,7 +188,7 @@ export class UserServiceManager {
   readInstallStartArguments(): string[] | null {
     const path = this.installDefinitionPath();
     if (path === null) {
-      if (this.kind === "systemd" && readResourceDropIns(`${this.definitionPath}.d`).size) unsafeInstalledDefinition();
+      if (this.kind === "systemd") inspectSystemdDropIns([dirname(this.definitionPath)], SYSTEMD_UNIT_NAME);
       return null;
     }
     const arguments_ = this.readStartArguments();
@@ -196,7 +197,8 @@ export class UserServiceManager {
     const definition = readFileSync(path, "utf8");
     if (this.kind === "systemd") {
       validateInstalledSystemdDefinition(definition);
-      this.installDropIns(path);
+      inspectSystemdDropIns([dirname(path)], basename(path));
+      if (path === this.legacyDefinitionPath) inspectSystemdDropIns([dirname(path)], SYSTEMD_UNIT_NAME);
     } else validateInstalledLaunchAgent(definition, arguments_);
     return arguments_;
   }
@@ -205,15 +207,26 @@ export class UserServiceManager {
   assertInstalledServiceConfiguration(): void {
     const path = this.installDefinitionPath();
     if (path === null || this.kind !== "systemd") return;
-    this.installDropIns(path);
     this.assertSystemdConfiguration(path);
   }
 
-  private assertSystemdConfiguration(path: string): void {
-    const expectedDropIns = readResourceDropIns(`${path}.d`);
-    const unit = path === this.definitionPath ? SYSTEMD_UNIT_NAME : LEGACY_SYSTEMD_UNIT_NAME;
-    const result = this.runner.run("systemctl", ["--user", "show", unit, "--property=FragmentPath", "--property=DropInPaths", "--property=NeedDaemonReload"]);
-    const entries = result.stdout.trim().split(/\r?\n/).map(line => {
+  private systemdLookupPaths(): string[] {
+    const result = this.runner.run("systemctl", ["--user", "show", "--property=UnitPath"]);
+    const match = /^UnitPath=([^\r\n]*)\r?\n?$/.exec(result.stdout);
+    const roots = match ? parseSystemdPathList(match[1]) : null;
+    if (result.status !== 0 || !roots?.length || !roots.includes(dirname(this.definitionPath))) this.managerConfigurationMismatch();
+    return roots;
+  }
+
+  private managerConfigurationMismatch(): never {
+    throw new Error("Installed service manager configuration differs from the inspected definition or needs daemon-reload. Inspect and reconcile its fragment, lookup paths and drop-ins before installing; no service was changed.");
+  }
+
+  private assertSystemdConfiguration(path: string): SystemdDropInPolicy {
+    const roots = this.systemdLookupPaths();
+    const expected = inspectSystemdDropIns(roots, basename(path));
+    const result = this.runner.run("systemctl", ["--user", "show", basename(path), "--property=FragmentPath", "--property=DropInPaths", "--property=NeedDaemonReload"]);
+    const entries = result.stdout.trimEnd().split(/\r?\n/).map(line => {
       const separator = line.indexOf("=");
       return [line.slice(0, separator), line.slice(separator + 1)];
     });
@@ -221,10 +234,8 @@ export class UserServiceManager {
     const dropIns = parseSystemdPathList(properties.DropInPaths);
     if (result.status !== 0 || entries.length !== 3 || new Set(entries.map(([key]) => key)).size !== 3
       || properties.FragmentPath !== path || properties.NeedDaemonReload !== "no" || dropIns === null
-      || dropIns.length !== expectedDropIns.size || new Set(dropIns).size !== dropIns.length
-      || dropIns.some(value => !expectedDropIns.has(value))) {
-      throw new Error("Installed service manager configuration differs from the inspected local definition or needs daemon-reload. Inspect and reconcile its fragment and drop-ins before installing; no service was changed.");
-    }
+      || !matchesSystemdDropInPaths(expected, dropIns)) this.managerConfigurationMismatch();
+    return expected;
   }
 
   private installDefinitionPath(): string | null {
@@ -239,28 +250,21 @@ export class UserServiceManager {
     return path;
   }
 
-  private installDropIns(path: string): Map<string, string> {
-    const selected = readResourceDropIns(`${path}.d`);
-    if (path === this.legacyDefinitionPath) {
-      const target = readResourceDropIns(`${this.definitionPath}.d`);
-      for (const [destination, contents] of target) {
-        const source = `${this.legacyDefinitionPath}.d${destination.slice(`${this.definitionPath}.d`.length)}`;
-        if (selected.get(source) !== contents) unsafeInstalledDefinition();
-      }
-    }
-    return selected;
-  }
-
   /**
    * Installs the service and enables it only after a verified healthy start. A legacy
    * `worktree-switcher` service is stopped just before the new one starts, because both would claim
    * the same ports and controller lock, and is disabled and removed only after the health check
-   * passes. systemd drop-ins of the legacy unit are copied to the new unit first, so limits keep
-   * applying. If the start or health check fails, the new service is stopped, its previous
+   * passes. Selected local legacy drop-ins are copied first and ordered resource assignments
+   * must match at the destination before either controller is interrupted. If the start or health
+   * check fails, the new service is stopped, its previous
    * definition and enabled state are restored (or the new definition, copied drop-ins and enabled
    * state removed), a legacy service that was running is started again, and the error is rethrown.
    */
   install(options: ServiceInstallOptions): { changed: boolean; definitionPath: string; legacy: LegacyServiceRemoval | null } {
+    // Direct callers must pass the same preflight as the CLI, before any file or lifecycle effect.
+    if (this.kind === "systemd") this.readInstallStartArguments();
+    const sourcePath = this.kind === "systemd" ? this.installDefinitionPath() : null;
+    const sourcePolicy = sourcePath === null ? null : this.assertSystemdConfiguration(sourcePath);
     const definition = this.kind === "systemd" ? renderSystemdUnit(options) : renderLaunchAgent(options);
     const previous = existsSync(this.definitionPath) ? readFileSync(this.definitionPath, "utf8") : null;
     if (previous !== null && previous !== definition && !options.refresh) {
@@ -277,11 +281,16 @@ export class UserServiceManager {
       if (previous !== null) state.currentWasActive = this.systemdActive(SYSTEMD_UNIT_NAME);
       if (changed) writeDefinition(this.definitionPath, definition);
       this.withRollback(state, () => {
-        if (legacyInstalled) this.migrateDropIns(state);
+        if (legacyInstalled && sourcePolicy) this.migrateDropIns(state, sourcePolicy);
         this.requireSuccess("systemctl", ["--user", "daemon-reload"]);
         // Destination-only system/runtime drop-ins are visible once the new fragment is loaded.
         // Inspect them before stopping either controller, including on a fresh installation.
-        this.assertSystemdConfiguration(this.definitionPath);
+        const destination = this.assertSystemdConfiguration(this.definitionPath);
+        if (sourcePolicy && !sameSystemdPolicy(sourcePolicy, destination)) unsafeInstalledDefinition();
+        if (sourcePath !== null && sourcePath !== this.definitionPath) {
+          const rechecked = this.assertSystemdConfiguration(sourcePath);
+          if (JSON.stringify(rechecked) !== JSON.stringify(sourcePolicy)) unsafeInstalledDefinition();
+        }
         if (legacyInstalled) {
           state.legacyWasActive = this.systemdActive(LEGACY_SYSTEMD_UNIT_NAME);
           this.requireSuccess("systemctl", ["--user", "stop", LEGACY_SYSTEMD_UNIT_NAME]);
@@ -334,38 +343,34 @@ export class UserServiceManager {
     };
   }
 
-  /**
-   * Copies `worktree-switcher.service.d/*.conf` into the new unit's drop-in directory before the
-   * daemon reload, so `MemoryMax`, sandbox settings and similar overrides keep applying. A file that
-   * already exists for the new unit with the same contents counts as migrated; a differing one is
-   * never overwritten. The legacy directory is retained whenever any entry could not be migrated.
-   */
-  private migrateDropIns(state: InstallState): void {
+  /** Copy only selected local legacy files; overridden candidates must never gain specificity. */
+  private migrateDropIns(state: InstallState, policy: SystemdDropInPolicy): void {
     const source = `${this.legacyDefinitionPath}.d`;
-    if (!existsSync(source) || !statSync(source).isDirectory()) return;
+    if (!existsSync(source)) return;
+    const canonical = realpathSync(source);
     const target = `${this.definitionPath}.d`;
-    const entries = readdirSync(source, { withFileTypes: true });
-    let retained = false;
-    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-      const from = join(source, entry.name);
-      const to = join(target, entry.name);
-      if (!entry.isFile() || !entry.name.endsWith(".conf")) {
-        retained = true;
-        continue;
-      }
-      const contents = readFileSync(from);
-      if (existsSync(to)) {
-        if (!readFileSync(to).equals(contents)) retained = true;
+    const selected = policy.files.filter(file => dirname(file.path) === canonical);
+    const migrated = new Set<string>();
+    for (const file of selected) {
+      const name = basename(file.path), to = join(target, name);
+      let existing;
+      try { existing = lstatSync(to); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      if (existing) {
+        // Existing destination candidates are inspected after reload and policy must match.
         continue;
       }
       if (!existsSync(target)) {
         mkdirSync(target, { recursive: true, mode: 0o700 });
         state.createdDropInDirectory = target;
       }
-      writeFileSync(to, contents, { mode: statSync(from).mode & 0o777 });
+      if (file.mask) symlinkSync("/dev/null", to);
+      else writeFileSync(to, file.contents, { mode: file.mode, flag: "wx" });
       state.copiedDropIns.push(to);
+      migrated.add(name);
     }
-    if (retained) state.retainedDropInDirectory = source;
+    // Keep all original inputs if any candidate was suppressed, conflicting or not a .conf.
+    if (readSystemdDropInDirectory(source).some(name => !migrated.has(name))) state.retainedDropInDirectory = source;
   }
 
   /** Runs the start sequence; on failure restores the previous service state before rethrowing. */
@@ -627,47 +632,6 @@ function unsafeInstalledDefinition(): never {
   throw new Error("Installed service configuration cannot be safely inherited. Inspect and reconcile the definition and drop-ins into generated absolute startup arguments and resource-only drop-ins before installing; no service was changed.");
 }
 
-/** Decode systemctl's shell_maybe_quote(..., 0) string array without shell evaluation. */
-function parseSystemdPathList(value: string | undefined): string[] | null {
-  if (value === undefined || value.length > 1024 * 1024) return null;
-  const paths: string[] = [];
-  const escapes: Record<string, string> = { a: "\x07", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "\\": "\\", '"': '"', "`": "`", $: "$" };
-  // systemd emits whole double-quoted words, never shell concatenation or single quotes.
-  const words = /"((?:\\.|[^"\\])*)"|([^ ]+)/gy;
-  let offset = 0;
-  while (offset < value.length) {
-    if (value[offset] === " ") { offset++; continue; }
-    words.lastIndex = offset;
-    const match = words.exec(value);
-    if (!match || (words.lastIndex < value.length && value[words.lastIndex] !== " ")) return null;
-    offset = words.lastIndex;
-    let path = match[2];
-    if (match[1] !== undefined) {
-      const bytes: Buffer[] = [];
-      const parts = /\\([abfnrtv\\"`$]|[0-7]{3})|([^\\]+)/gy;
-      let position = 0;
-      while (position < match[1].length) {
-        parts.lastIndex = position;
-        const part = parts.exec(match[1]);
-        if (!part) return null;
-        position = parts.lastIndex;
-        if (part[2] !== undefined) bytes.push(Buffer.from(part[2]));
-        else if (part[1] in escapes) bytes.push(Buffer.from(escapes[part[1]]));
-        else {
-          const byte = Number.parseInt(part[1], 8);
-          if (byte === 0 || byte > 255) return null;
-          bytes.push(Buffer.from([byte]));
-        }
-      }
-      try { path = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(Buffer.concat(bytes)); }
-      catch { return null; }
-    } else if (/[\s"'\\`$?*\[\]()<>|&;!]/.test(path)) return null;
-    if (!isAbsolute(path) || path.includes("\0") || paths.length >= 128) return null;
-    paths.push(path);
-  }
-  return paths;
-}
-
 const installedPathFlags = new Set([
   "--browse-root", "--data-dir", "--state-dir", "--web-root", "--backup-dir",
   "--backup-remote-restic", "--backup-remote-password-file", "--backup-remote-credentials-file", "--backup-remote-ca-file",
@@ -734,38 +698,6 @@ function validateInstalledSystemdDefinition(definition: string): void {
     if (!(name in fixed) || value !== fixed[name]) unsafeInstalledDefinition();
   }
   if (!["Service.ExecStart", "Service.WorkingDirectory", "Environment.NODE_ENV", "Environment.PATH"].every(name => seen.has(name))) unsafeInstalledDefinition();
-}
-
-const resourceDropInKeys = new Set([
-  "MemoryAccounting", "MemoryMin", "MemoryLow", "MemoryHigh", "MemoryMax", "MemorySwapMax", "MemoryZSwapMax",
-  "CPUAccounting", "CPUWeight", "StartupCPUWeight", "CPUQuota", "CPUQuotaPeriodSec", "AllowedCPUs", "StartupAllowedCPUs",
-  "AllowedMemoryNodes", "StartupAllowedMemoryNodes", "TasksAccounting", "TasksMax", "IOAccounting", "IOWeight",
-  "StartupIOWeight", "IOReadBandwidthMax", "IOWriteBandwidthMax", "IOReadIOPSMax", "IOWriteIOPSMax", "Nice",
-  "OOMScoreAdjust", "OOMPolicy", "ManagedOOMSwap", "ManagedOOMMemoryPressure", "ManagedOOMMemoryPressureLimit",
-  "LimitAS", "LimitCORE", "LimitCPU", "LimitDATA", "LimitFSIZE", "LimitLOCKS", "LimitMEMLOCK", "LimitMSGQUEUE",
-  "LimitNICE", "LimitNOFILE", "LimitNPROC", "LimitRSS", "LimitRTPRIO", "LimitRTTIME", "LimitSIGPENDING", "LimitSTACK",
-]);
-function readResourceDropIns(directory: string): Map<string, string> {
-  let stat;
-  try { stat = lstatSync(directory); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Map(); throw error; }
-  if (!stat.isDirectory()) unsafeInstalledDefinition();
-  const entries = readdirSync(directory, { withFileTypes: true });
-  if (entries.length > 128) unsafeInstalledDefinition();
-  const result = new Map<string, string>();
-  let bytes = 0;
-  for (const entry of entries) {
-    if (!entry.name.endsWith(".conf")) continue;
-    const path = join(directory, entry.name);
-    if (!entry.isFile() || (bytes += lstatSync(path).size) > 1024 * 1024) unsafeInstalledDefinition();
-    const contents = readFileSync(path, "utf8");
-    for (const { section, key, value } of systemdEntries(contents)) {
-      if (section !== "Service" || !resourceDropInKeys.has(key) || value.includes("$")
-        || (value.includes("%") && !/^[0-9]+(?:\.[0-9]+)?%$/.test(value))) unsafeInstalledDefinition();
-    }
-    result.set(path, contents);
-  }
-  return result;
 }
 
 function validateInstalledLaunchAgent(definition: string, args: string[]): void {

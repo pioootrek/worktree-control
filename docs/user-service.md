@@ -1,6 +1,6 @@
 ---
 audience: "people running Worktree Control on a development machine"
-last_reviewed: "2026-10-08"
+last_reviewed: "2026-10-27"
 source_of_truth: "user-service installation, operation, logs, and removal"
 status: "active"
 ---
@@ -122,17 +122,136 @@ than silently replaced with defaults. Automatic inheritance accepts the
 generated definition with complete absolute startup paths and recognized
 environment settings. Relative paths, environment substitutions and custom
 main-unit settings require operator reconciliation first. Supported resource
-drop-ins are preserved; command/environment overrides and conflicting legacy
-and destination drop-ins are refused.
+drop-ins are inspected and preserved as described below. Command/environment
+overrides and non-equivalent legacy and destination policies are refused.
 
-The preview covers local files. Before an actual Linux install, a read-only
-service-manager check also verifies the loaded fragment and drop-ins and
-rejects a stale definition or overrides outside the inspected local directory.
-After loading the new definition, the installer checks the destination unit
-again before stopping or starting a controller. A failed check restores the
-previous files without interrupting the running service.
+The preview inspects applicable scopes under the local user unit directory.
+It never calls `systemctl` and cannot certify vendor/runtime policy or the
+loaded manager state. Before an actual Linux install, a read-only manager check
+requires the exact installed `FragmentPath`, `NeedDaemonReload=no`, and an
+ordered `DropInPaths` list matching inspected files. Direct service-manager
+callers pass the same checks. After `daemon-reload`, the installer inspects the
+destination again before stopping or starting a controller. A failed check
+restores the previous files without restarting a still-running service.
 An explicit `--yes` does not bypass these checks. macOS validates the stored
 LaunchAgent; real-host migration acceptance remains outstanding.
+
+### Supported systemd drop-ins
+
+Inspection uses the running user manager's ordered `UnitPath`, rather than
+assuming the CLI and manager share XDG settings. Supported scopes are the
+exact unit's `.d` directory, `worktree-.service.d`, and `service.d`. Within
+named scopes, lookup-root priority comes first and unit-specific scope comes
+before the dash prefix within each root. All type-wide directories follow all
+named directories. The first candidate for a basename wins, then selected
+basenames are processed in bytewise lexical order, independent of locale.
+This follows systemd's
+[drop-in directory selection](https://github.com/systemd/systemd/blob/main/src/shared/dropin.c)
+and [configuration file selection](https://github.com/systemd/systemd/blob/main/src/basic/conf-files.c).
+The [unit manual](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html)
+describes the supported scopes. Aliases, templates and other scope patterns
+are outside this installer's contract; an unexplained selected path is refused.
+
+A regular empty file or a symlink with the exact target `/dev/null` suppresses
+lower-priority files with the same basename and contributes no assignments.
+Both remain part of the selected path list. systemd's drop-in lookup does not
+request the `CONF_FILES_FILTER_MASKED` flags, so masks must not simply be
+removed from the expected `DropInPaths`. Overridden contents are not read or
+copied. Other file symlinks, symlinked drop-in directories, FIFOs and other
+non-regular selected inputs are refused. Lookup-root aliases such as `/lib`
+are canonicalized when resolving existing directories.
+
+Only `[Service]` resource assignments from this explicit allowlist are accepted:
+
+```text
+MemoryAccounting MemoryMin MemoryLow MemoryHigh MemoryMax MemorySwapMax MemoryZSwapMax
+CPUAccounting CPUWeight StartupCPUWeight CPUQuota CPUQuotaPeriodSec AllowedCPUs StartupAllowedCPUs
+AllowedMemoryNodes StartupAllowedMemoryNodes TasksAccounting TasksMax IOAccounting IOWeight
+StartupIOWeight IOReadBandwidthMax IOWriteBandwidthMax IOReadIOPSMax IOWriteIOPSMax Nice
+OOMScoreAdjust OOMPolicy ManagedOOMSwap ManagedOOMMemoryPressure ManagedOOMMemoryPressureLimit
+LimitAS LimitCORE LimitCPU LimitDATA LimitFSIZE LimitLOCKS LimitMEMLOCK LimitMSGQUEUE
+LimitNICE LimitNOFILE LimitNPROC LimitRSS LimitRTPRIO LimitRTTIME LimitSIGPENDING LimitSTACK
+```
+
+The existing resource allowlist is unchanged. Comments, blank lines and empty
+assignment values are supported. Unknown sections/directives, continuations,
+invalid UTF-8 or a BOM, NULs, environment substitutions and unit specifiers
+are refused. A numeric percentage such as `CPUQuota=50%` is allowed.
+`ExecStart`, `Environment`, `KillMode`, sandboxing and other startup or process
+ownership settings are refused even in vendor files. `TimeoutStopFailureMode=abort`
+is also refused: it changes how a failed stop is handled, rather than resource
+allocation. Its behavior is described in the
+[service manual](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html).
+The inspector does not validate every resource value against each installed
+systemd version; it preserves validated assignment text and leaves value
+interpretation to that manager.
+
+Each inspection accepts at most 64 lookup roots, 1,024 directory entries across
+applicable scopes, 128 selected files, and 1 MiB of selected content. Path-list
+input is capped at 1 MiB and 128 paths. Unreadable files/directories, malformed
+manager output and inspection-limit failures are refused. Files are opened
+without following symlinks, read with a byte bound, and checked for replacement
+or changes during the read. This detects observed changes; concurrent policy
+editing is not locked against the systemd manager. Keep policy files stable
+during installation. A local-only preview can conservatively refuse a local
+file that another manager lookup root would override.
+
+Refresh and migration compare the entire ordered stream of validated resource
+assignments, including repeated assignments and empty resets. They do not
+assume every directive is last-wins. Textually different streams may therefore
+be refused even when an operator knows they are equivalent. Only selected
+local unit-specific legacy files are copied, including masks and empty files.
+A suppressed local file never gains unit-specific priority under the new name.
+Existing destination files are retained. Files from vendor/runtime scopes stay
+where they are; if the resulting destination stream differs from the source,
+installation rolls back before interrupting the legacy controller. A second
+source inspection after reload detects observed changes to the source policy.
+Uncopied legacy candidates remain in their original directory for review.
+
+### Disposable systemd acceptance fixture
+
+The unit/integration tests replace `systemctl`; they never use the host manager.
+The real-manager fixture is `scripts/systemd-drop-in-acceptance.ts`. The separate
+`systemd-drop-in-acceptance` job in Verify runs it on a disposable GitHub-hosted
+`ubuntu-24.04` VM, independently of the application build and packaged lifecycle
+job. It checks out the exact PR source commit, installs dependencies, and starts
+that runner's user manager. The source fixture needs no application build.
+
+Run it manually only inside a disposable Linux VM/container with its own
+systemd user manager and a fresh test account. It installs dummy Node processes
+under the two real service names. Before changing anything, it refuses existing
+definitions or applicable scope directories anywhere in the manager's lookup
+roots, loaded units, and enabled units. It requires user-owned config, runtime
+and data roots in the actual `UnitPath`, in that priority order. It writes only
+to those user roots and a temporary fixture directory, never `/etc` or `/usr`.
+Missing roots or unsupported conditions fail acceptance rather than skip cases.
+In that disposable environment, create
+`/run/worktree-control-disposable-systemd` containing exactly
+`worktree-control test fixture only`, then run as the test user:
+
+```bash
+WORKTREE_CONTROL_ISOLATED_SYSTEMD_ACCEPTANCE=disposable pnpm exec tsx scripts/systemd-drop-in-acceptance.ts --report systemd-drop-in-acceptance-report.json
+```
+
+The fixture compares the inspector and real loaded `DropInPaths` against explicit
+expected winners, including `/dev/null` masks and empty files, then checks actual
+effective resource properties. Cases cover the same basename across lookup
+roots, root priority before prefix/specific scope, specificity within one root,
+named scope before type-wide scope across roots, bytewise lexical order, and
+paths containing spaces and quotes. Mask and empty-file cases suppress real
+lower-priority resource assignments and are also copied during legacy migration.
+Fresh install, refresh and migration each have a real failed-start rollback case.
+Destination-policy mismatch and unsafe directives in both `service.d` and
+`worktree-.service.d` must refuse with the legacy PID unchanged and no lifecycle
+calls. Cleanup checks unit definitions, enablement, policies and observed PIDs.
+
+The JSON report records the source commit, systemd version, actual lookup roots,
+named check results, loaded paths, effective properties, failures, cleanup and
+exit status. Verify uploads it even when acceptance fails. This job supplies
+evidence for its Ubuntu manager version only after CI executes it; adding the
+fixture is not evidence that acceptance has passed. Other distributions and
+real-host migration remain separate verification. Never run this fixture
+against the application host's manager.
 
 Use repeated `--unset STARTUP_FLAG` options to reset inherited settings. For
 example, `--unset --no-mcp` enables MCP again,
