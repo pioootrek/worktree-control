@@ -30,7 +30,9 @@ describe("user backup startup policy", () => {
     const root = mkdtempSync(join(tmpdir(), "user-policy-refresh-"));
     const calls: string[][] = [];
     // The health check needs a running main process; the fake managers report one.
-    const healthy = (args: string[]) => args[1] === "show"
+    const healthy = (args: string[]) => args.includes("--property=UnitPath")
+      ? `UnitPath=${JSON.stringify(join(root, ".config/systemd/user"))}\n`
+      : args[1] === "show"
       ? args.includes("--property=FragmentPath")
         ? `FragmentPath=${join(root, ".config", "systemd", "user", args[2])}\nDropInPaths=\nNeedDaemonReload=no\n`
         : "ActiveState=active\nSubState=running\nMainPID=42\nNRestarts=0\n"
