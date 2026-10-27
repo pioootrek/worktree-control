@@ -96,7 +96,7 @@ interface TaskCurrentState {
   changeNote: string;            // ≤ 280 characters: what changed in this write
 
   outcome: { known: true; text: string; sources: StateSource[] } | Unknown;   // ≤ 280 characters
-  blockers: Blocker[];                                                       // ≤ 10, open and resolved
+  blockers: Blocker[] | Unknown;                                            // ≤ 10, open and resolved
   nextStep: { known: true; none: true } | { known: true; none?: false; action: string; actor: StateActor; sources: StateSource[] } | Unknown;
   ownerDecision: OwnerDecision;
   delivery: {
@@ -160,6 +160,10 @@ Rules:
   memory. Whether that amounts to owner consent is derived from the memory's
   approval and the authentication method in its approval history (see
   [owner consent](#owner-consent-tiers)).
+- **Blockers not checked** use `{ known: false, reason? }`. An array means the
+  blocker list is known; `[]` confirms none. Unknown renders with a question
+  icon, never a checkmark or "No open blockers". It does not trigger
+  `blocked_without_blocker`, which requires a known list.
 - **Resolved blockers stay** in the state with `resolvedAt` and `resolution`
   until a writer removes them. Removal is visible in history because the
   previous state is kept.
@@ -204,7 +208,7 @@ Deterministic findings:
 | Code | Severity | Rule |
 | --- | --- | --- |
 | `done_with_open_blocker` | conflict | Task status is `done` and a blocker is `open`. |
-| `blocked_without_blocker` | conflict | Task status is `blocked` and no blocker is `open`. |
+| `blocked_without_blocker` | conflict | Task status is `blocked`, blockers are known, and no blocker is `open`. |
 | `open_blocker_not_blocked` | attention | A blocker is `open` and task status is neither `blocked` nor `done` (`done` is already a conflict). A blocker may cover only one step, so this is not a conflict. |
 | `deploy_without_merge` | conflict | Deployment is `done` while merge applies and is not `merged`. |
 | `ci_not_merged_head` | attention | CI and merge commits are both known and differ. |
@@ -310,7 +314,8 @@ The reader order becomes:
    - A four-cell grid with **Blocker**, **Next step**, **Owner decision** and
      **Evidence**. An open blocker uses an amber border and icon; a needed
      decision uses a question icon. Unknown cells keep their place and read
-     **Unknown**.
+     **Unknown**. Show every open blocker with its actor, unblock condition and
+     sources in the blocker cell; a count alone must never hide another blocker.
    - **Delivery**: a five-row definition list (merge, CI, review, evidence,
      deployment). Each row has an icon and word, version (commit or PR), checked
      time and source link. **Not applicable** and **Unknown** stay visible.
@@ -403,6 +408,8 @@ test in the implementation.
 | E | **No owner consent** — the agent reports that the owner agreed in chat; the decision memory is not approved | Owner decision: "Agent proposal — owner has not approved" and attention `consent_missing`. The agent's report appears as an attributed note. After approval with the installation token: "Owner decision · approved with: installation token". With the future set (owner session only), the same record shows `consent_method_not_accepted`. |
 | F | **Stale summary** — state at r7; task now r9 with a description edit and status change to `done`; two new replies; one cited memory superseded | Freshness chip amber "Changes since this summary: 5" and a banner listing them with links. Attention `next_step_on_done` and `source_inactive`. The result stays readable. |
 | G | **No state yet** — every existing task until written | "No current state recorded". Shows only the system-derived facts (status, priority, last update, counts of decisions, proposals, open questions and attachments) and writer guidance. |
+| H | **Blockers not checked** — result known, blockers `{ known: false }` | Result stays readable; blocker cell says "Unknown" with its reason, without a green checkmark or "No open blockers". A blocked status alone does not turn missing information into a contradiction. |
+| I | **Multiple open blockers** — staging health check plus missing deployment approval | Both blockers, their different actors, conditions and sources are visible in the reader, including on mobile. |
 
 The few-second reading target is validated by giving the owner scenarios B, D
 and E with only the panel visible. The owner names the result, blocker, next
@@ -456,7 +463,7 @@ current and the future `OWNER_CONSENT_METHODS`; SQLite tests for
 migration, task creation after it, revision conflict, a history snapshot that
 contains the previous state, idempotent replay and
 transfer round trip; transport parity for the two operations; static-export UI
-tests for scenarios A–G at 1440, 1366, 390 and 320 in PL/EN and dark/light,
+tests for scenarios A–I at 1440, 1366, 390 and 320 in PL/EN and dark/light,
 including keyboard order and focus return. Verification: managed `check`,
 `build`, `test:ui`, then pilot acceptance on isolated data as in earlier GUI
 slices.

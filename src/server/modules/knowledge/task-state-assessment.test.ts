@@ -52,6 +52,13 @@ describe("task state assessment", () => {
     expect(codes(assessTaskState({ status: "blocked", revision: 4 }, state({ blockers: [blocker] }), facts()))).toEqual([]);
   });
 
+  it("distinguishes unknown blockers from a known empty list", () => {
+    const unknown = state({ blockers: { known: false, reason: "Not checked yet" } });
+    expect(codes(assessTaskState({ status: "blocked", revision: 4 }, unknown, facts()))).toEqual([]);
+    expect(taskStateSources(unknown)).toEqual([pr]);
+    expect(codes(assessTaskState({ status: "blocked", revision: 4 }, state({ blockers: [] }), facts()))).toEqual(["conflict:blocked_without_blocker"]);
+  });
+
   it("keeps deployment separate from merge", () => {
     const deployed = state({ delivery: { ...state().delivery, merge: { applies: true, state: "pr_open", commit: HEAD, observedAt: at, sources: [pr] }, deploy: { applies: true, state: "done", commit: MAIN, observedAt: at, sources: [pr] } } });
     expect(codes(assessTaskState(task, deployed, facts()))).toEqual(["conflict:deploy_without_merge", "attention:deploy_not_merged_head"]);
@@ -70,13 +77,16 @@ describe("task state assessment", () => {
   it("derives consent from approval and the accepted authentication methods", () => {
     const recorded = state({ ownerDecision: { state: "recorded", decisionRef: { id: "m", revision: 2 } } });
     expect(assessTaskState(task, recorded, facts())).toMatchObject({ ownerConsent: "proposal_only" });
-    expect(assessTaskState(task, recorded, facts({ decision: { approvedAtCurrentRevision: false, approvalMethod: null, everApproved: true } }))).toMatchObject({ ownerConsent: "approval_invalidated" });
-    const installation = facts({ decision: { approvedAtCurrentRevision: true, approvalMethod: "installation_token", everApproved: true } });
+    expect(assessTaskState(task, recorded, facts({ decision: { approvedAtCurrentRevision: false, matchesReferencedRevision: false, approvalMethod: null, everApproved: true } }))).toMatchObject({ ownerConsent: "approval_invalidated" });
+    const installation = facts({ decision: { approvedAtCurrentRevision: true, matchesReferencedRevision: true, approvalMethod: "installation_token", everApproved: true } });
     expect(OWNER_CONSENT_METHODS.has("installation_token")).toBe(true);
     expect(assessTaskState(task, recorded, installation)).toMatchObject({ ownerConsent: "approved", approvalMethod: "installation_token", findings: [] });
     const separated = assessTaskState(task, recorded, installation, new Set(["owner_session"]));
     expect(separated).toMatchObject({ ownerConsent: "approved_method_not_accepted", approvalMethod: "installation_token" });
     expect(codes(separated)).toEqual(["attention:consent_method_not_accepted"]);
+    const changedText = assessTaskState(task, recorded, facts({ decision: { ...installation.decision!, matchesReferencedRevision: false } }));
+    expect(changedText).toMatchObject({ ownerConsent: "approval_invalidated", approvalMethod: null });
+    expect(codes(changedText)).toEqual(["attention:consent_missing"]);
     expect(assessTaskState(task, state({ ownerDecision: { state: "needed", question: "A or B?" } }), facts())).toMatchObject({ ownerConsent: "needed" });
   });
 

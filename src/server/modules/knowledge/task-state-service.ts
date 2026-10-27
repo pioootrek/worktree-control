@@ -37,11 +37,17 @@ export class KnowledgeTaskStateService {
         if (parsed.success) state = parsed.data; else stateUnreadable = true;
       } catch { stateUnreadable = true; }
     }
+    // Resolve navigation against the authorized project, never a caller-supplied parent.
+    const replyThreadIds = Object.fromEntries((state ? taskStateSources(state) : []).flatMap(source => {
+      if (source.kind !== "reply") return [];
+      const reply = this.store.getReply(input.projectId, source.id);
+      return reply ? [[source.id, reply.threadId]] : [];
+    }));
     const facts = state ? this.store.taskStateFacts(input.projectId, task, state) : null;
     const assessment = assessTaskState(task, state, facts ?? { changes: { descriptionChanged: false, memoriesChanged: 0, attachmentsAdded: 0, repliesAdded: 0, staleSources: 0, inactiveSources: 0 }, presentAttachments: new Set(), decision: null });
     const { description: _description, ...summary } = task;
     void _description;
-    return { task: summary, state, stateUnreadable, assessment, systemFacts: this.store.taskSystemFacts(input.projectId, input.taskId) };
+    return { task: summary, state, stateUnreadable, replyThreadIds, assessment, systemFacts: this.store.taskSystemFacts(input.projectId, input.taskId) };
   }
 
   update(input: KnowledgeInput<"update_task_state">, actor: AuthenticatedPrincipal): KnowledgeMutationResult<{ task: KnowledgeTask; state: TaskCurrentState }> {

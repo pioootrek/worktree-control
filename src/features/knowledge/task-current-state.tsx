@@ -57,10 +57,10 @@ export function TaskCurrentState({ token, projectId, taskId, changeVersion, onSh
     <div>{historyButton}</div>
   </>);
 
-  const source = (item: TaskStateSource, index: number) => <SourceLink key={index} projectId={projectId} source={item} />;
+  const source = (item: TaskStateSource, index: number) => <SourceLink key={index} projectId={projectId} source={item} replyThreadId={item.kind === "reply" ? view.replyThreadIds[item.id] : undefined} />;
   const sources = (items: TaskStateSource[]) => items.length ? <span className="ml-1 inline-flex flex-wrap gap-x-2">{items.map(source)}</span> : null;
-  const open = state.blockers.filter(blocker => blocker.state === "open");
-  const resolved = state.blockers.filter(blocker => blocker.state === "resolved");
+  const open = (Array.isArray(state.blockers) ? state.blockers : []).filter(blocker => blocker.state === "open");
+  const resolved = (Array.isArray(state.blockers) ? state.blockers : []).filter(blocker => blocker.state === "resolved");
   const consentTone: Tone = assessment.ownerConsent === "approved" ? "ok" : assessment.ownerConsent === "not_needed" ? "neutral" : assessment.ownerConsent === "unknown" ? "unknown" : "warn";
   const method = assessment.approvalMethod ? t(key(`taskState.method.${assessment.approvalMethod}`)) : "";
   const decisionRef = state.ownerDecision.state === "recorded" ? state.ownerDecision.decisionRef : state.ownerDecision.state === "needed" ? state.ownerDecision.proposalRef : undefined;
@@ -84,9 +84,12 @@ export function TaskCurrentState({ token, projectId, taskId, changeVersion, onSh
       <dd className="mt-1 max-w-[70ch] break-words text-lg leading-7">{state.outcome.known ? <><span>{state.outcome.text}</span>{sources(state.outcome.sources)}</> : <Unknown />}</dd>
     </dl>
     <dl className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-      <Cell label={t("taskState.blocker")} tone={open.length ? "warn" : "ok"}>
-        {open.length ? <><span className={toneClass.warn}>{open[0].text}</span>{sources(open[0].sources)}
-          <span className="block text-xs text-muted-foreground">{t("taskState.unblockedBy", { actor: t(key(`taskState.actor.${open[0].unblockedBy}`)), condition: open[0].condition })}{open.length > 1 ? ` · ${t("taskState.moreBlockers", { count: open.length - 1 })}` : ""}</span></>
+      <Cell label={t("taskState.blocker")} tone={!Array.isArray(state.blockers) ? "unknown" : open.length ? "warn" : "ok"}>
+        {!Array.isArray(state.blockers) ? <><Unknown />{state.blockers.reason && <span className="block text-xs text-muted-foreground">{state.blockers.reason}</span>}</>
+          : open.length ? <ul className="space-y-2">{open.map(blocker => <li key={blocker.key}>
+            <span className={toneClass.warn}>{blocker.text}</span>{sources(blocker.sources)}
+            <span className="block text-xs text-muted-foreground">{t("taskState.unblockedBy", { actor: t(key(`taskState.actor.${blocker.unblockedBy}`)), condition: blocker.condition })}</span>
+          </li>)}</ul>
           : <>{t("taskState.noBlocker")}{resolved.length > 0 && <span className="block text-xs text-muted-foreground">{t("taskState.resolvedCount", { count: resolved.length })}</span>}</>}
       </Cell>
       <Cell label={t("taskState.nextStep")} tone={!state.nextStep.known ? "unknown" : "action" in state.nextStep ? "progress" : "neutral"}>
@@ -94,7 +97,12 @@ export function TaskCurrentState({ token, projectId, taskId, changeVersion, onSh
       </Cell>
       <Cell label={t("taskState.ownerDecision")} tone={consentTone}>
         <span className={toneClass[consentTone]}>{t(key(`taskState.consent.${assessment.ownerConsent}`), { method })}</span>
-        {state.ownerDecision.state === "needed" && <span className="block text-sm">{state.ownerDecision.question}</span>}
+        {state.ownerDecision.state === "needed" && <>
+          <span className="block text-sm">{state.ownerDecision.question}</span>
+          {!!state.ownerDecision.options?.length && <ul className="mt-1 list-disc space-y-0.5 pl-5">
+            {state.ownerDecision.options.map((option, index) => <li key={index}>{option}</li>)}
+          </ul>}
+        </>}
         {decisionRef && <span className="block">{source({ kind: "memory", ...decisionRef }, 0)}</span>}
       </Cell>
       <Cell label={t("taskState.evidence")} tone={assessment.evidence?.missing.length ? "bad" : "applies" in evidence && evidence.applies ? TONE[evidence.state] ?? "neutral" : "unknown"}>
@@ -154,16 +162,19 @@ function DeliveryValue({ state, stage }: { state: TaskCurrentState; stage: TaskD
   if (!fact.applies) return <span className="inline-flex items-center gap-1.5 text-muted-foreground"><CircleMinus aria-hidden className="size-4" />{t("taskState.notApplicable")}</span>;
   const tone = TONE[fact.state] ?? "neutral";
   const Icon = toneIcon[tone];
-  return <span className={`inline-flex items-center gap-1.5 ${toneClass[tone]}`}><Icon aria-hidden className="size-4 shrink-0" />{t(key(`taskState.state.${stage}.${fact.state}`), { count: fact.openFindings ?? 0, who: state.declaredBy ?? state.writtenBy.principalId })}</span>;
+  const label = stage === "review" && fact.state === "findings_open" && fact.openFindings === undefined
+    ? t("taskState.reviewFindingsCountUnknown")
+    : t(key(`taskState.state.${stage}.${fact.state}`), { count: fact.openFindings ?? 0, who: state.declaredBy ?? state.writtenBy.principalId });
+  return <span className={`inline-flex items-center gap-1.5 ${toneClass[tone]}`}><Icon aria-hidden className="size-4 shrink-0" />{label}</span>;
 }
 
-function SourceLink({ projectId, source }: { projectId: string; source: TaskStateSource }) {
+function SourceLink({ projectId, source, replyThreadId }: { projectId: string; source: TaskStateSource; replyThreadId?: string }) {
   const { t } = useI18n();
   const className = "text-xs text-muted-foreground underline underline-offset-2";
   if (source.kind === "external") return <a className={`${className} inline-flex items-center gap-1`} href={source.url} target="_blank" rel="noreferrer"><ExternalLink aria-hidden className="size-3" />{source.label}</a>;
   if (source.kind === "repository") return <span className="text-xs text-muted-foreground">{source.sourceId} · <span className="font-mono">{short(source.commit)}</span>:{source.path}</span>;
   if (source.kind === "attachment") return <span className="text-xs text-muted-foreground">{t("taskState.attachmentSource", { id: source.id })}</span>;
-  const href = knowledgeSourceHref(projectId, source);
+  const href = knowledgeSourceHref(projectId, source, replyThreadId);
   const label = t("taskState.recordSource", { kind: t(key(`taskState.kind.${source.kind}`)), revision: source.revision });
   return href ? <a className={className} href={href}>{label}</a> : <span className="text-xs text-muted-foreground">{label}</span>;
 }

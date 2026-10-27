@@ -67,7 +67,8 @@ export const taskStateInputSchema = z.strictObject({
   declaredBy: text(120).nullable().optional(),
   changeNote: text(280),
   outcome: z.union([z.strictObject({ known: z.literal(true), text: text(280), sources }), unknown]),
-  blockers: z.array(blocker).max(10).refine(items => new Set(items.map(item => item.key)).size === items.length, { message: "Blocker keys must be unique." }),
+  // An array is a known list (including confirmed absence); unknown is explicit.
+  blockers: z.union([z.array(blocker).max(10).refine(items => new Set(items.map(item => item.key)).size === items.length, { message: "Blocker keys must be unique." }), unknown]),
   nextStep: z.union([
     z.strictObject({ known: z.literal(true), none: z.literal(true) }),
     z.strictObject({ known: z.literal(true), action: text(280), actor: taskStateActorSchema, sources }),
@@ -151,6 +152,8 @@ export interface KnowledgeTaskStateView {
   state: TaskCurrentState | null;
   /** True when a stored state exists but fails validation; it is never shown as missing. */
   stateUnreadable: boolean;
+  /** Server-resolved parent discussions for cited replies, scoped to this project. */
+  replyThreadIds: Record<string, string>;
   assessment: TaskStateAssessment;
   /** Facts known to the system without a recorded state. */
   systemFacts: { approvedDecisions: number; proposals: number; openQuestions: number; attachments: number };

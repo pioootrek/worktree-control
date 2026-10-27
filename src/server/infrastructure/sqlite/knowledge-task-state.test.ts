@@ -7,7 +7,7 @@ import { SqliteStateStore } from "./sqlite-state-store";
 import { IdentityService } from "@/server/modules/identity";
 import { KnowledgeAttachmentService, KnowledgeService } from "@/server/modules/knowledge";
 import { parseKnowledgeProjectSnapshot } from "@/server/modules/knowledge/project-transfer-schema";
-import type { KnowledgeHistoryEntry, KnowledgeMutationResult, KnowledgeOperation, KnowledgePage, KnowledgeTask } from "@/shared/contracts/knowledge";
+import type { KnowledgeHistoryEntry, KnowledgeMutationResult, KnowledgeOperation, KnowledgePage, KnowledgeTask, KnowledgeThread, KnowledgeReply } from "@/shared/contracts/knowledge";
 import type { KnowledgeMemory } from "@/shared/contracts/knowledge-memory";
 import type { KnowledgeTaskStateView, TaskCurrentState, TaskStateInput } from "@/shared/contracts/knowledge-task-state";
 
@@ -47,7 +47,7 @@ function setup() {
   return { path, store, identity, owner, agent, readOnly, project, service, changed, call, task, read, current, write };
 }
 
-function mergedNotDeployed(evidence: string[] = []): TaskStateInput {
+function mergedNotDeployed(evidence: string[] = []): TaskStateInput & { blockers: Extract<TaskStateInput["blockers"], unknown[]> } {
   return {
     declaredBy: "codex · T3", changeNote: "PR #112 merged; blocker: none; next: owner — schedule deployment; decision: none",
     outcome: { known: true, text: "Merged to main; production deployment is a separate stage.", sources: [pr] },
@@ -106,6 +106,26 @@ describe("task current state", () => {
     expect(view.assessment).toMatchObject({ freshness: "current", changeCount: 0, ownerConsent: "not_needed", evidence: { listed: 1, present: 1, missing: [] } });
     expect(view.assessment.findings).toEqual([]);
     expect(view.systemFacts.attachments).toBe(1);
+  });
+
+  it("resolves cited reply parents within the authorized project", () => {
+    const f = setup();
+    const thread = f.call<KnowledgeMutationResult<KnowledgeThread>>("create_thread", { title: "Evidence", body: "Discussion", idempotencyKey: "thread" }).value;
+    const reply = f.call<KnowledgeMutationResult<KnowledgeReply>>("create_reply", { threadId: thread.id, body: "Verified result", idempotencyKey: "reply" }).value;
+    f.write({ ...mergedNotDeployed(), outcome: { known: true, text: "Result", sources: [{ kind: "reply", id: reply.id, revision: reply.revision }] } });
+    expect(f.read(f.readOnly).replyThreadIds).toEqual({ [reply.id]: thread.id });
+    const otherProject = f.identity.createKnowledgeProject({ name: "Other project" }, f.owner);
+    f.identity.setKnowledgeGrant({ principalId: f.owner.principalId, projectId: otherProject.id, permissions: ["knowledge:read"] }, f.owner);
+    expect(() => f.service.execute({ operation: "task_state", input: { projectId: otherProject.id, taskId: f.task.id } }, f.owner))
+      .toThrowError(expect.objectContaining({ code: "not_found" }));
+  });
+
+  it("round-trips unknown blockers without turning them into confirmed absence", () => {
+    const f = setup();
+    f.write({ ...mergedNotDeployed(), blockers: { known: false, reason: "Not checked yet" } }, { status: "blocked" });
+    expect(f.read()).toMatchObject({ state: { blockers: { known: false, reason: "Not checked yet" } }, stateUnreadable: false, assessment: { findings: [] } });
+    f.write({ ...mergedNotDeployed(), blockers: [] });
+    expect(f.read().assessment.findings).toEqual([expect.objectContaining({ code: "blocked_without_blocker" })]);
   });
 
   it("rejects stale revisions, read-only writers and structural errors without contradiction checks", () => {
@@ -183,6 +203,28 @@ describe("task current state", () => {
     expect(f.read().assessment).toMatchObject({ ownerConsent: "approval_invalidated" });
   });
 
+  it.each([false, true])("does not reuse approval of edited decision text (previously approved: %s)", previouslyApproved => {
+    const f = setup();
+    const chat = { kind: "external" as const, label: "Owner conversation", url: "https://example.invalid/chat" };
+    const decision = f.call<KnowledgeMutationResult<KnowledgeMemory>>("create_memory", { title: "Header variant", body: "Use variant A", category: "decision", tags: [], legacyId: null, sources: [chat], idempotencyKey: "decision" }).value;
+    const state = mergedNotDeployed();
+    state.ownerDecision = { state: "recorded", decisionRef: { id: decision.id, revision: decision.revision } };
+    f.write(state);
+    const beforeEdit = previouslyApproved
+      ? f.call<KnowledgeMutationResult<KnowledgeMemory>>("approve_memory", { memoryId: decision.id, expectedRevision: decision.revision, idempotencyKey: "approve-original" }, f.owner).value
+      : decision;
+    const edited = f.call<KnowledgeMutationResult<KnowledgeMemory>>("update_memory", { memoryId: decision.id, expectedRevision: beforeEdit.revision, idempotencyKey: "edit-decision", title: "Header variant", body: "Use variant B", category: "decision", tags: [], legacyId: null, sources: [chat] }, f.owner).value;
+    const approved = f.call<KnowledgeMutationResult<KnowledgeMemory>>("approve_memory", { memoryId: decision.id, expectedRevision: edited.revision, idempotencyKey: "approve-edited" }, f.owner).value;
+
+    expect(f.read().assessment).toMatchObject({ ownerConsent: "approval_invalidated", approvalMethod: null, changes: { staleSources: 1 } });
+    expect(f.read().assessment.findings.map(finding => finding.code)).toEqual(["source_stale", "consent_missing"]);
+    expect(f.read().state!.ownerDecision).toEqual(state.ownerDecision);
+
+    state.ownerDecision = { state: "recorded", decisionRef: { id: decision.id, revision: approved.revision } };
+    f.write(state);
+    expect(f.read().assessment).toMatchObject({ ownerConsent: "approved", approvalMethod: "owner_session", findings: [] });
+  });
+
   it("replaces an unreadable stored state and keeps the raw text in history", () => {
     const f = setup();
     f.write(mergedNotDeployed());
@@ -196,7 +238,7 @@ describe("task current state", () => {
     expect(JSON.parse(history.items.at(-1)!.previousJson!)).toMatchObject({ currentState: null, currentStateUnreadable: "{broken" });
   });
 
-  it("keeps a task-citing decision approvable across state writes but not across task edits", () => {
+  it("keeps a task-citing decision approvable across state writes including status changes but not across task edits", () => {
     const f = setup();
     const cite = () => ({ kind: "task" as const, id: f.task.id, revision: f.current().revision });
     const cited = f.current().revision;

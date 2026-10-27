@@ -17,7 +17,7 @@ export interface TaskStateFacts {
   /** Evidence attachment IDs that exist on this task. */
   presentAttachments: ReadonlySet<string>;
   /** The decision memory referenced by `ownerDecision.recorded`, when it exists. */
-  decision: { approvedAtCurrentRevision: boolean; approvalMethod: TaskStateAuthenticationMethod | null; everApproved: boolean } | null;
+  decision: { approvedAtCurrentRevision: boolean; matchesReferencedRevision: boolean; approvalMethod: TaskStateAuthenticationMethod | null; everApproved: boolean } | null;
 }
 
 const short = (commit: string) => commit.slice(0, 7);
@@ -34,9 +34,9 @@ export function assessTaskState(task: { status: KnowledgeTaskStatus; revision: n
   const add = (code: TaskStateFinding["code"], severity: TaskStateFinding["severity"], fields: string[], values: Record<string, string> = {}) =>
     findings.push({ code, severity, fields, values });
 
-  const open = state.blockers.filter(blocker => blocker.state === "open");
+  const open = (Array.isArray(state.blockers) ? state.blockers : []).filter(blocker => blocker.state === "open");
   if (task.status === "done" && open.length) add("done_with_open_blocker", "conflict", ["status", `blockers.${open[0].key}`], { blocker: open[0].text });
-  if (task.status === "blocked" && !open.length) add("blocked_without_blocker", "conflict", ["status", "blockers"]);
+  if (task.status === "blocked" && Array.isArray(state.blockers) && !open.length) add("blocked_without_blocker", "conflict", ["status", "blockers"]);
   if (open.length && task.status !== "blocked" && task.status !== "done") add("open_blocker_not_blocked", "attention", ["status", `blockers.${open[0].key}`], { blocker: open[0].text, status: task.status });
 
   const { merge, ci, deploy, evidence } = state.delivery;
@@ -70,7 +70,7 @@ export function assessTaskState(task: { status: KnowledgeTaskStatus; revision: n
   const decision = state.ownerDecision;
   if (decision.state === "recorded") {
     const memory = facts.decision;
-    if (memory?.approvedAtCurrentRevision) {
+    if (memory?.approvedAtCurrentRevision && memory.matchesReferencedRevision) {
       approvalMethod = memory.approvalMethod;
       ownerConsent = approvalMethod && accepted.has(approvalMethod) ? "approved" : "approved_method_not_accepted";
       if (ownerConsent === "approved_method_not_accepted") add("consent_method_not_accepted", "attention", ["ownerDecision"], { method: approvalMethod ?? "unknown" });
@@ -90,7 +90,7 @@ export function assessTaskState(task: { status: KnowledgeTaskStatus; revision: n
 export function taskStateSources(state: TaskStateInputLike): TaskStateSource[] {
   const all: TaskStateSource[] = [];
   if (state.outcome.known) all.push(...state.outcome.sources);
-  for (const blocker of state.blockers) all.push(...blocker.sources);
+  for (const blocker of Array.isArray(state.blockers) ? state.blockers : []) all.push(...blocker.sources);
   if ("sources" in state.nextStep) all.push(...state.nextStep.sources);
   for (const stage of ["merge", "ci", "review", "evidence", "deploy"] as const) {
     const value = state.delivery[stage];
