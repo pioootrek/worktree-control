@@ -15,6 +15,7 @@ import {
   type KnowledgeStore,
   type KnowledgeTask,
   type KnowledgeThread,
+  type TaskStateFacts,
 } from "@/server/modules/knowledge";
 import type { KnowledgeProject, KnowledgeProjectRuntimeLink } from "@/server/modules/identity";
 import type { KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
@@ -23,7 +24,6 @@ import { memoryHistoryComparison } from "./knowledge-history-projection";
 import { searchExcerpt } from "./knowledge-search-snippet";
 import { compactPreview, importedRecordId, importedTaskPreview, importedTaskTopic, verifiedThreadSourceSql } from "./knowledge-thread-presentation";
 import type { KnowledgeTaskStateView, TaskCurrentState } from "@/shared/contracts/knowledge-task-state";
-import type { TaskStateFacts } from "@/server/modules/knowledge/task-state-assessment";
 import { collectTaskStateFacts, collectTaskSystemFacts, readTaskStateJson } from "./knowledge-task-state-queries";
 
 type ThreadRow = { id: string; project_id: string; title: string; body: string; revision: number; created_by: string; created_at: string; updated_at: string; display_title?: string | null; source_preview?: string | null; reply_count?: number };

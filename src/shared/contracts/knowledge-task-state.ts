@@ -1,5 +1,4 @@
 import { z } from "zod";
-import type { KnowledgeTaskStatus, KnowledgeTaskSummary } from "./knowledge";
 
 const id = z.string().trim().min(1).max(160);
 const text = (maximum: number) => z.string().trim().min(1).max(maximum);
@@ -140,8 +139,15 @@ export interface TaskStateAssessment {
   evidence: { listed: number; present: number; missing: string[] } | null;
 }
 
+/** Mirrors KnowledgeTaskSummary; declared here so the shared contracts stay acyclic. */
+export interface KnowledgeTaskStateSummary {
+  id: string; projectId: string; title: string;
+  status: "open" | "in_progress" | "blocked" | "done" | "archived"; priority: "now" | "next" | "later";
+  revision: number; createdBy: string; createdAt: string; updatedAt: string;
+}
+
 export interface KnowledgeTaskStateView {
-  task: KnowledgeTaskSummary;
+  task: KnowledgeTaskStateSummary;
   state: TaskCurrentState | null;
   /** True when a stored state exists but fails validation; it is never shown as missing. */
   stateUnreadable: boolean;
@@ -150,4 +156,3 @@ export interface KnowledgeTaskStateView {
   systemFacts: { approvedDecisions: number; proposals: number; openQuestions: number; attachments: number };
 }
 
-export type { KnowledgeTaskStatus };

@@ -44,7 +44,7 @@ import { OwnedSqliteDatabase } from "./owned-database";
 import { IdentityQueries } from "./identity-queries";
 import { KnowledgeQueries } from "./knowledge-queries";
 import type { KnowledgeTaskStateView, TaskCurrentState } from "@/shared/contracts/knowledge-task-state";
-import type { TaskStateFacts } from "@/server/modules/knowledge/task-state-assessment";
+import type { TaskStateFacts } from "@/server/modules/knowledge";
 import { mapProject, type ProjectRow } from "./project-mapping";
 import { equalHash, mapReservation, type ReservationRow } from "./reservation-mapping";
 import { AuthenticationQueries } from "./authentication-queries";

@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import type { KnowledgeTask } from "@/shared/contracts/knowledge";
 import type { KnowledgeTaskStateView, TaskCurrentState, TaskStateAuthenticationMethod } from "@/shared/contracts/knowledge-task-state";
-import { taskStateSources, type TaskStateFacts } from "@/server/modules/knowledge/task-state-assessment";
+import { taskStateSources, type TaskStateFacts } from "@/server/modules/knowledge";
 
 /** Counting stops here; the reader only needs to know that changes exist. */
 const COUNT_LIMIT = 1000;
