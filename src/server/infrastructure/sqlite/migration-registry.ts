@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 
-export const SUPPORTED_SCHEMA_VERSION = 32;
+export const SUPPORTED_SCHEMA_VERSION = 33;
 // Versions 1–27 predate checksums. NULL means provenance was not recorded,
 // including when these frozen transformations run during a later upgrade.
 export const registryMigration = {

@@ -11,6 +11,7 @@ export const CLI_HELP = [
   "  doctor             Check Node.js, Git and the application state",
   "  knowledge          Project knowledge operations and Hub imports",
   "  identity           Owners, agents, agent tokens and knowledge grants",
+  "  vault              DEV-only encrypted vault; signed owner approval, JSON on stdin",
   "  remote-verification  Local owner provisioning: provision --file FILE, revoke-token --credential-id ID; start opts in with --remote-verification-config FILE",
   "  config mcp         Print the MCP client configuration",
   "  config path        Print the database path",

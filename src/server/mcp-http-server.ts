@@ -1,3 +1,4 @@
+import type { DevVaultService } from "./modules/dev-vault";
 import type { McpDiagnosticsSnapshot } from "@/shared/contracts/mcp-diagnostics";
 import { McpDiagnostics, type McpCloseReason } from "./mcp-diagnostics";
 import { timingSafeEqual } from "node:crypto";
@@ -91,6 +92,7 @@ export function createMcpControllerServer(options: {
   port: number;
   accessToken: string;
   identity?: Pick<IdentityService, "authenticateBearer" | "describeIdentity">;
+  devVault?: DevVaultService;
   authentication?: ControllerAuthenticationDependencies["authentication"];
   onDiagnostic?: (message: string, details?: Record<string, unknown>) => void;
   /** Session admission, idle and renewal limits; defaults apply to omitted values. */
@@ -108,11 +110,13 @@ export function createMcpControllerServer(options: {
       options.identity,
       diagnostics,
       governor,
+      options.devVault,
     ));
     return runtimePromise;
   };
 
   const server = createServer((request, response) => {
+    response.setHeader("Cache-Control", "no-store");
     void (async () => {
       if (request.url !== "/mcp") return jsonError(response, 404, "MCP endpoint not found.");
       const authentication = authenticate(request, options.accessToken, options);

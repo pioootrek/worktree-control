@@ -1,3 +1,5 @@
+import { DevVaultQueries } from "./dev-vault-queries";
+import type { DevVaultStore } from "@/server/modules/dev-vault";
 import { RemoteConnectionQueries } from "./remote-connection-queries";
 import type { RemoteConnectionStore } from "@/server/modules/remote-verification";
 import { TestHistoryQueries } from "./test-history-queries";
@@ -56,6 +58,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   private readonly storage: StorageQueries;
   private readonly remoteVerification: RemoteVerificationQueries;
   readonly remoteConnection: RemoteConnectionStore;
+  readonly devVault: DevVaultStore;
   private readonly identity: IdentityQueries;
   private readonly authentication: AuthenticationQueries;
   private readonly knowledge: KnowledgeQueries;
@@ -74,6 +77,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       this.storage = new StorageQueries(this.database);
       this.remoteVerification = new RemoteVerificationQueries(this.database);
       this.remoteConnection = new RemoteConnectionQueries(this.database);
+      this.devVault = new DevVaultQueries(this.database);
       this.identity = new IdentityQueries(this.database);
       this.authentication = new AuthenticationQueries(this.database);
       this.knowledge = new KnowledgeQueries(this.database);
