@@ -41,9 +41,9 @@ describe("DEV vault view model", () => {
     expect(vaultErrorCode("vault_conflict")).toBe("vault_conflict");
     expect(vaultErrorCode("SQLITE_BUSY: FAKE_DEV_VALUE")).toBe("vault_unavailable");
     expect(vaultErrorCode(undefined)).toBe("vault_unavailable");
-    expect(clockSkew("Tue, 27 Oct 2026 12:00:00 GMT", now - 100, now + 100)).toBe(0);
-    expect(clockSkew("Tue, 27 Oct 2026 11:59:00 GMT", now - 100, now + 100)).toBe(-59_500);
-    expect(clockSkew(null, now, now)).toBe(0);
+    expect(clockSkew("Tue, 27 Oct 2026 12:00:00 GMT", now + 100)).toBe(-100);
+    expect(clockSkew("Tue, 27 Oct 2026 11:59:00 GMT", now + 100)).toBe(-60_100);
+    expect(clockSkew(null, now)).toBe(0);
     expect(proofTimestamp(now, 0)).toBe("2026-10-27T11:59:59.000Z");
     expect(proofTimestamp(now, -59_500)).toBe("2026-10-27T11:58:59.500Z");
   });

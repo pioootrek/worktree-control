@@ -76,12 +76,12 @@ export const VAULT_LIFETIMES: readonly VaultLifetime[] = ["once", "15-minutes", 
 export const VAULT_IDLE_LOCK_MS = 10 * 60_000;
 
 /** Estimates controller clock offset from a response Date header (whole seconds). */
-export function clockSkew(dateHeader: string | null, sentAt: number, receivedAt: number): number {
+export function clockSkew(dateHeader: string | null, receivedAt: number): number {
   const server = dateHeader ? Date.parse(dateHeader) : Number.NaN;
   if (!Number.isFinite(server)) return 0;
-  const skew = server + 500 - (sentAt + receivedAt) / 2;
-  // Only a clear offset is corrected; proofs are dated slightly in the past either way.
-  return Math.abs(skew) > 3_000 ? Math.round(skew) : 0;
+  // Use the server second's lower bound at receipt, without guessing network
+  // latency. Every offset is corrected; proof backdating adds a further margin.
+  return Math.round(server - receivedAt);
 }
 /** Proofs must not be dated in the future and expire after 60 seconds at the controller. */
 export function proofTimestamp(now: number, skewMs: number): string {

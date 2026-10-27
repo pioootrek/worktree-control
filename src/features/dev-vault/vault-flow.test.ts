@@ -17,7 +17,7 @@ afterEach(() => { fixture?.close(); fixture = null; });
 /** Routes the browser client's requests to the real controller service, as the HTTP route does. */
 function controllerFetch(f: ReturnType<typeof vaultFixture>) {
   const calls: Array<{ path: string; authorization: string; body: string }> = [];
-  let dropNextResponse = false;
+  let dropNextResponse: "headers" | "body" | null = null;
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", Date: new Date(f.now).toUTCString() } });
   const send: typeof fetch = async (input, init) => {
     const path = new URL(String(input), "http://127.0.0.1:3410").pathname;
@@ -31,16 +31,21 @@ function controllerFetch(f: ReturnType<typeof vaultFixture>) {
     let response: Response;
     try { response = json(200, executeDevVault(f.vault, JSON.parse(body), actor)); }
     catch (error) { const failure = devVaultFailure(error); response = json(failure.status, failure.body); }
-    if (dropNextResponse) { dropNextResponse = false; throw new TypeError("connection reset after commit"); }
+    if (dropNextResponse) {
+      const mode = dropNextResponse; dropNextResponse = null;
+      if (mode === "headers") throw new TypeError("connection reset after commit");
+      return new Response(new ReadableStream({ start(stream) { stream.error(new TypeError("body connection reset after commit")); } }), { status: response.status });
+    }
     return response;
   };
-  return { send, calls, dropNextResponse: () => { dropNextResponse = true; } };
+  return { send, calls, dropNextResponse: (mode: "headers" | "body" = "headers") => { dropNextResponse = mode; } };
 }
 
-async function connected() {
+async function connected(browserOffset = 0, serverMillis = 0) {
   const f = fixture = vaultFixture();
+  f.advance(serverMillis);
   const controller = controllerFetch(f);
-  const session = new OwnerVaultSession({ fetch: controller.send, now: () => Date.parse(f.now) });
+  const session = new OwnerVaultSession({ fetch: controller.send, now: () => Date.parse(f.now) + browserOffset });
   const pem = f.pair.privateKey.export({ format: "pem", type: "pkcs8" }).toString();
   await session.connect(f.ownerToken, pem);
   const run = (intent: string, operation: Parameters<OwnerVaultSession["run"]>[2]) => session.run(f.project.id, intent, operation);
@@ -157,9 +162,18 @@ describe("owner GUI vault flow against the controller service", () => {
     expect(await code(run("list", { operation: "list" }))).toBe("locked");
   });
 
-  it("retries an uncertain import with the same operation ID instead of creating a duplicate", async () => {
+  it.each([[2000, 0], [2000, 999], [-2000, 0], [0, 500], [2999, 500]])("signs acceptable proofs with browser offset %i ms and server fraction %i ms", async (offset, fraction) => {
+    const { f, run, controller } = await connected(offset, fraction);
+    expect(vaultListSchema.parse(await run("list", { operation: "list" })).profiles).toHaveLength(1);
+    const call = controller.calls.find(call => call.path === "/api/dev-vault")!;
+    const age = Date.parse(f.now) - Date.parse(JSON.parse(call.body).proof.issuedAt);
+    expect(age).toBeGreaterThanOrEqual(0);
+    expect(age).toBeLessThanOrEqual(2000);
+  });
+
+  it.each(["headers", "body"] as const)("retries an import interrupted during %s with the same operation ID", async mode => {
     const { f, run, controller } = await connected();
-    controller.dropNextResponse();
+    controller.dropNextResponse(mode);
     const first = await run("import", { operation: "import", dotenv: FAKE_DOTENV }).catch((error: unknown) => error);
     expect((first as VaultClientError).code).toBe("transport");
     const retried = vaultProfileSchema.parse(await run("import", { operation: "import", dotenv: FAKE_DOTENV }));

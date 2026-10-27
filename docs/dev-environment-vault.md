@@ -207,8 +207,9 @@ loopback address and in browsers with Ed25519 support. Without a secure context
 or Web Crypto the section says signing is unavailable. A browser without Ed25519
 support reports an unsupported-key error during import; there is no fallback.
 The proof timestamp is
-dated one second in the past. It is corrected from the controller's `Date`
-header only for an offset above three seconds.
+dated one second in the past after correcting every measured clock offset.
+The controller's `Date` header supplies the lower bound of its reported second
+at receipt; the browser does not guess network latency or ignore small offsets.
 
 Every list, reveal, import, inspection and decision is a separately signed
 command. Profile and request lists contain metadata only. Values appear only

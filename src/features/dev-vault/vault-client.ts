@@ -17,8 +17,10 @@ export async function postDevVault(ownerToken: string, command: DevVaultCommand,
       body: JSON.stringify({ command, proof }),
     });
   } catch { throw new VaultClientError("transport"); }
+  let text: string;
+  try { text = await response.text(); } catch { throw new VaultClientError("transport"); }
   let body: unknown;
-  try { body = await response.json(); } catch { throw new VaultClientError(response.ok ? "invalid_response" : "vault_unavailable"); }
+  try { body = JSON.parse(text); } catch { throw new VaultClientError(response.ok ? "invalid_response" : "vault_unavailable"); }
   if (!response.ok) throw new VaultClientError(vaultErrorCode((body as { code?: unknown } | null)?.code));
   const result = (body as { result?: unknown } | null)?.result;
   if (result === undefined) throw new VaultClientError("invalid_response");
@@ -33,7 +35,6 @@ export interface OwnerIdentity { principalId: string; credentialId: string; labe
 
 /** Confirms that the pasted credential is a current owner session, not installation or agent access. */
 export async function readOwnerIdentity(ownerToken: string, send: Fetch = fetch, clock: () => number = Date.now): Promise<OwnerIdentity> {
-  const sentAt = clock();
   let response: Response;
   try {
     response = await send("/api/identity", { cache: "no-store", credentials: "omit", redirect: "error", headers: { Authorization: `Bearer ${ownerToken}` } });
@@ -45,7 +46,7 @@ export async function readOwnerIdentity(ownerToken: string, send: Fetch = fetch,
   const { principal, credential } = parsed.data;
   if (principal.kind !== "owner" || credential?.kind !== "owner_session") throw new VaultClientError("not_owner_session");
   return { principalId: principal.id, credentialId: credential.id, label: credential.label, expiresAt: credential.expiresAt,
-    skewMs: clockSkew(response.headers.get("Date"), sentAt, clock()) };
+    skewMs: clockSkew(response.headers.get("Date"), clock()) };
 }
 
 const agentCredentialsSchema = z.object({ credentials: z.array(z.object({
