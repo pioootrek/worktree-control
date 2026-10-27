@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,7 +11,8 @@ const installOptions = {
   nodePath: "/opt/node/bin/node",
   entrypointPath: "/opt/worktree control/dist/cli/index.js",
   workingDirectory: "/opt/worktree control",
-  startArguments: ["--service-mode", "--no-open", "--data-dir", "/home/me/data%dir"],
+  startArguments: ["--service-mode", "--no-open", "--host", "127.0.0.1", "--port", "47831", "--mcp-port", "47832",
+    "--browse-root", "/repos", "--data-dir", "/home/me/data%dir", "--state-dir", "/home/me/state", "--web-root", "/old/out"],
   stateDirectory: "/home/me/state",
   refresh: false,
 };
@@ -87,6 +88,9 @@ interface LinuxOptions {
   health?: Partial<ServiceHealthPolicy>;
   destinationExternalDropIn?: boolean;
   formatDropIns?: (paths: string[]) => string;
+  lookupRoots?: (home: string) => string[];
+  afterReload?: (home: string) => void;
+  reportedDropIns?: (paths: string[], unit: string) => string[];
 }
 
 function linuxHome(options: LinuxOptions = {}) {
@@ -98,12 +102,21 @@ function linuxHome(options: LinuxOptions = {}) {
     run(command, args) {
       calls.push([command, ...args]);
       if (options.fail?.(args)) return { status: 1, stdout: "", stderr: "failed" };
+      if (args[1] === "daemon-reload") options.afterReload?.(home);
+      if (args.includes("--property=UnitPath")) return { status: 0, stdout: `UnitPath=${roots().map(quotePath).join(" ")}\n`, stderr: "" };
       if (args[1] === "show") {
         if (args.includes("--property=FragmentPath")) {
           const path = join(home, ".config", "systemd", "user", args[2]);
-          const dropIns = existsSync(`${path}.d`) ? readdirSync(`${path}.d`).filter(name => name.endsWith(".conf")).map(name => join(`${path}.d`, name)) : [];
+          const directories = roots().flatMap(root => [join(root, `${args[2]}.d`), join(root, "worktree-.service.d")])
+            .concat(roots().map(root => join(root, "service.d")));
+          const winners = new Map<string, string>();
+          for (const directory of directories) if (existsSync(directory)) {
+            for (const name of readdirSync(directory)) if (name.endsWith(".conf") && !winners.has(name)) winners.set(name, join(directory, name));
+          }
+          let dropIns = [...winners].sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b))).map(([, path]) => path);
+          dropIns = options.reportedDropIns?.(dropIns, args[2]) ?? dropIns;
           if (options.destinationExternalDropIn && args[2] === "worktree-control.service") dropIns.push("/etc/systemd/user/worktree-control.service.d/override.conf");
-          return { status: 0, stdout: `FragmentPath=${path}\nDropInPaths=${options.formatDropIns?.(dropIns) ?? dropIns.join(" ")}\nNeedDaemonReload=no\n`, stderr: "" };
+          return { status: 0, stdout: `FragmentPath=${path}\nDropInPaths=${options.formatDropIns?.(dropIns) ?? dropIns.map(quotePath).join(" ")}\nNeedDaemonReload=no\n`, stderr: "" };
         }
         const outputs = options.show ?? [running];
         return { status: 0, stdout: outputs[Math.min(polls++, outputs.length - 1)], stderr: "" };
@@ -111,6 +124,7 @@ function linuxHome(options: LinuxOptions = {}) {
       return { status: 0, stdout: "", stderr: "" };
     },
   };
+  const roots = () => options.lookupRoots?.(home) ?? [join(home, ".config/systemd/user")];
   const clock = fakeClock();
   const manager = new UserServiceManager({
     platform: "linux", homeDirectory: home, environment: { NODE_ENV: "test" }, runner, clock,
@@ -118,11 +132,15 @@ function linuxHome(options: LinuxOptions = {}) {
   });
   mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
   if (options.legacy) writeFileSync(manager.legacyDefinitionPath, legacyUnit);
-  if (options.current) writeFileSync(manager.definitionPath, "unit");
+  if (options.current) writeFileSync(manager.definitionPath, currentUnit);
   return { home, calls, manager, clock };
 }
 
-const legacyUnit = 'ExecStart="/old/node" "/old/dist/cli/index.js" "start" "--data-dir" "/home/me/.local/share/worktree-switcher" "--backup-dir" "/backups"\n';
+function quotePath(path: string): string {
+  return `"${path.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "\\$").replaceAll("`", "\\`")}"`;
+}
+const legacyUnit = renderSystemdUnit({ ...installOptions, entrypointPath: "/old/dist/cli/index.js" });
+const currentUnit = renderSystemdUnit({ ...installOptions, entrypointPath: "/previous/dist/cli/index.js" });
 
 describe("safe installed configuration inheritance", () => {
   const arguments_ = [
@@ -169,7 +187,7 @@ describe("safe installed configuration inheritance", () => {
     expect(() => manager.readInstallStartArguments()).toThrow("Inspect and reconcile");
   });
 
-  it("accepts identical resource drop-ins but refuses target-only or conflicting migration policy", () => {
+  it("previews inspected local resource policy while leaving manager equivalence for actual install", () => {
     const { manager, calls } = linuxHome();
     writeFileSync(manager.legacyDefinitionPath, renderSystemdUnit(complete));
     mkdirSync(`${manager.legacyDefinitionPath}.d`); mkdirSync(`${manager.definitionPath}.d`);
@@ -179,10 +197,10 @@ describe("safe installed configuration inheritance", () => {
     writeFileSync(target, readFileSync(source));
     expect(manager.readInstallStartArguments()).toEqual(arguments_);
     writeFileSync(target, "[Service]\nMemoryMax=1G\n");
-    expect(() => manager.readInstallStartArguments()).toThrow("Inspect and reconcile");
+    expect(manager.readInstallStartArguments()).toEqual(arguments_);
     writeFileSync(target, readFileSync(source));
     writeFileSync(join(`${manager.definitionPath}.d`, "extra.conf"), "[Service]\nMemoryMax=1G\n");
-    expect(() => manager.readInstallStartArguments()).toThrow("Inspect and reconcile");
+    expect(manager.readInstallStartArguments()).toEqual(arguments_);
     expect(calls).toEqual([]);
   });
 
@@ -214,6 +232,7 @@ describe("safe installed configuration inheritance", () => {
     const manager: UserServiceManager = new UserServiceManager({ platform: "linux", homeDirectory: home, environment: { NODE_ENV: "test" }, runner: {
       run(command, args) {
         calls.push([command, ...args]);
+        if (args.includes("--property=UnitPath")) return { status: 0, stdout: `UnitPath=${join(home, ".config/systemd/user")}\n`, stderr: "" };
         return { status: 0, stderr: "", stdout: `FragmentPath=${scenario === "different-fragment" ? "/etc/systemd/user/worktree-switcher.service" : manager.legacyDefinitionPath}\nDropInPaths=${scenario === "external-drop-in" ? "/run/user/123/systemd/user/service.d/limits.conf" : scenario === "missing-local-drop-in" ? "" : join(`${manager.legacyDefinitionPath}.d`, "limits.conf")}\nNeedDaemonReload=${scenario === "stale" ? "yes" : "no"}\n` };
       },
     } });
@@ -224,7 +243,7 @@ describe("safe installed configuration inheritance", () => {
     expect(calls).toEqual([]);
     if (scenario === "matching") expect(() => manager.assertInstalledServiceConfiguration()).not.toThrow();
     else expect(() => manager.assertInstalledServiceConfiguration()).toThrow("Inspect and reconcile");
-    expect(calls).toEqual([["systemctl", "--user", "show", "worktree-switcher.service", "--property=FragmentPath", "--property=DropInPaths", "--property=NeedDaemonReload"]]);
+    expect(calls).toEqual([["systemctl", "--user", "show", "--property=UnitPath"], ["systemctl", "--user", "show", "worktree-switcher.service", "--property=FragmentPath", "--property=DropInPaths", "--property=NeedDaemonReload"]]);
     expect(existsSync(manager.definitionPath)).toBe(false);
   });
 
@@ -255,7 +274,7 @@ describe("safe installed configuration inheritance", () => {
 
     expect(manager.readInstallStartArguments()).toEqual(arguments_);
     expect(() => manager.assertInstalledServiceConfiguration()).not.toThrow();
-    expect(calls).toEqual([["systemctl", "--user", "show", "worktree-switcher.service", "--property=FragmentPath", "--property=DropInPaths", "--property=NeedDaemonReload"]]);
+    expect(calls).toEqual([["systemctl", "--user", "show", "--property=UnitPath"], ["systemctl", "--user", "show", "worktree-switcher.service", "--property=FragmentPath", "--property=DropInPaths", "--property=NeedDaemonReload"]]);
     expect(existsSync(manager.definitionPath)).toBe(false);
   });
 
@@ -280,7 +299,7 @@ describe("safe installed configuration inheritance", () => {
 
     expect(manager.readInstallStartArguments()).toEqual(arguments_);
     expect(() => manager.assertInstalledServiceConfiguration()).toThrow("Inspect and reconcile");
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     expect(calls[0][2]).toBe("show");
     expect(existsSync(manager.definitionPath)).toBe(false);
   });
@@ -293,9 +312,107 @@ describe("safe installed configuration inheritance", () => {
 
     expect(manager.readInstallStartArguments()).toEqual(arguments_);
     expect(() => manager.assertInstalledServiceConfiguration()).toThrow("Inspect and reconcile");
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     expect(calls[0][2]).toBe("show");
     expect(existsSync(manager.definitionPath)).toBe(false);
+  });
+});
+
+describe("effective scoped systemd policy during installation", () => {
+  const roots = (home: string) => [join(home, "runtime"), join(home, ".config/systemd/user"), join(home, 'vendor "policy"')];
+  function policy(root: string, scope: string, name: string, contents: string) {
+    const directory = join(root, `${scope}.d`); mkdirSync(directory, { recursive: true });
+    const path = join(directory, name); writeFileSync(path, contents); return path;
+  }
+  const lifecycle = (calls: string[][]) => calls.filter(call => ["start", "stop", "restart", "enable", "disable"].includes(call[2]));
+
+  it.each(["fresh", "refresh", "legacy"] as const)("accepts inspected type-wide and prefix policy on %s install", mode => {
+    const { manager, calls, home } = linuxHome({ legacy: mode === "legacy", current: mode === "refresh", lookupRoots: roots });
+    policy(roots(home)[2], "service", '10-vendor "resource".conf', "[Service]\nMemoryHigh=80%\nMemorySwapMax=0\n");
+    policy(roots(home)[0], "worktree-.service", "20-prefix.conf", "[Service]\nCPUQuota=50%\nTasksMax=64\n");
+    manager.install({ ...installOptions, refresh: mode === "refresh" });
+    expect(lifecycle(calls).length).toBeGreaterThan(0);
+    expect(existsSync(manager.definitionPath)).toBe(true);
+  });
+
+  it.each(["service", "worktree-.service"])("refuses unsafe %s policy on direct install without touching a running service", scope => {
+    const { manager, calls, home } = linuxHome({ legacy: true, lookupRoots: roots });
+    policy(roots(home)[2], scope, "unsafe.conf", "[Service]\nKillMode=process\n");
+    expect(() => manager.install(installOptions)).toThrow("Inspect and reconcile");
+    expect(lifecycle(calls)).toEqual([]);
+    expect(existsSync(manager.definitionPath)).toBe(false);
+    expect(readFileSync(manager.legacyDefinitionPath, "utf8")).toBe(legacyUnit);
+  });
+
+  it("does not reintroduce a local legacy file shadowed by a higher root's prefix mask", () => {
+    const { manager, home } = linuxHome({ legacy: true, lookupRoots: roots });
+    policy(roots(home)[1], "worktree-switcher.service", "limits.conf", "[Service]\nMemoryMax=512M\n");
+    const mask = policy(roots(home)[0], "worktree-.service", "limits.conf", ""); rmSync(mask); symlinkSync("/dev/null", mask);
+    const result = manager.install(installOptions);
+    expect(result.legacy).toMatchObject({ migratedDropIns: [], retainedDropInDirectory: `${manager.legacyDefinitionPath}.d` });
+    expect(existsSync(`${manager.definitionPath}.d`)).toBe(false);
+  });
+
+  it("copies selected masks and empty files without reviving lower vendor policy", () => {
+    const { manager, home } = linuxHome({ legacy: true, lookupRoots: roots });
+    const mask = policy(roots(home)[1], "worktree-switcher.service", "mask.conf", ""); rmSync(mask); symlinkSync("/dev/null", mask);
+    policy(roots(home)[1], "worktree-switcher.service", "empty.conf", "");
+    policy(roots(home)[2], "service", "mask.conf", "[Service]\nExecStart=/ignored\n");
+    policy(roots(home)[2], "service", "empty.conf", "[Service]\nEnvironment=ignored\n");
+    const result = manager.install(installOptions);
+    expect(result.legacy?.migratedDropIns).toHaveLength(2);
+    expect(readFileSync(join(`${manager.definitionPath}.d`, "mask.conf"), "utf8")).toBe("");
+    expect(readFileSync(join(`${manager.definitionPath}.d`, "empty.conf"), "utf8")).toBe("");
+  });
+
+  it("refuses when copying a selected legacy file would override a higher-precedence destination scope", () => {
+    const { manager, calls, home } = linuxHome({ legacy: true, lookupRoots: roots });
+    policy(roots(home)[1], "worktree-switcher.service", "limits.conf", "[Service]\nMemoryMax=512M\n");
+    policy(roots(home)[0], "worktree-control.service", "limits.conf", "[Service]\nMemoryMax=1G\n");
+    expect(() => manager.install(installOptions)).toThrow("Inspect and reconcile");
+    expect(lifecycle(calls)).toEqual([]);
+    expect(existsSync(manager.definitionPath)).toBe(false);
+    expect(existsSync(`${manager.definitionPath}.d`)).toBe(false);
+    expect(readFileSync(manager.legacyDefinitionPath, "utf8")).toBe(legacyUnit);
+  });
+
+  it("refuses non-equivalent ordered multi-value/reset policy and keeps existing destination inputs", () => {
+    const { manager, calls, home } = linuxHome({ legacy: true, lookupRoots: roots });
+    policy(roots(home)[2], "worktree-switcher.service", "io.conf", "[Service]\nIOReadBandwidthMax=/dev/sda 1M\nIOReadBandwidthMax=\nIOReadBandwidthMax=/dev/sdb 2M\n");
+    const target = policy(roots(home)[1], "worktree-control.service", "io.conf", "[Service]\nIOReadBandwidthMax=/dev/sdb 2M\n");
+    expect(() => manager.install(installOptions)).toThrow("Inspect and reconcile");
+    expect(lifecycle(calls)).toEqual([]);
+    expect(readFileSync(target, "utf8")).toContain("IOReadBandwidthMax=/dev/sdb 2M");
+    expect(existsSync(manager.definitionPath)).toBe(false);
+  });
+
+  it("refuses a disk/loaded-selection disagreement even when every file is safe", () => {
+    const { manager, home, calls } = linuxHome({ legacy: true, lookupRoots: roots, reportedDropIns: paths => paths.slice(1) });
+    policy(roots(home)[2], "service", "limits.conf", "[Service]\nMemoryMax=512M\n");
+    expect(() => manager.install(installOptions)).toThrow("configuration differs");
+    expect(lifecycle(calls)).toEqual([]);
+  });
+
+  it("refuses a source policy changed during daemon-reload without restarting the legacy service", () => {
+    const { manager, calls, home } = linuxHome({ legacy: true, lookupRoots: roots, afterReload: home => {
+      policy(roots(home)[2], "worktree-switcher.service", "source.conf", "[Service]\nMemoryMax=1G\n");
+    } });
+    policy(roots(home)[2], "worktree-switcher.service", "source.conf", "[Service]\nMemoryMax=512M\n");
+    policy(roots(home)[2], "worktree-control.service", "target.conf", "[Service]\nMemoryMax=512M\n");
+    expect(() => manager.install(installOptions)).toThrow("Inspect and reconcile");
+    expect(lifecycle(calls)).toEqual([]);
+    expect(existsSync(manager.legacyDefinitionPath)).toBe(true);
+  });
+
+  it.each(["fresh", "refresh", "legacy"] as const)("rolls back unsafe policy appearing after reload on %s without start, stop or restart", mode => {
+    const { manager, calls, home } = linuxHome({ legacy: mode === "legacy", current: mode === "refresh", lookupRoots: roots, afterReload: home => {
+      policy(roots(home)[2], "worktree-control.service", "unsafe.conf", "[Service]\nExecStart=/evil\n");
+    } });
+    expect(() => manager.install({ ...installOptions, refresh: mode === "refresh" })).toThrow("Inspect and reconcile");
+    expect(lifecycle(calls)).toEqual([]);
+    if (mode === "refresh") expect(readFileSync(manager.definitionPath, "utf8")).toBe(currentUnit);
+    else expect(existsSync(manager.definitionPath)).toBe(false);
+    expect(home).toContain("worktree-control-service");
   });
 });
 
@@ -316,7 +433,7 @@ describe("UserServiceManager", () => {
 
     manager.install(installOptions);
 
-    const names = calls.filter(call => !call.includes("--property=FragmentPath")).map((call) => call[2]);
+    const names = calls.filter(call => !call.includes("--property=FragmentPath") && !call.includes("--property=UnitPath")).map((call) => call[2]);
     expect(names.indexOf("start")).toBeLessThan(names.indexOf("show"));
     expect(names.lastIndexOf("show")).toBeLessThan(names.indexOf("enable"));
     expect(calls.filter((call) => call[2] === "show" && call.includes("--property=ActiveState"))).toHaveLength(11);
@@ -346,8 +463,8 @@ describe("UserServiceManager", () => {
     expect(() => manager.install({ ...installOptions, refresh: mode === "refresh" })).toThrow("Inspect and reconcile");
     expect(calls.some(call => ["start", "stop", "restart", "enable", "disable"].includes(call[2]))).toBe(false);
     expect(calls).toContainEqual(["systemctl", "--user", "show", "worktree-control.service", "--property=FragmentPath", "--property=DropInPaths", "--property=NeedDaemonReload"]);
-    expect(calls.at(-1)).toEqual(["systemctl", "--user", "daemon-reload"]);
-    if (mode === "refresh") expect(readFileSync(manager.definitionPath, "utf8")).toBe("unit");
+    if (mode !== "refresh") expect(calls.at(-1)).toEqual(["systemctl", "--user", "daemon-reload"]);
+    if (mode === "refresh") expect(readFileSync(manager.definitionPath, "utf8")).toBe(currentUnit);
     else expect(existsSync(manager.definitionPath)).toBe(false);
     if (mode === "legacy") {
       expect(readFileSync(manager.legacyDefinitionPath, "utf8")).toBe(legacyUnit);
@@ -383,7 +500,7 @@ describe("UserServiceManager", () => {
 
     expect(() => manager.install({ ...installOptions, refresh: true })).toThrow("systemctl --user restart worktree-control.service failed");
 
-    expect(readFileSync(manager.definitionPath, "utf8")).toBe("unit");
+    expect(readFileSync(manager.definitionPath, "utf8")).toBe(currentUnit);
     expect(calls.slice(-3)).toEqual([
       ["systemctl", "--user", "stop", "worktree-control.service"],
       ["systemctl", "--user", "daemon-reload"],
@@ -442,8 +559,13 @@ describe("legacy worktree-switcher service migration", () => {
     expect(existsSync(manager.legacyDefinitionPath)).toBe(false);
     expect(existsSync(manager.definitionPath)).toBe(true);
     expect(calls).toEqual([
+      ["systemctl", "--user", "show", "--property=UnitPath"],
+      ["systemctl", "--user", "show", "worktree-switcher.service", "--property=FragmentPath", "--property=DropInPaths", "--property=NeedDaemonReload"],
       ["systemctl", "--user", "daemon-reload"],
+      ["systemctl", "--user", "show", "--property=UnitPath"],
       ["systemctl", "--user", "show", "worktree-control.service", "--property=FragmentPath", "--property=DropInPaths", "--property=NeedDaemonReload"],
+      ["systemctl", "--user", "show", "--property=UnitPath"],
+      ["systemctl", "--user", "show", "worktree-switcher.service", "--property=FragmentPath", "--property=DropInPaths", "--property=NeedDaemonReload"],
       ["systemctl", "--user", "is-active", "--quiet", "worktree-switcher.service"],
       ["systemctl", "--user", "stop", "worktree-switcher.service"],
       ["systemctl", "--user", "start", "worktree-control.service"],
@@ -512,7 +634,7 @@ describe("legacy worktree-switcher service migration", () => {
     expect(readFileSync(target, "utf8")).toBe("[Service]\nMemoryMax=512M\n");
     expect(statSync(target).mode & 0o777).toBe(sourceMode);
     expect(existsSync(legacyDropIns)).toBe(false);
-    expect(calls[0]).toEqual(["systemctl", "--user", "daemon-reload"]);
+    expect(calls.findIndex(call => call[2] === "daemon-reload")).toBeGreaterThan(calls.findIndex(call => call.includes("--property=DropInPaths")));
   });
 
   it("removes copied drop-ins again when the migration rolls back", () => {
@@ -527,7 +649,7 @@ describe("legacy worktree-switcher service migration", () => {
     expect(readFileSync(join(legacyDropIns, "override.conf"), "utf8")).toBe("[Service]\nMemoryMax=512M\n");
   });
 
-  it("never overwrites a differing drop-in of the new unit and keeps the legacy directory for review", () => {
+  it("refuses differing destination policy before interrupting the legacy service", () => {
     const { manager } = linuxHome({ legacy: true });
     const legacyDropIns = `${manager.legacyDefinitionPath}.d`;
     const newDropIns = `${manager.definitionPath}.d`;
@@ -538,17 +660,16 @@ describe("legacy worktree-switcher service migration", () => {
     writeFileSync(join(newDropIns, "override.conf"), "[Service]\nMemoryMax=1G\n");
     writeFileSync(join(newDropIns, "same.conf"), "[Service]\nNice=10\n");
 
-    const result = manager.install(installOptions);
+    expect(() => manager.install(installOptions)).toThrow("Inspect and reconcile");
 
-    expect(result.legacy).toMatchObject({ migratedDropIns: [], retainedDropInDirectory: legacyDropIns });
     expect(readFileSync(join(newDropIns, "override.conf"), "utf8")).toBe("[Service]\nMemoryMax=1G\n");
     expect(existsSync(join(legacyDropIns, "override.conf"))).toBe(true);
-    expect(existsSync(manager.legacyDefinitionPath)).toBe(false);
+    expect(existsSync(manager.legacyDefinitionPath)).toBe(true);
   });
 
   it("inherits start arguments from the legacy unit until the new unit exists", () => {
     const { manager } = linuxHome({ legacy: true });
-    expect(manager.readStartArguments()).toEqual(["--data-dir", "/home/me/.local/share/worktree-switcher", "--backup-dir", "/backups"]);
+    expect(manager.readStartArguments()).toEqual(installOptions.startArguments);
     writeFileSync(manager.definitionPath, renderSystemdUnit(installOptions));
     expect(manager.readStartArguments()).toEqual(installOptions.startArguments);
   });
