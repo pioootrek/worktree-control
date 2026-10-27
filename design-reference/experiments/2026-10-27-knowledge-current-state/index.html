@@ -291,8 +291,8 @@ function assess(sc, approval, policy) {
     out.evidence = { listed: d.evidence.attachments.length, present: d.evidence.attachments.length - missing.length, missing: missing };
     missing.forEach(function (id) { add("evidence_missing", "conflict", { id: id }); });
   }
-  var positive = { merged: 1, passed: 1, findings_closed: 1, done: 1 };
-  ["merge", "ci", "review", "deploy"].forEach(function (k) { var x = d[k]; if (app(x) && positive[x.state] && !x.ref && !(x.sources && x.sources.length)) add("claim_without_source", "attention", { f: k }); });
+  var positive = { merged: 1, passed: 1, findings_closed: 1, stored: 1, verified: 1, done: 1 };
+  ["merge", "ci", "review", "evidence", "deploy"].forEach(function (k) { var x = d[k]; if (app(x) && positive[x.state] && !x.ref && !(x.sources && x.sources.length) && !(x.attachments && x.attachments.length)) add("claim_without_source", "attention", { f: k }); });
   if (st.outcome.known && !st.outcome.sources.length) add("claim_without_source", "attention", { f: "outcome" });
   if (ch.staleSources) add("source_stale", "attention");
   if (ch.inactiveSources) add("source_inactive", "attention");
