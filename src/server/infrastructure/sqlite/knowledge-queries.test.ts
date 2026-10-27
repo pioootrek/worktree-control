@@ -225,7 +225,7 @@ describe("knowledge service SQLite flow", () => {
     const db=new Database(path);
     db.pragma("foreign_keys = ON");
     db.prepare("INSERT INTO knowledge_threads VALUES (?,?,?,?,?,?,?,?)").run(task.id,"project-1","Shared-ID discussion","Same ID, different kind",1,"agent-1",NOW,NOW);
-    db.prepare("INSERT INTO knowledge_tasks VALUES (?,?,?,?,?,?,?,?,?,?)").run("foreign-task","project-2","Private title","Private body","open","later",1,"agent-1",NOW,NOW);
+    db.prepare("INSERT INTO knowledge_tasks(id,project_id,title,description,status,priority,revision,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run("foreign-task","project-2","Private title","Private body","open","later",1,"agent-1",NOW,NOW);
     const insert=db.prepare("INSERT INTO knowledge_relations VALUES (?,?,?,?,?,?,?,?,?,?)");
     for(const [id,type,sourceKind,sourceId,targetKind,targetId] of [
       ["edge-reply","blocks","thread",thread.id,"reply",reply.id],

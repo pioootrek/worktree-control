@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import { verificationProjectChecksum, verificationProjectMigration } from "./verification-project-migration";
 import { telemetryChecksum, telemetryMigration } from "./test-summary-migration";
 import { testPresetTimeoutMigration, testPresetTimeoutChecksum } from "./test-preset-timeout-migration";
+import { taskCurrentStateMigration, taskCurrentStateChecksum } from "./task-current-state-migration";
 import { initializeSchema } from "./migrations";
 
 import { registryChecksum, registryMigration, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
@@ -35,6 +36,7 @@ const columnVersions: Record<string, number> = {
   "projects.launch_preset": 15, "projects.environment_json": 8,
   "projects.environment_profiles_json": 9, "projects.selected_environment_profile": 9,
   "projects.test_preset_timeouts_json": 31,
+  "knowledge_tasks.current_state_json": 33,
   "projects.test_environment_profiles_json": 11, "projects.test_preset_profiles_json": 11,
   "test_runs.environment_mode": 11, "test_runs.environment_profile": 11,
   "test_runs.inherited_server_profile": 11, "test_runs.environment_variable_names_json": 11,
@@ -105,7 +107,8 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : x.version === 29 ? x.name !== telemetryMigration.name || x.checksum !== telemetryChecksum
       : x.version === 30 ? x.name !== verificationProjectMigration.name || x.checksum !== verificationProjectChecksum
       : x.version === 31 ? x.name !== testPresetTimeoutMigration.name || x.checksum !== testPresetTimeoutChecksum
-      : x.name !== remoteConnectionMigration.name || x.checksum !== remoteConnectionChecksum)) refuse("migration checksum or name");
+      : x.version === 32 ? x.name !== remoteConnectionMigration.name || x.checksum !== remoteConnectionChecksum
+      : x.name !== taskCurrentStateMigration.name || x.checksum !== taskCurrentStateChecksum)) refuse("migration checksum or name");
   }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));
   if (objects.some(x => x.type === "view" || x.type === "trigger") || [...tables].some(x => !(x in tableVersions))) refuse();

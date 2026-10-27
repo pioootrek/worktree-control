@@ -4,6 +4,7 @@ import { applyRegistryMigration, SUPPORTED_SCHEMA_VERSION } from "./migration-re
 import { applyTelemetryMigration } from "./test-summary-migration";
 import { applyVerificationProjectMigration, rebuildTable } from "./verification-project-migration";
 import { applyTestPresetTimeoutMigration } from "./test-preset-timeout-migration";
+import { applyTaskCurrentStateMigration } from "./task-current-state-migration";
 import { validateDatabase } from "./database-validation";
 
 /** Built-in test profiles every project starts with; see `test-environment.ts`. */
@@ -353,6 +354,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyVerificationProjectMigration(database);
       applyTestPresetTimeoutMigration(database);
       applyRemoteConnectionMigration(database);
+      applyTaskCurrentStateMigration(database);
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();
