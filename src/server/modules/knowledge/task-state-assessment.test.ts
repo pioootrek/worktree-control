@@ -77,13 +77,16 @@ describe("task state assessment", () => {
   it("derives consent from approval and the accepted authentication methods", () => {
     const recorded = state({ ownerDecision: { state: "recorded", decisionRef: { id: "m", revision: 2 } } });
     expect(assessTaskState(task, recorded, facts())).toMatchObject({ ownerConsent: "proposal_only" });
-    expect(assessTaskState(task, recorded, facts({ decision: { approvedAtCurrentRevision: false, approvalMethod: null, everApproved: true } }))).toMatchObject({ ownerConsent: "approval_invalidated" });
-    const installation = facts({ decision: { approvedAtCurrentRevision: true, approvalMethod: "installation_token", everApproved: true } });
+    expect(assessTaskState(task, recorded, facts({ decision: { approvedAtCurrentRevision: false, matchesReferencedRevision: false, approvalMethod: null, everApproved: true } }))).toMatchObject({ ownerConsent: "approval_invalidated" });
+    const installation = facts({ decision: { approvedAtCurrentRevision: true, matchesReferencedRevision: true, approvalMethod: "installation_token", everApproved: true } });
     expect(OWNER_CONSENT_METHODS.has("installation_token")).toBe(true);
     expect(assessTaskState(task, recorded, installation)).toMatchObject({ ownerConsent: "approved", approvalMethod: "installation_token", findings: [] });
     const separated = assessTaskState(task, recorded, installation, new Set(["owner_session"]));
     expect(separated).toMatchObject({ ownerConsent: "approved_method_not_accepted", approvalMethod: "installation_token" });
     expect(codes(separated)).toEqual(["attention:consent_method_not_accepted"]);
+    const changedText = assessTaskState(task, recorded, facts({ decision: { ...installation.decision!, matchesReferencedRevision: false } }));
+    expect(changedText).toMatchObject({ ownerConsent: "approval_invalidated", approvalMethod: null });
+    expect(codes(changedText)).toEqual(["attention:consent_missing"]);
     expect(assessTaskState(task, state({ ownerDecision: { state: "needed", question: "A or B?" } }), facts())).toMatchObject({ ownerConsent: "needed" });
   });
 

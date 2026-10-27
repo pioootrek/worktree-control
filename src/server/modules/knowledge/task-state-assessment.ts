@@ -17,7 +17,7 @@ export interface TaskStateFacts {
   /** Evidence attachment IDs that exist on this task. */
   presentAttachments: ReadonlySet<string>;
   /** The decision memory referenced by `ownerDecision.recorded`, when it exists. */
-  decision: { approvedAtCurrentRevision: boolean; approvalMethod: TaskStateAuthenticationMethod | null; everApproved: boolean } | null;
+  decision: { approvedAtCurrentRevision: boolean; matchesReferencedRevision: boolean; approvalMethod: TaskStateAuthenticationMethod | null; everApproved: boolean } | null;
 }
 
 const short = (commit: string) => commit.slice(0, 7);
@@ -70,7 +70,7 @@ export function assessTaskState(task: { status: KnowledgeTaskStatus; revision: n
   const decision = state.ownerDecision;
   if (decision.state === "recorded") {
     const memory = facts.decision;
-    if (memory?.approvedAtCurrentRevision) {
+    if (memory?.approvedAtCurrentRevision && memory.matchesReferencedRevision) {
       approvalMethod = memory.approvalMethod;
       ownerConsent = approvalMethod && accepted.has(approvalMethod) ? "approved" : "approved_method_not_accepted";
       if (ownerConsent === "approved_method_not_accepted") add("consent_method_not_accepted", "attention", ["ownerDecision"], { method: approvalMethod ?? "unknown" });

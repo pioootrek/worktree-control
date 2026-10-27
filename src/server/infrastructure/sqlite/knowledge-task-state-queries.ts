@@ -16,6 +16,7 @@ export function readTaskStateJson(database: Database.Database, projectId: string
  * True when every task revision after `sinceRevision` came from `update_task_state`.
  * Only state writes add `currentState` to the server-built `previousJson`; `update_task` does not.
  * A citation of the task then still refers to unchanged title, description and priority.
+ * Per the owner's policy, this includes an atomic status change made by the state write.
  */
 export function taskChangedOnlyByState(database: Database.Database, projectId: string, taskId: string, sinceRevision: number): boolean {
   const row = database.prepare(`SELECT count(*) AS total,
@@ -86,13 +87,15 @@ export function collectTaskStateFacts(database: Database.Database, projectId: st
     if (memory) {
       const approval = memory.approval_json ? JSON.parse(memory.approval_json) as { revision: number } : null;
       const approvedAtCurrentRevision = approval?.revision === memory.revision;
+      const matchesReferencedRevision = memory.revision === decision.decisionRef.revision
+        || memoryChangedOnlyByApproval(database, projectId, decision.decisionRef.id, decision.decisionRef.revision, memory.revision);
       const approved = database.prepare("SELECT authentication_method FROM knowledge_history WHERE project_id = ? AND record_kind = 'memory' AND record_id = ? AND operation = 'approved' ORDER BY id DESC LIMIT 1")
         .get(projectId, decision.decisionRef.id) as { authentication_method: TaskStateAuthenticationMethod } | undefined;
       const atRevision = approvedAtCurrentRevision
         ? database.prepare("SELECT authentication_method FROM knowledge_history WHERE project_id = ? AND record_kind = 'memory' AND record_id = ? AND operation = 'approved' AND revision = ? ORDER BY id DESC LIMIT 1")
           .get(projectId, decision.decisionRef.id, memory.revision) as { authentication_method: TaskStateAuthenticationMethod } | undefined
         : undefined;
-      decisionFacts = { approvedAtCurrentRevision, approvalMethod: atRevision?.authentication_method ?? null, everApproved: Boolean(approved) };
+      decisionFacts = { approvedAtCurrentRevision, matchesReferencedRevision, approvalMethod: atRevision?.authentication_method ?? null, everApproved: Boolean(approved) };
     }
   }
 

@@ -203,6 +203,28 @@ describe("task current state", () => {
     expect(f.read().assessment).toMatchObject({ ownerConsent: "approval_invalidated" });
   });
 
+  it.each([false, true])("does not reuse approval of edited decision text (previously approved: %s)", previouslyApproved => {
+    const f = setup();
+    const chat = { kind: "external" as const, label: "Owner conversation", url: "https://example.invalid/chat" };
+    const decision = f.call<KnowledgeMutationResult<KnowledgeMemory>>("create_memory", { title: "Header variant", body: "Use variant A", category: "decision", tags: [], legacyId: null, sources: [chat], idempotencyKey: "decision" }).value;
+    const state = mergedNotDeployed();
+    state.ownerDecision = { state: "recorded", decisionRef: { id: decision.id, revision: decision.revision } };
+    f.write(state);
+    const beforeEdit = previouslyApproved
+      ? f.call<KnowledgeMutationResult<KnowledgeMemory>>("approve_memory", { memoryId: decision.id, expectedRevision: decision.revision, idempotencyKey: "approve-original" }, f.owner).value
+      : decision;
+    const edited = f.call<KnowledgeMutationResult<KnowledgeMemory>>("update_memory", { memoryId: decision.id, expectedRevision: beforeEdit.revision, idempotencyKey: "edit-decision", title: "Header variant", body: "Use variant B", category: "decision", tags: [], legacyId: null, sources: [chat] }, f.owner).value;
+    const approved = f.call<KnowledgeMutationResult<KnowledgeMemory>>("approve_memory", { memoryId: decision.id, expectedRevision: edited.revision, idempotencyKey: "approve-edited" }, f.owner).value;
+
+    expect(f.read().assessment).toMatchObject({ ownerConsent: "approval_invalidated", approvalMethod: null, changes: { staleSources: 1 } });
+    expect(f.read().assessment.findings.map(finding => finding.code)).toEqual(["source_stale", "consent_missing"]);
+    expect(f.read().state!.ownerDecision).toEqual(state.ownerDecision);
+
+    state.ownerDecision = { state: "recorded", decisionRef: { id: decision.id, revision: approved.revision } };
+    f.write(state);
+    expect(f.read().assessment).toMatchObject({ ownerConsent: "approved", approvalMethod: "owner_session", findings: [] });
+  });
+
   it("replaces an unreadable stored state and keeps the raw text in history", () => {
     const f = setup();
     f.write(mergedNotDeployed());
@@ -216,7 +238,7 @@ describe("task current state", () => {
     expect(JSON.parse(history.items.at(-1)!.previousJson!)).toMatchObject({ currentState: null, currentStateUnreadable: "{broken" });
   });
 
-  it("keeps a task-citing decision approvable across state writes but not across task edits", () => {
+  it("keeps a task-citing decision approvable across state writes including status changes but not across task edits", () => {
     const f = setup();
     const cite = () => ({ kind: "task" as const, id: f.task.id, revision: f.current().revision });
     const cited = f.current().revision;
