@@ -26,6 +26,7 @@ export { KnowledgeError } from "./knowledge-error";
 export type { KnowledgeErrorCode } from "./knowledge-error";
 import { KnowledgeMemoryService } from "./knowledge-memory-service";
 import type { KnowledgeAttachmentService } from "./attachment-service";
+import { KnowledgeTaskStateService } from "./task-state-service";
 
 export interface KnowledgeWriteOptions { idempotencyKey: string }
 
@@ -121,6 +122,8 @@ export class KnowledgeService {
       case "create_task": return this.createTask(request.input.projectId, request.input, request.input, actor);
       case "task_from_thread": return this.createTaskFromThread(request.input.projectId, request.input.threadId, request.input, request.input, actor);
       case "update_task": return this.updateTask(request.input.projectId, request.input.taskId, request.input, request.input, actor);
+      case "task_state": return new KnowledgeTaskStateService(this.store, this.identity, this.clock, this.changed).read(request.input, actor);
+      case "update_task_state": return new KnowledgeTaskStateService(this.store, this.identity, this.clock, this.changed).update(request.input, actor);
       case "archive_project": return this.archiveProject(request.input.projectId, request.input.expectedRevision, request.input, actor);
       case "restore_project": return this.restoreProject(request.input.projectId, request.input.expectedRevision, request.input, actor);
       case "link_runtime": return this.setRuntimeLink(request.input.projectId, request.input.runtimeProjectId, request.input.expectedRevision, request.input, actor);

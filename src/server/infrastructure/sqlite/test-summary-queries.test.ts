@@ -57,11 +57,11 @@ describe("durable bounded test summary history", () => {
     expect(inspectSchema(old).version).toBe(28); old.close();
     const owned = new OwnedSqliteDatabase(f.path);
     const reopened = new SqliteStateStore(f.path, owned); stores.push(reopened);
-    expect(reopened.schemaVersion()).toBe(32);
+    expect(reopened.schemaVersion()).toBe(33);
     expect(reopened.getTestRun(run.id)?.telemetry).toMatchObject({ availability: "legacy_unknown", admittedAt: null, exitedAt: null });
     expect(new TestSummaryQueries(owned.database).get(run.id)?.telemetry.durations.processMs).toBeNull();
     expect(owned.database.prepare("SELECT name,checksum FROM schema_migrations WHERE version=29").get()).toEqual({ name: telemetryMigration.name, checksum: telemetryChecksum });
-    expect(inspectSchema(owned.database).version).toBe(32);
+    expect(inspectSchema(owned.database).version).toBe(33);
   });
 
   it("rolls migration 29 and its backfill back together, and rejects changed provenance", () => {

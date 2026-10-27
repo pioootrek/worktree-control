@@ -7,11 +7,12 @@ status: "active"
 
 # Task current state before history — stage 1 design
 
-**Status: proposal; the owner answered its four open decisions on
-2026-10-27.** Nothing in this document is implemented. The
+**Status: the owner answered its four open decisions on 2026-10-27, and the
+[smallest implementation slice](#smallest-implementation-slice) is implemented
+on branch `feat/knowledge-task-current-state`.** The
 [verified facts](#verified-facts-about-the-current-system) describe commit
-`b5da139`. Everything after that section is proposed behavior, adjusted by the
-[owner decisions](#owner-decisions-2026-10-27) at the end.
+`b5da139`, before that slice. [Implementation notes](#implementation-notes)
+record where the code differs from this design.
 
 The Knowledge task is `6cc7e676-d699-482b-b907-5832249eda70`. Stages 2 (one
 view of a case across task, memory and discussion) and 3 (simplified evidence
@@ -470,6 +471,27 @@ slices.
 Deferred to later slices: a readable timeline of state changes from task history
 (the Memory comparison pattern applied to tasks), list badges for open
 blockers and stale states, an owner edit form, and the stage 2 case view.
+
+## Implementation notes
+
+The first slice follows this design with these differences:
+
+- `KnowledgeTask` and the `task` operation are unchanged. The state is read
+  only through `task_state`, which returns the task summary, the state, the
+  assessment, `stateUnreadable` and system facts. List and search responses
+  do not grow.
+- Delivery facts have no separate `ref` field. Links to a PR, CI run or
+  deployment are ordinary `external` sources. Merge records the merged head as
+  `commit` and the main-branch commit as `resultCommit`.
+- The stored state includes `writtenBy` (principal and authentication method)
+  so the panel can show how it was written without reading history.
+- Missing records cited as sources count as inactive sources.
+- Source links use the existing record routes. Returning focus to the
+  originating link after following a source is not implemented; browser Back
+  reopens the task.
+- Agent guidance lives in the `knowledge_update_task_state` MCP tool
+  description. The `docs/knowledge/AGENTS.md` update waits for PR #110 and
+  #111, which edit the same file.
 
 ## Alternatives considered
 

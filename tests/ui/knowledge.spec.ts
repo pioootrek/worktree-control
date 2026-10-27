@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { dashboardFixture, mountDashboard } from "./dashboard-fixture";
+import type { TaskStateInput, TaskStateSource } from "@/shared/contracts/knowledge-task-state";
 import { openPreferences, selectLanguage } from "./shell-actions";
 
 async function disconnectKnowledge(page: Page) {
@@ -16,6 +17,7 @@ async function mountKnowledge(page: Page, { withRuntimeProject = false }: { with
   const records: Array<{ id: string; projectId: string; title: string; body?: string; description?: string; priority?: string; status?: string; revision: number; createdBy: string; presentation?: { displayTitle: string; preview: string; imported: boolean; replyCount: number } }> = [];
   const replies: Array<{ id: string; threadId: string; body: string; revision: number; createdBy: string; createdAt?: string; historicalImport?: { sourceAttribution: "verified" | "unverified"; sourceAuthor: string | null; sourceDate: string | null; sourceDateStatus: "valid" | "missing" | "invalid" | "unverified"; sourceOrder: "verified" | "unverified" } }> = [];
   const calls: Array<{ operation: string; input: Record<string, unknown> }> = [];
+  const taskStates = new Map<string, unknown>();
   const saved = new Map<string, unknown>();
   const savedInputs = new Map<string, string>();
   let failSave = false;
@@ -36,7 +38,21 @@ async function mountKnowledge(page: Page, { withRuntimeProject = false }: { with
     }
     if (operation === "task" || operation === "thread") return route.fulfill({ json: records.find(record => record.id === (input.taskId ?? input.threadId)) });
     if (operation === "relations") return route.fulfill({ json: pageResult([]) });
-    if (operation === "replies") return route.fulfill({ json: pageResult(replies.filter(reply => reply.threadId === input.threadId)) });
+    if (operation === "replies") {
+      const limit = typeof input.limit === "number" ? input.limit : 25;
+      const threadReplies = replies.filter(reply => reply.threadId === input.threadId);
+      let offset = typeof input.offset === "number" ? input.offset : 0;
+      let target = {};
+      if (typeof input.targetReplyId === "string") {
+        const index = threadReplies.findIndex(reply => reply.id === input.targetReplyId);
+        target = { targetFound: index >= 0 };
+        if (index >= 0) offset = Math.floor(index / limit) * limit;
+      }
+      return route.fulfill({ json: { items: threadReplies.slice(offset, offset + limit), nextOffset: threadReplies.length > offset + limit ? offset + limit : null, offset, ...target } });
+    }
+    if (operation === "task_state") return route.fulfill({ json: taskStates.get(input.taskId) ?? { task: records.find(record => record.id === input.taskId), state: null, stateUnreadable: false, replyThreadIds: {},
+      assessment: { freshness: "missing", changes: { taskRevisions: 0, statusChanged: false, descriptionChanged: false, memoriesChanged: 0, attachmentsAdded: 0, repliesAdded: 0, staleSources: 0, inactiveSources: 0 }, changeCount: 0, findings: [], ownerConsent: "unknown", approvalMethod: null, evidence: null },
+      systemFacts: { approvedDecisions: 0, proposals: 0, openQuestions: 0, attachments: 0 } } });
     if (failSave) return route.fulfill({ status: 503, json: { code: "unavailable", error: "Unavailable" } });
     if (saved.has(input.idempotencyKey)) {
       if (savedInputs.get(input.idempotencyKey) !== JSON.stringify(input)) return route.fulfill({ status: 409, json: { code: "idempotency_conflict", error: "Different committed input" } });
@@ -64,8 +80,189 @@ async function mountKnowledge(page: Page, { withRuntimeProject = false }: { with
   if (!await knowledgeNavigation.isVisible()) await page.getByRole("button", { name: "Toggle navigation" }).click();
   await knowledgeNavigation.click();
   await expect(page.getByLabel("Knowledge project", { exact: true })).toHaveValue(project.id);
-  return { ...fixture, records, replies, calls, setFailure: (value: boolean) => { failSave = value; }, loseNextResponse: () => { loseResponse = true; } };
+  return { ...fixture, records, replies, calls, taskStates, setFailure: (value: boolean) => { failSave = value; }, loseNextResponse: () => { loseResponse = true; } };
 }
+
+function currentStateView(taskId: string, patch: { freshness?: "current" | "changed_since"; consent?: string; approvalMethod?: string | null; blockers?: TaskStateInput["blockers"]; ownerDecision?: TaskStateInput["ownerDecision"]; review?: TaskStateInput["delivery"]["review"]; outcomeSources?: TaskStateSource[]; replyThreadIds?: Record<string, string> } = {}) {
+  const at = "2026-10-27T10:00:00.000Z", head = "a31f92c5e0d1b7f4c2a9e8d6b5c4a3f2e1d0c9b8", main = "c672be1a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c";
+  const pr = { kind: "external", label: "PR #112", url: "https://example.invalid/pr/112" };
+  const changed = patch.freshness === "changed_since";
+  return {
+    task: { id: taskId, projectId: "knowledge-only", title: "Export CSV", status: "blocked", priority: "now", revision: changed ? 9 : 7, createdBy: "owner", createdAt: at, updatedAt: at },
+    state: { formatVersion: 1, taskRevision: 7, statusAtWrite: "blocked", writtenAt: at, writtenBy: { principalId: "installation", authenticationMethod: "installation_token" }, declaredBy: "codex · T3",
+      changeNote: "Staging deployment failed; blocker: staging-health opened; next: operator — restore DATABASE_URL; decision: recorded",
+      outcome: { known: true, text: "PR #112 merged to main; staging deployment fails its health check.", sources: [pr, ...(patch.outcomeSources ?? [])] },
+      blockers: patch.blockers ?? [{ key: "staging-health", text: "Staging /health returns 503", unblockedBy: "operator", condition: "Restore DATABASE_URL", since: at, state: "open", sources: [] },
+        { key: "ci-runner", text: "CI runner offline", unblockedBy: "operator", condition: "Restore secret", since: at, state: "resolved", resolvedAt: at, resolution: "Secret restored", sources: [] }],
+      nextStep: { known: true, action: "Restore the variable and redeploy", actor: "operator", sources: [] },
+      ownerDecision: patch.ownerDecision ?? { state: "recorded", decisionRef: { id: "decision-1", revision: 2 } },
+      delivery: { merge: { applies: true, state: "merged", commit: head, resultCommit: main, observedAt: at, sources: [pr] }, ci: { applies: true, state: "passed", commit: head, observedAt: at, sources: [pr] },
+        review: patch.review ?? { known: false }, evidence: { applies: true, state: "stored", attachments: ["att-1"], observedAt: at, sources: [] }, deploy: { applies: true, state: "failed", target: "staging", commit: main, observedAt: at, sources: [] } } },
+    stateUnreadable: false,
+    replyThreadIds: patch.replyThreadIds ?? {},
+    assessment: { freshness: patch.freshness ?? "current", changes: { taskRevisions: changed ? 2 : 0, statusChanged: false, descriptionChanged: changed, memoriesChanged: 0, attachmentsAdded: 0, repliesAdded: changed ? 1 : 0, staleSources: 0, inactiveSources: 0 },
+      changeCount: changed ? 3 : 0, findings: patch.consent === "proposal_only" ? [{ code: "consent_missing", severity: "attention", fields: ["ownerDecision"], values: {} }] : [],
+      ownerConsent: patch.consent ?? "approved", approvalMethod: patch.approvalMethod === undefined ? "installation_token" : patch.approvalMethod, evidence: { listed: 1, present: 1, missing: [] } },
+    systemFacts: { approvedDecisions: 1, proposals: 0, openQuestions: 0, attachments: 1 },
+  };
+}
+
+test("task reader shows the current state before the description and keeps history reachable in EN/PL", async ({ page }) => {
+  const f = await mountKnowledge(page);
+  f.records.push({ id: "state-task", projectId: "knowledge-only", title: "Export CSV", description: "2026-10-22 started\n2026-10-24 blocked\n2026-10-26 unblocked", status: "blocked", priority: "now", revision: 7, createdBy: "owner" });
+  f.taskStates.set("state-task", currentStateView("state-task"));
+  // Backlog is already loaded; refresh reads the records added after mounting.
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+  await page.getByRole("link", { name: "Export CSV", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Current state", exact: true });
+  await expect(panel.getByText("PR #112 merged to main; staging deployment fails its health check.", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Staging /health returns 503", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Resolved: 1", { exact: true })).toHaveCount(0);
+  await expect(panel.getByText("Owner decision · approved with: installation token", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Pending — separate stage", { exact: true })).toHaveCount(0);
+  await expect(panel.getByText("Failed", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Current", { exact: true })).toBeVisible();
+  const description = page.getByText("2026-10-24 blocked", { exact: false });
+  const panelBox = await panel.boundingBox(), descriptionBox = await description.boundingBox();
+  expect(panelBox!.y).toBeLessThan(descriptionBox!.y);
+  await panel.getByRole("button", { name: "Go to description and history", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Description and history", exact: true })).toBeFocused();
+
+  f.taskStates.set("state-task", currentStateView("state-task", { freshness: "changed_since", consent: "proposal_only", approvalMethod: null }));
+  await selectLanguage(page);
+  // The panel refreshes on Knowledge changes, not on a language switch; reload reads the new fixture state.
+  await page.reload();
+  const plPanel = page.getByRole("region", { name: "Aktualny stan", exact: true });
+  await expect(plPanel.getByText("Zmiany od podsumowania: 3", { exact: true })).toBeVisible();
+  await expect(plPanel.getByText("Późniejsze zmiany nieuwzględnione w podsumowaniu: 3", { exact: true })).toBeVisible();
+  await expect(plPanel.getByText("Propozycja — brak zgody właściciela", { exact: true })).toBeVisible();
+  await expect(plPanel.getByText("Decyzja nie jest zatwierdzona; zgłoszenie agenta nie jest zgodą.", { exact: true })).toBeVisible();
+  await expect(plPanel.getByText("Nieznane", { exact: true })).toBeVisible();
+  expect(f.errors).toEqual([]);
+});
+
+for (const { language, width } of [{ language: "en", width: 1440 }, { language: "pl", width: 320 }]) {
+  test(`pending owner decision exposes choices without a proposal in ${language} at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const f = await mountKnowledge(page);
+    const options = ["CSV with BOM", "CSV without BOM"];
+    f.records.push({ id: "decision-task", projectId: "knowledge-only", title: "Export decision", description: "Export format decision pending", status: "blocked", priority: "now", revision: 7, createdBy: "owner" });
+    f.taskStates.set("decision-task", currentStateView("decision-task", { consent: "needed", approvalMethod: null,
+      ownerDecision: { state: "needed", question: "Which export format?", options } }));
+    await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+    await page.getByRole("link", { name: "Export decision", exact: true }).click();
+    if (language === "pl") await selectLanguage(page);
+    const panel = page.getByRole("region", { name: language === "pl" ? "Aktualny stan" : "Current state", exact: true });
+    const cell = panel.getByText(language === "pl" ? "Decyzja właściciela" : "Owner decision", { exact: true }).locator("..");
+    await expect(cell.getByText("Which export format?", { exact: true })).toBeVisible();
+    await expect(cell.getByRole("listitem")).toHaveText(options);
+    for (const option of options) await expect(cell.getByText(option, { exact: true })).toBeVisible();
+    await expect(cell.getByRole("link")).toHaveCount(0);
+    expect(await page.evaluate(() => document.scrollingElement!.scrollWidth <= window.innerWidth)).toBe(true);
+    expect(f.errors).toEqual([]);
+  });
+
+  test(`review findings preserve unknown and recorded counts in ${language} at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const f = await mountKnowledge(page);
+    const review = { applies: true as const, state: "findings_open" as const, observedAt: "2026-10-27T10:00:00.000Z", sources: [] };
+    f.records.push({ id: "review-task", projectId: "knowledge-only", title: "Review findings", description: "Review still has findings", status: "in_progress", priority: "now", revision: 7, createdBy: "owner" });
+    f.taskStates.set("review-task", currentStateView("review-task", { review }));
+    await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+    await page.getByRole("link", { name: "Review findings", exact: true }).click();
+    if (language === "pl") await selectLanguage(page);
+    const panel = page.getByRole("region", { name: language === "pl" ? "Aktualny stan" : "Current state", exact: true });
+    const unknownLabel = language === "pl" ? "Otwarte uwagi (liczba nieznana)" : "Open findings (count unknown)";
+    const countLabel = language === "pl" ? "Otwarte uwagi" : "Open findings";
+    await expect(panel.getByText(unknownLabel, { exact: true })).toBeVisible();
+    await expect(panel.getByText(`${countLabel}: 0`, { exact: true })).toHaveCount(0);
+    for (const openFindings of [2, 0]) {
+      f.taskStates.set("review-task", currentStateView("review-task", { review: { ...review, openFindings } }));
+      await page.reload();
+      await expect(panel.getByText(`${countLabel}: ${openFindings}`, { exact: true })).toBeVisible();
+      await expect(panel.getByText(unknownLabel, { exact: true })).toHaveCount(0);
+    }
+    expect(await page.evaluate(() => document.scrollingElement!.scrollWidth <= window.innerWidth)).toBe(true);
+    expect(f.errors).toEqual([]);
+  });
+
+  test(`task blocker details stay honest and visible in ${language} at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const f = await mountKnowledge(page);
+    const unknown = { known: false as const, reason: "Blockers have not been checked yet" };
+    f.records.push({ id: "blocker-task", projectId: "knowledge-only", title: "Blocker details", description: "Partial handoff", status: "blocked", priority: "now", revision: 7, createdBy: "owner" });
+    f.taskStates.set("blocker-task", currentStateView("blocker-task", { blockers: unknown }));
+    await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+    await page.getByRole("link", { name: "Blocker details", exact: true }).click();
+    if (language === "pl") await selectLanguage(page);
+    const panel = page.getByRole("region", { name: language === "pl" ? "Aktualny stan" : "Current state", exact: true });
+    const cell = panel.getByText(language === "pl" ? "Blokada" : "Blocker", { exact: true }).locator("..");
+    await expect(cell.getByText(language === "pl" ? "Nieznane" : "Unknown", { exact: true })).toBeVisible();
+    await expect(cell.getByText(unknown.reason, { exact: true })).toBeVisible();
+    await expect(cell).not.toContainText(language === "pl" ? "Brak otwartych blokad" : "No open blockers");
+
+    const at = "2026-10-27T10:00:00.000Z";
+    const blockers: TaskStateInput["blockers"] = [
+      { key: "staging-health", text: "Staging health check fails", unblockedBy: "operator", condition: "Restore DATABASE_URL", since: at, state: "open", sources: [] },
+      { key: "approval", text: "Redeployment approval missing", unblockedBy: "owner", condition: "Approve redeployment after the repair", since: at, state: "open", sources: [{ kind: "external", label: "Deployment approval", url: "https://example.invalid/approval" }] },
+    ];
+    f.taskStates.set("blocker-task", currentStateView("blocker-task", { blockers }));
+    await page.reload();
+    for (const blocker of blockers) {
+      await expect(cell.getByText(blocker.text, { exact: true })).toBeVisible();
+      await expect(cell).toContainText(blocker.condition);
+    }
+    await expect(cell).toContainText(language === "pl" ? "właściciel" : "owner");
+    const source = cell.getByRole("link", { name: "Deployment approval", exact: true });
+    await expect(source).toHaveAttribute("href", "https://example.invalid/approval");
+    await source.focus(); await expect(source).toBeFocused();
+    expect(await page.evaluate(() => document.scrollingElement!.scrollWidth <= window.innerWidth)).toBe(true);
+    expect(f.errors).toEqual([]);
+  });
+}
+
+test("a task without a recorded state says so on a narrow reader without horizontal scrolling", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const f = await mountKnowledge(page);
+  f.records.push({ id: "plain-task", projectId: "knowledge-only", title: "Plain task", description: "Only a description", status: "open", priority: "later", revision: 1, createdBy: "owner" });
+  // Backlog is already loaded; refresh reads the records added after mounting.
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+  await page.getByRole("link", { name: "Plain task", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Current state", exact: true });
+  await expect(panel.getByText("No current state recorded", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Approved decisions", { exact: true })).toBeVisible();
+  f.taskStates.set("plain-task", currentStateView("plain-task"));
+  await page.reload();
+  await expect(page.getByRole("region", { name: "Current state", exact: true }).getByText("Staging /health returns 503", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.scrollingElement!.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(f.errors).toEqual([]);
+});
+
+test("a cited reply source links into its discussion and focuses the exact reply", async ({ page }) => {
+  const f = await mountKnowledge(page);
+  f.records.push({ id: "reply-task", projectId: "knowledge-only", title: "Reply source task", description: "Task citing a discussion reply", status: "blocked", priority: "now", revision: 7, createdBy: "owner" });
+  f.records.push({ id: "decision-thread", projectId: "knowledge-only", title: "Staging decision", body: "Redeploy context", revision: 1, createdBy: "owner" });
+  f.replies.push({ id: "decision-reply", threadId: "decision-thread", body: "Approved the staging redeploy", revision: 3, createdBy: "owner" });
+  const outcomeSources: TaskStateSource[] = [{ kind: "reply", id: "decision-reply", revision: 3 }, { kind: "reply", id: "missing-reply", revision: 2 }];
+  f.taskStates.set("reply-task", currentStateView("reply-task", { outcomeSources, replyThreadIds: { "decision-reply": "decision-thread" } }));
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+  await page.getByRole("link", { name: "Reply source task", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Current state", exact: true });
+  const source = panel.getByRole("link", { name: "reply · r3", exact: true });
+  await expect(source).toHaveAttribute("href", "?view=knowledge&knowledgeProject=knowledge-only&knowledgeTab=discussions&record=decision-thread&reply=decision-reply");
+  // A cited reply without a resolved parent stays honest text instead of a guessed route.
+  await expect(panel.getByText("reply · r2", { exact: true })).toBeVisible();
+  await expect(panel.getByRole("link", { name: "reply · r2", exact: true })).toHaveCount(0);
+  await source.click();
+  await expect(page).toHaveURL(/knowledgeTab=discussions&record=decision-thread&reply=decision-reply/);
+  const reader = page.locator("[data-knowledge-detail]");
+  await expect(reader.getByRole("heading", { name: "Staging decision", exact: true })).toBeVisible();
+  const reply = reader.locator("[data-reply-id='decision-reply']");
+  await expect(reply.getByText("Approved the staging redeploy", { exact: true })).toBeVisible();
+  await expect(reply.getByText("Selected reply", { exact: true })).toBeVisible();
+  await expect(reply).toBeFocused();
+  expect(f.errors).toEqual([]);
+});
 
 test("attachment capacity shows WinPath logical usage, refresh, exceeded and denied states in EN/PL", async ({ page }) => {
   const f = await mountKnowledge(page);
