@@ -81,7 +81,7 @@ export function TaskCurrentState({ token, projectId, taskId, changeVersion, onSh
     </div>}
     <dl>
       <dt className="text-xs text-muted-foreground">{t("taskState.result")}</dt>
-      <dd className="mt-1 max-w-[70ch] break-words text-lg leading-7">{state.outcome.known ? <>{state.outcome.text}{sources(state.outcome.sources)}</> : <Unknown />}</dd>
+      <dd className="mt-1 max-w-[70ch] break-words text-lg leading-7">{state.outcome.known ? <><span>{state.outcome.text}</span>{sources(state.outcome.sources)}</> : <Unknown />}</dd>
     </dl>
     <dl className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
       <Cell label={t("taskState.blocker")} tone={open.length ? "warn" : "ok"}>
