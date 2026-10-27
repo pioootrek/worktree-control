@@ -894,6 +894,10 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     return this.knowledge.taskSystemFacts(projectId, taskId);
   }
 
+  taskChangedOnlyByState(projectId: string, taskId: string, sinceRevision: number): boolean {
+    return this.knowledge.taskChangedOnlyByState(projectId, taskId, sinceRevision);
+  }
+
   updateKnowledgeProject(project: KnowledgeProject, expectedRevision: number, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeProject> {
     return this.knowledge.updateKnowledgeProject(project, expectedRevision, context);
   }

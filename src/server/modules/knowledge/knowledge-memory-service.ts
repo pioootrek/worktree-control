@@ -74,8 +74,15 @@ export class KnowledgeMemoryService {
       if (source.kind === "memory" && source.id === memoryId) throw new KnowledgeError("invalid_request", "Memory cannot cite itself.");
       const record = this.sourceRecord(projectId, source);
       if (!record) throw new KnowledgeError("not_found", "Source not found in this project.");
-      if (record.revision !== source.revision) throw new KnowledgeError("revision_conflict", "Source revision changed.", record.revision);
+      if (!this.citationCurrent(projectId, source, record.revision)) throw new KnowledgeError("revision_conflict", "Source revision changed.", record.revision);
     }
+  }
+
+  /** State writes advance a task's revision without changing what a memory cites, so they keep the citation current. */
+  private citationCurrent(projectId: string, source: KnowledgeSource, currentRevision: number | undefined) {
+    if (source.kind === "external" || source.kind === "repository" || currentRevision === source.revision) return true;
+    return source.kind === "task" && currentRevision !== undefined && currentRevision > source.revision
+      && this.store.taskChangedOnlyByState(projectId, source.id, source.revision);
   }
 
   private mutate(request: Extract<MemoryRequest, { input: { idempotencyKey: string } }>, actor: AuthenticatedPrincipal) {
@@ -141,7 +148,7 @@ export class KnowledgeMemoryService {
   private sourceState(projectId: string, source: KnowledgeSource): KnowledgeSourceState {
     const current = this.sourceRecord(projectId, source);
     return { source, href: knowledgeSourceHref(projectId, source, current && "threadId" in current ? current.threadId : undefined), currentRevision: current?.revision ?? null,
-      stale: source.kind !== "external" && source.kind !== "repository" && current?.revision !== source.revision,
+      stale: source.kind !== "external" && source.kind !== "repository" && !this.citationCurrent(projectId, source, current?.revision),
       inactive: Boolean(current && "status" in current && ["archived", "superseded"].includes(current.status)) };
   }
 

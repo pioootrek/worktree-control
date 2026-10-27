@@ -24,7 +24,7 @@ import { memoryHistoryComparison } from "./knowledge-history-projection";
 import { searchExcerpt } from "./knowledge-search-snippet";
 import { compactPreview, importedRecordId, importedTaskPreview, importedTaskTopic, verifiedThreadSourceSql } from "./knowledge-thread-presentation";
 import type { KnowledgeTaskStateView, TaskCurrentState } from "@/shared/contracts/knowledge-task-state";
-import { collectTaskStateFacts, collectTaskSystemFacts, readTaskStateJson } from "./knowledge-task-state-queries";
+import { collectTaskStateFacts, collectTaskSystemFacts, readTaskStateJson, taskChangedOnlyByState } from "./knowledge-task-state-queries";
 
 type ThreadRow = { id: string; project_id: string; title: string; body: string; revision: number; created_by: string; created_at: string; updated_at: string; display_title?: string | null; source_preview?: string | null; reply_count?: number };
 type ReplyRow = { id: string; project_id: string; thread_id: string; body: string; revision: number; created_by: string; created_at: string; updated_at: string; source_count: number; source_ordinal: number | null; source_attribution_verified: number; source_author: unknown; source_date: unknown };
@@ -531,6 +531,10 @@ export class KnowledgeQueries implements KnowledgeStore {
     return collectTaskSystemFacts(this.database, projectId, taskId);
   }
 
+  taskChangedOnlyByState(projectId: string, taskId: string, sinceRevision: number): boolean {
+    return taskChangedOnlyByState(this.database, projectId, taskId, sinceRevision);
+  }
+
   /** Writes state and optional status atomically; history keeps the previous task including its previous state. */
   updateTaskState(task: KnowledgeTask, state: TaskCurrentState, expectedRevision: number, context: KnowledgeMutationContext): KnowledgeMutationResult<{ task: KnowledgeTask; state: TaskCurrentState }> {
     return this.mutate("task.update_state", context, () => {
@@ -540,7 +544,13 @@ export class KnowledgeQueries implements KnowledgeStore {
       const result = this.database.prepare("UPDATE knowledge_tasks SET current_state_json = ?, status = ?, revision = ?, updated_at = ? WHERE project_id = ? AND id = ? AND revision = ?")
         .run(JSON.stringify(state), task.status, task.revision, task.updatedAt, task.projectId, task.id, expectedRevision);
       if (result.changes === 0) throw new KnowledgeError("revision_conflict", "Rewizja zadania uległa zmianie.", this.getTask(task.projectId, task.id)?.revision);
-      this.history(task.projectId, "task", task.id, "updated", JSON.stringify({ ...previous, currentState: previousState === null ? null : JSON.parse(previousState) as unknown }), task.revision, context, task.updatedAt);
+      // An unreadable stored state stays in history as raw text, so a new state can always replace it.
+      let currentState: unknown = null;
+      let currentStateUnreadable: string | undefined;
+      if (previousState !== null) {
+        try { currentState = JSON.parse(previousState) as unknown; } catch { currentStateUnreadable = previousState; }
+      }
+      this.history(task.projectId, "task", task.id, "updated", JSON.stringify({ ...previous, currentState, ...(currentStateUnreadable === undefined ? {} : { currentStateUnreadable }) }), task.revision, context, task.updatedAt);
       return { task, state };
     });
   }

@@ -50,7 +50,7 @@ These facts were checked against code at `b5da139` and Knowledge records on
 | --- | --- | --- |
 | Task shape | A task has `title`, free-text `description` (≤ 65536 characters), `status` (`open`, `in_progress`, `blocked`, `done`, `archived`), `priority` and `revision`. There are no structured result, blocker, next-step or delivery fields. | `src/shared/contracts/knowledge.ts` |
 | Task updates | `update_task` replaces title, description, status and priority together under `expectedRevision`. The SQL `UPDATE` sets only those columns plus revision and time. | `knowledge-queries.ts` `updateTask` |
-| Task history | Every task update stores the complete previous row as `previousJson`, with `principalId` and `authenticationMethod`. Readable before/after comparison exists only for Memory. | `knowledge-queries.ts` `history`; `KnowledgeHistoryEntry` |
+| Task history | Every task update stores the previous task as `previousJson`. It is the mapped `KnowledgeTask` field list from `getTask`, not the raw row, so a new column is not captured unless the snapshot adds it. Entries carry with `principalId` and `authenticationMethod`. Readable before/after comparison exists only for Memory. | `knowledge-queries.ts` `history`; `KnowledgeHistoryEntry` |
 | Task reader | The reader shows status, title, attribution, the full description, edit action, an on-demand **Task context**, attachments, relations and metadata. Nothing summarises current state above the description. | `src/features/knowledge/knowledge-dashboard.tsx` |
 | Task context | `task_context` groups memories that cite the task: approved decisions (approval revision equals current revision), proposals and open questions. Source states report `stale` (revision changed) and `inactive` (archived or superseded). Derived threads are listed as evidence. | `knowledge-memory-service.ts` `taskContext` |
 | Memory sources | Memory sources may cite Knowledge records at an exact revision, external `http(s)` URLs or repository commits. Writes reject a Knowledge source whose current revision differs. | `knowledge-memory-schemas.ts`; `validateSources` |
@@ -78,8 +78,10 @@ re-verify T02e facts.
 Store the summary as a structured, versioned **current state** attached to the
 task. It is not derived from free text and is not a new kind of record. It
 lives beside the description and changes only through a dedicated operation.
-That operation advances the task revision, so ordinary task history keeps every
-previous state.
+That operation advances the task revision. Its history entry adds the previous
+state to the `previousJson` snapshot, because the mapped task fields alone would
+not contain it. Ordinary `update_task` does not change the state, so every
+previous state stays in the entry of the state write that replaced it.
 
 ```ts
 // Proposed: src/shared/contracts/knowledge-task-state.ts
@@ -208,7 +210,7 @@ Deterministic findings:
 | `ci_not_merged_head` | attention | CI and merge commits are both known and differ. |
 | `deploy_not_merged_head` | attention | Deployment and merge commits are both known and deployment matches neither the merged head nor the main commit in `detail`. |
 | `evidence_missing` | conflict | A listed attachment no longer exists or belongs to another record. |
-| `claim_without_source` | attention | A positive fact (`merged`, `passed`, `findings_closed`, `stored`, `verified`, `done`) or the outcome has no source. |
+| `claim_without_source` | attention | A positive fact (`merged`, `passed`, `findings_closed`, `stored`, `verified`, `done`) or the outcome has no source. For evidence, listed attachments count as sources. |
 | `source_stale` / `source_inactive` | attention | A cited Knowledge source changed revision, or was archived or superseded. |
 | `consent_missing` | attention | `ownerDecision.recorded` points to a memory that is unapproved or whose approval no longer applies to its current revision. |
 | `consent_method_not_accepted` | attention | The decision memory is approved, but the approval's authentication method is not in the accepted set (see [owner consent](#owner-consent-tiers)). Under the current policy this cannot occur. |
@@ -394,7 +396,7 @@ test in the implementation.
 
 | # | Scenario | Expected first reading |
 | --- | --- | --- |
-| A | **Resolved blocker** — the CI runner blocker resolved on 26 Oct, CI then passed | Blocker cell: "No open blockers · 1 resolved" (link to history). No amber in the summary. Freshness: current. |
+| A | **Resolved blocker** — the CI runner blocker resolved on 26 Oct, CI then passed | Blocker cell: "No open blockers · 1 resolved" (link to history), not amber. The only amber is the review row with 2 open findings; no attention list. Freshness: current. |
 | B | **New blocker after success** — merged, CI passed, then deployment failed a health check | Blocker cell amber: "Deployment health check fails · unblocked by operator". Delivery: merge ✓, CI ✓, deployment ✕ failed. Result still states what was merged. If task status is not `blocked`: attention `open_blocker_not_blocked`. |
 | C | **Missing and contradictory data** — status `done`, one open blocker, CI on another commit, review unknown | No green summary. Needs attention lists: conflict `done_with_open_blocker`, attention `ci_not_merged_head` with both commits, and review "Unknown". |
 | D | **Merge without deployment** — merged, CI passed, findings closed, evidence verified, deployment pending | Delivery reads "Merged · CI passed · findings closed · evidence verified · deployment pending (separate stage)". The task is not presented as finished. |
@@ -415,7 +417,12 @@ because both touch the same Knowledge files.
 1. **Migration**: an additive nullable column
    `knowledge_tasks.current_state_json TEXT`, with a `schema-inspection` count
    update. Existing rows stay `NULL`. The `update_task` SQL already leaves
-   unlisted columns unchanged.
+   unlisted columns unchanged, but `insertTask` inserts positionally
+   (`INSERT INTO knowledge_tasks VALUES (?, …)`, used by `create_task` and
+   `task_from_thread`). It must name its columns in the same change, or every
+   task creation fails once the column exists. The transfer importer's column
+   list gains the column with `NULL` for older exports. Test task creation after
+   the migration.
 2. **Contract** `src/shared/contracts/knowledge-task-state.ts`: Zod schema and
    types above, browser-safe. `KnowledgeTask` gains an optional
    `currentState: TaskCurrentState | null` on the single-task read only. List
@@ -425,7 +432,7 @@ because both touch the same Knowledge files.
    - `update_task_state { projectId, idempotencyKey, taskId, expectedRevision, state, status? }`
      with `knowledge:write`. It sets the state and, optionally, task status
      atomically, advances the revision and writes history `updated` with
-     `previousJson`. The server fills `taskRevision`, `statusAtWrite` and
+     `previousJson` = previous task fields plus `currentState`. The server fills `taskRevision`, `statusAtWrite` and
      `writtenAt`.
    - `task_state { projectId, taskId }` with `knowledge:read`. It returns
      `{ task summary, state, assessment }` using bounded, indexed counts. It
@@ -446,7 +453,8 @@ because both touch the same Knowledge files.
 
 Tests: unit tests for every finding code and consent tier, run with both the
 current and the future `OWNER_CONSENT_METHODS`; SQLite tests for
-migration, revision conflict, history snapshot, idempotent replay and
+migration, task creation after it, revision conflict, a history snapshot that
+contains the previous state, idempotent replay and
 transfer round trip; transport parity for the two operations; static-export UI
 tests for scenarios A–G at 1440, 1366, 390 and 320 in PL/EN and dark/light,
 including keyboard order and focus return. Verification: managed `check`,
@@ -509,6 +517,17 @@ a whole remains a proposal until the owner reviews the document and prototype.
 4. **Rollout order.** Implement after the higher-priority work the owner set on
    2026-10-05 (the task remains `later`), and after PR110 and the `legacyId`
    change merge.
+5. **Citations across state writes** (after the n8n review of PR #113). Every
+   state write advances the task revision. Memory validation requires current
+   source revisions, so a decision that cites its own task could never be
+   approved once a state pointed at it. A task revision produced only by
+   `update_task_state` therefore keeps a citation of that task current, for
+   `approve_memory`, memory writes, source states and state writes. A state
+   write is recognized by the `currentState` key the server adds to
+   `previousJson`, so no history-operation migration is needed. An
+   `update_task` edit still invalidates the citation. In the same way, a
+   memory revision that only added an approval does not make a state's
+   reference to it stale.
 
 ## Unverified and out of scope
 

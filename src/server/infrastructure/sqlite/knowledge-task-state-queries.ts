@@ -12,6 +12,27 @@ export function readTaskStateJson(database: Database.Database, projectId: string
   return row ? row.current_state_json : undefined;
 }
 
+/**
+ * True when every task revision after `sinceRevision` came from `update_task_state`.
+ * Only state writes add `currentState` to the server-built `previousJson`; `update_task` does not.
+ * A citation of the task then still refers to unchanged title, description and priority.
+ */
+export function taskChangedOnlyByState(database: Database.Database, projectId: string, taskId: string, sinceRevision: number): boolean {
+  const row = database.prepare(`SELECT count(*) AS total,
+      coalesce(sum(operation = 'updated' AND (CASE WHEN json_valid(previous_json) THEN json_type(previous_json, '$.currentState') END) IS NOT NULL), 0) AS stateWrites,
+      (SELECT revision FROM knowledge_tasks WHERE project_id = @projectId AND id = @taskId) AS current
+    FROM knowledge_history WHERE project_id = @projectId AND record_kind = 'task' AND record_id = @taskId AND revision > @sinceRevision`)
+    .get({ projectId, taskId, sinceRevision }) as { total: number; stateWrites: number; current: number | null };
+  return row.current !== null && row.current > sinceRevision && row.total === row.current - sinceRevision && row.stateWrites === row.total;
+}
+
+/** True when every memory revision after `sinceRevision` only added an approval; the cited text is unchanged. */
+function memoryChangedOnlyByApproval(database: Database.Database, projectId: string, memoryId: string, sinceRevision: number, currentRevision: number): boolean {
+  const row = database.prepare(`SELECT count(*) AS total, coalesce(sum(operation = 'approved'), 0) AS approvals FROM knowledge_history
+    WHERE project_id = ? AND record_kind = 'memory' AND record_id = ? AND revision > ?`).get(projectId, memoryId, sinceRevision) as { total: number; approvals: number };
+  return currentRevision > sinceRevision && row.total === currentRevision - sinceRevision && row.approvals === row.total;
+}
+
 /** Bounded reads on the controller's single connection; no write and no separate transaction. */
 export function collectTaskStateFacts(database: Database.Database, projectId: string, task: KnowledgeTask, state: TaskCurrentState): TaskStateFacts {
   const since = state.writtenAt;
@@ -45,7 +66,9 @@ export function collectTaskStateFacts(database: Database.Database, projectId: st
     const status = source.kind === "task" || source.kind === "memory" ? ", status" : ", NULL AS status";
     const current = database.prepare(`SELECT revision${status} FROM ${table[source.kind]} WHERE project_id = ? AND id = ?`).get(projectId, source.id) as { revision: number; status: string | null } | undefined;
     if (!current || ["archived", "superseded"].includes(current.status ?? "")) inactiveSources += 1;
-    else if (current.revision !== source.revision) staleSources += 1;
+    else if (current.revision !== source.revision
+      && !(source.kind === "task" && taskChangedOnlyByState(database, projectId, source.id, source.revision))
+      && !(source.kind === "memory" && memoryChangedOnlyByApproval(database, projectId, source.id, source.revision, current.revision))) staleSources += 1;
   }
 
   const delivery = state.delivery.evidence;

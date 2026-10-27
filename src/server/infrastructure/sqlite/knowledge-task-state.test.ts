@@ -176,10 +176,50 @@ describe("task current state", () => {
 
     const approved = f.call<KnowledgeMutationResult<KnowledgeMemory>>("approve_memory", { memoryId: decision.id, expectedRevision: decision.revision, idempotencyKey: "approve" }, f.owner).value;
     expect(f.read().assessment).toMatchObject({ ownerConsent: "approved", approvalMethod: "owner_session" });
-    expect(f.read().assessment.findings.map(item => item.code)).toEqual(["source_stale"]);
+    // The approval advances the memory revision without changing the cited decision.
+    expect(f.read().assessment.findings).toEqual([]);
 
     f.call("update_memory", { memoryId: decision.id, expectedRevision: approved.revision, idempotencyKey: "edit-decision", title: "Header variant B", body: "Use variant B with BOM", category: "decision", tags: [], legacyId: null, sources: [chat] }, f.owner);
     expect(f.read().assessment).toMatchObject({ ownerConsent: "approval_invalidated" });
+  });
+
+  it("replaces an unreadable stored state and keeps the raw text in history", () => {
+    const f = setup();
+    f.write(mergedNotDeployed());
+    const database = new Database(f.path);
+    try { database.prepare("UPDATE knowledge_tasks SET current_state_json = ? WHERE id = ?").run("{broken", f.task.id); } finally { database.close(); }
+    expect(f.read()).toMatchObject({ state: null, stateUnreadable: true });
+
+    f.write(mergedNotDeployed());
+    expect(f.read()).toMatchObject({ stateUnreadable: false, assessment: { freshness: "current" } });
+    const history = f.call<KnowledgePage<KnowledgeHistoryEntry>>("history", { recordKind: "task", recordId: f.task.id });
+    expect(JSON.parse(history.items.at(-1)!.previousJson!)).toMatchObject({ currentState: null, currentStateUnreadable: "{broken" });
+  });
+
+  it("keeps a task-citing decision approvable across state writes but not across task edits", () => {
+    const f = setup();
+    const cite = () => ({ kind: "task" as const, id: f.task.id, revision: f.current().revision });
+    const cited = f.current().revision;
+    const decision = f.call<KnowledgeMutationResult<KnowledgeMemory>>("create_memory", { title: "Header variant B", body: "Use variant B", category: "decision", tags: [], legacyId: null, sources: [cite()], idempotencyKey: "decision" }).value;
+    const state = mergedNotDeployed();
+    state.ownerDecision = { state: "recorded", decisionRef: { id: decision.id, revision: decision.revision } };
+    f.write(state, { status: "in_progress" });
+    state.changeNote = "Second write";
+    f.write(state);
+    expect(f.current().revision).toBe(cited + 2);
+    expect(f.read().assessment).toMatchObject({ ownerConsent: "proposal_only" });
+
+    const approved = f.call<KnowledgeMutationResult<KnowledgeMemory>>("approve_memory", { memoryId: decision.id, expectedRevision: decision.revision, idempotencyKey: "approve" }, f.owner).value;
+    expect(f.read().assessment).toMatchObject({ ownerConsent: "approved", approvalMethod: "owner_session", findings: [] });
+    // A new write cites the current revision; the approval-only revision is not reported as stale before that.
+    state.ownerDecision = { state: "recorded", decisionRef: { id: decision.id, revision: approved.revision } };
+
+    const proposal = f.call<KnowledgeMutationResult<KnowledgeMemory>>("create_memory", { title: "Footer", body: "Add a footer", category: "decision", tags: [], legacyId: null, sources: [cite()], idempotencyKey: "proposal" }).value;
+    const task = f.current();
+    f.call("update_task", { taskId: task.id, expectedRevision: task.revision, idempotencyKey: "edit", title: task.title, description: "Changed scope", priority: task.priority, status: task.status });
+    f.write(state);
+    expect(() => f.call("approve_memory", { memoryId: proposal.id, expectedRevision: proposal.revision, idempotencyKey: "approve-proposal" }, f.owner))
+      .toThrowError(expect.objectContaining({ code: "revision_conflict" }));
   });
 
   it("exports the state column and accepts older exports without it", () => {
