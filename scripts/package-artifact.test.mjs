@@ -50,8 +50,8 @@ test("current manifest is a publishable pre-1.0 worktree-control package whose f
   await assert.rejects(promisify(execFile)("npm", ["run", "--silent", "prepublishOnly"], { cwd: root }), error => /Refusing npm publish from a checkout/.test(error.stderr));
   const { stdout } = await promisify(execFile)("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: root, maxBuffer: 8 * 1024 * 1024 });
   const files = JSON.parse(stdout)[0].files.map(file => file.path);
-  for (const required of ["package.json", "CHANGELOG.md", "LICENSE", "README.md", "skills/worktree-control/SKILL.md"]) assert(files.includes(required), `missing ${required}`);
-  const allowed = /^(?:package\.json|CHANGELOG\.md|LICENSE|README\.md|THIRD_PARTY_NOTICES\.md|dist\/cli\/|out\/|skills\/|docs\/(?:authentication|controller-https|dependency-licenses|package-trial|user-service|reservations-and-mcp|knowledge-evidence)\.md$)/;
+  for (const required of ["package.json", "CHANGELOG.md", "LICENSE", "README.md", "skills/worktree-control/SKILL.md", "docs/dev-environment-vault.md", "docs/environment-runtime-plan.md"]) assert(files.includes(required), `missing ${required}`);
+  const allowed = /^(?:package\.json|CHANGELOG\.md|LICENSE|README\.md|THIRD_PARTY_NOTICES\.md|dist\/cli\/|out\/|skills\/|docs\/(?:authentication|controller-https|dependency-licenses|dev-environment-vault|environment-runtime-plan|package-trial|user-service|reservations-and-mcp|knowledge-evidence)\.md$)/;
   assert.deepEqual(files.filter(file => !allowed.test(file)), []);
   assert.deepEqual(files.filter(file => /(?:^|\/)(?:site|tests?|\.claude|\.github|src|scripts|measurements|node_modules|\.env[^/]*|state\.sqlite3[^/]*|[^/]*\.log)(?:\/|$)/.test(file)), []);
 });
