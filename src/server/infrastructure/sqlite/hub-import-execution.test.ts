@@ -128,6 +128,50 @@ describe("legacyId search provenance", () => {
     db.close(); f.store.close();
   });
 
+  it.each([100, 400, 1600])("bounds provenance reads for missing and existing IDs with %i discussions", count => {
+    const f = fixture(), original = importTask(f), db = new Database(join(f.root, "state.sqlite3"));
+    const queries = new KnowledgeQueries(db);
+    try {
+      const task = db.prepare(`INSERT INTO knowledge_tasks
+        SELECT ?,project_id,title,description,status,priority,revision,created_by,created_at,updated_at
+        FROM knowledge_tasks WHERE id=?`);
+      const thread = db.prepare(`INSERT INTO knowledge_threads
+        SELECT ?,project_id,?,?,revision,created_by,created_at,updated_at FROM knowledge_threads WHERE id=?`);
+      const relation = db.prepare(`INSERT INTO knowledge_relations
+        SELECT ?,project_id,type,source_kind,?,target_kind,?,revision,created_by,created_at
+        FROM knowledge_relations WHERE id=?`);
+      const source = db.prepare(`INSERT INTO knowledge_import_sources
+        SELECT ?,project_id,batch_id,source_id,source_repository,source_commit,?,?,source_sha256,mapping_version,target_kind,?,original_payload_json,created_at,target_revision
+        FROM knowledge_import_sources WHERE target_kind='task' AND target_id=?`);
+      db.transaction(() => {
+        for (let i = 1; i < count; i++) {
+          const path = `docs/backlog/feature/item-${i}.json`, legacyId = `item-${i}`;
+          const taskId = importedRecordId("legacy", "fixture", path, "task"), threadId = importedRecordId("legacy", "fixture", path, "thread");
+          task.run(taskId, original.taskId);
+          thread.run(threadId, `Imported discussion: ${legacyId}`, `Historical comments imported from ${path}`, original.threadId);
+          relation.run(importedRecordId("legacy", "fixture", path, "task-thread"), taskId, threadId, importedRecordId("legacy", "fixture", sourcePath, "task-thread"));
+          source.run(importedRecordId("legacy", "fixture", path, "source"), path, legacyId, taskId, original.taskId);
+        }
+      })();
+      // Count actual legacy-ID evaluations instead of asserting host-dependent timings.
+      // The temporary view retains the real table and its existing project/target indexes.
+      let reads = 0;
+      db.function("knowledge_legacy_probe", (value: unknown) => { reads++; return value; });
+      const columns = (db.prepare("PRAGMA table_info(knowledge_import_sources)").all() as Array<{name: string}>)
+        .map(({name}) => name === "legacy_id" ? "knowledge_legacy_probe(legacy_id) AS legacy_id" : `"${name}"`);
+      db.exec(`CREATE TEMP VIEW knowledge_import_sources AS SELECT ${columns.join(",")} FROM main.knowledge_import_sources`);
+      const observations: Array<{legacyId: string; reads: number}> = [];
+      for (const legacyId of ["missing", "A"]) {
+        reads = 0;
+        const hits = queries.searchKnowledge("legacy", 25, 0, { legacyId }).items.map(hit => hit.id);
+        expect(hits).toEqual(legacyId === "A" ? [original.taskId, original.threadId] : []);
+        expect(reads, `${legacyId}: ${reads} source reads for ${count} discussions`).toBeLessThan(count * 16);
+        observations.push({ legacyId, reads });
+      }
+      if (count === 1600) console.info("legacy-id-read-cost", { discussions: count, observations });
+    } finally { db.close(); f.store.close(); }
+  });
+
   it("finds completion aliases and standalone completed tasks without duplicating hits", () => {
     const f = fixture();
     execute(f.store, f.identity, f.owner, { plan: plan([
