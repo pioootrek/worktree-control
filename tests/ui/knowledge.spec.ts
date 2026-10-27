@@ -83,7 +83,7 @@ async function mountKnowledge(page: Page, { withRuntimeProject = false }: { with
   return { ...fixture, records, replies, calls, taskStates, setFailure: (value: boolean) => { failSave = value; }, loseNextResponse: () => { loseResponse = true; } };
 }
 
-function currentStateView(taskId: string, patch: { freshness?: "current" | "changed_since"; consent?: string; approvalMethod?: string | null; blockers?: TaskStateInput["blockers"]; outcomeSources?: TaskStateSource[]; replyThreadIds?: Record<string, string> } = {}) {
+function currentStateView(taskId: string, patch: { freshness?: "current" | "changed_since"; consent?: string; approvalMethod?: string | null; blockers?: TaskStateInput["blockers"]; ownerDecision?: TaskStateInput["ownerDecision"]; review?: TaskStateInput["delivery"]["review"]; outcomeSources?: TaskStateSource[]; replyThreadIds?: Record<string, string> } = {}) {
   const at = "2026-10-27T10:00:00.000Z", head = "a31f92c5e0d1b7f4c2a9e8d6b5c4a3f2e1d0c9b8", main = "c672be1a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c";
   const pr = { kind: "external", label: "PR #112", url: "https://example.invalid/pr/112" };
   const changed = patch.freshness === "changed_since";
@@ -95,9 +95,9 @@ function currentStateView(taskId: string, patch: { freshness?: "current" | "chan
       blockers: patch.blockers ?? [{ key: "staging-health", text: "Staging /health returns 503", unblockedBy: "operator", condition: "Restore DATABASE_URL", since: at, state: "open", sources: [] },
         { key: "ci-runner", text: "CI runner offline", unblockedBy: "operator", condition: "Restore secret", since: at, state: "resolved", resolvedAt: at, resolution: "Secret restored", sources: [] }],
       nextStep: { known: true, action: "Restore the variable and redeploy", actor: "operator", sources: [] },
-      ownerDecision: { state: "recorded", decisionRef: { id: "decision-1", revision: 2 } },
+      ownerDecision: patch.ownerDecision ?? { state: "recorded", decisionRef: { id: "decision-1", revision: 2 } },
       delivery: { merge: { applies: true, state: "merged", commit: head, resultCommit: main, observedAt: at, sources: [pr] }, ci: { applies: true, state: "passed", commit: head, observedAt: at, sources: [pr] },
-        review: { known: false }, evidence: { applies: true, state: "stored", attachments: ["att-1"], observedAt: at, sources: [] }, deploy: { applies: true, state: "failed", target: "staging", commit: main, observedAt: at, sources: [] } } },
+        review: patch.review ?? { known: false }, evidence: { applies: true, state: "stored", attachments: ["att-1"], observedAt: at, sources: [] }, deploy: { applies: true, state: "failed", target: "staging", commit: main, observedAt: at, sources: [] } } },
     stateUnreadable: false,
     replyThreadIds: patch.replyThreadIds ?? {},
     assessment: { freshness: patch.freshness ?? "current", changes: { taskRevisions: changed ? 2 : 0, statusChanged: false, descriptionChanged: changed, memoriesChanged: 0, attachmentsAdded: 0, repliesAdded: changed ? 1 : 0, staleSources: 0, inactiveSources: 0 },
@@ -142,6 +142,50 @@ test("task reader shows the current state before the description and keeps histo
 });
 
 for (const { language, width } of [{ language: "en", width: 1440 }, { language: "pl", width: 320 }]) {
+  test(`pending owner decision exposes choices without a proposal in ${language} at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const f = await mountKnowledge(page);
+    const options = ["CSV with BOM", "CSV without BOM"];
+    f.records.push({ id: "decision-task", projectId: "knowledge-only", title: "Export decision", description: "Export format decision pending", status: "blocked", priority: "now", revision: 7, createdBy: "owner" });
+    f.taskStates.set("decision-task", currentStateView("decision-task", { consent: "needed", approvalMethod: null,
+      ownerDecision: { state: "needed", question: "Which export format?", options } }));
+    await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+    await page.getByRole("link", { name: "Export decision", exact: true }).click();
+    if (language === "pl") await selectLanguage(page);
+    const panel = page.getByRole("region", { name: language === "pl" ? "Aktualny stan" : "Current state", exact: true });
+    const cell = panel.getByText(language === "pl" ? "Decyzja właściciela" : "Owner decision", { exact: true }).locator("..");
+    await expect(cell.getByText("Which export format?", { exact: true })).toBeVisible();
+    await expect(cell.getByRole("listitem")).toHaveText(options);
+    for (const option of options) await expect(cell.getByText(option, { exact: true })).toBeVisible();
+    await expect(cell.getByRole("link")).toHaveCount(0);
+    expect(await page.evaluate(() => document.scrollingElement!.scrollWidth <= window.innerWidth)).toBe(true);
+    expect(f.errors).toEqual([]);
+  });
+
+  test(`review findings preserve unknown and recorded counts in ${language} at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const f = await mountKnowledge(page);
+    const review = { applies: true as const, state: "findings_open" as const, observedAt: "2026-10-27T10:00:00.000Z", sources: [] };
+    f.records.push({ id: "review-task", projectId: "knowledge-only", title: "Review findings", description: "Review still has findings", status: "in_progress", priority: "now", revision: 7, createdBy: "owner" });
+    f.taskStates.set("review-task", currentStateView("review-task", { review }));
+    await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+    await page.getByRole("link", { name: "Review findings", exact: true }).click();
+    if (language === "pl") await selectLanguage(page);
+    const panel = page.getByRole("region", { name: language === "pl" ? "Aktualny stan" : "Current state", exact: true });
+    const unknownLabel = language === "pl" ? "Otwarte uwagi (liczba nieznana)" : "Open findings (count unknown)";
+    const countLabel = language === "pl" ? "Otwarte uwagi" : "Open findings";
+    await expect(panel.getByText(unknownLabel, { exact: true })).toBeVisible();
+    await expect(panel.getByText(`${countLabel}: 0`, { exact: true })).toHaveCount(0);
+    for (const openFindings of [2, 0]) {
+      f.taskStates.set("review-task", currentStateView("review-task", { review: { ...review, openFindings } }));
+      await page.reload();
+      await expect(panel.getByText(`${countLabel}: ${openFindings}`, { exact: true })).toBeVisible();
+      await expect(panel.getByText(unknownLabel, { exact: true })).toHaveCount(0);
+    }
+    expect(await page.evaluate(() => document.scrollingElement!.scrollWidth <= window.innerWidth)).toBe(true);
+    expect(f.errors).toEqual([]);
+  });
+
   test(`task blocker details stay honest and visible in ${language} at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     const f = await mountKnowledge(page);

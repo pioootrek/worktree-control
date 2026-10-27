@@ -97,7 +97,12 @@ export function TaskCurrentState({ token, projectId, taskId, changeVersion, onSh
       </Cell>
       <Cell label={t("taskState.ownerDecision")} tone={consentTone}>
         <span className={toneClass[consentTone]}>{t(key(`taskState.consent.${assessment.ownerConsent}`), { method })}</span>
-        {state.ownerDecision.state === "needed" && <span className="block text-sm">{state.ownerDecision.question}</span>}
+        {state.ownerDecision.state === "needed" && <>
+          <span className="block text-sm">{state.ownerDecision.question}</span>
+          {!!state.ownerDecision.options?.length && <ul className="mt-1 list-disc space-y-0.5 pl-5">
+            {state.ownerDecision.options.map((option, index) => <li key={index}>{option}</li>)}
+          </ul>}
+        </>}
         {decisionRef && <span className="block">{source({ kind: "memory", ...decisionRef }, 0)}</span>}
       </Cell>
       <Cell label={t("taskState.evidence")} tone={assessment.evidence?.missing.length ? "bad" : "applies" in evidence && evidence.applies ? TONE[evidence.state] ?? "neutral" : "unknown"}>
@@ -157,7 +162,10 @@ function DeliveryValue({ state, stage }: { state: TaskCurrentState; stage: TaskD
   if (!fact.applies) return <span className="inline-flex items-center gap-1.5 text-muted-foreground"><CircleMinus aria-hidden className="size-4" />{t("taskState.notApplicable")}</span>;
   const tone = TONE[fact.state] ?? "neutral";
   const Icon = toneIcon[tone];
-  return <span className={`inline-flex items-center gap-1.5 ${toneClass[tone]}`}><Icon aria-hidden className="size-4 shrink-0" />{t(key(`taskState.state.${stage}.${fact.state}`), { count: fact.openFindings ?? 0, who: state.declaredBy ?? state.writtenBy.principalId })}</span>;
+  const label = stage === "review" && fact.state === "findings_open" && fact.openFindings === undefined
+    ? t("taskState.reviewFindingsCountUnknown")
+    : t(key(`taskState.state.${stage}.${fact.state}`), { count: fact.openFindings ?? 0, who: state.declaredBy ?? state.writtenBy.principalId });
+  return <span className={`inline-flex items-center gap-1.5 ${toneClass[tone]}`}><Icon aria-hidden className="size-4 shrink-0" />{label}</span>;
 }
 
 function SourceLink({ projectId, source, replyThreadId }: { projectId: string; source: TaskStateSource; replyThreadId?: string }) {
