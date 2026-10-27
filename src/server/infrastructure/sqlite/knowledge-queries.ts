@@ -305,6 +305,24 @@ export class KnowledgeQueries implements KnowledgeStore {
     // verified imported-topic projection, which is needed only for discussions.
     const kinds = options.kind ? [options.kind] : ["thread", "reply", "task", "memory"];
     const needsTopic = kinds.includes("thread") || kinds.includes("reply");
+    // Keep provenance out of unfiltered search, including its text matching.
+    // EXISTS preserves one hit per record when several sources share an ID.
+    const legacyProvenance = options.legacyId === undefined ? "" : `
+      OR (kind IN ('task', 'thread') AND EXISTS (
+        SELECT 1 FROM knowledge_import_sources s
+        WHERE s.project_id=records.project_id AND s.legacy_id=@legacyId
+          AND s.target_id=records.id
+          AND (s.target_kind=records.kind OR (records.kind='task' AND s.target_kind='task_completion'))))
+      OR (kind='thread' AND EXISTS (
+        SELECT 1 FROM knowledge_import_sources s
+        JOIN knowledge_tasks task ON task.project_id=s.project_id AND task.id=s.target_id
+        JOIN knowledge_relations relation ON relation.project_id=s.project_id
+          AND relation.id=knowledge_import_record_id(s.project_id,s.source_id,s.source_path,'task-thread')
+          AND relation.type='derived_from' AND relation.source_kind='task' AND relation.source_id=task.id
+          AND relation.target_kind='thread' AND relation.target_id=records.id
+        WHERE s.project_id=records.project_id AND s.legacy_id=@legacyId AND s.target_kind='task'
+          AND task.id=knowledge_import_record_id(s.project_id,s.source_id,s.source_path,'task')
+          AND records.id=knowledge_import_record_id(s.project_id,s.source_id,s.source_path,'thread')))`;
     const arms = [] as string[];
     if (kinds.includes("thread")) arms.push(`SELECT t.id, t.project_id, 'thread' AS kind, coalesce(v.display_title,t.title) title, t.title raw_title, t.body, t.revision, 'active' AS status, t.updated_at, NULL AS thread_id, '[]' AS tags_json, NULL AS legacy_id
       FROM knowledge_threads t LEFT JOIN verified v ON v.thread_id=t.id WHERE t.project_id=@projectId`);
@@ -319,7 +337,7 @@ export class KnowledgeQueries implements KnowledgeStore {
       SELECT id, project_id AS projectId, kind, title, body, raw_title AS rawTitle, revision, status, updated_at AS updatedAt, thread_id AS threadId FROM records
       WHERE (@inactive OR @status IN ('archived', 'superseded') OR status NOT IN ('archived', 'superseded'))
       AND (@kind IS NULL OR kind = @kind) AND (@status IS NULL OR status = @status)
-      AND (@legacyId IS NULL OR legacy_id = @legacyId)
+      AND (@legacyId IS NULL OR legacy_id = @legacyId ${legacyProvenance})
       AND (@tag IS NULL OR EXISTS(SELECT 1 FROM json_each(tags_json) WHERE knowledge_fold(value) = knowledge_fold(@tag)))
       AND instr(knowledge_fold(title || char(10) || raw_title || char(10) || body || char(10) || coalesce((SELECT group_concat(value, char(10)) FROM json_each(tags_json)), '') || char(10) || coalesce(legacy_id, '')), knowledge_fold(@query)) > 0
       ORDER BY updatedAt DESC, kind, id LIMIT @limit OFFSET @offset`).all({ projectId, limit: limit + 1, offset,

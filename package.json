@@ -67,6 +67,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "test:modules": "vitest run src/server/modules src/server/infrastructure src/architecture.test.ts",
+    "test:knowledge": "vitest run src/server/infrastructure/sqlite/hub-import-execution.test.ts src/server/infrastructure/sqlite/knowledge-memory.test.ts src/server/infrastructure/sqlite/knowledge-project-transfer.test.ts src/server/knowledge-transports.test.ts",
     "test:ui": "playwright test",
     "test:ui:detail-focus": "playwright test tests/ui/detail-focus.spec.ts",
     "test:integration": "node scripts/build-fingerprint.mjs --check && vitest run --config vitest.integration.config.ts",

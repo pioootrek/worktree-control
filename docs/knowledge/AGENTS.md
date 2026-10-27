@@ -34,12 +34,13 @@ from agent proposals and historical imported author labels.
 
 ## Imported records and attachments
 
-Find a legacy ID with `knowledge_search`, using `query` and
-`includeInactive: true`. For a matching thread, use `knowledge_relations` to
+Find a legacy ID with `knowledge_search`, using the exact `legacyId` and
+`includeInactive: true`. The filter matches memories and provenance-backed
+tasks and threads. For a matching thread, use `knowledge_relations` to
 find its task. If needed, search `knowledge_tasks` by title with
-`activeOnly: false`, then read candidate records. The `legacyId` filter
-currently applies only to memories; an empty filtered result does not prove
-a task is absent. Report ambiguous matches instead of creating duplicates.
+`activeOnly: false`, then read candidate records. Records without import
+provenance still require text search. Report ambiguous matches instead of
+creating duplicates.
 
 Use `knowledge_attachments` and `knowledge_attachment` for imported note
 payloads. Before uploading a batch, check `knowledge_attachment_policy` and

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SqliteStateStore } from "./sqlite-store";
 import { IdentityService } from "./modules/identity";
@@ -18,6 +19,7 @@ import { runKnowledgeCommand } from "../cli/knowledge-management";
 import { writeServiceAccess } from "../cli/service-access";
 import type { AppPaths } from "./paths";
 import type { KnowledgeTask, KnowledgeThread, KnowledgePage } from "@/shared/contracts/knowledge";
+import { importedRecordId } from "./infrastructure/sqlite/knowledge-thread-presentation";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -71,10 +73,44 @@ async function setup(clock?: () => string, limits?: import("@/shared/contracts/k
   };
   const paths = { serviceAccessPath: join(directory, "access.json"), databasePath: join(directory, "never-open.sqlite3") } as AppPaths;
   writeServiceAccess(paths.serviceAccessPath, { pid: process.pid, startedAt: new Date().toISOString(), version: "test", dashboardEndpoint: base, mcpEndpoint: endpoint.href, accessUrl: base, logDirectory: directory });
-  return { store, identity, owner, project, privateProject, agents, agentTokens, clients, base, http, call, paths, git, service, events };
+  return { store, identity, owner, project, privateProject, agents, agentTokens, clients, base, http, call, paths, git, service, events, databasePath: join(directory, "state.sqlite3") };
 }
 
 describe("real knowledge HTTP, MCP and CLI", () => {
+  it("shares exact provenance filtering, pagination and authorization across HTTP, MCP and CLI", async () => {
+    const f = await setup(), projectId = f.project.id, sourceId = "fixture", sourcePath = "docs/backlog/feature/A.json";
+    const threadId = importedRecordId(projectId, sourceId, sourcePath, "thread");
+    const taskId = importedRecordId(projectId, sourceId, sourcePath, "task");
+    const ids = [threadId, taskId, importedRecordId(projectId, sourceId, sourcePath, "task-thread")];
+    const knowledge = new KnowledgeService(f.store, f.identity, () => "2026-10-27T09:00:00.000Z", () => ids.shift()!);
+    knowledge.createThread(projectId, { title: "Discussion", body: "Context" }, { idempotencyKey: "legacy-thread" }, f.owner);
+    knowledge.createTaskFromThread(projectId, threadId, { title: "Task", description: "Deliver" }, { idempotencyKey: "legacy-task" }, f.owner);
+    const db = new Database(f.databasePath);
+    db.prepare(`INSERT INTO knowledge_import_sources
+      (id,project_id,source_id,source_repository,source_commit,source_path,legacy_id,source_sha256,mapping_version,target_kind,target_id,created_at,target_revision)
+      VALUES ('legacy-source',?,?, '/source',?,?, 'A',?,2,'task',?,?,1)`)
+      .run(projectId, sourceId, "d".repeat(40), sourcePath, "a".repeat(64), taskId, "2026-10-27T09:00:00.000Z");
+    db.close();
+    const search = async (input: Record<string, unknown>) => {
+      const http = await (await f.http("search", input, f.agentTokens[0])).json();
+      expect((await f.call(0, "search", input)).value).toEqual(http);
+      const lines: string[] = [];
+      await runKnowledgeCommand(["search", "--json", JSON.stringify(input)], f.paths, { environment: { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: line => lines.push(line) });
+      expect(JSON.parse(lines[0])).toEqual(http);
+      return http;
+    };
+    expect(await search({ projectId, legacyId: "A", limit: 1 })).toMatchObject({ items: [{ id: taskId, kind: "task" }], nextOffset: 1 });
+    expect(await search({ projectId, legacyId: "A", limit: 1, offset: 1 })).toMatchObject({ items: [{ id: threadId, kind: "thread" }], nextOffset: null });
+    expect(await search({ projectId, legacyId: "missing" })).toEqual({ items: [], nextOffset: null });
+    const input = { projectId: f.privateProject.id, legacyId: "A", includeInactive: true };
+    expect((await f.http("search", input, f.agentTokens[0])).status).toBe(403);
+    expect((await f.call(0, "search", input)).value.code).toBe("knowledge_forbidden");
+    await expect(runKnowledgeCommand(["search", "--json", JSON.stringify(input)], f.paths, { environment: { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: f.agentTokens[0] } })).rejects.toThrow();
+    const project = f.store.getKnowledgeProject(projectId)!;
+    knowledge.archiveProject(projectId, project.revision, { idempotencyKey: "archive-legacy-project" }, f.owner);
+    expect(await search({ projectId, legacyId: "A" })).toMatchObject({ items: [{ id: taskId }, { id: threadId }] });
+  });
+
   it("preflights a whole manifest above 1 MiB consistently across transports", async () => {
     const f = await setup(), projectId = f.project.id;
     const task = (await f.call(0, "create_task", { projectId, title: "Manifest", description: "Manifest", idempotencyKey: "manifest-task" })).value.value;

@@ -25,6 +25,128 @@ function atCommit(value:HubImportPlan,commit:string):HubImportPlan{const result=
 function fixture(){const root=mkdtempSync(join(tmpdir(),"hub-import-execution-"));roots.push(root);let n=0;const ids=["00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000003"];const store=new SqliteStateStore(join(root,"state.sqlite3")),identity=new IdentityService(store,()=>NOW,()=>ids[n++]!,()=>"a".repeat(64)),owner=identity.authenticateBearer(identity.bootstrapOwnerSession().token);return {root,store,identity,owner};}
 const execute=(store:SqliteStateStore,identity:IdentityService,owner:ReturnType<IdentityService["authenticateBearer"]>,input:Parameters<typeof executeHubImport>[3])=>executeHubImport(store,identity,owner,input,()=>NOW,plan=>plan);
 
+describe("legacyId search provenance", () => {
+  const sourcePath = "docs/backlog/feature/A.json";
+  function importTask(f: ReturnType<typeof fixture>, projectId = "legacy", sourceId = "fixture", status = "open") {
+    const source = plan([
+      mapping(sourcePath, "task", "task", { id: "A", title: "Storage decision", status }),
+      mapping(`${sourcePath}#notes/0`, "task_note", "historical_comment", { id: "A:note:0", text: "Historical context" }),
+    ]);
+    source.source.sourceId = sourceId;
+    source.planHash = calculateHubImportPlanHash(source);
+    source.planId = `hub:${sourceId}:${source.source.commit}:${source.planHash.slice(0,16)}`;
+    execute(f.store, f.identity, f.owner, { plan: source, targetProjectId: projectId, targetProjectName: projectId,
+      ...(f.store.getKnowledgeProject(projectId) ? { expectedTargetRevision: f.store.getKnowledgeProject(projectId)!.revision } : {}) });
+    return { taskId: importedRecordId(projectId, sourceId, sourcePath, "task"), threadId: importedRecordId(projectId, sourceId, sourcePath, "thread") };
+  }
+
+  it("finds exact imported task/thread IDs without borrowing titles, text or native relations", () => {
+    const f = fixture(), { taskId, threadId } = importTask(f);
+    const service = new KnowledgeService(f.store, f.identity);
+    const native = service.createThread("legacy", { title: "Imported discussion: A", body: `Historical comments imported from ${sourcePath}` }, { idempotencyKey: "native-thread" }, f.owner).value;
+    const nativeTask = service.createTaskFromThread("legacy", threadId, { title: "A", description: "Storage decision A" }, { idempotencyKey: "native-task" }, f.owner).value.task;
+    const db = new Database(join(f.root, "state.sqlite3"));
+    db.prepare(`INSERT INTO knowledge_relations
+      SELECT 'native-edge',project_id,type,source_kind,source_id,target_kind,?,revision,created_by,created_at
+      FROM knowledge_relations WHERE source_id=?`).run(native.id, taskId);
+    db.close();
+    const search = (legacyId: string) => f.store.searchKnowledge("legacy", 25, 0, { legacyId });
+    expect(search("A").items.map(hit => hit.id)).toEqual([taskId, threadId]);
+    for (const legacyId of ["missing", "a", "A%", "A_", "A' OR 1=1 --", "A:note:0"]) expect(search(legacyId).items).toEqual([]);
+    expect(f.store.searchKnowledge("legacy", 25, 0, { legacyId: "A", query: "Storage", kind: "task" }).items.map(hit => hit.id)).toEqual([taskId]);
+    expect(f.store.searchKnowledge("legacy", 25, 0, { legacyId: "A", query: "absent" }).items).toEqual([]);
+    expect(f.store.searchKnowledge("legacy", 25, 0, { legacyId: "A", tag: "absent" }).items).toEqual([]);
+    expect(f.store.searchKnowledge("legacy", 25, 0, { legacyId: "A", kind: "reply" }).items).toEqual([]);
+    expect(f.store.searchKnowledge("legacy", 25, 0, {}).items.map(hit => hit.id)).toEqual(expect.arrayContaining([taskId, threadId, native.id, nativeTask.id]));
+    f.store.close();
+  });
+
+  it.each(["open", "in_progress", "blocked", "done", "archived"] as const)("preserves %s visibility and explicit status filtering", status => {
+    const f = fixture(), { taskId, threadId } = importTask(f, "legacy", "fixture", status);
+    const ids = (options: Parameters<SqliteStateStore["searchKnowledge"]>[3]) => f.store.searchKnowledge("legacy", 25, 0, { legacyId: "A", ...options }).items.map(hit => hit.id);
+    expect(ids({})).toEqual(status === "archived" ? [threadId] : [taskId, threadId]);
+    expect(ids({ kind: "task", status })).toEqual([taskId]);
+    expect(ids({ includeInactive: true })).toEqual([taskId, threadId]);
+    expect(ids({ status: "active" })).toEqual([threadId]);
+    f.store.close();
+  });
+
+  it("returns every colliding source in one project, deduplicates mappings and paginates before returning", () => {
+    const f = fixture(), first = importTask(f), second = importTask(f, "legacy", "second"), foreign = importTask(f, "foreign");
+    const db = new Database(join(f.root, "state.sqlite3"));
+    db.exec(`INSERT INTO knowledge_import_sources
+      SELECT 'duplicate',project_id,batch_id,'duplicate-source',source_repository,source_commit,source_path,legacy_id,source_sha256,mapping_version,target_kind,target_id,original_payload_json,created_at,target_revision
+      FROM knowledge_import_sources WHERE project_id='legacy' AND source_id='fixture' AND target_kind='task'`);
+    // A foreign-project map deliberately points at a local record.
+    db.prepare("UPDATE knowledge_import_sources SET legacy_id='foreign-alias',target_id=? WHERE project_id='foreign' AND target_kind='task'").run(first.taskId);
+    db.close();
+    const expected = [first.taskId, second.taskId].sort().concat([first.threadId, second.threadId].sort());
+    expect(f.store.searchKnowledge("legacy", 25, 0, { legacyId: "A" }).items.map(hit => hit.id)).toEqual(expected);
+    expect(f.store.searchKnowledge("legacy", 25, 0, { legacyId: "foreign-alias" }).items).toEqual([]);
+    const paged: string[] = [];
+    let offset: number | null = 0;
+    while (offset !== null) {
+      const page = f.store.searchKnowledge("legacy", 1, offset, { legacyId: "A" });
+      paged.push(...page.items.map(hit => hit.id)); offset = page.nextOffset;
+    }
+    expect(paged).toEqual(expected);
+    expect(paged).not.toContain(foreign.taskId); expect(paged).not.toContain(foreign.threadId);
+    expect(f.store.searchKnowledge("legacy", 1, expected.length, { legacyId: "A" })).toEqual({ items: [], nextOffset: null });
+    f.store.close();
+  });
+
+  it("retains provenance after edits and requires the exact imported parent relation for a generated thread", () => {
+    const f = fixture(), { taskId, threadId } = importTask(f);
+    const db = new Database(join(f.root, "state.sqlite3"));
+    db.prepare("UPDATE knowledge_tasks SET title='Changed',revision=revision+1 WHERE id=?").run(taskId);
+    db.prepare("UPDATE knowledge_threads SET title='Changed',body='Changed',revision=revision+1 WHERE id=?").run(threadId);
+    const ids = () => f.store.searchKnowledge("legacy", 25, 0, { legacyId: "A" }).items.map(hit => hit.id);
+    expect(ids()).toEqual([taskId, threadId]);
+    db.prepare("UPDATE knowledge_tasks SET title='Edited',description='Edited' WHERE id=?").run(taskId);
+    // Provenance must not enlarge the existing free-text search corpus.
+    expect(f.store.searchKnowledge("legacy", 25, 0, { kind: "task", query: "A" }).items).toEqual([]);
+    expect(f.store.searchKnowledge("legacy", 25, 0, { kind: "task", legacyId: "A", query: "A" }).items).toEqual([]);
+    const relationId = importedRecordId("legacy", "fixture", sourcePath, "task-thread");
+    db.prepare("UPDATE knowledge_relations SET id='native-edge' WHERE id=?").run(relationId);
+    expect(ids()).toEqual([taskId]);
+    db.prepare("UPDATE knowledge_relations SET id=? WHERE id='native-edge'").run(relationId);
+    db.prepare("UPDATE knowledge_import_sources SET legacy_id=NULL WHERE project_id='legacy' AND target_kind='task'").run();
+    expect(ids()).toEqual([]);
+    db.prepare("UPDATE knowledge_import_sources SET legacy_id='A' WHERE project_id='legacy' AND target_kind='task'").run();
+    db.prepare("UPDATE knowledge_import_sources SET target_id=NULL WHERE project_id='legacy' AND target_kind='task'").run();
+    expect(ids()).toEqual([]);
+    db.close(); f.store.close();
+  });
+
+  it("accepts a direct thread source map and keeps target kinds distinct", () => {
+    const f = fixture(), { taskId, threadId } = importTask(f);
+    const db = new Database(join(f.root, "state.sqlite3"));
+    db.prepare("UPDATE knowledge_import_sources SET target_kind='thread',target_id=? WHERE project_id='legacy' AND target_kind='task'").run(threadId);
+    expect(f.store.searchKnowledge("legacy", 25, 0, { legacyId: "A" }).items.map(hit => hit.id)).toEqual([threadId]);
+    db.prepare("UPDATE knowledge_import_sources SET target_kind='historical_comment',target_id=? WHERE project_id='legacy' AND target_kind='thread'").run(taskId);
+    expect(f.store.searchKnowledge("legacy", 25, 0, { legacyId: "A" }).items).toEqual([]);
+    db.close(); f.store.close();
+  });
+
+  it("finds completion aliases and standalone completed tasks without duplicating hits", () => {
+    const f = fixture();
+    execute(f.store, f.identity, f.owner, { plan: plan([
+      mapping(sourcePath, "task", "task", { id: "A", title: "Storage" }),
+      mapping("docs/backlog/done/A.json", "done", "task_completion", { id: "DONE-A", item_id: "A", summary: "Delivered" }),
+      mapping("docs/backlog/done/B.json", "done", "task_completion", { id: "DONE-B", summary: "Standalone" }),
+      mapping("docs/backlog/notes/N/note.json", "note", "memory", { id: "N", title: "Memory", body: "Source", tags: ["tag"] }),
+    ]), targetProjectId: "legacy", targetProjectName: "Legacy" });
+    const tasks = f.store.listTasks("legacy", 25, 0, { activeOnly: false }).items;
+    const search = (legacyId: string) => f.store.searchKnowledge("legacy", 25, 0, { legacyId }).items;
+    expect(search("A")).toMatchObject([{ kind: "task", status: "done" }]);
+    expect(search("DONE-A").map(hit => hit.id)).toEqual(search("A").map(hit => hit.id));
+    expect(search("DONE-B").map(hit => hit.id)).toEqual(tasks.filter(task => task.id !== search("A")[0]!.id).map(task => task.id));
+    expect(search("N")).toMatchObject([{ kind: "memory", title: "Memory" }]);
+    expect(f.store.searchKnowledge("legacy", 25, 0, { legacyId: "N", tag: "tag" }).items).toEqual(search("N"));
+    f.store.close();
+  });
+});
+
 describe("K6b Hub import execution",()=>{
   it("shares attachment admission with upload/export and rechecks accumulated usage at publication", () => {
     const f = fixture(), directory = join(f.root, "attachments"), bytes = Buffer.from("proof");
@@ -429,6 +551,8 @@ describe("K6b Hub import execution",()=>{
     exportKnowledgeProject(source.store,source.identity,"portable",directory,join(source.root,"attachments"),source.owner,{applicationVersion:"test",clock:()=>NOW}); source.store.close();
     const target=fixture(); importKnowledgeProject(target.store,target.identity,directory,join(target.root,"attachments"),target.owner);
     expect(target.store.exportKnowledgeProject("portable")?.importSources).toEqual(before.importSources);
+    expect(target.store.searchKnowledge("portable",25,0,{legacyId:"one"}).items.map(hit=>hit.kind)).toEqual(["task","thread"]);
+    expect(target.store.searchKnowledge("portable",25,0,{legacyId:"NOTE-one",includeInactive:true}).items.map(hit=>hit.kind)).toEqual(["memory"]);
     expect(target.store.listMemories("portable",25,0,"",true).items[0]).toMatchObject({status:"archived",sources:[{kind:"repository",sourceId:"fixture",repository:"/source",commit:"d".repeat(40),path:"docs/backlog/notes/NOTE-one/note.json"}]});
     const thread=target.store.listThreads("portable",25,0).items[0]!;expect(target.store.listReplies("portable",thread.id,25,0).items[0]?.historicalImport).toEqual({sourceAttribution:"verified",sourceAuthor:"Ada",sourceDate:"2026-09-13",sourceDateStatus:"valid",sourceOrder:"verified"}); target.store.close();
   });
