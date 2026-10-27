@@ -152,6 +152,8 @@ export interface KnowledgeTaskStateView {
   state: TaskCurrentState | null;
   /** True when a stored state exists but fails validation; it is never shown as missing. */
   stateUnreadable: boolean;
+  /** Server-resolved parent discussions for cited replies, scoped to this project. */
+  replyThreadIds: Record<string, string>;
   assessment: TaskStateAssessment;
   /** Facts known to the system without a recorded state. */
   systemFacts: { approvedDecisions: number; proposals: number; openQuestions: number; attachments: number };

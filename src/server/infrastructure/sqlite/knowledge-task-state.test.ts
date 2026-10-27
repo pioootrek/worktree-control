@@ -7,7 +7,7 @@ import { SqliteStateStore } from "./sqlite-state-store";
 import { IdentityService } from "@/server/modules/identity";
 import { KnowledgeAttachmentService, KnowledgeService } from "@/server/modules/knowledge";
 import { parseKnowledgeProjectSnapshot } from "@/server/modules/knowledge/project-transfer-schema";
-import type { KnowledgeHistoryEntry, KnowledgeMutationResult, KnowledgeOperation, KnowledgePage, KnowledgeTask } from "@/shared/contracts/knowledge";
+import type { KnowledgeHistoryEntry, KnowledgeMutationResult, KnowledgeOperation, KnowledgePage, KnowledgeTask, KnowledgeThread, KnowledgeReply } from "@/shared/contracts/knowledge";
 import type { KnowledgeMemory } from "@/shared/contracts/knowledge-memory";
 import type { KnowledgeTaskStateView, TaskCurrentState, TaskStateInput } from "@/shared/contracts/knowledge-task-state";
 
@@ -106,6 +106,18 @@ describe("task current state", () => {
     expect(view.assessment).toMatchObject({ freshness: "current", changeCount: 0, ownerConsent: "not_needed", evidence: { listed: 1, present: 1, missing: [] } });
     expect(view.assessment.findings).toEqual([]);
     expect(view.systemFacts.attachments).toBe(1);
+  });
+
+  it("resolves cited reply parents within the authorized project", () => {
+    const f = setup();
+    const thread = f.call<KnowledgeMutationResult<KnowledgeThread>>("create_thread", { title: "Evidence", body: "Discussion", idempotencyKey: "thread" }).value;
+    const reply = f.call<KnowledgeMutationResult<KnowledgeReply>>("create_reply", { threadId: thread.id, body: "Verified result", idempotencyKey: "reply" }).value;
+    f.write({ ...mergedNotDeployed(), outcome: { known: true, text: "Result", sources: [{ kind: "reply", id: reply.id, revision: reply.revision }] } });
+    expect(f.read(f.readOnly).replyThreadIds).toEqual({ [reply.id]: thread.id });
+    const otherProject = f.identity.createKnowledgeProject({ name: "Other project" }, f.owner);
+    f.identity.setKnowledgeGrant({ principalId: f.owner.principalId, projectId: otherProject.id, permissions: ["knowledge:read"] }, f.owner);
+    expect(() => f.service.execute({ operation: "task_state", input: { projectId: otherProject.id, taskId: f.task.id } }, f.owner))
+      .toThrowError(expect.objectContaining({ code: "not_found" }));
   });
 
   it("round-trips unknown blockers without turning them into confirmed absence", () => {
