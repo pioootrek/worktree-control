@@ -544,7 +544,13 @@ export class KnowledgeQueries implements KnowledgeStore {
       const result = this.database.prepare("UPDATE knowledge_tasks SET current_state_json = ?, status = ?, revision = ?, updated_at = ? WHERE project_id = ? AND id = ? AND revision = ?")
         .run(JSON.stringify(state), task.status, task.revision, task.updatedAt, task.projectId, task.id, expectedRevision);
       if (result.changes === 0) throw new KnowledgeError("revision_conflict", "Rewizja zadania uległa zmianie.", this.getTask(task.projectId, task.id)?.revision);
-      this.history(task.projectId, "task", task.id, "updated", JSON.stringify({ ...previous, currentState: previousState === null ? null : JSON.parse(previousState) as unknown }), task.revision, context, task.updatedAt);
+      // An unreadable stored state stays in history as raw text, so a new state can always replace it.
+      let currentState: unknown = null;
+      let currentStateUnreadable: string | undefined;
+      if (previousState !== null) {
+        try { currentState = JSON.parse(previousState) as unknown; } catch { currentStateUnreadable = previousState; }
+      }
+      this.history(task.projectId, "task", task.id, "updated", JSON.stringify({ ...previous, currentState, ...(currentStateUnreadable === undefined ? {} : { currentStateUnreadable }) }), task.revision, context, task.updatedAt);
       return { task, state };
     });
   }

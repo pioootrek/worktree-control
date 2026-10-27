@@ -183,6 +183,19 @@ describe("task current state", () => {
     expect(f.read().assessment).toMatchObject({ ownerConsent: "approval_invalidated" });
   });
 
+  it("replaces an unreadable stored state and keeps the raw text in history", () => {
+    const f = setup();
+    f.write(mergedNotDeployed());
+    const database = new Database(f.path);
+    try { database.prepare("UPDATE knowledge_tasks SET current_state_json = ? WHERE id = ?").run("{broken", f.task.id); } finally { database.close(); }
+    expect(f.read()).toMatchObject({ state: null, stateUnreadable: true });
+
+    f.write(mergedNotDeployed());
+    expect(f.read()).toMatchObject({ stateUnreadable: false, assessment: { freshness: "current" } });
+    const history = f.call<KnowledgePage<KnowledgeHistoryEntry>>("history", { recordKind: "task", recordId: f.task.id });
+    expect(JSON.parse(history.items.at(-1)!.previousJson!)).toMatchObject({ currentState: null, currentStateUnreadable: "{broken" });
+  });
+
   it("keeps a task-citing decision approvable across state writes but not across task edits", () => {
     const f = setup();
     const cite = () => ({ kind: "task" as const, id: f.task.id, revision: f.current().revision });
