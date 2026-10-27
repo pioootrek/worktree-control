@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DROP_IN_LIMITS, inspectSystemdDropIns, matchesSystemdDropInPaths, sameSystemdPolicy } from "./systemd-drop-ins";
 
+vi.mock("node:fs", async importOriginal => ({ ...await importOriginal<typeof import("node:fs")>() }));
+
 const homes: string[] = [];
 const unit = "worktree-control.service";
 afterEach(() => { vi.restoreAllMocks(); for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true }); });

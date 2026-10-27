@@ -255,7 +255,8 @@ export class UserServiceManager {
    * `worktree-switcher` service is stopped just before the new one starts, because both would claim
    * the same ports and controller lock, and is disabled and removed only after the health check
    * passes. Selected local legacy drop-ins are copied first and ordered resource assignments
-   * must match at the destination before either controller is interrupted. If the start or health check fails, the new service is stopped, its previous
+   * must match at the destination before either controller is interrupted. If the start or health
+   * check fails, the new service is stopped, its previous
    * definition and enabled state are restored (or the new definition, copied drop-ins and enabled
    * state removed), a legacy service that was running is started again, and the error is rethrown.
    */
