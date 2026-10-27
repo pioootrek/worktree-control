@@ -36,14 +36,14 @@ describe("browser owner signer", () => {
     // Ed25519 is deterministic, so WebCrypto and node:crypto (CLI) must agree exactly.
     expect(proof.signature).toBe(sign(null, devOwnerSigningMessage(command, owner, issuedAt), keys.privateKey).toString("base64"));
     const verifier = new Ed25519DevVaultOwnerVerifier(() => keys.publicKey);
-    expect(verifier.verify(command, owner, proof, "2026-10-27T12:00:30.000Z")).toBe(true);
+    expect(verifier.verify(command, owner, proof, "2026-10-27T12:00:30.000Z")).toBe("valid");
     // Any change to the command, actor or time breaks the proof.
-    expect(verifier.verify({ ...command, operationId: randomUUID() }, owner, proof, "2026-10-27T12:00:30.000Z")).toBe(false);
-    expect(verifier.verify(command, { ...owner, credentialId: "other" }, proof, "2026-10-27T12:00:30.000Z")).toBe(false);
-    expect(verifier.verify(command, owner, proof, "2026-10-27T12:01:01.000Z")).toBe(false);
-    expect(verifier.verify(command, { ...owner, authenticationMethod: "installation_token" }, proof, "2026-10-27T12:00:30.000Z")).toBe(false);
+    expect(verifier.verify({ ...command, operationId: randomUUID() }, owner, proof, "2026-10-27T12:00:30.000Z")).toBe("invalid");
+    expect(verifier.verify(command, { ...owner, credentialId: "other" }, proof, "2026-10-27T12:00:30.000Z")).toBe("invalid");
+    expect(verifier.verify(command, owner, proof, "2026-10-27T12:01:01.000Z")).toBe("expired");
+    expect(verifier.verify(command, { ...owner, authenticationMethod: "installation_token" }, proof, "2026-10-27T12:00:30.000Z")).toBe("invalid");
     // A different owner key is rejected.
-    expect(new Ed25519DevVaultOwnerVerifier(() => pair().publicKey).verify(command, owner, proof, "2026-10-27T12:00:30.000Z")).toBe(false);
+    expect(new Ed25519DevVaultOwnerVerifier(() => pair().publicKey).verify(command, owner, proof, "2026-10-27T12:00:30.000Z")).toBe("invalid");
   });
 
   it("refuses public, encrypted, non-Ed25519, malformed and oversized key files with fixed reasons", async () => {

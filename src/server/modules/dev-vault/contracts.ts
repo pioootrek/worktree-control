@@ -10,10 +10,11 @@ export interface DevVaultStore {
   projectExists(projectId: string): boolean;
 }
 export interface DevVaultKeyProvider { key(): Buffer }
+export type DevVaultOwnerProofStatus = "valid" | "expired" | "invalid";
 export interface DevVaultOwnerVerifier {
-  verify(command: DevVaultCommand, actor: AuthenticatedPrincipal, proof: DevOwnerProof | undefined, now: string): boolean;
+  verify(command: DevVaultCommand, actor: AuthenticatedPrincipal, proof: DevOwnerProof | undefined, now: string): DevVaultOwnerProofStatus;
 }
-export type DevVaultErrorCode = "vault_denied" | "vault_unavailable" | "vault_invalid_request" | "vault_conflict" | "vault_limit" | "vault_use_unavailable";
+export type DevVaultErrorCode = "vault_denied" | "vault_proof_expired" | "vault_unavailable" | "vault_invalid_request" | "vault_conflict" | "vault_limit" | "vault_use_unavailable";
 export class DevVaultError extends Error {
   constructor(readonly code: DevVaultErrorCode) { super(code); }
 }

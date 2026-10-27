@@ -21,7 +21,7 @@ it("signs an exact stdin command with a separate key after validating owner iden
   await runDevVaultCommand(["--endpoint", "http://127.0.0.1:3410"], { environment: { WORKTREE_CONTROL_DEV_VAULT_TOKEN: "fake-token", WORKTREE_CONTROL_DEV_VAULT_OWNER_PRIVATE_KEY_FILE: path },
     input: (async function* () { yield JSON.stringify({ command }); })(), fetch: send, write: line => output.push(line), warn: () => undefined });
   const sent = JSON.parse(send.mock.calls[1][1]!.body as string);
-  expect(new Ed25519DevVaultOwnerVerifier(() => pair.publicKey).verify(sent.command, actor, sent.proof, new Date().toISOString())).toBe(true);
+  expect(new Ed25519DevVaultOwnerVerifier(() => pair.publicKey).verify(sent.command, actor, sent.proof, new Date().toISOString())).toBe("valid");
   expect(send.mock.calls[1][1]!.redirect).toBe("error");
   expect(output).toHaveLength(1);
 });
@@ -40,7 +40,7 @@ it.each([2000, -2000, 120_000])("signs for the controller clock when the CLI clo
   await runDevVaultCommand(["--endpoint", "https://controller.example.test"], { environment: { WORKTREE_CONTROL_DEV_VAULT_TOKEN: "fake-token", WORKTREE_CONTROL_DEV_VAULT_OWNER_PRIVATE_KEY_FILE: path },
     input: (async function* () { yield JSON.stringify({ command }); })(), fetch: send, write: () => undefined, warn: () => undefined });
   const sent = JSON.parse(send.mock.calls[1][1]!.body as string);
-  expect(new Ed25519DevVaultOwnerVerifier(() => pair.publicKey).verify(sent.command, actor, sent.proof, serverNow.toISOString())).toBe(true);
+  expect(new Ed25519DevVaultOwnerVerifier(() => pair.publicKey).verify(sent.command, actor, sent.proof, serverNow.toISOString())).toBe("valid");
 });
 it("does not send credentials to redirects, insecure remote endpoints, or fall back to installation tokens", async () => {
   const send = vi.fn<typeof fetch>();

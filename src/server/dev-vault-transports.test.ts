@@ -96,7 +96,7 @@ describe("vault HTTP, MCP and CLI", () => {
     const outcome = Promise.allSettled([pending]);
     f.advance(61_000);
     release(); await holding;
-    expect(await outcome).toMatchObject([{ status: "rejected", reason: { code: "vault_denied" } }]);
+    expect(await outcome).toMatchObject([{ status: "rejected", reason: { code: "vault_proof_expired" } }]);
     await expect(vault.execute({ command, proof: f.proof(command) }, f.owner)).resolves.toHaveProperty("result.profiles");
     lifecycle.closeAdmission();
     await expect(vault.execute({ command, proof: f.proof(command) }, f.owner)).rejects.toThrow("vault_unavailable");
@@ -138,6 +138,20 @@ describe("vault HTTP, MCP and CLI", () => {
     expect(spoof.status).toBe(400);
     authentication.setMode("open", "fixture");
     expect((await call({ command: cmd, proof: f.proof(cmd) }, f.ownerToken)).status).toBe(403);
+  });
+  it("returns a fixed retryable expiry code over HTTP without executing the import", async () => {
+    const { f, call } = await setup();
+    const command = f.command({ operation: "import", dotenv: "FAKE_EXPIRY_NAME=fake" });
+    const proof = f.proof(command), before = f.store.devVault.load(f.project.id);
+    f.advance(60_001);
+    const response = await call({ command, proof }, f.ownerToken);
+    expect(response.status).toBe(409);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const body = await response.json();
+    expect(body).toMatchObject({ code: "vault_proof_expired" });
+    expect(JSON.stringify(body)).not.toContain("FAKE_EXPIRY_NAME");
+    expect(f.store.devVault.load(f.project.id)).toEqual(before);
+    expect((await call({ command, proof: f.proof(command) }, f.ownerToken)).status).toBe(200);
   });
   it("returns plaintext only for signed owner reads or the exact authorized agent read, with no cache", async () => {
     const { f, call } = await setup();

@@ -51,12 +51,39 @@ describe("vault authorization, persistence and versioning", () => {
     expect(() => f.vault.execute({ command: cmd }, f.owner)).toThrow("vault_denied");
     expect(() => f.vault.execute({ command: cmd, proof: f.proof(cmd) }, f.first.actor)).toThrow("vault_denied");
     expect(() => f.vault.execute({ command: { ...cmd, operation: "audit" }, proof: f.proof(cmd) }, f.owner)).toThrow("vault_denied");
-    expect(() => f.vault.execute({ command: cmd, proof: f.proof(cmd, f.owner, "2026-10-27T11:58:00.000Z") }, f.owner)).toThrow("vault_denied");
+    expect(() => f.vault.execute({ command: cmd, proof: f.proof(cmd, f.owner, "2026-10-27T11:58:00.000Z") }, f.owner)).toThrow("vault_proof_expired");
     for (const method of ["installation_token", "none"] as const) {
       const installation = { principalId: "installation", principalKind: "installation" as const, credentialId: "installation", authenticationMethod: method };
       expect(() => f.vault.execute({ command: cmd, proof: f.proof(cmd, installation) }, installation)).toThrow("vault_denied");
     }
     expect(() => f.execute({ operation: "approve", requestId: randomUUID(), revision: 1, lifetime: "once" }, f.first.actor)).toThrow("vault_denied");
+  });
+  it("classifies only authentic expired proofs as retryable without changing state", () => {
+    const f = fixture(), cmd = f.command({ operation: "import", dotenv: FAKE_DOTENV });
+    const proof = f.proof(cmd), before = f.store.devVault.load(f.project.id);
+    f.advance(60_001);
+    expect(f.verifier.verify(cmd, f.owner, proof, f.now)).toBe("expired");
+    expect(() => f.vault.execute({ command: cmd, proof }, f.owner)).toThrow("vault_proof_expired");
+    expect(f.store.devVault.load(f.project.id)).toEqual(before);
+    // An old timestamp does not make a forged or differently bound signature retryable.
+    for (const request of [
+      { command: { ...cmd, operationId: randomUUID() }, proof },
+      { command: cmd, proof: { ...proof, signature: Buffer.alloc(64).toString("base64") } },
+      { command: cmd, proof: f.proof(cmd, { ...f.owner, credentialId: randomUUID() }, proof.issuedAt) },
+      { command: cmd, proof: f.proof(cmd, f.owner, new Date(Date.parse(f.now) + 1).toISOString()) },
+    ]) expect(() => f.vault.execute(request, f.owner)).toThrow("vault_denied");
+    f.identity.revokeCredential(f.owner.credentialId, f.owner);
+    expect(() => f.vault.execute({ command: cmd, proof }, f.owner)).toThrow("vault_denied");
+    expect(f.store.devVault.load(f.project.id)).toEqual(before);
+  });
+  it("denies expired proofs for removed projects and across restore fences", () => {
+    const f = fixture(), removed = f.command({ operation: "list", projectId: f.otherProject.id });
+    const cmd = f.command({ operation: "list" }), proof = f.proof(cmd), removedProof = f.proof(removed);
+    f.store.removeProject(f.otherProject.id, "fixture");
+    f.advance(60_001);
+    expect(() => f.vault.execute({ command: removed, proof: removedProof }, f.owner)).toThrow("vault_denied");
+    f.restoreFence();
+    expect(() => f.vault.execute({ command: cmd, proof }, f.owner)).toThrow("vault_denied");
   });
   it("defaults deny and separates project, agent and exact credential", () => {
     const f = fixture(), read = { operation: "read", ...f.imported };

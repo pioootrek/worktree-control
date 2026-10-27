@@ -35,16 +35,16 @@ export const vaultRevokeSchema = z.object({ grantId: id, revokedAt: timestamp })
 export const vaultRejectSchema = z.object({ requestId: id, status: z.literal("rejected") });
 
 /** Fixed server codes plus client-side failures; no message text from a response is ever shown. */
-export type VaultErrorCode = "vault_denied" | "vault_unavailable" | "vault_invalid_request" | "vault_conflict" | "vault_limit"
+export type VaultErrorCode = "vault_denied" | "vault_proof_expired" | "vault_unavailable" | "vault_invalid_request" | "vault_conflict" | "vault_limit"
   | "vault_use_unavailable" | "transport" | "invalid_response" | "locked" | "session_invalid" | "not_owner_session";
-const serverCodes = new Set<string>(["vault_denied", "vault_unavailable", "vault_invalid_request", "vault_conflict", "vault_limit", "vault_use_unavailable"]);
+const serverCodes = new Set<string>(["vault_denied", "vault_proof_expired", "vault_unavailable", "vault_invalid_request", "vault_conflict", "vault_limit", "vault_use_unavailable"]);
 export function vaultErrorCode(value: unknown): VaultErrorCode {
   return typeof value === "string" && serverCodes.has(value) ? value as VaultErrorCode : "vault_unavailable";
 }
 export class VaultClientError extends Error {
   constructor(readonly code: VaultErrorCode) { super(code); }
-  /** Transport uncertainty: the same operation ID may be retried to recover a committed result. */
-  get retryable(): boolean { return this.code === "transport"; }
+  /** Preserve earlier uncertainty even if a later proof expires before a receipt can be recovered. */
+  get retryable(): boolean { return this.code === "transport" || this.code === "vault_proof_expired"; }
 }
 
 /** One signed read of a project's profile metadata, requests and grants. */

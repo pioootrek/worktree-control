@@ -4,7 +4,7 @@ import type { AuthenticatedPrincipal } from "@/server/modules/identity";
 
 export function devVaultFailure(error: unknown) {
   const code = error instanceof DevVaultError ? error.code : "vault_unavailable";
-  const status = code === "vault_denied" ? 403 : code === "vault_conflict" ? 409
+  const status = code === "vault_denied" ? 403 : (code === "vault_conflict" || code === "vault_proof_expired") ? 409
     : code === "vault_invalid_request" ? 400 : code === "vault_limit" ? 429 : 503;
   return { status, body: { code, disclaimer: DEV_VAULT_DISCLAIMER } };
 }

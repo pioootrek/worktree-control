@@ -244,9 +244,14 @@ approval arrives. Rejection, revocation and the bounded audit log are also
 available. Profile update and deletion are not.
 
 Errors show fixed text for the response code only, never server text, names
-or values. While signing remains unlocked, a transport failure keeps the
-operation ID, so retrying the same action replays a committed receipt instead
-of repeating it. Locking clears retry bookkeeping. After reconnecting, check
+or values. Proof freshness is checked after lifecycle admission. An authentic
+owner proof that expires while waiting returns `vault_proof_expired` (HTTP 409);
+invalid signatures, revoked sessions and pre-restore proofs remain denied.
+The expired attempt does not execute. Retry the same action without reconnecting:
+the browser signs it again and retains its operation ID, including after an earlier
+transport failure, so a committed receipt can be recovered without repeating
+the mutation. CLI callers can resubmit the same command JSON and operation ID
+with a fresh proof. Locking clears retry bookkeeping. After reconnecting, check
 the result before retrying: a previously completed import could be duplicated.
 While signing is
 unlocked, script running in the dashboard origin could use the loaded key to

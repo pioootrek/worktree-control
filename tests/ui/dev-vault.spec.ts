@@ -25,6 +25,7 @@ async function mount(page: Page, origin = ORIGIN) {
   const data = dashboardFixture();
   data.projects[0].project.id = f.project.id;
   const shell = await mountDashboard(page, data, { origin });
+  let expireNextProof = false;
   const calls: Array<{ path: string; headers: Record<string, string>; body: string }> = [];
   const json = (status: number, body: unknown) => ({ status, json: body, headers: { Date: new Date(f.now).toUTCString(), "Cache-Control": "no-store" } });
   await page.route(/\/api\/(dev-vault|identity(\/admin)?)$/, async route => {
@@ -40,11 +41,15 @@ async function mount(page: Page, origin = ORIGIN) {
       try { return route.fulfill(json(200, { credentials: f.identity.listAgentCredentials(JSON.parse(body).principalId, actor) })); }
       catch { return route.fulfill(json(403, { error: "fixture forbidden" })); }
     }
+    if (expireNextProof && JSON.parse(body).command.operation === "list") {
+      expireNextProof = false; f.advance(61_000);
+      await page.clock.setFixedTime(new Date(f.now));
+    }
     try { return route.fulfill(json(200, await executeDevVault(vault, JSON.parse(body), actor))); }
     catch (error) { const failure = devVaultFailure(error); return route.fulfill(json(failure.status, failure.body)); }
   });
   const pem = f.pair.privateKey.export({ format: "pem", type: "pkcs8" }).toString();
-  return { f, calls, pem, errors: shell.errors };
+  return { f, calls, pem, errors: shell.errors, expireNextProof: () => { expireNextProof = true; } };
 }
 
 async function openVault(page: Page, locale: "en" | "pl" = "en") {
@@ -124,6 +129,26 @@ test("a key that does not match the controller verifier is denied without exposi
   await unlock(page, f.ownerToken, generateKeyPairSync("ed25519").privateKey.export({ format: "pem", type: "pkcs8" }).toString());
   await expect(page.locator("[data-dev-vault]").getByRole("alert")).toContainText(translate("en", "vault.error.vault_denied"));
   await expect(page.locator("[data-vault-profile]")).toHaveCount(0);
+});
+
+test("expired refresh proof keeps signing unlocked and retries without reconnecting", async ({ page }) => {
+  const { f, pem, calls, expireNextProof, errors } = await mount(page);
+  await openVault(page);
+  await unlock(page, f.ownerToken, pem);
+  await expect(page.locator("[data-vault-profile]")).toHaveCount(1);
+  const offset = calls.length;
+  expireNextProof();
+  await page.getByRole("button", { name: translate("en", "vault.refresh") }).click();
+  await expect(page.locator("[data-dev-vault]").getByRole("alert")).toContainText(translate("en", "vault.error.vault_proof_expired"));
+  await expect(page.getByRole("button", { name: translate("en", "vault.reconnect"), exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: translate("en", "vault.refresh") }).click();
+  await expect(page.locator("[data-dev-vault]").getByRole("alert")).toHaveCount(0);
+  await expect(page.locator("[data-vault-profile]")).toHaveCount(1);
+  const lists = calls.slice(offset).filter(call => call.path === "/api/dev-vault").map(call => JSON.parse(call.body)).filter(body => body.command.operation === "list");
+  expect(lists).toHaveLength(2);
+  expect(lists[0].command.operationId).toBe(lists[1].command.operationId);
+  expect(lists[0].proof.issuedAt).not.toBe(lists[1].proof.issuedAt);
+  expect(errors).toEqual([]);
 });
 
 test("import, explicit reveal, write inspection and approval, rejection, stale revision and revocation", async ({ page }) => {

@@ -19,7 +19,9 @@ afterEach(() => { fixture?.close(); fixture = null; });
 
 /** Routes the browser client's requests to the real controller service, as the HTTP route does. */
 function controllerFetch(f: ReturnType<typeof vaultFixture>) {
-  const vault = new DevVaultOperations(f.vault, new ProjectLifecycle(f.store, new ProcessManager()));
+  const lifecycle = new ProjectLifecycle(f.store, new ProcessManager());
+  const vault = new DevVaultOperations(f.vault, lifecycle);
+  let expireNextProof = false;
   const calls: Array<{ path: string; authorization: string; body: string }> = [];
   let dropNextResponse: "headers" | "body" | null = null;
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", Date: new Date(f.now).toUTCString() } });
@@ -33,7 +35,14 @@ function controllerFetch(f: ReturnType<typeof vaultFixture>) {
     if (path === "/api/identity") return json(200, f.identity.describeIdentity(actor));
     if (path === "/api/identity/admin") return json(200, { credentials: f.identity.listAgentCredentials(JSON.parse(body).principalId, actor) });
     let response: Response;
-    try { response = json(200, await executeDevVault(vault, JSON.parse(body), actor)); }
+    try {
+      let release!: () => void;
+      const blocking = new Promise<void>(resolve => { release = resolve; });
+      const gate = expireNextProof ? lifecycle.serialized(f.project.id, async () => blocking) : null;
+      const executing = executeDevVault(vault, JSON.parse(body), actor);
+      if (gate) { expireNextProof = false; f.advance(61_000); release(); }
+      response = json(200, await executing);
+    }
     catch (error) { const failure = devVaultFailure(error); response = json(failure.status, failure.body); }
     if (dropNextResponse) {
       const mode = dropNextResponse; dropNextResponse = null;
@@ -42,7 +51,7 @@ function controllerFetch(f: ReturnType<typeof vaultFixture>) {
     }
     return response;
   };
-  return { send, calls, dropNextResponse: (mode: "headers" | "body" = "headers") => { dropNextResponse = mode; } };
+  return { send, calls, expireNextProof: () => { expireNextProof = true; }, dropNextResponse: (mode: "headers" | "body" = "headers") => { dropNextResponse = mode; } };
 }
 
 async function connected(browserOffset = 0, serverMillis = 0) {
@@ -173,6 +182,28 @@ describe("owner GUI vault flow against the controller service", () => {
     const age = Date.parse(f.now) - Date.parse(JSON.parse(call.body).proof.issuedAt);
     expect(age).toBeGreaterThanOrEqual(0);
     expect(age).toBeLessThanOrEqual(2000);
+  });
+
+  it.each([false, true])("re-signs a queued expired import without duplicating a previous uncertain commit (%s)", async lostResponse => {
+    const { f, run, controller, session, code } = await connected();
+    const operation = { operation: "import" as const, dotenv: FAKE_DOTENV };
+    if (lostResponse) {
+      controller.dropNextResponse("body");
+      expect(await code(run("import", operation))).toBe("transport");
+    }
+    const before = f.store.devVault.load(f.project.id);
+    controller.expireNextProof();
+    expect(await code(run("import", operation))).toBe("vault_proof_expired");
+    expect(session.connected).toBe(true);
+    expect(f.store.devVault.load(f.project.id)).toEqual(before);
+    const recovered = vaultProfileSchema.parse(await run("import", operation));
+    const attempts = controller.calls.filter(call => call.path === "/api/dev-vault").map(call => JSON.parse(call.body));
+    expect(attempts).toHaveLength(lostResponse ? 3 : 2);
+    expect(new Set(attempts.map(call => call.command.operationId)).size).toBe(1);
+    expect(attempts.at(-1).proof.issuedAt).not.toBe(attempts.at(-2).proof.issuedAt);
+    const profiles = vaultListSchema.parse(await run("list", { operation: "list" })).profiles;
+    expect(profiles).toHaveLength(2);
+    expect(profiles.some(profile => profile.profileId === recovered.profileId)).toBe(true);
   });
 
   it.each(["headers", "body"] as const)("retries an import interrupted during %s with the same operation ID", async mode => {

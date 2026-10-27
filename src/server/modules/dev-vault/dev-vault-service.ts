@@ -69,13 +69,15 @@ export class DevVaultService {
     if (actor.principalKind === "agent" && actor.authenticationMethod !== "agent_token") return denied();
     const now = this.clock();
     const owner = actor.principalKind === "owner";
-    if (owner && !this.ownerVerifier.verify(command, actor, proof, now)) return denied();
+    const ownerProof = owner ? this.ownerVerifier.verify(command, actor, proof, now) : null;
+    if (owner && ownerProof !== "valid" && ownerProof !== "expired") return denied();
     if (!this.store.projectExists(command.projectId)) return denied();
+    const fence = this.restoreBoundary();
+    if (owner && fence !== null && (!proof || !(Date.parse(proof.issuedAt) > Date.parse(fence)))) return denied();
+    if (ownerProof === "expired") throw new DevVaultError("vault_proof_expired");
     this.cipher.assertAvailable();
     const snapshot = this.store.load(command.projectId);
     const state = snapshot ? this.cipher.open<VaultState>(snapshot.ciphertext, command.projectId, "state", snapshot.version) : empty();
-    const fence = this.restoreBoundary();
-    if (owner && fence !== null && (!proof || !(Date.parse(proof.issuedAt) > Date.parse(fence)))) return denied();
     const current = (createdAt: string) => fence === null || createdAt > fence;
     // Expired state can never authorize a request after reopen. Keep active grants and their requests.
     state.grants = state.grants.filter(g => !g.revokedAt && (!g.expiresAt || g.expiresAt > now) && current(g.createdAt));
