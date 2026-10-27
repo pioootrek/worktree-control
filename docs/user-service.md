@@ -211,25 +211,47 @@ Uncopied legacy candidates remain in their original directory for review.
 ### Disposable systemd acceptance fixture
 
 The unit/integration tests replace `systemctl`; they never use the host manager.
-The optional real-manager fixture is `scripts/systemd-drop-in-acceptance.ts`.
-Run it only inside a disposable Linux VM/container with its own systemd user
-manager and a fresh test account. It installs dummy timer processes under the
-two real service names, so it refuses existing local definitions or scope
-directories. In that disposable environment, create
+The real-manager fixture is `scripts/systemd-drop-in-acceptance.ts`. The separate
+`systemd-drop-in-acceptance` job in Verify runs it on a disposable GitHub-hosted
+`ubuntu-24.04` VM, independently of the application build and packaged lifecycle
+job. It checks out the exact PR source commit, installs dependencies, and starts
+that runner's user manager. The source fixture needs no application build.
+
+Run it manually only inside a disposable Linux VM/container with its own
+systemd user manager and a fresh test account. It installs dummy Node processes
+under the two real service names. Before changing anything, it refuses existing
+definitions or applicable scope directories anywhere in the manager's lookup
+roots, loaded units, and enabled units. It requires user-owned config, runtime
+and data roots in the actual `UnitPath`, in that priority order. It writes only
+to those user roots and a temporary fixture directory, never `/etc` or `/usr`.
+Missing roots or unsupported conditions fail acceptance rather than skip cases.
+In that disposable environment, create
 `/run/worktree-control-disposable-systemd` containing exactly
 `worktree-control test fixture only`, then run as the test user:
 
 ```bash
-WORKTREE_CONTROL_ISOLATED_SYSTEMD_ACCEPTANCE=disposable pnpm exec tsx scripts/systemd-drop-in-acceptance.ts
+WORKTREE_CONTROL_ISOLATED_SYSTEMD_ACCEPTANCE=disposable pnpm exec tsx scripts/systemd-drop-in-acceptance.ts --report systemd-drop-in-acceptance-report.json
 ```
 
-The fixture checks fresh install, refresh, migration, quoted type-wide/prefix
-resource policy, loaded resource values, and refusal with an unchanged running
-legacy PID. It removes its units and files afterwards. Save its JSON result
-and systemd version with acceptance evidence. Additional cross-root basename,
-mask and empty-file cases should be provisioned in that same disposable
-manager when validating a distribution's lookup behavior. Never run this
-fixture against the application host's manager.
+The fixture compares the inspector and real loaded `DropInPaths` against explicit
+expected winners, including `/dev/null` masks and empty files, then checks actual
+effective resource properties. Cases cover the same basename across lookup
+roots, root priority before prefix/specific scope, specificity within one root,
+named scope before type-wide scope across roots, bytewise lexical order, and
+paths containing spaces and quotes. Mask and empty-file cases suppress real
+lower-priority resource assignments and are also copied during legacy migration.
+Fresh install, refresh and migration each have a real failed-start rollback case.
+Destination-policy mismatch and unsafe directives in both `service.d` and
+`worktree-.service.d` must refuse with the legacy PID unchanged and no lifecycle
+calls. Cleanup checks unit definitions, enablement, policies and observed PIDs.
+
+The JSON report records the source commit, systemd version, actual lookup roots,
+named check results, loaded paths, effective properties, failures, cleanup and
+exit status. Verify uploads it even when acceptance fails. This job supplies
+evidence for its Ubuntu manager version only after CI executes it; adding the
+fixture is not evidence that acceptance has passed. Other distributions and
+real-host migration remain separate verification. Never run this fixture
+against the application host's manager.
 
 Use repeated `--unset STARTUP_FLAG` options to reset inherited settings. For
 example, `--unset --no-mcp` enables MCP again,
