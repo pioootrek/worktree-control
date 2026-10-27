@@ -16,7 +16,7 @@ const memory = {
 };
 const write = { ...project, idempotencyKey: z.string().trim().min(1).max(200) };
 const change = { ...write, memoryId: id, expectedRevision: revision };
-const context = { ...project, taskId: id, ...page };
+const context = { ...project, taskId: id, ...page, includeSuperseded: z.boolean().optional() };
 export const memorySchemas = {
   memories: z.strictObject({ ...project, ...page, query: z.string().trim().max(200).optional(), includeInactive: z.boolean().optional() }),
   memory: z.strictObject({ ...project, memoryId: id }),

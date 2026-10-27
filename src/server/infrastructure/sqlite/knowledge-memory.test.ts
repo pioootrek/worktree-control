@@ -234,6 +234,129 @@ describe("K4 memory and session context", () => {
     expect(f.call<KnowledgeTaskContext>("task_context", { taskId: f.task.id, offset: 25 }).proposals).toHaveLength(2);
   });
 
+  it("opts into A/B/C predecessor history in both export formats without promoting old approvals", () => {
+    const f = setup();
+    const a = f.change("approve_memory", f.create({ title: "A <script>old</script>" }));
+    const b = f.change("approve_memory", f.create({ title: "B", idempotencyKey: "b" }));
+    const oldA = f.change("supersede_memory", a, { replacementId: b.id, replacementRevision: b.revision });
+    const c = f.change("approve_memory", f.create({ title: "C", idempotencyKey: "c" }));
+    const oldB = f.change("supersede_memory", b, { replacementId: c.id, replacementRevision: c.revision });
+    const input = { taskId: f.task.id };
+    const plain = f.call<KnowledgeTaskContext>("task_context", input);
+    expect(plain).not.toHaveProperty("supersessionHistory");
+    expect(f.call<KnowledgeTaskContext>("task_context", { ...input, includeSuperseded: false }).fingerprint).toBe(plain.fingerprint);
+    const context = f.call<KnowledgeTaskContext>("task_context", { ...input, includeSuperseded: true });
+    expect(context.decisions.map(item => item.id)).toEqual([c.id]);
+    expect(context.proposals).toEqual([]);
+    expect(context.supersessionHistory?.chains).toEqual([{ decisionId: c.id, truncated: false, predecessors: [
+      expect.objectContaining({ id: oldB.id, status: "superseded", revision: oldB.revision, updatedAt: oldB.updatedAt, supersededBy: { id: c.id, revision: c.revision } }),
+      expect.objectContaining({ id: oldA.id, status: "superseded", revision: oldA.revision, updatedAt: oldA.updatedAt, supersededBy: { id: b.id, revision: b.revision } }),
+    ] }]);
+    const json = f.call<KnowledgeExport>("export_context", { ...input, includeSuperseded: true, format: "json" });
+    expect(JSON.parse(json.content).supersessionHistory).toEqual(context.supersessionHistory);
+    expect(json.fingerprint).toBe(context.fingerprint);
+    expect(f.call("check_context_export", { ...input, includeSuperseded: true, fingerprint: json.fingerprint })).toMatchObject({ current: true });
+    expect(f.call("check_context_export", { ...input, fingerprint: json.fingerprint })).toMatchObject({ current: false });
+    const markdown = f.call<KnowledgeExport>("export_context", { ...input, includeSuperseded: true, format: "markdown" });
+    expect(markdown.content).toContain("## Superseded history (not current decisions or proposals)");
+    expect(markdown.content).toContain("Status: superseded");
+    expect(markdown.content).toContain('"supersededBy"');
+    expect(markdown.content).toContain("&lt;script&gt;old&lt;/script&gt;");
+    expect(markdown.content).not.toContain("<script>");
+    expect(f.call<KnowledgeExport>("export_context", { ...input, format: "markdown" }).content).not.toContain("## Superseded history");
+  });
+
+  it("keeps active pagination and follows predecessors without a direct task citation", () => {
+    const f = setup();
+    const hidden = f.call<KnowledgeMutationResult<KnowledgeMemory>>("create_memory", { ...f.input,
+      sources: [{ kind: "external", label: "Original discussion", url: "https://example.test" }] }).value;
+    const c = f.change("approve_memory", f.create({ idempotencyKey: "current" }));
+    f.change("supersede_memory", hidden, { replacementId: c.id, replacementRevision: c.revision });
+    f.create({ category: "question", idempotencyKey: "question" });
+    f.create({ category: "note", idempotencyKey: "proposal" });
+    const found: string[] = [];
+    for (let offset = 0; offset < 3; offset++) {
+      const plain = f.call<KnowledgeTaskContext>("task_context", { taskId: f.task.id, limit: 1, offset });
+      const context = f.call<KnowledgeTaskContext>("task_context", { taskId: f.task.id, limit: 1, offset, includeSuperseded: true });
+      expect(context).toMatchObject({ decisions: plain.decisions, proposals: plain.proposals, openQuestions: plain.openQuestions, nextOffset: plain.nextOffset });
+      expect(context.supersessionHistory?.chains.map(chain => chain.decisionId)).toEqual(context.decisions.map(item => item.id));
+      found.push(...context.supersessionHistory!.chains.flatMap(chain => chain.predecessors.map(item => item.id)));
+    }
+    expect(found).toEqual([hidden.id]);
+  });
+
+  it("invalidates the history fingerprint when a new predecessor is attached", () => {
+    const f = setup();
+    const current = f.change("approve_memory", f.create());
+    const hidden = f.call<KnowledgeMutationResult<KnowledgeMemory>>("create_memory", { ...f.input, idempotencyKey: "hidden",
+      sources: [{ kind: "external", label: "History", url: "https://example.test" }] }).value;
+    const input = { taskId: f.task.id };
+    const plain = f.call<KnowledgeTaskContext>("task_context", input);
+    const history = f.call<KnowledgeTaskContext>("task_context", { ...input, includeSuperseded: true });
+    f.change("supersede_memory", hidden, { replacementId: current.id, replacementRevision: current.revision });
+    expect(f.call("check_context_export", { ...input, fingerprint: plain.fingerprint })).toMatchObject({ current: true });
+    expect(f.call("check_context_export", { ...input, includeSuperseded: true, fingerprint: history.fingerprint })).toMatchObject({ current: false });
+  });
+
+  it("bounds deep chains and discloses omitted predecessors", () => {
+    const f = setup();
+    let current = f.create();
+    for (let index = 0; index < 10; index++) {
+      const replacement = f.create({ idempotencyKey: `depth-${index}` });
+      f.change("supersede_memory", current, { replacementId: replacement.id, replacementRevision: replacement.revision });
+      current = replacement;
+    }
+    current = f.change("approve_memory", current);
+    const read = vi.spyOn(f.store, "listSupersededPredecessors");
+    const context = f.call<KnowledgeTaskContext>("task_context", { taskId: f.task.id, includeSuperseded: true });
+    expect(context.supersessionHistory?.chains[0]).toMatchObject({ decisionId: current.id, truncated: true });
+    expect(context.supersessionHistory?.chains[0].predecessors).toHaveLength(8);
+    expect(read).toHaveBeenCalledTimes(9);
+  });
+
+  it("caps broad history across a page and reports byte truncation without consuming current entries", () => {
+    const f = setup();
+    const current = f.change("approve_memory", f.create());
+    for (let index = 0; index < 51; index++) {
+      const old = f.create({ idempotencyKey: `branch-${index}` });
+      f.change("supersede_memory", old, { replacementId: current.id, replacementRevision: current.revision });
+    }
+    const context = f.call<KnowledgeTaskContext>("task_context", { taskId: f.task.id, includeSuperseded: true });
+    expect(context.supersessionHistory?.chains[0].truncated).toBe(true);
+    expect(context.supersessionHistory!.chains[0].predecessors.length).toBeGreaterThan(0);
+    expect(context.supersessionHistory!.chains[0].predecessors.length).toBeLessThanOrEqual(50);
+    expect(Buffer.byteLength(JSON.stringify(context.supersessionHistory))).toBeLessThanOrEqual(32768);
+    expect(context.nextOffset).toBeNull();
+    const huge = f.call<KnowledgeMutationResult<KnowledgeMemory>>("create_memory", { ...f.input, idempotencyKey: "huge",
+      sources: Array.from({ length: 20 }, (_, i) => ({ kind: "external", label: `source-${i}`, url: `https://example.test/${"ą".repeat(1800)}` })) }).value;
+    const newest = f.change("approve_memory", f.create({ idempotencyKey: "newest" }));
+    f.change("supersede_memory", huge, { replacementId: newest.id, replacementRevision: newest.revision });
+    for (const format of ["json", "markdown"] as const) {
+      const exported = f.call<KnowledgeExport>("export_context", { taskId: f.task.id, includeSuperseded: true, format });
+      expect(Buffer.byteLength(JSON.stringify(exported))).toBeLessThanOrEqual(262144);
+    }
+    const withHuge = f.call<KnowledgeTaskContext>("task_context", { taskId: f.task.id, includeSuperseded: true });
+    expect(withHuge.supersessionHistory?.chains.find(chain => chain.decisionId === newest.id)).toMatchObject({ truncated: true, predecessors: [] });
+  });
+
+  it("keeps predecessor reads project-scoped and enforces current read/export grants", () => {
+    const f = setup();
+    const current = f.change("approve_memory", f.create());
+    const foreign = f.call<KnowledgeMutationResult<KnowledgeMemory>>("create_memory", { ...f.input, projectId: f.privateProject.id,
+      sources: [{ kind: "external", label: "Private", url: "https://private.test" }] }, f.owner).value;
+    // Simulate an imported cross-project pointer; the public mutation API rejects this edge.
+    f.store.saveMemory({ ...foreign, revision: 2, status: "superseded", supersededBy: { id: current.id, revision: current.revision } }, 1,
+      "supersede_memory", { projectId: foreign.projectId, actor: f.owner, idempotencyKey: "import-edge", requestHash: "import-edge" });
+    const input = { taskId: f.task.id, includeSuperseded: true };
+    expect(f.call<KnowledgeTaskContext>("task_context", input).supersessionHistory?.chains[0]).toMatchObject({ predecessors: [], truncated: false });
+    expect(() => f.call("task_context", { ...input, projectId: f.privateProject.id })).toThrowError(expect.objectContaining({ code: "knowledge_forbidden" }));
+    f.identity.setKnowledgeGrant({ principalId: f.agent.id, projectId: f.project.id, permissions: ["knowledge:read"] }, f.owner);
+    expect(() => f.call("export_context", { ...input, format: "json" })).toThrowError(expect.objectContaining({ code: "knowledge_forbidden" }));
+    f.identity.setKnowledgeGrant({ principalId: f.agent.id, projectId: f.project.id, permissions: ["knowledge:export"] }, f.owner);
+    expect(() => f.call("export_context", { ...input, format: "json" })).toThrowError(expect.objectContaining({ code: "knowledge_forbidden" }));
+    expect(() => f.call("task_context", input)).toThrowError(expect.objectContaining({ code: "knowledge_forbidden" }));
+  });
+
   it("keeps K3 history during migration and rolls back failed memory writes with history/idempotency", () => {
     const f = setup(); const before = f.store.listHistory(f.project.id, "task", f.task.id, 25, 0);
     f.store.close();

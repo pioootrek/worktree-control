@@ -15,6 +15,25 @@ Use the configured MCP connection, which may still be named
 `worktree-switcher`. Keep credentials in private client configuration. If
 Knowledge is unavailable, report the failure and pause backlog writes.
 
+## Context handoffs
+
+For a handoff that needs replaced alternatives, pass `includeSuperseded: true`
+to `knowledge_task_context` or `knowledge_export_context` (JSON or Markdown).
+The default stays unchanged. `supersessionHistory.chains` attaches predecessors
+to approved decisions on the current page; keep this history separate from
+current decisions and proposals. Each predecessor retains its superseded
+revision, `updatedAt` date, and recorded `supersededBy` replacement ID/revision.
+Replacement revisions may have advanced since that pointer was recorded.
+
+Follow `nextOffset` with the same option for subsequent current entries.
+History is bounded to depth 8, 50 predecessors and 32 KiB across the page,
+nearest predecessors first. Check each chain's `truncated` flag and read full
+memories separately when more history is needed. History truncation does not
+advance `nextOffset`; the flag also covers detected repeated records.
+Exports retain the 256 KiB limit; reduce the page size if an export exceeds it.
+Use the same `includeSuperseded`, `limit` and `offset` when calling
+`knowledge_check_context_export` to validate the saved fingerprint.
+
 ## Writing and completion
 
 Create tasks with `knowledge_create_task`, stating the problem, scope, expected

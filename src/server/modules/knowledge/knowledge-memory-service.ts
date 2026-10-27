@@ -43,11 +43,11 @@ export class KnowledgeMemoryService {
       }
       case "search": return this.store.searchKnowledge(projectId, limit, offset, request.input);
       case "check_context_export": {
-        const context = this.taskContext(projectId, request.input.taskId, limit, offset);
+        const context = this.taskContext(projectId, request.input.taskId, limit, offset, request.input.includeSuperseded);
         return { current: context.fingerprint === request.input.fingerprint, fingerprint: context.fingerprint, generatedAt: context.generatedAt };
       }
-      case "task_context": return this.taskContext(projectId, request.input.taskId, limit, offset);
-      case "export_context": return this.exportContext(this.taskContext(projectId, request.input.taskId, limit, offset), request.input.format);
+      case "task_context": return this.taskContext(projectId, request.input.taskId, limit, offset, request.input.includeSuperseded);
+      case "export_context": return this.exportContext(this.taskContext(projectId, request.input.taskId, limit, offset, request.input.includeSuperseded), request.input.format);
       default: return this.mutate(request, actor);
     }
   }
@@ -145,7 +145,49 @@ export class KnowledgeMemoryService {
       inactive: Boolean(current && "status" in current && ["archived", "superseded"].includes(current.status)) };
   }
 
-  private taskContext(projectId: string, taskId: string, limit: number, offset: number): KnowledgeTaskContext {
+  private contextMemory(projectId: string, memory: KnowledgeMemory): KnowledgeContextMemory {
+    const excerpt = clip(memory.body, 1200);
+    return { ...this.summary(memory), href: knowledgeSourceHref(projectId, { kind: "memory", id: memory.id, revision: memory.revision }), excerpt, bodyTruncated: excerpt !== memory.body,
+      sourceStates: memory.sources.map(source => this.sourceState(projectId, source)) };
+  }
+
+  private appendSupersessionHistory(data: Omit<KnowledgeTaskContext, "fingerprint">) {
+    const history = data.supersessionHistory = { maxDepth: 8, maxItems: 50, maxBytes: 32768,
+      chains: data.decisions.map(decision => ({ decisionId: decision.id, predecessors: [] as KnowledgeContextMemory[], truncated: false })) };
+    let remaining = history.maxItems;
+    let budgetReached = false;
+    for (const chain of history.chains) {
+      const visited = new Set([chain.decisionId]);
+      const pending = [{ id: chain.decisionId, depth: 0 }];
+      // Breadth-first traversal keeps nearest replacements first and bounds branching too.
+      while (pending.length) {
+        const current = pending.shift()!;
+        const canAppend = remaining > 0 && !budgetReached && current.depth < history.maxDepth;
+        const page = this.store.listSupersededPredecessors(data.projectId, current.id, canAppend ? remaining : 1);
+        if (!canAppend) {
+          if (page.items.length) chain.truncated = true;
+          continue;
+        }
+        if (page.nextOffset !== null) chain.truncated = true;
+        for (const memory of page.items) {
+          if (visited.has(memory.id)) { chain.truncated = true; continue; }
+          visited.add(memory.id);
+          chain.predecessors.push(this.contextMemory(data.projectId, memory));
+          if (Buffer.byteLength(JSON.stringify(history), "utf8") > history.maxBytes
+            || Buffer.byteLength(JSON.stringify(data), "utf8") > 250000) {
+            chain.predecessors.pop();
+            chain.truncated = true;
+            budgetReached = true;
+            break;
+          }
+          remaining--;
+          pending.push({ id: memory.id, depth: current.depth + 1 });
+        }
+      }
+    }
+  }
+
+  private taskContext(projectId: string, taskId: string, limit: number, offset: number, includeSuperseded = false): KnowledgeTaskContext {
     const record = this.store.getTask(projectId, taskId);
     if (!record) throw new KnowledgeError("not_found", "Task not found.");
     // All reads are synchronous on the controller's single SQLite connection.
@@ -158,9 +200,7 @@ export class KnowledgeMemoryService {
       evidence: [], nextOffset: page.nextOffset };
     // Bound before adding each record; never silently discard an unread remainder.
     for (const memory of page.items) {
-      const excerpt = clip(memory.body, 1200);
-      const item: KnowledgeContextMemory = { ...this.summary(memory), href: knowledgeSourceHref(projectId, { kind: "memory", id: memory.id, revision: memory.revision }), excerpt, bodyTruncated: excerpt !== memory.body,
-        sourceStates: memory.sources.map(source => this.sourceState(projectId, source)) };
+      const item = this.contextMemory(projectId, memory);
       const group = memory.category === "question" ? data.openQuestions
         : memory.category === "decision" && memory.approval?.revision === memory.revision ? data.decisions : data.proposals;
       group.push(item);
@@ -178,6 +218,7 @@ export class KnowledgeMemoryService {
       const current = this.sourceRecord(projectId, source);
       return this.sourceState(projectId, { ...source, revision: current?.revision ?? 1 } as KnowledgeSource);
     });
+    if (includeSuperseded) this.appendSupersessionHistory(data);
     const { generatedAt: _generatedAt, ...fingerprintData } = data;
     void _generatedAt;
     const result = { ...data, fingerprint: hash(fingerprintData) };
@@ -197,6 +238,16 @@ export class KnowledgeMemoryService {
         `## ${label}`, ...items.flatMap(item => [quote(item.title), `ID: ${item.id}; revision: ${item.revision}; truncated: ${item.bodyTruncated}`, `[Open memory](${item.href})`,
           quote(item.excerpt), quote(JSON.stringify({ approval: item.approval, sources: item.sourceStates }))]),
       ]), "## Evidence", quote(JSON.stringify(context.evidence)),
+      ...(context.supersessionHistory ? ["## Superseded history (not current decisions or proposals)",
+        `Limits: depth ${context.supersessionHistory.maxDepth}; predecessors ${context.supersessionHistory.maxItems}; bytes ${context.supersessionHistory.maxBytes} per page`,
+        ...context.supersessionHistory.chains.flatMap(chain => [
+          quote(`Current decision: ${chain.decisionId}; history truncated: ${chain.truncated}`),
+          ...chain.predecessors.flatMap(item => [quote(item.title),
+            quote(`Status: ${item.status}; ID: ${item.id}; revision: ${item.revision}; superseded at: ${item.updatedAt}; excerpt truncated: ${item.bodyTruncated}`),
+            `[Open superseded memory](${item.href})`, quote(item.excerpt),
+            quote(JSON.stringify({ supersededBy: item.supersededBy, approval: item.approval, sources: item.sourceStates }))]),
+        ]),
+      ] : []),
     ].join("\n\n");
     const result: KnowledgeExport = { formatVersion: 1, generatedAt: context.generatedAt, projectId: context.projectId, taskId: context.task.id,
       fingerprint: context.fingerprint, format, content, nextOffset: context.nextOffset };
