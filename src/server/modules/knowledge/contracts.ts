@@ -54,6 +54,7 @@ export interface KnowledgeStore {
   getMemory(projectId: string, id: string): KnowledgeMemory | null;
   getReply(projectId: string, id: string): KnowledgeReply | null;
   listMemories(projectId: string, limit: number, offset: number, query: string, includeInactive: boolean, taskId?: string): KnowledgePage<KnowledgeMemory>;
+  listSupersededPredecessors(projectId: string, replacementId: string, limit: number): KnowledgePage<KnowledgeMemory>;
   saveMemory(memory: KnowledgeMemory, expectedRevision: number | null, operation: string, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeMemory>;
   searchKnowledge(projectId: string, limit: number, offset: number, options: KnowledgeSearchOptions): KnowledgePage<KnowledgeSearchHit>;
   listKnowledgeProjects(principalId: string | null, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary>;

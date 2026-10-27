@@ -243,6 +243,15 @@ export class KnowledgeQueries implements KnowledgeStore {
     return this.page(this.withMemoryReadings(projectId, rows.map(mapMemory)), limit, offset);
   }
 
+  listSupersededPredecessors(projectId: string, replacementId: string, limit: number): KnowledgePage<KnowledgeMemory> {
+    // Scope every reverse edge to the authorized project, including imported records.
+    const rows = this.database.prepare(`SELECT * FROM knowledge_memories
+      WHERE project_id = @projectId AND status = 'superseded'
+      AND json_extract(superseded_by_json, '$.id') = @replacementId
+      ORDER BY updated_at DESC, id LIMIT @limit`).all({ projectId, replacementId, limit: limit + 1 }) as MemoryRow[];
+    return this.page(rows.map(mapMemory), limit, 0);
+  }
+
   private withMemoryReadings<T extends { id: string }>(projectId: string, items: T[]): Array<T & { reading?: KnowledgeMemoryReading }> {
     const readings = new Map<string, KnowledgeMemoryReading>();
     for (let start = 0; start < items.length; start += 100) {

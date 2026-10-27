@@ -811,6 +811,9 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   saveMemory(memory: KnowledgeMemory, expectedRevision: number | null, operation: string, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeMemory> {
     return this.knowledge.saveMemory(memory, expectedRevision, operation, context);
   }
+  listSupersededPredecessors(projectId: string, replacementId: string, limit: number): KnowledgePage<KnowledgeMemory> {
+    return this.knowledge.listSupersededPredecessors(projectId, replacementId, limit);
+  }
   searchKnowledge(projectId: string, limit: number, offset: number, options: KnowledgeSearchOptions): KnowledgePage<KnowledgeSearchHit> {
     return this.knowledge.searchKnowledge(projectId, limit, offset, options);
   }
