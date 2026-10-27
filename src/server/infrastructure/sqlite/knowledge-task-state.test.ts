@@ -47,7 +47,7 @@ function setup() {
   return { path, store, identity, owner, agent, readOnly, project, service, changed, call, task, read, current, write };
 }
 
-function mergedNotDeployed(evidence: string[] = []): TaskStateInput {
+function mergedNotDeployed(evidence: string[] = []): TaskStateInput & { blockers: Extract<TaskStateInput["blockers"], unknown[]> } {
   return {
     declaredBy: "codex · T3", changeNote: "PR #112 merged; blocker: none; next: owner — schedule deployment; decision: none",
     outcome: { known: true, text: "Merged to main; production deployment is a separate stage.", sources: [pr] },
@@ -106,6 +106,14 @@ describe("task current state", () => {
     expect(view.assessment).toMatchObject({ freshness: "current", changeCount: 0, ownerConsent: "not_needed", evidence: { listed: 1, present: 1, missing: [] } });
     expect(view.assessment.findings).toEqual([]);
     expect(view.systemFacts.attachments).toBe(1);
+  });
+
+  it("round-trips unknown blockers without turning them into confirmed absence", () => {
+    const f = setup();
+    f.write({ ...mergedNotDeployed(), blockers: { known: false, reason: "Not checked yet" } }, { status: "blocked" });
+    expect(f.read()).toMatchObject({ state: { blockers: { known: false, reason: "Not checked yet" } }, stateUnreadable: false, assessment: { findings: [] } });
+    f.write({ ...mergedNotDeployed(), blockers: [] });
+    expect(f.read().assessment.findings).toEqual([expect.objectContaining({ code: "blocked_without_blocker" })]);
   });
 
   it("rejects stale revisions, read-only writers and structural errors without contradiction checks", () => {

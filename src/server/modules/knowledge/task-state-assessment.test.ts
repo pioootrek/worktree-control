@@ -52,6 +52,13 @@ describe("task state assessment", () => {
     expect(codes(assessTaskState({ status: "blocked", revision: 4 }, state({ blockers: [blocker] }), facts()))).toEqual([]);
   });
 
+  it("distinguishes unknown blockers from a known empty list", () => {
+    const unknown = state({ blockers: { known: false, reason: "Not checked yet" } });
+    expect(codes(assessTaskState({ status: "blocked", revision: 4 }, unknown, facts()))).toEqual([]);
+    expect(taskStateSources(unknown)).toEqual([pr]);
+    expect(codes(assessTaskState({ status: "blocked", revision: 4 }, state({ blockers: [] }), facts()))).toEqual(["conflict:blocked_without_blocker"]);
+  });
+
   it("keeps deployment separate from merge", () => {
     const deployed = state({ delivery: { ...state().delivery, merge: { applies: true, state: "pr_open", commit: HEAD, observedAt: at, sources: [pr] }, deploy: { applies: true, state: "done", commit: MAIN, observedAt: at, sources: [pr] } } });
     expect(codes(assessTaskState(task, deployed, facts()))).toEqual(["conflict:deploy_without_merge", "attention:deploy_not_merged_head"]);

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { dashboardFixture, mountDashboard } from "./dashboard-fixture";
+import type { TaskStateInput } from "@/shared/contracts/knowledge-task-state";
 import { openPreferences, selectLanguage } from "./shell-actions";
 
 async function disconnectKnowledge(page: Page) {
@@ -71,7 +72,7 @@ async function mountKnowledge(page: Page, { withRuntimeProject = false }: { with
   return { ...fixture, records, replies, calls, taskStates, setFailure: (value: boolean) => { failSave = value; }, loseNextResponse: () => { loseResponse = true; } };
 }
 
-function currentStateView(taskId: string, patch: { freshness?: "current" | "changed_since"; consent?: string; approvalMethod?: string | null } = {}) {
+function currentStateView(taskId: string, patch: { freshness?: "current" | "changed_since"; consent?: string; approvalMethod?: string | null; blockers?: TaskStateInput["blockers"] } = {}) {
   const at = "2026-10-27T10:00:00.000Z", head = "a31f92c5e0d1b7f4c2a9e8d6b5c4a3f2e1d0c9b8", main = "c672be1a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c";
   const pr = { kind: "external", label: "PR #112", url: "https://example.invalid/pr/112" };
   const changed = patch.freshness === "changed_since";
@@ -80,7 +81,7 @@ function currentStateView(taskId: string, patch: { freshness?: "current" | "chan
     state: { formatVersion: 1, taskRevision: 7, statusAtWrite: "blocked", writtenAt: at, writtenBy: { principalId: "installation", authenticationMethod: "installation_token" }, declaredBy: "codex · T3",
       changeNote: "Staging deployment failed; blocker: staging-health opened; next: operator — restore DATABASE_URL; decision: recorded",
       outcome: { known: true, text: "PR #112 merged to main; staging deployment fails its health check.", sources: [pr] },
-      blockers: [{ key: "staging-health", text: "Staging /health returns 503", unblockedBy: "operator", condition: "Restore DATABASE_URL", since: at, state: "open", sources: [] },
+      blockers: patch.blockers ?? [{ key: "staging-health", text: "Staging /health returns 503", unblockedBy: "operator", condition: "Restore DATABASE_URL", since: at, state: "open", sources: [] },
         { key: "ci-runner", text: "CI runner offline", unblockedBy: "operator", condition: "Restore secret", since: at, state: "resolved", resolvedAt: at, resolution: "Secret restored", sources: [] }],
       nextStep: { known: true, action: "Restore the variable and redeploy", actor: "operator", sources: [] },
       ownerDecision: { state: "recorded", decisionRef: { id: "decision-1", revision: 2 } },
@@ -127,6 +128,42 @@ test("task reader shows the current state before the description and keeps histo
   await expect(plPanel.getByText("Nieznane", { exact: true })).toBeVisible();
   expect(f.errors).toEqual([]);
 });
+
+for (const { language, width } of [{ language: "en", width: 1440 }, { language: "pl", width: 320 }]) {
+  test(`task blocker details stay honest and visible in ${language} at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const f = await mountKnowledge(page);
+    const unknown = { known: false as const, reason: "Blockers have not been checked yet" };
+    f.records.push({ id: "blocker-task", projectId: "knowledge-only", title: "Blocker details", description: "Partial handoff", status: "blocked", priority: "now", revision: 7, createdBy: "owner" });
+    f.taskStates.set("blocker-task", currentStateView("blocker-task", { blockers: unknown }));
+    await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+    await page.getByRole("link", { name: "Blocker details", exact: true }).click();
+    if (language === "pl") await selectLanguage(page);
+    const panel = page.getByRole("region", { name: language === "pl" ? "Aktualny stan" : "Current state", exact: true });
+    const cell = panel.getByText(language === "pl" ? "Blokada" : "Blocker", { exact: true }).locator("..");
+    await expect(cell.getByText(language === "pl" ? "Nieznane" : "Unknown", { exact: true })).toBeVisible();
+    await expect(cell.getByText(unknown.reason, { exact: true })).toBeVisible();
+    await expect(cell).not.toContainText(language === "pl" ? "Brak otwartych blokad" : "No open blockers");
+
+    const at = "2026-10-27T10:00:00.000Z";
+    const blockers: TaskStateInput["blockers"] = [
+      { key: "staging-health", text: "Staging health check fails", unblockedBy: "operator", condition: "Restore DATABASE_URL", since: at, state: "open", sources: [] },
+      { key: "approval", text: "Redeployment approval missing", unblockedBy: "owner", condition: "Approve redeployment after the repair", since: at, state: "open", sources: [{ kind: "external", label: "Deployment approval", url: "https://example.invalid/approval" }] },
+    ];
+    f.taskStates.set("blocker-task", currentStateView("blocker-task", { blockers }));
+    await page.reload();
+    for (const blocker of blockers) {
+      await expect(cell.getByText(blocker.text, { exact: true })).toBeVisible();
+      await expect(cell).toContainText(blocker.condition);
+    }
+    await expect(cell).toContainText(language === "pl" ? "właściciel" : "owner");
+    const source = cell.getByRole("link", { name: "Deployment approval", exact: true });
+    await expect(source).toHaveAttribute("href", "https://example.invalid/approval");
+    await source.focus(); await expect(source).toBeFocused();
+    expect(await page.evaluate(() => document.scrollingElement!.scrollWidth <= window.innerWidth)).toBe(true);
+    expect(f.errors).toEqual([]);
+  });
+}
 
 test("a task without a recorded state says so on a narrow reader without horizontal scrolling", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });

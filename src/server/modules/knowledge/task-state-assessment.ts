@@ -34,9 +34,9 @@ export function assessTaskState(task: { status: KnowledgeTaskStatus; revision: n
   const add = (code: TaskStateFinding["code"], severity: TaskStateFinding["severity"], fields: string[], values: Record<string, string> = {}) =>
     findings.push({ code, severity, fields, values });
 
-  const open = state.blockers.filter(blocker => blocker.state === "open");
+  const open = (Array.isArray(state.blockers) ? state.blockers : []).filter(blocker => blocker.state === "open");
   if (task.status === "done" && open.length) add("done_with_open_blocker", "conflict", ["status", `blockers.${open[0].key}`], { blocker: open[0].text });
-  if (task.status === "blocked" && !open.length) add("blocked_without_blocker", "conflict", ["status", "blockers"]);
+  if (task.status === "blocked" && Array.isArray(state.blockers) && !open.length) add("blocked_without_blocker", "conflict", ["status", "blockers"]);
   if (open.length && task.status !== "blocked" && task.status !== "done") add("open_blocker_not_blocked", "attention", ["status", `blockers.${open[0].key}`], { blocker: open[0].text, status: task.status });
 
   const { merge, ci, deploy, evidence } = state.delivery;
@@ -90,7 +90,7 @@ export function assessTaskState(task: { status: KnowledgeTaskStatus; revision: n
 export function taskStateSources(state: TaskStateInputLike): TaskStateSource[] {
   const all: TaskStateSource[] = [];
   if (state.outcome.known) all.push(...state.outcome.sources);
-  for (const blocker of state.blockers) all.push(...blocker.sources);
+  for (const blocker of Array.isArray(state.blockers) ? state.blockers : []) all.push(...blocker.sources);
   if ("sources" in state.nextStep) all.push(...state.nextStep.sources);
   for (const stage of ["merge", "ci", "review", "evidence", "deploy"] as const) {
     const value = state.delivery[stage];
