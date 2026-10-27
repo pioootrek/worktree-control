@@ -158,23 +158,35 @@ describe("vault authorization, persistence and versioning", () => {
   it("can revoke near the byte cap with a partially filled receipt ring, including after reopen", () => {
     const f = fixture(), cipher = new DevVaultCipher({ key: () => f.key });
     const dotenv = (start: number, count: number) => Array.from({ length: count }, (_, i) => `FAKE_${start + i}=${"x".repeat(8000)}`).join("\n");
-    // Reach the boundary through valid operations: large profiles, retained write
-    // proposals, then plaintext read receipts after the earlier receipts expire.
+    // Create real records, then expand the encrypted fixture in bulk instead of
+    // repeatedly encrypting and writing megabytes just to prepare the boundary.
     f.execute({ operation: "update", ...f.imported, dotenv: dotenv(0, 4) });
     f.execute({ operation: "update", ...f.imported, revision: 2, dotenv: dotenv(4, 2) });
     const profile = { ...f.imported, revision: 3 };
+    type Seed = { profiles: { id: string; revision: number; payload: string }[];
+      receipts: { command: { operationId: string } }[]; audit: Record<string, unknown>[] };
+    const snapshotBefore = f.store.devVault.load(f.project.id)!;
+    const seed = cipher.open<Seed>(snapshotBefore.ciphertext, f.project.id, "state", snapshotBefore.version);
+    const template = seed.profiles[0];
+    const environment = cipher.open(template.payload, f.project.id, template.id, template.revision);
     for (let i = 1; i < 16; i++) {
-      const imported = f.execute({ operation: "import", dotenv: dotenv(0, 4) }) as { profileId: string };
-      f.execute({ operation: "update", profileId: imported.profileId, revision: 1, dotenv: dotenv(4, 2) });
+      const id = randomUUID();
+      seed.profiles.push({ ...template, id, payload: cipher.seal(environment, f.project.id, id, template.revision) });
+      seed.audit.push({ operation: "import", actorId: f.owner.principalId, at: f.now },
+        ...Array.from({ length: 2 }, () => ({ operation: "update", actorId: f.owner.principalId, at: f.now, profileId: id })));
     }
+    expect(f.store.devVault.commit(f.project.id, snapshotBefore.version, cipher.seal(seed, f.project.id, "state", snapshotBefore.version + 1))).toBe(true);
     for (let i = 0; i < 3; i++) f.approve(f.request("write", { ...profile, dotenv: dotenv(0, 4), source: "inline-dotenv" }), "until-revoked");
     const grant = f.approve(f.request("read", profile), "until-revoked");
     f.advance(2 * 86_400_000);
-    let read = f.command({ operation: "read", ...profile, grantId: grant.id });
-    for (let i = 0; i < 62; i++) {
-      read = f.command({ operation: "read", ...profile, grantId: grant.id });
-      f.execute(read, f.first.actor);
-    }
+    const read = f.command({ operation: "read", ...profile, grantId: grant.id });
+    f.execute(read, f.first.actor);
+    const readSnapshot = f.store.devVault.load(f.project.id)!;
+    const reads = cipher.open<Seed>(readSnapshot.ciphertext, f.project.id, "state", readSnapshot.version);
+    const receipt = reads.receipts[0];
+    reads.receipts = [...Array.from({ length: 61 }, () => ({ ...receipt, command: { ...receipt.command, operationId: randomUUID() } })), receipt];
+    reads.audit.push(...Array.from({ length: 61 }, () => ({ ...reads.audit.at(-1)! })));
+    expect(f.store.devVault.commit(f.project.id, readSnapshot.version, cipher.seal(reads, f.project.id, "state", readSnapshot.version + 1))).toBe(true);
     const padding = (bytes: number) => Array.from({ length: 4 }, (_, i) => `PAD_${i}=${"x".repeat(Math.max(0, Math.min(8192, bytes - i * 8192)))}`).join("\n");
     const pending = f.command({ operation: "request", ...profile, permission: "write", source: "inline-dotenv", dotenv: padding(0) });
     // Measure fixed overhead in a disposable candidate, without changing SQLite.
