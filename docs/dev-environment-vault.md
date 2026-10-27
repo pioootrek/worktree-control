@@ -141,16 +141,19 @@ revocation still permit them. Another operation ID cannot reuse a consumed once
 grant. Read retries also require the approved profile revision to remain current.
 Write retries return only their saved metadata after advancing a revision.
 
-Receipts retain at most 64 operations per project for 24 hours. Once consumption
-survives receipt eviction, so a read whose receipt was evicted is denied rather
-than consuming again. Idempotent import/request retries outside retention may
+Receipts retain at most 64 operations per project for 24 hours. Revocation may
+evict older receipts sooner to fit its own receipt and audit within the byte cap.
+Once consumption survives receipt eviction, so a read whose receipt was evicted
+is denied rather than consuming again. Idempotent import/request retries outside retention may
 create a new record; do not use old operation IDs as permanent deduplication keys.
 There are at most 16 profiles, 64 retained requests, 64 active grants, 8 pending
 requests per credential and 128 audit events per project. Plain state is bounded
-to 4 MiB before encryption; limit failures do not partially commit. Expired or
-revoked records are removed on the next committed operation; access checks filter
-them immediately, including after restart. Active indefinite grants retain their
-request; reaching the active limit requires revocation before new approvals.
+to 4 MiB before encryption; limit failures do not partially commit. Revocation
+removes the grant and its request in the same commit as its receipt and audit
+event, reclaiming space before checking the byte limit. Expired records are
+removed on the next committed operation; access checks filter them immediately,
+including after restart. Active indefinite grants retain their request;
+reaching the active limit requires revocation before new approvals.
 
 The parser accepts at most 32 KiB UTF-8, 100 distinct variables and 8192 bytes per
 value. It accepts `NAME=value`, empty values, full comment lines, CRLF and simple
@@ -174,8 +177,11 @@ URLs are rejected.
 For owner signing, set
 `WORKTREE_CONTROL_DEV_VAULT_OWNER_PRIVATE_KEY_FILE` to a private Ed25519 PEM file.
 The CLI verifies the session identity through `/api/identity`, signs the exact
-command, then sends the proof. It does not generate keys. Alternatively supply
-an already signed proof in stdin JSON. The CLI prints the DEV disclaimer to
+command, then sends the proof. It dates the proof from the controller's `Date`
+header with one-second backdating, avoiding dependence on the CLI host's clock.
+If the header is missing or invalid, it falls back to the local clock with the
+same backdating. It does not generate keys. Alternatively supply an already
+signed proof in stdin JSON. The CLI prints the DEV disclaimer to
 stderr and the authorized operation response to stdout. Explicit reads expose
 values to the caller, so protect redirected output and shell history. MCP tool
 arguments and client transcripts may retain submitted values; do not submit real

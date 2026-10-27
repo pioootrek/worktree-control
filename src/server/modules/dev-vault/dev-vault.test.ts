@@ -1,9 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DevVaultCipher, DevVaultService, parseDevDotenv } from "./index";
 import { canonicalJson } from "./crypto";
 import { FAKE_DOTENV, vaultFixture } from "./test-fixture";
+import { DEV_VAULT_STATE_BYTES } from "./dev-vault-service";
 
 const fixtures: ReturnType<typeof vaultFixture>[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.close(); });
@@ -153,6 +154,63 @@ describe("vault authorization, persistence and versioning", () => {
     const next = f.approve(f.request("read"), "until-revoked");
     f.identity.revokeCredential(f.first.actor.credentialId, f.owner);
     expect(() => f.execute({ operation: "read", ...f.imported, grantId: next.id }, f.first.actor)).toThrow("vault_denied");
+  });
+  it("can revoke near the byte cap with a partially filled receipt ring, including after reopen", () => {
+    const f = fixture(), cipher = new DevVaultCipher({ key: () => f.key });
+    const dotenv = (start: number, count: number) => Array.from({ length: count }, (_, i) => `FAKE_${start + i}=${"x".repeat(8000)}`).join("\n");
+    // Reach the boundary through valid operations: large profiles, retained write
+    // proposals, then plaintext read receipts after the earlier receipts expire.
+    f.execute({ operation: "update", ...f.imported, dotenv: dotenv(0, 4) });
+    f.execute({ operation: "update", ...f.imported, revision: 2, dotenv: dotenv(4, 2) });
+    const profile = { ...f.imported, revision: 3 };
+    for (let i = 1; i < 16; i++) {
+      const imported = f.execute({ operation: "import", dotenv: dotenv(0, 4) }) as { profileId: string };
+      f.execute({ operation: "update", profileId: imported.profileId, revision: 1, dotenv: dotenv(4, 2) });
+    }
+    for (let i = 0; i < 3; i++) f.approve(f.request("write", { ...profile, dotenv: dotenv(0, 4), source: "inline-dotenv" }), "until-revoked");
+    const grant = f.approve(f.request("read", profile), "until-revoked");
+    f.advance(2 * 86_400_000);
+    let read = f.command({ operation: "read", ...profile, grantId: grant.id });
+    for (let i = 0; i < 62; i++) {
+      read = f.command({ operation: "read", ...profile, grantId: grant.id });
+      f.execute(read, f.first.actor);
+    }
+    const padding = (bytes: number) => Array.from({ length: 4 }, (_, i) => `PAD_${i}=${"x".repeat(Math.max(0, Math.min(8192, bytes - i * 8192)))}`).join("\n");
+    const pending = f.command({ operation: "request", ...profile, permission: "write", source: "inline-dotenv", dotenv: padding(0) });
+    // Measure fixed overhead in a disposable candidate, without changing SQLite.
+    let candidateBytes = 0;
+    const probe = new DevVaultService({
+      projectExists: id => f.store.devVault.projectExists(id), load: id => f.store.devVault.load(id),
+      commit: (id, version, ciphertext) => {
+        candidateBytes = Buffer.byteLength(canonicalJson(cipher.open(ciphertext, id, "state", version + 1))); return true;
+      },
+    }, { key: () => f.key }, f.identity, f.verifier, () => f.now);
+    probe.execute({ command: pending }, f.first.actor);
+    const bytes = Math.floor((DEV_VAULT_STATE_BYTES - candidateBytes) / 2);
+    expect(bytes).toBeGreaterThan(0); expect(bytes).toBeLessThan(32_000);
+    f.execute({ ...pending, dotenv: padding(bytes) }, f.first.actor);
+    const snapshot = f.store.devVault.load(f.project.id)!;
+    const state = cipher.open<{ receipts: unknown[] }>(snapshot.ciphertext, f.project.id, "state", snapshot.version);
+    expect(state.receipts).toHaveLength(63);
+    expect(DEV_VAULT_STATE_BYTES - Buffer.byteLength(canonicalJson(state))).toBeLessThanOrEqual(1);
+    expect(f.execute(read, f.first.actor)).toHaveProperty("environment");
+    const revoke = f.command({ operation: "revoke", grantId: grant.id });
+    const commit = vi.spyOn(f.store.devVault, "commit").mockReturnValueOnce(false);
+    expect(() => f.execute(revoke)).toThrow("vault_conflict");
+    commit.mockRestore();
+    expect(f.execute(read, f.first.actor)).toHaveProperty("environment");
+    const result = f.execute(revoke);
+    expect(result).toMatchObject({ grantId: grant.id, revokedAt: f.now });
+    f.reopen();
+    const after = f.store.devVault.load(f.project.id)!;
+    const retained = cipher.open<{ receipts: unknown[] }>(after.ciphertext, f.project.id, "state", after.version);
+    expect(Buffer.byteLength(canonicalJson(retained))).toBeLessThanOrEqual(DEV_VAULT_STATE_BYTES);
+    expect(retained.receipts).toHaveLength(63); // One old receipt made room for the revocation.
+    expect(f.execute(revoke)).toEqual(result);
+    expect(() => f.execute(read, f.first.actor)).toThrow("vault_denied");
+    expect(() => f.execute({ ...read, operationId: randomUUID() }, f.first.actor)).toThrow("vault_denied");
+    expect(f.execute({ operation: "requests" })).toMatchObject({ grants: expect.arrayContaining([expect.objectContaining({ lifetime: "until-revoked" })]) });
+    expect(f.execute({ operation: "audit" })).toMatchObject({ events: expect.arrayContaining([expect.objectContaining({ operation: "revoke", grantId: grant.id })]) });
   });
   it("expires pending requests, handles rejection, and bounds an agent's pending queue", () => {
     const f = fixture(), r = f.request("read");

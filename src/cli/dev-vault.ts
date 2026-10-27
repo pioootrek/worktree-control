@@ -45,7 +45,10 @@ export async function runDevVaultCommand(args: string[], dependencies: DevVaultC
       if (identity.principal.kind !== "owner" || identity.credential?.kind !== "owner_session") return fail();
       const key = createPrivateKey(readExternalVaultFile(privatePath, [], true, 8192));
       if (key.asymmetricKeyType !== "ed25519") return fail();
-      const issuedAt = new Date().toISOString();
+      // This proof is sent immediately. Use the controller's whole-second lower
+      // bound, with the same one-second backdating as the browser signing flow.
+      const serverTime = Date.parse(identityResponse.headers.get("date") ?? "");
+      const issuedAt = new Date((Number.isFinite(serverTime) ? serverTime : Date.now()) - 1000).toISOString();
       const proof: DevOwnerProof = { issuedAt, signature: sign(null, devOwnerSigningMessage(body.command,
         { principalId: identity.principal.id, credentialId: identity.credential.id }, issuedAt), key).toString("base64") };
       body.proof = proof;

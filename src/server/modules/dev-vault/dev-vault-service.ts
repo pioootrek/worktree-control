@@ -191,7 +191,11 @@ export class DevVaultService {
       case "revoke": {
         requireOwner(); const g = state.grants.find(g => g.id === command.grantId);
         if (!g) return denied();
-        g.revokedAt = now; result = { grantId: g.id, revokedAt: now }; break;
+        // Reclaim the authority in this commit, before charging its receipt and
+        // audit event against the byte cap. A full vault must remain revocable.
+        state.grants = state.grants.filter(grant => grant.id !== g.id);
+        state.requests = state.requests.filter(request => request.id !== g.requestId);
+        result = { grantId: g.id, revokedAt: now }; break;
       }
       case "write": {
         if (!access?.proposal.proposal) return denied();
@@ -206,7 +210,14 @@ export class DevVaultService {
       ...("requestId" in command ? { requestId: command.requestId } : {}),
       ...("grantId" in command ? { grantId: command.grantId } : {}) });
     state.audit = state.audit.slice(-128);
-    if (Buffer.byteLength(canonicalJson(state)) > DEV_VAULT_STATE_BYTES) return limit();
+    let stateBytes = Buffer.byteLength(canonicalJson(state));
+    // Retained retries must not prevent withdrawal of authority. Keep this
+    // revocation's receipt, but evict older receipts if its audit needs space.
+    while (command.operation === "revoke" && stateBytes > DEV_VAULT_STATE_BYTES && state.receipts.length > 1) {
+      state.receipts.shift();
+      stateBytes = Buffer.byteLength(canonicalJson(state));
+    }
+    if (stateBytes > DEV_VAULT_STATE_BYTES) return limit();
     const version = snapshot?.version ?? 0;
     const ciphertext = this.cipher.seal(state, command.projectId, "state", version + 1);
     if (!this.store.commit(command.projectId, version, ciphertext)) return conflict();
