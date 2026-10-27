@@ -122,7 +122,7 @@ export function TaskCurrentState({ token, projectId, taskId, changeVersion, onSh
       <h5 className="flex items-center gap-2 text-sm font-medium"><AlertTriangle aria-hidden className="size-4 text-amber-600 dark:text-amber-300" />{t("taskState.attention", { count: assessment.findings.length })}</h5>
       <ul className="mt-2 space-y-1.5 text-sm">{assessment.findings.map((finding, index) => <li key={`${finding.code}-${index}`} className="flex gap-2">
         {finding.severity === "conflict" ? <XCircle aria-hidden className="mt-0.5 size-4 shrink-0 text-destructive" /> : <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-300" />}
-        <span><span className="font-medium">{t(finding.severity === "conflict" ? "taskState.conflict" : "taskState.attentionItem")}:</span> {t(key(`taskState.finding.${finding.code}`), finding.values.method ? { ...finding.values, method: t(key(`taskState.method.${finding.values.method}`)) } : finding.values)}</span>
+        <span><span className="font-medium">{t(finding.severity === "conflict" ? "taskState.conflict" : "taskState.attentionItem")}:</span> <span>{t(key(`taskState.finding.${finding.code}`), finding.values.method ? { ...finding.values, method: t(key(`taskState.method.${finding.values.method}`)) } : finding.values)}</span></span>
       </li>)}</ul>
     </div>}
     <div className="flex flex-wrap gap-2">{historyButton}</div>
