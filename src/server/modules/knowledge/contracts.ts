@@ -79,6 +79,8 @@ export interface KnowledgeStore {
   updateTaskState(task: KnowledgeTask, state: TaskCurrentState, expectedRevision: number, context: KnowledgeMutationContext): KnowledgeMutationResult<{ task: KnowledgeTask; state: TaskCurrentState }>;
   taskStateFacts(projectId: string, task: KnowledgeTask, state: TaskCurrentState): TaskStateFacts;
   taskSystemFacts(projectId: string, taskId: string): KnowledgeTaskStateView["systemFacts"];
+  /** True when every revision after `sinceRevision` is a state write, which keeps a citation of the task current. */
+  taskChangedOnlyByState(projectId: string, taskId: string, sinceRevision: number): boolean;
   updateKnowledgeProject(project: KnowledgeProject, expectedRevision: number, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeProject>;
   setKnowledgeProjectRuntimeLink(link: KnowledgeProjectRuntimeLink, expectedRevision: number, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeRuntimeLinkResult>;
 }

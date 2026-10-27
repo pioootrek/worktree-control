@@ -108,7 +108,8 @@ export class KnowledgeTaskStateService {
     const record = kind === "task" ? this.store.getTask(projectId, id) : kind === "thread" ? this.store.getThread(projectId, id)
       : kind === "reply" ? this.store.getReply(projectId, id) : this.store.getMemory(projectId, id);
     if (!record) throw new KnowledgeError("not_found", "Source not found in this project.");
-    if (record.revision !== revision) throw new KnowledgeError("revision_conflict", "Source revision changed.", record.revision);
+    if (record.revision !== revision && !(kind === "task" && record.revision > revision && this.store.taskChangedOnlyByState(projectId, id, revision)))
+      throw new KnowledgeError("revision_conflict", "Source revision changed.", record.revision);
     return record;
   }
 }
