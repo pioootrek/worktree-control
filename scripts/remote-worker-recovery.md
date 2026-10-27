@@ -208,8 +208,8 @@ delete receipts, or infer exit from a reused PID.
    new recovery phase without overwriting the crash or Angular histories.
    Unset the private owner-token environment variable when finished.
 
-The interactive T3 gate remains separate: use the existing T3 MCP connection
-to submit/read a real request and verify its displayed source/result evidence.
+The T3 client gate is a separate execution: use an authenticated T3 MCP
+connection to submit/read a real request and verify its source/result evidence.
 An SDK fixture or successful reboot cannot establish that client behavior.
 
 ## Execution evidence, 2026-10-26
@@ -242,5 +242,31 @@ remained uncertain. Runtime continuation verified:
 The host's 17 previously running containers returned, all five healthchecks
 passed, and its existing CI runner returned online. Detailed private evidence,
 failed preparation attempts and driver assertion corrections are recorded in the
-linked Knowledge discussion. No production code changed. This evidence does
-not complete the separate interactive T3 MCP acceptance gate.
+linked Knowledge discussion. No production code changed. The separate T3
+client execution is recorded below.
+
+## T3 client evidence, 2026-10-27
+
+The active installation did not advertise remote tools because its controller
+was started without `--remote-verification-config`. Its MCP registration was
+connected. For acceptance, the existing disposable remote broker and worker
+were reopened with their original data and the verified fresh cache. A temporary
+named MCP connection used a loopback SSH tunnel and a private owner credential;
+the existing production controller configuration was unchanged.
+
+A T3-owned Codex child invoked the actual exposed
+`submit_remote_verification`, `get_remote_verification`, and
+`get_remote_verification_logs` tools. This was not an SDK or shell substitute.
+Request `49a3de6f-7dc4-4f19-a020-82dbe47287a8` succeeded at exact fixture SHA
+`00753e0c591683877830cbcc0ab9e3cc7fadfbf7`, with exit zero, observed matching
+source, preset/environment fingerprints and confirmed cleanup. An identical
+submission retained its request, attempt and local run IDs and unchanged result.
+Replaying the historical worker-crash submission retained its original uncertain
+result without cancellation or reexecution.
+
+Independent parent inspection found exactly one new launcher/descendant pair,
+no additional execution of the original attempt, and removal of all three fresh
+execution slots. The temporary MCP registration, tunnel and credential files
+were removed and both disposable controllers stopped. The parsed client
+configuration matched its pre-trial state. The detailed delegated result and
+private marker evidence are referenced in the linked Knowledge discussion.
