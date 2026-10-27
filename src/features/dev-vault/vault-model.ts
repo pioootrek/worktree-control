@@ -73,7 +73,6 @@ export function grantState(grant: VaultGrant, request: VaultRequest | undefined,
 
 export const VAULT_LIFETIMES: readonly VaultLifetime[] = ["once", "15-minutes", "until-revoked"];
 export const VAULT_IDLE_LOCK_MS = 10 * 60_000;
-export const VAULT_DOTENV_FILE_BYTES = 32 * 1024;
 
 /** Estimates controller clock offset from a response Date header (whole seconds). */
 export function clockSkew(dateHeader: string | null, sentAt: number, receivedAt: number): number {

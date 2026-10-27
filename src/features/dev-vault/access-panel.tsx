@@ -25,11 +25,10 @@ export function AccessPanel({ snapshot, ...props }: PanelProps & { snapshot: Vau
   const { t } = useI18n();
   const { requests, grants, profiles } = snapshot;
   const open = requests.filter(request => request.status !== "approved");
-  const pendingCount = open.filter(request => requestState(request, profiles, props.now) === "pending").length;
   return (
     <>
       <section className="grid gap-3" aria-labelledby="vault-requests-heading">
-        <h4 id="vault-requests-heading" className="text-sm font-semibold">{t("vault.requests", { count: pendingCount })}</h4>
+        <h4 id="vault-requests-heading" className="text-sm font-semibold">{t("vault.requests", { count: open.length })}</h4>
         {open.length === 0 ? <p className="text-sm text-muted-foreground">{t("vault.noRequests")}</p> : (
           <ul className="grid gap-2">{open.map(request => <RequestItem key={request.id} request={request} profiles={profiles} {...props} />)}</ul>
         )}

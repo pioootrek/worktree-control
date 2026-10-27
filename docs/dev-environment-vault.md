@@ -188,8 +188,9 @@ DEV-only disclaimer, the agent request contract and the controller's notice.
 Owner proof follows the same contract as the CLI; there is no signing endpoint.
 
 1. The owner pastes a `wts_` owner session token and chooses an unencrypted
-   PKCS#8 Ed25519 private key PEM file. Encrypted keys are refused; use the
-   CLI for those. The dashboard checks `/api/identity` and accepts only an
+   PKCS#8 Ed25519 private key PEM file. Neither the dashboard nor the CLI
+   supports encrypted PEM files; decrypt or re-export them with an external
+   key tool first. The dashboard checks `/api/identity` and accepts only an
    `owner` principal with an `owner_session` credential. Installation and
    agent tokens are refused before any signing.
 2. The browser imports the key with Web Crypto as a non-extractable signing key
@@ -202,8 +203,10 @@ Owner proof follows the same contract as the CLI; there is no signing endpoint.
    JavaScript strings, including the PEM text, cannot be reliably erased.
 
 Web Crypto requires a secure context, so signing works only over HTTPS or a
-loopback address and in browsers with Ed25519 support. Elsewhere the section
-says signing is unavailable and offers no fallback. The proof timestamp is
+loopback address and in browsers with Ed25519 support. Without a secure context
+or Web Crypto the section says signing is unavailable. A browser without Ed25519
+support reports an unsupported-key error during import; there is no fallback.
+The proof timestamp is
 dated one second in the past. It is corrected from the controller's `Date`
 header only for an offset above three seconds.
 
@@ -226,8 +229,11 @@ approval arrives. Rejection, revocation and the bounded audit log are also
 available. Profile update and deletion are not.
 
 Errors show fixed text for the response code only, never server text, names
-or values. A transport failure keeps the operation ID, so retrying the same
-action replays a committed receipt instead of repeating it. While signing is
+or values. While signing remains unlocked, a transport failure keeps the
+operation ID, so retrying the same action replays a committed receipt instead
+of repeating it. Locking clears retry bookkeeping. After reconnecting, check
+the result before retrying: a previously completed import could be duplicated.
+While signing is
 unlocked, script running in the dashboard origin could use the loaded key to
 sign commands without extracting it. Unlock only on a trusted device and lock
 signing when finished.
