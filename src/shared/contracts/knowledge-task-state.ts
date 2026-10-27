@@ -158,4 +158,3 @@ export interface KnowledgeTaskStateView {
   /** Facts known to the system without a recorded state. */
   systemFacts: { approvedDecisions: number; proposals: number; openQuestions: number; attachments: number };
 }
-

@@ -1,3 +1,4 @@
+import type { DevVaultOperations } from "./modules/dev-vault";
 import type { McpDiagnosticsSnapshot } from "@/shared/contracts/mcp-diagnostics";
 import { McpDiagnostics, type McpCloseReason } from "./mcp-diagnostics";
 import { timingSafeEqual } from "node:crypto";
@@ -79,7 +80,9 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
     chunks.push(buffer);
   }
   if (chunks.length === 0) return undefined;
-  const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  let body;
+  try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+  catch { throw new Error("MCP request JSON is invalid."); }
   const limit = body?.method === "tools/call" && body?.params?.name === "knowledge_create_attachment" ? ATTACHMENT_BODY_LIMIT
     : body?.method === "tools/call" && body?.params?.name === "knowledge_check_attachment_batch" ? MANIFEST_BODY_LIMIT : BODY_LIMIT;
   if (size > limit) throw new Error("MCP request is too large.");
@@ -91,6 +94,7 @@ export function createMcpControllerServer(options: {
   port: number;
   accessToken: string;
   identity?: Pick<IdentityService, "authenticateBearer" | "describeIdentity">;
+  devVault?: DevVaultOperations;
   authentication?: ControllerAuthenticationDependencies["authentication"];
   onDiagnostic?: (message: string, details?: Record<string, unknown>) => void;
   /** Session admission, idle and renewal limits; defaults apply to omitted values. */
@@ -108,11 +112,13 @@ export function createMcpControllerServer(options: {
       options.identity,
       diagnostics,
       governor,
+      options.devVault,
     ));
     return runtimePromise;
   };
 
   const server = createServer((request, response) => {
+    response.setHeader("Cache-Control", "no-store");
     void (async () => {
       if (request.url !== "/mcp") return jsonError(response, 404, "MCP endpoint not found.");
       const authentication = authenticate(request, options.accessToken, options);

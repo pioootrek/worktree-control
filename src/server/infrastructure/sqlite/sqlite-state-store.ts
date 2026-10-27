@@ -1,3 +1,5 @@
+import { DevVaultQueries } from "./dev-vault-queries";
+import type { DevVaultStore } from "@/server/modules/dev-vault";
 import { RemoteConnectionQueries } from "./remote-connection-queries";
 import type { RemoteConnectionStore } from "@/server/modules/remote-verification";
 import { TestHistoryQueries } from "./test-history-queries";
@@ -58,6 +60,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   private readonly storage: StorageQueries;
   private readonly remoteVerification: RemoteVerificationQueries;
   readonly remoteConnection: RemoteConnectionStore;
+  readonly devVault: DevVaultStore;
   private readonly identity: IdentityQueries;
   private readonly authentication: AuthenticationQueries;
   private readonly knowledge: KnowledgeQueries;
@@ -76,6 +79,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       this.storage = new StorageQueries(this.database);
       this.remoteVerification = new RemoteVerificationQueries(this.database);
       this.remoteConnection = new RemoteConnectionQueries(this.database);
+      this.devVault = new DevVaultQueries(this.database);
       this.identity = new IdentityQueries(this.database);
       this.authentication = new AuthenticationQueries(this.database);
       this.knowledge = new KnowledgeQueries(this.database);
@@ -393,9 +397,16 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     return this.getProject(id)!;
   }
 
+  assertProjectRemovalAllowed(projectId: string): void {
+    if (this.database.prepare("SELECT 1 FROM dev_environment_vaults WHERE project_id = ?").get(projectId)) {
+      throw new Error("Project has an encrypted DEV vault; removal requires a dedicated owner-authorized vault deletion workflow.");
+    }
+  }
+
   removeProject(projectId: string, actor: string): void {
     const project = this.getProject(projectId);
     if (!project) throw new Error("Nie znaleziono projektu.");
+    this.assertProjectRemovalAllowed(projectId);
     const now = new Date().toISOString();
     this.database.transaction(() => {
       const cancellationRequestedAttempts = this.database.prepare(`

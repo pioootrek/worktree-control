@@ -297,6 +297,7 @@ export class ControlService {
         this.processes.snapshot(projectId).worktreePath ?? project.selectedWorktreePath,
         actor,
       );
+      this.store.assertProjectRemovalAllowed(projectId);
       await this.processes.stop(projectId);
       this.store.removeProject(projectId, actor.owner);
       await this.tests?.pruneLogs();

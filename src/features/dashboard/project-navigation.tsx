@@ -2,9 +2,9 @@
 
 import { Sidebar, SidebarContent, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "@/components/ui/sidebar";
 import { useI18n } from "@/i18n/provider";
-import { BookOpen, ChartNoAxesGantt, FlaskConical, GitBranch, HardDrive, ScrollText } from "lucide-react";
+import { BookOpen, ChartNoAxesGantt, FlaskConical, GitBranch, HardDrive, KeyRound, ScrollText } from "lucide-react";
 
-export type ProjectSection = "worktrees" | "tests" | "analysis" | "resources" | "logs" | "knowledge";
+export type ProjectSection = "worktrees" | "tests" | "analysis" | "resources" | "logs" | "vault" | "knowledge";
 
 export const projectSections = [
   { id: "worktrees", label: "dashboard.navWorktrees", icon: GitBranch },
@@ -12,6 +12,7 @@ export const projectSections = [
   { id: "analysis", label: "dashboard.navAnalysis", icon: ChartNoAxesGantt },
   { id: "resources", label: "dashboard.navResources", icon: HardDrive },
   { id: "logs", label: "project.logs", icon: ScrollText },
+  { id: "vault", label: "dashboard.navVault", icon: KeyRound },
   { id: "knowledge", label: "knowledge.title", icon: BookOpen },
 ] as const;
 

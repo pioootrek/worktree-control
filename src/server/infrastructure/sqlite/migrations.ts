@@ -1,3 +1,4 @@
+import { applyDevVaultMigration } from "./dev-vault-migration";
 import { applyRemoteConnectionMigration } from "./remote-connection-migration";
 import Database from "better-sqlite3";
 import { applyRegistryMigration, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
@@ -355,6 +356,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyTestPresetTimeoutMigration(database);
       applyRemoteConnectionMigration(database);
       applyTaskCurrentStateMigration(database);
+      applyDevVaultMigration(database);
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();
