@@ -495,6 +495,17 @@ a whole remains a proposal until the owner reviews the document and prototype.
 4. **Rollout order.** Implement after the higher-priority work the owner set on
    2026-10-05 (the task remains `later`), and after PR110 and the `legacyId`
    change merge.
+5. **Citations across state writes** (after the n8n review of PR #113). Every
+   state write advances the task revision. Memory validation requires current
+   source revisions, so a decision that cites its own task could never be
+   approved once a state pointed at it. A task revision produced only by
+   `update_task_state` therefore keeps a citation of that task current, for
+   `approve_memory`, memory writes, source states and state writes. A state
+   write is recognized by the `currentState` key the server adds to
+   `previousJson`, so no history-operation migration is needed. An
+   `update_task` edit still invalidates the citation. In the same way, a
+   memory revision that only added an approval does not make a state's
+   reference to it stale.
 
 ## Unverified and out of scope
 
