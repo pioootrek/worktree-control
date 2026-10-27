@@ -272,12 +272,20 @@ Provider rotation, remote delivery, deletion/reclamation, encrypted-key browser
 signing, hardware-backed owner keys and operational key management remain
 unfinished.
 
-Migration 33 is local to this branch's base. The parallel Knowledge
-task-current-state branch also uses 33; integration must renumber/rebase one
-migration and rerun migration, backup/restore, check and build verification.
-On 2026-10-27, remote `main` at `b5da139` still supports schema 32, and
-Knowledge PR #113 is open against `docs/knowledge-current-state-design` with
-its own migration 33. Integration needs an approved base containing whichever
-migration lands first before the other can become 34. Do not skip 33 or copy
-the unmerged migration to manufacture that base. Do not apply either branch
-to the other branch's live database as a workaround.
+The local integration includes Knowledge task-current-state at `f97f41f` with
+its unchanged migration 33, followed by DEV vault migration 34. Both run on the
+same owned connection in the ordered schema transaction; provenance checks
+recognize each separately. Schema 32 and Knowledge schema 33 upgrade to 34.
+
+Earlier experimental vault builds used version 33 for a different migration.
+Those databases and backups are rejected by name/checksum validation without
+rewriting their provenance or deleting vault data. Keep an isolated copy and
+use the matching earlier build to recover any needed profiles before importing
+them into the integrated version. Do not point this build at an experimental
+vault-33 database as an upgrade shortcut.
+
+This is a local integration snapshot, not a merge into `main` or a deployment.
+On 2026-10-27 remote `main` at `b5da139` still supports schema 32 and Knowledge
+PR #113 remains open. Publication must retain Knowledge 33 before vault 34
+and revalidate if the Knowledge dependency changes. No live controller database
+was migrated during this integration.

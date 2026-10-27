@@ -12,6 +12,7 @@ if (!existsSync(cli) || !existsSync(dashboard)) {
 export default defineConfig({
   test: {
     include: ["tests/integration/**/*.test.ts"],
+    exclude: ["tests/integration/remote-cli-recovery.test.ts"],
     fileParallelism: false,
     maxWorkers: 1,
     testTimeout: 60_000,

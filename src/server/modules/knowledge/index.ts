@@ -12,3 +12,5 @@ export type { HubImportPlan, HubImportPlanOptions, HubImportMapping } from "./hu
 export { executeHubImport, newImportTargetId } from "./hub-import-execution";
 export type { HubImportBatch, HubImportBatchStatus, HubImportAuthenticationMethod, HubImportExecutionStore, ExecuteHubImportInput } from "./hub-import-execution";
 export { publishKnowledgeAttachment } from "./durable-attachments";
+export { assessTaskState, OWNER_CONSENT_METHODS, taskStateSources } from "./task-state-assessment";
+export type { TaskStateFacts } from "./task-state-assessment";

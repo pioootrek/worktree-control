@@ -16,6 +16,7 @@ async function mountKnowledge(page: Page, { withRuntimeProject = false }: { with
   const records: Array<{ id: string; projectId: string; title: string; body?: string; description?: string; priority?: string; status?: string; revision: number; createdBy: string; presentation?: { displayTitle: string; preview: string; imported: boolean; replyCount: number } }> = [];
   const replies: Array<{ id: string; threadId: string; body: string; revision: number; createdBy: string; createdAt?: string; historicalImport?: { sourceAttribution: "verified" | "unverified"; sourceAuthor: string | null; sourceDate: string | null; sourceDateStatus: "valid" | "missing" | "invalid" | "unverified"; sourceOrder: "verified" | "unverified" } }> = [];
   const calls: Array<{ operation: string; input: Record<string, unknown> }> = [];
+  const taskStates = new Map<string, unknown>();
   const saved = new Map<string, unknown>();
   const savedInputs = new Map<string, string>();
   let failSave = false;
@@ -37,6 +38,9 @@ async function mountKnowledge(page: Page, { withRuntimeProject = false }: { with
     if (operation === "task" || operation === "thread") return route.fulfill({ json: records.find(record => record.id === (input.taskId ?? input.threadId)) });
     if (operation === "relations") return route.fulfill({ json: pageResult([]) });
     if (operation === "replies") return route.fulfill({ json: pageResult(replies.filter(reply => reply.threadId === input.threadId)) });
+    if (operation === "task_state") return route.fulfill({ json: taskStates.get(input.taskId) ?? { task: records.find(record => record.id === input.taskId), state: null, stateUnreadable: false,
+      assessment: { freshness: "missing", changes: { taskRevisions: 0, statusChanged: false, descriptionChanged: false, memoriesChanged: 0, attachmentsAdded: 0, repliesAdded: 0, staleSources: 0, inactiveSources: 0 }, changeCount: 0, findings: [], ownerConsent: "unknown", approvalMethod: null, evidence: null },
+      systemFacts: { approvedDecisions: 0, proposals: 0, openQuestions: 0, attachments: 0 } } });
     if (failSave) return route.fulfill({ status: 503, json: { code: "unavailable", error: "Unavailable" } });
     if (saved.has(input.idempotencyKey)) {
       if (savedInputs.get(input.idempotencyKey) !== JSON.stringify(input)) return route.fulfill({ status: 409, json: { code: "idempotency_conflict", error: "Different committed input" } });
@@ -64,8 +68,82 @@ async function mountKnowledge(page: Page, { withRuntimeProject = false }: { with
   if (!await knowledgeNavigation.isVisible()) await page.getByRole("button", { name: "Toggle navigation" }).click();
   await knowledgeNavigation.click();
   await expect(page.getByLabel("Knowledge project", { exact: true })).toHaveValue(project.id);
-  return { ...fixture, records, replies, calls, setFailure: (value: boolean) => { failSave = value; }, loseNextResponse: () => { loseResponse = true; } };
+  return { ...fixture, records, replies, calls, taskStates, setFailure: (value: boolean) => { failSave = value; }, loseNextResponse: () => { loseResponse = true; } };
 }
+
+function currentStateView(taskId: string, patch: { freshness?: "current" | "changed_since"; consent?: string; approvalMethod?: string | null } = {}) {
+  const at = "2026-10-27T10:00:00.000Z", head = "a31f92c5e0d1b7f4c2a9e8d6b5c4a3f2e1d0c9b8", main = "c672be1a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c";
+  const pr = { kind: "external", label: "PR #112", url: "https://example.invalid/pr/112" };
+  const changed = patch.freshness === "changed_since";
+  return {
+    task: { id: taskId, projectId: "knowledge-only", title: "Export CSV", status: "blocked", priority: "now", revision: changed ? 9 : 7, createdBy: "owner", createdAt: at, updatedAt: at },
+    state: { formatVersion: 1, taskRevision: 7, statusAtWrite: "blocked", writtenAt: at, writtenBy: { principalId: "installation", authenticationMethod: "installation_token" }, declaredBy: "codex · T3",
+      changeNote: "Staging deployment failed; blocker: staging-health opened; next: operator — restore DATABASE_URL; decision: recorded",
+      outcome: { known: true, text: "PR #112 merged to main; staging deployment fails its health check.", sources: [pr] },
+      blockers: [{ key: "staging-health", text: "Staging /health returns 503", unblockedBy: "operator", condition: "Restore DATABASE_URL", since: at, state: "open", sources: [] },
+        { key: "ci-runner", text: "CI runner offline", unblockedBy: "operator", condition: "Restore secret", since: at, state: "resolved", resolvedAt: at, resolution: "Secret restored", sources: [] }],
+      nextStep: { known: true, action: "Restore the variable and redeploy", actor: "operator", sources: [] },
+      ownerDecision: { state: "recorded", decisionRef: { id: "decision-1", revision: 2 } },
+      delivery: { merge: { applies: true, state: "merged", commit: head, resultCommit: main, observedAt: at, sources: [pr] }, ci: { applies: true, state: "passed", commit: head, observedAt: at, sources: [pr] },
+        review: { known: false }, evidence: { applies: true, state: "stored", attachments: ["att-1"], observedAt: at, sources: [] }, deploy: { applies: true, state: "failed", target: "staging", commit: main, observedAt: at, sources: [] } } },
+    stateUnreadable: false,
+    assessment: { freshness: patch.freshness ?? "current", changes: { taskRevisions: changed ? 2 : 0, statusChanged: false, descriptionChanged: changed, memoriesChanged: 0, attachmentsAdded: 0, repliesAdded: changed ? 1 : 0, staleSources: 0, inactiveSources: 0 },
+      changeCount: changed ? 3 : 0, findings: patch.consent === "proposal_only" ? [{ code: "consent_missing", severity: "attention", fields: ["ownerDecision"], values: {} }] : [],
+      ownerConsent: patch.consent ?? "approved", approvalMethod: patch.approvalMethod === undefined ? "installation_token" : patch.approvalMethod, evidence: { listed: 1, present: 1, missing: [] } },
+    systemFacts: { approvedDecisions: 1, proposals: 0, openQuestions: 0, attachments: 1 },
+  };
+}
+
+test("task reader shows the current state before the description and keeps history reachable in EN/PL", async ({ page }) => {
+  const f = await mountKnowledge(page);
+  f.records.push({ id: "state-task", projectId: "knowledge-only", title: "Export CSV", description: "2026-10-22 started\n2026-10-24 blocked\n2026-10-26 unblocked", status: "blocked", priority: "now", revision: 7, createdBy: "owner" });
+  f.taskStates.set("state-task", currentStateView("state-task"));
+  // Backlog is already loaded; refresh reads the records added after mounting.
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+  await page.getByRole("link", { name: "Export CSV", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Current state", exact: true });
+  await expect(panel.getByText("PR #112 merged to main; staging deployment fails its health check.", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Staging /health returns 503", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Resolved: 1", { exact: true })).toHaveCount(0);
+  await expect(panel.getByText("Owner decision · approved with: installation token", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Pending — separate stage", { exact: true })).toHaveCount(0);
+  await expect(panel.getByText("Failed", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Current", { exact: true })).toBeVisible();
+  const description = page.getByText("2026-10-24 blocked", { exact: false });
+  const panelBox = await panel.boundingBox(), descriptionBox = await description.boundingBox();
+  expect(panelBox!.y).toBeLessThan(descriptionBox!.y);
+  await panel.getByRole("button", { name: "Go to description and history", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Description and history", exact: true })).toBeFocused();
+
+  f.taskStates.set("state-task", currentStateView("state-task", { freshness: "changed_since", consent: "proposal_only", approvalMethod: null }));
+  await selectLanguage(page);
+  // The panel refreshes on Knowledge changes, not on a language switch; reload reads the new fixture state.
+  await page.reload();
+  const plPanel = page.getByRole("region", { name: "Aktualny stan", exact: true });
+  await expect(plPanel.getByText("Zmiany od podsumowania: 3", { exact: true })).toBeVisible();
+  await expect(plPanel.getByText("Późniejsze zmiany nieuwzględnione w podsumowaniu: 3", { exact: true })).toBeVisible();
+  await expect(plPanel.getByText("Propozycja — brak zgody właściciela", { exact: true })).toBeVisible();
+  await expect(plPanel.getByText("Decyzja nie jest zatwierdzona; zgłoszenie agenta nie jest zgodą.", { exact: true })).toBeVisible();
+  await expect(plPanel.getByText("Nieznane", { exact: true })).toBeVisible();
+  expect(f.errors).toEqual([]);
+});
+
+test("a task without a recorded state says so on a narrow reader without horizontal scrolling", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const f = await mountKnowledge(page);
+  f.records.push({ id: "plain-task", projectId: "knowledge-only", title: "Plain task", description: "Only a description", status: "open", priority: "later", revision: 1, createdBy: "owner" });
+  // Backlog is already loaded; refresh reads the records added after mounting.
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+  await page.getByRole("link", { name: "Plain task", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Current state", exact: true });
+  await expect(panel.getByText("No current state recorded", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Approved decisions", { exact: true })).toBeVisible();
+  f.taskStates.set("plain-task", currentStateView("plain-task"));
+  await page.reload();
+  await expect(page.getByRole("region", { name: "Current state", exact: true }).getByText("Staging /health returns 503", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.scrollingElement!.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(f.errors).toEqual([]);
+});
 
 test("attachment capacity shows WinPath logical usage, refresh, exceeded and denied states in EN/PL", async ({ page }) => {
   const f = await mountKnowledge(page);
