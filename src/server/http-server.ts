@@ -1,4 +1,4 @@
-import type { DevVaultService } from "./modules/dev-vault";
+import type { DevVaultOperations } from "./modules/dev-vault";
 import { devVaultFailure, executeDevVault } from "./transports/dev-vault";
 import { testPresetTimeoutSchema } from "./modules/verification";
 import type { McpDiagnosticsResponse } from "@/shared/contracts/mcp-diagnostics";
@@ -407,7 +407,7 @@ export function createControllerServer(options: {
   port: number;
   accessToken: string;
   identity?: IdentityService;
-  devVault?: DevVaultService;
+  devVault?: DevVaultOperations;
   authentication?: ControllerAuthenticationDependencies["authentication"];
   publicOrigin?: string;
   backups?: BackupOperations;
@@ -470,7 +470,7 @@ export function createControllerServer(options: {
             let input: unknown;
             try { input = await readJson(request, 96 * 1024); }
             catch { json(response, 400, { code: "vault_invalid_request" }); return; }
-            json(response, 200, executeDevVault(options.devVault, input, authenticateActor(request)));
+            json(response, 200, await executeDevVault(options.devVault, input, authenticateActor(request)));
           } catch (error) { const failure = devVaultFailure(error); json(response, failure.status, failure.body); }
           return;
         }

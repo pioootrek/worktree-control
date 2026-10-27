@@ -1,4 +1,4 @@
-import type { DevVaultService } from "@/server/modules/dev-vault";
+import type { DevVaultOperations } from "@/server/modules/dev-vault";
 import { registerDevVaultTools } from "./dev-vault-tools";
 import { testPresetTimeoutSchema, testHistorySchema, testMetricsSchema, testSummarySchema, testComparisonSchema } from "@/server/modules/verification";
 import type { McpDiagnosticsSnapshot, McpSessionDiagnostics } from "@/shared/contracts/mcp-diagnostics";
@@ -113,7 +113,7 @@ export class McpRuntime {
     private readonly identity?: Pick<IdentityService, "describeIdentity">,
     private readonly diagnostics = new McpDiagnostics(),
     private readonly governor = new McpSessionGovernor(),
-    private readonly devVault?: DevVaultService,
+    private readonly devVault?: DevVaultOperations,
   ) {}
 
   private get clock() { return this.governor.clock; }

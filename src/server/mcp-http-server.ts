@@ -1,4 +1,4 @@
-import type { DevVaultService } from "./modules/dev-vault";
+import type { DevVaultOperations } from "./modules/dev-vault";
 import type { McpDiagnosticsSnapshot } from "@/shared/contracts/mcp-diagnostics";
 import { McpDiagnostics, type McpCloseReason } from "./mcp-diagnostics";
 import { timingSafeEqual } from "node:crypto";
@@ -94,7 +94,7 @@ export function createMcpControllerServer(options: {
   port: number;
   accessToken: string;
   identity?: Pick<IdentityService, "authenticateBearer" | "describeIdentity">;
-  devVault?: DevVaultService;
+  devVault?: DevVaultOperations;
   authentication?: ControllerAuthenticationDependencies["authentication"];
   onDiagnostic?: (message: string, details?: Record<string, unknown>) => void;
   /** Session admission, idle and renewal limits; defaults apply to omitted values. */

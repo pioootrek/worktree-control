@@ -237,7 +237,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     ...(projectId ? { projectIds: [projectId] } : {}),
   }));
   const identity = new IdentityService(store, undefined, undefined, undefined, authentication);
-  const devVault = createDevVault(store.devVault, identity, paths);
+  const devVault = createDevVault(store.devVault, identity, paths, lifecycle);
   const recovery = new WorkerRecoveryService(store.remoteConnection, new LinuxWorkerRecoveryHost(paths.databasePath), identity);
   tests.configurePathAdmission(paths => recovery.assertPathsAvailable(paths));
   // Remains enforced even if the worker configuration is omitted on restart.

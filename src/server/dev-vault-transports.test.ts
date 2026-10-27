@@ -11,6 +11,8 @@ import { createMcpControllerServer } from "./mcp-http-server";
 import { EventStream } from "./events";
 import type { DirectoryBrowser } from "./directory-browser";
 import { runDevVaultCommand } from "../cli/dev-vault";
+import { DevVaultOperations } from "./modules/dev-vault";
+import { ProjectLifecycle } from "./modules/lifecycle";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -20,11 +22,14 @@ async function setup() {
   const installationToken = authentication.generateToken("fixture").token;
   const events = new EventStream(); cleanups.push(() => events.close());
   const diagnostics: unknown[] = [];
-  const service = new ControlService(f.store, { list: vi.fn(() => { throw new Error("Vault must not inspect or run source"); }) } as never, new ProcessManager());
-  const web = createControllerServer({ service, identity: f.identity, authentication, devVault: f.vault, events,
+  const processes = new ProcessManager(), lifecycle = new ProjectLifecycle(f.store, processes);
+  const service = new ControlService(f.store, { list: vi.fn(() => { throw new Error("Vault must not inspect or run source"); }) } as never,
+    processes, undefined, undefined, undefined, undefined, undefined, undefined, lifecycle);
+  const vault = new DevVaultOperations(f.vault, lifecycle);
+  const web = createControllerServer({ service, identity: f.identity, authentication, devVault: vault, events,
     directoryBrowser: {} as DirectoryBrowser, webRoot: f.root, host: "127.0.0.1", port: 0, accessToken: "legacy-pairing",
     mcpStatus: () => ({ phase: "disabled", endpoint: null, transport: "streamable-http", network: "loopback", authentication: "bearer", activeSessions: 0 }) });
-  const mcp = createMcpControllerServer({ service, identity: f.identity, authentication, devVault: f.vault, port: 0, accessToken: "legacy-mcp",
+  const mcp = createMcpControllerServer({ service, identity: f.identity, authentication, devVault: vault, port: 0, accessToken: "legacy-mcp",
     onDiagnostic: (message, details) => diagnostics.push({ message, details }) });
   for (const controller of [web, mcp]) { await new Promise<void>(resolve => controller.server.listen(0, "127.0.0.1", resolve)); cleanups.push(() => controller.close()); }
   const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
@@ -34,6 +39,70 @@ async function setup() {
 }
 
 describe("vault HTTP, MCP and CLI", () => {
+  it("serializes first import behind removal, while another project's vault remains available", async () => {
+    const f = vaultFixture(); cleanups.push(() => f.close());
+    const processes = new ProcessManager(), lifecycle = new ProjectLifecycle(f.store, processes);
+    const service = new ControlService(f.store, {} as never, processes, undefined, undefined, undefined, undefined, undefined, undefined, lifecycle);
+    const vault = new DevVaultOperations(f.vault, lifecycle);
+    let entered!: () => void, release!: () => void;
+    const stopping = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(processes, "snapshot").mockReturnValue({ ...processes.snapshot(f.otherProject.id), phase: "running", worktreePath: f.otherProject.repositoryPath, pid: 12345 });
+    vi.spyOn(processes, "stop").mockImplementation(async () => { entered(); await gate; });
+    const removing = service.removeProject(f.otherProject.id);
+    await stopping;
+    const command = f.command({ operation: "import", projectId: f.otherProject.id, dotenv: "FAKE_KEY=fake" });
+    const importing = vault.execute({ command, proof: f.proof(command) }, f.owner);
+    const outcomes = Promise.allSettled([removing, importing]);
+    try {
+      const list = f.command({ operation: "list" });
+      await expect(vault.execute({ command: list, proof: f.proof(list) }, f.owner)).resolves.toHaveProperty("result.profiles");
+      expect(f.store.devVault.load(f.otherProject.id)).toBeNull();
+    } finally { release(); await outcomes; }
+    const [removed, imported] = await outcomes;
+    expect(removed.status).toBe("fulfilled");
+    expect(imported).toMatchObject({ status: "rejected", reason: { code: "vault_denied" } });
+    expect(f.store.getProject(f.otherProject.id)).toBeNull();
+    expect(f.store.devVault.load(f.otherProject.id)).toBeNull();
+  });
+
+  it("retains the running project when first import is admitted before removal", async () => {
+    const f = vaultFixture(); cleanups.push(() => f.close());
+    const processes = new ProcessManager(), lifecycle = new ProjectLifecycle(f.store, processes);
+    const stop = vi.spyOn(processes, "stop");
+    vi.spyOn(processes, "snapshot").mockReturnValue({ ...processes.snapshot(f.otherProject.id), phase: "running", worktreePath: f.otherProject.repositoryPath, pid: 12345 });
+    const service = new ControlService(f.store, {} as never, processes, undefined, undefined, undefined, undefined, undefined, undefined, lifecycle);
+    const vault = new DevVaultOperations(f.vault, lifecycle);
+    const command = f.command({ operation: "import", projectId: f.otherProject.id, dotenv: "FAKE_KEY=fake" });
+    const importing = vault.execute({ command, proof: f.proof(command) }, f.owner);
+    const removing = service.removeProject(f.otherProject.id);
+    const [imported, removed] = await Promise.allSettled([importing, removing]);
+    expect(imported.status).toBe("fulfilled");
+    expect(removed).toMatchObject({ status: "rejected", reason: { message: expect.stringContaining("encrypted DEV vault") } });
+    expect(stop).not.toHaveBeenCalled();
+    expect(f.store.getProject(f.otherProject.id)).not.toBeNull();
+    expect(f.store.devVault.load(f.otherProject.id)).not.toBeNull();
+  });
+
+  it("rechecks proof freshness after lifecycle admission and keeps admission errors safe", async () => {
+    const f = vaultFixture(); cleanups.push(() => f.close());
+    const lifecycle = new ProjectLifecycle(f.store, new ProcessManager());
+    const vault = new DevVaultOperations(f.vault, lifecycle);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const holding = lifecycle.serialized(f.project.id, async () => gate);
+    const command = f.command({ operation: "list" });
+    const pending = vault.execute({ command, proof: f.proof(command) }, f.owner);
+    const outcome = Promise.allSettled([pending]);
+    f.advance(61_000);
+    release(); await holding;
+    expect(await outcome).toMatchObject([{ status: "rejected", reason: { code: "vault_denied" } }]);
+    await expect(vault.execute({ command, proof: f.proof(command) }, f.owner)).resolves.toHaveProperty("result.profiles");
+    lifecycle.closeAdmission();
+    await expect(vault.execute({ command, proof: f.proof(command) }, f.owner)).rejects.toThrow("vault_unavailable");
+    await expect(vault.execute({ command: { ...command, FAKE_SECRET: "fake" } }, f.owner)).rejects.toThrow("vault_invalid_request");
+  });
+
   it("rejects deleting an existing vault project before stopping its managed runtime", async () => {
     const f = vaultFixture(); cleanups.push(() => f.close());
     const processes = new ProcessManager();

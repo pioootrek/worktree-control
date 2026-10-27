@@ -81,6 +81,14 @@ updated profiles. A failed commit returns no value and consumes nothing. This
 does not provide anti-rollback protection against a database/key holder restoring
 an arbitrary old snapshot outside the supported restore workflow.
 
+Online vault operations share the controller's project lifecycle lock with
+project removal. A first import cannot create a vault while removal is waiting
+for its managed process to stop. If import is admitted first, removal detects
+the vault before stopping the server; if removal completes first, import is
+denied because the project no longer exists. Authentication, proof freshness
+and project existence are checked after lock admission. HTTP, MCP and the online
+CLI await the same application operation.
+
 Profile identifiers are server-generated UUIDs. There are no caller-supplied
 profile names or imported filenames to leak through metadata. Ordinary lists
 return explicit metadata, never a serialized stored profile. Write responses

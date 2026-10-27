@@ -1,11 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { DEV_VAULT_DISCLAIMER } from "@/shared/contracts/dev-vault";
-import type { DevVaultService } from "@/server/modules/dev-vault";
+import type { DevVaultOperations } from "@/server/modules/dev-vault";
 import type { AuthenticatedPrincipal } from "@/server/modules/identity";
 import { devVaultFailure, executeDevVault } from "../dev-vault";
 
-export function registerDevVaultTools(server: McpServer, vault: DevVaultService | undefined, actor: AuthenticatedPrincipal): void {
+export function registerDevVaultTools(server: McpServer, vault: DevVaultOperations | undefined, actor: AuthenticatedPrincipal): void {
   if (!vault || actor.principalKind === "worker") return;
   server.registerTool("dev_vault", {
     description: `${DEV_VAULT_DISCLAIMER} Encrypted profiles are separate from literal profiles. Request read/write/use for an exact profile revision. Owner approval requires an external signature. Write executes the immutable approved inline-dotenv patch. Use remains unavailable; no secret delivery or job integration. Reuse operationId only for identical retries; receipts are bounded to 64/24h, and live authorization is rechecked. Never put real credentials in tool arguments.`,
@@ -16,7 +16,7 @@ export function registerDevVaultTools(server: McpServer, vault: DevVaultService 
     },
     annotations: { idempotentHint: true, destructiveHint: false, openWorldHint: false },
   }, async (input: unknown) => {
-    try { return { content: [{ type: "text" as const, text: JSON.stringify(executeDevVault(vault, input, actor)) }] }; }
+    try { return { content: [{ type: "text" as const, text: JSON.stringify(await executeDevVault(vault, input, actor)) }] }; }
     catch (error) { return { isError: true, content: [{ type: "text" as const, text: JSON.stringify(devVaultFailure(error).body) }] }; }
   });
 }

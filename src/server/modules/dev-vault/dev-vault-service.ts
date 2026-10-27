@@ -37,7 +37,7 @@ function publicRequest(request: Request) {
   return metadata;
 }
 
-/** All transports call this operation boundary. There is deliberately no process/env resolution port. */
+/** Synchronous vault transaction, invoked under DevVaultOperations' shared lifecycle admission online. */
 export class DevVaultService {
   private readonly cipher: DevVaultCipher;
   constructor(

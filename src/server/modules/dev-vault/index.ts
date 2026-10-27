@@ -1,4 +1,5 @@
 export { DevVaultService, DEV_VAULT_STATE_BYTES } from "./dev-vault-service";
+export { DevVaultOperations, type DevVaultLifecycle } from "./dev-vault-operations";
 export { DevVaultCipher, canonicalJson } from "./crypto";
 export { parseDevDotenv } from "./dotenv";
 export { Ed25519DevVaultOwnerVerifier, devOwnerSigningMessage } from "./owner-proof";
