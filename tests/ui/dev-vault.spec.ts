@@ -2,6 +2,9 @@ import { generateKeyPairSync } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 import { FAKE_DOTENV, vaultFixture } from "../../src/server/modules/dev-vault/test-fixture";
 import { devVaultFailure, executeDevVault } from "../../src/server/transports/dev-vault";
+import { DevVaultOperations } from "../../src/server/modules/dev-vault";
+import { ProjectLifecycle } from "../../src/server/modules/lifecycle";
+import { ProcessManager } from "../../src/server/process-manager";
 import type { AuthenticatedPrincipal } from "../../src/server/modules/identity";
 import { translate } from "../../src/i18n/messages";
 import { dashboardFixture, mountDashboard } from "./dashboard-fixture";
@@ -16,6 +19,7 @@ test.afterEach(() => { fixture?.close(); fixture = null; });
 
 async function mount(page: Page, origin = ORIGIN) {
   const f = fixture = vaultFixture();
+  const vault = new DevVaultOperations(f.vault, new ProjectLifecycle(f.store, new ProcessManager()));
   // The browser signs with its own clock; align it with the fixture controller clock.
   await page.clock.setFixedTime(new Date(f.now));
   const data = dashboardFixture();
@@ -36,7 +40,7 @@ async function mount(page: Page, origin = ORIGIN) {
       try { return route.fulfill(json(200, { credentials: f.identity.listAgentCredentials(JSON.parse(body).principalId, actor) })); }
       catch { return route.fulfill(json(403, { error: "fixture forbidden" })); }
     }
-    try { return route.fulfill(json(200, executeDevVault(f.vault, JSON.parse(body), actor))); }
+    try { return route.fulfill(json(200, await executeDevVault(vault, JSON.parse(body), actor))); }
     catch (error) { const failure = devVaultFailure(error); return route.fulfill(json(failure.status, failure.body)); }
   });
   const pem = f.pair.privateKey.export({ format: "pem", type: "pkcs8" }).toString();

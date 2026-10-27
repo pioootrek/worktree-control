@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { FAKE_DOTENV, vaultFixture } from "@/server/modules/dev-vault/test-fixture";
 import { devVaultFailure, executeDevVault } from "@/server/transports/dev-vault";
+import { DevVaultOperations } from "@/server/modules/dev-vault";
+import { ProjectLifecycle } from "@/server/modules/lifecycle";
+import { ProcessManager } from "@/server/process-manager";
 import type { AuthenticatedPrincipal } from "@/server/modules/identity";
 import { OwnerVaultSession } from "./owner-session";
 import { listAgentCredentials } from "./vault-client";
@@ -16,6 +19,7 @@ afterEach(() => { fixture?.close(); fixture = null; });
 
 /** Routes the browser client's requests to the real controller service, as the HTTP route does. */
 function controllerFetch(f: ReturnType<typeof vaultFixture>) {
+  const vault = new DevVaultOperations(f.vault, new ProjectLifecycle(f.store, new ProcessManager()));
   const calls: Array<{ path: string; authorization: string; body: string }> = [];
   let dropNextResponse: "headers" | "body" | null = null;
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", Date: new Date(f.now).toUTCString() } });
@@ -29,7 +33,7 @@ function controllerFetch(f: ReturnType<typeof vaultFixture>) {
     if (path === "/api/identity") return json(200, f.identity.describeIdentity(actor));
     if (path === "/api/identity/admin") return json(200, { credentials: f.identity.listAgentCredentials(JSON.parse(body).principalId, actor) });
     let response: Response;
-    try { response = json(200, executeDevVault(f.vault, JSON.parse(body), actor)); }
+    try { response = json(200, await executeDevVault(vault, JSON.parse(body), actor)); }
     catch (error) { const failure = devVaultFailure(error); response = json(failure.status, failure.body); }
     if (dropNextResponse) {
       const mode = dropNextResponse; dropNextResponse = null;
