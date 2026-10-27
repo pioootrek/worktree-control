@@ -135,9 +135,14 @@ h2.sec{font-size:13px;margin:20px 0 6px;font-weight:600}
     </select></label>
   <label id="approvalWrap" hidden>Zatwierdzenie decyzji (E)
     <select id="approval">
-      <option value="none">brak zatwierdzenia</option>
-      <option value="installation_token" selected>token instalacji</option>
+      <option value="none" selected>brak zatwierdzenia</option>
+      <option value="installation_token">token instalacji</option>
       <option value="owner_session">sesja właściciela</option>
+    </select></label>
+  <label id="policyWrap" hidden>Polityka zgody (E)
+    <select id="policy">
+      <option value="current" selected>obecna: token instalacji = właściciel</option>
+      <option value="future">po rozdzieleniu: tylko sesja właściciela</option>
     </select></label>
   <label>Język / Language <select id="lang"><option value="pl">PL</option><option value="en">EN</option></select></label>
   <label>Motyw / Theme <select id="theme"><option value="dark">Ciemny / Dark</option><option value="light">Jasny / Light</option></select></label>
@@ -159,7 +164,8 @@ var T = {
     bannerTitle: "Późniejsze zmiany nieuwzględnione w podsumowaniu: {n}", bannerHelp: "Podsumowanie pozostaje czytelne, ale może nie odpowiadać bieżącemu stanowi.",
     ch: { taskRevisions: "Nowe rewizje zadania: {n}", statusChanged: "status zmieniony na „{s}”", descriptionChanged: "opis edytowany", memoriesChanged: "Zmienione ustalenia: {n}", attachmentsAdded: "Nowe załączniki: {n}", repliesAdded: "Nowe odpowiedzi w dyskusji: {n}", staleSources: "Źródła w nowszej rewizji: {n}", inactiveSources: "Źródła zastąpione lub zarchiwizowane: {n}" },
     actors: { owner: "właściciel", agent: "agent", operator: "operator", external: "strona zewnętrzna" },
-    consent: { not_needed: "Niepotrzebna", needed: "Potrzebna decyzja", unknown: "Nieznane", proposal_only: "Propozycja agenta — brak zgody właściciela", approved_installation_token: "Zatwierdzone tokenem instalacji — osoba niepotwierdzona", approved_owner_session: "Decyzja właściciela", approval_invalidated: "Zatwierdzenie nieaktualne" },
+    consent: { not_needed: "Niepotrzebna", needed: "Potrzebna decyzja", unknown: "Nieznane", proposal_only: "Propozycja agenta — brak zgody właściciela", approved: "Decyzja właściciela · zatwierdzono: {method}", approved_method_not_accepted: "Zatwierdzono metodą, która nie potwierdza właściciela: {method}", approval_invalidated: "Zatwierdzenie nieaktualne" },
+    methods: { installation_token: "token instalacji", owner_session: "sesja właściciela" },
     agentReport: "Zgłoszenie agenta: {t}",
     ev: { listed: "{p} z {n} załączników", missing: "brak załącznika: {id}" },
     d: { merge: "Scalenie", ci: "CI", review: "Przegląd", evidence: "Dowody", deploy: "Wdrożenie" },
@@ -169,7 +175,7 @@ var T = {
       evidence: { none: "Brak", stored: "Zapisane, niezweryfikowane", verified: "Zweryfikowane (deklaruje: {who})" },
       deploy: { not_planned: "Nieplanowane", pending: "Oczekuje — osobny etap", done: "Wdrożone", failed: "Nieudane" } },
     short: { merged: "scalone", pr_open: "PR otwarty", passed: "CI zielone", failed_ci: "CI czerwone", findings_closed: "uwagi zamknięte", findings_open: "otwarte uwagi", verified: "dowody zweryfikowane", stored: "dowody zapisane, niezweryfikowane", pending: "wdrożenie oczekuje (osobny etap)", done: "wdrożone", failed_deploy: "wdrożenie nieudane" },
-    f: { done_with_open_blocker: "Zadanie ma status „zakończone”, a blokada „{b}” jest otwarta.", blocked_without_blocker: "Status „zablokowane”, ale żadna blokada nie jest otwarta.", open_blocker_not_blocked: "Blokada „{b}” jest otwarta, a status zadania to „{s}”.", deploy_without_merge: "Wdrożenie oznaczone jako wykonane, a zmiana nie jest scalona.", ci_not_merged_head: "CI dotyczy {c}, a scalono {m}.", deploy_not_merged_head: "Wdrożono {d}, co nie odpowiada scalonej wersji {m}.", evidence_missing: "Wskazany załącznik {id} nie istnieje przy tym zadaniu.", claim_without_source: "{f}: deklaracja bez źródła.", source_stale: "Źródło ma nowszą rewizję niż cytowana.", source_inactive: "Cytowane ustalenie zostało zastąpione.", consent_not_owner_session: "Decyzja nie jest zatwierdzona w sesji właściciela.", next_step_on_done: "Zadanie zakończone, a następny krok nadal jest wpisany." },
+    f: { done_with_open_blocker: "Zadanie ma status „zakończone”, a blokada „{b}” jest otwarta.", blocked_without_blocker: "Status „zablokowane”, ale żadna blokada nie jest otwarta.", open_blocker_not_blocked: "Blokada „{b}” jest otwarta, a status zadania to „{s}”.", deploy_without_merge: "Wdrożenie oznaczone jako wykonane, a zmiana nie jest scalona.", ci_not_merged_head: "CI dotyczy {c}, a scalono {m}.", deploy_not_merged_head: "Wdrożono {d}, co nie odpowiada scalonej wersji {m}.", evidence_missing: "Wskazany załącznik {id} nie istnieje przy tym zadaniu.", claim_without_source: "{f}: deklaracja bez źródła.", source_stale: "Źródło ma nowszą rewizję niż cytowana.", source_inactive: "Cytowane ustalenie zostało zastąpione.", consent_missing: "Decyzja nie jest zatwierdzona; zgłoszenie agenta nie jest zgodą.", consent_method_not_accepted: "Zatwierdzenie metodą „{method}” nie potwierdza właściciela w obecnej polityce.", next_step_on_done: "Zadanie zakończone, a następny krok nadal jest wpisany." },
     histTitle: "Opis i historia", resolvedTitle: "Rozwiązane blokady", supersededTitle: "Zastąpione ustalenia", descTitle: "Opis zadania (bez zmian)", resolvedItem: "{t} — rozwiązana {d}: {r}", supersededItem: "{t} → zastąpione przez „{n}”",
     backToState: "Wróć do stanu zadania", srcView: "Widok źródła (symulacja nawigacji do istniejącej trasy rekordu)", externalNote: "Odnośnik zewnętrzny: w aplikacji zwykły link z rel=noreferrer, bez pobierania treści.",
     gTitle: "Nie zapisano jeszcze aktualnego stanu tego zadania.", gHelp: "Poniżej tylko fakty znane systemowi. Rezultat, blokady, następny krok i dostarczenie pozostają nieznane, dopóki agent lub właściciel ich nie zapisze.", gFacts: ["Status", "Ostatnia zmiana", "Zatwierdzone decyzje", "Propozycje", "Otwarte pytania", "Załączniki"],
@@ -183,7 +189,8 @@ var T = {
     bannerTitle: "Later changes not reflected in this summary: {n}", bannerHelp: "The summary stays readable but may not match the current state.",
     ch: { taskRevisions: "New task revisions: {n}", statusChanged: "status changed to “{s}”", descriptionChanged: "description edited", memoriesChanged: "Changed findings: {n}", attachmentsAdded: "New attachments: {n}", repliesAdded: "New discussion replies: {n}", staleSources: "Sources at a newer revision: {n}", inactiveSources: "Sources superseded or archived: {n}" },
     actors: { owner: "owner", agent: "agent", operator: "operator", external: "external party" },
-    consent: { not_needed: "Not needed", needed: "Decision needed", unknown: "Unknown", proposal_only: "Agent proposal — owner has not approved", approved_installation_token: "Approved with the installation token — person not verified", approved_owner_session: "Owner decision", approval_invalidated: "Approval no longer applies" },
+    consent: { not_needed: "Not needed", needed: "Decision needed", unknown: "Unknown", proposal_only: "Agent proposal — owner has not approved", approved: "Owner decision · approved with: {method}", approved_method_not_accepted: "Approved with a method that does not confirm the owner: {method}", approval_invalidated: "Approval no longer applies" },
+    methods: { installation_token: "installation token", owner_session: "owner session" },
     agentReport: "Agent report: {t}",
     ev: { listed: "{p} of {n} attachments", missing: "missing attachment: {id}" },
     d: { merge: "Merge", ci: "CI", review: "Review", evidence: "Evidence", deploy: "Deployment" },
@@ -193,7 +200,7 @@ var T = {
       evidence: { none: "None", stored: "Stored, not verified", verified: "Verified (declared by {who})" },
       deploy: { not_planned: "Not planned", pending: "Pending — separate stage", done: "Deployed", failed: "Failed" } },
     short: { merged: "merged", pr_open: "PR open", passed: "CI passed", failed_ci: "CI failed", findings_closed: "findings closed", findings_open: "open findings", verified: "evidence verified", stored: "evidence stored, not verified", pending: "deployment pending (separate stage)", done: "deployed", failed_deploy: "deployment failed" },
-    f: { done_with_open_blocker: "Task status is “done” while blocker “{b}” is open.", blocked_without_blocker: "Status is “blocked” but no blocker is open.", open_blocker_not_blocked: "Blocker “{b}” is open while task status is “{s}”.", deploy_without_merge: "Deployment is marked done but the change is not merged.", ci_not_merged_head: "CI ran on {c}, but {m} was merged.", deploy_not_merged_head: "Deployed {d}, which does not match merged {m}.", evidence_missing: "Listed attachment {id} does not exist on this task.", claim_without_source: "{f}: claim without a source.", source_stale: "A source has a newer revision than cited.", source_inactive: "A cited finding was superseded.", consent_not_owner_session: "The decision is not approved in an owner session.", next_step_on_done: "Task is done but a next step is still set." },
+    f: { done_with_open_blocker: "Task status is “done” while blocker “{b}” is open.", blocked_without_blocker: "Status is “blocked” but no blocker is open.", open_blocker_not_blocked: "Blocker “{b}” is open while task status is “{s}”.", deploy_without_merge: "Deployment is marked done but the change is not merged.", ci_not_merged_head: "CI ran on {c}, but {m} was merged.", deploy_not_merged_head: "Deployed {d}, which does not match merged {m}.", evidence_missing: "Listed attachment {id} does not exist on this task.", claim_without_source: "{f}: claim without a source.", source_stale: "A source has a newer revision than cited.", source_inactive: "A cited finding was superseded.", consent_missing: "The decision is not approved; an agent report is not consent.", consent_method_not_accepted: "Approval with “{method}” does not confirm the owner under the current policy.", next_step_on_done: "Task is done but a next step is still set." },
     histTitle: "Description and history", resolvedTitle: "Resolved blockers", supersededTitle: "Superseded findings", descTitle: "Task description (unchanged)", resolvedItem: "{t} — resolved {d}: {r}", supersededItem: "{t} → superseded by “{n}”",
     backToState: "Back to task state", srcView: "Source view (simulated navigation to the existing record route)", externalNote: "External reference: an ordinary link with rel=noreferrer in the app; content is never fetched.",
     gTitle: "No current state has been recorded for this task.", gHelp: "Only facts known to the system are shown. Result, blockers, next step and delivery stay unknown until an agent or the owner records them.", gFacts: ["Status", "Last change", "Approved decisions", "Proposals", "Open questions", "Attachments"],
@@ -261,7 +268,9 @@ S.F.state.outcome.sources = [PR, mem("m-9", 1, L("Format daty: ISO bez strefy", 
 S.F.state.taskRevision = 7;
 
 // Deterministic assessment — mirrors the finding table in the design document.
-function assess(sc, approval) {
+// Owner decision 2026-10-27: the shared installation token counts as the owner for now.
+var CONSENT_POLICIES = { current: ["owner_session", "installation_token"], future: ["owner_session"] };
+function assess(sc, approval, policy) {
   var st = sc.state, t = sc.task, f = sc.facts, out = { freshness: "missing", changes: {}, total: 0, findings: [], consent: "unknown", evidence: null };
   if (!st) return out;
   var ch = Object.assign({ taskRevisions: Math.max(0, t.revision - st.taskRevision), statusChanged: t.status !== st.statusAtWrite, descriptionChanged: false, memoriesChanged: 0, attachmentsAdded: 0, repliesAdded: 0, staleSources: 0, inactiveSources: 0 }, f.changes || {});
@@ -289,8 +298,11 @@ function assess(sc, approval) {
   if (ch.inactiveSources) add("source_inactive", "attention");
   var od = st.ownerDecision;
   if (od.state === "recorded") {
-    out.consent = approval === "owner_session" ? "approved_owner_session" : approval === "installation_token" ? "approved_installation_token" : "proposal_only";
-    if (out.consent !== "approved_owner_session") add("consent_not_owner_session", "attention", {}, [od.decisionRef]);
+    var accepted = CONSENT_POLICIES[policy || "current"];
+    out.approvalMethod = approval === "none" ? null : approval;
+    if (!out.approvalMethod) { out.consent = "proposal_only"; add("consent_missing", "attention", {}, [od.decisionRef]); }
+    else if (accepted.indexOf(out.approvalMethod) >= 0) out.consent = "approved";
+    else { out.consent = "approved_method_not_accepted"; add("consent_method_not_accepted", "attention", { method: out.approvalMethod }, [od.decisionRef]); }
   } else out.consent = od.state;
   if (t.status === "done" && st.nextStep.known && st.nextStep.action) add("next_step_on_done", "attention");
   out.findings.sort(function (a, b) { return (a.severity === "conflict" ? 0 : 1) - (b.severity === "conflict" ? 0 : 1); });
@@ -302,7 +314,7 @@ function icon(k, label) { return '<svg class="ico" viewBox="0 0 24 24" fill="non
 var TONE = { merged: "ok", passed: "ok", findings_closed: "ok", verified: "ok", done: "ok", failed: "bad", closed_unmerged: "bad", findings_open: "warn", stored: "half", pending: "clock", running: "clock", in_progress: "clock", pr_open: "clock" };
 function toneClass(k) { return k === "ok" ? "tone-ok" : k === "bad" ? "tone-bad" : k === "warn" ? "tone-warn" : k === "unknown" || k === "na" ? "tone-unknown" : ""; }
 
-var ui = { scenario: "D", lang: "pl", theme: "dark", width: "desktop", approval: "installation_token", sourcesOpen: false, sourceView: null, returnId: null };
+var ui = { scenario: "D", lang: "pl", theme: "dark", width: "desktop", approval: "none", policy: "current", sourcesOpen: false, sourceView: null, returnId: null };
 var app = document.getElementById("app");
 var linkSeq = 0, linkTargets = {};
 function src(s, lang) {
@@ -314,9 +326,10 @@ function src(s, lang) {
 function srcs(list, lang) { return (list || []).filter(Boolean).map(function (s) { return src(s, lang); }).join(""); }
 function render() {
   linkSeq = 0; linkTargets = {};
-  var t = T[ui.lang], lang = ui.lang, sc = S[ui.scenario], a = assess(sc, ui.approval);
+  var t = T[ui.lang], lang = ui.lang, sc = S[ui.scenario], a = assess(sc, ui.approval, ui.policy);
   document.documentElement.lang = lang; document.documentElement.dataset.theme = ui.theme;
   document.getElementById("approvalWrap").hidden = ui.scenario !== "E";
+  document.getElementById("policyWrap").hidden = ui.scenario !== "E";
   app.className = "app" + (ui.width === "desktop" ? "" : " mobile") + (ui.width === "narrow" ? " narrow" : "");
   var list = ["A", "B", "C", "D", "E", "F", "G"].map(function (k) { var x = S[k]; return '<li><a href="#" data-pick="' + k + '"' + (k === ui.scenario ? ' aria-current="true"' : "") + '><span class="t">' + esc(TITLE[lang]) + " (" + k + ')</span><span class="s">' + esc(t.statuses[x.task.status]) + " · " + esc(t.prio[x.task.priority]) + "</span></a></li>"; }).join("");
   var body = ui.sourceView ? sourceView(t, lang) : reader(sc, a, t, lang);
@@ -356,8 +369,8 @@ function reader(sc, a, t, lang) {
     ? cell(t.blocker, "warn", '<span class="tone-warn">' + esc(open[0].text[lang]) + "</span>" + srcs(open[0].sources, lang), esc(fmt(t.unblockedBy, { a: t.actors[open[0].unblockedBy] })) + " · " + esc(fmt(t.until, { c: open[0].condition[lang] })) + (open.length > 1 ? " · +" + (open.length - 1) : ""), "warn")
     : cell(t.blocker, "ok", esc(t.noBlocker), resolved.length ? '<a class="srclink" href="#resolved" data-history="resolved">' + esc(fmt(t.resolvedN, { n: resolved.length })) + "</a>" : "");
   var ns = st.nextStep, nCell = !ns.known ? cell(t.nextStep, "unknown", '<span class="tone-unknown">' + esc(t.unknown) + "</span>") : ns.none ? cell(t.nextStep, "na", esc(t.none)) : cell(t.nextStep, "clock", "<strong>" + esc(t.actors[ns.actor]) + "</strong> — " + esc(ns.action[lang]) + srcs(ns.sources, lang));
-  var od = st.ownerDecision, cons = t.consent[a.consent], dCls = a.consent === "approved_owner_session" ? "" : a.consent === "needed" || a.consent === "proposal_only" || a.consent === "approved_installation_token" ? "warn" : "";
-  var dIcon = a.consent === "approved_owner_session" ? "ok" : a.consent === "not_needed" ? "na" : a.consent === "unknown" ? "unknown" : "warn";
+  var od = st.ownerDecision, cons = fmt(t.consent[a.consent], { method: a.approvalMethod ? t.methods[a.approvalMethod] : "" }), dCls = a.consent === "needed" || a.consent === "proposal_only" || a.consent === "approved_method_not_accepted" ? "warn" : "";
+  var dIcon = a.consent === "approved" ? "ok" : a.consent === "not_needed" ? "na" : a.consent === "unknown" ? "unknown" : "warn";
   var dVal = '<span class="' + (dIcon === "warn" ? "tone-warn" : dIcon === "ok" ? "tone-ok" : dIcon === "unknown" ? "tone-unknown" : "") + '">' + esc(cons) + "</span>" + (od.decisionRef ? srcs([od.decisionRef], lang) : "");
   var dSub = /zgodził|agreed/.test(st.changeNote[lang]) ? esc(fmt(t.agentReport, { t: st.changeNote[lang] })) : "";
   var dCell = cell(t.ownerDecision, dIcon, dVal, dSub, dCls);
@@ -379,7 +392,7 @@ function reader(sc, a, t, lang) {
   push(d.merge, "merge"); push(d.ci, "ci", d.ci.state === "failed" ? "failed_ci" : null); push(d.review, "review"); push(d.evidence, "evidence"); push(d.deploy, "deploy", d.deploy.state === "failed" ? "failed_deploy" : null);
   var line = parts.length ? '<p class="summary-line">' + esc(parts.join(" · ")) + "</p>" : "";
   var findings = a.findings.length ? '<details class="findings" open><summary><strong>' + icon("warn") + " " + esc(fmt(t.attention, { n: a.findings.length })) + "</strong></summary><ul>" + a.findings.map(function (f) {
-    var v = Object.assign({}, f.v); if (v.b && v.b[lang]) v.b = v.b[lang]; if (v.s) v.s = t.statuses[v.s]; if (v.f) v.f = v.f === "outcome" ? t.result : t.d[v.f];
+    var v = Object.assign({}, f.v); if (v.b && v.b[lang]) v.b = v.b[lang]; if (v.s) v.s = t.statuses[v.s]; if (v.f) v.f = v.f === "outcome" ? t.result : t.d[v.f]; if (v.method) v.method = t.consent && t.methods[v.method];
     return '<li class="' + (f.severity === "conflict" ? "tone-bad" : "tone-warn") + '">' + icon(f.severity === "conflict" ? "bad" : "warn") + '<span><span class="kind">' + esc(f.severity === "conflict" ? t.conflict : t.attn) + ":</span> <span style=\"color:var(--foreground)\">" + esc(fmt(t.f[f.code], v)) + "</span>" + srcs(f.sources, lang) + ' <span class="muted mono">' + f.code + "</span></span></li>";
   }).join("") + "</ul></details>" : "";
   var all = [].concat(st.outcome.sources || [], open.reduce(function (s, b) { return s.concat(b.sources); }, []), od.decisionRef ? [od.decisionRef] : [], ["merge", "ci", "review", "deploy"].map(function (k) { return st.delivery[k].ref; }).filter(Boolean));
@@ -409,7 +422,7 @@ app.addEventListener("click", function (e) {
   if (a.hasAttribute("data-history")) { e.preventDefault(); focusEl(a.dataset.history === "resolved" ? "#resolved" : "#historyHeading"); return; }
   if (a.getAttribute("href") === "#freshBanner") { e.preventDefault(); focusEl("#freshBanner"); }
 });
-["scenario", "lang", "theme", "width", "approval"].forEach(function (k) { document.getElementById(k).addEventListener("change", function (e) { ui[k] = e.target.value; ui.sourceView = null; render(); }); });
+["scenario", "lang", "theme", "width", "approval", "policy"].forEach(function (k) { document.getElementById(k).addEventListener("change", function (e) { ui[k] = e.target.value; ui.sourceView = null; render(); }); });
 render();
 </script>
 </body>

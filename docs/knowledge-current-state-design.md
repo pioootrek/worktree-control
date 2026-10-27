@@ -7,10 +7,11 @@ status: "active"
 
 # Task current state before history — stage 1 design
 
-**Status: proposal awaiting owner review.** Nothing in this document is
-implemented. The [verified facts](#verified-facts-about-the-current-system)
-describe commit `b5da139`. Everything after that section is proposed behavior.
-The [owner decisions](#owner-decisions-required) at the end block implementation.
+**Status: proposal; the owner answered its four open decisions on
+2026-10-27.** Nothing in this document is implemented. The
+[verified facts](#verified-facts-about-the-current-system) describe commit
+`b5da139`. Everything after that section is proposed behavior, adjusted by the
+[owner decisions](#owner-decisions-2026-10-27) at the end.
 
 The Knowledge task is `6cc7e676-d699-482b-b907-5832249eda70`. Stages 2 (one
 view of a case across task, memory and discussion) and 3 (simplified evidence
@@ -181,7 +182,8 @@ interface TaskStateAssessment {
     inactiveSources: number;          // cited sources now archived or superseded
   };
   findings: Array<{ code: FindingCode; severity: "conflict" | "attention"; fields: string[]; sources: StateSource[] }>;
-  ownerConsent: "not_needed" | "needed" | "unknown" | "proposal_only" | "approved_installation_token" | "approved_owner_session" | "approval_invalidated";
+  ownerConsent: "not_needed" | "needed" | "unknown" | "proposal_only" | "approved" | "approved_method_not_accepted" | "approval_invalidated";
+  approvalMethod: AuthenticationMethod | null; // from the approval history entry; always shown with "approved"
   evidence: { listed: number; present: number; missing: string[] };
 }
 ```
@@ -207,7 +209,8 @@ Deterministic findings:
 | `evidence_missing` | conflict | A listed attachment no longer exists or belongs to another record. |
 | `claim_without_source` | attention | A positive fact (`merged`, `passed`, `findings_closed`, `stored`, `verified`, `done`) or the outcome has no source. |
 | `source_stale` / `source_inactive` | attention | A cited Knowledge source changed revision, or was archived or superseded. |
-| `consent_not_owner_session` | attention | `ownerDecision.recorded` points to a memory that is unapproved, approved at another revision, or approved without an owner session. |
+| `consent_missing` | attention | `ownerDecision.recorded` points to a memory that is unapproved or whose approval no longer applies to its current revision. |
+| `consent_method_not_accepted` | attention | The decision memory is approved, but the approval's authentication method is not in the accepted set (see [owner consent](#owner-consent-tiers)). Under the current policy this cannot occur. |
 | `next_step_on_done` | attention | Task status is `done` and a next step is set. |
 
 Write-time validation rejects only structural errors: bounds, malformed
@@ -219,19 +222,43 @@ real disagreement between sources.
 
 ### Owner consent tiers
 
+Owner consent is a derived value. It requires an approved decision memory, and
+the approval's authentication method must be in one accepted set. That set is
+a single constant in the shared assessment module, not a stored setting:
+
+```ts
+// Owner decision 2026-10-27: owner and agents currently share the installation
+// token, so it counts as the owner. Remove "installation_token" once agents
+// receive their own credentials.
+export const OWNER_CONSENT_METHODS: ReadonlySet<AuthenticationMethod> =
+  new Set(["owner_session", "installation_token"]);
+```
+
 | Tier | Condition | Shown as |
 | --- | --- | --- |
 | Needed | `ownerDecision.state = needed` | **Decision needed** with the question and options |
 | Proposal only | Decision memory exists but is not approved at its current revision | **Agent proposal — owner has not approved** |
-| Installation token | Approved at the current revision; the approval history entry has `installation_token` | **Approved with the installation token — the approving person is not verified** |
-| Owner session | Approved at the current revision; the approval history entry has `owner_session` | **Owner decision** with date and a link to the memory |
+| Approved | Approved at the current revision with a method in `OWNER_CONSENT_METHODS` | **Owner decision · approved with {method}**, with date and a link to the memory |
+| Method not accepted | Approved at the current revision with a method outside the set | **Approved with {method}, which does not confirm the owner** |
 | Invalidated | The memory changed after approval (`approve_memory` approvals are cleared on update) | **Approval no longer applies** |
+
+The approval method is always displayed next to an approved decision. Readers
+can therefore see today that an approval came from the shared installation
+token, and nothing changes in stored data when the set changes.
+
+Separating permissions later takes three steps, none of which migrate data:
+issue agents their own credentials without `knowledge:approve`, remove
+`installation_token` from the set, and decide whether approvals recorded
+before that date keep the **Approved** tier. History records each approval's
+method and time, so either choice is possible. If needed, a dated policy
+(`acceptedUntil`) can replace the constant at that point.
 
 An agent's report that "the owner agreed in chat" belongs in `changeNote` or a
 proposal memory. It is shown as the agent's report and never upgrades a tier.
-Because this installation runs in `token` mode, tier 4 is currently
-unreachable unless the owner uses an owner session. See
-[decision 1](#owner-decisions-required).
+While the token is shared, the system cannot stop an agent from approving.
+The implementation slice therefore adds a process rule to agent guidance: an
+agent calls `approve_memory` only on the owner's explicit instruction in the
+current conversation, and quotes that instruction in the change note.
 
 ### Who updates the state
 
@@ -334,8 +361,9 @@ horizontally, and the freshness chip wraps under the label.
 | ownerDecision | Decyzja właściciela | Owner decision |
 | decisionNeeded | Potrzebna decyzja | Decision needed |
 | proposalOnly | Propozycja agenta — brak zgody właściciela | Agent proposal — owner has not approved |
-| installationApproval | Zatwierdzone tokenem instalacji — osoba niepotwierdzona | Approved with the installation token — person not verified |
-| ownerApproved | Decyzja właściciela | Owner decision |
+| ownerApproved | Decyzja właściciela · zatwierdzono: {method} | Owner decision · approved with: {method} |
+| methodNotAccepted | Zatwierdzono metodą, która nie potwierdza właściciela: {method} | Approved with a method that does not confirm the owner: {method} |
+| method.installation_token / owner_session | token instalacji / sesja właściciela | installation token / owner session |
 | evidence | Dowody | Evidence |
 | evidenceStored | Zapisane, niezweryfikowane | Stored, not verified |
 | evidenceVerified | Zweryfikowane (deklaruje: …) | Verified (declared by …) |
@@ -369,7 +397,7 @@ test in the implementation.
 | B | **New blocker after success** — merged, CI passed, then deployment failed a health check | Blocker cell amber: "Deployment health check fails · unblocked by operator". Delivery: merge ✓, CI ✓, deployment ✕ failed. Result still states what was merged. If task status is not `blocked`: attention `open_blocker_not_blocked`. |
 | C | **Missing and contradictory data** — status `done`, one open blocker, CI on another commit, review unknown | No green summary. Needs attention lists: conflict `done_with_open_blocker`, attention `ci_not_merged_head` with both commits, and review "Unknown". |
 | D | **Merge without deployment** — merged, CI passed, findings closed, evidence verified, deployment pending | Delivery reads "Merged · CI passed · findings closed · evidence verified · deployment pending (separate stage)". The task is not presented as finished. |
-| E | **No owner consent** — the agent reports that the owner agreed in chat; the decision memory is approved only with the installation token, or not at all | Owner decision: "Approved with the installation token — person not verified" or "Agent proposal — owner has not approved". The agent's report appears as an attributed note. |
+| E | **No owner consent** — the agent reports that the owner agreed in chat; the decision memory is not approved | Owner decision: "Agent proposal — owner has not approved" and attention `consent_missing`. The agent's report appears as an attributed note. After approval with the installation token: "Owner decision · approved with: installation token". With the future set (owner session only), the same record shows `consent_method_not_accepted`. |
 | F | **Stale summary** — state at r7; task now r9 with a description edit and status change to `done`; two new replies; one cited memory superseded | Freshness chip amber "Changes since this summary: 5" and a banner listing them with links. Attention `next_step_on_done` and `source_inactive`. The result stays readable. |
 | G | **No state yet** — every existing task until written | "No current state recorded". Shows only the system-derived facts (status, priority, last update, counts of decisions, proposals, open questions and attachments) and writer guidance. |
 
@@ -411,11 +439,12 @@ because both touch the same Knowledge files.
    with no new polling. Add PL/EN messages, source links with return focus and
    **Go to history**. Owner editing is a follow-up; writes in this slice come
    through MCP, HTTP or CLI.
-7. **Agent guidance**: add the update rule and `changeNote` format to
-   `docs/knowledge/AGENTS.md` and the shared skill only after the owner accepts
-   this design.
+7. **Agent guidance**: add the update rule, the `changeNote` format and the
+   shared-token approval rule to `docs/knowledge/AGENTS.md` and the shared
+   skill, only after the owner accepts this design.
 
-Tests: unit tests for every finding code and consent tier; SQLite tests for
+Tests: unit tests for every finding code and consent tier, run with both the
+current and the future `OWNER_CONSENT_METHODS`; SQLite tests for
 migration, revision conflict, history snapshot, idempotent replay and
 transfer round trip; transport parity for the two operations; static-export UI
 tests for scenarios A–G at 1440, 1366, 390 and 320 in PL/EN and dark/light,
@@ -444,21 +473,20 @@ blockers and stale states, an owner edit form, and the stage 2 case view.
 - **LLM-generated summaries.** Rejected by the task. They would also need
   separate provenance and could invent consent.
 
-## Owner decisions required
+## Owner decisions (2026-10-27)
 
-1. **Consent on a token-mode installation.** Today owner and agents share the
-   installation identity. Recommended: show approvals made with the installation
-   token as "person not verified", and have the owner approve decisions in an
-   owner session. Alternative: give agents scoped agent tokens without
-   `knowledge:approve`, so installation-token approvals become likely, but
-   still unproven, owner actions.
-2. **Additive migration.** Accept one nullable column on `knowledge_tasks` for
-   the implementation slice, or require the separate-table alternative.
+The owner answered the four open questions in the design thread. The design as
+a whole remains a proposal until the owner reviews the document and prototype.
+
+1. **Consent on a token-mode installation.** The owner expects separate
+   permissions in the future. For now an installation-token approval counts as
+   the owner's, and the design must make the later separation simple. Applied as
+   `OWNER_CONSENT_METHODS` in [owner consent](#owner-consent-tiers).
+2. **Storage.** One additive nullable column, `knowledge_tasks.current_state_json`.
 3. **Status coupling.** `update_task_state` may change task status atomically.
-   Recommended: yes, so a new blocker and `blocked` cannot drift apart.
-4. **Rollout order.** Implement this slice after the higher-priority work the
-   owner set on 2026-10-05 (the task remains `later`), and after PR110 and the
-   `legacyId` change merge.
+4. **Rollout order.** Implement after the higher-priority work the owner set on
+   2026-10-05 (the task remains `later`), and after PR110 and the `legacyId`
+   change merge.
 
 ## Unverified and out of scope
 

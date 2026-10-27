@@ -20,8 +20,10 @@ and the primary action only. Nothing is taken from WinPath.
 Open `index.html` directly in a browser; no server, network or build is needed.
 The controls above the mocked application choose:
 
-- scenario A–G from the design's acceptance table, plus the approval method
-  for scenario E (none, installation token, owner session);
+- scenario A–G from the design's acceptance table, plus, for scenario E, the
+  approval method (none, installation token, owner session) and the consent
+  policy (current: the installation token counts as the owner, per the owner's
+  2026-10-27 decision; future: owner session only);
 - PL or EN, dark or light, and desktop 1440, mobile 390 or mobile 320.
 
 The freshness chip, the **Needs attention** list and the owner-consent wording
@@ -33,13 +35,18 @@ moves focus to the history heading. All content is fictional.
 
 ## Checks performed (2026-10-27)
 
+Repeated after the consent-policy change: all 12 scenario E combinations of
+approval method, policy and language rendered the expected wording.
+
 - `node --check` on the extracted script passed.
 - A Node harness with a stubbed DOM ran `assess()` for every scenario and
   rendered all 7 scenarios × PL/EN × 3 widths without placeholders,
   `undefined` or object text. Assessment results:
   A, B and D have no findings; C has `done_with_open_blocker`,
   `evidence_missing`, `ci_not_merged_head` and `claim_without_source`;
-  E has `consent_not_owner_session` unless approved in an owner session;
+  E has `consent_missing` without approval, no finding when approved under
+  the current policy, and `consent_method_not_accepted` for an
+  installation-token approval under the future policy;
   F is `changed_since` with 5 changes, `source_inactive` and `next_step_on_done`;
   G is `missing`.
 - A browser preview of scenario D at 1440 px (dark, PL) was inspected. It
