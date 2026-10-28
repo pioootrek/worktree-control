@@ -4,7 +4,8 @@ import { EnvironmentService, redactProject } from "./modules/environments";
 import type { AuthenticatedPrincipal } from "./modules/identity";
 import { KnowledgeService, type KnowledgeHistoryEntry, type KnowledgeHistoryOptions, type KnowledgePageOptions, type KnowledgeRecordKind, type KnowledgeTaskPriority, type KnowledgeTaskStatus, type KnowledgeWriteOptions } from "./modules/knowledge";
 import { leaseTokenHash, type OperationActor, ProjectLifecycle } from "./modules/lifecycle";
-import { RuntimeService } from "./modules/runtime";
+import { AGENT_LEASE_DEFAULT_SECONDS, AGENT_LEASE_MAX_SECONDS, RuntimeService, ScopedRuntimeService, type RuntimeAuthorizer, type ScopedClaimRequest, type ScopedSession } from "./modules/runtime";
+import type { RuntimeAction } from "@/shared/contracts/runtime-access";
 import { StatusService, type CompactProjectStatus, type CompactTestStatus, type CompactEnvelope } from "./modules/status";
 import { VerificationService, VerificationHistoryService } from "./modules/verification";
 import type { RemoteVerificationController } from "./modules/remote-verification";
@@ -39,8 +40,6 @@ import { ProjectTestCommandResolver } from "./test-command";
 import type { TestJobManager } from "./test-job-manager";
 import { AllowlistedWorktreeCacheCleaner, type WorktreeCacheCleaner, type WorktreeStorageManager } from "./worktree-storage";
 
-const AGENT_LEASE_DEFAULT_SECONDS = 30 * 60;
-const AGENT_LEASE_MAX_SECONDS = 8 * 60 * 60;
 export interface AgentClaimRequest {
   projectId: string;
   worktreePath: string;
@@ -66,6 +65,7 @@ export class ControlService {
   private readonly verificationHistory: VerificationHistoryService;
   private readonly dashboardQueries: DashboardQueryService;
   private readonly statusQueries: StatusService;
+  private readonly scopedRuntime?: ScopedRuntimeService;
 
   constructor(
     private readonly store: StateStore,
@@ -80,6 +80,7 @@ export class ControlService {
     lifecycle?: ProjectLifecycle,
     private readonly knowledge?: KnowledgeService,
     private readonly remoteVerification?: RemoteVerificationController,
+    runtimeAuthorizer?: RuntimeAuthorizer,
   ) {
     this.lifecycle = lifecycle ?? new ProjectLifecycle(store, processes);
     this.storage?.assertLifecycle(this.lifecycle);
@@ -98,6 +99,34 @@ export class ControlService {
     });
     this.statusQueries = new StatusService(store, processes,
       () => this.lifecycle.capacityStatusCompact(), () => this.testQueueStatus());
+    if (runtimeAuthorizer) {
+      this.scopedRuntime = new ScopedRuntimeService(runtimeAuthorizer, store, git, processes, this.lifecycle, this.runtime, logs);
+    }
+  }
+
+  /** Scoped agent runtime access; enforcement and safe views live in the runtime module. */
+  scopedRuntimeEnabled(): boolean { return !!this.scopedRuntime; }
+  scopedProjects(actor: AuthenticatedPrincipal, session: ScopedSession) { return this.requireScopedRuntime().listProjects(actor, session); }
+  scopedProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string) { return this.requireScopedRuntime().projectStatus(actor, session, projectId); }
+  scopedWorktrees(actor: AuthenticatedPrincipal, projectId: string) { return this.requireScopedRuntime().worktrees(actor, projectId); }
+  claimScopedProject(actor: AuthenticatedPrincipal, session: ScopedSession, input: ScopedClaimRequest, existingLeaseToken?: string) {
+    return this.requireScopedRuntime().claim(actor, session, input, existingLeaseToken);
+  }
+  renewScopedClaim(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string, reservationId: string, leaseToken: string, ttlSeconds?: number) {
+    return this.requireScopedRuntime().renew(actor, session, projectId, reservationId, leaseToken, ttlSeconds);
+  }
+  releaseScopedClaim(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string, reservationId: string, leaseToken: string) {
+    return this.requireScopedRuntime().release(actor, session, projectId, reservationId, leaseToken);
+  }
+  operateScopedRuntime(actor: AuthenticatedPrincipal, session: ScopedSession, leaseToken: string, projectId: string, reservationId: string, action: ClaimedRuntimeAction, signal?: AbortSignal, sessionClosed?: () => boolean) {
+    return this.requireScopedRuntime().operate(actor, session, leaseToken, projectId, reservationId, action, signal, sessionClosed);
+  }
+  authorizeScopedRuntime(actor: AuthenticatedPrincipal, projectId: string, action: RuntimeAction): void {
+    this.requireScopedRuntime().authorize(actor, projectId, action);
+  }
+  private requireScopedRuntime(): ScopedRuntimeService {
+    if (!this.scopedRuntime) throw new Error("Scoped agent runtime access is unavailable.");
+    return this.scopedRuntime;
   }
 
   executeKnowledge(input: unknown, actor: AuthenticatedPrincipal) {
@@ -449,9 +478,15 @@ export class ControlService {
           this.lifecycle.acquireCapacity(project);
           try {
             operationStage = "runtime";
-            if (runtime.phase !== "stopped") await this.processes.stop(input.projectId);
+            // The lease can expire or be force-released while stop is awaited; never spawn on a stale claim.
+            const claimed = { owner: input.owner, leaseToken };
+            if (runtime.phase !== "stopped") {
+              await this.processes.stop(input.projectId);
+              this.lifecycle.requireAgentClaim(input.projectId, reservation.id, claimed);
+            }
             if (project.selectedWorktreePath !== selected.path) this.store.setSelectedWorktree(input.projectId, selected.path);
-            await this.processes.start(this.lifecycle.requireProject(input.projectId), selected.path);
+            await this.processes.start(this.lifecycle.requireProject(input.projectId), selected.path,
+              () => { this.lifecycle.requireAgentClaim(input.projectId, reservation.id, claimed); });
           } finally {
             this.lifecycle.releaseCapacity(input.projectId);
           }

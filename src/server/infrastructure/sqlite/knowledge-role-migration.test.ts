@@ -28,14 +28,14 @@ describe("Knowledge role migration and persistence", () => {
     const f = fixture(); f.store.close();
     const db = new Database(f.path);
     try {
-      db.exec("DROP TABLE knowledge_role_bindings; DELETE FROM schema_migrations WHERE version=35");
+      db.exec("DROP TABLE knowledge_role_bindings; DELETE FROM schema_migrations WHERE version>=35");
       const before = db.prepare("SELECT * FROM knowledge_project_grants").all();
       expect(inspectSchema(db).version).toBe(34);
       expect(() => initializeSchema(db, false, () => { throw new Error("late failure"); })).toThrow("late failure");
       expect(inspectSchema(db).version).toBe(34);
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name='knowledge_role_bindings'").get()).toBeUndefined();
       initializeSchema(db, false);
-      expect(inspectSchema(db).version).toBe(35);
+      expect(inspectSchema(db).version).toBe(36);
       expect(db.prepare("SELECT * FROM knowledge_project_grants").all()).toEqual(before);
       expect(db.prepare("SELECT * FROM knowledge_role_bindings").all()).toEqual([]);
       expect(db.prepare("SELECT id,kind FROM remote_principals WHERE id=?").get(f.owner.principalId)).toEqual({ id: f.owner.principalId, kind: "owner" });

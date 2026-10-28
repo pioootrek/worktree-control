@@ -36,6 +36,12 @@ export type TestRunStatusRecord = Pick<TestRun,
   | "source"
 >;
 
+/** Durable credential binding of a scoped agent lease, in addition to session owner and lease hash. */
+export interface ReservationBinding {
+  principalId: string;
+  credentialId: string;
+}
+
 export interface ReservationRequest {
   projectId: string;
   worktreePath: string;
@@ -46,6 +52,7 @@ export interface ReservationRequest {
   maximumLifetimeSeconds?: number;
   leaseTokenHash?: string;
   idempotencyKey?: string;
+  binding?: ReservationBinding;
 }
 
 export interface TestHistoryPosition { queuedAt: string; runId: string }
@@ -97,9 +104,9 @@ export interface StateStore {
   getActiveReservation(projectId: string): Reservation | null;
   getEffectiveReservation(projectId: string, observedAt: string): Reservation | null;
   acquireReservation(input: ReservationRequest): Reservation;
-  authorizeReservation(projectId: string, owner: string, leaseTokenHash?: string): Reservation | null;
-  renewAgentReservation(projectId: string, reservationId: string, owner: string, leaseTokenHash: string, ttlSeconds: number): Reservation;
-  releaseAgentReservation(projectId: string, reservationId: string, owner: string, leaseTokenHash: string): void;
+  authorizeReservation(projectId: string, owner: string, leaseTokenHash?: string, binding?: ReservationBinding | null): Reservation | null;
+  renewAgentReservation(projectId: string, reservationId: string, owner: string, leaseTokenHash: string, ttlSeconds: number, binding?: ReservationBinding | null): Reservation;
+  releaseAgentReservation(projectId: string, reservationId: string, owner: string, leaseTokenHash: string, binding?: ReservationBinding | null): void;
   releaseReservation(projectId: string, owner: string, force?: boolean): void;
   close(): void;
 }

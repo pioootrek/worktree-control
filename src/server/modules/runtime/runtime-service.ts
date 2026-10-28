@@ -7,6 +7,7 @@ import type { ClaimedRuntimeAction, ClaimedRuntimeReceipt } from "@/shared/contr
 import { createHash, randomUUID } from "node:crypto";
 import type { RuntimeCapacity } from "../lifecycle";
 import { type LifecycleAccess, type OperationActor } from "../lifecycle";
+import { RuntimeAccessDenied, ScopedRuntimeError } from "./runtime-errors";
 
 class ClaimedRuntimeOperationError extends Error {
   constructor(readonly code: string, readonly safeMessage: string) {
@@ -31,12 +32,16 @@ export class RuntimeService {
     actor: OperationActor,
     signal?: AbortSignal,
     sessionClosed: () => boolean = () => false,
+    /** Scoped callers re-read current credential authority; a denial throws RuntimeAccessDenied. */
+    authority: () => void = () => undefined,
   ): Promise<ClaimedRuntimeReceipt> {
     return this.lifecycle.serialized(projectId, async () => {
       if (signal?.aborted || sessionClosed()) throw new Error("The runtime operation was cancelled before it started.");
+      authority();
       const operationId = randomUUID();
       const project = this.lifecycle.requireProject(projectId);
       const claim = this.lifecycle.requireAgentClaim(projectId, reservationId, actor);
+      const verify = () => { this.revalidateClaim(projectId, reservationId, actor); authority(); };
       const actorRef = `mcp:${createHash("sha256").update(actor.owner).digest("hex").slice(0, 12)}`;
       this.store.recordProjectEvent(projectId, "agent.runtime_accepted", actorRef, { operationId, reservationId, action });
       this.logs.controller("agent.runtime_accepted", { operationId, projectId, reservationId, action, actor: actorRef });
@@ -51,7 +56,7 @@ export class RuntimeService {
         }
         if (action === "stop") {
           if (!initial.pid && initial.phase !== "starting" && initial.phase !== "stopping") outcome = "noop";
-          else await this.stopRuntime(projectId);
+          else { verify(); await this.stopRuntime(projectId); }
         } else if (action === "start" && initial.phase === "running" && initial.worktreePath === claim.worktreePath) {
           outcome = "noop";
         } else {
@@ -62,7 +67,7 @@ export class RuntimeService {
           } catch {
             throw new ClaimedRuntimeOperationError("worktree_unavailable", "The claimed worktree is unavailable.");
           }
-          this.revalidateClaim(projectId, reservationId, actor);
+          verify();
           try {
             this.lifecycle.acquireCapacity(project);
           } catch {
@@ -70,8 +75,9 @@ export class RuntimeService {
           }
           try {
             if (action === "restart" && initial.pid) {
+              verify();
               await this.stopRuntime(projectId);
-              this.revalidateClaim(projectId, reservationId, actor);
+              verify();
             } else if (action === "start" && (initial.pid || initial.phase === "starting" || initial.phase === "stopping")) {
               throw new ClaimedRuntimeOperationError("runtime_busy", "The managed runtime is busy.");
             }
@@ -84,12 +90,16 @@ export class RuntimeService {
                 tlsCaPath: launch.tls.caPath, executable: launch.executable, args: launch.args,
               });
             }
-            await this.startRuntime(projectId, selected.path, actorRef, () => this.revalidateClaim(projectId, reservationId, actor));
+            await this.startRuntime(projectId, selected.path, actorRef, verify);
           } finally {
             this.lifecycle.releaseCapacity(projectId);
           }
         }
       } catch (error) {
+        if (error instanceof RuntimeAccessDenied) {
+          this.recordDenied(projectId, operationId, reservationId, action, actorRef);
+          throw error;
+        }
         outcome = "failed";
         operationError = this.safeOperationError(error);
       }
@@ -111,12 +121,56 @@ export class RuntimeService {
       this.store.recordProjectEvent(projectId, `agent.runtime_${outcome}`, actorRef, {
         operationId, reservationId, action, outcome, errorCode: operationError?.code ?? null,
       });
+      // Effects already happened are audited above; revoked callers still receive no status.
+      authority();
       return receipt;
     });
   }
 
+  /**
+   * Places the managed server on a freshly claimed worktree. The caller holds the
+   * project lock; `verify` runs before stopping, after the awaited stop and
+   * immediately before spawn. Denials propagate; other failures are safe codes.
+   */
+  async placeClaimed(projectId: string, worktreePath: string, actorRef: string, verify: () => void): Promise<{ code: string; message: string } | null> {
+    try {
+      verify();
+      const project = this.lifecycle.requireProject(projectId);
+      if (project.launchPreset === "none") throw new ClaimedRuntimeOperationError("no_managed_server", NO_SERVER_MESSAGE);
+      const runtime = this.processes.snapshot(projectId);
+      if (runtime.phase === "running" && runtime.worktreePath === worktreePath) return null;
+      try {
+        this.lifecycle.acquireCapacity(project);
+      } catch {
+        throw new ClaimedRuntimeOperationError("capacity_exhausted", "Managed server capacity is exhausted.");
+      }
+      try {
+        if (runtime.phase !== "stopped") {
+          await this.stopRuntime(projectId);
+          verify();
+        }
+        if (project.selectedWorktreePath !== worktreePath) this.store.setSelectedWorktree(projectId, worktreePath);
+        await this.startRuntime(projectId, worktreePath, actorRef, verify);
+      } finally {
+        this.lifecycle.releaseCapacity(projectId);
+      }
+      return null;
+    } catch (error) {
+      if (error instanceof RuntimeAccessDenied) throw error;
+      return this.safeOperationError(error);
+    }
+  }
+
+  private recordDenied(projectId: string, operationId: string, reservationId: string, action: ClaimedRuntimeAction, actorRef: string): void {
+    try {
+      this.store.recordProjectEvent(projectId, "agent.runtime_denied", actorRef, { operationId, reservationId, action });
+      this.logs.controller("agent.runtime_denied", { operationId, projectId, reservationId, action, actor: actorRef });
+    } catch { /* the denial itself is authoritative */ }
+  }
+
   private safeOperationError(error: unknown): { code: string; message: string } {
     if (error instanceof ClaimedRuntimeOperationError) return { code: error.code, message: error.safeMessage };
+    if (error instanceof ScopedRuntimeError) return { code: error.code, message: error.message };
     return { code: "runtime_operation_failed", message: "The managed runtime operation failed." };
   }
 
@@ -132,7 +186,7 @@ export class RuntimeService {
     try {
       await this.processes.stop(projectId);
     } catch (error) {
-      if (error instanceof ClaimedRuntimeOperationError) throw error;
+      if (error instanceof ClaimedRuntimeOperationError || error instanceof ScopedRuntimeError || error instanceof RuntimeAccessDenied) throw error;
       const code = this.processes.snapshot(projectId).failure?.code ?? "cleanup_unconfirmed";
       throw new ClaimedRuntimeOperationError(code, "The managed runtime could not be stopped safely.");
     }
@@ -142,7 +196,7 @@ export class RuntimeService {
     try {
       await this.processes.start(this.lifecycle.requireProject(projectId), worktreePath, beforeSpawn);
     } catch (error) {
-      if (error instanceof ClaimedRuntimeOperationError) throw error;
+      if (error instanceof ClaimedRuntimeOperationError || error instanceof ScopedRuntimeError || error instanceof RuntimeAccessDenied) throw error;
       const code = this.processes.snapshot(projectId).failure?.code ?? "launch_failed";
       throw new ClaimedRuntimeOperationError(code, "The managed runtime could not be started.");
     }

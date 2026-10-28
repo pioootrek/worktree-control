@@ -1,5 +1,5 @@
 import type { ProcessManager } from "@/server/process-manager";
-import type { StateStore } from "@/server/state-store";
+import type { ReservationBinding, StateStore } from "@/server/state-store";
 import type { Project, ProjectSnapshot, ServerCapacityStatus, Worktree } from "@/shared/contracts";
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
@@ -7,6 +7,8 @@ import { basename } from "node:path";
 export interface OperationActor {
   owner: string;
   leaseToken?: string;
+  /** Scoped agent leases also bind the authenticated principal and credential. */
+  binding?: ReservationBinding;
 }
 
 export function leaseTokenHash(token: string): string {
@@ -39,6 +41,7 @@ export class ProjectLifecycle {
       projectId,
       actor.owner,
       actor.leaseToken ? leaseTokenHash(actor.leaseToken) : undefined,
+      actor.binding ?? null,
     );
     if (reservation && reservation.worktreePath !== worktreePath) {
       throw new Error(`Projekt jest zablokowany na ${basename(reservation.worktreePath)} przez ${reservation.owner}.`);
@@ -51,7 +54,7 @@ export class ProjectLifecycle {
     }
     let reservation;
     try {
-      reservation = this.store.authorizeReservation(projectId, actor.owner, leaseTokenHash(actor.leaseToken));
+      reservation = this.store.authorizeReservation(projectId, actor.owner, leaseTokenHash(actor.leaseToken), actor.binding ?? null);
     } catch {
       throw new Error("The MCP claim is stale, expired, or no longer active.");
     }

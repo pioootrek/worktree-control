@@ -7,6 +7,8 @@ export {
   type IdentityErrorCode,
   type IssueAgentTokenInput,
   type IssuedAgentToken,
+  type IssuedRuntimeCredential,
+  type RuntimeAccessReport,
   type SetKnowledgeGrantInput,
 } from "./identity-service";
 export type {
@@ -26,4 +28,5 @@ export type {
   Principal,
   PrincipalCredential,
   PrincipalKind,
+  RuntimeAccessStore,
 } from "./contracts";

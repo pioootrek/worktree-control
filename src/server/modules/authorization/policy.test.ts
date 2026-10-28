@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { knowledgePermissions, type KnowledgeRole, type SubjectKind } from "@/shared/contracts/authorization";
-import { effectiveKnowledgePermissions, isAuthorized } from "./policy";
+import { effectiveKnowledgePermissions, effectiveRuntimeActions, isAuthorized, type RuntimeAuthority } from "./policy";
 
 const subject = { id: "actor", kind: "human" as const, humanSession: true };
 const grant = { principalId: "actor", projectId: "p", permissions: [...knowledgePermissions], revokedAt: null };
@@ -36,5 +36,35 @@ describe("shared authorization policy", () => {
     }
     expect(isAuthorized(installation, "made-up" as never, { kind: "knowledge-project", id: "p" }, context)).toBe(false);
     expect(isAuthorized(subject, "knowledge:write", { kind: "knowledge-project", id: "p" }, { ...context, project: { id: "p", status: "archived" } })).toBe(false);
+  });
+  it("grants runtime actions only to an agent through both delegation and the exact credential ceiling", () => {
+    const agent = { id: "agent", kind: "agent" as const, humanSession: false };
+    const runtime: RuntimeAuthority = {
+      now: "2026-10-28T12:00:00.000Z", credentialId: "credential", project: { id: "p" },
+      delegation: { principalId: "agent", projectId: "p", sponsorId: "owner", actions: ["projects:read", "claims:manage"], revision: 1, expiresAt: null, updatedAt: "now", revokedAt: null },
+      scope: { credentialId: "credential", projectId: "p", actions: ["claims:manage", "runtime:control"], createdAt: "now" },
+      sponsor: { id: "owner", kind: "human", status: "active" },
+    };
+    const resource = { kind: "runtime-project" as const, id: "p" };
+    expect(effectiveRuntimeActions(agent, "p", runtime)).toEqual(["claims:manage"]);
+    expect(isAuthorized(agent, "claims:manage", resource, { ...context, runtime })).toBe(true);
+    expect(isAuthorized(agent, "runtime:control", resource, { ...context, runtime })).toBe(false);
+    expect(isAuthorized(agent, "knowledge:read", resource, { ...context, runtime })).toBe(false);
+    expect(isAuthorized(agent, "claims:manage", { kind: "knowledge-project", id: "p" }, { ...context, runtime })).toBe(false);
+    for (const kind of ["human", "worker", "installation"] as const) expect(effectiveRuntimeActions({ ...agent, kind }, "p", runtime)).toEqual([]);
+    for (const narrowed of [
+      { ...runtime, project: null },
+      { ...runtime, credentialId: "other" },
+      { ...runtime, scope: { ...runtime.scope!, projectId: "q" } },
+      { ...runtime, delegation: { ...runtime.delegation!, revokedAt: "now" } },
+      { ...runtime, delegation: { ...runtime.delegation!, expiresAt: runtime.now } },
+      { ...runtime, delegation: { ...runtime.delegation!, principalId: "other" } },
+      { ...runtime, sponsor: { ...runtime.sponsor!, status: "revoked" as const } },
+      { ...runtime, sponsor: { ...runtime.sponsor!, kind: "agent" as const } },
+      { ...runtime, sponsor: { ...runtime.sponsor!, id: "someone-else" } },
+      { ...runtime, sponsor: null },
+    ]) expect(effectiveRuntimeActions(agent, "p", narrowed)).toEqual([]);
+    expect(effectiveRuntimeActions(agent, "q", runtime)).toEqual([]);
+    expect(isAuthorized(agent, "claims:manage", resource, context)).toBe(false);
   });
 });

@@ -9,7 +9,7 @@ import type { KnowledgeTaskPage, KnowledgeReplyPage, KnowledgeRelationDestinatio
 import type { KnowledgeMemory, KnowledgeSearchHit, KnowledgeSearchOptions } from "@/shared/contracts/knowledge-memory";
 import type { KnowledgeAttachmentLimits, KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
 import type { KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
-import type { PendingTestRun, ProjectRegistration, ReservationRequest, StateStore, TestRunStatusRecord, WorktreeStorageSample } from "@/server/state-store";
+import type { PendingTestRun, ProjectRegistration, ReservationBinding, ReservationRequest, StateStore, TestRunStatusRecord, WorktreeStorageSample } from "@/server/state-store";
 import type { Project, Reservation, ServerCapacitySettings, TestEnvironmentProfile, TestQueueSettings, TestRun, TestRunPhase, WorktreeStorageSnapshot } from "@/shared/contracts";
 import type {
   RemotePrincipal,
@@ -33,7 +33,10 @@ import type {
   KnowledgeProjectRuntimeLink,
   Principal,
   PrincipalCredential,
+  RuntimeAccessStore,
 } from "@/server/modules/identity";
+import type { RuntimeCredentialScope, RuntimeDelegation } from "@/shared/contracts/runtime-access";
+import { RuntimeAccessQueries } from "./runtime-access-queries";
 import type { AuthenticationPolicy, AuthenticationStore } from "@/server/modules/authentication";
 import type { HubImportBatch, HubImportExecutionStore, HubImportMapping, KnowledgeHistoryEntry, KnowledgeMutationContext, KnowledgeMutationResult, KnowledgePage, KnowledgeProjectSnapshot, KnowledgeRelation, KnowledgeReply, KnowledgeRuntimeLinkResult, KnowledgeStore, KnowledgeTask, KnowledgeThread } from "@/server/modules/knowledge";
 import { KnowledgeError, publishKnowledgeAttachment, DEFAULT_ATTACHMENT_LIMITS, assertAttachmentCapacity } from "@/server/modules/knowledge";
@@ -49,13 +52,13 @@ import { KnowledgeQueries } from "./knowledge-queries";
 import type { KnowledgeTaskStateView, TaskCurrentState } from "@/shared/contracts/knowledge-task-state";
 import type { TaskStateFacts } from "@/server/modules/knowledge";
 import { mapProject, type ProjectRow } from "./project-mapping";
-import { equalHash, mapReservation, type ReservationRow } from "./reservation-mapping";
+import { equalBinding, equalHash, mapReservation, type ReservationRow } from "./reservation-mapping";
 import { AuthenticationQueries } from "./authentication-queries";
 import { RemoteVerificationQueries } from "./remote-verification-queries";
 import { StorageQueries } from "./storage-queries";
 import { TestRunQueries } from "./test-run-queries";
 
-export class SqliteStateStore implements StateStore, AuthenticationStore, IdentityStore, KnowledgeStore, HubImportExecutionStore, RemoteVerificationStore, RemoteVerificationAttemptStore, RemoteVerificationProvisioningStore {
+export class SqliteStateStore implements StateStore, AuthenticationStore, IdentityStore, RuntimeAccessStore, KnowledgeStore, HubImportExecutionStore, RemoteVerificationStore, RemoteVerificationAttemptStore, RemoteVerificationProvisioningStore {
   private readonly database: Database.Database;
   private readonly testRuns: TestRunQueries;
   private readonly storage: StorageQueries;
@@ -63,6 +66,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   readonly remoteConnection: RemoteConnectionStore;
   readonly devVault: DevVaultStore;
   private readonly identity: IdentityQueries;
+  private readonly runtimeAccess: RuntimeAccessQueries;
   private readonly authentication: AuthenticationQueries;
   private readonly knowledge: KnowledgeQueries;
 
@@ -82,6 +86,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       this.remoteConnection = new RemoteConnectionQueries(this.database);
       this.devVault = new DevVaultQueries(this.database);
       this.identity = new IdentityQueries(this.database);
+      this.runtimeAccess = new RuntimeAccessQueries(this.database);
       this.authentication = new AuthenticationQueries(this.database);
       this.knowledge = new KnowledgeQueries(this.database);
     } catch (error) {
@@ -783,6 +788,20 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     this.identity.saveKnowledgeProjectGrant(grant, actor);
   }
 
+  getRuntimeDelegation(principalId: string, projectId: string): RuntimeDelegation | null { return this.runtimeAccess.getRuntimeDelegation(principalId, projectId); }
+  listRuntimeDelegations(principalId: string): RuntimeDelegation[] { return this.runtimeAccess.listRuntimeDelegations(principalId); }
+  saveRuntimeDelegation(delegation: RuntimeDelegation, expectedRevision: number, actor: string): boolean {
+    return this.runtimeAccess.saveRuntimeDelegation(delegation, expectedRevision, actor);
+  }
+  getRuntimeCredentialScope(credentialId: string, projectId: string): RuntimeCredentialScope | null { return this.runtimeAccess.getRuntimeCredentialScope(credentialId, projectId); }
+  listRuntimeCredentialScopes(credentialId: string): RuntimeCredentialScope[] { return this.runtimeAccess.listRuntimeCredentialScopes(credentialId); }
+  issueScopedCredential(credential: CredentialAuthenticationRecord, scopes: RuntimeCredentialScope[], actor: string): void {
+    this.runtimeAccess.issueScopedCredential(credential, scopes, actor);
+  }
+  rotateScopedCredential(replacedId: string, revokedAt: string, credential: CredentialAuthenticationRecord, scopes: RuntimeCredentialScope[], actor: string): boolean {
+    return this.runtimeAccess.rotateScopedCredential(replacedId, revokedAt, credential, scopes, actor);
+  }
+
   getKnowledgeRoleBinding(principalId: string, projectId: string): KnowledgeRoleBinding | null {
     return this.identity.getKnowledgeRoleBinding(principalId, projectId);
   }
@@ -1019,7 +1038,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     this.expireReservations(projectId);
     const row = this.database.prepare(`
       SELECT id, project_id, worktree_path, kind, owner, reason, created_at, expires_at,
-             maximum_expires_at, token_hash, idempotency_key, released_at
+             maximum_expires_at, token_hash, idempotency_key, released_at, principal_id, credential_id
       FROM reservations WHERE project_id = ? AND released_at IS NULL
     `).get(projectId) as ReservationRow | undefined;
     return row ? mapReservation(row) : null;
@@ -1028,7 +1047,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   getEffectiveReservation(projectId: string, observedAt: string): Reservation | null {
     const row = this.database.prepare(`
       SELECT id, project_id, worktree_path, kind, owner, reason, created_at, expires_at,
-             maximum_expires_at, token_hash, idempotency_key, released_at
+             maximum_expires_at, token_hash, idempotency_key, released_at, principal_id, credential_id
       FROM reservations
       WHERE project_id = ? AND released_at IS NULL
         AND (expires_at IS NULL OR expires_at > ?)
@@ -1051,7 +1070,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
         }
         const repeated = this.database.prepare(`
           SELECT id, project_id, worktree_path, kind, owner, reason, created_at, expires_at,
-                 maximum_expires_at, token_hash, idempotency_key, released_at
+                 maximum_expires_at, token_hash, idempotency_key, released_at, principal_id, credential_id
           FROM reservations
           WHERE owner = ? AND idempotency_key = ? AND kind = 'agent' AND released_at IS NULL
         `).get(input.owner, input.idempotencyKey) as ReservationRow | undefined;
@@ -1060,6 +1079,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
             repeated.project_id !== input.projectId
             || repeated.worktree_path !== input.worktreePath
             || !equalHash(repeated.token_hash, input.leaseTokenHash)
+            || !equalBinding(repeated, input.binding)
           ) {
             throw new Error("Klucz idempotencji jest już używany przez inną dzierżawę.");
           }
@@ -1089,8 +1109,8 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       this.database.prepare(`
         INSERT INTO reservations (
           id, project_id, worktree_path, kind, owner, reason, created_at, expires_at,
-          maximum_expires_at, token_hash, idempotency_key
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          maximum_expires_at, token_hash, idempotency_key, principal_id, credential_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         reservation.id,
         reservation.projectId,
@@ -1103,18 +1123,20 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
         reservation.maximumExpiresAt,
         input.leaseTokenHash ?? null,
         input.idempotencyKey ?? null,
+        input.kind === "agent" ? input.binding?.principalId ?? null : null,
+        input.kind === "agent" ? input.binding?.credentialId ?? null : null,
       );
       this.audit(input.projectId, "reservation.acquired", input.owner, reservation);
       return reservation;
     })();
   }
 
-  authorizeReservation(projectId: string, owner: string, leaseTokenHash?: string): Reservation | null {
+  authorizeReservation(projectId: string, owner: string, leaseTokenHash?: string, binding?: ReservationBinding | null): Reservation | null {
     const reservation = this.getActiveReservation(projectId);
     if (!reservation) return null;
     const row = this.activeReservationRow(projectId)!;
     if (reservation.owner !== owner) throw new Error(`Projekt jest zablokowany przez ${reservation.owner}.`);
-    if (reservation.kind === "agent" && (!leaseTokenHash || !equalHash(row.token_hash, leaseTokenHash))) {
+    if (reservation.kind === "agent" && (!leaseTokenHash || !equalHash(row.token_hash, leaseTokenHash) || !equalBinding(row, binding))) {
       throw new Error("Nieprawidłowy token dzierżawy agenta.");
     }
     return reservation;
@@ -1126,13 +1148,14 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     owner: string,
     leaseTokenHash: string,
     ttlSeconds: number,
+    binding?: ReservationBinding | null,
   ): Reservation {
     return this.database.transaction(() => {
       if (ttlSeconds < 30) throw new Error("Dzierżawa agenta musi trwać co najmniej 30 sekund.");
       this.expireReservations(projectId);
       const row = this.activeReservationRow(projectId);
       if (!row || row.id !== reservationId) throw new Error("Dzierżawa agenta wygasła lub nie istnieje.");
-      if (row.kind !== "agent" || row.owner !== owner || !equalHash(row.token_hash, leaseTokenHash)) {
+      if (row.kind !== "agent" || row.owner !== owner || !equalHash(row.token_hash, leaseTokenHash) || !equalBinding(row, binding)) {
         throw new Error("Nieprawidłowy token dzierżawy agenta.");
       }
       const maximum = new Date(row.maximum_expires_at!).getTime();
@@ -1144,12 +1167,12 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     })();
   }
 
-  releaseAgentReservation(projectId: string, reservationId: string, owner: string, leaseTokenHash: string): void {
+  releaseAgentReservation(projectId: string, reservationId: string, owner: string, leaseTokenHash: string, binding?: ReservationBinding | null): void {
     this.database.transaction(() => {
       this.expireReservations(projectId);
       const row = this.activeReservationRow(projectId);
       if (!row || row.id !== reservationId) return;
-      if (row.kind !== "agent" || row.owner !== owner || !equalHash(row.token_hash, leaseTokenHash)) {
+      if (row.kind !== "agent" || row.owner !== owner || !equalHash(row.token_hash, leaseTokenHash) || !equalBinding(row, binding)) {
         throw new Error("Nieprawidłowy token dzierżawy agenta.");
       }
       this.releaseRow(row, owner, false);
@@ -1177,7 +1200,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       const now = new Date().toISOString();
       const expired = this.database.prepare(`
         SELECT id, project_id, worktree_path, kind, owner, reason, created_at, expires_at,
-               maximum_expires_at, token_hash, idempotency_key, released_at
+               maximum_expires_at, token_hash, idempotency_key, released_at, principal_id, credential_id
         FROM reservations
         WHERE project_id = ? AND released_at IS NULL AND expires_at IS NOT NULL AND expires_at <= ?
       `).all(projectId, now) as ReservationRow[];
@@ -1193,7 +1216,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   private activeReservationRow(projectId: string): ReservationRow | undefined {
     return this.database.prepare(`
       SELECT id, project_id, worktree_path, kind, owner, reason, created_at, expires_at,
-             maximum_expires_at, token_hash, idempotency_key, released_at
+             maximum_expires_at, token_hash, idempotency_key, released_at, principal_id, credential_id
       FROM reservations WHERE project_id = ? AND released_at IS NULL
     `).get(projectId) as ReservationRow | undefined;
   }

@@ -236,7 +236,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     kinds: ["tests", "controller"],
     ...(projectId ? { projectIds: [projectId] } : {}),
   }));
-  const identity = new IdentityService(store, undefined, undefined, undefined, authentication);
+  const identity = new IdentityService(store, undefined, undefined, undefined, authentication, store);
   const devVault = createDevVault(store.devVault, identity, paths, lifecycle);
   const recovery = new WorkerRecoveryService(store.remoteConnection, new LinuxWorkerRecoveryHost(paths.databasePath), identity);
   tests.configurePathAdmission(paths => recovery.assertPathsAvailable(paths));
@@ -270,7 +270,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   } catch (error) {
     userSchedules?.close(); await backups.close(); await tests.shutdown(); git.close(); await logs.close(); store.close(); controllerLock.release(); throw error;
   }
-  const service = new ControlService(store, git, processes, logs, undefined, storage, undefined, undefined, tests, lifecycle, knowledge, remoteVerification?.controller);
+  const service = new ControlService(store, git, processes, logs, undefined, storage, undefined, undefined, tests, lifecycle, knowledge, remoteVerification?.controller, identity);
   const restores = new RestoreOperations(backups, paths.databasePath, paths.knowledgeAttachmentDirectory, {
     authentication: () => store.getAuthenticationPolicy(),
     enterMaintenance: () => { maintenance = true; lifecycle.closeAdmission(); },

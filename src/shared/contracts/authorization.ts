@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { RuntimeAction } from "./runtime-access";
 
 export const knowledgePermissions = [
   "knowledge:read", "knowledge:write", "knowledge:approve", "knowledge:export", "knowledge:import",
@@ -21,7 +22,7 @@ export type AuthorizationResource =
   | { kind: "knowledge-project"; id: string }
   | { kind: "runtime-project"; id: string }
   | { kind: "dev-vault"; id: string };
-export type AuthorizationAction = KnowledgePermission | "env:read" | "env:write" | "env:use";
+export type AuthorizationAction = KnowledgePermission | RuntimeAction | "env:read" | "env:write" | "env:use";
 
 const bindingTarget = {
   principalId: z.string().min(1).max(160),

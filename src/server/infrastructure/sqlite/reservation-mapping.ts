@@ -14,6 +14,8 @@ export type ReservationRow = {
   token_hash: string | null;
   idempotency_key: string | null;
   released_at?: string | null;
+  principal_id?: string | null;
+  credential_id?: string | null;
 };
 
 export function mapReservation(row: ReservationRow): Reservation {
@@ -35,4 +37,9 @@ export function equalHash(actual: string | null, expected: string): boolean {
   const actualBuffer = Buffer.from(actual);
   const expectedBuffer = Buffer.from(expected);
   return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
+/** Scoped leases match only their exact principal and credential; unbound leases match only unbound callers. */
+export function equalBinding(row: Pick<ReservationRow, "principal_id" | "credential_id">, binding?: { principalId: string; credentialId: string } | null): boolean {
+  return (row.principal_id ?? null) === (binding?.principalId ?? null) && (row.credential_id ?? null) === (binding?.credentialId ?? null);
 }
