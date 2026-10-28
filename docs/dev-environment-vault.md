@@ -7,6 +7,11 @@ status: "active"
 
 # DEV environment vault
 
+Planned role integration is described in the
+[identity and authorization plan](identity-authorization-plan.md). It preserves
+the signed owner and exact-grant boundaries below; those roles are not yet
+implemented and do not enable execution use.
+
 The vault stores encrypted DEV environment profiles and supports explicit
 owner approval of agent requests from the CLI or the dashboard **DEV vault**
 section. It has no remote secret delivery. Execution use is unavailable. A saved use grant does not prove a test received

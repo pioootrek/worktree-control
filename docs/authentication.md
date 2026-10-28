@@ -7,6 +7,10 @@ status: "active"
 
 # Authentication modes
 
+For planned human accounts, project roles, scoped agents and ENV permissions,
+see the [identity and authorization plan](identity-authorization-plan.md).
+That plan does not change the implemented modes described here.
+
 One authentication policy applies to the dashboard, the HTTP API, live updates,
 MCP and the online CLI. The controller stores the policy in its database and
 applies the active mode to every request.
