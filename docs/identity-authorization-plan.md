@@ -9,15 +9,17 @@ status: "active"
 
 ## Status and decision boundary
 
-This document describes the target design; only the A1 Knowledge policy subset
-is implemented so far. See [implemented Knowledge roles](authentication.md#knowledge-roles-a1)
-for its compatibility limits.
+This document describes the target design. A1 Knowledge policy and an A2
+scoped-runtime subset are implemented. See [Knowledge roles](authentication.md#knowledge-roles-a1)
+and [scoped runtime agents](authentication.md#scoped-runtime-agents-a2-subset)
+for their compatibility limits.
 The owner accepted role-based access, shared application authorization,
 Better Auth human accounts and agent-specific identities/scopes on 2026-10-28,
 and explicitly requested ENV roles fitting existing workflows and OWASP guidance.
 The initial slice delivered this document and Knowledge planning. The subsequent
-A1 slice adds shared Knowledge policy and optional role restrictions; it does
-not activate accounts, scoped runtime access or ENV delivery.
+A1 slice adds shared Knowledge policy and optional role restrictions. The A2
+subset adds owner-sponsored runtime credentials, filtered MCP discovery and
+credential/session-bound leases. Accounts and ENV delivery remain deferred.
 
 Knowledge project `k7a-worktree-switcher` holds design task
 `e3e2e52e-7b95-4088-8234-0e6d35c39f86` and direction memory
@@ -37,14 +39,16 @@ coordinator remain architecture constraints.
 
 ## Baseline verified against source
 
-Baseline: `f71bad97f921bc6ff42cacb585afd0c4258a06bc`.
+Historical main baseline: `f71bad97f921bc6ff42cacb585afd0c4258a06bc`.
+A2 backend contract checked at `ae866b2d2d9ade47edab9bf7dce3102d13e5d8e8`;
+the CLI, transport verification and operational docs extend that contract.
 
 | Area | Implemented baseline | Remaining work |
 | --- | --- | --- |
 | Installation authentication | `token`, `open`, `legacy`; rotation and policy invalidation | `better-auth` still rejects activation |
-| Identity | Owner, agent, worker and installation principals; revocable credentials | Separate human identity from the owner role; scoped role bindings |
-| Knowledge | Project grants and permission checks; installation authority bypasses grants | Shared policy integration and explicit human approval in account mode |
-| MCP | Principal sessions register Knowledge, DEV vault and enabled remote-verification tools before returning | General runtime discovery, claims and configuration still lack scoped-agent access |
+| Identity | Owner, agent, worker and installation principals; revocable credentials | Account-backed humans and general role administration |
+| Knowledge | Shared policy, explicit grants and optional Knowledge role ceilings; installation compatibility bypass | Explicit human approval in account mode |
+| MCP | Agent sessions add filtered runtime discovery, explicit-start claims and claimed control; Knowledge/vault/remote grants stay independent | Scoped profiles/configuration/tests, runtime resources, compact status and wait API |
 | Remote verification | Separate submitter/project and worker/project/preset grants | Integrate without replacing both checks with a broad project role |
 | DEV vault | Encrypted profiles, signed owner operations, exact agent grants; backend and GUI on main | General role integration; execution delivery remains unavailable |
 
@@ -233,10 +237,10 @@ secrets out of URLs and browser persistent storage. Remote account access needs
 HTTPS; failure or missing provider never falls back to anonymous access.
 
 Machine credentials are separate: server-generated opaque secrets with only
-verifiers retained, shown once, narrowed actions/resources and finite expiry.
-Initial proposal: task tokens default to two hours with a 24-hour issue ceiling;
-unattended worker renewal policy is a distinct explicit operator configuration.
-These are proposed product defaults, not changes to existing non-expiring tokens.
+verifiers retained, shown once, narrowed actions/resources and optional expiry
+in the implemented A2 subset. No two-hour default or 24-hour issue ceiling is
+implemented or approved. Such finite defaults remain a proposal; unattended
+worker renewal requires its own explicit operator configuration.
 MCP clients may inspect their effective access and request more, but cannot
 mint tokens or approve their own elevation. OAuth later reuses the same policy.
 
@@ -334,7 +338,11 @@ execution or secret exfiltration from an already approved process.
 ## Delivery slices and gates
 
 Knowledge owns status, discussion and validation; this table defines intended
-boundaries. A0 supplied the design; A1 now implements the first policy workflow.
+boundaries. A0 supplied the design; A1 implements Knowledge policy. A2 remains
+in progress after its runtime/CLI subset: `projects:read`, `claims:manage` and
+`runtime:control` are implemented; profile/configuration/test rights and account
+GUI remain deferred. Migration 36 is additive with no runtime backfill. This
+status does not authorize a live upgrade, installation changes or publication.
 
 | Slice and Knowledge task | Deliverable | Acceptance gate |
 | --- | --- | --- |

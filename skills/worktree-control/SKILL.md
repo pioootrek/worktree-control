@@ -45,6 +45,12 @@ tool is absent. Fetch full status, storage, presets, worktrees, or bounded
 
 Read-only status requests do not need a claim.
 
+When `get_identity` reports `runtimeAccess`, use scoped runtime tools only for
+the returned project/actions. Scoped sessions have no runtime resources,
+compact status, wait API, logs, capacity, storage, local tests or profile/ENV
+administration. Use `get_project_status`; ask the owner for missing access.
+Installation/open/legacy sessions keep the broader compatibility tools below.
+
 If the server is already running on another worktree, do not move it unless the
 user asked to switch it or the current task clearly authorizes using the server
 from this checkout. A claim may stop the existing managed process before it
@@ -61,7 +67,11 @@ For work that needs exclusive use of the development server, call
 - an idempotency key that is reused when retrying the same claim;
 - an optional TTL between 30 and 1800 seconds.
 
-A successful claim moves or starts the managed server when necessary. Do not
+For scoped credentials, the default is `start: false`: acquiring a claim only
+reserves the discovered worktree. Add `start: true` only when execution is
+authorized and `runtimeAccess` includes both `claims:manage` and
+`runtime:control`, or call `start_project` under the acquired lease. Compatibility
+claims still move or start the managed server when necessary. Do not
 start another copy with `pnpm`, `npm`, `yarn`, `bun`, or a framework CLI.
 
 After claiming, call `get_project_status` and verify the worktree, runtime
@@ -69,12 +79,13 @@ phase, and port. If `claim_project` returns an operation error, the claim is
 still held. Inspect the returned failure and logs before deciding whether to
 retry or release it.
 
-Newer controllers accept `responseMode: compact` for `claim_project`. The
+Compatibility sessions on newer controllers accept `responseMode: compact` for `claim_project`. The
 compact result still returns the reservation ID, exact placement, failure code,
 and `leaseHeld`; it never changes claim semantics.
 
 If another owner holds the project, do not stop its process, take its port, or
-try to bypass the reservation. Report the owner and conflict. Force release is
+try to bypass the reservation. Report the conflict and any safe details returned.
+Scoped sessions omit foreign lease identities and reasons. Force release is
 intentionally unavailable through MCP.
 
 ## Control a claimed runtime
@@ -91,7 +102,7 @@ across its controlled stop/start, and stop retains the claim while releasing
 capacity after confirmed process-tree cleanup. A failed start or stop may retain
 both the claim and capacity, so inspect compact status and bounded runtime logs
 before deciding on another operation. Verify placement, phase, failure code,
-capacity, and `leaseHeld` after every operation; a replayed receipt is historical
+capacity when available, and `leaseHeld` after every operation; a replayed receipt is historical
 and should be followed by a current status read.
 
 ## Renew and release
@@ -118,6 +129,12 @@ stays down for more than 15 minutes after your last call, or that stays idle for
 Report a stale claim and let it expire, or ask the user to review it in the
 dashboard. The controller may refuse a new session when too many are open; close
 unused MCP clients rather than retrying in a loop.
+
+Scoped leases also bind the agent principal and credential. Rotation creates a
+new credential/session that cannot adopt an old lease. Each call, cached retry
+and automatic renewal rechecks current authority. Revocation or expiry stops
+renewal; the persisted lease keeps its remaining TTL without early release or
+server termination. Ask a human to review it or wait for expiry.
 
 ## Run finite verification through the queue
 

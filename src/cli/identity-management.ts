@@ -1,4 +1,8 @@
 import { setKnowledgeRoleSchema, revokeKnowledgeRoleSchema, listKnowledgeRolesSchema } from "../shared/contracts/authorization";
+import {
+  issueRuntimeCredentialSchema, listRuntimeAccessSchema, revokeRuntimeDelegationSchema,
+  rotateRuntimeCredentialSchema, setRuntimeDelegationSchema,
+} from "../shared/contracts/runtime-access";
 import type { AppPaths } from "../server/paths";
 import { acquireControllerLock } from "../server/controller-lock";
 import { IdentityService, type KnowledgePermission } from "../server/modules/identity";
@@ -21,7 +25,57 @@ const AVAILABLE_COMMANDS = [
   "issue-agent-token", "list-agent-tokens", "revoke-token", "create-knowledge-project",
   "grant-knowledge", "list-knowledge-grants", "revoke-knowledge-grant",
   "set-knowledge-role", "list-knowledge-roles", "revoke-knowledge-role",
+  "set-runtime-delegation", "revoke-runtime-delegation", "list-runtime-access",
+  "issue-runtime-credential", "rotate-runtime-credential",
 ].join(", ");
+
+const RUNTIME_OPTIONS: Record<string, readonly string[]> = {
+  "set-runtime-delegation": ["--principal-id", "--project-id", "--actions", "--expires-at", "--expected-revision"],
+  "revoke-runtime-delegation": ["--principal-id", "--project-id", "--expected-revision"],
+  "list-runtime-access": ["--principal-id"],
+  "issue-runtime-credential": ["--principal-id", "--label", "--expires-at", "--projects-json"],
+  "rotate-runtime-credential": ["--credential-id", "--label", "--expires-at", "--projects-json"],
+};
+
+/** Parse only named values. Never accept tokens, file paths to read, or caller-supplied sponsors. */
+function runtimeInput(args: string[]): Record<string, unknown> {
+  const action = args[0];
+  const seen = new Set<string>();
+  for (let index = 1; index < args.length; index += 2) {
+    const name = args[index];
+    if (!RUNTIME_OPTIONS[action].includes(name) || seen.has(name)) throw new Error("Unknown or repeated runtime option.");
+    seen.add(name);
+    requiredOption(args, name);
+  }
+  if (action === "list-runtime-access") return listRuntimeAccessSchema.parse({ principalId: requiredOption(args, "--principal-id") });
+  if (action === "set-runtime-delegation" || action === "revoke-runtime-delegation") {
+    const revision = requiredOption(args, "--expected-revision");
+    if (!/^(0|[1-9][0-9]*)$/.test(revision)) throw new Error("Invalid --expected-revision: use a nonnegative integer.");
+    const target = {
+      principalId: requiredOption(args, "--principal-id"), projectId: requiredOption(args, "--project-id"),
+      expectedRevision: Number(revision),
+    };
+    if (action === "revoke-runtime-delegation") return revokeRuntimeDelegationSchema.parse(target);
+    const actions = requiredOption(args, "--actions").split(",");
+    if (new Set(actions).size !== actions.length) throw new Error("Repeated --actions value.");
+    const expiry = option(args, "--expires-at");
+    return setRuntimeDelegationSchema.parse({ ...target, actions, ...(expiry === undefined ? {} : { expiresAt: expiry === "none" ? null : expiry }) });
+  }
+  const json = option(args, "--projects-json");
+  let projects: unknown;
+  if (json !== undefined) {
+    try { projects = JSON.parse(json); }
+    catch { throw new Error("Invalid --projects-json: expected a JSON array of projectId/actions objects."); }
+  }
+  const optional = {
+    ...(option(args, "--label") === undefined ? {} : { label: option(args, "--label") }),
+    ...(option(args, "--expires-at") === undefined ? {} : { expiresAt: option(args, "--expires-at") }),
+    ...(json === undefined ? {} : { projects }),
+  };
+  if (action === "rotate-runtime-credential") return rotateRuntimeCredentialSchema.parse({ credentialId: requiredOption(args, "--credential-id"), ...optional });
+  requiredOption(args, "--projects-json");
+  return issueRuntimeCredentialSchema.parse({ principalId: requiredOption(args, "--principal-id"), ...optional });
+}
 
 function option(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -78,6 +132,7 @@ function roleInput(args: string[]): Record<string, unknown> {
 
 function administrationPayload(args: string[]): Record<string, unknown> {
   const action = args[0]!;
+  if (Object.hasOwn(RUNTIME_OPTIONS, action)) return { action, ...runtimeInput(args) };
   switch (action) {
     case "set-knowledge-role":
     case "revoke-knowledge-role":
@@ -179,6 +234,8 @@ export async function runIdentityCommand(
     throw new Error(`Available identity commands: ${AVAILABLE_COMMANDS}`);
   }
   const write = dependencies.write ?? console.log;
+  // Reject malformed options before touching a service endpoint, lock or database.
+  const runtime = Object.hasOwn(RUNTIME_OPTIONS, action) ? runtimeInput(args) : undefined;
   const access = readServiceAccess(paths.serviceAccessPath);
   if (access && processExists(access.pid)) {
     if (action === "bootstrap-owner") {
@@ -206,6 +263,21 @@ export async function runIdentityCommand(
     const { identity, actor } = authenticateOfflineActor(store, administratorToken(dependencies), OWNER_CREDENTIAL_REQUIRED);
     let result: unknown;
     switch (action) {
+      case "set-runtime-delegation":
+        result = { delegation: identity.setRuntimeDelegation(runtime, actor) };
+        break;
+      case "revoke-runtime-delegation":
+        result = { delegation: identity.revokeRuntimeDelegation(runtime, actor) };
+        break;
+      case "list-runtime-access":
+        result = identity.listRuntimeAccess(runtime, actor);
+        break;
+      case "issue-runtime-credential":
+        result = identity.issueRuntimeCredential(runtime, actor);
+        break;
+      case "rotate-runtime-credential":
+        result = identity.rotateRuntimeCredential(runtime, actor);
+        break;
       case "set-knowledge-role":
         result = { binding: identity.setKnowledgeRole(roleInput(args), actor) };
         break;

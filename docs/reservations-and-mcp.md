@@ -1,6 +1,6 @@
 ---
 audience: "product owner and contributors discussing agent coordination"
-last_reviewed: "2026-10-23"
+last_reviewed: "2026-10-28"
 source_of_truth: "implemented reservation and local MCP integration design"
 status: "active"
 ---
@@ -73,15 +73,18 @@ uses one atomic move operation so ownership is never briefly dropped.
 
 ## Conflict behavior
 
-Acquisition is an atomic compare-and-set operation. A conflict returns the
-current owner, reason, pinned worktree, and expiry without switching anything.
+Acquisition is an atomic compare-and-set operation. A compatibility caller
+receives the current owner, reason, pinned worktree and expiry on conflict.
+Scoped agents receive a safe conflict code without foreign lease details.
 The existing holder is never silently displaced.
 
 The controller implements acquisition as one SQLite write transaction that
 expires stale leases, checks the current claim, records the new claim, and
 appends its audit event. UI, CLI, and MCP never open the database directly.
 
-The preferred agent operation atomically reserves and switches the server. A
+The compatibility claim operation atomically reserves and switches the server.
+Scoped claims reserve only unless the caller explicitly requests `start: true`
+and holds `runtime:control`. A
 separate `acquire` followed by `switch` would leave a race between the calls.
 If switching fails, the result reports both the failed runtime transition and
 whether the lease remains held so recovery is unambiguous.
@@ -104,11 +107,52 @@ http://127.0.0.1:47832/mcp
 
 It runs inside the existing controller, so connecting an agent does not create
 another persistent Node.js process. The MCP SDK is loaded lazily on first use.
-In `token` mode the endpoint requires the installation token as a bearer token;
+In `token` mode the endpoint accepts the installation token or an active
+owner/agent/worker bearer credential;
 `legacy` installations use a persistent token stored in an owner-only file, and
 `open` mode requires none. `worktree-control config mcp` prints the client
 configuration on explicit request. See [authentication modes](authentication.md). A future stdio command may act as a compatibility proxy for clients
 without Streamable HTTP support.
+
+### Scoped agent runtime tools (A2 subset)
+
+The [owner workflow](authentication.md#scoped-runtime-agents-a2-subset) grants
+registered runtime projects and issues private credentials. Scoped agent MCP
+sessions expose only these runtime tools alongside independently authorized
+Knowledge, vault and remote-verification tools:
+
+| Tool | Required runtime action and behavior |
+| --- | --- |
+| `list_projects`, `get_project_status`, `list_worktrees` | `projects:read`; filtered DTOs omit ENV, command/profile/TLS configuration, logs, detailed errors, capacity and foreign lease identity |
+| `claim_project` | `claims:manage`; defaults to `start: false`; explicit `start: true` also requires `runtime:control` |
+| `renew_project_claim`, `release_project_claim` | `claims:manage`; exact active lease owned by this session, principal and credential |
+| `start_project`, `restart_project`, `stop_project` | `runtime:control`; exact active lease owned by this session, principal and credential |
+
+A claim without `start: true` leaves the runtime in its current placement and
+phase. Explicit start uses the discovered claimed worktree. Claims with only
+`claims:manage` return no project status unless the credential also has
+`projects:read`. A safe status reports claim relation `none`, `own` or `other`;
+only `own` includes the reservation handle and expiry. Unauthorized and missing
+projects return the same denial before Git discovery.
+
+Scoped runtime sessions have no runtime resources, compact status, wait API,
+logs, capacity/storage tools, local test tools or profile/configuration/ENV
+administration. They do not accept `responseMode`. New identity administration
+and credential minting are owner-session CLI/HTTP operations, never MCP tools.
+The HTTP runtime API does not accept a scoped credential.
+
+Every operation and cached retry rechecks current authority. Renewal stops on
+credential/delegation expiry or revocation, or loss of the active stored owner
+sponsor. Owner-session expiry alone leaves sponsorship intact. Denied leases
+retain their remaining TTL without early release or server termination. A
+replacement credential/session cannot adopt the lease. Runtime DTOs contain
+only allowlisted fields and fixed failure codes/messages; compatibility
+resources and receipt capacity projections below do not apply to them.
+
+### Compatibility tools and resources
+
+The lists and detailed projections in this section describe installation/open/legacy
+compatibility sessions. Scoped agent sessions use the smaller API below.
 
 Read-only MCP resources:
 
