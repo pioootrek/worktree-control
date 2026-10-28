@@ -113,7 +113,7 @@ describe("durable SQLite initialization and migration", () => {
   it.each(["checksum", "name", "gap", "legacy-provenance", "missing-policy", "future"])("rejects inconsistent %s without resetting auth or data", variant => {
     const f=fixture(); new SqliteStateStore(f.path).close();
     raw(f.path,db=>{
-      if(variant==="future") db.exec("INSERT INTO schema_migrations(version,applied_at,name,checksum) VALUES(35,'future','unknown','unknown')");
+      if(variant==="future") db.exec("INSERT INTO schema_migrations(version,applied_at,name,checksum) VALUES(36,'future','unknown','unknown')");
       if(variant==="checksum") db.exec("UPDATE schema_migrations SET checksum='wrong' WHERE version=28");
       if(variant==="name") db.exec("UPDATE schema_migrations SET name='wrong' WHERE version=28");
       if(variant==="gap") db.exec("DELETE FROM schema_migrations WHERE version=7");
