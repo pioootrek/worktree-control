@@ -59,6 +59,9 @@ function runtimeInput(args: string[]): Record<string, unknown> {
     const actions = requiredOption(args, "--actions").split(",");
     if (new Set(actions).size !== actions.length) throw new Error("Repeated --actions value.");
     const expiry = option(args, "--expires-at");
+    if (target.expectedRevision > 0 && expiry === undefined) {
+      throw new Error("Delegation updates require --expires-at: pass the current timestamp to preserve expiry, or none to remove it.");
+    }
     return setRuntimeDelegationSchema.parse({ ...target, actions, ...(expiry === undefined ? {} : { expiresAt: expiry === "none" ? null : expiry }) });
   }
   const json = option(args, "--projects-json");

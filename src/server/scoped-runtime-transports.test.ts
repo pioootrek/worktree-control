@@ -172,7 +172,7 @@ describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
       expect(rotated.credential.expiresAt).toBeNull();
       expect(rotated.scopes.map((scope: { actions: string[] }) => scope.actions)).toEqual([all]);
       expect(() => f.identity.authenticateBearer(issued.token)).toThrow();
-      await runIdentityCommand(["set-runtime-delegation", "--principal-id", f.agents[0].id, "--project-id", f.projects[0].id, "--actions", "projects:read", "--expected-revision", "2"], onlinePaths, cli);
+      await runIdentityCommand(["set-runtime-delegation", "--principal-id", f.agents[0].id, "--project-id", f.projects[0].id, "--actions", "projects:read", "--expected-revision", "2", "--expires-at", "none"], onlinePaths, cli);
       await runIdentityCommand(["revoke-runtime-delegation", "--principal-id", f.agents[0].id, "--project-id", f.projects[0].id, "--expected-revision", "3"], onlinePaths, cli);
       expect(JSON.parse(lines.pop()!).delegation.revokedAt).toEqual(expect.any(String));
       expect(existsSync(onlinePaths.databasePath)).toBe(false);
@@ -190,6 +190,12 @@ describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
     const reader = await f.connect(f.issue(0, ["projects:read"]).token);
     expect((await f.claim(reader)).error).toBe(true);
     expect(f.store.getActiveReservation(f.projects[0].id)).toBeNull();
+    const blindClaimant = await f.connect(f.issue(0, ["claims:manage"]).token);
+    expect((await f.call(blindClaimant, "list_projects")).value).toEqual([]);
+    expect((await f.call(blindClaimant, "get_project_status", { projectId: f.projects[0].id })).error).toBe(true);
+    const blindClaim = await f.claim(blindClaimant);
+    expect(blindClaim.value).toMatchObject({ startRequested: false, leaseHeld: true, status: null });
+    expect((await f.call(blindClaimant, "release_project_claim", { projectId: f.projects[0].id, reservationId: blindClaim.value.reservationId })).error).toBe(false);
     const claimCredential = f.issue(0, ["projects:read", "claims:manage"]);
     const claimOnly = await f.connect(claimCredential.token);
     expect((await f.claim(claimOnly, 0, { start: true })).error).toBe(true);
@@ -252,22 +258,24 @@ describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
     const rotatedResponse = await f.admin({ action: "rotate-runtime-credential", credentialId: f.issued[0].credential.id, projects: [{ projectId, actions: ["projects:read", "claims:manage"] }] });
     expect(rotatedResponse.status).toBe(200);
     const rotated = await rotatedResponse.json();
-    await expect(f.call(client, "list_projects")).rejects.toThrow(/401/);
+    await expect(f.call(client, "list_projects")).rejects.toMatchObject({ code: 401 });
     const replacement = await f.connect(rotated.token);
     const status = (await f.call(replacement, "get_project_status", { projectId })).value;
     expect(status).toMatchObject({ claim: "other", ownClaim: null });
     expect((await f.call(replacement, "renew_project_claim", { projectId, reservationId: held.value.reservationId })).error).toBe(true);
     expect(f.store.getActiveReservation(projectId)?.id).toBe(held.value.reservationId);
     expect((await f.admin({ action: "revoke-token", credentialId: rotated.credential.id })).status).toBe(200);
-    await expect(f.call(replacement, "get_identity")).rejects.toThrow(/401/);
+    await expect(f.call(replacement, "get_identity")).rejects.toMatchObject({ code: 401 });
   });
 
-  it("applies delegation expiry and sponsor revocation while owner-session expiry alone keeps durable sponsorship", async () => {
+  it("applies credential/delegation expiry and sponsor revocation while owner-session expiry alone keeps sponsorship", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const clock = new ManualMcpClock(Date.now(), now => vi.setSystemTime(now));
     const f = await fixture(clock);
+    const expiring = await f.connect(f.issue(0, all, new Date(Date.now() + 60_000).toISOString()).token);
     f.grant(0, all, new Date(Date.now() + 60_000).toISOString(), 1);
     clock.advance(61_000);
+    await expect(f.call(expiring, "get_identity")).rejects.toMatchObject({ code: 401 });
     expect((await f.call(f.clients[0], "list_projects")).value).toEqual([]);
     // The second delegation has no expiry and the agent credential is durable.
     clock.advance(240_000);

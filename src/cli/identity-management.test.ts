@@ -68,11 +68,15 @@ describe("identity management CLI", () => {
       expect(() => identity.authenticateBearer(issued.token)).toThrow();
       expect(identity.runtimeAccessFor(identity.authenticateBearer(rotated.token))).toEqual([{ projectId: projects[0].id, actions: ["projects:read"], expiresAt: expiry }]);
     } finally { reopened.close(); }
-    // A set is a replacement: omitting expiry explicitly means no expiry.
-    await runIdentityCommand(["set-runtime-delegation", "--principal-id", principalId, "--project-id", projects[0].id, "--actions", "projects:read", "--expected-revision", "1"], appPaths, dependencies);
+    // Updating actions must make an explicit expiry choice to avoid clearing a bound.
+    const update = ["set-runtime-delegation", "--principal-id", principalId, "--project-id", projects[0].id, "--actions", "projects:read", "--expected-revision", "1"];
+    await expect(runIdentityCommand(update, appPaths, dependencies)).rejects.toThrow("updates require --expires-at");
+    await runIdentityCommand([...update, "--expires-at", expiry], appPaths, dependencies);
+    expect(JSON.parse(lines.pop()!).delegation.expiresAt).toBe(expiry);
+    await runIdentityCommand([...update.slice(0, -1), "2", "--expires-at", "none"], appPaths, dependencies);
     expect(JSON.parse(lines.pop()!).delegation.expiresAt).toBeNull();
-    await runIdentityCommand(["revoke-runtime-delegation", "--principal-id", principalId, "--project-id", projects[0].id, "--expected-revision", "2"], appPaths, dependencies);
-    expect(JSON.parse(lines.pop()!).delegation).toMatchObject({ revision: 3, revokedAt: expect.any(String) });
+    await runIdentityCommand(["revoke-runtime-delegation", "--principal-id", principalId, "--project-id", projects[0].id, "--expected-revision", "3"], appPaths, dependencies);
+    expect(JSON.parse(lines.pop()!).delegation).toMatchObject({ revision: 4, revokedAt: expect.any(String) });
     await runIdentityCommand(["revoke-token", "--credential-id", rotated.credential.id], appPaths, dependencies);
     lines.pop();
     await runIdentityCommand(["list-runtime-access", "--principal-id", principalId], appPaths, dependencies);

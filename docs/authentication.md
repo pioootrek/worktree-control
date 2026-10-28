@@ -1,7 +1,7 @@
 ---
 audience: "people running Worktree Control and choosing how callers authenticate"
 last_reviewed: "2026-10-28"
-source_of_truth: "authentication modes, the auth CLI, and migration from legacy access"
+source_of_truth: "authentication modes, owner CLI and scoped runtime agent workflow"
 status: "active"
 ---
 
@@ -115,14 +115,18 @@ bearer credentials and cannot administer scoped runtime access.
 
 ```bash
 worktree-control identity bootstrap-owner --label 'Local owner'
+```
+
+After bootstrap, load the private owner-token environment variable, then run:
+
+```bash
 worktree-control identity create-agent
 ```
 
-After bootstrap, set the private owner-token environment variable before
-`create-agent`. Record the returned principal ID as `AGENT_ID` and the intended
+Record the returned principal ID as `AGENT_ID` and the intended
 registered runtime project ID as `PROJECT_ID`. Runtime project IDs come from
 existing project registration, not Knowledge project IDs. This example assumes
-those nonsecret variables are set and creates an unexpired delegation:
+those nonsecret variables are set and creates a delegation with no expiry:
 
 ```bash
 worktree-control identity set-runtime-delegation \
@@ -144,10 +148,12 @@ only verifiers and nonsecret metadata persist.
 
 There is no default credential or delegation lifetime. Add `--expires-at` with
 a future ISO timestamp when a bound is needed. `set-runtime-delegation` replaces
-the delegation: **omitting `--expires-at` removes an existing expiry**;
-`--expires-at none` also removes it. To preserve a bound when changing actions,
-read `list-runtime-access` first and pass its expiry explicitly. First assignment
-uses revision `0`; updates and revocations require the current revision.
+the delegation. At revision `0`, omitting `--expires-at` means no expiry.
+For updates/restoration with a later revision, the CLI requires `--expires-at`:
+pass the current future timestamp to preserve its bound or `none` to explicitly
+remove it. Read `list-runtime-access` before changing actions. The HTTP/service
+contract accepts omission or null as no expiry; the CLI guard prevents an
+accidental removal on update. Updates and revocations require the current revision.
 Revocation retains a tombstone; restoration is a new set with its revision.
 Stale mutations fail with a revision conflict (HTTP 409).
 
@@ -184,6 +190,31 @@ explicitly when execution is authorized; both `claims:manage` and
 `runtime:control` are required. Alternatively acquire without starting and call
 `start_project` with the returned project/reservation IDs and a new idempotency
 key. `restart_project` and `stop_project` use the same own-lease requirement.
+For example, these are MCP tool argument objects, with placeholders replaced
+by discovery/claim results:
+
+```json
+{
+  "projectId": "<registered project UUID>",
+  "worktreePath": "<exact discovered path>",
+  "reason": "Verify the requested change",
+  "idempotencyKey": "verify-claim-1",
+  "ttlSeconds": 900,
+  "start": true
+}
+```
+
+Call `claim_project` with that object. To start a previously acquired claim,
+call `start_project` with:
+
+```json
+{
+  "projectId": "<registered project UUID>",
+  "reservationId": "<claim result reservation UUID>",
+  "idempotencyKey": "verify-start-1"
+}
+```
+
 Check `leaseHeld`, `error` and current safe status after an operation. Release
 with `release_project_claim` when finished; release does not stop the server.
 
