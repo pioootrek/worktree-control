@@ -8,6 +8,8 @@ export {
   type IssueAgentTokenInput,
   type IssuedAgentToken,
   type IssuedRuntimeCredential,
+  type RotatedRuntimeCredential,
+  RUNTIME_ACCESS_DENIED,
   type RuntimeAccessReport,
   type SetKnowledgeGrantInput,
 } from "./identity-service";
