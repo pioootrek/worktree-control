@@ -903,6 +903,9 @@ export class McpRuntime {
       existingToken: scope => session.idempotencyTokens.get(scope),
       track: ({ projectId, reservationId, token, ttlSeconds, idempotencyScope }) => {
         session.idempotencyTokens.set(idempotencyScope, token);
+        // An identical acquisition retry does not renew the persisted lease.
+        // Keep its current timer and any TTL selected by an explicit renewal.
+        if (session.claims.has(reservationId)) return;
         const claim: ClaimSecret = {
           projectId, reservationId, token, ttlSeconds, timer: null,
           renew: (ttl) => { this.service.renewScopedClaim(actor, { owner: owner() }, projectId, reservationId, token, ttl); },

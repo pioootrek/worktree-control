@@ -39,6 +39,7 @@ const columnVersions: Record<string, number> = {
   "projects.tls_mode": 3, "projects.tls_key_path": 3, "projects.tls_cert_path": 3, "projects.tls_ca_path": 3,
   "reservations.maximum_expires_at": 4, "reservations.token_hash": 4, "reservations.idempotency_key": 4,
   "reservations.principal_id": 36, "reservations.credential_id": 36,
+  "reservations.request_fingerprint": 36,
   // Migration 13 explicitly supports the legacy lineage without launch_preset.
   "projects.launch_preset": 15, "projects.environment_json": 8,
   "projects.environment_profiles_json": 9, "projects.selected_environment_profile": 9,

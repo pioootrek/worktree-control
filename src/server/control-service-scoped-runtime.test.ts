@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeSnapshot, Worktree } from "@/shared/contracts";
 import { ControlService } from "./control-service";
 import type { GitWorktreeReader } from "./git-worktrees";
+import type { LaunchCommandResolver } from "./launch-command";
 import { IdentityService, type AuthenticatedPrincipal } from "./modules/identity";
 import { RuntimeAccessDenied, ScopedRuntimeError } from "./modules/runtime";
 import type { ProcessManager } from "./process-manager";
@@ -16,7 +17,10 @@ import { SqliteStateStore } from "./sqlite-store";
 // process are fakes whose hooks change authority at the exact await points.
 
 const directories: string[] = [];
-afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
+afterEach(() => {
+  vi.useRealTimers();
+  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
+});
 
 const SENTINEL = "SENTINEL-must-not-leak";
 const all = ["projects:read", "claims:manage", "runtime:control"] as const;
@@ -40,7 +44,7 @@ function fixture() {
     });
     return runtimes.get(id)!;
   };
-  const hooks: { beforeGitReturn?: () => void; duringStop?: () => void; beforeStartHook?: () => void } = {};
+  const hooks: { beforeGitReturn?: () => void; duringStop?: () => void; beforeStartHook?: () => void; afterSpawn?: () => void } = {};
   let spawned = 0;
   let nextPid = 500;
   const list = vi.fn(async () => { hooks.beforeGitReturn?.(); return worktrees; });
@@ -50,14 +54,16 @@ function fixture() {
     beforeSpawn?.();
     spawned += 1;
     Object.assign(runtime(target.id), { phase: "running", pid: nextPid++, worktreePath: path, startedAt: new Date().toISOString() });
+    hooks.afterSpawn?.();
   });
   const stop = vi.fn(async (id: string) => {
     hooks.duringStop?.();
     Object.assign(runtime(id), { phase: "stopped", pid: null, worktreePath: null, startedAt: null });
   });
   const processes = { snapshot: (id: string) => ({ ...runtime(id) }), start, stop } as unknown as ProcessManager;
+  const resolve = vi.fn<LaunchCommandResolver["resolve"]>(() => ({ preset: "node", executable: "pnpm", args: ["run", "dev"], portMethod: "environment", tls: { mode: "off", keyPath: null, certPath: null, caPath: null } }));
   const service = new ControlService(store, git, processes, undefined,
-    { resolve: () => ({ preset: "node", executable: "pnpm", args: ["run", "dev"], portMethod: "environment", tls: { mode: "off", keyPath: null, certPath: null, caPath: null } }) },
+    { resolve },
     undefined, undefined, undefined, undefined, undefined, undefined, undefined, identity);
   const agent = identity.createAgent(owner);
   const grant = (actions: readonly string[], projectId = project.id, expectedRevision = 0) =>
@@ -69,10 +75,10 @@ function fixture() {
     identity.revokeRuntimeDelegation({ principalId: agent.id, projectId: project.id, expectedRevision: current.revision }, owner);
   };
   const session = { owner: "agent:mcp:scoped-session" };
-  const claim = (actor: AuthenticatedPrincipal, extra: { start?: boolean; worktreePath?: string; idempotencyKey?: string } = {}) => service.claimScopedProject(actor, session, {
-    projectId: project.id, worktreePath: extra.worktreePath ?? "/code/web", reason: "scoped test", idempotencyKey: extra.idempotencyKey ?? "claim", start: extra.start,
+  const claim = (actor: AuthenticatedPrincipal, extra: { start?: boolean; worktreePath?: string; idempotencyKey?: string; ttlSeconds?: number } = {}) => service.claimScopedProject(actor, session, {
+    projectId: project.id, worktreePath: extra.worktreePath ?? "/code/web", reason: "scoped test", idempotencyKey: extra.idempotencyKey ?? "claim", start: extra.start, ttlSeconds: extra.ttlSeconds,
   });
-  return { store, identity, owner, project, foreign, service, git, list, start, stop, hooks, runtime, grant, credential, revoke, session, claim, agent, spawned: () => spawned };
+  return { store, identity, owner, project, foreign, service, git, list, start, stop, resolve, hooks, runtime, grant, credential, revoke, session, claim, agent, spawned: () => spawned };
 }
 
 describe("scoped agent runtime", () => {
@@ -206,13 +212,71 @@ describe("scoped agent runtime", () => {
     await expect(f.service.operateClaimedRuntime(f.project.id, result.reservationId, "start", { owner: f.session.owner, leaseToken })).rejects.toThrow();
     expect(() => f.service.renewAgentClaim(f.project.id, result.reservationId, f.session.owner, leaseToken)).toThrow();
     // Idempotent retry by the same credential returns the same lease; another credential cannot replay it.
-    expect((await f.service.claimScopedProject(actor, f.session, { projectId: f.project.id, worktreePath: "/code/web", reason: "again", idempotencyKey: "claim" }, leaseToken)).result.reservationId)
+    expect((await f.service.claimScopedProject(actor, f.session, { projectId: f.project.id, worktreePath: "/code/web", reason: "scoped test", idempotencyKey: "claim" }, leaseToken)).result.reservationId)
       .toBe(result.reservationId);
     await expect(f.service.claimScopedProject(sibling, f.session, { projectId: f.project.id, worktreePath: "/code/web", reason: "again", idempotencyKey: "claim" }, leaseToken))
       .rejects.toMatchObject({ code: "idempotency_conflict" });
     expect(f.service.renewScopedClaim(actor, f.session, f.project.id, result.reservationId, leaseToken, 600).reservationId).toBe(result.reservationId);
     await f.service.releaseScopedClaim(actor, f.session, f.project.id, result.reservationId, leaseToken);
     expect(f.store.getActiveReservation(f.project.id)).toBeNull();
+    f.store.close();
+  });
+
+  it("resolves the target worktree launch command before a claim moves the runtime", async () => {
+    const f = fixture();
+    f.grant(all);
+    const actor = f.credential(all);
+    const first = await f.claim(actor, { start: true });
+    await f.service.releaseScopedClaim(actor, f.session, f.project.id, first.result.reservationId, first.leaseToken);
+    f.resolve.mockImplementation(path => ({
+      preset: "node", executable: path === "/code/web-feature" ? "npm" : "pnpm", args: ["run", "dev", "--", "--port", "3610"],
+      portMethod: "environment", tls: { mode: "off", keyPath: null, certPath: null, caPath: null },
+    }));
+    const moved = await f.claim(actor, { start: true, worktreePath: "/code/web-feature", idempotencyKey: "move" });
+    expect(moved.result.error).toBeNull();
+    expect(f.start).toHaveBeenLastCalledWith(
+      expect.objectContaining({ executable: "npm", args: ["run", "dev", "--", "--port", "3610"] }),
+      "/code/web-feature", expect.any(Function),
+    );
+    expect(f.store.getProject(f.project.id)).toMatchObject({ executable: "npm", selectedWorktreePath: "/code/web-feature" });
+    f.store.close();
+  });
+
+  it("binds claim retries to normalized mutation options in the shared service", async () => {
+    const f = fixture();
+    f.grant(all);
+    const actor = f.credential(all);
+    const original = { projectId: f.project.id, worktreePath: "/code/web", reason: "scoped test", idempotencyKey: "claim" };
+    const held = await f.service.claimScopedProject(actor, f.session, original);
+    const before = f.store.getActiveReservation(f.project.id);
+    const retry = await f.service.claimScopedProject(actor, f.session, { ...original, reason: " scoped test ", start: false, ttlSeconds: 1800 }, held.leaseToken);
+    expect(retry.result.reservationId).toBe(held.result.reservationId);
+    for (const change of [{ ttlSeconds: 30 }, { start: true }, { reason: "different" }, { worktreePath: "/code/web-feature" }]) {
+      await expect(f.service.claimScopedProject(actor, f.session, { ...original, ...change }, held.leaseToken))
+        .rejects.toMatchObject({ code: "idempotency_conflict" });
+    }
+    expect(f.store.getActiveReservation(f.project.id)).toEqual(before);
+    expect(f.start).not.toHaveBeenCalled();
+    f.store.close();
+  });
+
+  it.each(["expired", "released", "revoked-control"] as const)("refuses a successful claim receipt when startup finishes with %s authority", async (change) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const f = fixture();
+    f.grant(all);
+    const actor = f.credential(all);
+    f.hooks.afterSpawn = () => {
+      if (change === "expired") vi.setSystemTime(Date.now() + 35_000);
+      else if (change === "released") f.store.releaseReservation(f.project.id, "local-user", true);
+      else f.grant(["projects:read", "claims:manage"], f.project.id, 1);
+    };
+    await expect(f.claim(actor, { start: true, ttlSeconds: 30 })).rejects.toMatchObject({
+      code: change === "revoked-control" ? "project_access_denied" : "claim_stale",
+    });
+    expect(f.spawned()).toBe(1);
+    expect(f.stop).not.toHaveBeenCalled();
+    expect(f.runtime(f.project.id).phase).toBe("running");
+    if (change !== "revoked-control") expect(f.store.getActiveReservation(f.project.id)).toBeNull();
     f.store.close();
   });
 

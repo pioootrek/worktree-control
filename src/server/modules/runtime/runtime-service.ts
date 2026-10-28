@@ -149,6 +149,13 @@ export class RuntimeService {
           await this.stopRuntime(projectId);
           verify();
         }
+        const launch = this.commands.resolve(worktreePath, project.port, project.launchPreset, {
+          mode: project.tlsMode, keyPath: project.tlsKeyPath, certPath: project.tlsCertPath, caPath: project.tlsCaPath,
+        });
+        this.store.updateProjectLaunch(projectId, {
+          tlsMode: launch.tls.mode, tlsKeyPath: launch.tls.keyPath, tlsCertPath: launch.tls.certPath,
+          tlsCaPath: launch.tls.caPath, executable: launch.executable, args: launch.args,
+        });
         if (project.selectedWorktreePath !== worktreePath) this.store.setSelectedWorktree(projectId, worktreePath);
         await this.startRuntime(projectId, worktreePath, actorRef, verify);
       } finally {

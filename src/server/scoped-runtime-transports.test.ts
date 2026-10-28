@@ -228,6 +228,29 @@ describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
     expect((await f.call(f.clients[0], "release_project_claim", { projectId: target.projectId, reservationId: full.value.reservationId })).error).toBe(false);
   });
 
+  it("rejects changed claim retries and preserves the original renewal deadline on identical retries", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const clock = new ManualMcpClock(Date.now(), now => vi.setSystemTime(now));
+    const f = await fixture(clock), client = f.clients[0];
+    const input = { idempotencyKey: "short-claim", ttlSeconds: 30, start: false };
+    const acquired = await f.claim(client, 0, input);
+    const projectId = f.projects[0].id;
+    const original = f.store.getActiveReservation(projectId)!;
+    clock.advance(9_000);
+    for (const changed of [{ ttlSeconds: 1800 }, { start: true }]) {
+      const result = await f.claim(client, 0, { ...input, ...changed });
+      expect(result.error).toBe(true);
+      expect(result.output).toContain("idempotency_conflict");
+    }
+    expect((await f.claim(client, 0, input)).value.reservationId).toBe(acquired.value.reservationId);
+    expect(f.store.getActiveReservation(projectId)?.expiresAt).toBe(original.expiresAt);
+    expect(f.processes.start).not.toHaveBeenCalled();
+    clock.advance(2_000);
+    const renewed = f.store.getActiveReservation(projectId)!;
+    expect(renewed.id).toBe(original.id);
+    expect(Date.parse(renewed.expiresAt!)).toBeGreaterThan(Date.parse(original.expiresAt!));
+  });
+
   it("reauthorizes receipt/claim replays after delegation revocation and stops automatic renewal without releasing or stopping", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const clock = new ManualMcpClock(Date.now(), now => vi.setSystemTime(now));

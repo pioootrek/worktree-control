@@ -41,10 +41,10 @@ function downgradeTo35(path: string): void {
       db.exec("DROP TABLE runtime_credential_scopes; DROP TABLE runtime_delegations; DELETE FROM schema_migrations WHERE version=36");
       const table = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='reservations'").get() as { sql: string }).sql;
       const indexes = (db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='reservations' AND sql IS NOT NULL").all() as Array<{ sql: string }>).map(x => x.sql);
-      const original = table.replace(/,\s*principal_id TEXT REFERENCES remote_principals\(id\),\s*credential_id TEXT REFERENCES principal_credentials\(id\)/, "");
+      const original = table.replace(/,\s*principal_id TEXT REFERENCES remote_principals\(id\),\s*credential_id TEXT REFERENCES principal_credentials\(id\),\s*request_fingerprint TEXT/, "");
       if (original === table) throw new Error("Unexpected reservations DDL.");
       const columns = (db.prepare("PRAGMA table_info(reservations)").all() as Array<{ name: string }>).map(x => x.name)
-        .filter(name => name !== "principal_id" && name !== "credential_id").join(", ");
+        .filter(name => name !== "principal_id" && name !== "credential_id" && name !== "request_fingerprint").join(", ");
       db.exec(`ALTER TABLE reservations RENAME TO reservations_v36; ${original};
         INSERT INTO reservations(${columns}) SELECT ${columns} FROM reservations_v36; DROP TABLE reservations_v36;`);
       for (const index of indexes) db.exec(index);
@@ -66,7 +66,8 @@ describe("runtime access migration 36", () => {
       initializeSchema(db, false);
       expect(inspectSchema(db).version).toBe(36);
       expect(db.prepare("SELECT id, owner, token_hash, released_at FROM reservations").all()).toEqual(before);
-      expect(db.prepare("SELECT principal_id, credential_id FROM reservations").all()).toEqual([{ principal_id: null, credential_id: null }]);
+      expect(db.prepare("SELECT principal_id, credential_id, request_fingerprint FROM reservations").all())
+        .toEqual([{ principal_id: null, credential_id: null, request_fingerprint: null }]);
       expect(db.prepare("SELECT count(*) n FROM runtime_delegations").get()).toEqual({ n: 0 });
       expect(db.prepare("SELECT count(*) n FROM runtime_credential_scopes").get()).toEqual({ n: 0 });
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=36").get())

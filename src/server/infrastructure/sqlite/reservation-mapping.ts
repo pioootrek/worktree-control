@@ -16,6 +16,7 @@ export type ReservationRow = {
   released_at?: string | null;
   principal_id?: string | null;
   credential_id?: string | null;
+  request_fingerprint?: string | null;
 };
 
 export function mapReservation(row: ReservationRow): Reservation {

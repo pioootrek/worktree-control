@@ -53,6 +53,8 @@ export interface ReservationRequest {
   leaseTokenHash?: string;
   idempotencyKey?: string;
   binding?: ReservationBinding;
+  /** Normalized scoped mutation options; retries cannot alter TTL, placement or execution intent. */
+  requestFingerprint?: string;
 }
 
 export interface TestHistoryPosition { queuedAt: string; runId: string }

@@ -215,6 +215,12 @@ call `start_project` with:
 }
 ```
 
+Reuse a claim's idempotency key only with the same worktree, reason, TTL and
+`start` choice. Conflicting retries are rejected; identical retries keep the
+existing renewal deadline. After startup, the controller checks the lease and
+all required actions again before reporting success. An expired or released
+lease produces a stale-claim error; revoked authority produces a denial.
+
 Check `leaseHeld`, `error` and current safe status after an operation. Release
 with `release_project_claim` when finished; release does not stop the server.
 

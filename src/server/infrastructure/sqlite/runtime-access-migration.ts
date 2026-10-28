@@ -28,7 +28,8 @@ export const runtimeAccessMigration = {
     PRIMARY KEY(credential_id, project_id)
   );
   ALTER TABLE reservations ADD COLUMN principal_id TEXT REFERENCES remote_principals(id);
-  ALTER TABLE reservations ADD COLUMN credential_id TEXT REFERENCES principal_credentials(id);`,
+  ALTER TABLE reservations ADD COLUMN credential_id TEXT REFERENCES principal_credentials(id);
+  ALTER TABLE reservations ADD COLUMN request_fingerprint TEXT;`,
 };
 export const runtimeAccessChecksum = createHash("sha256")
   .update(`${runtimeAccessMigration.version}\0${runtimeAccessMigration.name}\0${runtimeAccessMigration.sql}`).digest("hex");

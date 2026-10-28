@@ -1070,7 +1070,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
         }
         const repeated = this.database.prepare(`
           SELECT id, project_id, worktree_path, kind, owner, reason, created_at, expires_at,
-                 maximum_expires_at, token_hash, idempotency_key, released_at, principal_id, credential_id
+                 maximum_expires_at, token_hash, idempotency_key, released_at, principal_id, credential_id, request_fingerprint
           FROM reservations
           WHERE owner = ? AND idempotency_key = ? AND kind = 'agent' AND released_at IS NULL
         `).get(input.owner, input.idempotencyKey) as ReservationRow | undefined;
@@ -1080,6 +1080,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
             || repeated.worktree_path !== input.worktreePath
             || !equalHash(repeated.token_hash, input.leaseTokenHash)
             || !equalBinding(repeated, input.binding)
+            || (repeated.request_fingerprint ?? null) !== (input.requestFingerprint ?? null)
           ) {
             throw new Error("Klucz idempotencji jest już używany przez inną dzierżawę.");
           }
@@ -1109,8 +1110,8 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       this.database.prepare(`
         INSERT INTO reservations (
           id, project_id, worktree_path, kind, owner, reason, created_at, expires_at,
-          maximum_expires_at, token_hash, idempotency_key, principal_id, credential_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          maximum_expires_at, token_hash, idempotency_key, principal_id, credential_id, request_fingerprint
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         reservation.id,
         reservation.projectId,
@@ -1125,6 +1126,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
         input.idempotencyKey ?? null,
         input.kind === "agent" ? input.binding?.principalId ?? null : null,
         input.kind === "agent" ? input.binding?.credentialId ?? null : null,
+        input.requestFingerprint ?? null,
       );
       this.audit(input.projectId, "reservation.acquired", input.owner, reservation);
       return reservation;

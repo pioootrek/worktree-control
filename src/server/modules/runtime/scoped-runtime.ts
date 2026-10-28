@@ -109,6 +109,7 @@ export class ScopedRuntimeService {
           projectId: project.id, worktreePath: selectedPath, kind: "agent", owner: session.owner, reason, ttlSeconds,
           maximumLifetimeSeconds: AGENT_LEASE_MAX_SECONDS, leaseTokenHash: leaseTokenHash(leaseToken),
           idempotencyKey: input.idempotencyKey, binding,
+          requestFingerprint: createHash("sha256").update(JSON.stringify({ worktreePath: selectedPath, reason, ttlSeconds, start })).digest("hex"),
         });
       } catch (error) {
         const idempotency = error instanceof Error && /idempotencji|idempotency/i.test(error.message);
@@ -119,15 +120,16 @@ export class ScopedRuntimeService {
       const actorRef = this.actorRef(session.owner);
       this.logs.controller("agent.claimed", { projectId: project.id, reservationId: reservation.id, owner: session.owner, credentialId: actor.credentialId, worktreePath: selectedPath });
       const operator: OperationActor = { owner: session.owner, leaseToken, binding };
+      const verify = () => {
+        this.check(actor, project.id, required);
+        try { this.lifecycle.requireAgentClaim(project.id, reservation.id, operator); }
+        catch { throw new ScopedRuntimeError("claim_stale", "The claim is stale, expired, or no longer active."); }
+      };
       const error = start
-        ? await this.runtime.placeClaimed(project.id, selectedPath, actorRef, () => {
-          this.check(actor, project.id, required);
-          try { this.lifecycle.requireAgentClaim(project.id, reservation.id, operator); }
-          catch { throw new ScopedRuntimeError("claim_stale", "The claim is stale, expired, or no longer active."); }
-        })
+        ? await this.runtime.placeClaimed(project.id, selectedPath, actorRef, verify)
         : null;
       // The lease stays held with its TTL; a revoked caller simply receives no result.
-      this.check(actor, project.id, ["claims:manage"]);
+      verify();
       return {
         leaseToken,
         result: {
