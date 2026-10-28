@@ -1,3 +1,4 @@
+import type { KnowledgeRoleBinding, KnowledgePermission } from "@/shared/contracts/authorization";
 import { DevVaultQueries } from "./dev-vault-queries";
 import type { DevVaultStore } from "@/server/modules/dev-vault";
 import { RemoteConnectionQueries } from "./remote-connection-queries";
@@ -782,6 +783,16 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     this.identity.saveKnowledgeProjectGrant(grant, actor);
   }
 
+  getKnowledgeRoleBinding(principalId: string, projectId: string): KnowledgeRoleBinding | null {
+    return this.identity.getKnowledgeRoleBinding(principalId, projectId);
+  }
+  listKnowledgeRoleBindings(principalId: string): KnowledgeRoleBinding[] {
+    return this.identity.listKnowledgeRoleBindings(principalId);
+  }
+  saveKnowledgeRoleBinding(binding: KnowledgeRoleBinding, expectedRevision: number, actor: string): boolean {
+    return this.identity.saveKnowledgeRoleBinding(binding, expectedRevision, actor);
+  }
+
   getKnowledgeProjectRuntimeLink(projectId: string): KnowledgeProjectRuntimeLink | null {
     return this.identity.getKnowledgeProjectRuntimeLink(projectId);
   }
@@ -825,8 +836,8 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   attachmentLargestFileForProject(projectId: string): number { return this.knowledge.attachmentLargestFileForProject(projectId); }
   attachmentTargetExists(projectId: string, kind: KnowledgeAttachment["recordKind"], id: string): boolean { return this.knowledge.attachmentTargetExists(projectId,kind,id); }
 
-  listKnowledgeProjects(principalId: string | null, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary> {
-    return this.knowledge.listKnowledgeProjects(principalId, limit, offset);
+  listKnowledgeProjects(grants: Array<{ projectId: string; permissions: KnowledgePermission[] }> | null, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary> {
+    return this.knowledge.listKnowledgeProjects(grants, limit, offset);
   }
 
   createTask(task: KnowledgeTask, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeTask> {

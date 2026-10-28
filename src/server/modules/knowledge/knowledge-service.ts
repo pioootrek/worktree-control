@@ -96,7 +96,7 @@ export class KnowledgeService {
       case "projects": {
         const identity = this.identity.describeIdentity(actor);
         const page = this.page(request.input);
-        return this.store.listKnowledgeProjects(identity.installationAuthority ? null : actor.principalId, page.limit, page.offset);
+        return this.store.listKnowledgeProjects(identity.installationAuthority ? null : identity.knowledgeGrants, page.limit, page.offset);
       }
       case "threads": {
         const page = this.listThreads(request.input.projectId, actor, request.input);

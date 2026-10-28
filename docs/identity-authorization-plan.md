@@ -9,11 +9,15 @@ status: "active"
 
 ## Status and decision boundary
 
-This is a design for implementation, not an implemented security contract.
+This document describes the target design; only the A1 Knowledge policy subset
+is implemented so far. See [implemented Knowledge roles](authentication.md#knowledge-roles-a1)
+for its compatibility limits.
 The owner accepted role-based access, shared application authorization,
 Better Auth human accounts and agent-specific identities/scopes on 2026-10-28,
 and explicitly requested ENV roles fitting existing workflows and OWASP guidance.
-The current slice delivers this document and Knowledge planning only.
+The initial slice delivered this document and Knowledge planning. The subsequent
+A1 slice adds shared Knowledge policy and optional role restrictions; it does
+not activate accounts, scoped runtime access or ENV delivery.
 
 Knowledge project `k7a-worktree-switcher` holds design task
 `e3e2e52e-7b95-4088-8234-0e6d35c39f86` and direction memory
@@ -330,7 +334,7 @@ execution or secret exfiltration from an already approved process.
 ## Delivery slices and gates
 
 Knowledge owns status, discussion and validation; this table defines intended
-boundaries. A0 is the only slice executed by this document change.
+boundaries. A0 supplied the design; A1 now implements the first policy workflow.
 
 | Slice and Knowledge task | Deliverable | Acceptance gate |
 | --- | --- | --- |
@@ -363,6 +367,6 @@ Documentation-only A0 uses `test:docs` (format, validate and diff check).
 
 Remaining pre-implementation decisions are tracked in the owning slices:
 provider version/SQLite adapter and factor UX in A3; exact credential/session
-bounds in A2/A3; typed migration and legacy-grant compatibility in A1; mapping
+bounds in A2/A3; mapping
 human accounts to existing external vault proofs in A4; recovery and host
 isolation contract in A5. None permits weakening current protections by default.

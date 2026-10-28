@@ -1,3 +1,4 @@
+import { setKnowledgeRoleSchema, revokeKnowledgeRoleSchema, listKnowledgeRolesSchema } from "../shared/contracts/authorization";
 import type { AppPaths } from "../server/paths";
 import { acquireControllerLock } from "../server/controller-lock";
 import { IdentityService, type KnowledgePermission } from "../server/modules/identity";
@@ -19,6 +20,7 @@ const AVAILABLE_COMMANDS = [
   "bootstrap-owner", "recover-owner", "renew-owner", "create-agent", "list-agents", "revoke-agent",
   "issue-agent-token", "list-agent-tokens", "revoke-token", "create-knowledge-project",
   "grant-knowledge", "list-knowledge-grants", "revoke-knowledge-grant",
+  "set-knowledge-role", "list-knowledge-roles", "revoke-knowledge-role",
 ].join(", ");
 
 function option(args: string[], name: string): string | undefined {
@@ -59,9 +61,28 @@ function permissions(args: string[]): KnowledgePermission[] {
   return values as KnowledgePermission[];
 }
 
+function roleInput(args: string[]): Record<string, unknown> {
+  const action = args[0];
+  const allowed = action === "list-knowledge-roles" ? ["--principal-id"]
+    : ["--principal-id", "--project-id", "--expected-revision", ...(action === "set-knowledge-role" ? ["--role"] : [])];
+  const seen = new Set<string>();
+  for (let i = 1; i < args.length; i += 2) {
+    if (!allowed.includes(args[i]) || seen.has(args[i])) throw new Error("Unknown or repeated role option.");
+    seen.add(args[i]);
+  }
+  const input = { principalId: requiredOption(args, "--principal-id") };
+  if (action === "list-knowledge-roles") return listKnowledgeRolesSchema.parse(input);
+  const target = { ...input, projectId: requiredOption(args, "--project-id"), expectedRevision: Number(requiredOption(args, "--expected-revision")) };
+  return action === "set-knowledge-role" ? setKnowledgeRoleSchema.parse({ ...target, role: requiredOption(args, "--role") }) : revokeKnowledgeRoleSchema.parse(target);
+}
+
 function administrationPayload(args: string[]): Record<string, unknown> {
   const action = args[0]!;
   switch (action) {
+    case "set-knowledge-role":
+    case "revoke-knowledge-role":
+    case "list-knowledge-roles":
+      return { action, ...roleInput(args) };
     case "renew-owner":
       return { action, ...sessionInput(args) };
     case "create-agent":
@@ -185,6 +206,15 @@ export async function runIdentityCommand(
     const { identity, actor } = authenticateOfflineActor(store, administratorToken(dependencies), OWNER_CREDENTIAL_REQUIRED);
     let result: unknown;
     switch (action) {
+      case "set-knowledge-role":
+        result = { binding: identity.setKnowledgeRole(roleInput(args), actor) };
+        break;
+      case "revoke-knowledge-role":
+        result = { binding: identity.revokeKnowledgeRole(roleInput(args), actor) };
+        break;
+      case "list-knowledge-roles":
+        result = { roles: identity.listKnowledgeRoles(roleInput(args), actor) };
+        break;
       case "create-agent":
         result = { principal: identity.createAgent(actor) };
         break;

@@ -1,3 +1,4 @@
+import type { KnowledgePermission } from "@/shared/contracts/authorization";
 import type { KnowledgeTaskPage } from "@/shared/contracts/knowledge";
 import type { KnowledgeMemory, KnowledgeMemoryReading, KnowledgeSearchHit, KnowledgeSearchOptions } from "@/shared/contracts/knowledge-memory";
 import type { KnowledgeFilters, KnowledgeProjectSummary, KnowledgeRelationDestination, KnowledgeReplyPage } from "@/shared/contracts/knowledge";
@@ -370,15 +371,14 @@ export class KnowledgeQueries implements KnowledgeStore {
     return this.page(hits.map(item => item.kind === "memory" && projected.get(item.id) ? { ...item, reading: projected.get(item.id)! } : item), limit, offset);
   }
 
-  /** A null principal is the installation authority: every project, always writable. */
-  listKnowledgeProjects(principalId: string | null, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary> {
-    const rows = (principalId === null
+  /** Effective permissions from the common policy, filtered before pagination. Null means installation authority. */
+  listKnowledgeProjects(grants: Array<{ projectId: string; permissions: KnowledgePermission[] }> | null, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary> {
+    const rows = (grants === null
       ? this.database.prepare("SELECT p.*, 1 AS writable FROM knowledge_projects p ORDER BY p.name, p.id LIMIT ? OFFSET ?").all(limit + 1, offset)
-      : this.database.prepare(`SELECT p.*, EXISTS(SELECT 1 FROM json_each(g.permissions_json) WHERE value = 'knowledge:write') AS writable
-      FROM knowledge_projects p JOIN knowledge_project_grants g ON g.project_id = p.id
-      WHERE g.principal_id = ? AND g.revoked_at IS NULL
-      AND EXISTS(SELECT 1 FROM json_each(g.permissions_json) WHERE value = 'knowledge:read')
-      ORDER BY p.name, p.id LIMIT ? OFFSET ?`).all(principalId, limit + 1, offset)) as Array<{ id: string; name: string; status: KnowledgeProject["status"]; revision: number; created_at: string; updated_at: string; writable: number }>;
+      : this.database.prepare(`SELECT p.*, EXISTS(SELECT 1 FROM json_each(json_extract(g.value, '$.permissions')) WHERE value = 'knowledge:write') AS writable
+      FROM knowledge_projects p JOIN json_each(?) g ON json_extract(g.value, '$.projectId') = p.id
+      WHERE EXISTS(SELECT 1 FROM json_each(json_extract(g.value, '$.permissions')) WHERE value = 'knowledge:read')
+      ORDER BY p.name, p.id LIMIT ? OFFSET ?`).all(JSON.stringify(grants), limit + 1, offset)) as Array<{ id: string; name: string; status: KnowledgeProject["status"]; revision: number; created_at: string; updated_at: string; writable: number }>;
     return this.page(rows.map(row => ({ id: row.id, name: row.name, status: row.status, revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at, writable: Boolean(row.writable) })), limit, offset);
   }
 

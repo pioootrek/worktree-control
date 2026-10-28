@@ -1,3 +1,4 @@
+import { knowledgeRoleMigration, knowledgeRoleChecksum } from "./knowledge-role-migration";
 import { devVaultMigration, devVaultChecksum } from "./dev-vault-migration";
 import { remoteConnectionMigration, remoteConnectionChecksum } from "./remote-connection-migration";
 import Database from "better-sqlite3";
@@ -16,6 +17,7 @@ type ForeignKey = { table: string; from: string; to: string; on_delete: string; 
 // Historical installations may already have tables from the bootstrap DDL. Require
 // them only after their introducing migration, but validate any that are present.
 const tableVersions: Record<string, number> = {
+  knowledge_role_bindings: 35,
   dev_environment_vaults: 34,
   remote_verification_cancellations: 32, remote_verification_reports: 32, remote_worker_receipts: 32,
   schema_migrations: 1, projects: 1, reservations: 1, audit_events: 1,
@@ -111,7 +113,8 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : x.version === 31 ? x.name !== testPresetTimeoutMigration.name || x.checksum !== testPresetTimeoutChecksum
       : x.version === 32 ? x.name !== remoteConnectionMigration.name || x.checksum !== remoteConnectionChecksum
       : x.version === 33 ? x.name !== taskCurrentStateMigration.name || x.checksum !== taskCurrentStateChecksum
-      : x.name !== devVaultMigration.name || x.checksum !== devVaultChecksum)) refuse("migration checksum or name");
+      : x.version === 34 ? x.name !== devVaultMigration.name || x.checksum !== devVaultChecksum
+      : x.name !== knowledgeRoleMigration.name || x.checksum !== knowledgeRoleChecksum)) refuse("migration checksum or name");
   }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));
   if (objects.some(x => x.type === "view" || x.type === "trigger") || [...tables].some(x => !(x in tableVersions))) refuse();

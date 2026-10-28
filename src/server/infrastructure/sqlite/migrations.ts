@@ -1,3 +1,4 @@
+import { applyKnowledgeRoleMigration } from "./knowledge-role-migration";
 import { applyDevVaultMigration } from "./dev-vault-migration";
 import { applyRemoteConnectionMigration } from "./remote-connection-migration";
 import Database from "better-sqlite3";
@@ -357,6 +358,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyRemoteConnectionMigration(database);
       applyTaskCurrentStateMigration(database);
       applyDevVaultMigration(database);
+      applyKnowledgeRoleMigration(database);
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();

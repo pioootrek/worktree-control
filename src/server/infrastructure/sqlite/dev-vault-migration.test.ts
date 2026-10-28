@@ -29,7 +29,8 @@ describe("Knowledge 33 and DEV vault 34 integration", () => {
     const db = new Database(f.path);
     try {
       db.exec(`DROP TABLE dev_environment_vaults;
-        DELETE FROM schema_migrations WHERE version = 34;
+        DROP TABLE knowledge_role_bindings;
+        DELETE FROM schema_migrations WHERE version >= 34;
         INSERT INTO knowledge_projects VALUES('knowledge','Kept','active',1,'now','now');
         INSERT INTO knowledge_tasks(id,project_id,title,description,status,priority,revision,created_by,created_at,updated_at,current_state_json)
         VALUES('task','knowledge','Kept task','History stays','open','now',1,'installation','now','now','{"preserved":"state"}');`);
@@ -47,15 +48,15 @@ describe("Knowledge 33 and DEV vault 34 integration", () => {
 
     const upgraded = new SqliteStateStore(f.path);
     try {
-      expect(upgraded.schemaVersion()).toBe(34);
+      expect(upgraded.schemaVersion()).toBe(35);
       expect(upgraded.getProject(f.project.id)).toEqual(f.project);
       expect(upgraded.getAuthenticationPolicy()).toEqual(f.policy);
       expect(upgraded.devVault.load(f.project.id)).toBeNull();
     } finally { upgraded.close(); }
     const check = new Database(f.path, { readonly: true });
     try {
-      expect(inspectSchema(check).version).toBe(34);
-      expect(check.prepare("SELECT version,name,checksum FROM schema_migrations WHERE version>=33 ORDER BY version").all()).toEqual([
+      expect(inspectSchema(check).version).toBe(35);
+      expect(check.prepare("SELECT version,name,checksum FROM schema_migrations WHERE version BETWEEN 33 AND 34 ORDER BY version").all()).toEqual([
         { version: 33, name: taskCurrentStateMigration.name, checksum: taskCurrentStateChecksum },
         { version: 34, name: devVaultMigration.name, checksum: devVaultChecksum },
       ]);
