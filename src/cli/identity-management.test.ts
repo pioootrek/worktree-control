@@ -26,6 +26,25 @@ afterEach(() => {
 });
 
 describe("identity management CLI", () => {
+  it("administers role revisions offline and rejects unexpected options", async () => {
+    const appPaths = paths(), lines: string[] = [];
+    const write = (line: string) => lines.push(line);
+    await runIdentityCommand(["bootstrap-owner"], appPaths, { write });
+    const owner = JSON.parse(lines.pop()!);
+    const dependencies = { write, environment: { WORKTREE_CONTROL_OWNER_TOKEN: owner.token } };
+    await runIdentityCommand(["create-knowledge-project", "--name", "Roles"], appPaths, dependencies);
+    const projectId = JSON.parse(lines.pop()!).project.id;
+    const target = ["--principal-id", owner.principalId, "--project-id", projectId];
+    await runIdentityCommand(["grant-knowledge", ...target, "--permissions", "knowledge:read,knowledge:write"], appPaths, dependencies);
+    await runIdentityCommand(["set-knowledge-role", ...target, "--role", "reader", "--expected-revision", "0"], appPaths, dependencies);
+    expect(JSON.parse(lines.pop()!).binding).toMatchObject({ role: "reader", revision: 1 });
+    await expect(runIdentityCommand(["set-knowledge-role", ...target, "--role", "manager", "--expected-revision", "0"], appPaths, dependencies)).rejects.toThrow("rewizja");
+    await expect(runIdentityCommand(["set-knowledge-role", ...target, "--role", "reader", "--expected-revision", "1", "--permissions", "knowledge:approve"], appPaths, dependencies)).rejects.toThrow("Unknown");
+    await runIdentityCommand(["revoke-knowledge-role", ...target, "--expected-revision", "1"], appPaths, dependencies);
+    await runIdentityCommand(["list-knowledge-roles", "--principal-id", owner.principalId], appPaths, dependencies);
+    expect(JSON.parse(lines.pop()!).roles).toEqual([expect.objectContaining({ role: "reader", revision: 2, revokedAt: expect.any(String) })]);
+  });
+
   it("prints the first owner token once and never persists the raw value", async () => {
     const appPaths = paths();
     const output: string[] = [];

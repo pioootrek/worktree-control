@@ -1,3 +1,4 @@
+import type { KnowledgeRoleBinding } from "@/shared/contracts/authorization";
 import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
@@ -47,6 +48,7 @@ function fixture(installationAuthority?: InstallationAuthority) {
     ["project-b", { id: "project-b", name: "B", status: "active", revision: 1, createdAt: NOW, updatedAt: NOW }],
   ]);
   const grants = new Map<string, KnowledgeProjectGrant>();
+  const roles = new Map<string, KnowledgeRoleBinding>();
   const links = new Map<string, KnowledgeProjectRuntimeLink>();
   const store: IdentityStore = {
     getPrincipal: (id) => principals.get(id) ?? null,
@@ -89,6 +91,14 @@ function fixture(installationAuthority?: InstallationAuthority) {
     getKnowledgeProjectGrant: (principalId, projectId) => grants.get(`${principalId}:${projectId}`) ?? null,
     listKnowledgeProjectGrants: (principalId) => [...grants.values()].filter((grant) => grant.principalId === principalId),
     saveKnowledgeProjectGrant: (grant) => { grants.set(`${grant.principalId}:${grant.projectId}`, grant); },
+    getKnowledgeRoleBinding: (principalId, projectId) => roles.get(`${principalId}:${projectId}`) ?? null,
+    listKnowledgeRoleBindings: principalId => [...roles.values()].filter(binding => binding.principalId === principalId),
+    saveKnowledgeRoleBinding: (binding, expectedRevision) => {
+      const key = `${binding.principalId}:${binding.projectId}`;
+      if ((roles.get(key)?.revision ?? 0) !== expectedRevision) return false;
+      roles.set(key, binding);
+      return true;
+    },
     getKnowledgeProjectRuntimeLink: (projectId) => links.get(projectId) ?? null,
     saveKnowledgeProjectRuntimeLink: (link) => { links.set(link.projectId, link); },
   };
@@ -101,6 +111,32 @@ function expectCode(operation: () => unknown, code: IdentityError["code"]): void
 }
 
 describe("IdentityService", () => {
+  it("restricts a current actor immediately, rejects forged actors and stale or injected role changes", () => {
+    const { service, credentials } = fixture();
+    const owner = service.authenticateBearer(OWNER_TOKEN);
+    service.setKnowledgeGrant({ principalId: "agent-1", projectId: "project-a", permissions: ["knowledge:read", "knowledge:write"] }, owner);
+    const issued = service.issueAgentToken({ principalId: "agent-1", label: "test" }, owner);
+    const agent = service.authenticateBearer(issued.token);
+    const input = { principalId: agent.principalId, projectId: "project-a", role: "reader", expectedRevision: 0 };
+    expectCode(() => service.setKnowledgeRole(input, agent), "owner_authentication_required");
+    expectCode(() => service.setKnowledgeRole({ ...input, role: "manager" }, owner), "invalid_request");
+    for (const field of ["permissions", "actor", "revokedAt", "revision"]) {
+      expectCode(() => service.setKnowledgeRole({ ...input, [field]: "injected" }, owner), "invalid_request");
+    }
+    service.setKnowledgeRole(input, owner);
+    expectCode(() => service.setKnowledgeRole(input, owner), "role_revision_conflict");
+    expect(service.describeIdentity(agent).knowledgeGrants).toEqual([{ projectId: "project-a", permissions: ["knowledge:read"] }]);
+    service.authorizeKnowledge(agent, "project-a", "knowledge:read");
+    expectCode(() => service.authorizeKnowledge(agent, "project-a", "knowledge:write"), "knowledge_forbidden");
+    expectCode(() => service.authorizeKnowledge({ ...agent, principalId: owner.principalId, principalKind: "owner" }, "project-a", "knowledge:read"), "invalid_credential");
+    service.revokeKnowledgeRole({ principalId: agent.principalId, projectId: "project-a", expectedRevision: 1 }, owner);
+    expect(service.describeIdentity(agent).knowledgeGrants).toEqual([]);
+    expectCode(() => service.authorizeKnowledge(agent, "project-a", "knowledge:read"), "knowledge_forbidden");
+    service.setKnowledgeRole({ ...input, expectedRevision: 2 }, owner);
+    credentials.set(issued.credential.id, { ...credentials.get(issued.credential.id)!, expiresAt: NOW });
+    expectCode(() => service.authorizeKnowledge(agent, "project-a", "knowledge:read"), "invalid_credential");
+  });
+
   it("keeps the default owner session active until explicit rotation or revocation", () => {
     const { service, principals, credentials } = fixture();
     principals.delete("owner-1");

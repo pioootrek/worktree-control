@@ -15,6 +15,7 @@ import { createControllerServer } from "./http-server";
 import { createMcpControllerServer } from "./mcp-http-server";
 import { EventStream } from "./events";
 import { DirectoryBrowser } from "./directory-browser";
+import { runIdentityCommand } from "../cli/identity-management";
 import { runKnowledgeCommand } from "../cli/knowledge-management";
 import { writeServiceAccess } from "../cli/service-access";
 import type { AppPaths } from "./paths";
@@ -74,10 +75,46 @@ async function setup(clock?: () => string, limits?: import("@/shared/contracts/k
   };
   const paths = { serviceAccessPath: join(directory, "access.json"), databasePath: join(directory, "never-open.sqlite3") } as AppPaths;
   writeServiceAccess(paths.serviceAccessPath, { pid: process.pid, startedAt: new Date().toISOString(), version: "test", dashboardEndpoint: base, mcpEndpoint: endpoint.href, accessUrl: base, logDirectory: directory });
-  return { store, identity, owner, project, privateProject, agents, agentTokens, clients, base, http, call, paths, git, service, events, databasePath: join(directory, "state.sqlite3") };
+  return { store, identity, ownerToken: ownerSession.token, owner, project, privateProject, agents, agentTokens, clients, base, http, call, paths, git, service, events, databasePath: join(directory, "state.sqlite3") };
 }
 
 describe("real knowledge HTTP, MCP and CLI", () => {
+  it("applies role changes to discovery, writes and cached retries across HTTP, MCP and online CLI", async () => {
+    const f = await setup(), projectId = f.project.id, principalId = f.agents[0];
+    const input = { projectId, title: "Before downgrade", description: "test", idempotencyKey: "role-retry" };
+    expect((await f.call(0, "create_task", input)).value.value.title).toBe(input.title);
+    const admin = (body: unknown, token = f.ownerToken) => fetch(`${f.base}/api/identity/admin`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const role = { action: "set-knowledge-role", principalId, projectId, role: "reader", expectedRevision: 0 };
+    expect((await admin(role, f.agentTokens[0])).status).toBe(403);
+    expect((await admin({ ...role, permissions: ["knowledge:approve"] })).status).toBe(400);
+    expect((await admin(role)).status).toBe(200);
+    expect((await admin(role)).status).toBe(409);
+    const projects = await (await f.http("projects", {}, f.agentTokens[0])).json();
+    expect(projects.items).toEqual([expect.objectContaining({ id: projectId, writable: false })]);
+    expect((await f.call(0, "projects", {})).value).toEqual(projects);
+    const lines: string[] = [];
+    const cli = { environment: { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: f.agentTokens[0] }, write: (line: string) => lines.push(line) };
+    await runKnowledgeCommand(["projects", "--json", "{}"], f.paths, cli);
+    expect(JSON.parse(lines.pop()!)).toEqual(projects);
+    expect((await f.http("create_task", input, f.agentTokens[0])).status).toBe(403);
+    expect((await f.call(0, "create_task", input)).value.code).toBe("knowledge_forbidden");
+    await expect(runKnowledgeCommand(["create_task", "--json", JSON.stringify(input)], f.paths, cli)).rejects.toThrow();
+    expect((await f.call(0, "project", { projectId: f.privateProject.id })).value.code).toBe("knowledge_forbidden");
+    await runIdentityCommand(["revoke-knowledge-role", "--principal-id", principalId, "--project-id", projectId, "--expected-revision", "1"], f.paths,
+      { environment: { WORKTREE_CONTROL_OWNER_TOKEN: f.ownerToken }, write: () => {} });
+    expect((await f.call(0, "projects", {})).value.items).toEqual([]);
+    expect((await f.http("project", { projectId }, f.agentTokens[0])).status).toBe(403);
+    await expect(runKnowledgeCommand(["project", "--json", JSON.stringify({ projectId })], f.paths, cli)).rejects.toThrow();
+    f.identity.setKnowledgeGrant({ principalId, projectId: f.privateProject.id, permissions: ["knowledge:read"] }, f.owner);
+    const page = (await f.call(0, "projects", { limit: 1 })).value;
+    expect(page).toMatchObject({ items: [expect.objectContaining({ id: f.privateProject.id, writable: false })], nextOffset: null });
+    // Another caller's authority and existing MCP session are unaffected.
+    expect((await f.call(1, "projects", {})).value.items).toEqual([expect.objectContaining({ id: projectId, writable: true })]);
+    expect((await f.clients[0].listTools()).tools.some(t => t.name.includes("knowledge_role"))).toBe(false);
+  });
+
   it("shares exact provenance filtering, pagination and authorization across HTTP, MCP and CLI", async () => {
     const f = await setup(), projectId = f.project.id, sourceId = "fixture", sourcePath = "docs/backlog/feature/A.json";
     const threadId = importedRecordId(projectId, sourceId, sourcePath, "thread");
@@ -222,7 +259,7 @@ describe("real knowledge HTTP, MCP and CLI", () => {
     const uploaded=await f.http("create_attachment",input); expect(uploaded.status).toBe(200);
     await runKnowledgeCommand(["create_attachment","--json",JSON.stringify({...input,idempotencyKey:"cli-file",filename:"cli.bin"})],f.paths,{environment:{WORKTREE_CONTROL_KNOWLEDGE_TOKEN:f.agentTokens[0]},write:()=>{}});
   });
-  it.each(["grant", "credential", "expiry"] as const)("filters SSE with current %s state without recording passive credential usage", async kind => {
+  it.each(["grant", "role", "credential", "expiry"] as const)("filters SSE with current %s state without recording passive credential usage", async kind => {
     let now = "2026-01-01T12:00:00.000Z";
     const f = await setup(() => now);
     f.identity.setKnowledgeGrant({ principalId: f.agents[0], projectId: f.privateProject.id, permissions: ["knowledge:read"] }, f.owner);
@@ -246,13 +283,18 @@ describe("real knowledge HTTP, MCP and CLI", () => {
       await vi.waitFor(() => expect(frames).toContain(`"projectIds":["${f.project.id}","${f.privateProject.id}"]`));
       expect(used.mock.calls.filter(([id]) => id === eventCredential.credential.id)).toHaveLength(0);
       if (kind === "grant") f.identity.revokeKnowledgeGrant(f.agents[0], f.project.id, f.owner);
+      else if (kind === "role") {
+        const target = { principalId: f.agents[0], projectId: f.project.id };
+        f.identity.setKnowledgeRole({ ...target, role: "reader", expectedRevision: 0 }, f.owner);
+        f.identity.revokeKnowledgeRole({ ...target, expectedRevision: 1 }, f.owner);
+      }
       else if (kind === "credential") f.identity.revokeCredential(eventCredential.credential.id, f.owner);
       else now = "2100-01-01T00:00:00.000Z";
       frames = "";
       f.events.publishKnowledge(f.project.id); f.events.publishKnowledge(f.privateProject.id);
       f.events.publish({ kinds: ["runtime"] });
       await vi.waitFor(() => expect(frames).toContain("event: changed"));
-      if (kind === "grant") {
+      if (kind === "grant" || kind === "role") {
         expect(frames).toContain(`"projectIds":["${f.privateProject.id}"]`);
         expect(frames).not.toContain(f.project.id);
       } else expect(frames).not.toContain("knowledge-changed");

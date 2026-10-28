@@ -1,3 +1,5 @@
+import { effectiveKnowledgePermissions, isAuthorized, type AuthorizationSubject } from "@/server/modules/authorization";
+import { knowledgePermissions, setKnowledgeRoleSchema, revokeKnowledgeRoleSchema, listKnowledgeRolesSchema, type AuthorizationAction, type AuthorizationResource, type KnowledgeRoleBinding } from "@/shared/contracts/authorization";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 import type {
@@ -19,7 +21,8 @@ export type IdentityErrorCode =
   | "owner_already_initialized"
   | "principal_forbidden"
   | "knowledge_forbidden"
-  | "invalid_request";
+  | "invalid_request"
+  | "role_revision_conflict";
 
 export class IdentityError extends Error {
   constructor(readonly code: IdentityErrorCode, message: string) {
@@ -62,10 +65,7 @@ export interface SetKnowledgeGrantInput {
 
 const TOKEN_PREFIX = "wts";
 const DUMMY_HASH = Buffer.alloc(32);
-const KNOWLEDGE_PERMISSIONS = new Set<KnowledgePermission>([
-  "knowledge:read", "knowledge:write", "knowledge:approve", "knowledge:export", "knowledge:import",
-  "attachments:read", "attachments:write",
-]);
+const KNOWLEDGE_PERMISSIONS = new Set<KnowledgePermission>(knowledgePermissions);
 
 function hashToken(token: string): Buffer {
   return createHash("sha256").update(token, "utf8").digest();
@@ -186,7 +186,10 @@ export class IdentityService {
       credential: publicCredential(credential),
       knowledgeGrants: this.store.listKnowledgeProjectGrants(actor.principalId)
         .filter((grant) => grant.revokedAt === null)
-        .map(({ projectId, permissions }) => ({ projectId, permissions })),
+        .map(grant => ({ projectId: grant.projectId, permissions: effectiveKnowledgePermissions(this.subject(actor), grant.projectId, {
+          grant, binding: this.store.getKnowledgeRoleBinding(actor.principalId, grant.projectId),
+        }) }))
+        .filter(grant => grant.permissions.length > 0),
     };
   }
 
@@ -334,26 +337,68 @@ export class IdentityService {
     permission: KnowledgePermission,
     options: { allowArchived?: boolean } = {},
   ): void {
+    this.authorize(actor, permission, { kind: "knowledge-project", id: projectId }, options);
+  }
+
+  /** The application boundary re-reads authentication and authority on every operation. */
+  authorize(actor: AuthenticatedPrincipal, action: AuthorizationAction, resource: AuthorizationResource, context: { allowArchived?: boolean } = {}): void {
     this.requireCurrentAuthentication(actor);
-    const project = this.store.getKnowledgeProject(projectId);
-    if (actor.principalKind === "installation") {
-      // The installation authority holds every permission; only the project state still applies.
-      if (!project || (project.status !== "active" && permission !== "knowledge:read" && !options.allowArchived)) {
-        throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
-      }
-      return;
+    const knowledge = resource.kind === "knowledge-project";
+    if (!isAuthorized(this.subject(actor), action, resource, {
+      project: knowledge ? this.store.getKnowledgeProject(resource.id) : null,
+      grant: knowledge ? this.store.getKnowledgeProjectGrant(actor.principalId, resource.id) : null,
+      binding: knowledge ? this.store.getKnowledgeRoleBinding(actor.principalId, resource.id) : null,
+      allowArchived: context.allowArchived,
+    })) throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
+  }
+
+  private subject(actor: AuthenticatedPrincipal): AuthorizationSubject {
+    return { id: actor.principalId, kind: actor.principalKind === "owner" ? "human" : actor.principalKind, humanSession: isOwnerSession(actor) };
+  }
+
+  setKnowledgeRole(value: unknown, actor: AuthenticatedPrincipal): KnowledgeRoleBinding {
+    this.requireOwnerSession(actor);
+    const parsed = setKnowledgeRoleSchema.safeParse(value);
+    if (!parsed.success) throw new IdentityError("invalid_request", "Nieprawidłowe przypisanie roli.");
+    const input = parsed.data;
+    const principal = this.store.getPrincipal(input.principalId);
+    const project = this.store.getKnowledgeProject(input.projectId);
+    const grant = this.store.getKnowledgeProjectGrant(input.principalId, input.projectId);
+    if (!principal || principal.status !== "active" || !["owner", "agent"].includes(principal.kind)
+      || (input.role === "manager" && principal.kind !== "owner")
+      || project?.status !== "active" || !grant || grant.revokedAt !== null) {
+      throw new IdentityError("invalid_request", "Rola wymaga aktywnego grantu; manager wymaga człowieka.");
     }
-    const grant = this.store.getKnowledgeProjectGrant(actor.principalId, projectId);
-    if (
-      !project
-      || (project.status !== "active" && permission !== "knowledge:read" && !options.allowArchived)
-      || !grant
-      || grant.revokedAt !== null
-      || !grant.permissions.includes(permission)
-      || (permission === "knowledge:approve" && !isOwnerSession(actor))
-    ) {
-      throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
+    const binding: KnowledgeRoleBinding = { principalId: input.principalId, projectId: input.projectId,
+      role: input.role, revision: input.expectedRevision + 1, updatedAt: this.clock(), revokedAt: null };
+    if (!this.store.saveKnowledgeRoleBinding(binding, input.expectedRevision, actor.principalId)) {
+      throw new IdentityError("role_revision_conflict", "Nieaktualna rewizja przypisania roli.");
     }
+    return binding;
+  }
+
+  listKnowledgeRoles(value: unknown, actor: AuthenticatedPrincipal): KnowledgeRoleBinding[] {
+    this.requireOwnerSession(actor);
+    const parsed = listKnowledgeRolesSchema.safeParse(value);
+    if (!parsed.success) throw new IdentityError("invalid_request", "Nieprawidłowy podmiot.");
+    return this.store.listKnowledgeRoleBindings(parsed.data.principalId);
+  }
+
+  revokeKnowledgeRole(value: unknown, actor: AuthenticatedPrincipal): KnowledgeRoleBinding {
+    this.requireOwnerSession(actor);
+    const parsed = revokeKnowledgeRoleSchema.safeParse(value);
+    if (!parsed.success) throw new IdentityError("invalid_request", "Nieprawidłowe przypisanie roli.");
+    const input = parsed.data;
+    const current = this.store.getKnowledgeRoleBinding(input.principalId, input.projectId);
+    if (!current || current.revokedAt !== null || current.revision !== input.expectedRevision) {
+      throw new IdentityError("role_revision_conflict", "Nieaktualna rewizja przypisania roli.");
+    }
+    const now = this.clock();
+    const binding = { ...current, revision: current.revision + 1, updatedAt: now, revokedAt: now };
+    if (!this.store.saveKnowledgeRoleBinding(binding, input.expectedRevision, actor.principalId)) {
+      throw new IdentityError("role_revision_conflict", "Nieaktualna rewizja przypisania roli.");
+    }
+    return binding;
   }
 
   /** Owner-level authority: an owner session or the current installation authority. */

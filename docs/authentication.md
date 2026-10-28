@@ -1,11 +1,15 @@
 ---
 audience: "people running Worktree Control and choosing how callers authenticate"
-last_reviewed: "2026-10-08"
+last_reviewed: "2026-10-28"
 source_of_truth: "authentication modes, the auth CLI, and migration from legacy access"
 status: "active"
 ---
 
 # Authentication modes
+
+For planned human accounts, project roles, scoped agents and ENV permissions,
+see the [identity and authorization plan](identity-authorization-plan.md).
+That plan does not change the implemented modes described here.
 
 One authentication policy applies to the dashboard, the HTTP API, live updates,
 MCP and the online CLI. The controller stores the policy in its database and
@@ -21,6 +25,59 @@ applies the active mode to every request.
 Scoped agent tokens and owner sessions from `identity` commands keep working in
 `legacy` and `token` modes. A controller whose stored mode is unavailable
 refuses to start; it never falls back to another mode.
+
+## Knowledge roles (A1)
+
+Knowledge operations use a shared application policy in HTTP, MCP and CLI.
+The persisted `owner` identity is interpreted as a human subject by that policy;
+its ID, credentials, signed vault operations and historical records stay intact.
+Schema migration 35 adds project-scoped role bindings without changing grants.
+
+For existing owner/agent credentials, effective permissions are the intersection
+of the explicit Knowledge grant and an optional role:
+
+| Role | Allowed ceiling (still requires the corresponding grant) |
+| --- | --- |
+| `reader` | Read Knowledge, export, read attachments |
+| `operator` | Reader actions plus write Knowledge, import, write attachments |
+| `manager` | Operator actions plus approve; only an owner/human session |
+
+Exports/imports and attachment permissions remain explicit grants. Roles neither
+create access to other projects nor grant runtime or ENV permissions. A revoked
+binding denies all Knowledge access for that principal/project, including
+project discovery; it never falls back to the old grant. An absent binding
+preserves existing grants. Changing/revoking the grant remains an independent
+restriction. Current credential, grant and role are checked for every operation,
+including an idempotent retry and requests within an existing MCP session.
+Discovery filters effective permissions before pagination and reports the same
+write ceiling to the dashboard.
+
+An owner session or the existing installation authority administers roles:
+
+```bash
+worktree-control identity set-knowledge-role --principal-id <id> --project-id <knowledge-id> --role reader --expected-revision 0
+worktree-control identity list-knowledge-roles --principal-id <id>
+worktree-control identity revoke-knowledge-role --principal-id <id> --project-id <knowledge-id> --expected-revision 1
+```
+
+First assignment requires an active Knowledge grant and revision `0`; subsequent
+changes require the current binding revision. Revocation keeps a tombstone and
+increments the revision. Restoring access requires an explicit new assignment
+with that revision. Repeating a stale mutation returns a revision conflict
+(HTTP 409); read current state before deciding whether to retry. Audit and binding
+updates are atomic. Role administration is not exposed as an agent MCP tool.
+The online CLI calls `/api/identity/admin`; the offline CLI uses the same service
+under the controller lock. Unknown fields and role options are rejected.
+
+The compatibility installation authority in `open`/`token` mode still bypasses
+Knowledge roles. This is not account-mode RBAC. Human account login, credential
+scopes/TTL, scoped runtime operations and ENV roles remain later slices. The
+shared policy denies reserved ENV actions; the existing DEV vault continues to
+require its separate signed proof and exact grants, with `use` unavailable.
+
+Full backups retain bindings, revisions, tombstones and audit. As with existing
+credentials, restoring an older snapshot can restore older authorization state;
+external revocation fences are an A5 gate before account-mode activation.
 
 ## The `auth` command
 

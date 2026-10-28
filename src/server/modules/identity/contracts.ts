@@ -1,3 +1,4 @@
+import type { KnowledgePermission, KnowledgeRoleBinding } from "@/shared/contracts/authorization";
 import type { KnowledgeProject } from "@/shared/contracts/knowledge";
 /** `installation` is the single installation-wide authority; it never holds credentials or grants. */
 export type PrincipalKind = "owner" | "agent" | "worker" | "installation";
@@ -48,14 +49,7 @@ export interface InstallationAuthority {
   isCurrentInstallationActor(actor: AuthenticatedPrincipal): boolean;
 }
 
-export type KnowledgePermission =
-  | "knowledge:read"
-  | "knowledge:write"
-  | "knowledge:approve"
-  | "knowledge:export"
-  | "knowledge:import"
-  | "attachments:read"
-  | "attachments:write";
+export type { KnowledgePermission } from "@/shared/contracts/authorization";
 
 export type { KnowledgeProject } from "@/shared/contracts/knowledge";
 export interface KnowledgeProjectGrant {
@@ -96,6 +90,9 @@ export interface IdentityStore {
   getKnowledgeProjectGrant(principalId: string, projectId: string): KnowledgeProjectGrant | null;
   listKnowledgeProjectGrants(principalId: string): KnowledgeProjectGrant[];
   saveKnowledgeProjectGrant(grant: KnowledgeProjectGrant, actor: string): void;
+  getKnowledgeRoleBinding(principalId: string, projectId: string): KnowledgeRoleBinding | null;
+  listKnowledgeRoleBindings(principalId: string): KnowledgeRoleBinding[];
+  saveKnowledgeRoleBinding(binding: KnowledgeRoleBinding, expectedRevision: number, actor: string): boolean;
   getKnowledgeProjectRuntimeLink(projectId: string): KnowledgeProjectRuntimeLink | null;
   saveKnowledgeProjectRuntimeLink(link: KnowledgeProjectRuntimeLink, actor: string): void;
 }

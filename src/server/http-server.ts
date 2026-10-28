@@ -333,9 +333,16 @@ function identityAdministration(
   actor: AuthenticatedPrincipal,
   value: unknown,
 ): unknown {
-  const record = strictRecord(value, ["action", "principalId", "credentialId", "projectId", "label", "expiresAt", "name", "permissions", "sessionLifetimeSeconds"]);
+  const record = strictRecord(value, ["action", "principalId", "credentialId", "projectId", "label", "expiresAt", "name", "permissions", "sessionLifetimeSeconds", "role", "expectedRevision"]);
   const action = requiredString(record, "action", 80);
   switch (action) {
+    case "set-knowledge-role":
+    case "revoke-knowledge-role":
+    case "list-knowledge-roles": {
+      const input = Object.fromEntries(Object.entries(record).filter(([key]) => key !== "action"));
+      if (action === "list-knowledge-roles") return { roles: service.listKnowledgeRoles(input, actor) };
+      return { binding: action === "set-knowledge-role" ? service.setKnowledgeRole(input, actor) : service.revokeKnowledgeRole(input, actor) };
+    }
     case "renew-owner": {
       const lifetime = record.sessionLifetimeSeconds;
       if (lifetime !== undefined && typeof lifetime !== "number") throw new Error("Nieprawidłowe pole sessionLifetimeSeconds.");
@@ -554,6 +561,10 @@ export function createControllerServer(options: {
           try {
             json(response, 200, identityAdministration(options.identity, actor, await readJson(request)));
           } catch (error) {
+            if (error instanceof IdentityError && error.code === "role_revision_conflict") {
+              json(response, 409, { code: error.code, error: localizeServerMessage(error.message, locale) });
+              return;
+            }
             if (error instanceof IdentityError && error.code === "owner_authentication_required") {
               json(response, 403, { error: localizeServerMessage(error.message, locale) });
               return;
