@@ -169,7 +169,8 @@ describe("optional installation transfer", () => {
       expect(vi.mocked(f.transport.upload).mock.calls[8][0].reconciliation?.proofs).toEqual([proof]);
       expect(restarted.remote.status().transfers[0]).toMatchObject({ state: "confirmed", attempts: 1, retryGeneration: 1, reconciliation: { passes: 1 } });
     } finally { await restarted.close(); }
-  });
+    // Eight durable verification passes share CI resources; retry budgets use the fixture clock.
+  }, 20_000);
 
   it("retains original source identity and requires fenced operator retry after changed inventory", async () => {
     const f = fixture(true, { attemptLimit: 3, retrySeconds: 60 });
