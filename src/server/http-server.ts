@@ -506,7 +506,10 @@ export function createControllerServer(options: {
           try {
             let input: unknown;
             try { input = await readJson(request, 96 * 1024); }
-            catch { json(response, 400, { code: "vault_invalid_request" }); return; }
+            catch (error) {
+              if (databaseAdmissionFailure(error)) throw error;
+              json(response, 400, { code: "vault_invalid_request" }); return;
+            }
             json(response, 200, await executeDevVault(options.devVault, input, authenticateActor(request)));
           } catch (error) { if (databaseAdmissionFailure(error)) throw error; const failure = devVaultFailure(error); json(response, failure.status, failure.body); }
           return;
@@ -529,7 +532,10 @@ export function createControllerServer(options: {
           try {
             let input: unknown;
             try { input = await readJson(request, knowledgeRequestLimit("create_attachment")); }
-            catch (error) { throw new KnowledgeError(error instanceof Error && error.message === "Żądanie jest zbyt duże." ? "limit_exceeded" : "invalid_request", "Invalid knowledge JSON request."); }
+            catch (error) {
+              if (databaseAdmissionFailure(error)) throw error;
+              throw new KnowledgeError(error instanceof Error && error.message === "Żądanie jest zbyt duże." ? "limit_exceeded" : "invalid_request", "Invalid knowledge JSON request.");
+            }
             json(response, 200, options.service.executeKnowledge(input, actor));
           } catch (error) {
             if (databaseAdmissionFailure(error)) throw error;

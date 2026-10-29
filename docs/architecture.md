@@ -476,8 +476,9 @@ mapping. There is no credential or grant backfill. An exclusive connection
 guard protects core SQL, prepared statements and backups while asynchronous
 provider work borrows the sole connection. Shared core admission and exclusive
 provider admission now coordinate on that gate; see [database admission](#database-admission).
-The strict proof still has failing HTTP error-classification regressions and
-incomplete integration coverage. Safe live coexistence is not accepted.
+The strict proof includes HTTP error-classification regressions; broader
+integration coverage and design acceptance remain open. Safe live coexistence
+is not accepted.
 Disposal tracks actual provider settlement and closes only its borrowed facade.
 Local provider modules are trusted code, not sandboxed plugins. See the
 [proof contract and limitations](authentication.md#optional-provider-proof-first-a3-slice).

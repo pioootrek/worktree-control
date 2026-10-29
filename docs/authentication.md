@@ -53,10 +53,10 @@ coordination, scans, schedules and restore callbacks have admission boundaries.
 The proof suite exercises selected real boundaries under held Better Auth
 transactions. Coverage and remaining cases are listed in the
 [proof README](../packages/auth-provider-better-auth-proof/README.md#live-admission-coverage).
-It retains failing regressions for Knowledge and vault body-read re-admission:
-a valid request whose database wait expires is currently mislabeled as malformed
-JSON (400) instead of `database_busy` (503 with `Retry-After`). This blocks
-coexistence acceptance.
+Regressions cover Knowledge and vault body-read re-admission: an expired
+database wait preserves `database_busy` (503 with `Retry-After`), while malformed
+JSON remains a 400 response. The application operation does not execute when
+re-admission fails. Remaining coverage and design gates still apply.
 
 SQL-free waits release admission and re-enter it afterwards. Callers must recheck
 current authority after those waits. `idle` suspends the whole shared participant;

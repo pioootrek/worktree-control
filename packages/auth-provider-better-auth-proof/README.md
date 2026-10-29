@@ -48,8 +48,8 @@ bearer session tokens and includes native session tokens in sign-in and
 password-change JSON; production browser API design remains open. Admitted core phases now wait on the
 same gate while a provider borrows the connection. Strict proof fixtures reject
 unadmitted SQL even when idle; production without a provider retains compatible
-synchronous store access. Live coexistence remains unaccepted because strict
-HTTP regressions and coverage gaps are still open. Restoring backups can restore old
+synchronous store access. Live coexistence remains unaccepted while broader
+coverage and design gates are open. Restoring backups can restore old
 sessions and passwords until A5 adds an external revocation fence. A2 credentials
 remain unchanged; A4 vault authorization still requires its separate proof.
 Human enrollment, factors, invitations, role administration, GUI and account
@@ -70,7 +70,7 @@ fixtures and mocks; finite-job cases run a real short Node process.
 
 | Boundary | Strict held-provider evidence | Remaining acceptance work |
 | --- | --- | --- |
-| HTTP | Commit/rollback wait, single mutation and receipt replay, queued revocation, malformed 400, initial contention 503 | Two retained failing tests: body-read re-admission timeout is mislabeled 400 on Knowledge/vault routes; broader route inventory |
+| HTTP | Commit/rollback wait, single mutation and receipt replay, queued revocation, malformed 400, initial and body-read re-admission contention 503 with Retry-After | Broader route inventory |
 | MCP | Actual in-memory request wrapper, commit/rollback wait, current identity after revocation, scoped readiness and retained retry | Full HTTP MCP transport authentication/body behavior and broader tool/resource matrix |
 | Automatic renewal | Contention deadline and retry preserve claim; queued credential revocation/expiry and session close prevent renewal | Lease expiry during an admission wait |
 | Remote controller | Poll/report wait on commit/rollback, exact report replay, current worker grant at delivery | Submit/cancel transport races and worker credential expiry |

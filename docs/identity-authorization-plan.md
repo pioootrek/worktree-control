@@ -29,8 +29,8 @@ controller migration 38 and explicit subject mapping. Account mode remains
 unavailable; enrollment, factors, invitations, roles and GUI are still open.
 Shared core admission, exclusive provider admission and background persistence
 boundaries are implemented as partial infrastructure. Strict integration tests
-still reproduce HTTP body-read error misclassification, and complete callback
-coverage and the atomic provider-to-core handoff remain open. Safe live
+cover HTTP body-read admission errors; complete callback coverage and the
+atomic provider-to-core handoff remain open. Safe live
 coexistence is not accepted. The A5 external restore fence is also unfinished;
 restores can revive old sessions and passwords. Native proof responses expose
 session tokens and require a separate browser API design before activation.
