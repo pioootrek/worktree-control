@@ -71,9 +71,13 @@ describe("strict remote protocol and worker persistence", () => {
       expect(submit).toHaveBeenCalledOnce(); expect(cancel).toHaveBeenCalledOnce();
       expect(await mcp.client.callTool(input)).toEqual(result);
       const poll = await request(r.http.server, "/remote-verification/v1/poll", r.issued.token, JSON.stringify({ version: 1, workerId: "worker" })).completed;
-      const assignment = (poll.body.assignments as RemoteAssignment[])[0];
-      expect(assignment.requestId).toBe(r.submitted.id);
-      expect(poll.body.cancellations).toEqual([assignment.attemptId]);
+      // Equal creation timestamps do not promise request ordering; deliver both known requests.
+      const next = await request(r.http.server, "/remote-verification/v1/poll", r.issued.token, JSON.stringify({ version: 1, workerId: "worker" })).completed;
+      const assignments = [...poll.body.assignments as RemoteAssignment[], ...next.body.assignments as RemoteAssignment[]];
+      expect(new Set(assignments.map(value => value.requestId)).size).toBe(2);
+      const assignment = assignments.find(value => value.requestId === r.submitted.id)!;
+      expect(assignment).toBeTruthy();
+      expect([...poll.body.cancellations as string[], ...next.body.cancellations as string[]]).toContain(assignment.attemptId);
       const report = { attemptId: assignment.attemptId, localRunId: "never-spawned", sequence: 1, phase: "cancelled" };
       expect(await request(r.http.server, "/remote-verification/v1/report", r.issued.token, JSON.stringify({ version: 1, workerId: "worker", report })).completed).toMatchObject({ status: 200, body: { acceptedSequence: 1 } });
       expect(await f.run(() => r.controller.status(r.submitted.id, f.ownerActor))).toMatchObject({ request: { phase: "cancelled" }, result: { phase: "cancelled", sequence: 1 } });
@@ -185,7 +189,7 @@ describe("strict remote protocol and worker persistence", () => {
     } finally { acknowledge.open(); hold.resume(); await hold.pending; await ticking; await worker.close(); await closeStrictProof(f); }
   });
 
-  it("commits receipt before preparation, delays spawn, and merges a queued ACK with real running/terminal reports appended during upload", async () => {
+  it("commits receipt before preparation, delays spawn, and merges a queued ACK with a real running report appended during upload", async () => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults);
     const project = await f.run(() => f.store.addProject({ name: "worker", repositoryPath: f.root, port: 3898, executable: "", args: [], launchPreset: "none" }));
     const jobs = await f.run(() => new TestJobManager(f.store, nullLogWriter));

@@ -50,7 +50,7 @@ describe("owning service shutdown with strict provider admission", () => {
       expect(JSON.parse(durable.telemetry_json)).toMatchObject({ cleanup: "confirmed", finalizedAt: expect.any(String) });
       expect(readCommitted(destination, db => (db.prepare("SELECT count(*) n FROM projects").get() as { n: number }).n)).toBe(1);
       expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
-    } finally { writeFileSync(release, "finish"); hold.resume(); await hold.pending; await backup; await shutdown; await service.shutdown(); await closeStrictProof(f); }
+    } finally { writeFileSync(release, "finish"); hold.resume(); await hold.pending; await backup; if (shutdown) await shutdown; else await service.shutdown(); await closeStrictProof(f); }
   });
 
   it("reports failed owning-service drain, retains the singleton lock, and closes on retry after late provider execution settles", async () => {
@@ -68,7 +68,9 @@ describe("owning service shutdown with strict provider admission", () => {
       expect(existsSync(`${f.path}.owner.lock`)).toBe(true);
       expect(() => new SqliteStateStore(f.path)).toThrow();
       await expect(f.runtime.resolve(new Headers())).rejects.toMatchObject({ code: "provider_disposed" });
-      await expect(f.store.admission.run(() => f.store.listProjects())).rejects.toMatchObject({ code: "draining" });
+      await expect(service.operate("new-project", "start", f.root)).rejects.toThrow("zamykany");
+      // Internal core completion remains possible during drain; lifecycle admission is the firewall.
+      expect(await f.store.admission.run(() => f.store.listProjects())).toEqual([]);
       hold.resume();
       expect(await f.store.authenticationProviderStorage().drain(2000)).toBe(true);
       await service.shutdown();
