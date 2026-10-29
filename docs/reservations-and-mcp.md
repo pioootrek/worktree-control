@@ -84,8 +84,12 @@ appends its audit event. UI, CLI, and MCP never open the database directly.
 
 The compatibility claim operation atomically reserves and switches the server.
 Scoped claims reserve only unless the caller explicitly requests `start: true`
-and holds `runtime:control`. A
-separate `acquire` followed by `switch` would leave a race between the calls.
+and holds `runtime:control`. A later explicit `start_project` or `restart_project`
+under that lease can move a server left running on another worktree;
+`stop_project` can stop it without changing the selection or releasing the lease.
+These operations hold the shared project lock and revalidate the exact lease and
+current runtime authority before effects, including after stopping and before
+spawning. The reservation-only claim itself never moves or stops a server.
 If switching fails, the result reports both the failed runtime transition and
 whether the lease remains held so recovery is unambiguous.
 

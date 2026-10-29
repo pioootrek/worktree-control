@@ -46,12 +46,15 @@ export class RuntimeService {
       this.store.recordProjectEvent(projectId, "agent.runtime_accepted", actorRef, { operationId, reservationId, action });
       this.logs.controller("agent.runtime_accepted", { operationId, projectId, reservationId, action, actor: actorRef });
       const initial = this.processes.snapshot(projectId);
+      // Scoped claims can reserve without placing the server. Their explicit
+      // runtime operation controls the project under the validated bound lease.
+      const scopedPlacement = actor.binding !== undefined && initial.worktreePath !== claim.worktreePath;
 
       let outcome: ClaimedRuntimeReceipt["outcome"] = "completed";
       let operationError: ClaimedRuntimeReceipt["error"] = null;
       try {
         if (project.launchPreset === "none") throw new ClaimedRuntimeOperationError("no_managed_server", NO_SERVER_MESSAGE);
-        if (initial.pid && initial.worktreePath !== claim.worktreePath) {
+        if (initial.pid && initial.worktreePath !== claim.worktreePath && !scopedPlacement) {
           throw new ClaimedRuntimeOperationError("runtime_worktree_mismatch", "The managed runtime does not match the claimed worktree.");
         }
         if (action === "stop") {
@@ -74,7 +77,7 @@ export class RuntimeService {
             throw new ClaimedRuntimeOperationError("capacity_exhausted", "Managed server capacity is exhausted.");
           }
           try {
-            if (action === "restart" && initial.pid) {
+            if ((action === "restart" && initial.pid) || (scopedPlacement && initial.phase !== "stopped")) {
               verify();
               await this.stopRuntime(projectId);
               verify();

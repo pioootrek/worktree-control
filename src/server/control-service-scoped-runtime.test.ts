@@ -257,6 +257,70 @@ describe("scoped agent runtime", () => {
     f.store.close();
   });
 
+  it.each(["start", "restart", "stop"] as const)("allows explicit %s after reserving a different worktree without starting", async (action) => {
+    const f = fixture();
+    f.grant(all);
+    const actor = f.credential(all);
+    const first = await f.claim(actor, { start: true });
+    await f.service.releaseScopedClaim(actor, f.session, f.project.id, first.result.reservationId, first.leaseToken);
+    f.start.mockClear();
+    f.store.setServerCapacitySettings({ enabled: true, limit: 1 });
+    const held = await f.claim(actor, { worktreePath: "/code/web-feature", idempotencyKey: "reserve-feature" });
+    expect(f.runtime(f.project.id).worktreePath).toBe("/code/web");
+    expect(f.start).not.toHaveBeenCalled();
+    expect(f.stop).not.toHaveBeenCalled();
+    f.resolve.mockReturnValue({ preset: "node", executable: "npm", args: ["run", "dev"], portMethod: "environment", tls: { mode: "off", keyPath: null, certPath: null, caPath: null } });
+    const result = await f.service.operateScopedRuntime(actor, f.session, held.leaseToken, f.project.id, held.result.reservationId, action);
+    expect(result).toMatchObject({ outcome: "completed", error: null, leaseHeld: true, claimedWorktreePath: "/code/web-feature" });
+    expect(f.stop).toHaveBeenCalledOnce();
+    expect(f.store.getActiveReservation(f.project.id)?.id).toBe(held.result.reservationId);
+    if (action === "stop") {
+      expect(result.runtime.phase).toBe("stopped");
+      expect(f.start).not.toHaveBeenCalled();
+      expect(f.store.getProject(f.project.id)?.selectedWorktreePath).toBe("/code/web");
+    } else {
+      expect(result.runtime).toMatchObject({ phase: "running", worktreePath: "/code/web-feature" });
+      expect(f.start).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ executable: "npm" }), "/code/web-feature", expect.any(Function));
+      expect(f.store.getProject(f.project.id)?.selectedWorktreePath).toBe("/code/web-feature");
+    }
+    f.store.close();
+  });
+
+  it.each(["after-git", "after-stop", "before-spawn"] as const)("refuses scoped placement when runtime authority is revoked %s", async (boundary) => {
+    const f = fixture();
+    f.grant(all);
+    const actor = f.credential(all);
+    Object.assign(f.runtime(f.project.id), { phase: "running", pid: 42, worktreePath: "/code/web" });
+    const held = await f.claim(actor, { worktreePath: "/code/web-feature" });
+    const revokeControl = () => f.grant(["projects:read", "claims:manage"], f.project.id, 1);
+    if (boundary === "after-git") f.hooks.beforeGitReturn = revokeControl;
+    else if (boundary === "after-stop") f.hooks.duringStop = revokeControl;
+    else f.hooks.beforeStartHook = revokeControl;
+    await expect(f.service.operateScopedRuntime(actor, f.session, held.leaseToken, f.project.id, held.result.reservationId, "start"))
+      .rejects.toBeInstanceOf(RuntimeAccessDenied);
+    expect(f.spawned()).toBe(0);
+    expect(f.stop).toHaveBeenCalledTimes(boundary === "after-git" ? 0 : 1);
+    expect(f.store.getActiveReservation(f.project.id)?.id).toBe(held.result.reservationId);
+    f.store.close();
+  });
+
+  it.each(["released", "cleanup-failed"] as const)("does not spawn during scoped placement after %s stop", async (failure) => {
+    const f = fixture();
+    f.grant(all);
+    const actor = f.credential(all);
+    Object.assign(f.runtime(f.project.id), { phase: "running", pid: 42, worktreePath: "/code/web" });
+    const held = await f.claim(actor, { worktreePath: "/code/web-feature" });
+    f.hooks.duringStop = () => {
+      if (failure === "released") f.store.releaseReservation(f.project.id, "local-user", true);
+      else throw new Error(SENTINEL);
+    };
+    const result = await f.service.operateScopedRuntime(actor, f.session, held.leaseToken, f.project.id, held.result.reservationId, "start");
+    expect(result).toMatchObject({ outcome: "failed", leaseHeld: failure !== "released", error: { code: failure === "released" ? "claim_stale" : "cleanup_unconfirmed" } });
+    expect(JSON.stringify(result)).not.toContain(SENTINEL);
+    expect(f.start).not.toHaveBeenCalled();
+    f.store.close();
+  });
+
   it("keeps storage failures distinct from claim conflicts and stale claims without exposing messages", async () => {
     const f = fixture();
     f.grant(all);

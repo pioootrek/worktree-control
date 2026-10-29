@@ -198,6 +198,11 @@ explicitly when execution is authorized; both `claims:manage` and
 `runtime:control` are required. Alternatively acquire without starting and call
 `start_project` with the returned project/reservation IDs and a new idempotency
 key. `restart_project` and `stop_project` use the same own-lease requirement.
+If the previous holder left a server running on another worktree, explicit
+`start_project` or `restart_project` stops it and starts the claimed worktree.
+`stop_project` stops the project's managed server without changing the selected
+worktree or releasing the claim. Every operation still requires current
+`runtime:control`; a reservation alone does not authorize runtime changes.
 For example, these are MCP tool argument objects, with placeholders replaced
 by discovery/claim results:
 
