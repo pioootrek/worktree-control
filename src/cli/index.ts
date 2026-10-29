@@ -197,13 +197,14 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const controllerLock = retainedLock ?? acquireControllerLock(paths.controllerLockPath);
   let maintenance = false;
 
-  const events = new EventStream();
   let store;
   try {
     const handoff = recoverBackupHandoff(paths.databasePath, paths.knowledgeAttachmentDirectory, backupPolicy);
     store = await openControllerStore(paths.databasePath, { ...migrationBackup, applicationVersion: packageJson.version, attachmentDirectory: paths.knowledgeAttachmentDirectory });
     if (handoff) finishBackupHandoff(paths.databasePath, handoff, store);
   } catch (error) { store?.close(); controllerLock.release(); throw error; }
+  // Every producer below shares this store's single connection gate for database admission.
+  const events = new EventStream(store.admission);
   const authentication = new AuthenticationService(store);
   const serviceMode = process.argv.includes("--service-mode");
   let logs: FileLogWriter;
@@ -225,10 +226,12 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       source: store, estimateBytes: () => store.backupEstimateBytes(),
       authorize: actor => authentication.isCurrentInstallationActor(actor), maintenance: () => maintenance,
       remoteTransport: remoteBackup.loaded ? new ResticBackupTransport(remoteBackup.loaded) : undefined,
+      admission: store.admission,
     });
   } catch (error) { await logs.close(); store.close(); controllerLock.release(); throw error; }
   const processes = new ProcessManager((projectId) => events.publish({ kinds: ["runtime"], projectIds: [projectId] }), logs, {
     memoryWarningThresholdBytes: memoryWarningMiB === null ? null : Math.round(memoryWarningMiB * 1024 * 1024),
+    admission: store.admission,
   });
   const lifecycle = new ProjectLifecycle(store, processes);
   const storage = new WorktreeStorageManager(store, lifecycle, undefined, (projectId) => events.publish({ kinds: ["storage"], projectIds: [projectId] }));
@@ -336,6 +339,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     authentication,
     publicOrigin,
     backups, restores, userSchedules, maintenance: () => maintenance,
+    admission: store.admission,
   });
   try {
     await remoteVerification?.start();
@@ -379,7 +383,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   try {
     const authenticationHandler = authenticationAdminHandler({
       authentication,
-      closeMcpSessions: async () => { await mcp?.closeSessions(); },
+      closeMcpSessions: () => store.admission.idle(async () => { await mcp?.closeSessions(); }),
       disconnectEvents: () => events.disconnectAll(),
       onPolicyChanged: (command) => {
         if (serviceMode) recordServiceAccess();
@@ -394,7 +398,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
         return mcpDiagnosticsHandler(body);
       }
       if (maintenance) throw new Error("Controller is in maintenance.");
-      return authenticationHandler(body);
+      return store.admission.run(() => authenticationHandler(body));
     });
   } catch (error) {
     userSchedules?.close(); await backups.close();

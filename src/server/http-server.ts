@@ -21,6 +21,7 @@ import { localizeServerMessage } from "../i18n/server-errors";
 import { DirectoryBrowser } from "./directory-browser";
 import { EventStream } from "./events";
 import { resolveControllerAuthentication, type ControllerAuthenticationDependencies } from "./modules/authentication";
+import { databaseAdmissionFailure, directAdmission, type DatabaseAdmission } from "./database-admission";
 import { IdentityError, type AuthenticatedPrincipal, type ControllerAuthentication, type IdentityService, type KnowledgePermission } from "./modules/identity";
 
 const JSON_LIMIT = 64 * 1024;
@@ -433,9 +434,17 @@ export function createControllerServer(options: {
   restores?: RestoreOperations;
   userSchedules?: UserSchedules;
   maintenance?: () => boolean;
+  /**
+   * Each API request runs as one admitted operation. Body reads, project
+   * serialization, process readiness, Git and other long waits inside release
+   * admission (`idle`); SSE subscriptions return after registration.
+   */
+  admission?: DatabaseAdmission;
 }): ControllerServer {
+  const admission = options.admission ?? directAdmission;
+  const readBody = (request: IncomingMessage, limit?: number) => admission.idle(() => readRequestJson(request, limit));
   const readJson = async (request: IncomingMessage, limit?: number): Promise<unknown> => {
-    const input = await readRequestJson(request, limit);
+    const input = await readBody(request, limit);
     if (options.maintenance?.()) throw new BackupError("backup_busy", 503);
     return input;
   };
@@ -461,7 +470,16 @@ export function createControllerServer(options: {
     });
     return result && result.kind !== "legacy" ? result.actor : null;
   };
-  const server = createServer(async (request, response) => {
+  const server = createServer((request, response) => {
+    void admission.run(() => handleRequest(request, response)).catch((error: unknown) => {
+      // Admission refused before the handler ran, or a fault after it already answered.
+      const failure = databaseAdmissionFailure(error);
+      if (response.headersSent) { response.destroy(); return; }
+      if (failure?.retryable) response.setHeader("Retry-After", "1");
+      json(response, failure?.status ?? 500, { code: failure?.code ?? "request_failed", error: failure?.code ?? "request_failed" });
+    });
+  });
+  const handleRequest = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const url = new URL(request.url ?? "/", request.headers.host ? `http://${request.headers.host}` : fallbackOrigin);
     const locale = localeFrom(request.headers["accept-language"]);
     try {
@@ -469,14 +487,14 @@ export function createControllerServer(options: {
         response.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
         if (url.pathname === "/api/user-backups" && options.userSchedules) {
           if (!hasValidOrigin(request, options.publicOrigin)) { json(response, 403, { code: "forbidden" }); return; }
-          await handleUserBackupHttp(request, authenticateActor(request), options.userSchedules, readRequestJson, (status, body) => json(response, status, body));
+          await handleUserBackupHttp(request, authenticateActor(request), options.userSchedules, readBody, (status, body) => json(response, status, body));
           return;
         }
         if (url.pathname === "/api/backups" && options.backups && options.restores) {
           if (!hasValidOrigin(request, options.publicOrigin)) { json(response, 403, { code: "origin_forbidden", error: "origin_forbidden" }); return; }
           const runtime = authenticateRuntime(request);
           const actor = runtime?.kind === "installation" ? runtime.actor : authenticateActor(request);
-          await handleBackupHttp(request, response, actor, options.backups, options.restores, readRequestJson, (status, body) => json(response, status, body));
+          await handleBackupHttp(request, response, actor, options.backups, options.restores, readBody, (status, body) => json(response, status, body));
           return;
         }
         if (options.maintenance?.()) { json(response, 503, { code: "backup_busy", error: "backup_busy" }); return; }
@@ -490,7 +508,7 @@ export function createControllerServer(options: {
             try { input = await readJson(request, 96 * 1024); }
             catch { json(response, 400, { code: "vault_invalid_request" }); return; }
             json(response, 200, await executeDevVault(options.devVault, input, authenticateActor(request)));
-          } catch (error) { const failure = devVaultFailure(error); json(response, failure.status, failure.body); }
+          } catch (error) { if (databaseAdmissionFailure(error)) throw error; const failure = devVaultFailure(error); json(response, failure.status, failure.body); }
           return;
         }
         if (url.pathname === "/api/knowledge") {
@@ -514,6 +532,7 @@ export function createControllerServer(options: {
             catch (error) { throw new KnowledgeError(error instanceof Error && error.message === "Żądanie jest zbyt duże." ? "limit_exceeded" : "invalid_request", "Invalid knowledge JSON request."); }
             json(response, 200, options.service.executeKnowledge(input, actor));
           } catch (error) {
+            if (databaseAdmissionFailure(error)) throw error;
             const failure = knowledgeFailure(error);
             json(response, failure.status, failure.body);
           }
@@ -599,7 +618,9 @@ export function createControllerServer(options: {
               return;
             }
             json(response, 200, options.identity.describeIdentity(actor));
-          } catch {
+          } catch (error) {
+            // Contention is reported as such, never as an invalid credential.
+            if (databaseAdmissionFailure(error)) throw error;
             json(response, 401, { error: localizeServerMessage("Brak prawidłowego klucza dostępu.", locale) });
           }
           return;
@@ -632,7 +653,7 @@ export function createControllerServer(options: {
             return;
           }
           if (!options.mcpDiagnostics) { json(response, 503, { error: "MCP diagnostics are unavailable." }); return; }
-          json(response, 200, await options.mcpDiagnostics());
+          json(response, 200, await admission.idle(options.mcpDiagnostics));
           return;
         }
         const runtimeAuthentication = authenticateRuntime(request);
@@ -665,10 +686,10 @@ export function createControllerServer(options: {
           return;
         }
         if (request.method === "GET" && url.pathname === "/api/directories") {
-          json(response, 200, await options.directoryBrowser.list(
+          json(response, 200, await admission.idle(() => options.directoryBrowser.list(
             url.searchParams.get("path") ?? undefined,
             url.searchParams.get("files") === "certificates",
-          ));
+          )));
           return;
         }
         if (request.method === "GET" && url.pathname === "/api/events") {
@@ -904,12 +925,18 @@ export function createControllerServer(options: {
       serveStatic(options.webRoot, url.pathname, response, request.method === "HEAD");
     } catch (error) {
       if (error instanceof BackupError) { json(response, error.status, { code: error.code, error: error.code }); return; }
+      const admissionFailure = databaseAdmissionFailure(error);
+      if (admissionFailure) {
+        if (admissionFailure.retryable) response.setHeader("Retry-After", "1");
+        json(response, admissionFailure.status, { code: admissionFailure.code, error: admissionFailure.code });
+        return;
+      }
       const rawMessage = messageFrom(error);
       const conflict = /zajęty|zablokowany|osiągnięto limit|UNIQUE constraint/i.test(rawMessage);
       const message = localizeServerMessage(rawMessage, locale);
       json(response, conflict ? 409 : 400, { error: message });
     }
-  });
+  };
 
   const closeServer = createHttpServerCloser(server);
   return {

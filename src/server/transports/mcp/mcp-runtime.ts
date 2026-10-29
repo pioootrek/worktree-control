@@ -10,6 +10,7 @@ import { ScopedRuntimeError } from "../../modules/runtime";
 import type { AuthenticatedPrincipal } from "../../modules/identity";
 import { McpDiagnostics, type McpSessionObservation, type McpCloseReason } from "../../mcp-diagnostics";
 import { randomUUID } from "node:crypto";
+import { admitNowOrLater, admissionOf, databaseAdmissionFailure } from "../../database-admission";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -416,7 +417,15 @@ export class McpRuntime {
       const settle = session.governed.callStarted();
       this.diagnostics.change(session.observation, "operations", 1);
       if (qualifying) this.recordActivity(session);
-      try { return await handler(request, extra); }
+      // One admitted operation per protocol request; long waits inside release it.
+      try { return await admissionOf(this.service).run(() => handler(request, extra)); }
+      catch (error) {
+        const failure = databaseAdmissionFailure(error);
+        if (!failure) throw error;
+        throw new McpError(ErrorCode.InternalError, failure.retryable
+          ? "The controller database is busy; retry the request."
+          : "The controller database is unavailable.", { reason: failure.code, retryable: failure.retryable });
+      }
       finally {
         if (qualifying) this.recordActivity(session);
         this.diagnostics.change(session.observation, "operations", -1);
@@ -972,12 +981,23 @@ export class McpRuntime {
         this.diagnostic("mcp.claim_auto_renew_stopped", { projectId: claim.projectId, reservationId: claim.reservationId, reason: "client-idle" });
         return;
       }
-      try {
+      // A timer gets its own admission. Contention retries soon; only a refused renewal ends it.
+      admitNowOrLater(admissionOf(this.service), () => {
+        // Recheck after any admission wait: the session or claim may have ended meanwhile.
+        if (session.closing || session.claims.get(claim.reservationId) !== claim) return false;
         // Scoped claims re-read credential, delegation and sponsor here; a denial ends renewal below.
         claim.renew(claim.ttlSeconds);
+        return true;
+      }, renewed => {
+        if (!renewed) return;
         this.diagnostics.renewed(session.observation, true);
         this.scheduleRenewal(session, claim);
-      } catch (error) {
+      }, (error: unknown) => {
+        if (databaseAdmissionFailure(error)?.retryable) {
+          this.diagnostic("mcp.claim_auto_renew_deferred", { projectId: claim.projectId, reservationId: claim.reservationId, reason: "database-busy" });
+          this.scheduleRenewal(session, claim, 1_000);
+          return;
+        }
         if (session.claims.get(claim.reservationId) === claim && session.claims.delete(claim.reservationId)) {
           this.diagnostics.change(session.observation, "claims", -1);
         }
@@ -987,7 +1007,7 @@ export class McpRuntime {
           reservationId: claim.reservationId,
           error: error instanceof Error ? error.message : String(error),
         });
-      }
+      });
     }, delay);
   }
 

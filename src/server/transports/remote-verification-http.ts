@@ -1,3 +1,4 @@
+import { databaseAdmissionFailure, directAdmission, type DatabaseAdmission } from "../database-admission";
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import type { IdentityService } from "@/server/modules/identity";
@@ -28,7 +29,17 @@ export function createRemoteVerificationServer(options: {
   identity: Pick<IdentityService, "authenticateBearer">;
   tls?: { key: Buffer; cert: Buffer };
   allowLoopbackHttpFixture?: boolean;
+  /** Authentication and each protocol operation are admitted; the body read is not. */
+  admission?: DatabaseAdmission;
 }) {
+  const admission = options.admission ?? directAdmission;
+  const busy = (response: ServerResponse, error: unknown) => {
+    const failure = databaseAdmissionFailure(error);
+    if (!failure) return false;
+    if (failure.retryable) response.setHeader("Retry-After", "1");
+    json(response, failure.status, { error: failure.code });
+    return true;
+  };
   if (!options.tls && !options.allowLoopbackHttpFixture) throw new Error("remote_https_required");
   const handle = async (request: IncomingMessage, response: ServerResponse) => {
     if (!options.tls && !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.socket.remoteAddress ?? "")) return json(response, 403, { error: "loopback_fixture_only" });
@@ -38,20 +49,24 @@ export function createRemoteVerificationServer(options: {
     let actor;
     const token = request.headers.authorization?.startsWith("Bearer ") ? request.headers.authorization.slice(7) : "";
     try {
-      actor = options.identity.authenticateBearer(token);
+      actor = await admission.run(() => options.identity.authenticateBearer(token));
       if (actor.authenticationMethod !== "worker_token") throw new Error("worker_token_required");
-    } catch { return json(response, 401, { error: "worker_authentication_required" }); }
+    } catch (error) { if (busy(response, error)) return; return json(response, 401, { error: "worker_authentication_required" }); }
     try {
       const input = await body(request);
-      actor = options.identity.authenticateBearer(token);
-      if (request.url.endsWith("/poll")) {
-        const poll = remotePollSchema.parse(input);
-        json(response, 200, options.controller.poll(poll.workerId, actor));
-      } else {
+      const url = request.url;
+      // Re-authenticate and apply in one admitted phase after the body arrived.
+      const result = await admission.run(() => {
+        const current = options.identity.authenticateBearer(token);
+        if (url.endsWith("/poll")) {
+          const poll = remotePollSchema.parse(input);
+          return options.controller.poll(poll.workerId, current);
+        }
         const report = remoteReportEnvelopeSchema.parse(input);
-        json(response, 200, { version: 1, ...options.controller.report(report.workerId, report.report, actor) });
-      }
-    } catch { json(response, 400, { error: "remote_protocol_rejected" }); }
+        return { version: 1, ...options.controller.report(report.workerId, report.report, current) };
+      });
+      json(response, 200, result);
+    } catch (error) { if (!busy(response, error)) json(response, 400, { error: "remote_protocol_rejected" }); }
   };
   const listener = (request: IncomingMessage, response: ServerResponse) => { void handle(request, response).catch(() => { if (!response.headersSent) json(response, 500, { error: "remote_protocol_failed" }); else response.destroy(); }); };
   const server = options.tls ? createHttpsServer(options.tls, listener) : createHttpServer(listener);

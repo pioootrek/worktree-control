@@ -10,7 +10,8 @@ export interface LogWriter {
   openTest(runId: string): void;
   test(runId: string, line: string): void;
   finishTest(runId: string): Promise<void>;
-  pruneTests(isRetained: (runId: string) => boolean): Promise<void>;
+  /** `isRetained` may wait (for database admission); a rejection fails the pass without deleting. */
+  pruneTests(isRetained: (runId: string) => boolean | Promise<boolean>): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -137,7 +138,7 @@ export class FileLogWriter implements LogWriter {
     return completion;
   }
 
-  pruneTests(isRetained: (runId: string) => boolean): Promise<void> {
+  pruneTests(isRetained: (runId: string) => boolean | Promise<boolean>): Promise<void> {
     if (this.closing) return Promise.resolve();
     this.pruneAgain = true;
     // Defer entry so even synchronous failures clear an already assigned promise.
@@ -153,7 +154,8 @@ export class FileLogWriter implements LogWriter {
             const match = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.log(?:\.1)?$/.exec(entry.name);
             if (!entry.isFile() || !match) continue;
             const id = match[1];
-            if (this.testFiles.has(id) || this.finishing.has(id) || isRetained(id)) continue;
+            const active = () => this.testFiles.has(id) || this.finishing.has(id);
+            if (active() || await isRetained(id) || active()) continue;
             await unlink(join(root, entry.name)).catch((error: NodeJS.ErrnoException) => {
               if (error.code !== "ENOENT") throw error;
             });

@@ -35,6 +35,7 @@ import { type LogWriter, nullLogWriter } from "./log-writer";
 import { ProcessManager } from "./process-manager";
 import { discoverProjectRegistrationTarget } from "./project-registration";
 import type { NewProject, ReservationRequest, StateStore } from "./state-store";
+import { admissionOf, type DatabaseAdmission } from "./database-admission";
 import { ProjectTestCommandResolver } from "./test-command";
 import type { TestJobManager } from "./test-job-manager";
 import { AllowlistedWorktreeCacheCleaner, type WorktreeCacheCleaner, type WorktreeStorageManager } from "./worktree-storage";
@@ -105,6 +106,9 @@ export class ControlService {
         worktreePath => testCommands.discover(worktreePath), logs);
     }
   }
+
+  /** Core admission of the store this facade operates on; transports admit each request with it. */
+  get admission(): DatabaseAdmission { return admissionOf(this.store); }
 
   /** Scoped agent runtime access; enforcement and safe views live in the runtime module. */
   scopedRuntimeEnabled(): boolean { return !!this.scopedRuntime; }
@@ -614,7 +618,8 @@ export class ControlService {
         if (!releaseMaintenance) {
           throw new Error("Poczekaj na zakończenie pomiaru dysku przed usunięciem katalogu .next.");
         }
-        const result = await this.cacheCleaner.remove(selected.path, cache);
+        // Deletion is SQL-free and may be long; the maintenance permit keeps the worktree reserved meanwhile.
+        const result = await this.admission.idle(() => this.cacheCleaner.remove(selected.path, cache));
         this.store.recordProjectEvent(projectId, "worktree_cache.delete_succeeded", "local-user", { ...auditDetails, removed: result.removed });
         releaseMaintenance();
         releaseMaintenance = null;
@@ -652,7 +657,10 @@ export class ControlService {
     this.dashboardQueries.close();
     this.git.close?.();
     try {
-      this.store.close();
+      // Accepted database work, backups and provider executions settle first; a failed drain keeps ownership.
+      const owner = this.store as StateStore & { closeAfterDrain?: () => Promise<void> };
+      if (owner.closeAfterDrain) await owner.closeAfterDrain();
+      else this.store.close();
     } catch (error) {
       failures.push(error);
     }

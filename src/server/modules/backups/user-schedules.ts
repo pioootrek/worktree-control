@@ -1,3 +1,4 @@
+import { admitWithRetry, databaseAdmissionFailure } from "@/server/database-admission";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, linkSync, lstatSync, rmSync, statfsSync } from "node:fs";
 import { join } from "node:path";
@@ -69,7 +70,7 @@ export class UserSchedules {
   }
   private authenticate(actor: AuthenticatedPrincipal): void {
     if (!((actor.principalKind === "owner" && actor.authenticationMethod === "owner_session") || (actor.principalKind === "agent" && actor.authenticationMethod === "agent_token"))) throw new UserBackupError("forbidden", 403);
-    try { this.deps.authorize(actor); } catch { throw new UserBackupError("forbidden", 403); }
+    try { this.deps.authorize(actor); } catch (error) { if (databaseAdmissionFailure(error)) throw error; throw new UserBackupError("forbidden", 403); }
   }
   private validate(schedule: Schedule): void {
     this.authenticate(schedule.actor);
@@ -77,7 +78,7 @@ export class UserSchedules {
     if (!this.policy.enabled || !this.policy.scopes.includes(schedule.scope) || !this.policy.projects.includes(schedule.projectId) || !this.policy.targets.some(value => value.id === schedule.targetId)
       || schedule.intervalSeconds < this.policy.minIntervalSeconds || schedule.retainCount > this.policy.retainCount || schedule.retainDays > this.policy.retainDays
       || this.ledger.schedules.filter(value => value.ownerId === schedule.ownerId).length > this.policy.maxSchedules) throw new UserBackupError("policy", 403);
-    try { this.deps.authorize(schedule.actor, schedule.projectId); } catch { throw new UserBackupError("forbidden", 403); }
+    try { this.deps.authorize(schedule.actor, schedule.projectId); } catch (error) { if (databaseAdmissionFailure(error)) throw error; throw new UserBackupError("forbidden", 403); }
   }
   private admission(): void {
     if (this.closed || this.broken || this.recovery.unavailable) throw new UserBackupError("busy", 503);
@@ -88,7 +89,7 @@ export class UserSchedules {
     const { targets, projects, ...policy } = this.policy;
     const allowed = projects.flatMap(id => {
       if (!policy.enabled) return [];
-      try { this.deps.authorize(actor, id); const name = this.deps.projectName(id); return name ? [{ id, name }] : []; } catch { return []; }
+      try { this.deps.authorize(actor, id); const name = this.deps.projectName(id); return name ? [{ id, name }] : []; } catch (error) { if (databaseAdmissionFailure(error)) throw error; return []; }
     });
     const schedules = this.ledger.schedules.filter(value => value.ownerId === actor.principalId).map(value => this.publicSchedule(value, actor));
     return { mutationGeneration: this.ledger.mutationGeneration, policy, projects: allowed, targets: policy.enabled && allowed.length ? targets.map(value => value.id) : [], schedules,
@@ -172,7 +173,11 @@ export class UserSchedules {
       } catch (error) { reject(error); }
     });
   }
-  start(): void { if (this.policy.enabled && !this.closed) { try { this.tick(); } catch { this.broken = true; } this.arm(); } }
+  start(): void { if (this.policy.enabled && !this.closed) this.scheduledTick(); }
+  /** Timer work: every tick is its own admitted phase; contention waits for the next second instead of breaking schedules. */
+  private scheduledTick(): void {
+    void this.backups.admission.detached(() => this.tick()).catch(error => { if (!databaseAdmissionFailure(error)?.retryable) this.broken = true; }).finally(() => this.arm());
+  }
   tick(): void {
     if (!this.policy.enabled || this.closed || this.broken || this.isBusy()) return;
     for (const schedule of this.ledger.schedules) {
@@ -191,7 +196,8 @@ export class UserSchedules {
       this.ledger.executions.push(execution); this.save();
       try {
         this.validate(schedule); this.admission();
-        this.backups.enqueueExport(schedule.ownerId, this.policy.queueLimit, () => this.execute(execution), () => { this.finish(execution, "interrupted", "interrupted"); });
+        // The executor runs the export later and detached; it is admitted on its own and rechecks authority.
+        this.backups.enqueueExport(schedule.ownerId, this.policy.queueLimit, async () => { await admitWithRetry(this.backups.admission, () => this.execute(execution), { reserved: true }); }, () => { this.finish(execution, "interrupted", "interrupted"); });
         schedule.reason = null;
       } catch (error) { this.finish(execution, "denied", this.reason(error)); schedule.reason = execution.reason; }
       this.save();
@@ -264,5 +270,5 @@ export class UserSchedules {
   private iso(): string { return new Date(this.now()).toISOString(); }
   private isBusy(): boolean { try { this.admission(); return false; } catch { return true; } }
   private save(): void { try { writeRecord(this.path, this.ledger); } catch (error) { this.broken = true; throw error; } }
-  private arm(): void { if (this.closed) return; this.timer = setTimeout(() => { try { this.tick(); } catch { this.broken = true; } this.arm(); }, 1000); this.timer.unref(); }
+  private arm(): void { if (this.closed) return; this.timer = setTimeout(() => this.scheduledTick(), 1000); this.timer.unref(); }
 }

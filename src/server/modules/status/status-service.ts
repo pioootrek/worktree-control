@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
+import { admitNowOrLater, admissionOf, type DatabaseAdmission } from "@/server/database-admission";
 import type { ProcessManager, RuntimeStatusSummary } from "@/server/process-manager";
 import type { StateStore, TestRunStatusRecord } from "@/server/state-store";
 import type { Project, Reservation, ServerCapacityStatus, TestQueueStatus } from "@/shared/contracts";
@@ -105,6 +106,7 @@ export class StatusService {
   private timer: NodeJS.Timeout | null = null;
   private sampling = false;
   private closed = false;
+  private readonly admission: DatabaseAdmission;
 
   constructor(
     private readonly store: Pick<StateStore,
@@ -113,7 +115,9 @@ export class StatusService {
     private readonly processes: Pick<ProcessManager, "statusSummary" | "logTail">,
     private readonly capacity: () => ServerCapacityStatus,
     private readonly queue: () => TestQueueStatus,
-  ) {}
+  ) {
+    this.admission = admissionOf(store);
+  }
 
   project(projectId: string, owner: string): CompactEnvelope<CompactProjectStatus> {
     return this.projectEnvelope(this.observeProject(projectId), owner);
@@ -167,31 +171,38 @@ export class StatusService {
     return result();
   }
 
+  /**
+   * Long poll. The initial read and registration run in the caller's admitted
+   * operation; the wait itself holds no admission. Timeout reads and sampling
+   * are admitted independently.
+   */
   async wait(target: Target, cursor: string, sessionKey: string, timeoutMs = DEFAULT_WAIT_MS, signal?: AbortSignal): Promise<{ changed: boolean; result?: AnyEnvelope; epoch: string; cursor: string; retryAfterMs: number; errorCode?: "status_wait_busy" }> {
     if (this.closed) throw new Error("STATUS_CLOSED");
+    return this.admission.run(() => this.waitAdmitted(target, cursor, sessionKey, timeoutMs, signal));
+  }
+
+  private waitAdmitted(target: Target, cursor: string, sessionKey: string, timeoutMs: number, signal?: AbortSignal): Promise<{ changed: boolean; result?: AnyEnvelope; epoch: string; cursor: string; retryAfterMs: number; errorCode?: "status_wait_busy" }> {
     const current = this.read(target, sessionKey);
-    if (current.cursor !== cursor) return { changed: true, result: current, epoch: this.epoch, cursor: current.cursor, retryAfterMs: current.retryAfterMs ?? 0 };
+    if (current.cursor !== cursor) return Promise.resolve({ changed: true, result: current, epoch: this.epoch, cursor: current.cursor, retryAfterMs: current.retryAfterMs ?? 0 });
     if (this.waiterCount() >= MAX_WAITERS || (this.sessionCounts.get(sessionKey) ?? 0) >= MAX_SESSION_WAITERS) {
-      return { changed: false, epoch: this.epoch, cursor: current.cursor, retryAfterMs: 2_000, errorCode: "status_wait_busy" };
+      return Promise.resolve({ changed: false, epoch: this.epoch, cursor: current.cursor, retryAfterMs: 2_000, errorCode: "status_wait_busy" as const });
     }
     const key = `${target.kind}:${target.id}`;
     if (!this.targets.has(key) && this.targets.size >= MAX_TARGETS) {
-      return { changed: false, epoch: this.epoch, cursor: current.cursor, retryAfterMs: 2_000, errorCode: "status_wait_busy" };
+      return Promise.resolve({ changed: false, epoch: this.epoch, cursor: current.cursor, retryAfterMs: 2_000, errorCode: "status_wait_busy" as const });
     }
     const boundedTimeout = Math.max(1, Math.min(MAX_WAIT_MS, timeoutMs));
-    return new Promise((resolve, reject) => {
+    const waiting = new Promise<{ changed: boolean; result?: AnyEnvelope; epoch: string; cursor: string; retryAfterMs: number }>((resolve, reject) => {
       const waiter: Waiter = {
         sessionKey, initialCursor: cursor, reject,
         resolve: (result) => resolve({ changed: true, result, epoch: this.epoch, cursor: result.cursor, retryAfterMs: result.retryAfterMs ?? 0 }),
         timer: setTimeout(() => {
           this.remove(key, waiter);
-          try {
-            const latest = this.read(target, sessionKey);
+          // A timer is detached from the request that registered it.
+          admitNowOrLater(this.admission, () => this.read(target, sessionKey), latest => {
             resolve({ changed: latest.cursor !== cursor, result: latest.cursor !== cursor ? latest : undefined,
               epoch: this.epoch, cursor: latest.cursor, retryAfterMs: latest.retryAfterMs ?? 2_000 });
-          } catch (error) {
-            reject(error instanceof Error ? error : new Error(String(error)));
-          }
+          }, error => reject(error instanceof Error ? error : new Error(String(error))));
         }, boundedTimeout),
         signal,
       };
@@ -216,6 +227,7 @@ export class StatusService {
         reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
+    return this.admission.idle(() => waiting);
   }
 
   diagnostics(sessionKey?: string) {
@@ -286,13 +298,20 @@ export class StatusService {
   private waiterCount(): number { let count = 0; for (const group of this.targets.values()) count += group.waiters.size; return count; }
   private ensureTimer(): void {
     if (this.timer) return;
-    this.timer = setInterval(() => void this.sample(), SAMPLE_MS);
+    this.timer = setInterval(() => this.sample(), SAMPLE_MS);
     this.timer.unref();
   }
-  private async sample(): Promise<void> {
+  private sample(): void {
     if (this.sampling) return;
     this.sampling = true;
-    try {
+    // Each sampling pass is its own bounded admission. Contention skips this
+    // pass; waiters keep waiting for the next one or their own timeout.
+    const done = () => { this.sampling = false; };
+    admitNowOrLater(this.admission, () => this.sampleAdmitted(), done, done);
+  }
+
+  private sampleAdmitted(): void {
+    {
       for (const [key, group] of [...this.targets]) {
         let sharedProject: ProjectObservation | null = null;
         let sharedTest: AnyEnvelope | null = null;
@@ -315,7 +334,7 @@ export class StatusService {
           } catch (error) { this.remove(key, waiter); waiter.reject(error instanceof Error ? error : new Error(String(error))); }
         }
       }
-    } finally { this.sampling = false; }
+    }
   }
   private remove(key: string, waiter: Waiter): void {
     const group = this.targets.get(key);

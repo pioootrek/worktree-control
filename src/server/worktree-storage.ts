@@ -3,6 +3,7 @@ import { dirname, relative, resolve, sep } from "node:path";
 
 import type { CacheDeletionResult, SafeCacheKind, WorktreeStorageSnapshot } from "@/shared/contracts";
 import type { StateStore, WorktreeStorageSample } from "./state-store";
+import { admissionOf, admitWithRetry } from "./database-admission";
 import type { WorktreeMaintenanceAccess } from "./modules/lifecycle";
 
 const AUTO_REFRESH_MS = 6 * 60 * 60_000;
@@ -175,9 +176,16 @@ export class WorktreeStorageManager {
         this.states.set(key, { status: "scanning", error: null });
         this.onChange(projectId);
         try {
+          // The scan holds no database admission; only its result is saved under a fresh one.
           const sample = await this.scanner.scan(worktreePath, this.abortController.signal);
           if (this.closing) return;
-          this.store.saveWorktreeStorage({ ...sample, projectId, measuredAt: new Date().toISOString() });
+          const measuredAt = new Date().toISOString();
+          const saved = await admitWithRetry(admissionOf(this.store), () => {
+            if (this.closing) return false;
+            this.store.saveWorktreeStorage({ ...sample, projectId, measuredAt });
+            return true;
+          });
+          if (!saved) return;
           this.states.delete(key);
         } catch (error) {
           this.lastAttempts.set(key, Date.now());

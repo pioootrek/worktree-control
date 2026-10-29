@@ -19,7 +19,7 @@ export function createRemoteVerificationRuntime(config: RemoteVerificationConfig
   const controller = new RemoteVerificationController(store, store.remoteConnection, identity);
   controller.recover();
   const listener = config.listener ? createRemoteVerificationServer({
-    controller, identity, allowLoopbackHttpFixture: config.listener.allowLoopbackHttpFixture,
+    controller, identity, allowLoopbackHttpFixture: config.listener.allowLoopbackHttpFixture, admission: store.admission,
     ...(config.listener.keyFile && config.listener.certFile ? { tls: { key: readFileSync(config.listener.keyFile), cert: readFileSync(config.listener.certFile) } } : {}),
   }) : null;
   const workerConfig = config.worker;
@@ -27,7 +27,7 @@ export function createRemoteVerificationRuntime(config: RemoteVerificationConfig
   const worker = workerConfig ? new RemoteVerificationWorker(workerConfig.workerId, store.remoteConnection, jobs, id => store.getTestRun(id),
     new SystemRemoteWorkerExecution(workerConfig.workerId, workerConfig.mappings, store, lifecycle, git, new ProjectTestCommandResolver(),
       new SystemRemoteVerificationWorkspacePreparer(workerConfig.workspaceRoot, admission), workerConfig.workspaceRoot, recovery),
-    new HttpRemoteWorkerTransport(workerConfig.origin, workerConfig.workerId, () => readRemoteWorkerToken(workerConfig.tokenFile), workerConfig.allowLoopbackHttpFixture), receipt => recovery.isReconciled(receipt)) : null;
+    new HttpRemoteWorkerTransport(workerConfig.origin, workerConfig.workerId, () => readRemoteWorkerToken(workerConfig.tokenFile), workerConfig.allowLoopbackHttpFixture), receipt => recovery.isReconciled(receipt), store.admission) : null;
   return {
     controller,
     async start() {
