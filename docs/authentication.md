@@ -184,8 +184,8 @@ backup transfer. These checks establish this bounded handoff, not full A3.
 `cli-shutdown-admission.test.ts` exercises the actual owning CLI sequence,
 extracted without behavioral changes to
 `src/server/bootstrap/controller-shutdown.ts`. Temporary Unix listeners cover
-HTTP, MCP, admin and remote closure. Accepted HTTP/admin writes drain once on
-the successful path. Three regressions remain failing: an unconfirmed provider
+HTTP, MCP, admin and remote closure. The successful path refuses queued HTTP dispatch during maintenance, drains
+its response and settles the already accepted admin write/response once. Three regressions remain failing: an unconfirmed provider
 drain releases the controller lock while the database owner stays held; a
 listener-close failure still closes the database and releases the controller
 lock; a concurrent shutdown call returns before the first drain settles.

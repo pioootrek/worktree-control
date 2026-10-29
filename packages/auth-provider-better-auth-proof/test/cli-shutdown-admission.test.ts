@@ -37,7 +37,9 @@ async function fixture(options = {}) {
   const faults: ProofFaultInjection = {}, f = await strictProof(faults, options);
   const service = new ControlService(f.store, { list: async () => [] } as never, new ProcessManager(), undefined, undefined, undefined, undefined, undefined, undefined, undefined, new KnowledgeService(f.store, f.identity));
   const lockPath = join(f.root, "controller.lock"), controllerLock = acquireControllerLock(lockPath);
+  let maintenance = false;
   const controller = createControllerServer({ service, identity: f.identity, admission: f.store.admission,
+    maintenance: () => maintenance,
     directoryBrowser: {} as DirectoryBrowser, events: new EventStream(f.store.admission),
     mcpStatus: () => ({ phase: "disabled", endpoint: null, transport: "streamable-http", network: "loopback", authentication: "bearer", activeSessions: 0 }),
     webRoot: f.root, host: "127.0.0.1", port: 0, accessToken: "fixture" });
@@ -46,13 +48,19 @@ async function fixture(options = {}) {
   const adminProject = await f.run(() => f.store.addProject({ name: "Admin audit", repositoryPath: f.root, port: 3902, executable: "", args: [], launchPreset: "none" }));
   const adminEffect = vi.fn(() => f.store.recordProjectEvent(adminProject.id, "fixture.admin-completion", "test", {}));
   const adminPath = join(f.root, "admin.sock");
-  const admin = await listenAdminSocket(adminPath, () => f.store.admission.run(() => { adminEffect(); return { ok: true }; }));
+  const admin = await listenAdminSocket(adminPath, () => {
+    // Bootstrap checks maintenance before admitting an already parsed admin request.
+    if (maintenance) throw new Error("Controller is in maintenance.");
+    return f.store.admission.run(() => { adminEffect(); return { ok: true }; });
+  });
   const httpPath = join(f.root, "http.sock");
   // Temporary Unix sockets exercise Node's real accepted-response drain. No TCP ports or service commands.
   await listen(controller.server, httpPath); await listen(mcp.server, join(f.root, "mcp.sock")); await listen(remote.server, join(f.root, "remote.sock"));
   const closers = [remote, mcp, controller, admin].map(owner => vi.spyOn(owner, "close"));
   const accessRemoved = vi.fn(), stopping = vi.fn(), schedules = { close: vi.fn() }, backups = { close: vi.fn(async () => undefined) };
-  const shutdown = createControllerShutdown({ service, stopping, userSchedules: schedules, backups,
+  const shutdown = createControllerShutdown({
+    service: { closeAdmission: () => { maintenance = true; service.closeAdmission(); }, shutdown: () => service.shutdown() },
+    stopping, userSchedules: schedules, backups,
     remoteVerification: remote, mcp, controller, adminSocket: admin, removeServiceAccess: accessRemoved, controllerLock });
   return { ...f, faults, service, controllerLock, lockPath, controller, mcp, remote, admin, closers, adminEffect, adminPath, httpPath,
     accessRemoved, stopping, schedules, backups, shutdown,
@@ -60,7 +68,7 @@ async function fixture(options = {}) {
 }
 
 describe("owning CLI shutdown sequence with installed listeners", () => {
-  it("closes HTTP, MCP, admin and remote listeners, drains accepted responses and writes once before releasing both locks", async () => {
+  it("closes installed listeners, refuses queued HTTP dispatch and drains the accepted admin write/response before releasing both locks", async () => {
     const f = await fixture();
     const project = await f.run(() => {
       const project = f.identity.createKnowledgeProject({ name: "CLI completion" }, f.ownerActor);
@@ -81,10 +89,12 @@ describe("owning CLI shutdown sequence with installed listeners", () => {
       await expect(f.service.reserve({ projectId: "unknown", worktreePath: f.root, owner: "local-user", kind: "human", reason: "new" })).rejects.toThrow("zamykany");
       expect(settled).toBe(false); expect(existsSync(f.lockPath)).toBe(true); expect(existsSync(`${f.path}.owner.lock`)).toBe(true);
       hold.resume(); await hold.pending;
-      expect(await http).toMatchObject({ status: 200, body: { replayed: false } }); expect(await admin).toEqual({ ok: true });
+      // The socket was accepted, but HTTP application dispatch had not entered
+      // before maintenance. Its response drains without a Knowledge mutation.
+      expect(await http).toMatchObject({ status: 503, body: { code: "backup_busy" } }); expect(await admin).toEqual({ ok: true });
       await closing;
       expect(f.adminEffect).toHaveBeenCalledOnce();
-      expect(readCommitted(f.path, db => (db.prepare("SELECT count(*) n FROM knowledge_tasks").get() as { n: number }).n)).toBe(1);
+      expect(readCommitted(f.path, db => (db.prepare("SELECT count(*) n FROM knowledge_tasks").get() as { n: number }).n)).toBe(0);
       expect(f.accessRemoved).toHaveBeenCalledOnce(); expect(f.schedules.close).toHaveBeenCalledOnce(); expect(f.backups.close).toHaveBeenCalledOnce();
       expect(existsSync(f.lockPath)).toBe(false); expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
     } finally { hold.resume(); await hold.pending; await closing; await f.cleanup(); }

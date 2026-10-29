@@ -82,7 +82,7 @@ fixtures and mocks; finite-job cases run a real short Node process.
 | Vault | Proof expiry, grant revocation before retained plaintext replay, owner credential revocation | Broader role/grant/once-receipt and expiry combinations; A4 policy unchanged |
 | Schedules/restore | Actual automatic tick and current export grants; installed HTTP finish/close/already-disconnected handoff, one deferred launch, current revocation, refused shutdown blocks execution and retains owner | Physical replacement/restart is mocked; concurrent CLI shutdown remains blocked below |
 | Storage/logs | One save per completed scan, duplicate coalescing, close while save waits, retention lookup waiting/refusal preserves files | Global scan backlog bounds and all retention/drain failures |
-| Lifecycle/shutdown | Same-project serialization and idle admission; owning service drains real process completion/backup; actual CLI sequence closes HTTP/MCP/admin/remote Unix listeners and accepted responses; service failure retains database owner | Three preserved CLI failures: controller lock released on failed drain, both owners released despite listener failure, concurrent shutdown returns early |
+| Lifecycle/shutdown | Same-project serialization and idle admission; owning service drains real process completion/backup; actual CLI sequence closes HTTP/MCP/admin/remote Unix listeners, refuses queued HTTP dispatch in maintenance and drains accepted admin completion; service failure retains database owner | Three preserved CLI failures: controller lock released on failed drain, both owners released despite listener failure, concurrent shutdown returns early |
 | Provider Knowledge handoff | 25 real-provider cases: exact opaque actor, current session/mapping/principal/grant/role, queue/idle/lock/replay, failed notification, rollback, substitutions, original-expiry cap, drain/disposal and denied privilege elevation | No transport mounting, login or account-mode activation |
 | Local readiness | Installed HTTP reservation/force-release queue behind readiness; installed admin rotation invalidates the installation actor before the accepted local operation returns 200 | Existing unscoped runtime does not reauthenticate after readiness; injected direct-store takeover is not transport evidence |
 | Shared branches | Joined SQL is refused while a sibling idles; detached participants remain independent | Dashboard fan-out retains admission during Git; this is no blanket safety claim for concurrent joined branches |
@@ -156,9 +156,9 @@ The bounded acceptance checklist is:
 - **Blocked CLI gate:** `cli-shutdown-admission.test.ts` invokes the actual
   shutdown sequence extracted unchanged from `src/cli/index.ts` into
   `src/server/bootstrap/controller-shutdown.ts`. Installed HTTP/MCP/admin/remote
-  listeners use temporary Unix sockets. The successful test drains accepted
-  HTTP/admin responses and writes once, rejects new work, then releases both
-  locks. Three failing regressions preserve actual defects: failed provider
+  listeners use temporary Unix sockets. The successful test refuses queued HTTP dispatch in maintenance, drains its
+  response and the already accepted admin write/response once, rejects new
+  work, then releases both locks. Three failing regressions preserve actual defects: failed provider
   drain releases the controller lock while the database lock remains; failed
   listener closure still closes the database/releases the controller lock;
   concurrent handoff shutdown resolves before the first provider drain.

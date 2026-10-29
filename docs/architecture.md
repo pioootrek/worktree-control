@@ -549,8 +549,8 @@ not an external-request firewall. Store close waits for actual provider
 execution, core participants and driver backups. Timeout or failed driver close
 retains database ownership, and restore execution must wait for confirmed
 shutdown. Tests cover the owning service and actual CLI shutdown orchestration
-with temporary Unix HTTP/MCP/admin/remote listeners. The success path drains
-accepted HTTP/admin effects once. Three CLI regressions block acceptance:
+with temporary Unix HTTP/MCP/admin/remote listeners. The success path refuses queued HTTP dispatch during maintenance and drains
+its response plus the accepted admin write/response once. Three CLI regressions block acceptance:
 unconfirmed provider drain releases the controller lock; listener-close failure
 still closes the database/relinquishes controller ownership; concurrent shutdown
 returns before the first drain completes. The controller lock is separate from
