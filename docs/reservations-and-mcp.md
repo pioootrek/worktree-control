@@ -143,7 +143,10 @@ administration. They do not accept `responseMode`. New identity administration
 and credential minting are owner-session CLI/HTTP operations, never MCP tools.
 The HTTP runtime API does not accept a scoped credential.
 
-Every operation and cached retry rechecks current authority. Renewal stops on
+Every operation and cached retry rechecks current authority. A cached runtime
+outcome also requires the original active claim with the same session, secret
+and principal/credential binding; a released or expired claim cannot replay it.
+Renewal stops on
 credential/delegation expiry or revocation, or loss of the active stored owner
 sponsor. Owner-session expiry alone leaves sponsorship intact. Denied leases
 retain their remaining TTL without early release or server termination. A

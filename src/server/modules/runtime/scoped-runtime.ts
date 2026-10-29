@@ -192,9 +192,14 @@ export class ScopedRuntimeService {
     };
   }
 
-  /** Cached receipts and other retained results are released only to current authority. */
-  authorize(actor: AuthenticatedPrincipal, projectId: string, action: RuntimeAction): void {
-    this.check(actor, projectId, [action]);
+  /** Retained runtime outcomes require current authority and the original active lease. */
+  authorizeReplay(actor: AuthenticatedPrincipal, session: ScopedSession, leaseToken: string, projectId: string, reservationId: string): void {
+    this.check(actor, projectId, ["runtime:control"]);
+    try {
+      this.lifecycle.requireAgentClaim(projectId, reservationId, { owner: session.owner, leaseToken, binding: bindingOf(actor) });
+    } catch {
+      throw new ScopedRuntimeError("claim_stale", "The claim is stale, expired, or no longer active.");
+    }
   }
 
   private check(actor: AuthenticatedPrincipal, projectId: string, actions: readonly RuntimeAction[]): void {

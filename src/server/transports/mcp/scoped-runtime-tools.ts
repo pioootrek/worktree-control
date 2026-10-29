@@ -10,7 +10,7 @@ import { RuntimeAccessDenied, ScopedRuntimeError } from "../../modules/runtime";
 
 type ScopedService = Pick<ControlService,
   "scopedProjects" | "scopedProjectStatus" | "scopedWorktrees" | "claimScopedProject" | "renewScopedClaim"
-  | "releaseScopedClaim" | "operateScopedRuntime" | "authorizeScopedRuntime">;
+  | "releaseScopedClaim" | "operateScopedRuntime" | "authorizeScopedRuntimeReplay">;
 
 /** Session-held secrets and timers stay in the MCP runtime; tools only reach them through this port. */
 export interface ScopedSessionPort {
@@ -100,7 +100,7 @@ export function registerScopedRuntimeTools(server: McpServer, service: ScopedSer
         const token = session.claimToken(projectId, reservationId);
         return session.runOperation(idempotencyKey, `${action}\0${projectId}\0${reservationId}`,
           () => service.operateScopedRuntime(actor, scoped(), token, projectId, reservationId, action, extra.signal, () => session.closing()),
-          () => service.authorizeScopedRuntime(actor, projectId, "runtime:control"));
+          () => service.authorizeScopedRuntimeReplay(actor, scoped(), token, projectId, reservationId));
       });
       return jsonContent(receipt);
     });

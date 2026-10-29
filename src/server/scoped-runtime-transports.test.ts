@@ -280,6 +280,35 @@ describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
     expect(Date.parse(renewed.expiresAt!)).toBeGreaterThan(Date.parse(original.expiresAt!));
   });
 
+  it.each(["released", "expired"] as const)("refuses retained runtime successes and failures after the original claim is %s", async mode => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const clock = new ManualMcpClock(Date.now(), now => vi.setSystemTime(now));
+    const f = await fixture(clock), client = f.clients[0], projectId = f.projects[0].id;
+    const acquired = await f.claim(client, 0, { start: true });
+    const target = { projectId, reservationId: acquired.value.reservationId };
+    const success = { ...target, idempotencyKey: "retained-success" };
+    expect((await f.call(client, "start_project", success)).value).toMatchObject({ outcome: "noop", leaseHeld: true });
+    f.processes.start.mockRejectedValueOnce(new Error(SENTINEL));
+    const failure = { ...target, idempotencyKey: "retained-failure" };
+    expect((await f.call(client, "restart_project", failure)).value).toMatchObject({ outcome: "failed", leaseHeld: true });
+    for (const [tool, input] of [["start_project", success], ["restart_project", failure]] as const) {
+      expect((await f.call(client, tool, input)).value).toMatchObject({ replayed: true });
+    }
+    const starts = f.processes.start.mock.calls.length, stops = f.processes.stop.mock.calls.length;
+    if (mode === "released") f.store.releaseReservation(projectId, "local-user", true);
+    // Advance wall time without running renewal timers: the session still holds its old handle.
+    else vi.setSystemTime(Date.now() + 121_000);
+    expect(f.store.getActiveReservation(projectId)).toBeNull();
+    for (const [tool, input] of [["start_project", success], ["restart_project", failure]] as const) {
+      const denied = await f.call(client, tool, input);
+      expect(denied.error).toBe(true);
+      expect(denied.output).toMatch(/^claim_stale:/);
+      expect(denied.output).not.toContain("leaseHeld");
+    }
+    expect(f.processes.start).toHaveBeenCalledTimes(starts);
+    expect(f.processes.stop).toHaveBeenCalledTimes(stops);
+  });
+
   it("reauthorizes receipt/claim replays after delegation revocation and stops automatic renewal without releasing or stopping", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const clock = new ManualMcpClock(Date.now(), now => vi.setSystemTime(now));

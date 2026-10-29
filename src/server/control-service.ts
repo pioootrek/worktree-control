@@ -5,7 +5,6 @@ import type { AuthenticatedPrincipal } from "./modules/identity";
 import { KnowledgeService, type KnowledgeHistoryEntry, type KnowledgeHistoryOptions, type KnowledgePageOptions, type KnowledgeRecordKind, type KnowledgeTaskPriority, type KnowledgeTaskStatus, type KnowledgeWriteOptions } from "./modules/knowledge";
 import { leaseTokenHash, type OperationActor, ProjectLifecycle } from "./modules/lifecycle";
 import { AGENT_LEASE_DEFAULT_SECONDS, AGENT_LEASE_MAX_SECONDS, RuntimeService, ScopedRuntimeService, type RuntimeAuthorizer, type ScopedClaimRequest, type ScopedSession } from "./modules/runtime";
-import type { RuntimeAction } from "@/shared/contracts/runtime-access";
 import { StatusService, type CompactProjectStatus, type CompactTestStatus, type CompactEnvelope } from "./modules/status";
 import { VerificationService, VerificationHistoryService } from "./modules/verification";
 import type { RemoteVerificationController } from "./modules/remote-verification";
@@ -124,8 +123,8 @@ export class ControlService {
   operateScopedRuntime(actor: AuthenticatedPrincipal, session: ScopedSession, leaseToken: string, projectId: string, reservationId: string, action: ClaimedRuntimeAction, signal?: AbortSignal, sessionClosed?: () => boolean) {
     return this.requireScopedRuntime().operate(actor, session, leaseToken, projectId, reservationId, action, signal, sessionClosed);
   }
-  authorizeScopedRuntime(actor: AuthenticatedPrincipal, projectId: string, action: RuntimeAction): void {
-    this.requireScopedRuntime().authorize(actor, projectId, action);
+  authorizeScopedRuntimeReplay(...args: Parameters<ScopedRuntimeService["authorizeReplay"]>): void {
+    this.requireScopedRuntime().authorizeReplay(...args);
   }
   /** Scoped profile selection and configuration; enforcement, revision CAS and safe views live in the environments module. */
   scopedEnvironmentProfiles(actor: AuthenticatedPrincipal, input: unknown) { return this.requireScopedConfiguration().listEnvironmentProfiles(actor, input); }
