@@ -31,7 +31,7 @@ describe("strict maintenance completion beside the provider", () => {
       hold.resume(); await hold.pending;
       await vi.waitFor(() => expect(storage.isBusy(project.id, f.root)).toBe(false));
       expect(save).toHaveBeenCalledOnce(); expect(scanner.scan).toHaveBeenCalledOnce();
-      expect((await f.run(() => storage.snapshots(project.id, [f.root])))[0]).toMatchObject({ status: "ready", totalBytes: 8192, nextBytes: 1024, error: null });
+      expect((await f.run(() => storage.snapshots(project.id, [f.root])))[0]).toMatchObject({ status: "available", totalBytes: 8192, nextBytes: 1024, error: null });
       await storage.close(); expect(storage.queue(project.id, f.root, true)).toBe(false);
       expect(lifecycle.acquireMaintenance(project.id, f.root)).not.toBeNull();
     } finally { finishScan.open(); hold.resume(); await hold.pending; await storage.close(); await closeStrictProof(f); }
@@ -61,6 +61,7 @@ describe("strict maintenance completion beside the provider", () => {
     const directory = join(f.root, "logs"); mkdirSync(join(directory, "tests"), { recursive: true });
     const logs = new FileLogWriter(directory), manager = await f.run(() => new TestJobManager(f.store, logs));
     const id = randomUUID(), path = join(directory, "tests", `${id}.log`); writeFileSync(path, "fixture log\n");
+    let managerClosed = false;
     const hold = pauseProvisioning(f, faults, "rollback");
     try {
       await hold.paused;
@@ -69,11 +70,11 @@ describe("strict maintenance completion beside the provider", () => {
       expect(existsSync(path)).toBe(true);
       hold.resume(); await hold.pending; await pruning;
       expect(existsSync(path)).toBe(false); // A successful current lookup found no retained run.
-      await manager.shutdown();
+      await manager.shutdown(); managerClosed = true;
       await f.runtime.dispose(); await f.store.closeAfterDrain();
       writeFileSync(path, "must survive failed lookup\n");
-      await logs.pruneTests(() => f.store.admission.detached(() => f.store.hasTestRun(id))).catch(() => undefined);
+      await expect(logs.pruneTests(() => f.store.admission.detached(() => f.store.hasTestRun(id)))).rejects.toMatchObject({ code: "closed" });
       expect(existsSync(path)).toBe(true);
-    } finally { hold.resume(); await hold.pending; await manager.shutdown(); await logs.close(); await closeStrictProof(f); }
+    } finally { hold.resume(); await hold.pending; if (!managerClosed) await manager.shutdown(); await logs.close(); await closeStrictProof(f); }
   });
 });

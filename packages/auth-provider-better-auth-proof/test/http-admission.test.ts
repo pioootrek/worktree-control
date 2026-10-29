@@ -45,7 +45,7 @@ describe("strict HTTP admission with a real paused provider", () => {
   it.each(["commit", "rollback"] as const)("waits through provider %s, executes once, and distinguishes invalid credentials and malformed bodies", async outcome => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults), http = web(f);
     const project = await f.run(() => f.identity.createKnowledgeProject({ name: "HTTP fixture" }, f.ownerActor));
-    const body = JSON.stringify({ operation: "create_task", input: { projectId: project.id, title: "Once", body: "boundary", idempotencyKey: "http-once" } });
+    const body = JSON.stringify({ operation: "create_task", input: { projectId: project.id, title: "Once", description: "boundary", idempotencyKey: "http-once" } });
     const hold = pauseProvisioning(f, faults, outcome);
     try {
       await hold.paused;

@@ -19,7 +19,7 @@ export async function strictProof(faults: ProofFaultInjection = {}, options: Exc
   const root = mkdtempSync(join(tmpdir(), "auth-provider-admission-")); roots.push(root);
   const path = join(root, "state.sqlite3");
   const store = new SqliteStateStore(path, undefined, options);
-  const identity = new IdentityService(store);
+  const identity = new IdentityService(store, undefined, undefined, undefined, undefined, store);
   const owner = identity.bootstrapOwnerSession();
   const ownerActor = identity.authenticateBearer(owner.token);
   store.requireAdmission();
