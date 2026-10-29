@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, linkSync, lstatSync, rmSync, statfsSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import type { AuthenticatedPrincipal } from "@/server/modules/identity";
+import type { AuthenticatedPrincipal, CredentialAuthenticatedPrincipal } from "@/server/modules/identity";
 import { privateDirectory, syncDirectory } from "@/server/private-storage";
 import { parseUserScheduleMutationKey, userScheduleCommandSchema, userScheduleInputSchema, type ScheduleReason, type UserExportResult, type UserSchedule, type UserScheduleCommand, type UserScheduleOverview } from "@/shared/contracts/user-backups";
 import { artifactSchema } from "./user-export-artifact";
@@ -68,7 +68,7 @@ export class UserSchedules {
     }
     this.save();
   }
-  private authenticate(actor: AuthenticatedPrincipal): void {
+  private authenticate(actor: AuthenticatedPrincipal): asserts actor is CredentialAuthenticatedPrincipal {
     if (!((actor.principalKind === "owner" && actor.authenticationMethod === "owner_session") || (actor.principalKind === "agent" && actor.authenticationMethod === "agent_token"))) throw new UserBackupError("forbidden", 403);
     try { this.deps.authorize(actor); } catch (error) { if (databaseAdmissionFailure(error)) throw error; throw new UserBackupError("forbidden", 403); }
   }
@@ -254,8 +254,8 @@ export class UserSchedules {
     if (!artifact || artifact.source !== "user-schedule" || artifact.ownerId !== config.ownerId || artifact.projectId !== config.projectId || artifact.scope !== config.scope || artifact.targetId !== config.targetId || artifact.scheduleId !== config.id || artifact.version !== config.version || artifact.executionId !== execution.executionId || artifact.dueAt !== new Date(execution.dueAt).toISOString() || (execution.hash !== null && recordHash(artifact) !== execution.hash)) throw new UserBackupError("failed");
     return artifact;
   }
-  private canRead(schedule: Schedule, actor: AuthenticatedPrincipal): boolean { try { this.validate({ ...schedule, actor, restoreGeneration: this.deps.restoreGeneration?.() ?? "" }); return schedule.ownerId === actor.principalId; } catch { return false; } }
-  private publicSchedule(schedule: Schedule, actor: AuthenticatedPrincipal): UserSchedule {
+  private canRead(schedule: Schedule, actor: AuthenticatedPrincipal): boolean { if (actor.authenticationMethod === "provider_session") return false; try { this.validate({ ...schedule, actor, restoreGeneration: this.deps.restoreGeneration?.() ?? "" }); return schedule.ownerId === actor.principalId; } catch { return false; } }
+  private publicSchedule(schedule: Schedule, actor: CredentialAuthenticatedPrincipal): UserSchedule {
     const { actor: storedActor, restoreGeneration, nextAt, ...config } = schedule;
     void storedActor; void restoreGeneration;
     let reason: ScheduleReason | null = this.broken ? "busy" : schedule.enabled ? schedule.reason : "disabled";

@@ -78,7 +78,7 @@ export interface KnowledgeProjectGrant {
 
 export interface AuthenticatedIdentity {
   principal: Principal;
-  /** Null for the installation authority, which has no stored credential or grants. */
+  /** Null for installation authority and provider sessions; neither has a stored A2 credential. */
   credential: PrincipalCredential | null;
   knowledgeGrants: Array<Pick<KnowledgeProjectGrant, "projectId" | "permissions">>;
   /** Present for agents: the credential's current effective runtime scope. */

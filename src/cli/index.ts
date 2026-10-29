@@ -253,6 +253,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       restoreGeneration: () => restoreBoundary.generation,
       authorize: (actor, projectId) => {
         identity.describeIdentity(actor);
+        if (actor.authenticationMethod === "provider_session") throw new Error("Schedule credential is unavailable.");
         if (restoreBoundary.createdAt && (store.getCredentialForAuthentication(actor.credentialId)?.createdAt ?? "") <= restoreBoundary.createdAt) throw new Error("Schedule credential requires post-restore renewal.");
         if (projectId) {
           identity.authorizeKnowledge(actor, projectId, "knowledge:read");

@@ -90,7 +90,7 @@ function fixture(withWorktreeErrors = true) {
   };
   const issue = (actions: readonly RuntimeAction[], projectIds = [project.id, tests.id]) =>
     identity.issueRuntimeCredential({ principalId: agent.id, label: "scoped", projects: projectIds.map(projectId => ({ projectId, actions: [...actions] })) }, owner);
-  const credential = (actions: readonly RuntimeAction[], projectIds?: string[]): AuthenticatedPrincipal => identity.authenticateBearer(issue(actions, projectIds).token);
+  const credential = (actions: readonly RuntimeAction[], projectIds?: string[]) => identity.authenticateBearer(issue(actions, projectIds).token);
   // The MCP session port: it resolves only lease secrets this session tracks.
   const sessionFor = (owner: string) => {
     const tokens = new Map<string, string>();

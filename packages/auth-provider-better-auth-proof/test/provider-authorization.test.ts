@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { IdentityService, type ProviderSessionActor } from "@/server/modules/identity";
 import { ProviderKnowledgeApplication, resolveControllerAuthentication } from "@/server/modules/authentication";
 import { KnowledgeService } from "@/server/modules/knowledge";
 import { ProjectLifecycle } from "@/server/modules/lifecycle";
 import { ProcessManager } from "@/server/process-manager";
+import { DevVaultService, Ed25519DevVaultOwnerVerifier } from "@/server/modules/dev-vault";
 import type { ProviderSqliteConnection } from "@/server/modules/authentication";
 import type { ProofFaultInjection } from "../src/index";
 import { Client, loadProof, OWNER_EMAIL, OWNER_PASSWORD } from "./fixture";
@@ -56,6 +59,8 @@ describe("runtime-issued provider-session Knowledge application", () => {
     try {
       await denied(f.app.execute(write(f), f.actor), "knowledge_forbidden");
       await f.grant();
+      await denied(f.app.execute({ operation: "approve_memory", input: { projectId: f.project.id,
+        memoryId: "unavailable", expectedRevision: 1, idempotencyKey: "approval" } }, f.actor), "knowledge_forbidden");
       const result = await f.app.execute(write(f), f.actor);
       expect(result).toMatchObject({ replayed: false, value: { createdBy: f.owner.principalId } });
       expect(await f.app.execute(write(f), f.actor)).toMatchObject({ replayed: true });
@@ -95,6 +100,11 @@ describe("runtime-issued provider-session Knowledge application", () => {
         expect(() => f.identity.authorizeRuntime(f.actor, "any", "runtime:control")).toThrow(expect.objectContaining({ code: "runtime_forbidden" }));
       });
       expect(f.changed).not.toHaveBeenCalled();
+      const verifier = new Ed25519DevVaultOwnerVerifier(() => { throw new Error("A provider actor must never reach the external key."); });
+      const command = { operation: "list" as const, projectId: "runtime", environment: "DEV" as const, operationId: randomUUID() };
+      expect(verifier.verify(command, f.actor, { issuedAt: new Date().toISOString(), signature: "invalid" }, new Date().toISOString())).toBe("invalid");
+      const vault = new DevVaultService(f.store.devVault, { key: () => Buffer.alloc(32) }, f.identity, { verify: () => "valid" });
+      await expect(f.run(() => vault.execute({ command }, f.actor))).rejects.toMatchObject({ code: "vault_denied" });
       // Account mode and compatibility transports gain no session-cookie path.
       expect(resolveControllerAuthentication({ authentication: { mode: () => "better-auth",
         authenticateInstallation: () => null, anonymousInstallation: () => null }, identity: f.identity },
@@ -121,6 +131,26 @@ describe("runtime-issued provider-session Knowledge application", () => {
         await denied(foreignApp.execute(write(f), f.actor));
       } finally { await other.runtime.dispose(); }
       expect(f.changed).not.toHaveBeenCalled();
+    } finally { await closeStrictProof(f); }
+  });
+
+  it("refuses an unverified validity adapter and never accepts old actors after runtime replacement", async () => {
+    const f = await fixture();
+    try {
+      await f.grant();
+      const incompatible = await loadProof(f.store, undefined, fileURLToPath(new URL("./loader-fixtures/synchronous-handle.mjs", import.meta.url)));
+      try { await expect(incompatible.runtime.authenticate(new Headers())).rejects.toMatchObject({ code: "provider_unavailable" }); }
+      finally { await incompatible.runtime.dispose(); }
+      await f.runtime.dispose();
+      const replacement = await loadProof(f.store);
+      try {
+        const currentIdentity = new IdentityService(f.store, undefined, undefined, undefined, undefined, f.store, replacement.runtime);
+        const app = new ProviderKnowledgeApplication(f.store.admission, currentIdentity, new KnowledgeService(f.store, currentIdentity));
+        const current = (await replacement.runtime.authenticate(new Headers({ cookie: f.client.cookieHeader() })))!;
+        expect(await app.execute(read(f), current)).toMatchObject({ items: [] });
+        await denied(app.execute(write(f), f.actor));
+        await denied(f.app.execute(write(f), f.actor));
+      } finally { await replacement.runtime.dispose(); }
     } finally { await closeStrictProof(f); }
   });
 
@@ -153,6 +183,7 @@ describe("runtime-issued provider-session Knowledge application", () => {
         hold.release(); await hold.pending; await revoked;
       }
       await rejection;
+      await denied(f.app.execute(write(f, "fresh-after-session-revocation"), f.actor));
       expect(f.changed).toHaveBeenCalledTimes(1);
       await denied(f.app.describeIdentity(f.actor));
     } finally { await closeStrictProof(f); }
@@ -183,6 +214,7 @@ describe("runtime-issued provider-session Knowledge application", () => {
       const rejection = denied(pending, kind === "grant" || kind === "role" ? "knowledge_forbidden" : "invalid_credential");
       expect(f.store.admissionSnapshot()).toMatchObject({ queuedCore: 1 });
       hold.release(); await hold.pending; await rejection;
+      await denied(f.app.execute(write(f, "fresh-after-policy-revocation"), f.actor), kind === "grant" || kind === "role" ? "knowledge_forbidden" : "invalid_credential");
       expect(f.changed).toHaveBeenCalledTimes(1);
     } finally { await closeStrictProof(f); }
   });

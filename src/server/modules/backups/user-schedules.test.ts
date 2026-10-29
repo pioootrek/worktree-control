@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteStateStore } from "@/server/infrastructure/sqlite";
-import { IdentityService } from "@/server/modules/identity";
+import { IdentityService, type AuthenticatedPrincipal } from "@/server/modules/identity";
 import { KnowledgeService } from "@/server/modules/knowledge";
 import { userScheduleMutationKey, type UserSchedule, type UserScheduleCommand } from "@/shared/contracts/user-backups";
 import { BackupOperations, backupPolicySchema, UserSchedules, userBackupPolicySchema } from "./index";
@@ -26,7 +26,7 @@ function fixture(userOptions: Record<string, unknown> = {}, serviceOptions: Reco
   let now = Date.now(), maintenance = false, failExport = false;
   const backups = new BackupOperations(backupPolicySchema.parse({ directory: join(root, "service"), ...serviceOptions }), { source: store, databasePath: join(root, "state.sqlite3"), attachmentDirectory: join(root, "attachments"), applicationVersion: "test", estimateBytes: () => store.backupEstimateBytes(), authorize: () => true, maintenance: () => maintenance, clock: () => now });
   const policy = userBackupPolicySchema.parse({ enabled: true, scopes: ["knowledge-discussions"], projects: [project.id], targets: [{ id: "local", directory: join(root, "exports") }], minIntervalSeconds: 60, ...userOptions });
-  const deps = { authorize: (actor: typeof owner, id?: string) => { identity.describeIdentity(actor); if (id) { identity.authorizeKnowledge(actor, id, "knowledge:read"); identity.authorizeKnowledge(actor, id, "knowledge:export"); } }, projectName: (id: string) => store.getKnowledgeProject(id)?.name ?? null, exportDiscussions: (id: string, budget: number) => { if (failExport) throw new Error("injected failure"); return store.exportUserDiscussions(id, budget); }, clock: () => now };
+  const deps = { authorize: (actor: AuthenticatedPrincipal, id?: string) => { identity.describeIdentity(actor); if (id) { identity.authorizeKnowledge(actor, id, "knowledge:read"); identity.authorizeKnowledge(actor, id, "knowledge:export"); } }, projectName: (id: string) => store.getKnowledgeProject(id)?.name ?? null, exportDiscussions: (id: string, budget: number) => { if (failExport) throw new Error("injected failure"); return store.exportUserDiscussions(id, budget); }, clock: () => now };
   const schedules = new UserSchedules(policy, backups, deps);
   cleanup.push(() => rmSync(root, { recursive: true, force: true }), () => store.close(), () => backups.close(), () => schedules.close());
   const generation = schedules.overview(owner).mutationGeneration;

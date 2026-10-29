@@ -116,6 +116,17 @@ describe("provider session history migration 39", () => {
     expect(readFileSync(f.path)).toEqual(bytes);
   });
 
+  it("retains the deleted-ID watermark even when every old history row was deleted", () => {
+    const f = genuine38();
+    raw(f.path, db => {
+      db.exec("DELETE FROM knowledge_history");
+      initializeSchema(db, false);
+      const result = db.prepare(`INSERT INTO knowledge_history(project_id,record_kind,record_id,operation,principal_id,authentication_method,revision,created_at)
+        VALUES('kept','task','kept-task','updated','owner','provider_session',2,'2026-10-29T00:00:00.000Z')`).run();
+      expect(result.lastInsertRowid).toBe(100);
+    });
+  });
+
   it("round-trips provider history through full backup/restore and authorized logical export/import", async () => {
     const f = genuine38();
     const store = new SqliteStateStore(f.path), identity = new IdentityService(store);
@@ -143,6 +154,9 @@ describe("provider session history migration 39", () => {
     const target = new SqliteStateStore(join(f.root, "logical.sqlite3"));
     try {
       const targetIdentity = identityFor(target), token = targetIdentity.bootstrapOwnerSession();
+      // Logical import requires explicit existing historical IDs and creates no identities or grants.
+      target.savePrincipal({ id: "owner", kind: "owner", status: "revoked" }, "fixture");
+      target.savePrincipal({ id: "agent", kind: "agent", status: "revoked" }, "fixture");
       importKnowledgeProject(target, targetIdentity, exported, join(f.root, "target-attachments"), targetIdentity.authenticateBearer(token.token));
       expect(target.listHistory("kept", "task", task.value.id, 25, 0).items[0]?.authenticationMethod).toBe("provider_session");
     } finally { target.close(); }
