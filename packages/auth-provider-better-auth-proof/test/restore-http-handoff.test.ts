@@ -37,7 +37,6 @@ describe("installed restore HTTP completion to owning launch", () => {
     const lockPath = join(f.root, "controller.lock"), controllerLock = acquireControllerLock(lockPath);
     const failed = vi.fn(), restarted = vi.fn();
     let maintenance = false;
-    let shutdown!: ReturnType<typeof createControllerShutdown>;
     const restart = vi.fn(async (execute: () => void) => {
       await shutdown(true);
       execute();
@@ -50,11 +49,12 @@ describe("installed restore HTTP completion to owning launch", () => {
       directoryBrowser: {} as DirectoryBrowser, events: new EventStream(f.store.admission),
       mcpStatus: () => ({ phase: "disabled", endpoint: null, transport: "streamable-http", network: "loopback", authentication: "bearer", activeSessions: 0 }),
       backups, restores, maintenance: () => maintenance, webRoot: f.root, host: "127.0.0.1", port: 0, accessToken: "fixture" });
-    shutdown = createControllerShutdown({ service, stopping: () => undefined, userSchedules: undefined, backups,
+    const shutdown = createControllerShutdown({ service, stopping: () => undefined, userSchedules: undefined, backups,
       remoteVerification: null, mcp: null, controller, adminSocket: { close: async () => undefined }, removeServiceAccess: () => undefined, controllerLock });
     if (mode === "cleanup-unconfirmed") vi.spyOn(service, "shutdown").mockRejectedValueOnce(new Error("cleanup_unconfirmed"));
     vi.mocked(executeControllerRestoreRequest).mockImplementation(() => {
       expect(existsSync(lockPath)).toBe(true); expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
+      return { operationId: copy.operationId, backupId: copy.backupId!, state: "verified", createdAt: copy.createdAt };
     });
     const launch = vi.spyOn(restores, "launch");
     const input = { action: "restore", backupId: copy.backupId, idempotencyKey: "http-restore", confirmation: "replace-entire-installation" };
