@@ -54,6 +54,41 @@ async function fence(f: Fixture, mutation?: (connection: ProviderSqliteConnectio
 }
 
 describe("runtime-issued provider-session Knowledge application", () => {
+  it("caps an actor at its original expiry even if the stored session extends; fresh authentication gets fresh evidence", async () => {
+    let now = new Date().toISOString();
+    const f = await fixture({}, {}, () => now);
+    try {
+      await f.grant();
+      const evidence = (await f.client.resolve())!;
+      now = new Date(Date.parse(evidence.session.expiresAt) + 1).toISOString();
+      const hold = await fence(f, connection => connection.prepare('UPDATE authentication_ba_session SET expiresAt=? WHERE id=?')
+        .run([new Date(Date.parse(now) + 60_000).toISOString(), f.sessionId]));
+      hold.release(); await hold.pending;
+      await denied(f.app.execute(write(f), f.actor));
+      const fresh = (await f.runtime.authenticate(new Headers({ cookie: f.client.cookieHeader() })))!;
+      expect(fresh).not.toBeNull();
+      expect(await f.app.execute(write(f), fresh)).toMatchObject({ replayed: false });
+      expect(f.changed).toHaveBeenCalledOnce();
+    } finally { await closeStrictProof(f); }
+  });
+
+  it("fails closed without the issuing authority and when the sole owner begins drain", async () => {
+    const f = await fixture();
+    const entered = gate(), release = gate();
+    let holding: Promise<unknown> | undefined, closing: Promise<void> | undefined;
+    try {
+      await f.grant();
+      const missing = new IdentityService(f.store);
+      const app = new ProviderKnowledgeApplication(f.store.admission, missing, new KnowledgeService(f.store, missing));
+      await denied(app.execute(write(f), f.actor));
+      holding = f.run(async () => { entered.open(); await release.opened; });
+      await entered.opened;
+      closing = f.store.closeAfterDrain();
+      await denied(f.app.execute(write(f), f.actor));
+      expect(f.changed).not.toHaveBeenCalled();
+    } finally { release.open(); await holding; await closing; await closeStrictProof(f); }
+  });
+
   it("requires explicit grants, writes once, replays once, and exposes only safe identity/audit metadata", async () => {
     const f = await fixture();
     try {

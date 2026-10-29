@@ -3,11 +3,56 @@ import { ControlService } from "@/server/control-service";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectLifecycle } from "@/server/modules/lifecycle";
 import { ProcessManager } from "@/server/process-manager";
+import { AuthenticationService } from "@/server/modules/authentication";
+import { createControllerServer } from "@/server/http-server";
+import { EventStream } from "@/server/events";
+import type { DirectoryBrowser } from "@/server/directory-browser";
+import { request } from "./server-request";
 import type { ProofFaultInjection } from "../src/index";
 import { cleanupStrictRoots, closeStrictProof, gate, pauseProvisioning, sleep, strictProof } from "./strict-fixture";
 
 afterEach(cleanupStrictRoots);
 describe("project lock and strict database admission ordering", () => {
+  it("queues a supported HTTP reservation and force-release behind local HTTP readiness; no transport reservation changes before operation completion", async () => {
+    const faults: ProofFaultInjection = {}, f = await strictProof(faults);
+    const authentication = new AuthenticationService(f.store);
+    const credential = await f.run(() => authentication.generateToken("fixture"));
+    const project = await f.run(() => f.store.addProject({ name: "HTTP readiness", repositoryPath: f.root, port: 3903, executable: "node", args: [], launchPreset: "node" }));
+    const processes = new ProcessManager(), ready = gate(), entered = gate(), effects: string[] = [];
+    const start = vi.spyOn(processes, "start").mockImplementation(async () => { effects.push("readiness-entered"); entered.open(); await f.store.admission.idle(() => ready.opened); effects.push("readiness-returned"); });
+    const worktree = { path: f.root, head: "a".repeat(40), shortHead: "aaaaaaa", branch: "main", detached: false, locked: false, prunable: false, dirty: false };
+    const service = new ControlService(f.store, { list: async () => [worktree] } as never, processes, undefined,
+      { resolve: () => ({ preset: "node", executable: "node", args: [], portMethod: "environment", tls: { mode: "off", keyPath: null, certPath: null, caPath: null } }) });
+    const acquireReservation = f.store.acquireReservation.bind(f.store), releaseReservation = f.store.releaseReservation.bind(f.store);
+    const reserve = vi.spyOn(f.store, "acquireReservation").mockImplementation(input => { effects.push("reserved"); return acquireReservation(input); });
+    const release = vi.spyOn(f.store, "releaseReservation").mockImplementation((...input) => { effects.push("released"); return releaseReservation(...input); });
+    const http = createControllerServer({ service, authentication, identity: f.identity, admission: f.store.admission,
+      directoryBrowser: {} as DirectoryBrowser, events: new EventStream(f.store.admission),
+      mcpStatus: () => ({ phase: "disabled", endpoint: null, transport: "streamable-http", network: "loopback", authentication: "bearer", activeSessions: 0 }),
+      webRoot: f.root, host: "127.0.0.1", port: 0, accessToken: "fixture" });
+    const operation = request(http.server, `/api/projects/${project.id}/operation`, credential.token, JSON.stringify({ operation: "start", worktreePath: f.root }));
+    await entered.opened;
+    const reservation = request(http.server, `/api/projects/${project.id}/reservation`, credential.token, JSON.stringify({ action: "acquire", worktreePath: f.root, reason: "supported competitor" }));
+    const releasing = request(http.server, `/api/projects/${project.id}/reservation`, credential.token, JSON.stringify({ action: "force-release" }));
+    const reserveCall = vi.spyOn(service, "reserve"), releaseCall = vi.spyOn(service, "release");
+    const hold = pauseProvisioning(f, faults, "rollback");
+    try {
+      await hold.paused;
+      await vi.waitFor(() => { expect(reserveCall).toHaveBeenCalledOnce(); expect(releaseCall).toHaveBeenCalledOnce(); });
+      expect(reserve).not.toHaveBeenCalled(); expect(release).not.toHaveBeenCalled();
+      expect(reservation.ended).toBe(false); expect(releasing.ended).toBe(false);
+      expect(f.store.admissionSnapshot()).toMatchObject({ coreActive: 0, queuedCore: 0 });
+      ready.open(); hold.resume(); await hold.pending;
+      expect(await operation.completed).toMatchObject({ status: 200, body: { ok: true } });
+      expect(await reservation.completed).toMatchObject({ status: 200 }); expect(await releasing.completed).toMatchObject({ status: 200 });
+      expect(effects).toEqual(["readiness-entered", "readiness-returned", "reserved", "released"]); expect(start).toHaveBeenCalledOnce();
+      expect(reserve).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce();
+      // HTTP bytes can arrive after subsequent serialized mutations. This 200 is
+      // a historical operation result and makes no claim of a continuing lease.
+      expect(await f.run(() => f.store.getActiveReservation(project.id))).toBeNull();
+    } finally { ready.open(); hold.resume(); await hold.pending; await Promise.allSettled([operation.completed, reservation.completed, releasing.completed]); await http.close(); await service.shutdown(); await closeStrictProof(f); }
+  });
+
   it("serializes two operations without retaining admission in a project-lock wait, lets the provider run during readiness, and drains accepted work", async () => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults);
     const project = await f.run(() => f.store.addProject({ name: "lifecycle", repositoryPath: f.root, port: 3895, executable: "node", args: [] }));

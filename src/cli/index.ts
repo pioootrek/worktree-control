@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createControllerShutdown } from "../server/bootstrap/controller-shutdown";
 import { createDevVault } from "../server/bootstrap/dev-vault";
 import { runDevVaultCommand } from "./dev-vault";
 import { loadRemoteVerificationConfig, runRemoteVerificationCommand } from "./remote-verification";
@@ -429,34 +430,16 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   if (!process.argv.includes("--no-open") && !serviceMode) openBrowser(interactiveAddress);
   backups.start();
   userSchedules.start();
-  let closing = false;
-  const shutdown = async (handoff = false) => {
-    if (closing) return;
-    closing = true;
-    maintenance = true;
-    // Cancel pending starts before closing listeners, which wait for their HTTP responses.
-    service.closeAdmission();
-    process.removeListener("SIGINT", handleSignal);
-    process.removeListener("SIGTERM", handleSignal);
-    writeCliLine(translate(locale, "cli.stopping"));
-    try {
-      let backupFailure: unknown = null;
-      try { userSchedules?.close(); await backups.close(); } catch (error) { backupFailure = error; }
-      const listeners = await Promise.allSettled([remoteVerification?.close(), mcp?.close(), controller.close(), adminSocket.close()]);
-      const listenerFailures = listeners.filter((result) => result.status === "rejected");
-      let serviceFailure: unknown = null;
-      try {
-        await service.shutdown();
-      } catch (error) {
-        serviceFailure = error;
-      }
-      const failures = [...(backupFailure ? [backupFailure] : []), ...listenerFailures.map((result) => result.reason), ...(serviceFailure ? [serviceFailure] : [])];
-      if (failures.length) throw new AggregateError(failures, "Controller shutdown did not complete cleanly.");
-    } finally {
-      if (serviceMode) removeServiceAccess(paths.serviceAccessPath);
-      if (!handoff) controllerLock.release();
-    }
-  };
+  const shutdown = createControllerShutdown({
+    service: { closeAdmission: () => { maintenance = true; service.closeAdmission(); }, shutdown: () => service.shutdown() },
+    userSchedules, backups, remoteVerification, mcp, controller, adminSocket, controllerLock,
+    stopping: () => {
+      process.removeListener("SIGINT", handleSignal);
+      process.removeListener("SIGTERM", handleSignal);
+      writeCliLine(translate(locale, "cli.stopping"));
+    },
+    removeServiceAccess: () => { if (serviceMode) removeServiceAccess(paths.serviceAccessPath); },
+  });
   const handleSignal = () => void shutdown().then(
     () => process.exit(0),
     (error) => {
