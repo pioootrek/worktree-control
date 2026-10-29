@@ -449,18 +449,21 @@ export class ControlService {
     return project;
   }
 
-  async reserve(input: ReservationRequest): Promise<void> {
+  async reserve(input: ReservationRequest, revalidate?: () => void): Promise<void> {
     await this.lifecycle.serialized(input.projectId, async () => {
+      revalidate?.();
       const project = this.lifecycle.requireProject(input.projectId);
       const worktrees = await this.git.list(project.repositoryPath);
       const selected = this.lifecycle.resolveWorktree(project, worktrees, input.worktreePath);
+      revalidate?.();
       this.store.acquireReservation({ ...input, worktreePath: selected.path });
       this.logs.controller("reservation.acquired", { projectId: input.projectId, worktreePath: selected.path, owner: input.owner });
     });
   }
 
-  async release(projectId: string, force = false): Promise<void> {
+  async release(projectId: string, force = false, revalidate?: () => void): Promise<void> {
     await this.lifecycle.serialized(projectId, async () => {
+      revalidate?.();
       this.lifecycle.requireProject(projectId);
       this.store.releaseReservation(projectId, "local-user", force);
       this.logs.controller(force ? "reservation.force_released" : "reservation.released", { projectId });
@@ -656,7 +659,8 @@ export class ControlService {
     this.statusQueries.close();
     this.dashboardQueries.close();
     this.git.close?.();
-    try {
+    // Unconfirmed process/job/storage cleanup may still need the owned database.
+    if (!failures.length) try {
       // Accepted database work, backups and provider executions settle first; a failed drain keeps ownership.
       const owner = this.store as StateStore & { closeAfterDrain?: () => Promise<void> };
       if (owner.closeAfterDrain) await owner.closeAfterDrain();

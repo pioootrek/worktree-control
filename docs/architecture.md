@@ -517,14 +517,14 @@ change from the earlier admission-before-project-lock proposal. Strict tests
 exercise two operations on one project with a provider between them, but design
 acceptance of this ordering remains separate. Scoped operations recheck current
 authority around effects and before returning retained outcomes. Local
-`RuntimeService.operateLocked` checks reservations before starting and has no
-post-readiness authorization callback. Installed HTTP reservation/force-release
-requests queue behind readiness, so direct-store reservation injection does not
-establish a supported transport takeover. The installed admin token-rotation
-handler can change installation authority during readiness; an accepted local
-operation still returns 200 after that actor becomes invalid. This executed
-limitation is distinct from scoped lease expiry. A local completion is historical
-and must not be used as current scoped/provider authorization.
+`RuntimeService.operateLocked` accepts a current-authority callback for installed
+HTTP runtime operations. It rechecks after asynchronous phases and immediately
+before spawn; the HTTP boundary rechecks before responding. Reservation mutations
+use the same callback under the project lock. Token rotation while waiting denies
+queued mutations and successful replies. Already performed effects are not rolled
+back. Installed reservation requests serialize behind readiness, so direct-store
+reservation injection is not a supported transport takeover. Scoped lease expiry
+and provider Knowledge authorization remain separate policies.
 
 Accepted finite jobs coalesce bounded log/resource checkpoints, preserve event
 timestamps and serialize writes per run. A terminal durability barrier precedes
@@ -550,20 +550,18 @@ execution, core participants and driver backups. Timeout or failed driver close
 retains database ownership, and restore execution must wait for confirmed
 shutdown. Tests cover the owning service and actual CLI shutdown orchestration
 with temporary Unix HTTP/MCP/admin/remote listeners. The success path refuses queued HTTP dispatch during maintenance and drains
-its response plus the accepted admin write/response once. Three CLI regressions block acceptance:
-unconfirmed provider drain releases the controller lock; listener-close failure
-still closes the database/relinquishes controller ownership; concurrent shutdown
-returns before the first drain completes. The controller lock is separate from
-the SQLite owner lock. The behavior-preserving sequence extraction lives in
-`src/server/bootstrap/controller-shutdown.ts`.
+its response plus the accepted admin write/response once. Failed producer or
+listener closure prevents SQLite close; unconfirmed service cleanup retains its
+database owner, and any shutdown failure retains controller ownership. Concurrent
+same-mode calls join one completion, including failure. A different handoff mode
+is refused. The sequence lives in `src/server/bootstrap/controller-shutdown.ts`;
+there is no automatic retry that hides a failed shutdown.
 
-The installed restore HTTP completion callbacks and owning deferred launch are
-covered under contention, including finish/close duplication, already-closed
-responses, current revocation and refused shutdown. The execution callback runs
-only after successful shutdown in the nonconcurrent case, with controller
-ownership retained and database ownership closed. Physical replacement/restart
-are mocked. HTTP 202 acknowledges durable admission, not completed restore;
-the concurrent CLI shutdown defect remains an acceptance blocker.
+Installed restore completion callbacks and deferred launch are covered under
+contention, including duplicate finish/close, disconnected responses, current
+revocation and refused shutdown. Execution waits for confirmed shutdown, retaining
+the controller lock while closing database ownership. Physical replacement and
+restart are mocked. HTTP 202 acknowledges admission, not completed restore.
 
 The implemented provider-to-core handoff authenticates outside admission and
 issues an exact runtime-owned frozen actor. `IdentityService` uses that runtime

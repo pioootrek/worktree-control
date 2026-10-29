@@ -80,11 +80,11 @@ fixtures and mocks; finite-job cases run a real short Node process.
 | Remote worker | Current-state ACK merge retains cancellation and a real running report appended during upload; SQL-free network phase, receipt before preparation, ordered terminal outbox; reopened strict owner refuses interrupted execution and retains cleanup block | Real crash/reboot and signed owner-recovery host acceptance under provider contention |
 | Workspace preparation | Real preparation adapter, committed recovery provenance before mock Git effect, SQL-free wait and mapping revocation after re-admission | Dependency-installation and all cleanup/refusal paths under strict contention |
 | Vault | Proof expiry, grant revocation before retained plaintext replay, owner credential revocation | Broader role/grant/once-receipt and expiry combinations; A4 policy unchanged |
-| Schedules/restore | Actual automatic tick and current export grants; installed HTTP finish/close/already-disconnected handoff, one deferred launch, current revocation, refused shutdown blocks execution and retains owner | Physical replacement/restart is mocked; concurrent CLI shutdown remains blocked below |
+| Schedules/restore | Actual automatic tick and current export grants; installed HTTP finish/close/already-disconnected handoff, one deferred launch, current revocation, refused shutdown blocks execution and retains owner | Physical replacement/restart is mocked; host recovery remains separate |
 | Storage/logs | One save per completed scan, duplicate coalescing, close while save waits, retention lookup waiting/refusal preserves files | Global scan backlog bounds and all retention/drain failures |
-| Lifecycle/shutdown | Same-project serialization and idle admission; owning service drains real process completion/backup; actual CLI sequence closes HTTP/MCP/admin/remote Unix listeners, refuses queued HTTP dispatch in maintenance and drains accepted admin completion; service failure retains database owner | Three preserved CLI failures: controller lock released on failed drain, both owners released despite listener failure, concurrent shutdown returns early |
+| Lifecycle/shutdown | Same-project serialization and idle admission; owning service drains real process completion/backup; actual CLI sequence closes HTTP/MCP/admin/remote Unix listeners, refuses queued HTTP dispatch in maintenance and drains accepted admin completion; service failure retains database owner | Failed listener/process/provider cleanup retains ownership; concurrent same-mode callers join completion; failures stay failures |
 | Provider Knowledge handoff | 25 real-provider cases: exact opaque actor, current session/mapping/principal/grant/role, queue/idle/lock/replay, failed notification, rollback, substitutions, original-expiry cap, drain/disposal and denied privilege elevation | No transport mounting, login or account-mode activation |
-| Local readiness | Installed HTTP reservation/force-release queue behind readiness; installed admin rotation invalidates the installation actor before the accepted local operation returns 200 | Existing unscoped runtime does not reauthenticate after readiness; injected direct-store takeover is not transport evidence |
+| Local readiness | Installed HTTP reservation/force-release queue behind readiness; current authority is rechecked before effects and replies after admin rotation | Other installation workflows need separate review; injected direct-store takeover is not transport evidence |
 | Shared branches | Joined SQL is refused while a sibling idles; detached participants remain independent | Dashboard fan-out retains admission during Git; this is no blanket safety claim for concurrent joined branches |
 
 `live-admission.test.ts` also retains the original strict proofs for running-job
@@ -153,25 +153,20 @@ The bounded acceptance checklist is:
   before the execution callback while the controller lock stays held. Physical
   replacement and starting the next controller are mocked. A 202 response
   records admission, not successful restore.
-- **Blocked CLI gate:** `cli-shutdown-admission.test.ts` invokes the actual
-  shutdown sequence extracted unchanged from `src/cli/index.ts` into
-  `src/server/bootstrap/controller-shutdown.ts`. Installed HTTP/MCP/admin/remote
-  listeners use temporary Unix sockets. The successful test refuses queued HTTP dispatch in maintenance, drains its
-  response and the already accepted admin write/response once, rejects new
-  work, then releases both locks. Three failing regressions preserve actual defects: failed provider
-  drain releases the controller lock while the database lock remains; failed
-  listener closure still closes the database/releases the controller lock;
-  concurrent handoff shutdown resolves before the first provider drain.
-  `ControlService.shutdown` passing alone does not close these gates.
-- **Readiness classification:** `lifecycle-admission.test.ts` drives installed
-  HTTP operation/reservation/force-release handlers. Both mutations wait behind
-  readiness with no admitted lock waiter; the old direct-store reservation
-  injection is not a supported transport takeover. The installed admin
-  token-rotation handler can change authority during readiness. The old
-  installation actor becomes invalid before the accepted local operation
-  returns 200. This passing characterization records a current-authority
-  limitation of the existing installation runtime path, not scoped/provider
-  authorization acceptance. Scoped natural lease expiry has separate tests.
+- **CLI regression coverage:** `cli-shutdown-admission.test.ts` invokes the actual
+  owning sequence with HTTP/MCP/admin/remote listeners on temporary Unix sockets.
+  It checks maintenance fencing, accepted-response drain and both ownership locks.
+  Failed listener, process cleanup or provider drain retains ownership; concurrent
+  same-mode calls wait for the same result, retained failures never become success,
+  and a conflicting handoff mode is refused. SQLite closes only after producers
+  and listeners confirm closure. Explicit recovery is required after failure.
+- **Readiness and current authority:** `lifecycle-admission.test.ts` drives installed
+  HTTP operation/reservation/force-release handlers and admin token rotation.
+  Reservation mutations wait behind readiness without holding admission. Rotation
+  during the wait denies queued mutations and the old caller's successful response.
+  Existing authorized process effects are not rolled back. Direct-store injection
+  remains separate from supported serialization; scoped lease expiry is tested
+  independently, and provider sessions still cannot control runtime.
 - **Separately deferred:** real host reboot/recovery, all dependency-install
   cleanup failures, broader route/tool permutations and global scan-backlog
   bounds need their own focused evidence. Compatible-mode recovery tests in
@@ -196,8 +191,8 @@ three CLI shutdown regressions failed (run
 `c8e4faaa-e892-4e63-b695-2ac7d7aca674`, exit 1, `observed_match`, confirmed
 cleanup). The first attempt on `385330a` had the same three failures plus an
 incorrect readiness-fixture ordering assumption; that fixture was corrected
-without changing production behavior. Build/fresh package verification are
-withheld because these backend blockers remain. A prebuild artifact scan skip
+without changing production behavior. These baseline failures preceded the parent shutdown and authority fixes.
+A prebuild artifact scan skip
 or an older build does not certify the changed CLI/static dashboard. Final
 check/docs run evidence belongs in the owning Knowledge task and handoff.
 

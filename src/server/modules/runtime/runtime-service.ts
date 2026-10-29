@@ -253,6 +253,7 @@ export class RuntimeService {
     worktreePath: string | undefined,
     actor: OperationActor,
   ): Promise<void> {
+    actor.revalidate?.();
     const project = this.lifecycle.requireProject(projectId);
     if (project.launchPreset === "none") throw new Error(NO_SERVER_MESSAGE);
     if (operation === "stop") {
@@ -262,15 +263,21 @@ export class RuntimeService {
         actor,
       );
       await this.processes.stop(projectId);
+      actor.revalidate?.();
       this.logs.controller("project.stopped", { projectId });
       return;
     }
     const worktrees = await this.git.list(project.repositoryPath);
     const selected = this.lifecycle.resolveWorktree(project, worktrees, worktreePath);
-    this.lifecycle.assertReservationAllows(projectId, selected.path, actor);
+    const verify = () => {
+      actor.revalidate?.();
+      this.lifecycle.assertReservationAllows(projectId, selected.path, actor);
+    };
+    verify();
     this.lifecycle.acquireCapacity(project);
     try {
       if (operation === "restart" || operation === "switch") await this.processes.stop(projectId);
+      verify();
       if (operation === "switch") this.store.setSelectedWorktree(projectId, selected.path);
       const launch = this.commands.resolve(selected.path, project.port, project.launchPreset, {
         mode: project.tlsMode,
@@ -288,7 +295,9 @@ export class RuntimeService {
           args: launch.args,
         });
       }
-      await this.processes.start(this.lifecycle.requireProject(projectId), selected.path);
+      if (actor.revalidate) await this.processes.start(this.lifecycle.requireProject(projectId), selected.path, verify);
+      else await this.processes.start(this.lifecycle.requireProject(projectId), selected.path);
+      actor.revalidate?.();
       this.recordLaunch(projectId, selected.path, actor.owner);
     } finally {
       this.lifecycle.releaseCapacity(projectId);

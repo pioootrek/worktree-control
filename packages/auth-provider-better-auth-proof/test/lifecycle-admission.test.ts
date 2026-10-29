@@ -16,14 +16,21 @@ import { cleanupStrictRoots, closeStrictProof, gate, pauseProvisioning, sleep, s
 
 afterEach(cleanupStrictRoots);
 describe("project lock and strict database admission ordering", () => {
-  it("queues supported HTTP reservation changes behind readiness, while supported admin token rotation can precede the local 200", async () => {
+  it.each([[false, false], [true, false], [true, true]])("serializes HTTP changes and revalidates waits (rotation: %s, before spawn: %s)", async (rotate, beforeSpawnWait) => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults);
     const authentication = new AuthenticationService(f.store);
     const credential = await f.run(() => authentication.generateToken("fixture"));
     const initialActor = await f.run(() => authentication.authenticateInstallation(credential.token)!);
     const project = await f.run(() => f.store.addProject({ name: "HTTP readiness", repositoryPath: f.root, port: 3903, executable: "node", args: [], launchPreset: "node" }));
     const processes = new ProcessManager(), ready = gate(), entered = gate(), effects: string[] = [];
-    const start = vi.spyOn(processes, "start").mockImplementation(async () => { effects.push("readiness-entered"); entered.open(); await f.store.admission.idle(() => ready.opened); effects.push("readiness-returned"); });
+    const spawned = vi.fn();
+    const start = vi.spyOn(processes, "start").mockImplementation(async (_project, _path, beforeSpawn) => {
+      if (!beforeSpawnWait) spawned();
+      effects.push("readiness-entered"); entered.open();
+      await f.store.admission.idle(() => ready.opened);
+      if (beforeSpawnWait) { beforeSpawn?.(); spawned(); }
+      effects.push("readiness-returned");
+    });
     const worktree = { path: f.root, head: "a".repeat(40), shortHead: "aaaaaaa", branch: "main", detached: false, locked: false, prunable: false, dirty: false };
     const service = new ControlService(f.store, { list: async () => [worktree] } as never, processes, undefined,
       { resolve: () => ({ preset: "node", executable: "node", args: [], portMethod: "environment", tls: { mode: "off", keyPath: null, certPath: null, caPath: null } }) });
@@ -51,21 +58,24 @@ describe("project lock and strict database admission ordering", () => {
       expect(reserve).not.toHaveBeenCalled(); expect(release).not.toHaveBeenCalled();
       expect(reservation.ended).toBe(false); expect(releasing.ended).toBe(false);
       expect(f.store.admissionSnapshot()).toMatchObject({ coreActive: 0, queuedCore: 0 });
-      const rotated = requestAdminSocket(adminPath, { command: "token rotate" });
-      await vi.waitFor(() => expect(f.store.admissionSnapshot().queuedCore).toBe(1));
+      const rotated = rotate ? requestAdminSocket(adminPath, { command: "token rotate" }) : Promise.resolve();
+      if (rotate) await vi.waitFor(() => expect(f.store.admissionSnapshot().queuedCore).toBe(1));
       hold.resume(); await hold.pending; await rotated;
-      expect(await f.run(() => authentication.isCurrentInstallationActor(initialActor))).toBe(false);
+      expect(await f.run(() => authentication.isCurrentInstallationActor(initialActor))).toBe(!rotate);
       expect(operation.ended).toBe(false); expect(reserve).not.toHaveBeenCalled();
       ready.open();
-      expect(await operation.completed).toMatchObject({ status: 200, body: { ok: true } });
-      expect(await reservation.completed).toMatchObject({ status: 200 }); expect(await releasing.completed).toMatchObject({ status: 200 });
-      expect(effects).toEqual(["readiness-entered", "readiness-returned", "reserved", "released"]); expect(start).toHaveBeenCalledOnce();
-      expect(reserve).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce();
+      const status = rotate ? 401 : 200;
+      expect(await operation.completed).toMatchObject({ status, body: rotate ? { code: "invalid_credential" } : { ok: true } });
+      expect(await reservation.completed).toMatchObject({ status }); expect(await releasing.completed).toMatchObject({ status });
+      expect(effects).toEqual(beforeSpawnWait ? ["readiness-entered"] : rotate ? ["readiness-entered", "readiness-returned"] : ["readiness-entered", "readiness-returned", "reserved", "released"]);
+      expect(spawned).toHaveBeenCalledTimes(beforeSpawnWait ? 0 : 1);
+      expect(start).toHaveBeenCalledOnce();
+      expect(reserve).toHaveBeenCalledTimes(rotate ? 0 : 1); expect(release).toHaveBeenCalledTimes(rotate ? 0 : 1);
       // HTTP bytes can arrive after subsequent serialized mutations. This 200 is
       // a historical operation result and makes no claim of a continuing lease.
       expect(await f.run(() => f.store.getActiveReservation(project.id))).toBeNull();
-      // Characterization of existing installation runtime authority, not provider
-      // handoff acceptance: local operations do not reauthenticate after readiness.
+      // A process already started under valid authority is not rolled back on
+      // revocation; queued mutations and the successful response are refused.
     } finally { ready.open(); hold.resume(); await hold.pending; await Promise.allSettled([operation.completed, reservation.completed, releasing.completed]); await admin.close(); await http.close(); await service.shutdown(); await closeStrictProof(f); }
   });
 

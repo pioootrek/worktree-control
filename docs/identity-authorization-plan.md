@@ -35,10 +35,10 @@ unavailable; enrollment, factors, invitations, roles and GUI are still open.
 Shared core admission, exclusive provider admission and background persistence
 boundaries are implemented as partial infrastructure. Strict integration tests
 cover HTTP body-read admission errors and the installed restore completion
-handoff. Complete CLI acceptance is blocked by three preserved shutdown
-regressions involving failed cleanup and concurrent drain. Supported HTTP
-reservation changes serialize behind readiness, while admin token rotation can
-invalidate an installation actor before an accepted local operation returns 200.
+handoff. CLI shutdown retains ownership on failed cleanup and joins concurrent
+calls to the same completion. Supported HTTP reservation changes serialize behind
+readiness and revalidate installation authority after waiting; token rotation
+prevents queued effects and successful replies to the old caller.
 Safe live coexistence is not accepted. The A5 external restore fence is also
 unfinished;
 restores can revive old sessions and passwords. Native proof responses expose

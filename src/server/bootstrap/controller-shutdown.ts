@@ -15,29 +15,42 @@ export function createControllerShutdown(deps: {
   removeServiceAccess(): void;
   controllerLock: ControllerLock;
 }) {
-  let closing = false;
-  return async (handoff = false) => {
-    if (closing) return;
-    closing = true;
-    // Cancel pending starts before closing listeners, which wait for their HTTP responses.
-    deps.service.closeAdmission();
-    deps.stopping();
-    try {
-      let backupFailure: unknown = null;
-      try { deps.userSchedules?.close(); await deps.backups.close(); } catch (error) { backupFailure = error; }
-      const listeners = await Promise.allSettled([deps.remoteVerification?.close(), deps.mcp?.close(), deps.controller.close(), deps.adminSocket.close()]);
-      const listenerFailures = listeners.filter((result) => result.status === "rejected");
-      let serviceFailure: unknown = null;
-      try {
-        await deps.service.shutdown();
-      } catch (error) {
-        serviceFailure = error;
-      }
-      const failures = [...(backupFailure ? [backupFailure] : []), ...listenerFailures.map((result) => result.reason), ...(serviceFailure ? [serviceFailure] : [])];
-      if (failures.length) throw new AggregateError(failures, "Controller shutdown did not complete cleanly.");
-    } finally {
-      deps.removeServiceAccess();
-      if (!handoff) deps.controllerLock.release();
+  let completion: Promise<void> | undefined;
+  let selectedHandoff = false;
+  return (handoff = false): Promise<void> => {
+    if (completion) {
+      // A normal stop cannot later promise to retain ownership for a restore.
+      if (handoff !== selectedHandoff) return Promise.reject(new Error("Controller shutdown mode cannot change after shutdown starts."));
+      return completion;
     }
+    selectedHandoff = handoff;
+    let resolve!: () => void, reject!: (error: unknown) => void;
+    completion = new Promise<void>((done, failed) => { resolve = done; reject = failed; });
+    // Publish the promise before invoking any dependency, including synchronous closers.
+    void (async () => {
+      try {
+        // Fence synchronously; listeners then drain already accepted responses.
+        deps.service.closeAdmission();
+        deps.stopping();
+        const failures: unknown[] = [];
+        for (const closer of [deps.userSchedules, deps.backups]) {
+          try { await closer?.close(); } catch (error) { failures.push(error); }
+        }
+        const listeners = await Promise.allSettled(
+          [deps.remoteVerification, deps.mcp, deps.controller, deps.adminSocket]
+            .map(closer => Promise.resolve().then(() => closer?.close())),
+        );
+        failures.push(...listeners.filter(result => result.status === "rejected").map(result => result.reason));
+        // Never close SQLite while a producer/listener might still use it.
+        if (failures.length) throw new AggregateError(failures);
+        await deps.service.shutdown();
+        deps.removeServiceAccess();
+        if (!handoff) deps.controllerLock.release();
+      } catch (error) {
+        // Retain failure as well as ownership: later calls cannot report a false success.
+        throw new AggregateError([error], "Controller shutdown did not complete cleanly.");
+      }
+    })().then(resolve, reject);
+    return completion;
   };
 }

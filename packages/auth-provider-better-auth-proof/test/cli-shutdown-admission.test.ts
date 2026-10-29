@@ -35,7 +35,8 @@ function post(path: string, token: string, body: unknown) {
 }
 async function fixture(options = {}) {
   const faults: ProofFaultInjection = {}, f = await strictProof(faults, options);
-  const service = new ControlService(f.store, { list: async () => [] } as never, new ProcessManager(), undefined, undefined, undefined, undefined, undefined, undefined, undefined, new KnowledgeService(f.store, f.identity));
+  const processes = new ProcessManager();
+  const service = new ControlService(f.store, { list: async () => [] } as never, processes, undefined, undefined, undefined, undefined, undefined, undefined, undefined, new KnowledgeService(f.store, f.identity));
   const lockPath = join(f.root, "controller.lock"), controllerLock = acquireControllerLock(lockPath);
   let maintenance = false;
   const controller = createControllerServer({ service, identity: f.identity, admission: f.store.admission,
@@ -62,7 +63,7 @@ async function fixture(options = {}) {
     service: { closeAdmission: () => { maintenance = true; service.closeAdmission(); }, shutdown: () => service.shutdown() },
     stopping, userSchedules: schedules, backups,
     remoteVerification: remote, mcp, controller, adminSocket: admin, removeServiceAccess: accessRemoved, controllerLock });
-  return { ...f, faults, service, controllerLock, lockPath, controller, mcp, remote, admin, closers, adminEffect, adminPath, httpPath,
+  return { ...f, faults, service, processes, controllerLock, lockPath, controller, mcp, remote, admin, closers, adminEffect, adminPath, httpPath,
     accessRemoved, stopping, schedules, backups, shutdown,
     cleanup: async () => { await Promise.allSettled([remote.close(), mcp.close(), controller.close(), admin.close()]); await service.shutdown(); controllerLock.release(); await closeStrictProof(f); } };
 }
@@ -111,6 +112,8 @@ describe("owning CLI shutdown sequence with installed listeners", () => {
       expect.soft(existsSync(`${f.path}.owner.lock`)).toBe(true);
       expect.soft(existsSync(f.lockPath)).toBe(true);
       expect(() => new SqliteStateStore(f.path)).toThrow();
+      await expect(f.shutdown()).rejects.toThrow("Controller shutdown did not complete cleanly");
+      expect(f.accessRemoved).not.toHaveBeenCalled();
     } finally { hold.resume(); await hold.pending; await f.store.authenticationProviderStorage().drain(2000); await f.cleanup(); }
   });
 
@@ -122,6 +125,21 @@ describe("owning CLI shutdown sequence with installed listeners", () => {
       expect.soft(f.controller.server.listening).toBe(true);
       expect.soft(existsSync(f.lockPath)).toBe(true);
       expect.soft(existsSync(`${f.path}.owner.lock`)).toBe(true);
+      await expect(f.shutdown()).rejects.toThrow("Controller shutdown did not complete cleanly");
+      expect(f.closers[2]).toHaveBeenCalledOnce();
+      expect(f.accessRemoved).not.toHaveBeenCalled();
+    } finally { await f.cleanup(); }
+  });
+
+  it("retains both owners if managed process cleanup cannot be confirmed", async () => {
+    const f = await fixture();
+    vi.spyOn(f.processes, "stopAll").mockRejectedValueOnce(new Error("process cleanup unconfirmed"));
+    try {
+      await expect(f.shutdown()).rejects.toThrow("Controller shutdown did not complete cleanly");
+      expect(existsSync(f.lockPath)).toBe(true);
+      expect(existsSync(`${f.path}.owner.lock`)).toBe(true);
+      expect(() => new SqliteStateStore(f.path)).toThrow();
+      expect(f.accessRemoved).not.toHaveBeenCalled();
     } finally { await f.cleanup(); }
   });
 
@@ -131,6 +149,7 @@ describe("owning CLI shutdown sequence with installed listeners", () => {
     try {
       await hold.paused;
       first = f.shutdown(true);
+      await expect(f.shutdown(false)).rejects.toThrow("shutdown mode cannot change");
       let handoffSettled = false;
       const second = f.shutdown(true).then(() => { handoffSettled = true; returned.open(); });
       await Promise.race([returned.opened, new Promise(resolve => setImmediate(resolve))]);

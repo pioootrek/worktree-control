@@ -667,6 +667,17 @@ export function createControllerServer(options: {
           json(response, 401, { error: localizeServerMessage("Brak prawidłowego klucza dostępu.", locale) });
           return;
         }
+        const revalidateRuntime = () => {
+          if (options.maintenance?.()) throw new BackupError("backup_busy", 503);
+          const current = authenticateRuntime(request);
+          if (!current || current.kind !== runtimeAuthentication.kind
+            || (runtimeAuthentication.kind !== "legacy" && (current.kind === "legacy"
+              || current.actor.principalId !== runtimeAuthentication.actor.principalId
+              || current.actor.credentialId !== runtimeAuthentication.actor.credentialId
+              || current.actor.authenticationMethod !== runtimeAuthentication.actor.authenticationMethod))) {
+            throw new IdentityError("invalid_credential", "The runtime credential is no longer active.");
+          }
+        };
         if (request.headers.origin && !hasValidOrigin(request, options.publicOrigin)) {
           json(response, 403, { error: localizeServerMessage("Odrzucono żądanie z obcego originu.", locale) });
           return;
@@ -796,7 +807,8 @@ export function createControllerServer(options: {
         if (request.method === "POST" && operationMatch) {
           const input = parseOperation(await readJson(request));
           const projectId = decodeURIComponent(operationMatch[1]);
-          await options.service.operate(projectId, input.operation, input.worktreePath);
+          await options.service.operate(projectId, input.operation, input.worktreePath, { owner: "local-user", revalidate: revalidateRuntime });
+          revalidateRuntime();
           options.events.publish({ kinds: ["runtime", "reservation"], projectIds: [projectId] });
           json(response, 200, { ok: true });
           return;
@@ -912,10 +924,11 @@ export function createControllerServer(options: {
               kind: "human",
               owner: "local-user",
               reason: input.reason,
-            });
+            }, revalidateRuntime);
           } else {
-            await options.service.release(projectId, input.action === "force-release");
+            await options.service.release(projectId, input.action === "force-release", revalidateRuntime);
           }
+          revalidateRuntime();
           options.events.publish({ kinds: ["reservation", "runtime"], projectIds: [projectId] });
           json(response, 200, { ok: true });
           return;
@@ -931,6 +944,7 @@ export function createControllerServer(options: {
       serveStatic(options.webRoot, url.pathname, response, request.method === "HEAD");
     } catch (error) {
       if (error instanceof BackupError) { json(response, error.status, { code: error.code, error: error.code }); return; }
+      if (error instanceof IdentityError && error.code === "invalid_credential") { json(response, 401, { code: error.code, error: error.code }); return; }
       const admissionFailure = databaseAdmissionFailure(error);
       if (admissionFailure) {
         if (admissionFailure.retryable) response.setHeader("Retry-After", "1");

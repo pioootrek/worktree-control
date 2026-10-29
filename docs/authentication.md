@@ -179,38 +179,36 @@ substitution, expiry, disposal, drain and the privilege ceilings. The seven
 preservation/rollback, malformed schema refusal, watermarks and full/logical
 backup transfer. These checks establish this bounded handoff, not full A3.
 
-### Remaining lifecycle gates
+### Lifecycle and authority boundaries
 
-`cli-shutdown-admission.test.ts` exercises the actual owning CLI sequence,
-extracted without behavioral changes to
-`src/server/bootstrap/controller-shutdown.ts`. Temporary Unix listeners cover
-HTTP, MCP, admin and remote closure. The successful path refuses queued HTTP dispatch during maintenance, drains
-its response and settles the already accepted admin write/response once. Three regressions remain failing: an unconfirmed provider
-drain releases the controller lock while the database owner stays held; a
-listener-close failure still closes the database and releases the controller
-lock; a concurrent shutdown call returns before the first drain settles.
-Controller ownership and database ownership are separate locks. Complete CLI
-shutdown acceptance is blocked by these failures.
+`cli-shutdown-admission.test.ts` exercises the owning CLI sequence in
+`src/server/bootstrap/controller-shutdown.ts` with temporary Unix listeners
+for HTTP, MCP, admin and remote closure. Shutdown fences new work, drains
+accepted responses and completion writes, and closes SQLite only after producers
+and listeners confirm closure. Failed listener, process cleanup or provider drain
+retains ownership. Concurrent calls with the same handoff mode join one promise,
+including its failure; changing mode is refused. A failed shutdown requires
+explicit recovery rather than a second call reporting success. Controller
+ownership and database ownership remain separate locks.
 
 `restore-http-handoff.test.ts` exercises the installed HTTP handler's
-`finish`/`close` callbacks, an already-disconnected response and actual owning
+`finish`/`close` callbacks, already-disconnected responses and actual deferred
 restore admission/launch under provider contention. Duplicate callbacks launch
 once, current token revocation denies launch, and refused shutdown prevents
-execution while retaining ownership. Successful shutdown retains the controller
-lock and releases the database owner before the execution callback. Physical
-replacement and starting the next controller are mocked. HTTP 202 means durable
-admission, not successful restore; concurrent shutdown remains blocked above.
+execution. Successful handoff retains the controller lock and releases the
+database owner before the execution callback. Physical replacement and starting
+the next controller are mocked. HTTP 202 means durable admission, not successful
+restore.
 
-The local readiness test now uses installed HTTP operation/reservation routes
-and the installed admin token-rotation handler. Reservation and force-release
-mutations queue behind the project's readiness lock. The old direct-store
-reservation injection is therefore not a demonstrated transport takeover.
-Admin policy rotation can run during readiness: the old installation actor is
-invalid before the accepted local operation still returns 200. This is an
-executed limitation of the existing installation runtime path, which has no
-post-readiness authentication check. It is distinct from scoped lease expiry
-and grants no provider runtime-control path. General account-mode acceptance
-must not assume current authority from that local result.
+Installed HTTP operation/reservation/force-release requests share project
+serialization. Direct-store reservation injection is not evidence of transport
+takeover. These HTTP operations now carry a current-authority callback: they
+recheck after body/lock/stop/readiness waits, immediately before spawn and before
+returning success. Admin token rotation during a wait denies queued reservation
+mutations and returns 401 to the old runtime caller. A process already started
+under valid authority is not rolled back on revocation. This bounded HTTP policy
+adds no provider runtime-control route; scoped lease/credential checks remain
+separate. Other installation workflows still require their own activation review.
 
 ## Knowledge roles (A1)
 

@@ -7,6 +7,8 @@ import { basename } from "node:path";
 
 export interface OperationActor {
   owner: string;
+  /** Current transport authority, checked in admitted phases after asynchronous waits. */
+  revalidate?: () => void;
   leaseToken?: string;
   /** Scoped agent leases also bind the authenticated principal and credential. */
   binding?: ReservationBinding;
