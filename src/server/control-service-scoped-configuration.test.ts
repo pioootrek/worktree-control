@@ -123,6 +123,29 @@ function expectNoLeak(value: unknown, extra: string[] = []): void {
 }
 
 describe("scoped configuration actions", () => {
+  it("invalidates warm dashboard presets after scoped timeout changes but not after no-ops or refusals", async () => {
+    const f = fixture();
+    f.grant(all);
+    const actor = f.credential(["config:write"], [f.project.id]);
+    const { session } = f.sessionFor("agent:mcp:dashboard");
+    const snapshot = async () => (await f.service.dashboard()).projects.find(entry => entry.project.id === f.project.id)!;
+    const before = await snapshot();
+    expect(before.metadata?.status).toBe("fresh");
+    expect(before.testPresets[0].presets.find(preset => preset.id === "node:test")?.timeoutMs).toBe(900_000);
+    const input = { projectId: f.project.id, worktreePath: "/code/web", presetId: "node:test", timeoutMs: 1000, expectedRevision: f.current(), idempotencyKey: "dashboard-timeout" };
+    await expect(f.service.setScopedTestPresetTimeout(actor, session, input)).resolves.toMatchObject({ outcome: "completed" });
+    const invalidated = await snapshot();
+    expect(invalidated.project.testPresetTimeouts["node:test"]).toBe(1000);
+    expect(invalidated.metadata?.status).toBe("stale");
+    const refreshed = await f.service.refreshProjectMetadata(f.project.id);
+    expect(refreshed.testPresets[0].presets.find(preset => preset.id === "node:test")?.timeoutMs).toBe(1000);
+    expect(refreshed.metadata?.status).toBe("fresh");
+    await expect(f.service.setScopedTestPresetTimeout(actor, session, { ...input, expectedRevision: f.current() })).resolves.toMatchObject({ outcome: "noop" });
+    await expect(f.service.setScopedTestPresetTimeout(actor, session, input)).rejects.toMatchObject({ code: "revision_conflict" });
+    expect((await snapshot()).metadata?.status).toBe("fresh");
+    f.store.close();
+  });
+
   it("requires each configuration action separately and never widens existing credentials", async () => {
     const f = fixture();
     const first: RuntimeAction[] = ["projects:read", "claims:manage", "runtime:control"];

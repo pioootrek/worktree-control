@@ -196,6 +196,20 @@ describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
     expect(f.processes.start).not.toHaveBeenCalled();
   });
 
+  it("preserves delegation expiry when HTTP updates omit it and clears it only explicitly", async () => {
+    const f = await fixture();
+    const input = { action: "set-runtime-delegation", principalId: f.agents[0].id, projectId: f.projects[0].id, actions: all };
+    const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+    expect((await f.admin({ ...input, expectedRevision: 1, expiresAt })).status).toBe(200);
+    const narrowed = await f.admin({ ...input, actions: ["projects:read"], expectedRevision: 2 });
+    expect(narrowed.status).toBe(200);
+    expect(await narrowed.json()).toMatchObject({ delegation: { expiresAt, revision: 3, actions: ["projects:read"] } });
+    expect(f.store.getRuntimeDelegation(f.agents[0].id, f.projects[0].id)?.expiresAt).toBe(expiresAt);
+    const cleared = await f.admin({ ...input, expectedRevision: 3, expiresAt: null });
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toMatchObject({ delegation: { expiresAt: null, revision: 4 } });
+  });
+
   it("requires a real owner online, validates strict admin schemas, and routes online CLI without opening SQLite", async () => {
     const f = await fixture();
     const input = { action: "set-runtime-delegation", principalId: f.agents[0].id, projectId: f.projects[0].id, actions: configurationActions, expectedRevision: 1 };

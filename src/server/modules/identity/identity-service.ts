@@ -420,9 +420,12 @@ export class IdentityService {
     }
     if (!store.hasRuntimeProject(input.projectId)) throw new IdentityError("invalid_request", "Registered runtime project not found.");
     const now = this.clock();
-    const expiresAt = futureTimestamp(input.expiresAt ?? undefined, now);
     const current = store.getRuntimeDelegation(input.principalId, input.projectId);
     if ((current?.revision ?? 0) !== input.expectedRevision) throw runtimeConflict();
+    // Omission preserves the existing ceiling; only explicit null removes it.
+    const expiresAt = input.expiresAt === undefined
+      ? current?.expiresAt ?? null
+      : futureTimestamp(input.expiresAt ?? undefined, now);
     const delegation: RuntimeDelegation = {
       principalId: input.principalId, projectId: input.projectId, sponsorId: actor.principalId,
       actions: canonicalActions(input.actions), revision: input.expectedRevision + 1,

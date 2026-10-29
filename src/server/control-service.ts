@@ -132,8 +132,10 @@ export class ControlService {
     return this.requireScopedConfiguration().selectEnvironmentProfile(actor, session, input);
   }
   scopedProjectConfiguration(actor: AuthenticatedPrincipal, input: unknown) { return this.requireScopedConfiguration().projectConfiguration(actor, input); }
-  setScopedTestPresetTimeout(actor: AuthenticatedPrincipal, session: ScopedConfigurationSession, input: unknown) {
-    return this.requireScopedConfiguration().setTestPresetTimeout(actor, session, input);
+  async setScopedTestPresetTimeout(actor: AuthenticatedPrincipal, session: ScopedConfigurationSession, input: unknown) {
+    const receipt = await this.requireScopedConfiguration().setTestPresetTimeout(actor, session, input);
+    if (receipt.outcome === "completed") this.invalidateDashboardMetadata(receipt.projectId);
+    return receipt;
   }
   authorizeScopedConfiguration(...args: Parameters<ScopedConfigurationService["authorize"]>): void {
     this.requireScopedConfiguration().authorize(...args);

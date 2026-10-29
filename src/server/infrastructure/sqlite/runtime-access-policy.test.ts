@@ -120,6 +120,21 @@ describe("scoped runtime authorization", () => {
     f.store.close();
   });
 
+  it("preserves an omitted delegation expiry on updates, including an already expired bound", () => {
+    const f = fixture();
+    const expiry = new Date(Date.parse(f.clock()) + 60_000).toISOString();
+    f.delegate(f.a.id, all, 0, expiry);
+    const { actor } = f.issue([{ projectId: f.a.id, actions: all }]);
+    expect(f.delegate(f.a.id, ["projects:read"], 1).expiresAt).toBe(expiry);
+    f.advance(60_000);
+    expect(f.delegate(f.a.id, ["projects:read"], 2).expiresAt).toBe(expiry);
+    expect(f.allowed(actor, f.a.id, "projects:read")).toBe(false);
+    const cleared = f.identity.setRuntimeDelegation({ principalId: f.agent.id, projectId: f.a.id, actions: ["projects:read"], expectedRevision: 3, expiresAt: null }, f.owner);
+    expect(cleared.expiresAt).toBeNull();
+    expect(f.allowed(actor, f.a.id, "projects:read")).toBe(true);
+    f.store.close();
+  });
+
   it("applies CAS revocation tombstones, credential revocation and sponsor disablement immediately", () => {
     const f = fixture();
     f.delegate(f.a.id, all);
