@@ -1,4 +1,5 @@
 import type { IncomingMessage } from "node:http";
+import { databaseAdmissionFailure } from "@/server/database-admission";
 import type { AuthenticatedPrincipal } from "@/server/modules/identity";
 import { UserBackupError, type UserSchedules } from "@/server/modules/backups";
 import { userScheduleCommandSchema } from "@/shared/contracts/user-backups";
@@ -12,6 +13,7 @@ export async function handleUserBackupHttp(request: IncomingMessage, actor: Auth
     if (!parsed.success) throw new UserBackupError("invalid");
     reply(200, schedules.command(actor, parsed.data));
   } catch (error) {
+    if (databaseAdmissionFailure(error)) throw error;
     const failure = error instanceof UserBackupError ? error : new UserBackupError("failed", 503);
     reply(failure.status, { code: failure.code, error: failure.code });
   }

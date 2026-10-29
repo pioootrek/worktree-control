@@ -4,6 +4,7 @@ import type { DirectoryBrowser } from "@/server/directory-browser";
 import { EventStream } from "@/server/events";
 import { createControllerServer } from "@/server/http-server";
 import { KnowledgeService } from "@/server/modules/knowledge";
+import type { BackupOperations, RestoreOperations, UserSchedules } from "@/server/modules/backups";
 import type { ProofFaultInjection } from "../src/index";
 import { cleanupStrictRoots, closeStrictProof, pauseProvisioning, sleep, strictProof, type StrictProof } from "./strict-fixture";
 
@@ -15,11 +16,15 @@ function web(f: StrictProof) {
   const knowledge = new KnowledgeService(f.store, f.identity);
   const execute = vi.fn((input: unknown, actor: Parameters<KnowledgeService["execute"]>[1]) => knowledge.execute(input, actor));
   const events = new EventStream(f.store.admission);
+  const backupCreate = vi.fn(), scheduleCommand = vi.fn();
   const controller = createControllerServer({ service: { executeKnowledge: execute } as unknown as ControlService,
     identity: f.identity, admission: f.store.admission, directoryBrowser: {} as DirectoryBrowser, events,
     mcpStatus: () => ({ phase: "disabled", endpoint: null, transport: "streamable-http", network: "loopback", authentication: "bearer", activeSessions: 0 }),
+    backups: { authorize: () => f.identity.requireOwnerSession(f.ownerActor), create: backupCreate } as unknown as BackupOperations,
+    restores: {} as RestoreOperations,
+    userSchedules: { command: scheduleCommand } as unknown as UserSchedules,
     webRoot: f.root, host: "127.0.0.1", port: 0, accessToken: "fixture-pairing" });
-  return { ...controller, execute };
+  return { ...controller, execute, backupCreate, scheduleCommand };
 }
 
 describe("strict HTTP admission with a real paused provider", () => {
@@ -74,7 +79,7 @@ describe("strict HTTP admission with a real paused provider", () => {
     } finally { hold.resume(); await hold.pending; await http.close(); await closeStrictProof(f); }
   });
 
-  it.each(["/api/knowledge", "/api/dev-vault"])("preserves the 503 classification when %s body-read re-admission times out", async path => {
+  it.each(["/api/knowledge", "/api/dev-vault", "/api/backups", "/api/user-backups"])("preserves the 503 classification when %s body-read re-admission times out", async path => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults, { admissionTimeoutMs: 80 }), http = web(f);
     // The real handler enters, authenticates where applicable, and idles waiting for body bytes.
     const call = request(http.server, path, f.owner.token);
@@ -87,6 +92,8 @@ describe("strict HTTP admission with a real paused provider", () => {
       expect.soft(result.body.code).toBe("database_busy");
       expect.soft(result.headers.get("retry-after")).toBe("1");
       expect(http.execute).not.toHaveBeenCalled();
+      expect(http.backupCreate).not.toHaveBeenCalled();
+      expect(http.scheduleCommand).not.toHaveBeenCalled();
     } finally { hold.resume(); await hold.pending; await http.close(); await closeStrictProof(f); }
   });
 });

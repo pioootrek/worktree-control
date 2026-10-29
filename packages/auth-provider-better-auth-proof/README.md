@@ -70,8 +70,9 @@ fixtures and mocks; finite-job cases run a real short Node process.
 
 | Boundary | Strict held-provider evidence | Remaining acceptance work |
 | --- | --- | --- |
-| HTTP | Commit/rollback wait, single mutation and receipt replay, queued revocation, malformed 400, initial and body-read re-admission contention 503 with Retry-After | Broader route inventory |
-| MCP | Actual in-memory request wrapper, commit/rollback wait, current identity after revocation, scoped readiness and retained retry | Full HTTP MCP transport authentication/body behavior and broader tool/resource matrix |
+| HTTP | Commit/rollback wait, single mutation and receipt replay, queued revocation, malformed 400, initial and body-read re-admission contention 503 with Retry-After (Knowledge, vault, backups and user backups) | Broader route inventory |
+| MCP | Actual in-memory request wrapper, commit/rollback wait, current identity after revocation, policy closure prevents queued installation mutations, scoped readiness and retained retry | Full HTTP MCP transport authentication/body behavior and broader tool/resource matrix |
+| Finite-job cancellation | Cancellation admitted after the preflight read remains terminal; no stale queued checkpoint or process spawn | Broader preparation/error interleavings |
 | Automatic renewal | Contention deadline and retry preserve claim; queued credential revocation/expiry and session close prevent renewal | Lease expiry during an admission wait |
 | Remote controller | Poll/report wait on commit/rollback, exact report replay, current worker grant at delivery | Submit/cancel transport races and worker credential expiry |
 | Remote worker | Current-state ACK merge retains cancellation, SQL-free network phase, receipt before preparation, ordered running/terminal outbox | Crash/restart matrix under strict admission and concurrent appended-report ACK race |
@@ -88,6 +89,8 @@ backup/drain ownership, late provider continuation denial and forbidden nesting.
 `better-auth-proof.test.ts` retains the earlier adapter regressions, including
 abandoned-iterator cleanup, omitted driver arguments, sanitized dispose failure
 and subject-wide invalidation only after commit for more than 100 sessions.
+The connection gate unit tests also reject already-aborted provider requests
+both on a free connection and behind another provider borrow.
 
 A provider-to-core resolution handoff is deliberately deferred. Resolving the
 provider inside admitted core work is rejected as reentrant; resolving before

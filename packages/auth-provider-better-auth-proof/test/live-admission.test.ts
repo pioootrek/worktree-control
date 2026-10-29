@@ -10,7 +10,7 @@ import { StatusService } from "@/server/modules/status";
 import { TestJobManager } from "@/server/test-job-manager";
 import type { ProofFaultInjection } from "../src/index";
 import { cleanupRoots, count, OWNER_EMAIL, OWNER_PASSWORD, readCommitted } from "./fixture";
-import { cleanupStrictRoots, pauseProvisioning, sleep, strictProof } from "./strict-fixture";
+import { cleanupStrictRoots, gate, pauseProvisioning, sleep, strictProof } from "./strict-fixture";
 
 /**
  * Live coexistence of the real pinned provider with admitted controller work on
@@ -31,6 +31,45 @@ function fakeClient() {
 }
 
 describe("live admission of controller work beside the real provider", () => {
+  it("does not overwrite cancellation queued after the preflight read", async () => {
+    const faults: ProofFaultInjection = {}, f = await strictProof(faults);
+    const tests = await f.run(() => new TestJobManager(f.store, nullLogWriter));
+    const observing = gate(), observed = gate();
+    const source = { observedAt: new Date().toISOString(), head: "a".repeat(40), branch: "main", dirty: false, statusDigest: "clean", statusEntries: 0, complete: true, errorCode: null };
+    tests.configureSourceObserver(async () => {
+      observing.open(); await observed.opened;
+      return source;
+    });
+    const saves: string[] = [];
+    const save = f.store.saveTestRun.bind(f.store);
+    vi.spyOn(f.store, "saveTestRun").mockImplementation((run, key) => { saves.push(run.phase); return save(run, key); });
+    let hold: ReturnType<typeof pauseProvisioning> | undefined;
+    try {
+      const project = await f.run(() => f.store.addProject({ name: "Cancelled preflight", repositoryPath: f.root, port: 3883, executable: "node", args: [] }));
+      const marker = join(f.root, "should-not-spawn");
+      const run = await f.run(() => tests.enqueue({ projectId: project.id, actor: "local-user", sourceObservation: source,
+        worktree: { path: f.root, head: source.head, shortHead: "aaaaaaa", branch: "main", detached: false, locked: false, prunable: false, dirty: false },
+        command: { preset: { id: "node:test", name: "test", adapter: "node", timeoutMs: 5_000 }, executable: process.execPath, args: ["-e", "require('node:fs').writeFileSync(process.argv[1], 'spawned')", marker], cwd: f.root },
+        environment: { environment: {}, mode: "clean", profile: "unit", inheritedServerProfile: null, variableNames: [] },
+      }));
+      await observing.opened;
+      hold = pauseProvisioning(f, faults, "rollback"); await hold.paused;
+      observed.open();
+      await vi.waitFor(() => expect(f.store.admissionSnapshot().queuedCore).toBe(1));
+      const cancellation = tests.cancel(run.id, "local-user");
+      expect(f.store.admissionSnapshot().queuedCore).toBe(2);
+      hold.resume(); await hold.pending;
+      await cancellation;
+      await vi.waitFor(async () => expect((await f.run(() => tests.status())).running).toBe(0));
+      const final = await f.run(() => f.store.getTestRun(run.id));
+      expect(final).toMatchObject({ phase: "cancelled", startedAt: null, telemetry: { termination: "cancel" } });
+      expect(final?.telemetry?.finalizedAt).toBeTruthy();
+      expect(saves).not.toContain("running");
+      expect(saves.slice(saves.indexOf("cancelled"))).not.toContain("queued");
+      expect(existsSync(marker)).toBe(false);
+    } finally { observed.open(); hold?.resume(); await hold?.pending; await tests.shutdown(); await f.runtime.dispose(); await f.store.closeAfterDrain(); }
+  });
+
   it("queues admitted reads and writes behind a held library transaction and runs each once after rollback or commit", async () => {
     const faults: ProofFaultInjection = {};
     const f = await strictProof(faults);

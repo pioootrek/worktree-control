@@ -360,16 +360,24 @@ export class TestJobManager {
       run.source.preflight = await observer(run, "preflight");
       session?.throwIfAborted();
       run.source.queueComparison = compareSource(run.source.enqueue, run.source.preflight);
-      if (this.closed || (await this.current(run.id))?.phase !== "queued") return;
-      await this.persist(run);
+      const checkpoint = await this.admission.run(() => {
+        // A cancellation can be admitted immediately after this callback. Never
+        // split reading the phase from persisting the preflight checkpoint.
+        if (this.closed || this.read(run.id)?.phase !== "queued") return false;
+        if (run.source.queueComparison !== "match") {
+          run.source = qualifySource(run.source);
+          this.telemetry.mark(run, "prepareFinishedAt");
+          run.telemetry!.termination = "rejected";
+          run.telemetry!.cleanup = "not_required";
+          run.phase = "failed";
+          run.finishedAt = this.clock.wallNow();
+          run.error = run.source.queueComparison === "changed" ? "Źródło testu zmieniło się podczas oczekiwania w kolejce." : "Nie udało się potwierdzić źródła testu przed uruchomieniem.";
+        }
+        this.persistNow(run);
+        return true;
+      });
+      if (!checkpoint) return;
       if (run.source.queueComparison !== "match") {
-        run.source = qualifySource(run.source);
-        this.telemetry.mark(run, "prepareFinishedAt");
-        run.telemetry!.termination = "rejected";
-        run.telemetry!.cleanup = "not_required";
-        run.phase = "failed";
-        run.finishedAt = this.clock.wallNow();
-        run.error = run.source.queueComparison === "changed" ? "Źródło testu zmieniło się podczas oczekiwania w kolejce." : "Nie udało się potwierdzić źródła testu przed uruchomieniem.";
         if (!preparation) this.preparing.delete(run.id);
         await this.finish(run);
         return;
@@ -396,7 +404,8 @@ export class TestJobManager {
         this.onChange(run.projectId);
         return;
       }
-      if ((await this.current(run.id))?.phase === "queued") {
+      const failed = await this.admission.run(() => {
+        if (this.read(run.id)?.phase !== "queued") return false;
         run.source.reasonCodes = [...new Set([...run.source.reasonCodes, "source_preflight_failed"])];
         run.source = qualifySource(run.source);
         this.telemetry.mark(run, "prepareFinishedAt");
@@ -409,8 +418,10 @@ export class TestJobManager {
         run.phase = code === "preparation_cancelled" ? "cancelled" : code === "preparation_timeout" ? "timed_out" : "failed";
         run.finishedAt = this.clock.wallNow();
         run.error = session ? code : `Nie udało się sprawdzić źródła testu: ${String(error)}`;
-        await this.finish(run);
-      }
+        this.persistNow(run);
+        return true;
+      });
+      if (failed) await this.finish(run);
     } finally {
       session?.close();
       session?.signal.removeEventListener("abort", preparationStopped);
@@ -429,6 +440,7 @@ export class TestJobManager {
 
   /** Must run admitted: `starting` provenance and the running state are durable before spawn. */
   private start(run: TestRun): void {
+    if (this.closed || this.read(run.id)?.phase !== "queued") return;
     this.pathAdmission([run.worktreePath, run.cwd]);
     this.preparationSessions.get(run.id)?.throwIfAborted();
     this.preparations.get(run.id)?.starting?.();

@@ -7,6 +7,7 @@ import { ProcessManager } from "@/server/process-manager";
 import { McpRuntime } from "@/server/transports/mcp/mcp-runtime";
 import { McpSessionGovernor, type GovernedMcpSession, type McpSessionClock } from "@/server/modules/mcp-sessions";
 import { KnowledgeService } from "@/server/modules/knowledge";
+import { AuthenticationService } from "@/server/modules/authentication";
 import type { ControllerAuthentication } from "@/server/modules/identity";
 import type { ProofFaultInjection } from "../src/index";
 import { cleanupStrictRoots, closeStrictProof, gate, pauseProvisioning, sleep, strictProof, type StrictProof } from "./strict-fixture";
@@ -21,10 +22,16 @@ class SessionClock implements McpSessionClock {
   clearTimeout = (id: unknown) => { this.timers.delete(id as number); };
   advance(ms: number) { this.time += ms; for (const [id, timer] of [...this.timers]) if (timer.at <= this.time) { this.timers.delete(id); timer.callback(); } }
 }
-async function protocol(f: StrictProof, scoped = false, expiresAt?: string) {
+async function protocol(f: StrictProof, scoped = false, expiresAt?: string, installation = false) {
   const clock = new SessionClock(), governor = new McpSessionGovernor({}, clock), diagnostic = vi.fn();
   const project = await f.run(() => f.store.addProject({ name: "MCP fixture", repositoryPath: f.root, port: 3894, executable: "", args: [], launchPreset: "node" }));
+  const authentication = new AuthenticationService(f.store);
   const actor = await f.run(() => {
+    if (installation) {
+      const issued = authentication.generateToken("fixture");
+      authentication.setMode("token", "fixture");
+      return authentication.authenticateInstallation(issued.token)!;
+    }
     const agent = f.identity.createAgent(f.ownerActor);
     if (scoped) {
       const actions = ["projects:read", "claims:manage", "runtime:control"] as const;
@@ -45,16 +52,37 @@ async function protocol(f: StrictProof, scoped = false, expiresAt?: string) {
   // No admission is added around calls: the production SDK handler wrapper must supply it.
   const session = (runtime as unknown as { createSession(auth: ControllerAuthentication, governed: GovernedMcpSession): {
     server: McpServer; owner: string; closing: boolean; transport: { close(): Promise<void> }; claims: Map<string, unknown>;
-  } }).createSession({ kind: "principal", actor }, admitted.session);
+  } }).createSession({ kind: installation ? "installation" : "principal", actor }, admitted.session);
   session.owner = "agent:mcp:strict-in-memory-fixture";
+  (runtime as unknown as { sessions: Map<string, unknown> }).sessions.set("strict-in-memory-fixture", session);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "strict-proof", version: "1" });
   await session.server.connect(serverTransport); await client.connect(clientTransport);
   const close = async () => { await session.transport.close(); await client.close(); await session.server.close(); admitted.session.markClosed(); };
-  return { client, clock, diagnostic, actor, project, session, processes, close };
+  return { client, clock, diagnostic, actor, project, session, processes, close, runtime, service, authentication };
 }
 
 describe("strict in-memory MCP protocol admission", () => {
+  it("does not invoke a queued installation mutation after authentication-policy closure", async () => {
+    const faults: ProofFaultInjection = {}, f = await strictProof(faults), mcp = await protocol(f, false, undefined, true);
+    const mutation = vi.spyOn(mcp.service, "setProjectEnvironment");
+    const hold = pauseProvisioning(f, faults, "rollback");
+    try {
+      await hold.paused;
+      const pending = mcp.client.callTool({ name: "set_project_environment", arguments: { projectId: mcp.project.id, environment: { SHOULD_NOT_WRITE: "fixture" } } }).catch((error: unknown) => error);
+      await vi.waitFor(() => expect(f.store.admissionSnapshot().queuedCore).toBe(1));
+      // This is the same immediate closure used when installation authentication changes.
+      await mcp.runtime.close("authentication-policy");
+      await mcp.client.close();
+      await pending;
+      expect(mcp.session.closing).toBe(true);
+      hold.resume(); await hold.pending;
+      await vi.waitFor(() => expect(f.store.admissionSnapshot()).toMatchObject({ queuedCore: 0, coreActive: 0 }));
+      expect(mutation).not.toHaveBeenCalled();
+      expect((await f.run(() => f.store.getProject(mcp.project.id)))?.environment).toEqual({});
+    } finally { hold.resume(); await hold.pending; await mcp.close(); await closeStrictProof(f); }
+  });
+
   it.each(["commit", "rollback"] as const)("waits for provider %s and reads current identity after release", async outcome => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults), mcp = await protocol(f);
     const hold = pauseProvisioning(f, faults, outcome);

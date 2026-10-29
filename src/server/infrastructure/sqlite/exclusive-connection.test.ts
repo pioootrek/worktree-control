@@ -44,6 +44,22 @@ function gate() {
 }
 
 describe("exclusive provider borrow of the controller connection", () => {
+  it.each([false, true])("never invokes a provider callback with an already aborted signal (contended: %s)", async contended => {
+    const f = fixture();
+    const entered = gate(), release = gate();
+    const held = contended ? f.storage.borrow(async () => { entered.open(); await release.opened; }) : Promise.resolve();
+    if (contended) await entered.opened;
+    const abort = new AbortController(); abort.abort();
+    let invoked = false;
+    const pending = asyncCode(() => f.storage.borrow(async () => { invoked = true; }, { signal: abort.signal }));
+    release.open();
+    try {
+      expect(await pending).toBe("cancelled");
+      expect(invoked).toBe(false);
+    } finally { release.open(); await held; }
+    await expect(f.storage.borrow(async () => "still usable")).resolves.toBe("still usable");
+  });
+
   it("preserves omitted boolean arguments on core database and statement methods", () => {
     const f = fixture();
     expect(f.core.prepare("SELECT 1 n").pluck().get()).toBe(1);

@@ -250,6 +250,7 @@ export class ExclusiveSqliteConnection {
     if (current?.kind === "provider") throw current.active ? fail("reentrant", "A provider operation cannot borrow the connection again.") : this.#released();
     if (current?.kind === "core" && this.#live(current)) throw fail("reentrant", "A core operation cannot upgrade to provider access.");
     this.#assertAdmission();
+    if (options.signal?.aborted) throw fail("cancelled", "The database operation was cancelled before admission.");
     // With a borrow active, an open transaction is that borrow's; this caller queues behind it.
     if (!this.#active && this.#raw.inTransaction) throw fail("in_transaction", "The connection cannot be lent from inside a transaction.");
     this.#everBorrowed = true;

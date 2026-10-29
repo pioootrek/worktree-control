@@ -418,7 +418,13 @@ export class McpRuntime {
       this.diagnostics.change(session.observation, "operations", 1);
       if (qualifying) this.recordActivity(session);
       // One admitted operation per protocol request; long waits inside release it.
-      try { return await admissionOf(this.service).run(() => handler(request, extra)); }
+      try {
+        return await admissionOf(this.service).run(() => {
+          // Closing/aborting a request while it waits must revoke its queued work too.
+          if (session.closing || extra.signal.aborted) throw new McpError(ErrorCode.InvalidRequest, "The MCP request is closed and accepts no further work.");
+          return handler(request, extra);
+        }, { signal: extra.signal });
+      }
       catch (error) {
         const failure = databaseAdmissionFailure(error);
         if (!failure) throw error;
