@@ -54,7 +54,7 @@ async function remoteProtocol(f: StrictProof, controller: RemoteVerificationCont
 }
 
 describe("strict remote protocol and worker persistence", () => {
-  it("admits actual MCP submit/cancel handlers once and persists cancellation before worker delivery", async () => {
+  it("admits actual MCP submit/cancel handlers once and cancels pending work before delivery without an attempt", async () => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults), r = await remote(f), mcp = await remoteProtocol(f, r.controller);
     const input = { name: "submit_remote_verification", arguments: { projectId: "project", workerId: "worker", presetId: "node:test", commitSha: "b".repeat(40), idempotencyKey: "mcp-submit-once" } };
     const submit = vi.spyOn(r.controller, "submit"), cancel = vi.spyOn(r.controller, "cancel");
@@ -71,16 +71,19 @@ describe("strict remote protocol and worker persistence", () => {
       expect(submit).toHaveBeenCalledOnce(); expect(cancel).toHaveBeenCalledOnce();
       expect(await mcp.client.callTool(input)).toEqual(result);
       const poll = await request(r.http.server, "/remote-verification/v1/poll", r.issued.token, JSON.stringify({ version: 1, workerId: "worker" })).completed;
-      // Equal creation timestamps do not promise request ordering; deliver both known requests.
-      const next = await request(r.http.server, "/remote-verification/v1/poll", r.issued.token, JSON.stringify({ version: 1, workerId: "worker" })).completed;
-      const assignments = [...poll.body.assignments as RemoteAssignment[], ...next.body.assignments as RemoteAssignment[]];
-      expect(new Set(assignments.map(value => value.requestId)).size).toBe(2);
-      const assignment = assignments.find(value => value.requestId === r.submitted.id)!;
-      expect(assignment).toBeTruthy();
-      expect([...poll.body.cancellations as string[], ...next.body.cancellations as string[]]).toContain(assignment.attemptId);
-      const report = { attemptId: assignment.attemptId, localRunId: "never-spawned", sequence: 1, phase: "cancelled" };
+      const assignments = poll.body.assignments as RemoteAssignment[];
+      expect(assignments).toHaveLength(1);
+      const assignment = assignments[0];
+      expect(assignment).toMatchObject({ commitSha: input.arguments.commitSha });
+      expect(assignment.requestId).not.toBe(r.submitted.id);
+      expect(poll.body.cancellations).toEqual([]);
+      expect(await f.run(() => r.controller.status(r.submitted.id, f.ownerActor))).toMatchObject({ request: { phase: "cancelled" }, cancellationRequested: true, attempt: null, result: null });
+      const report = { attemptId: assignment.attemptId, localRunId: "new-run", sequence: 1, phase: "preparing" };
       expect(await request(r.http.server, "/remote-verification/v1/report", r.issued.token, JSON.stringify({ version: 1, workerId: "worker", report })).completed).toMatchObject({ status: 200, body: { acceptedSequence: 1 } });
-      expect(await f.run(() => r.controller.status(r.submitted.id, f.ownerActor))).toMatchObject({ request: { phase: "cancelled" }, result: { phase: "cancelled", sequence: 1 } });
+      const terminal = { ...report, sequence: 2, phase: "failed", failureKind: "setup", errorCode: "preparation_failed" };
+      expect(await request(r.http.server, "/remote-verification/v1/report", r.issued.token, JSON.stringify({ version: 1, workerId: "worker", report: terminal })).completed).toMatchObject({ status: 200, body: { acceptedSequence: 2 } });
+      expect(await f.run(() => r.controller.status(assignment.requestId, f.ownerActor))).toMatchObject({ request: { phase: "completed" }, result: { phase: "failed", sequence: 2 } });
+      expect(readCommitted(f.path, db => (db.prepare("SELECT count(*) n FROM remote_verification_requests").get() as { n: number }).n)).toBe(2);
     } finally { hold.resume(); await hold.pending; await mcp.close(); await r.http.close(); await closeStrictProof(f); }
   });
 

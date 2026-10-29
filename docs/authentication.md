@@ -98,6 +98,80 @@ package retains its dependency notices and stays outside Community runtime
 dependencies and published assets. See its
 [README](../packages/auth-provider-better-auth-proof/README.md) for verification.
 
+### Next provider authorization handoff (proposal)
+
+This is an implementation brief, not an available login path. Keep account
+mode unavailable and keep provider loading out of production bootstrap.
+
+`AuthenticationProviderRuntime.resolve` currently returns session evidence and
+the active opaque subject mapping under one exclusive borrow. That return
+value is a snapshot. `resolveControllerAuthentication` is synchronous and
+recognizes only existing credentials/modes. `IdentityService` revalidates
+actors against stored A2 credentials, so a provider session cannot be passed
+through by relabeling it as `owner_session`. Resolving the provider from an
+admitted core callback fails as reentrant. Resolving first and trusting its
+snapshot after a core wait would instead miss intervening revocation.
+
+The smallest suggested addition is a server-only provider-session authority
+port with two distinct phases:
+
+1. Resolve the cookie through the actual provider outside core admission.
+   Keep its nonsecret session/subject IDs in a runtime-issued opaque reference
+   bound to this provider instance. A client-supplied structural copy of
+   `ProviderPrincipalResolution` must never be sufficient authentication.
+2. Inside the admitted controller operation, validate that reference against
+   current provider availability, the actual stored session's subject and
+   expiry, the active mapping to the same principal, and the current active
+   principal. Then run the ordinary action/resource policy. Repeat that
+   synchronous validation after every `idle`/project-lock wait and before
+   effects, retained results and sensitive delivery. Do not call Kysely or
+   borrow the provider from this admitted phase.
+
+For the existing fixed storage revision, a controller-owned query can project
+session ID, subject and expiry from `authentication_ba_session`, joined to the
+mapping and principal. It needs no token, password or extra connection. Keep
+it behind the storage/authority interface; normalize the pinned adapter's date
+representation and reject missing or malformed evidence. The existing schema
+already contains the needed rows. A different provider/storage revision would
+need its own verified validity adapter. An invalidation-only cache is
+insufficient without proving every mutation path and failed-notification
+behavior; direct current-state validation avoids that extra acceptance claim.
+
+Give the actor a distinct provider-session authentication method/reference.
+Do not create an A2 credential, issue a bearer, infer permissions from email,
+or translate password-only evidence into MFA. `describeIdentity` must handle
+the absence of an A2 credential safely. Existing owner administration,
+runtime sponsorship and vault proof checks must remain denied unless their
+specific policy is explicitly implemented and tested. Demonstrate the first
+handoff with existing grant-limited Knowledge operations; a mapping alone
+grants no Knowledge action.
+
+The source boundaries for that next change are:
+
+| Files | Required responsibility |
+| --- | --- |
+| `modules/authentication/provider-contract.ts`, `provider-runtime.ts` | Evidence/reference issuance, provider-instance lifetime and admitted validation entry; raw evidence stays non-authorizing |
+| `infrastructure/sqlite/authentication-provider-queries.ts`, `sqlite-state-store.ts` | Current session/mapping/principal projection on the same guarded owner connection |
+| `modules/identity/contracts.ts`, `identity-service.ts` | Distinct actor authentication, current checks and safe metadata without manufactured credentials; preserve existing policy gates |
+| `modules/authentication/controller-authentication.ts` | Keep compatibility mode resolution explicit; any new async preparation must precede admission and cannot enable account mode |
+| `http-server.ts`, `transports/mcp/mcp-runtime.ts` | Later transport adoption must preserve body-read/session-close/abort rechecks; this brief adds no public browser routes |
+
+Paths in this table are relative to `src/server/`. Keep provider dependencies
+inside the private optional package. Existing `provider-contract.ts` has no
+provider-library imports; preserve that boundary.
+
+Required strict tests use the actual pinned provider and existing granted
+principal: success executes once; a committed session deletion, mapping
+revocation or principal revocation ordered before core callback entry denies
+the effect; rollback does not invent a committed revocation; expiry and provider
+disposal during the wait deny access; forged references and provider/subject/
+principal substitution fail. Pin the queue ordering explicitly. Repeat a
+revocation after `idle` and verify denial before the next effect or receipt
+release. Check that a session-authenticated caller cannot mint credentials,
+sponsor a runtime agent or satisfy the independent vault proof through this
+handoff. Existing A2 authentication and reentrant-borrow refusal must continue
+to pass. No browser, MFA/lifetime defaults or A5 cutover are part of this step.
+
 ## Knowledge roles (A1)
 
 Knowledge operations use a shared application policy in HTTP, MCP and CLI.

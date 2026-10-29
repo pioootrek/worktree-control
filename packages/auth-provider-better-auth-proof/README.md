@@ -71,16 +71,16 @@ fixtures and mocks; finite-job cases run a real short Node process.
 | Boundary | Strict held-provider evidence | Remaining acceptance work |
 | --- | --- | --- |
 | HTTP | Commit/rollback wait, single mutation and receipt replay, queued revocation, malformed 400, initial and body-read re-admission contention 503 with Retry-After (Knowledge, vault, backups and user backups) | Broader route inventory |
-| MCP | Actual in-memory request wrapper, commit/rollback wait, current identity after revocation, policy closure prevents queued installation mutations, scoped readiness and retained retry | Full HTTP MCP transport authentication/body behavior and broader tool/resource matrix |
+| MCP | Actual in-memory request wrapper, commit/rollback wait, current identity after revocation, policy closure prevents queued installation mutations, scoped readiness and retained retry; actual HTTP initial contention and post-body queued revocation | Retained HTTP body-read regression requires Retry-After on 503; complete SDK HTTP session and broader tool/resource matrix |
 | Finite-job cancellation | Cancellation admitted after the preflight read remains terminal; no stale queued checkpoint or process spawn | Broader preparation/error interleavings |
-| Automatic renewal | Contention deadline and retry preserve claim; queued credential revocation/expiry and session close prevent renewal | Lease expiry during an admission wait |
-| Remote controller | Poll/report wait on commit/rollback, exact report replay, current worker grant at delivery | Submit/cancel transport races and worker credential expiry |
-| Remote worker | Current-state ACK merge retains cancellation, SQL-free network phase, receipt before preparation, ordered running/terminal outbox | Crash/restart matrix under strict admission and concurrent appended-report ACK race |
+| Automatic renewal | Contention deadline and retry preserve claim; queued credential revocation/expiry and session close prevent renewal; lease expiry during the wait prevents renewal, runtime spawn and retained retry | Complete SDK HTTP session lifecycle remains separate |
+| Remote controller | Poll/report wait on commit/rollback, exact report replay, current worker grant at delivery; actual MCP submit/cancel and queued grant revocation; worker expiry at HTTP body-read re-admission | Full listener shutdown and remote cleanup failures |
+| Remote worker | Current-state ACK merge retains cancellation and a real running report appended during upload; SQL-free network phase, receipt before preparation, ordered terminal outbox; reopened strict owner refuses interrupted execution and retains cleanup block | Real crash/reboot and signed owner-recovery host acceptance under provider contention |
 | Workspace preparation | Real preparation adapter, committed recovery provenance before mock Git effect, SQL-free wait and mapping revocation after re-admission | Dependency-installation and all cleanup/refusal paths under strict contention |
 | Vault | Proof expiry, grant revocation before retained plaintext replay, owner credential revocation | Broader role/grant/once-receipt and expiry combinations; A4 policy unchanged |
 | Schedules/restore | Actual automatic tick, current export grants, deferred launch admission, current restore authority, failed restart retains owner | Complete CLI response/listener shutdown and restore execution handoff |
 | Storage/logs | One save per completed scan, duplicate coalescing, close while save waits, retention lookup waiting/refusal preserves files | Global scan backlog bounds and all retention/drain failures |
-| Lifecycle/shutdown | Two same-project operations, provider during idle, no admitted project-lock waiter, new work refused while accepted work drains | Lock-order design acceptance and complete bootstrap shutdown; local readiness authorization gap is characterized separately |
+| Lifecycle/shutdown | Two same-project operations, provider during idle, no admitted project-lock waiter; owning service refuses new work while real process completion and a driver backup drain; failed drain retains sole-owner lock and retry closes after late provider settlement | Lock-order design acceptance and complete bootstrap shutdown; local readiness authorization gap is characterized separately |
 | Shared branches | Joined SQL is refused while a sibling idles; detached participants remain independent | Dashboard fan-out retains admission during Git; this is no blanket safety claim for concurrent joined branches |
 
 `live-admission.test.ts` also retains the original strict proofs for running-job
@@ -91,6 +91,52 @@ abandoned-iterator cleanup, omitted driver arguments, sanitized dispose failure
 and subject-wide invalidation only after commit for more than 100 sessions.
 The connection gate unit tests also reject already-aborted provider requests
 both on a free connection and behind another provider borrow.
+
+The bounded acceptance checklist is:
+
+- **Tested:** `shutdown-admission.test.ts` calls `ControlService.shutdown`
+  directly while accepted process completion, a queued driver backup and the
+  actual provider transaction are pending. It checks terminal persistence,
+  one finalized save, refusal of new lifecycle/jobs, lock retention on a real
+  drain deadline, refusal of a second owner and successful later store close.
+  The fixture shortens only that drain call. Failed runtime disposal stays a
+  failed idempotent result; store drain/close is the retryable operation.
+- **Tested:** `remote-admission.test.ts` calls actual MCP submit/cancel
+  handlers over the SDK wire without an outer admission scope. Pending
+  cancellation leaves durable intent and creates no attempt. A separate
+  submitted request is persisted once, survives replay and retains terminal
+  report evidence. Queued grant revocation denies both handlers; worker
+  credential expiry denies the HTTP operation after its body-read wait.
+- **Tested:** the same file's `merges a queued ACK` case holds the first
+  upload while a real finite job appends `running` through the production
+  callback. A second provider transaction delays the ACK write; it preserves
+  both reports. The next tick collects and acknowledges terminal evidence.
+  This is distinct from the cancellation-only ACK test. Its reopened-owner
+  case persists `uncertain`, blocks cleanup-dependent admission and never
+  enqueues the interrupted attempt again.
+- **Tested:** `mcp-admission.test.ts`'s `does not revive a lease` case queues
+  both the production renewal callback and `start_project`, then advances only
+  wall-clock time past the stored lease. Neither renewal nor retry can spawn.
+- **Retained failing regression:** `mcp-http-admission.test.ts`'s `preserves
+  Retry-After` case invokes the actual installed `/mcp` listener. It authenticates,
+  waits for body bytes without admission, then times out re-admission behind
+  the provider. `mcp-http-server.ts` sets Retry-After for initial contention but
+  omits it in the catch after the body read. The expected response is 503 with
+  `Retry-After: 1`; keep that expectation until the backend is fixed. The same
+  file checks initial admission and current post-body credential revocation.
+- **Scope-critical uncovered:** provider evidence still cannot authorize a
+  controller operation safely. The [handoff proposal](../../docs/authentication.md#next-provider-authorization-handoff-proposal)
+  identifies the required current-state check and actor boundary. Complete
+  bootstrap listener/response shutdown, restore execution handoff and the local
+  readiness authorization gap also remain unaccepted. The tests above certify
+  service ownership, not the complete CLI teardown.
+- **Separately deferred:** real host reboot/recovery, all dependency-install
+  cleanup failures, broader route/tool permutations and global scan-backlog
+  bounds need their own focused evidence. Compatible-mode recovery tests in
+  `src/server/modules/remote-verification/remote-worker-recovery.test.ts` and
+  `worker-owner-recovery.test.ts` cover many of these state machines; they are
+  not strict held-provider evidence. Account enrollment/factors/browser API,
+  A4 vault policy and A5 cutover/external restore fencing remain separate gates.
 
 A provider-to-core resolution handoff is deliberately deferred. Resolving the
 provider inside admitted core work is rejected as reentrant; resolving before
