@@ -88,9 +88,16 @@ export class OwnedSqliteDatabase {
       syncDirectory(dirname(this.ownership.path));
     }
   }
+  /**
+   * Releases ownership only after SQLite actually closed. A failed close leaves
+   * the connection and owner lock in place so a later call can retry; no other
+   * process (including a restore) may take over a database still open here.
+   */
   close(): void {
     if (this.closed) return;
+    if (this.connection.open) this.connection.close();
+    if (this.connection.open) throw new Error("The database connection is still open; ownership is retained.");
     this.closed = true;
-    try { if (this.connection.open) this.connection.close(); } finally { this.ownership.lock.release(); }
+    this.ownership.lock.release();
   }
 }

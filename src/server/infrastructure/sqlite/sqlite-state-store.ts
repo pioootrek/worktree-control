@@ -38,7 +38,8 @@ import type {
 import type { RuntimeCredentialScope, RuntimeDelegation } from "@/shared/contracts/runtime-access";
 import { RuntimeAccessQueries } from "./runtime-access-queries";
 import type { AuthenticationPolicy, AuthenticationProviderStorage, AuthenticationStore } from "@/server/modules/authentication";
-import { ExclusiveSqliteConnection, type ExclusiveConnectionOptions } from "./exclusive-connection";
+import { ExclusiveSqliteConnection, type AdmissionSnapshot, type ExclusiveConnectionOptions } from "./exclusive-connection";
+import type { DatabaseAdmission } from "@/server/database-admission";
 import { AuthenticationProviderQueries } from "./authentication-provider-queries";
 import { AUTHENTICATION_PROVIDER_STORAGE_REVISION } from "./authentication-provider-migration";
 import type { HubImportBatch, HubImportExecutionStore, HubImportMapping, KnowledgeHistoryEntry, KnowledgeMutationContext, KnowledgeMutationResult, KnowledgePage, KnowledgeProjectSnapshot, KnowledgeRelation, KnowledgeReply, KnowledgeRuntimeLinkResult, KnowledgeStore, KnowledgeTask, KnowledgeThread } from "@/server/modules/knowledge";
@@ -85,7 +86,8 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       initializeSchema(writable, this.ownedDatabase.inspection.fresh, inspectSchema);
       assertDurability(writable);
       this.ownedDatabase.completeInitialization();
-      this.connection = new ExclusiveSqliteConnection(writable, connectionOptions);
+      // Query modules register functions while being built; strict admission starts once they exist.
+      this.connection = new ExclusiveSqliteConnection(writable, { ...connectionOptions, admission: "compatible" });
       this.database = this.connection.core;
       this.testRuns = new TestRunQueries(this.database);
       this.storage = new StorageQueries(this.database);
@@ -96,10 +98,43 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       this.runtimeAccess = new RuntimeAccessQueries(this.database);
       this.authentication = new AuthenticationQueries(this.database);
       this.knowledge = new KnowledgeQueries(this.database);
+      if (connectionOptions?.admission === "strict") this.connection.requireAdmission();
     } catch (error) {
       this.ownedDatabase.close();
       throw error;
     }
+  }
+
+  /** Core admission on the single connection gate; see `DatabaseAdmission`. */
+  get admission(): DatabaseAdmission {
+    const connection = this.connection;
+    return {
+      run: (operation, options) => connection.runCore(operation, options),
+      detached: (operation, options) => connection.runDetached(operation, options),
+      tryRun: operation => connection.tryCore(operation),
+      outside: operation => connection.outside(operation),
+      idle: (operation, options) => connection.idle(operation, options),
+    };
+  }
+
+  /** Refuses unadmitted core SQL from now on, even while the connection is idle. */
+  requireAdmission(): void { this.connection.requireAdmission(); }
+
+  admissionSnapshot(): AdmissionSnapshot { return this.connection.snapshot(); }
+
+  /**
+   * Orderly close: provider admission ends, accepted core work, backups and
+   * provider executions (including ones whose public promise timed out) must
+   * settle within `timeoutMs`, then SQLite closes and ownership is released.
+   * When that cannot be confirmed, the connection and ownership lock stay held
+   * and the call can be retried; nothing reports a completed shutdown.
+   */
+  async closeAfterDrain(timeoutMs = 10_000): Promise<void> {
+    this.connection.beginDrain();
+    if (!await this.connection.drain(timeoutMs)) {
+      throw new Error("Database work did not settle before shutdown; ownership is retained.");
+    }
+    this.close();
   }
 
   backupEstimateBytes(): number {
@@ -1272,8 +1307,10 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     const connection = this.connection, database = this.database;
     return {
       storageRevision: AUTHENTICATION_PROVIDER_STORAGE_REVISION,
-      borrow: operation => connection.borrow(operation),
+      borrow: (operation, options) => connection.borrow(operation, options),
       runControllerOperation: operation => connection.runControllerOperation(operation),
+      operationActive: () => connection.providerOperationActive(),
+      drain: timeoutMs => connection.drainProviders(timeoutMs),
       createProviderConnection: () => connection.createProviderConnection(),
       subjects: providerId => new AuthenticationProviderQueries(database, providerId),
     };

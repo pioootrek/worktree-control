@@ -20,7 +20,7 @@ import {
 
 export type AuthenticationProviderErrorCode =
   | "provider_unavailable" | "principal_unavailable" | "subject_conflict" | "not_linked"
-  | "invalid_input" | "invalidation_failed" | "provider_disposed" | "provider_failed";
+  | "invalid_input" | "invalidation_failed" | "provider_disposed" | "provider_failed" | "disposal_unconfirmed";
 
 /** Safe to show: messages are fixed text, never library errors, input values or secrets. */
 export class AuthenticationProviderError extends Error {
@@ -45,8 +45,12 @@ export interface ProviderSubjectStore extends ProviderSubjectRegistry {
 /** Implemented by the SQLite owner; nothing here opens or closes the database. */
 export interface AuthenticationProviderStorage {
   readonly storageRevision: number;
-  borrow<T>(operation: () => Promise<T>): Promise<T>;
+  borrow<T>(operation: () => Promise<T>, options?: { signal?: AbortSignal; admissionTimeoutMs?: number }): Promise<T>;
   runControllerOperation<T>(operation: () => T): T;
+  /** False in a continuation whose borrow already ended, e.g. after its time limit. */
+  operationActive(): boolean;
+  /** Resolves false when provider executions, including timed-out ones, have not settled in time. */
+  drain(timeoutMs: number): Promise<boolean>;
   createProviderConnection(): ProviderSqliteConnection;
   subjects(providerId: string): ProviderSubjectStore;
 }
@@ -130,13 +134,18 @@ export async function loadAuthenticationProvider(input: LoadAuthenticationProvid
       record: (...value: Parameters<ProviderSubjectRegistry["record"]>) => controller(() => subjects.record(...value)),
     }),
     invalidated(event: ProviderInvalidation) {
+      // A continuation that outlived its borrow lost SQL access; it also loses notification.
+      if (!input.storage.operationActive()) {
+        input.log?.("error", "A late provider notification was ignored.");
+        return;
+      }
       try { input.onInvalidation?.(event); } catch {
         const operation = operations.getStore();
         if (operation) operation.invalidationFailed = true;
         throw new AuthenticationProviderError("invalidation_failed", "A committed change could not notify active sessions.", true);
       }
     },
-    log(level: "error" | "warn" | "info" | "debug", message: string) { input.log?.(level, message); },
+    log(level: "error" | "warn" | "info" | "debug", message: string) { if (input.storage.operationActive()) input.log?.(level, message); },
   });
   let instance: AuthenticationProviderInstance | undefined;
   try {
@@ -260,12 +269,20 @@ export class AuthenticationProviderRuntime {
     });
   }
 
-  /** Closes admission, drains admitted operations, disposes the provider and invalidates its connection. Idempotent. */
-  dispose(): Promise<void> {
+  /**
+   * Closes admission, drains admitted operations and every underlying provider
+   * execution (a timed-out public promise is not enough), disposes the provider
+   * and invalidates its connection. Idempotent. Rejects with
+   * `disposal_unconfirmed` when executions did not settle within `timeoutMs`;
+   * the caller must then treat provider state as uncertain.
+   */
+  dispose(options: { timeoutMs?: number } = {}): Promise<void> {
     this.#disposal ??= (async () => {
       await Promise.allSettled([...this.#inFlight]);
+      const settled = await this.#input.storage.drain(options.timeoutMs ?? 10_000);
       try { await this.#instance.dispose(); } catch { this.#input.log?.("error", "Authentication provider disposal failed."); }
       finally { this.#connection.close(); }
+      if (!settled) throw new AuthenticationProviderError("disposal_unconfirmed", "Authentication provider work did not settle before disposal.");
     })();
     return this.#disposal;
   }

@@ -323,3 +323,262 @@ describe("exclusive provider borrow of the controller connection", () => {
     expect(providerUsers(f.path)).toBe(0);
   });
 });
+
+describe("shared core admission on the same connection gate", () => {
+  const admission = (store: SqliteStateStore) => store.admission;
+  const snapshot = (store: SqliteStateStore) => store.admissionSnapshot();
+  const raw = (f: ReturnType<typeof fixture>) => f.storage.createProviderConnection();
+  const tick = () => new Promise(resolve => setTimeout(resolve, 5));
+
+  it("keeps the synchronous no-provider path compatible and runs an admissible operation before returning", async () => {
+    const f = fixture();
+    f.project("unadmitted", 3601);
+    let ran = false;
+    const pending = admission(f.store).run(() => { ran = true; return f.store.listProjects().length; });
+    expect(ran).toBe(true);
+    expect(await pending).toBe(1);
+    expect(snapshot(f.store)).toMatchObject({ coreActive: 0, queuedCore: 0, queuedProviders: 0 });
+  });
+
+  it("refuses unadmitted SQL in strict mode even while idle, including continuations of finished operations", async () => {
+    const f = fixture({ admission: "strict" });
+    expect(code(() => f.store.listProjects())).toBe("unadmitted");
+    let later: Promise<string | undefined> | undefined;
+    await admission(f.store).run(async () => {
+      f.project("admitted", 3602);
+      await Promise.resolve();
+      expect(f.store.listProjects()).toHaveLength(1);
+      later = tick().then(() => code(() => f.store.listProjects()));
+    });
+    expect(await later).toBe("unadmitted");
+    expect(await admission(f.store).detached(() => f.store.listProjects().length)).toBe(1);
+  });
+
+  it("holds core work behind a paused provider transaction, runs it once after rollback and keeps earlier core state", async () => {
+    const f = fixture({ admission: "strict" });
+    const connection = raw(f);
+    await admission(f.store).run(() => f.project("earlier", 3603));
+    const paused = gate(), resume = gate();
+    const borrowed = f.storage.borrow(async () => {
+      connection.prepare("BEGIN").run([]);
+      connection.prepare(insertUser).run(userValues("paused"));
+      paused.open();
+      await resume.opened;
+      connection.prepare("ROLLBACK").run([]);
+    });
+    await paused.opened;
+    let runs = 0;
+    const read = admission(f.store).run(() => { runs++; return f.store.listProjects().map(project => project.name); });
+    const write = admission(f.store).run(() => { runs++; return f.project("queued", 3604).name; });
+    await tick();
+    expect(runs).toBe(0);
+    expect(snapshot(f.store)).toMatchObject({ providerActive: true, queuedCore: 2 });
+    resume.open();
+    await borrowed;
+    expect(await read).toEqual(["earlier"]);
+    expect(await write).toBe("queued");
+    expect(runs).toBe(2);
+    expect(providerUsers(f.path)).toBe(0);
+    expect(await admission(f.store).run(() => f.store.listProjects().map(project => project.name))).toEqual(["earlier", "queued"]);
+  });
+
+  it("admits a queued provider before later core roots, batches consecutive core tickets and never starves either", async () => {
+    const f = fixture({ admission: "strict" });
+    const order: string[] = [];
+    const firstCore = gate();
+    const holding = admission(f.store).run(async () => { order.push("core-1"); await firstCore.opened; order.push("core-1-end"); });
+    const provider = f.storage.borrow(async () => { order.push("provider"); await tick(); order.push("provider-end"); });
+    const later = [1, 2].map(index => admission(f.store).run(() => { order.push(`core-later-${index}`); }));
+    const joined = admission(f.store).run(async () => undefined);
+    await tick();
+    expect(order).toEqual(["core-1"]);
+    expect(snapshot(f.store)).toMatchObject({ coreActive: 1, queuedProviders: 1, queuedCore: 3 });
+    firstCore.open();
+    await Promise.all([holding, provider, ...later, joined]);
+    expect(order).toEqual(["core-1", "core-1-end", "provider", "provider-end", "core-later-1", "core-later-2"]);
+    expect(snapshot(f.store)).toMatchObject({ coreActive: 0, queuedCore: 0, queuedProviders: 0 });
+  });
+
+  it("joins nested calls inside an admitted operation instead of queueing behind a waiting provider", async () => {
+    const f = fixture({ admission: "strict" });
+    let provider: Promise<void> | undefined;
+    const result = await admission(f.store).run(async () => {
+      provider = f.storage.borrow(async () => undefined).catch(() => undefined);
+      await tick();
+      // A fresh root would deadlock here until timeout; a nested call joins.
+      return admission(f.store).run(() => f.project("nested", 3605).name);
+    });
+    expect(result).toBe("nested");
+    await provider;
+  });
+
+  it("keeps an operation admitted until joined calls it started have settled", async () => {
+    const f = fixture({ admission: "strict" });
+    const finish = gate();
+    let joined: Promise<string> | undefined;
+    await admission(f.store).run(() => {
+      joined = admission(f.store).run(async () => { await finish.opened; return f.project("joined", 3613).name; });
+    });
+    let borrowed = false;
+    const provider = f.storage.borrow(async () => { borrowed = true; });
+    await tick();
+    expect(borrowed).toBe(false);
+    finish.open();
+    expect(await joined).toBe("joined");
+    await provider;
+    expect(borrowed).toBe(true);
+  });
+
+  it("releases the whole operation when a nested call idles", async () => {
+    const f = fixture({ admission: "strict" });
+    const network = gate();
+    const order: string[] = [];
+    const outer = admission(f.store).run(() => admission(f.store).run(async () => {
+      await admission(f.store).idle(() => network.opened);
+      order.push("resumed");
+      return f.project("nested-idle", 3614).name;
+    }));
+    await tick();
+    await f.storage.borrow(async () => { order.push("provider"); });
+    network.open();
+    expect(await outer).toBe("nested-idle");
+    expect(order).toEqual(["provider", "resumed"]);
+  });
+
+  it("bounds core waiting by queue size, admission deadline and cancellation without ever running refused callbacks", async () => {
+    const f = fixture({ admission: "strict", maxQueued: 2, admissionTimeoutMs: 40 });
+    const hold = gate();
+    const borrowed = f.storage.borrow(() => hold.opened);
+    const ran: string[] = [];
+    const controller = new AbortController();
+    const timedOut = admission(f.store).run(() => { ran.push("timeout"); });
+    const cancelled = admission(f.store).run(() => { ran.push("cancel"); }, { signal: controller.signal, admissionTimeoutMs: 5_000 });
+    expect(await asyncCode(() => admission(f.store).run(() => { ran.push("full"); }))).toBe("queue_full");
+    controller.abort();
+    expect(await asyncCode(() => cancelled)).toBe("cancelled");
+    expect(await asyncCode(() => timedOut)).toBe("admission_timeout");
+    const aborted = new AbortController(); aborted.abort();
+    expect(await asyncCode(() => admission(f.store).run(() => { ran.push("pre-aborted"); }, { signal: aborted.signal }))).toBe("cancelled");
+    hold.open();
+    await borrowed;
+    expect(ran).toEqual([]);
+    expect(snapshot(f.store)).toMatchObject({ coreActive: 0, queuedCore: 0, queuedProviders: 0, providerActive: false });
+  });
+
+  it("keeps an admitted operation admitted until its body settles, however long, and never times it out", async () => {
+    const f = fixture({ admission: "strict", admissionTimeoutMs: 30 });
+    const finish = gate();
+    const effect = admission(f.store).run(async () => { await finish.opened; return f.project("late-commit", 3606).name; });
+    expect(await asyncCode(() => f.storage.borrow(async () => undefined))).toBe("admission_timeout");
+    finish.open();
+    expect(await effect).toBe("late-commit");
+  });
+
+  it("refuses core-to-provider upgrades and core admission inside a provider operation immediately", async () => {
+    const f = fixture({ admission: "strict" });
+    expect(await admission(f.store).run(() => asyncCode(() => f.storage.borrow(async () => undefined)))).toBe("reentrant");
+    const inside = await f.storage.borrow(async () => ({
+      run: await asyncCode(() => admission(f.store).run(() => undefined)),
+      detached: await asyncCode(() => admission(f.store).detached(() => undefined)),
+      idle: await asyncCode(() => admission(f.store).idle(async () => undefined)),
+      direct: code(() => f.store.listProjects()),
+      joined: f.storage.runControllerOperation(() => f.store.listProjects().length),
+    }));
+    expect(inside).toEqual({ run: "reentrant", detached: "reentrant", idle: "reentrant", direct: "busy", joined: 0 });
+  });
+
+  it("releases admission during idle work so a provider can run, then re-admits the caller behind it", async () => {
+    const f = fixture({ admission: "strict" });
+    const order: string[] = [];
+    const network = gate();
+    const operation = admission(f.store).run(async () => {
+      order.push("validate");
+      await admission(f.store).idle(async () => {
+        expect(code(() => f.store.listProjects())).toBe("unadmitted");
+        await network.opened;
+      });
+      order.push("commit");
+      return f.project("after-idle", 3607).name;
+    });
+    await tick();
+    const provider = f.storage.borrow(async () => { order.push("provider"); });
+    await provider;
+    network.open();
+    expect(await operation).toBe("after-idle");
+    expect(order).toEqual(["validate", "provider", "commit"]);
+  });
+
+  it("closes cursors an admitted operation left open before the next provider transaction", async () => {
+    const f = fixture({ admission: "strict" });
+    await admission(f.store).run(() => { f.project("one", 3608); f.project("two", 3609); });
+    let iterator: IterableIterator<unknown> | undefined;
+    await admission(f.store).run(() => {
+      iterator = f.core.prepare("SELECT id FROM projects").iterate();
+      iterator.next();
+    });
+    const connection = raw(f);
+    await f.storage.borrow(async () => {
+      connection.prepare("BEGIN").run([]);
+      connection.prepare(insertUser).run(userValues("after-core-cursor"));
+      connection.prepare("COMMIT").run([]);
+    });
+    expect(providerUsers(f.path)).toBe(1);
+    expect(code(() => iterator!.next())).toBe("unadmitted");
+  });
+
+  it("holds the owner lock through a running backup, refuses a failed close and closes once work drained", async () => {
+    const f = fixture({ admission: "strict" });
+    await admission(f.store).run(() => f.project("backed-up", 3610));
+    // Only initiation is admitted; the gate's backup hold lasts until the driver settles.
+    const { backup } = await admission(f.store).run(() => ({ backup: f.store.backup(join(f.root, "drain.sqlite3"), { progress: () => 1 }) }));
+    expect(snapshot(f.store)).toMatchObject({ coreActive: 0, backups: 1 });
+    stores.splice(stores.indexOf(f.store), 1);
+    const closing = f.store.closeAfterDrain(5_000);
+    await expect(f.storage.borrow(async () => undefined)).rejects.toMatchObject({ code: "provider_closed" });
+    expect(existsSync(`${f.path}.owner.lock`)).toBe(true);
+    await backup;
+    await closing;
+    expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
+    expect(committed(join(f.root, "drain.sqlite3"), db => (db.prepare("SELECT count(*) n FROM projects").get() as { n: number }).n)).toBe(1);
+  });
+
+  it("keeps ownership when drain or the driver close cannot be confirmed, and closes on retry", async () => {
+    const f = fixture({ admission: "strict" });
+    const finish = gate();
+    const held = admission(f.store).run(() => finish.opened);
+    await expect(f.store.closeAfterDrain(20)).rejects.toThrow(/ownership is retained/);
+    expect(existsSync(`${f.path}.owner.lock`)).toBe(true);
+    finish.open(); await held;
+    const compatible = fixture();
+    compatible.project("a", 3611); compatible.project("b", 3612);
+    const iterator = compatible.core.prepare("SELECT id FROM projects").iterate();
+    iterator.next();
+    stores.splice(stores.indexOf(compatible.store), 1);
+    expect(() => compatible.store.close()).toThrow(/busy/);
+    expect(existsSync(`${compatible.path}.owner.lock`)).toBe(true);
+    iterator.return?.();
+    compatible.store.close();
+    expect(existsSync(`${compatible.path}.owner.lock`)).toBe(false);
+    stores.splice(stores.indexOf(f.store), 1);
+    await f.store.closeAfterDrain(1_000);
+    expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
+  });
+
+  it("tracks a timed-out provider execution until it settles and denies its late SQL", async () => {
+    const f = fixture({ admission: "strict", borrowTimeoutMs: 30 });
+    const connection = raw(f);
+    const resume = gate();
+    let late: string | undefined;
+    const execution = f.storage.borrow(async () => {
+      await resume.opened;
+      late = code(() => connection.prepare("SELECT 1").all([]));
+      return f.storage.operationActive();
+    });
+    expect(await asyncCode(() => execution)).toBe("expired");
+    expect(await f.storage.drain(20)).toBe(false);
+    expect(await admission(f.store).run(() => f.store.listProjects().length)).toBe(0);
+    resume.open();
+    expect(await f.storage.drain(1_000)).toBe(true);
+    expect(late).toBe("released");
+  });
+});
