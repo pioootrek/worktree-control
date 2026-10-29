@@ -12,6 +12,7 @@ export function validateDatabase(database: Database.Database, version: number): 
   // Scoped leases bind both principal and credential; older and human leases bind neither.
   if (version >= 36 && database.prepare(`SELECT 1 FROM reservations WHERE (principal_id IS NULL) <> (credential_id IS NULL)
     OR (principal_id IS NOT NULL AND kind <> 'agent') LIMIT 1`).get()) fail("lease binding");
+  if (version >= 37 && database.prepare("SELECT 1 FROM projects WHERE typeof(configuration_revision) <> 'integer' OR configuration_revision < 0 LIMIT 1").get()) fail("configuration revision");
   if (version >= 25) {
     try { new AuthenticationQueries(database).getAuthenticationPolicy(); } catch { fail("authentication policy"); }
     if (!database.prepare("SELECT 1 FROM remote_principals WHERE id='installation' AND kind='installation' AND status='active'").get()) fail("installation principal");

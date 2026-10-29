@@ -77,7 +77,7 @@ describe("scoped runtime authorization", () => {
       expect(() => f.identity.issueRuntimeCredential({ principalId: f.agent.id, label: "x", projects: [{ projectId: f.a.id, actions: ["projects:read"] }] }, subject)).toThrow(IdentityError);
       expect(() => f.identity.listRuntimeAccess({ principalId: f.agent.id }, subject)).toThrow(IdentityError);
     }
-    for (const unsupported of ["profiles:select", "config:write", "tests:run", "logs:read", "env:read", "env:use", "knowledge:read"]) {
+    for (const unsupported of ["tests:run", "logs:read", "env:read", "env:use", "knowledge:read"]) {
       expect(() => f.delegate(f.b.id, ["projects:read", unsupported])).toThrow(/Unsupported runtime action/);
     }
     expect(() => f.identity.setRuntimeDelegation({ principalId: f.agent.id, projectId: f.b.id, actions: all, expectedRevision: 0, sponsorId: "someone" }, f.owner)).toThrow(/Invalid runtime delegation/);

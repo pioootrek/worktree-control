@@ -5,6 +5,7 @@ import type { McpDiagnosticsSnapshot, McpSessionDiagnostics } from "@/shared/con
 import { registerKnowledgeTools } from "./knowledge-tools";
 import { registerRemoteVerificationTools } from "./remote-verification-tools";
 import { registerScopedRuntimeTools, type ScopedSessionPort } from "./scoped-runtime-tools";
+import { registerScopedConfigurationTools } from "./scoped-configuration-tools";
 import { ScopedRuntimeError } from "../../modules/runtime";
 import type { AuthenticatedPrincipal } from "../../modules/identity";
 import { McpDiagnostics, type McpSessionObservation, type McpCloseReason } from "../../mcp-diagnostics";
@@ -437,7 +438,9 @@ export class McpRuntime {
       // Scoped credentials stop here; the installation authority also controls the runtime.
       if (session.authentication.kind === "principal") {
         if (actor.principalKind === "agent" && this.service.scopedRuntimeEnabled?.()) {
-          registerScopedRuntimeTools(server, this.service, actor, this.scopedPort(session, actor));
+          const port = this.scopedPort(session, actor);
+          registerScopedRuntimeTools(server, this.service, actor, port);
+          registerScopedConfigurationTools(server, this.service, actor, port);
         }
         return server;
       }
@@ -861,14 +864,21 @@ export class McpRuntime {
   ): Promise<T> {
     const existing = session.runtimeOperations.get(idempotencyKey);
     if (existing) {
-      if (existing.fingerprint !== fingerprint) throw new Error("The idempotency key was already used for a different runtime operation.");
-      const receipt = await existing.promise as T;
+      if (existing.fingerprint !== fingerprint) throw new ScopedRuntimeError("idempotency_conflict", "The idempotency key was already used for a different operation in this MCP session.");
+      let receipt: T;
+      try {
+        receipt = await existing.promise as T;
+      } catch (error) {
+        // A retained failure is also released only to current authority.
+        beforeReplay();
+        throw error;
+      }
       beforeReplay();
       return { ...receipt, replayed: true };
     }
-    if (session.closing) throw new Error("The MCP session is closed.");
+    if (session.closing) throw new ScopedRuntimeError("session_closed", "The MCP session is closed.");
     if (session.runtimeOperations.size >= 64 || this.runtimeOperationCount >= 512) {
-      throw new Error("The runtime operation retry ledger is full. Start a new MCP session before submitting another operation.");
+      throw new ScopedRuntimeError("retry_ledger_full", "The runtime operation retry ledger is full. Start a new MCP session before submitting another operation.");
     }
     const entry: RuntimeOperationEntry = { fingerprint, promise: null as unknown as Promise<T>, settled: false, counted: true };
     this.runtimeOperationCount += 1;

@@ -35,7 +35,7 @@ describe("Knowledge role migration and persistence", () => {
       expect(inspectSchema(db).version).toBe(34);
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name='knowledge_role_bindings'").get()).toBeUndefined();
       initializeSchema(db, false);
-      expect(inspectSchema(db).version).toBe(36);
+      expect(inspectSchema(db).version).toBe(37);
       expect(db.prepare("SELECT * FROM knowledge_project_grants").all()).toEqual(before);
       expect(db.prepare("SELECT * FROM knowledge_role_bindings").all()).toEqual([]);
       expect(db.prepare("SELECT id,kind FROM remote_principals WHERE id=?").get(f.owner.principalId)).toEqual({ id: f.owner.principalId, kind: "owner" });

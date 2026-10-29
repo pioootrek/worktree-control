@@ -140,8 +140,13 @@ describe("scoped agent claims", () => {
     const text = (result: Awaited<ReturnType<Client["callTool"]>>) => (result.content as Array<{ text: string }>)[0]!.text;
 
     const tools = (await client.listTools()).tools.map(tool => tool.name);
-    for (const absent of ["get_runtime_logs", "set_project_environment", "get_server_capacity", "run_test", "select_environment_profile", "get_project_storage"]) {
+    for (const absent of ["get_runtime_logs", "set_project_environment", "get_server_capacity", "run_test", "save_environment_profile",
+      "delete_environment_profile", "save_test_environment_profile", "assign_test_preset_profile", "list_test_environment_profiles", "get_project_storage"]) {
       expect(tools).not.toContain(absent);
+    }
+    // Configuration tools are registered but each call requires its own separately granted action.
+    for (const present of ["list_environment_profiles", "select_environment_profile", "get_project_configuration", "set_test_preset_timeout"]) {
+      expect(tools).toContain(present);
     }
     expect(tools.some(name => /issue|grant|delegat|token|rotate/.test(name))).toBe(false);
     const identityView = JSON.parse(text(await client.callTool({ name: "get_identity", arguments: {} })));

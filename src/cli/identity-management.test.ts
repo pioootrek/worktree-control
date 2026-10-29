@@ -89,7 +89,7 @@ describe("identity management CLI", () => {
     ["list-runtime-access", "--principal-id", "agent", "--token", "secret"],
     ["list-runtime-access", "--principal-id", "agent", "trailing"],
     ["issue-runtime-credential", "--principal-id", "agent", "--label", "client", "--projects-json", "@file"],
-    ["issue-runtime-credential", "--principal-id", "agent", "--label", "client", "--projects-json", '[{"projectId":"p","actions":["config:write"]}]'],
+    ["issue-runtime-credential", "--principal-id", "agent", "--label", "client", "--projects-json", '[{"projectId":"p","actions":["tests:run"]}]'],
     ["issue-runtime-credential", "--principal-id", "agent", "--label", "client", "--projects-json", '[{"projectId":"p","actions":["projects:read"],"sponsorId":"owner"}]'],
     ["issue-runtime-credential", "--principal-id", "agent", "--label", "client"],
     ["rotate-runtime-credential", "--credential-id", "id", "--label", "a", "--label", "b"],

@@ -1,11 +1,12 @@
 import { z } from "zod";
 
 /**
- * Scoped agent runtime actions delivered by A2. Profile selection, configuration,
- * test admission, logs and ENV access are deliberately absent: requests naming
- * them are rejected rather than stored as inert grants.
+ * Scoped agent runtime actions delivered by A2. Each is granted only explicitly;
+ * none implies another and no role bundle grants `profiles:select` or
+ * `config:write`. Test admission, logs and ENV access are deliberately absent:
+ * requests naming them are rejected rather than stored as inert grants.
  */
-export const runtimeActions = ["projects:read", "claims:manage", "runtime:control"] as const;
+export const runtimeActions = ["projects:read", "claims:manage", "runtime:control", "profiles:select", "config:write"] as const;
 export type RuntimeAction = typeof runtimeActions[number];
 
 export function isRuntimeAction(value: unknown): value is RuntimeAction {

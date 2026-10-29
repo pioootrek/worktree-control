@@ -9,7 +9,7 @@ import type { KnowledgeTaskPage, KnowledgeReplyPage, KnowledgeRelationDestinatio
 import type { KnowledgeMemory, KnowledgeSearchHit, KnowledgeSearchOptions } from "@/shared/contracts/knowledge-memory";
 import type { KnowledgeAttachmentLimits, KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
 import type { KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
-import type { PendingTestRun, ProjectRegistration, ReservationBinding, ReservationRequest, StateStore, TestRunStatusRecord, WorktreeStorageSample } from "@/server/state-store";
+import type { PendingTestRun, ProjectRegistration, ReservationBinding, ReservationRequest, ScopedConfigurationCommit, ScopedConfigurationCommitResult, StateStore, TestRunStatusRecord, WorktreeStorageSample } from "@/server/state-store";
 import type { Project, Reservation, ServerCapacitySettings, TestEnvironmentProfile, TestQueueSettings, TestRun, TestRunPhase, WorktreeStorageSnapshot } from "@/shared/contracts";
 import type {
   RemotePrincipal,
@@ -470,7 +470,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       const result = this.database.prepare(`
         UPDATE projects SET
           tls_mode = ?, tls_key_path = ?, tls_cert_path = ?, tls_ca_path = ?,
-          executable = ?, args_json = ?, updated_at = ?
+          executable = ?, args_json = ?, updated_at = ?, configuration_revision = configuration_revision + 1
         WHERE id = ?
       `).run(
         input.tlsMode,
@@ -550,7 +550,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     if (timeoutMs === null) delete timeouts[presetId];
     else timeouts[presetId] = timeoutMs;
     this.database.transaction(() => {
-      this.database.prepare("UPDATE projects SET test_preset_timeouts_json = ?, updated_at = ? WHERE id = ?")
+      this.database.prepare("UPDATE projects SET test_preset_timeouts_json = ?, updated_at = ?, configuration_revision = configuration_revision + 1 WHERE id = ?")
         .run(JSON.stringify(timeouts), new Date().toISOString(), projectId);
       this.audit(projectId, "project.test_preset_timeout_set", actor, { presetId, timeoutMs });
     })();
@@ -567,7 +567,8 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     const now = new Date().toISOString();
     this.database.transaction(() => {
       const result = this.database.prepare(`
-        UPDATE projects SET test_environment_profiles_json = ?, test_preset_profiles_json = ?, updated_at = ?
+        UPDATE projects SET test_environment_profiles_json = ?, test_preset_profiles_json = ?, updated_at = ?,
+          configuration_revision = configuration_revision + 1
         WHERE id = ?
       `).run(JSON.stringify(profiles), JSON.stringify(presetProfiles), now, projectId);
       if (result.changes === 0) throw new Error("Nie znaleziono projektu.");
@@ -595,11 +596,74 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     this.database.transaction(() => {
       const result = this.database.prepare(`
         UPDATE projects SET environment_profiles_json = ?, selected_environment_profile = ?,
-          environment_json = ?, updated_at = ? WHERE id = ?
+          environment_json = ?, updated_at = ?, configuration_revision = configuration_revision + 1 WHERE id = ?
       `).run(JSON.stringify(profiles), selectedProfile, JSON.stringify(environment), now, projectId);
       if (result.changes === 0) throw new Error("Nie znaleziono projektu.");
       this.audit(projectId, eventType, actor, { profileName, variableNames: variableNames.sort() });
     })();
+  }
+
+  getProjectConfigurationRevision(projectId: string): number | null {
+    const row = this.database.prepare("SELECT configuration_revision FROM projects WHERE id = ?").get(projectId) as { configuration_revision: number } | undefined;
+    return row ? row.configuration_revision : null;
+  }
+
+  /**
+   * One immediate transaction checks lease ownership and the revision, applies
+   * the change, increments the revision and writes the attributable audit event.
+   * A refusal or a no-op changes no configuration and writes no audit event;
+   * only the shared lease expiry bookkeeping may run.
+   */
+  commitScopedConfiguration(input: ScopedConfigurationCommit): ScopedConfigurationCommitResult {
+    return this.database.transaction((): ScopedConfigurationCommitResult => {
+      const project = this.getProject(input.projectId);
+      const revision = this.getProjectConfigurationRevision(input.projectId);
+      if (!project || revision === null) return { status: "project_missing" };
+      this.expireReservations(input.projectId);
+      const row = this.activeReservationRow(input.projectId);
+      if (input.claim === null) {
+        if (row) return { status: "claim_required" };
+      } else if (!row || row.id !== input.claim.reservationId || row.kind !== "agent" || row.owner !== input.claim.owner
+        || !equalHash(row.token_hash, input.claim.leaseTokenHash) || !equalBinding(row, input.claim.binding)) {
+        return { status: "claim_stale" };
+      } else if (input.claim.worktreePath !== undefined && row.worktree_path !== input.claim.worktreePath) {
+        return { status: "claim_worktree_mismatch" };
+      }
+      if (revision !== input.expectedRevision) return { status: "revision_conflict" };
+      const { change } = input;
+      let eventType: string;
+      let changed: Record<string, unknown>;
+      if (change.kind === "select_environment_profile") {
+        const profile = project.environmentProfiles.find(({ name }) => name === change.profileName);
+        if (!profile) return { status: "profile_not_found" };
+        if (project.selectedEnvironmentProfile === profile.name) return { status: "noop", revision };
+        this.database.prepare(`UPDATE projects SET selected_environment_profile = ?, environment_json = ?, updated_at = ?,
+          configuration_revision = configuration_revision + 1 WHERE id = ? AND configuration_revision = ?`)
+          .run(profile.name, JSON.stringify(profile.environment), new Date().toISOString(), input.projectId, revision);
+        eventType = "configuration.environment_profile_selected";
+        changed = { selectedProfile: profile.name };
+      } else {
+        const timeouts = { ...project.testPresetTimeouts };
+        if ((timeouts[change.presetId] ?? null) === change.timeoutMs) return { status: "noop", revision };
+        if (change.timeoutMs === null) delete timeouts[change.presetId];
+        else {
+          if (!(change.presetId in timeouts) && Object.keys(timeouts).length >= change.overrideLimit) return { status: "override_limit" };
+          timeouts[change.presetId] = change.timeoutMs;
+        }
+        this.database.prepare(`UPDATE projects SET test_preset_timeouts_json = ?, updated_at = ?,
+          configuration_revision = configuration_revision + 1 WHERE id = ? AND configuration_revision = ?`)
+          .run(JSON.stringify(timeouts), new Date().toISOString(), input.projectId, revision);
+        eventType = "configuration.test_preset_timeout_set";
+        changed = { presetId: change.presetId, timeoutMs: change.timeoutMs };
+      }
+      // Attribution only: no ENV names or values, lease secrets or session handles.
+      this.audit(input.projectId, eventType, `principal:${input.attribution.principalId}`, {
+        principalId: input.attribution.principalId, credentialId: input.attribution.credentialId,
+        operationId: input.attribution.operationId, reservationId: input.claim?.reservationId ?? null,
+        previousRevision: revision, revision: revision + 1, outcome: "completed", ...changed,
+      });
+      return { status: "completed", revision: revision + 1 };
+    }).immediate();
   }
 
   setSelectedWorktree(projectId: string, path: string): void {

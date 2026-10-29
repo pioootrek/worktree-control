@@ -148,7 +148,7 @@ describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
     const workerToken = f.identity.issueWorkerToken({ principalId: worker.id, label: "worker" }, f.owner).token;
     for (const token of [f.installationToken, f.issued[0].token, workerToken]) expect((await f.admin(input, token)).status).toBe(403);
     expect((await f.admin(input, null)).status).toBe(401);
-    for (const body of [{ ...input, sponsorId: f.owner.principalId }, { ...input, actions: ["config:write"] }, { ...input, actions: ["profiles:select"] }, { ...input, actions: ["env:read"] }, { ...input, actions: ["tests:run"] }]) expect((await f.admin(body)).status).toBe(400);
+    for (const body of [{ ...input, sponsorId: f.owner.principalId }, { ...input, actions: ["logs:read"] }, { ...input, actions: ["env:read"] }, { ...input, actions: ["tests:run"] }]) expect((await f.admin(body)).status).toBe(400);
     expect((await f.admin(input)).status).toBe(200);
     expect((await f.admin(input)).status).toBe(409);
     const badIssue = { action: "issue-runtime-credential", principalId: f.agents[0].id, label: "duplicate", projects: Array(2).fill({ projectId: f.projects[0].id, actions: all }) };

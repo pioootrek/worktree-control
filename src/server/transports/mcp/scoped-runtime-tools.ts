@@ -3,6 +3,7 @@ import * as z from "zod/v4";
 
 import type { ClaimedRuntimeAction } from "@/shared/contracts";
 import type { ScopedRuntimeReceipt } from "@/shared/contracts/runtime-access";
+import type { ScopedConfigurationReceipt } from "@/shared/contracts/scoped-configuration";
 import type { ControlService } from "../../control-service";
 import type { AuthenticatedPrincipal } from "../../modules/identity";
 import { RuntimeAccessDenied, ScopedRuntimeError } from "../../modules/runtime";
@@ -20,15 +21,19 @@ export interface ScopedSessionPort {
   track(claim: { projectId: string; reservationId: string; token: string; ttlSeconds: number; idempotencyScope: string }): void;
   renewed(reservationId: string, ttlSeconds: number): void;
   forget(reservationId: string): void;
-  runOperation(idempotencyKey: string, fingerprint: string, execute: () => Promise<ScopedRuntimeReceipt>, beforeReplay: () => void): Promise<ScopedRuntimeReceipt>;
+  /**
+   * Bounded session-only retry ledger shared by runtime and configuration
+   * receipts. `beforeReplay` re-authorizes before a retained outcome is returned.
+   */
+  runOperation<T extends ScopedRuntimeReceipt | ScopedConfigurationReceipt>(idempotencyKey: string, fingerprint: string, execute: () => Promise<T>, beforeReplay: () => void): Promise<T>;
 }
 
-function jsonContent(value: unknown) {
+export function jsonContent(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };
 }
 
 /** Only fixed scoped codes cross this boundary; unexpected failures never expose internal messages. */
-async function safe<T>(operation: () => T | Promise<T>): Promise<T> {
+export async function safe<T>(operation: () => T | Promise<T>): Promise<T> {
   try {
     return await operation();
   } catch (error) {

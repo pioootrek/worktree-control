@@ -1,5 +1,6 @@
 import { knowledgeRoleMigration, knowledgeRoleChecksum } from "./knowledge-role-migration";
 import { runtimeAccessMigration, runtimeAccessChecksum } from "./runtime-access-migration";
+import { configurationRevisionMigration, configurationRevisionChecksum } from "./configuration-revision-migration";
 import { devVaultMigration, devVaultChecksum } from "./dev-vault-migration";
 import { remoteConnectionMigration, remoteConnectionChecksum } from "./remote-connection-migration";
 import Database from "better-sqlite3";
@@ -40,6 +41,7 @@ const columnVersions: Record<string, number> = {
   "reservations.maximum_expires_at": 4, "reservations.token_hash": 4, "reservations.idempotency_key": 4,
   "reservations.principal_id": 36, "reservations.credential_id": 36,
   "reservations.request_fingerprint": 36,
+  "projects.configuration_revision": 37,
   // Migration 13 explicitly supports the legacy lineage without launch_preset.
   "projects.launch_preset": 15, "projects.environment_json": 8,
   "projects.environment_profiles_json": 9, "projects.selected_environment_profile": 9,
@@ -120,6 +122,7 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : x.version === 34 ? x.name !== devVaultMigration.name || x.checksum !== devVaultChecksum
       : x.version === 35 ? x.name !== knowledgeRoleMigration.name || x.checksum !== knowledgeRoleChecksum
       : x.version === 36 ? x.name !== runtimeAccessMigration.name || x.checksum !== runtimeAccessChecksum
+      : x.version === 37 ? x.name !== configurationRevisionMigration.name || x.checksum !== configurationRevisionChecksum
       : true)) refuse("migration checksum or name");
   }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));

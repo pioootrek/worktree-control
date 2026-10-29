@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { DashboardQueryService } from "./modules/dashboard";
-import { EnvironmentService, redactProject } from "./modules/environments";
+import { EnvironmentService, redactProject, ScopedConfigurationService, type ScopedConfigurationSession } from "./modules/environments";
 import type { AuthenticatedPrincipal } from "./modules/identity";
 import { KnowledgeService, type KnowledgeHistoryEntry, type KnowledgeHistoryOptions, type KnowledgePageOptions, type KnowledgeRecordKind, type KnowledgeTaskPriority, type KnowledgeTaskStatus, type KnowledgeWriteOptions } from "./modules/knowledge";
 import { leaseTokenHash, type OperationActor, ProjectLifecycle } from "./modules/lifecycle";
@@ -66,6 +66,7 @@ export class ControlService {
   private readonly dashboardQueries: DashboardQueryService;
   private readonly statusQueries: StatusService;
   private readonly scopedRuntime?: ScopedRuntimeService;
+  private readonly scopedConfiguration?: ScopedConfigurationService;
 
   constructor(
     private readonly store: StateStore,
@@ -101,6 +102,8 @@ export class ControlService {
       () => this.lifecycle.capacityStatusCompact(), () => this.testQueueStatus());
     if (runtimeAuthorizer) {
       this.scopedRuntime = new ScopedRuntimeService(runtimeAuthorizer, store, git, processes, this.lifecycle, this.runtime, logs);
+      this.scopedConfiguration = new ScopedConfigurationService(runtimeAuthorizer, store, git, processes, this.lifecycle,
+        worktreePath => testCommands.discover(worktreePath), logs);
     }
   }
 
@@ -123,6 +126,22 @@ export class ControlService {
   }
   authorizeScopedRuntime(actor: AuthenticatedPrincipal, projectId: string, action: RuntimeAction): void {
     this.requireScopedRuntime().authorize(actor, projectId, action);
+  }
+  /** Scoped profile selection and configuration; enforcement, revision CAS and safe views live in the environments module. */
+  scopedEnvironmentProfiles(actor: AuthenticatedPrincipal, input: unknown) { return this.requireScopedConfiguration().listEnvironmentProfiles(actor, input); }
+  selectScopedEnvironmentProfile(actor: AuthenticatedPrincipal, session: ScopedConfigurationSession, input: unknown) {
+    return this.requireScopedConfiguration().selectEnvironmentProfile(actor, session, input);
+  }
+  scopedProjectConfiguration(actor: AuthenticatedPrincipal, input: unknown) { return this.requireScopedConfiguration().projectConfiguration(actor, input); }
+  setScopedTestPresetTimeout(actor: AuthenticatedPrincipal, session: ScopedConfigurationSession, input: unknown) {
+    return this.requireScopedConfiguration().setTestPresetTimeout(actor, session, input);
+  }
+  authorizeScopedConfigurationReplay(...args: Parameters<ScopedConfigurationService["authorizeReplay"]>): void {
+    this.requireScopedConfiguration().authorizeReplay(...args);
+  }
+  private requireScopedConfiguration(): ScopedConfigurationService {
+    if (!this.scopedConfiguration) throw new Error("Scoped agent configuration is unavailable.");
+    return this.scopedConfiguration;
   }
   private requireScopedRuntime(): ScopedRuntimeService {
     if (!this.scopedRuntime) throw new Error("Scoped agent runtime access is unavailable.");

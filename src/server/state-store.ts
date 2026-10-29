@@ -57,6 +57,25 @@ export interface ReservationRequest {
   requestFingerprint?: string;
 }
 
+/** A scoped agent configuration change, committed atomically with its ownership, revision and audit checks. */
+export type ScopedConfigurationChange =
+  | { kind: "select_environment_profile"; profileName: string }
+  | { kind: "set_test_preset_timeout"; presetId: string; timeoutMs: number | null; overrideLimit: number };
+export interface ScopedConfigurationCommit {
+  projectId: string;
+  expectedRevision: number;
+  /**
+   * Null: the project must have no active reservation. Otherwise the caller's
+   * exact scoped lease; `worktreePath`, when given, must be the claimed worktree.
+   */
+  claim: { reservationId: string; owner: string; leaseTokenHash: string; binding: ReservationBinding; worktreePath?: string } | null;
+  change: ScopedConfigurationChange;
+  attribution: { principalId: string; credentialId: string; operationId: string };
+}
+export type ScopedConfigurationCommitResult =
+  | { status: "completed" | "noop"; revision: number }
+  | { status: "project_missing" | "claim_required" | "claim_stale" | "claim_worktree_mismatch" | "revision_conflict" | "profile_not_found" | "override_limit" };
+
 export interface TestHistoryPosition { queuedAt: string; runId: string }
 export interface TestHistoryScan {
   projectId: string; from: string; to: string; before?: TestHistoryPosition; ceiling?: TestHistoryPosition;
@@ -84,6 +103,9 @@ export interface StateStore {
   deleteProjectTestEnvironmentProfile(projectId: string, profileName: string, actor: string): void;
   assignProjectTestPresetProfile(projectId: string, presetId: string, profileName: string | null, actor: string): void;
   setProjectTestPresetTimeout(projectId: string, presetId: string, timeoutMs: number | null, actor: string): void;
+  /** Incremented by every configuration write; null when the project does not exist. */
+  getProjectConfigurationRevision(projectId: string): number | null;
+  commitScopedConfiguration(input: ScopedConfigurationCommit): ScopedConfigurationCommitResult;
   setSelectedWorktree(projectId: string, path: string): void;
   getServerCapacitySettings(): ServerCapacitySettings;
   setServerCapacitySettings(settings: ServerCapacitySettings): void;
