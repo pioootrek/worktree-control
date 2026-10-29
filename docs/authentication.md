@@ -28,6 +28,45 @@ Scoped agent tokens and owner sessions from `identity` commands keep working in
 `legacy` and `token` modes. A controller whose stored mode is unavailable
 refuses to start; it never falls back to another mode.
 
+## Optional provider proof (first A3 slice)
+
+The private workspace package `packages/auth-provider-better-auth-proof` is an
+executable, server-free proof using Better Auth 1.7.14, `@better-auth/core`
+1.7.14 and Kysely 0.28.17 on the existing `better-sqlite3` 13.0.3 connection.
+It exercises real handler requests, cookies, password changes, session
+revocation and local recovery. The controller's production bootstrap does not
+load it. Selecting `better-auth` still fails; this slice adds no login UI,
+browser authorization or production account endpoints.
+
+The versioned local loader checks readiness and storage compatibility. Local
+modules execute as trusted controller code, with no sandbox. Each operation
+borrows the sole controller-owned connection. Core queries fail with `busy`
+while it is lent out; live background admission and retry remain unfinished.
+Disposal rejects new runtime work, drains accepted operations including queued
+ones, and closes the borrowed facade without closing the database owner.
+
+Controller migration 38 adds empty, recognized `authentication_ba_*` tables and
+`authentication_provider_subjects`. It performs no account, credential, role or
+grant backfill. An explicit opaque provider subject maps to an existing active
+owner ID. Resolution checks the current session, mapping and owner; email and
+display name grant no authority. Cookies never manufacture an `owner_session`.
+A2 machine credentials and scoped runtime policy remain unchanged.
+
+Full controller backups include provider rows and schema 38. Older readers
+reject unsupported schemas. Restoring a snapshot can revive old sessions and
+passwords; the external revocation/recovery fence remains A5 work. Better Auth
+stores bearer session tokens, and the proof's native sign-in and password-change
+JSON responses include session tokens. Those responses are not an approved
+browser API design. Password-only evidence is neither MFA nor an ASVS Level 2
+claim. Numeric session, reset, password and rate limits are proof settings,
+not approved product defaults. A4 vault proof remains separate.
+
+Human enrollment, factors, invitations, roles, GUI and the A5 activation gates
+remain open in Knowledge task `ec4c7258770328ca33fb1801be6831f6`. The optional
+package retains its dependency notices and stays outside Community runtime
+dependencies and published assets. See its
+[README](../packages/auth-provider-better-auth-proof/README.md) for verification.
+
 ## Knowledge roles (A1)
 
 Knowledge operations use a shared application policy in HTTP, MCP and CLI.

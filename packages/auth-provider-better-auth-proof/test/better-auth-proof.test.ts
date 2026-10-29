@@ -85,6 +85,20 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
     } finally { f.store.close(); }
   });
 
+  it.each([false, true])("cleans up a loaded provider's synchronous failure (open transaction: %s)", async openTransaction => {
+    const f = storeFixture();
+    const { runtime } = await loadProof(f.store, undefined, fixtureModule("synchronous-handle.mjs"));
+    try {
+      const error = await runtime.handle(new Request(`${ORIGIN}/${openTransaction ? "transaction" : "plain"}`)).catch((reason: unknown) => reason);
+      expect(error).toMatchObject({ code: openTransaction ? "provider_closed" : "provider_failed" });
+      expect(String(error)).not.toContain("fixture-secret");
+      expect(count(f.path, "authentication_ba_verification")).toBe(0);
+      expect(f.store.listProjects()).toEqual([]);
+      if (openTransaction) expect(await errorCode(() => runtime.resolve(new Headers()))).toBe("provider_closed");
+      else expect(await runtime.resolve(new Headers())).toBeNull();
+    } finally { await runtime.dispose(); f.store.close(); }
+  });
+
   it("provisions through library hashing and account operations with an atomic subject mapping and ID-only audit", async () => {
     const f = await provisioned();
     try {
@@ -180,6 +194,20 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
       ]);
       expect(sessionEvents).toHaveLength(4);
     } finally { await f.runtime.dispose(); f.store.close(); }
+  });
+
+  it("rejects a correctly signed cookie after the stored session expires, without reusing cached evidence", async () => {
+    const f = await provisioned();
+    try {
+      const client = new Client(f.runtime);
+      expect((await client.signIn()).status).toBe(200);
+      const session = (await client.resolve())!.session;
+      const retained = client.cookieHeader();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date(session.expiresAt).getTime() + 1);
+      expect(await client.resolve(retained)).toBeNull();
+      expect(await (await client.call("/get-session", { method: "GET", cookie: retained })).json()).toBeNull();
+    } finally { vi.useRealTimers(); await f.runtime.dispose(); f.store.close(); }
   });
 
   it("denies a retained cookie once the mapping or the owner principal is no longer current", async () => {
@@ -320,6 +348,10 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
       expect((await client.call("/sign-in/email", { body: { email: OWNER_EMAIL, password: OWNER_PASSWORD }, url: "https://other.invalid/api/auth/sign-in/email" })).status).toBe(421);
       const navigation = new Client(f.runtime, "203.0.113.71");
       expect((await navigation.call("/sign-in/email", { body: { email: OWNER_EMAIL, password: OWNER_PASSWORD }, origin: null, headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" } })).status).toBe(403);
+      const redirect = await new Client(f.runtime, "203.0.113.74").call("/sign-in/email", { body: { email: OWNER_EMAIL, password: OWNER_PASSWORD, callbackURL: "https://evil.invalid/collect" } });
+      expect(redirect.status).toBe(403);
+      expect(redirect.headers.getSetCookie()).toEqual([]);
+      expect(count(f.path, "authentication_ba_session")).toBe(1);
       const attacker = new Client(f.runtime, "203.0.113.72");
       const statuses: number[] = [];
       for (let attempt = 0; attempt < 6; attempt++) statuses.push((await attacker.signIn(`wrong-password-${attempt}`)).status);
@@ -341,6 +373,21 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
       f.evidence.failInvalidation = false;
       expect(await client.resolve()).toBeNull();
       expect(count(f.path, "authentication_ba_session")).toBe(0);
+    } finally { await f.runtime.dispose(); f.store.close(); }
+  });
+
+  it("preserves committed handler revocation when the library catches a failed notification", async () => {
+    const f = await provisioned();
+    try {
+      const client = new Client(f.runtime);
+      await client.signIn();
+      const retained = client.cookieHeader();
+      f.evidence.failInvalidation = true;
+      const error = await client.call("/sign-out", { body: {} }).catch((reason: unknown) => reason);
+      expect(error).toMatchObject({ code: "invalidation_failed", committed: true, message: "A committed change could not notify active sessions." });
+      f.evidence.failInvalidation = false;
+      expect(count(f.path, "authentication_ba_session")).toBe(0);
+      expect(await client.resolve(retained)).toBeNull();
     } finally { await f.runtime.dispose(); f.store.close(); }
   });
 
@@ -393,6 +440,9 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
       faults.beforePasswordWrite = async () => { inFlight.open(); await finish.opened; };
       const changing = client.call("/change-password", { body: { currentPassword: OWNER_PASSWORD, newPassword: NEW_PASSWORD, revokeOtherSessions: true } });
       await inFlight.opened;
+      // These operations enter the runtime before disposal but wait behind its active borrow.
+      const queuedSignIn = new Client(f.runtime, "203.0.113.81").signIn(NEW_PASSWORD);
+      const queuedResolution = client.resolve(client.cookieHeader());
       let disposed = false;
       const disposal = f.runtime.dispose().then(() => { disposed = true; });
       await new Promise(resolve => setTimeout(resolve, 20));
@@ -400,6 +450,8 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
       expect(await errorCode(() => f.runtime.resolve(new Headers()))).toBe("provider_disposed");
       finish.open();
       expect((await changing).status).toBe(200);
+      expect((await queuedSignIn).status).toBe(200);
+      expect(await queuedResolution).toBeNull();
       await disposal;
       await f.runtime.dispose();
       expect(existsSync(`${f.path}.owner.lock`)).toBe(true);

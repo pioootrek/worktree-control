@@ -1,6 +1,6 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-10-25"
+last_reviewed: "2026-10-29"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
@@ -467,6 +467,18 @@ they do not expose runtime claim/configuration tools.
 See [authentication modes](authentication.md) for commands and migration.
 Knowledge CLI, identity administration and logical import/export now apply
 the active policy when no token variable is present, including open mode.
+
+The first A3 slice adds a versioned server-only provider contract and explicit
+local loader, exercised by a private Better Auth workspace proof. Production
+bootstrap does not load it and account mode stays unavailable. Controller
+migration 38 owns the empty namespaced provider tables and explicit subject-to-owner
+mapping. There is no credential or grant backfill. An exclusive connection
+guard protects core SQL, prepared statements and backups while asynchronous
+provider work borrows the sole connection. Competing core work currently fails
+with `busy`; production admission/retry remains open. Disposal drains accepted
+provider work and closes only its borrowed facade. Local provider modules are
+trusted code, not sandboxed plugins. See the
+[proof contract and limitations](authentication.md#optional-provider-proof-first-a3-slice).
 
 ## CLI and package
 

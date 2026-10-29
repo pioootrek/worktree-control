@@ -23,6 +23,15 @@ implementation adds owner-sponsored runtime credentials, filtered MCP discovery,
 credential/session-bound leases and separately authorized configuration tools.
 Accounts and ENV delivery remain deferred.
 
+The first A3 slice now provides an optional executable provider/SQLite proof.
+It verifies real Better Auth operations through the sole guarded connection,
+controller migration 38 and explicit subject mapping. Account mode remains
+unavailable; enrollment, factors, invitations, roles and GUI are still open.
+Live core admission/retry and the A5 external restore fence are unfinished.
+Restores can revive old sessions and passwords. Native proof responses expose
+session tokens and require a separate browser API design before activation.
+See [the implemented proof boundary](authentication.md#optional-provider-proof-first-a3-slice).
+
 Knowledge project `k7a-worktree-switcher` holds design task
 `e3e2e52e-7b95-4088-8234-0e6d35c39f86` and direction memory
 `fb8aab07-3d97-4e38-ac84-617a0d1a0aa4`. The memory records the owner's words;
@@ -47,7 +56,7 @@ the CLI, transport verification and operational docs extend that contract.
 
 | Area | Implemented baseline | Remaining work |
 | --- | --- | --- |
-| Installation authentication | `token`, `open`, `legacy`; rotation and policy invalidation | `better-auth` still rejects activation |
+| Installation authentication | `token`, `open`, `legacy`; rotation and policy invalidation; optional server-free Better Auth/SQLite proof | `better-auth` still rejects activation; no browser account integration |
 | Identity | Owner, agent, worker and installation principals; revocable credentials | Account-backed humans and general role administration |
 | Knowledge | Shared policy, explicit grants and optional Knowledge role ceilings; installation compatibility bypass | Explicit human approval in account mode |
 | MCP | Agent sessions add filtered discovery, explicit-start claims, claimed control, literal profile selection and preset timeout overrides; Knowledge/vault/remote grants stay independent | Scoped finite-job admission/own-run access, runtime resources, compact status and wait API are separate followups |
@@ -219,9 +228,10 @@ or revoke a credential at its external provider.
 ## Authentication, revocation and audit
 
 Better Auth remains an optional identity/session provider mapped to stable
-principals. Prove adapter transaction/disposal behavior against the sole SQLite
-connection before integrating it. Controller-owned migrations and backups must
-include provider data. Keep the static dashboard and use library-supported
+principals. The first proof exercises adapter transactions/disposal against the
+sole SQLite connection; migration 38 and controller backups include its data.
+Production integration still needs safe live admission and the remaining
+account acceptance gates. Keep the static dashboard and use library-supported
 password, factor and session handling rather than new cryptographic protocols.
 
 Provision the first owner through protected local recovery/bootstrap; subsequent
