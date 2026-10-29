@@ -13,6 +13,9 @@ export function validateDatabase(database: Database.Database, version: number): 
   if (version >= 36 && database.prepare(`SELECT 1 FROM reservations WHERE (principal_id IS NULL) <> (credential_id IS NULL)
     OR (principal_id IS NOT NULL AND kind <> 'agent') LIMIT 1`).get()) fail("lease binding");
   if (version >= 37 && database.prepare("SELECT 1 FROM projects WHERE typeof(configuration_revision) <> 'integer' OR configuration_revision < 0 LIMIT 1").get()) fail("configuration revision");
+  // Provider accounts map only to owner principals; an unmapped provider row authorizes nothing.
+  if (version >= 38 && database.prepare(`SELECT 1 FROM authentication_provider_subjects s
+    JOIN remote_principals p ON p.id=s.principal_id WHERE p.kind<>'owner' LIMIT 1`).get()) fail("provider subject principal");
   if (version >= 25) {
     try { new AuthenticationQueries(database).getAuthenticationPolicy(); } catch { fail("authentication policy"); }
     if (!database.prepare("SELECT 1 FROM remote_principals WHERE id='installation' AND kind='installation' AND status='active'").get()) fail("installation principal");

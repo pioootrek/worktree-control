@@ -37,7 +37,10 @@ import type {
 } from "@/server/modules/identity";
 import type { RuntimeCredentialScope, RuntimeDelegation } from "@/shared/contracts/runtime-access";
 import { RuntimeAccessQueries } from "./runtime-access-queries";
-import type { AuthenticationPolicy, AuthenticationStore } from "@/server/modules/authentication";
+import type { AuthenticationPolicy, AuthenticationProviderStorage, AuthenticationStore } from "@/server/modules/authentication";
+import { ExclusiveSqliteConnection, type ExclusiveConnectionOptions } from "./exclusive-connection";
+import { AuthenticationProviderQueries } from "./authentication-provider-queries";
+import { AUTHENTICATION_PROVIDER_STORAGE_REVISION } from "./authentication-provider-migration";
 import type { HubImportBatch, HubImportExecutionStore, HubImportMapping, KnowledgeHistoryEntry, KnowledgeMutationContext, KnowledgeMutationResult, KnowledgePage, KnowledgeProjectSnapshot, KnowledgeRelation, KnowledgeReply, KnowledgeRuntimeLinkResult, KnowledgeStore, KnowledgeTask, KnowledgeThread } from "@/server/modules/knowledge";
 import { KnowledgeError, publishKnowledgeAttachment, DEFAULT_ATTACHMENT_LIMITS, assertAttachmentCapacity } from "@/server/modules/knowledge";
 import Database from "better-sqlite3";
@@ -71,15 +74,19 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   private readonly knowledge: KnowledgeQueries;
 
   private readonly ownedDatabase: OwnedSqliteDatabase;
+  /** Every query module receives `connection.core`; the raw handle stays here. */
+  private readonly connection: ExclusiveSqliteConnection;
 
-  constructor(databasePath: string, inspected?: OwnedSqliteDatabase) {
+  constructor(databasePath: string, inspected?: OwnedSqliteDatabase, connectionOptions?: ExclusiveConnectionOptions) {
     this.ownedDatabase = inspected ?? new OwnedSqliteDatabase(databasePath, true);
     try {
-      this.database = this.ownedDatabase.enableWrites();
-      configureDurability(this.database);
-      initializeSchema(this.database, this.ownedDatabase.inspection.fresh, inspectSchema);
-      assertDurability(this.database);
+      const writable = this.ownedDatabase.enableWrites();
+      configureDurability(writable);
+      initializeSchema(writable, this.ownedDatabase.inspection.fresh, inspectSchema);
+      assertDurability(writable);
       this.ownedDatabase.completeInitialization();
+      this.connection = new ExclusiveSqliteConnection(writable, connectionOptions);
+      this.database = this.connection.core;
       this.testRuns = new TestRunQueries(this.database);
       this.storage = new StorageQueries(this.database);
       this.remoteVerification = new RemoteVerificationQueries(this.database);
@@ -1257,8 +1264,23 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     })();
   }
 
+  /**
+   * Storage port for an optional authentication provider: exclusive borrows of
+   * this connection, never a second connection. Closing the store invalidates it.
+   */
+  authenticationProviderStorage(): AuthenticationProviderStorage {
+    const connection = this.connection, database = this.database;
+    return {
+      storageRevision: AUTHENTICATION_PROVIDER_STORAGE_REVISION,
+      borrow: operation => connection.borrow(operation),
+      runControllerOperation: operation => connection.runControllerOperation(operation),
+      createProviderConnection: () => connection.createProviderConnection(),
+      subjects: providerId => new AuthenticationProviderQueries(database, providerId),
+    };
+  }
+
   close(): void {
-    this.ownedDatabase.close();
+    try { this.connection?.close(); } finally { this.ownedDatabase.close(); }
   }
 
   private expireReservations(projectId: string): void {

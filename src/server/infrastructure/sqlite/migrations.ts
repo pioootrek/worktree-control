@@ -1,6 +1,7 @@
 import { applyKnowledgeRoleMigration } from "./knowledge-role-migration";
 import { applyRuntimeAccessMigration } from "./runtime-access-migration";
 import { applyConfigurationRevisionMigration } from "./configuration-revision-migration";
+import { applyAuthenticationProviderMigration } from "./authentication-provider-migration";
 import { applyDevVaultMigration } from "./dev-vault-migration";
 import { applyRemoteConnectionMigration } from "./remote-connection-migration";
 import Database from "better-sqlite3";
@@ -363,6 +364,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyKnowledgeRoleMigration(database);
       applyRuntimeAccessMigration(database);
       applyConfigurationRevisionMigration(database);
+      applyAuthenticationProviderMigration(database);
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();

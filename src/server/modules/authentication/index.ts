@@ -24,3 +24,30 @@ export type {
   AuthenticationStore,
   InstallationTokenRecord,
 } from "./contracts";
+export {
+  AuthenticationProviderError,
+  AuthenticationProviderRuntime,
+  loadAuthenticationProvider,
+  type AuthenticationProviderErrorCode,
+  type AuthenticationProviderStorage,
+  type LoadAuthenticationProviderInput,
+  type ProviderPrincipalResolution,
+  type ProviderSubjectStore,
+} from "./provider-runtime";
+export { AUTHENTICATION_PROVIDER_CONTRACT_VERSION } from "./provider-contract";
+export type {
+  AuthenticationProviderHost,
+  AuthenticationProviderInstance,
+  AuthenticationProviderModule,
+  AuthenticationProviderOptions,
+  AuthenticationProviderReadiness,
+  LocalProvisionInput,
+  LocalRecoveryInput,
+  ProviderAuditEvent,
+  ProviderInvalidation,
+  ProviderSqliteConnection,
+  ProviderSqliteStatement,
+  ProviderSubjectMapping,
+  ProviderSubjectRegistry,
+  VerifiedProviderSession,
+} from "./provider-contract";

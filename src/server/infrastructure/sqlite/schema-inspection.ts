@@ -1,6 +1,7 @@
 import { knowledgeRoleMigration, knowledgeRoleChecksum } from "./knowledge-role-migration";
 import { runtimeAccessMigration, runtimeAccessChecksum } from "./runtime-access-migration";
 import { configurationRevisionMigration, configurationRevisionChecksum } from "./configuration-revision-migration";
+import { authenticationProviderMigration, authenticationProviderChecksum } from "./authentication-provider-migration";
 import { devVaultMigration, devVaultChecksum } from "./dev-vault-migration";
 import { remoteConnectionMigration, remoteConnectionChecksum } from "./remote-connection-migration";
 import Database from "better-sqlite3";
@@ -19,6 +20,8 @@ type ForeignKey = { table: string; from: string; to: string; on_delete: string; 
 // Historical installations may already have tables from the bootstrap DDL. Require
 // them only after their introducing migration, but validate any that are present.
 const tableVersions: Record<string, number> = {
+  authentication_ba_user: 38, authentication_ba_session: 38, authentication_ba_account: 38,
+  authentication_ba_verification: 38, authentication_provider_subjects: 38,
   runtime_delegations: 36, runtime_credential_scopes: 36,
   knowledge_role_bindings: 35,
   dev_environment_vaults: 34,
@@ -54,7 +57,14 @@ const columnVersions: Record<string, number> = {
   "knowledge_import_batches.authentication_method": 26,
 };
 const historicalLeaseCheck = "(kind='human'andexpires_atisnull)or(kind='agent'andexpires_atisnotnull)";
-interface TableShape { columns: Column[]; foreignKeys: ForeignKey[]; checks: string[]; uniqueKeys: string[] }
+interface TableShape { columns: Column[]; foreignKeys: ForeignKey[]; checks: string[]; uniqueKeys: string[]; indexes: string[] }
+// Tables from migration 38 on are never in bootstrap DDL; their explicit indexes are part of the contract.
+const STRICT_TABLES_FROM = 38;
+const normalizedSql = (sql: string) => sql.replace(/\s+/g, "").toLowerCase();
+function explicitIndexes(database: Database.Database, table: string): string[] {
+  return (database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL").all(table) as Array<{ sql: string }>)
+    .map(({ sql }) => normalizedSql(sql)).sort();
+}
 function checks(sql: string): string[] {
   const result: string[] = [];
   const start = /CHECK\s*\(/gi;
@@ -91,6 +101,7 @@ function knownStructure(): Map<string, TableShape> {
       foreignKeys: database.prepare(`PRAGMA foreign_key_list("${table}")`).all() as ForeignKey[],
       checks: checks((database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql),
       uniqueKeys: uniqueKeys(database, table),
+      indexes: explicitIndexes(database, table),
     }]));
     return reference;
   } finally { database.close(); }
@@ -123,12 +134,14 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : x.version === 35 ? x.name !== knowledgeRoleMigration.name || x.checksum !== knowledgeRoleChecksum
       : x.version === 36 ? x.name !== runtimeAccessMigration.name || x.checksum !== runtimeAccessChecksum
       : x.version === 37 ? x.name !== configurationRevisionMigration.name || x.checksum !== configurationRevisionChecksum
+      : x.version === 38 ? x.name !== authenticationProviderMigration.name || x.checksum !== authenticationProviderChecksum
       : true)) refuse("migration checksum or name");
   }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));
   if (objects.some(x => x.type === "view" || x.type === "trigger") || [...tables].some(x => !(x in tableVersions))) refuse();
   for (const [table, introduced] of Object.entries(tableVersions)) {
     if (!tables.has(table)) { if (version >= introduced) refuse(); continue; }
+    if (introduced >= STRICT_TABLES_FROM && version < introduced) refuse(`${table} precedes its migration`);
     const expected = knownStructure().get(table)!;
     const columns = database.prepare(`PRAGMA table_info("${table}")`).all() as Column[];
     for (const column of columns) {
@@ -160,6 +173,7 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       // Bootstrap may have supplied the latest constraint before this migration.
       if (!actualChecks.includes(check) && !actualChecks.includes(expected.checks.find(x => x.startsWith(field ?? check)) ?? check)) refuse(`constraint in ${table}: ${field ?? "lease"}`);
     }
+    if (introduced >= STRICT_TABLES_FROM && JSON.stringify(explicitIndexes(database, table)) !== JSON.stringify(expected.indexes)) refuse(`indexes of ${table}`);
     const keys = uniqueKeys(database, table);
     if (expected.uniqueKeys.some(key => !keys.includes(key))) refuse();
     const foreignKeys = database.prepare(`PRAGMA foreign_key_list("${table}")`).all() as ForeignKey[];
