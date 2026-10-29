@@ -1,0 +1,13 @@
+{
+  "name": "@worktree-control/auth-provider-better-auth-proof",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Optional, unpublished Better Auth provider proof for Worktree Control. Not part of the Community package.",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@better-auth/core": "1.7.14",
+    "better-auth": "1.7.14",
+    "kysely": "0.28.17"
+  }
+}
