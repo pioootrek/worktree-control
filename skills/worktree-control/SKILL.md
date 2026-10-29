@@ -48,7 +48,8 @@ Read-only status requests do not need a claim.
 When `get_identity` reports `runtimeAccess`, use scoped runtime tools only for
 the returned project/actions. Scoped sessions have no runtime resources,
 compact status, wait API, logs, capacity, storage, local tests or profile/ENV
-administration. Use `get_project_status`; ask the owner for missing access.
+editing. Scoped profile selection and timeout configuration use the narrow
+workflow below. Use `get_project_status`; ask the owner for missing access.
 Installation/open/legacy sessions keep the broader compatibility tools below.
 
 If the server is already running on another worktree, do not move it unless the
@@ -104,6 +105,53 @@ both the claim and capacity, so inspect compact status and bounded runtime logs
 before deciding on another operation. Verify placement, phase, failure code,
 capacity when available, and `leaseHeld` after every operation; a replayed receipt is historical
 and should be followed by a current status read.
+
+## Configure with scoped credentials
+
+Use this workflow only when `get_identity.runtimeAccess` includes the exact
+project and action. Configuration does not require a claim when the project is
+unclaimed, including verification-only projects. If any reservation exists,
+supply `reservationId` from this session's own active claim. A human lock,
+another session using the same token, a rotated credential or a stale claim
+cannot authorize a write. A stale ID never falls back to unclaimed access.
+
+- With `profiles:select`, call `list_environment_profiles({projectId})`. It
+  returns names, `selectedProfile` and `configurationRevision`, without ENV
+  names/counts/values. Select an exact existing name with
+  `select_environment_profile({projectId, name, expectedRevision,
+  idempotencyKey, reservationId?})`. A changed selection requires no owned
+  process or cleanup. Selection never restarts; when the task separately
+  authorizes runtime control, explicitly stop, select, then start under the
+  own claim. Re-selecting still checks the revision. Profile editing and a
+  `restart` option are rejected.
+- With `config:write`, call
+  `get_project_configuration({projectId, worktreePath})` using an exact
+  discovered path. It returns the revision and at most 256 presets with
+  `id`, default `timeoutMs` and nullable `overrideTimeoutMs`. Call
+  `set_test_preset_timeout({projectId, worktreePath, presetId, timeoutMs,
+  expectedRevision, idempotencyKey, reservationId?})` with a currently discovered
+  preset and integer 1–86400000 or `null` to remove the override. The override
+  applies project-wide to future enqueues; queued/running jobs keep their
+  timeout. Under a claim, use its worktree even if `start: false` left the
+  selected runtime worktree elsewhere.
+
+Read the revision immediately before a mutation. Compatibility configuration
+writes also increment it. On `revision_conflict`, reread, reconsider and submit
+with a new key and revision. Reuse a key only for an identical retry after
+transport uncertainty; changed arguments, operation, revision or claim context
+conflict. Runtime/configuration retries share a bounded session ledger, not a
+durable cross-session/restart guarantee. Cached success and failure recheck
+current authority and the original claim. Verify `outcome`,
+`configurationRevision` and a current metadata read after a historical replay.
+
+`config:write` grants timeout overrides only, with at most 256 overrides. It
+assigns no manager role and cannot change commands, ENV, profiles, preset-profile
+assignments, launch/TLS/global settings, identities or vaults. Scoped finite
+jobs, resources, compact status and wait remain unavailable. See
+[the full operational contract](../../docs/reservations-and-mcp.md#scoped-configuration-workflow)
+for receipt fields and deferred followups. Installation/open/legacy compatibility
+sessions retain their broader tools and different input shapes; do not send
+scoped revision fields to an older compatibility controller.
 
 ## Renew and release
 

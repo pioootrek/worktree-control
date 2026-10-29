@@ -1,6 +1,6 @@
 ---
 audience: "people running Worktree Control and choosing how callers authenticate"
-last_reviewed: "2026-10-28"
+last_reviewed: "2026-10-29"
 source_of_truth: "authentication modes, owner CLI and scoped runtime agent workflow"
 status: "active"
 ---
@@ -9,8 +9,9 @@ status: "active"
 
 For planned human accounts, project roles, scoped agents and ENV permissions,
 see the [identity and authorization plan](identity-authorization-plan.md).
-A1 Knowledge roles and the A2 scoped runtime subset are implemented below;
-account login, profile/configuration rights and ENV roles remain planned.
+A1 Knowledge roles and A2 scoped projects, claims, runtime control, profile
+selection and timeout configuration are implemented below. Account login and
+ENV roles remain planned.
 
 One authentication policy applies to the dashboard, the HTTP API, live updates,
 MCP and the online CLI. The controller stores the policy in its database and
@@ -72,7 +73,7 @@ under the controller lock. Unknown fields and role options are rejected.
 
 The compatibility installation authority in `open`/`token` mode still bypasses
 Knowledge roles. This is not account-mode RBAC. Human account login and ENV roles remain later slices. Runtime credential
-scopes and optional expiry are available through the A2 subset below. The
+scopes and optional expiry are available through A2 below. The
 shared policy denies reserved ENV actions; the existing DEV vault continues to
 require its separate signed proof and exact grants, with `use` unavailable.
 
@@ -80,16 +81,19 @@ Full backups retain bindings, revisions, tombstones and audit. As with existing
 credentials, restoring an older snapshot can restore older authorization state;
 external revocation fences are an A5 gate before account-mode activation.
 
-## Scoped runtime agents (A2 subset)
+## Scoped runtime agents (A2)
 
 A scoped agent can discover registered runtime projects, reserve one discovered
-worktree, and control its claimed managed server. The only runtime actions are:
+worktree, control its claimed managed server, select an existing literal profile
+and configure preset timeouts. The accepted runtime actions are:
 
 | Action | Operations |
 | --- | --- |
 | `projects:read` | Filtered `list_projects`, safe `get_project_status`, `list_worktrees` |
 | `claims:manage` | Acquire, renew and release the session's own lease |
 | `runtime:control` | Start, restart and stop under an active own lease; also required for `claim_project` with `start: true` |
+| `profiles:select` | List literal profile names/selection/revision and select an existing profile while stopped |
+| `config:write` | Read discovered preset IDs/default/override timeouts and change project-wide timeout overrides for future enqueues |
 
 The owner delegates actions to a stable agent for each registered runtime
 project. Each credential has an exact project/action ceiling. Effective access
@@ -99,6 +103,9 @@ is derived from the authenticated owner session; callers cannot supply one.
 The owner's session may expire without ending durable sponsorship. Revoking the
 owner principal blocks sponsored authority. Knowledge grants, DEV vault grants
 and remote-verification grants remain independent.
+Adding actions to a delegation never widens an existing credential. Issue a new
+credential with the intended ceiling; rotation can only preserve or narrow it.
+These actions assign no manager role and grant no ENV or secret access.
 
 ### Owner workflow
 
@@ -224,12 +231,59 @@ lease produces a stale-claim error; revoked authority produces a denial.
 Check `leaseHeld`, `error` and current safe status after an operation. Release
 with `release_project_claim` when finished; release does not stop the server.
 
-These scoped tools omit ENV, profile/configuration editing, local test admission,
+These scoped tools omit ENV and profile content editing, local test admission,
 logs, storage, capacity and foreign lease details. Runtime resources,
 `get_project_status_compact` and `wait_for_status_change` are unavailable to
 scoped agents. The HTTP runtime/dashboard API continues to reject their
-credentials; runtime access is through these MCP tools. Unknown actions such
-as `profiles:select`, `config:write`, test/log/ENV permissions cannot be granted.
+credentials, including existing configuration routes; runtime access is through
+these MCP tools. Test/log/ENV permissions such as `tests:run` cannot be granted.
+
+### Independent profile and timeout access
+
+An owner can grant either action without discovery, claim or runtime control.
+For a new agent whose returned ID is `PROFILE_AGENT_ID`, grant selection only:
+
+```bash
+worktree-control identity set-runtime-delegation \
+  --principal-id "$PROFILE_AGENT_ID" --project-id "$PROJECT_ID" \
+  --actions profiles:select --expected-revision 0
+worktree-control identity issue-runtime-credential \
+  --principal-id "$PROFILE_AGENT_ID" --label 'Profile selection only' \
+  --projects-json "[{\"projectId\":\"$PROJECT_ID\",\"actions\":[\"profiles:select\"]}]"
+```
+
+For another new agent, `CONFIG_AGENT_ID`, grant timeout configuration only:
+
+```bash
+worktree-control identity set-runtime-delegation \
+  --principal-id "$CONFIG_AGENT_ID" --project-id "$PROJECT_ID" \
+  --actions config:write --expected-revision 0
+worktree-control identity issue-runtime-credential \
+  --principal-id "$CONFIG_AGENT_ID" --label 'Preset timeout configuration only' \
+  --projects-json "[{\"projectId\":\"$PROJECT_ID\",\"actions\":[\"config:write\"]}]"
+```
+
+Use the owner session and private client setup described above. Supply the
+registered project ID and, for timeout operations, an exact discovered worktree
+path through the task context when the agent lacks `projects:read`. Neither
+action implies the other, `claims:manage`, `runtime:control` or a human role.
+
+The [MCP configuration workflow](reservations-and-mcp.md#scoped-configuration-workflow)
+defines the four tools, revision handling and claim rules. Profile selection
+accepts an exact existing name and never creates, edits, deletes or restarts a
+profile. A changed selection requires no owned process or pending cleanup.
+When runtime control is separately authorized, use explicit stop, select, start
+operations under the own claim. Re-selecting the current profile can be a no-op
+while running, but still checks the expected revision.
+
+`config:write` currently means preset timeout overrides only. It cannot change
+commands, launch/TLS settings, ENV, literal/test profile content, preset-profile
+assignments, identities, global settings or vaults. Both mutations are useful
+without a claim, including on verification-only projects. Any active human or
+agent reservation blocks them unless the request proves that session's exact
+own agent claim. Supplying a stale reservation never falls back to unclaimed
+access. A timeout request must target the claim's worktree, even when a claim
+acquired with `start: false` left the selected runtime worktree elsewhere.
 
 ### Rotate and revoke
 
@@ -248,7 +302,7 @@ client's private secret and reconnect; the new session cannot adopt the old
 session's claim. Credential-bound vault grants are not copied by rotation.
 
 Revoking a credential, agent or delegation denies the next applicable call,
-including retained claim/runtime receipt retries. Automatic renewal rechecks
+including retained claim/runtime/configuration receipts and failures. Automatic renewal rechecks
 current authority and stops when denied. Existing leases retain their remaining
 TTL; revocation does not release the lease or stop its server. Manual renew and
 release also require current authority. A replacement session must wait for
@@ -262,9 +316,11 @@ principal/credential lease bindings on the existing SQLite connection. Existing
 principal IDs, credentials, Knowledge/vault/remote grants and unbound leases
 remain intact. Existing agents receive no runtime backfill. Installation-token,
 open and legacy compatibility callers retain their previous broad runtime
-authority; scoped credentials do not isolate those callers.
+authority; scoped credentials do not isolate those callers. Migration 37 adds
+the project configuration revision. Existing compatibility configuration
+writes increment it alongside scoped changes; no old credential gains actions.
 
-Opening an older database with this version applies migration 36. Plan an
+Opening an older database with this version applies the pending migrations. Plan an
 installation upgrade with a stopped-controller backup and a compatible restore
 version; do not use a live database as a test fixture or open it with an older
 binary after upgrade. Full backups preserve runtime grants, ceilings and lease
@@ -274,8 +330,13 @@ state; A5 still owns external revocation fences and cutover acceptance.
 The controller removes its token and keyfile environment variables from managed
 process inheritance. Scoped authorization is not an OS sandbox: repository code
 still executes with the controller's host identity and its permitted filesystem
-access. This subset does not finish A2. Profile/configuration/test rights remain
-deferred; A3 owns account GUI, A4 ENV policy and A5 compatibility cutover.
+access. The original A2 projects/claims/profiles/configuration criteria are
+implemented; completion requires recorded verification. Scoped finite-job
+admission/own-run access (`415205f2-4583-4b13-a508-49a9b618a19e`) and scoped
+resources/compact status/wait (`e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`) remain
+separate followups and are denied. A3 owns account GUI/human administration, A4
+ENV policy and A5 compatibility cutover. This describes source behavior, not a
+live installation upgrade.
 
 ## The `auth` command
 

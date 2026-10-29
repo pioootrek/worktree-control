@@ -19,6 +19,9 @@ export const CLI_HELP = [
   "  help, --help, -h   Show this help",
   "  --version, -v      Print the version",
   "",
+  "Scoped runtime actions: projects:read, claims:manage, runtime:control, profiles:select, config:write (preset timeouts only).",
+  "Runtime delegation and credential administration requires a private owner session.",
+  "",
   "Guides: README.md and docs/ in the installed package.",
 ].join("\n");
 

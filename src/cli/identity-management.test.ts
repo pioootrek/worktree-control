@@ -41,15 +41,16 @@ describe("identity management CLI", () => {
     store.close();
     const expiry = new Date(Date.now() + 3600_000).toISOString();
     for (const project of projects) {
-      await runIdentityCommand(["set-runtime-delegation", "--principal-id", principalId, "--project-id", project.id, "--actions", "projects:read,claims:manage", "--expires-at", expiry, "--expected-revision", "0"], appPaths, dependencies);
+      await runIdentityCommand(["set-runtime-delegation", "--principal-id", principalId, "--project-id", project.id, "--actions", "projects:read,claims:manage,profiles:select,config:write", "--expires-at", expiry, "--expected-revision", "0"], appPaths, dependencies);
       expect(JSON.parse(lines.pop()!).delegation).toMatchObject({ sponsorId: owner.principalId, revision: 1, expiresAt: expiry });
     }
-    const scopes = projects.map(project => ({ projectId: project.id, actions: ["projects:read", "claims:manage"] }));
+    const scopes = projects.map(project => ({ projectId: project.id, actions: ["projects:read", "claims:manage", "profiles:select", "config:write"] }));
     await runIdentityCommand(["issue-runtime-credential", "--principal-id", principalId, "--label", "Private client", "--projects-json", JSON.stringify(scopes), "--expires-at", expiry], appPaths, dependencies);
     expect(lines).toHaveLength(1);
     const issued = JSON.parse(lines.pop()!);
     expect(issued.token).toMatch(/^wts_/);
     expect(issued.scopes).toHaveLength(2);
+    expect(issued.scopes.map((scope: { actions: string[] }) => scope.actions)).toEqual(scopes.map(scope => scope.actions));
     await runIdentityCommand(["list-runtime-access", "--principal-id", principalId], appPaths, dependencies);
     const report = lines.pop()!;
     expect(JSON.parse(report).credentials[0].effective).toHaveLength(2);
@@ -57,7 +58,7 @@ describe("identity management CLI", () => {
     expect(report).not.toContain("verifierHash");
     await expect(runIdentityCommand(["rotate-runtime-credential", "--credential-id", issued.credential.id, "--expires-at", new Date(Date.parse(expiry) + 1000).toISOString()], appPaths, dependencies)).rejects.toThrow("extend");
     await expect(runIdentityCommand(["rotate-runtime-credential", "--credential-id", issued.credential.id, "--projects-json", JSON.stringify([{ projectId: projects[0].id, actions: ["runtime:control"] }])], appPaths, dependencies)).rejects.toThrow("narrow");
-    await runIdentityCommand(["rotate-runtime-credential", "--credential-id", issued.credential.id, "--projects-json", JSON.stringify([{ projectId: projects[0].id, actions: ["projects:read"] }])], appPaths, dependencies);
+    await runIdentityCommand(["rotate-runtime-credential", "--credential-id", issued.credential.id, "--projects-json", JSON.stringify([{ projectId: projects[0].id, actions: ["profiles:select", "config:write"] }])], appPaths, dependencies);
     expect(lines).toHaveLength(1);
     const rotated = JSON.parse(lines.pop()!);
     expect(rotated).toMatchObject({ replacedCredentialId: issued.credential.id, credential: { expiresAt: expiry } });
@@ -66,7 +67,7 @@ describe("identity management CLI", () => {
     try {
       const identity = new IdentityService(reopened, undefined, undefined, undefined, undefined, reopened);
       expect(() => identity.authenticateBearer(issued.token)).toThrow();
-      expect(identity.runtimeAccessFor(identity.authenticateBearer(rotated.token))).toEqual([{ projectId: projects[0].id, actions: ["projects:read"], expiresAt: expiry }]);
+      expect(identity.runtimeAccessFor(identity.authenticateBearer(rotated.token))).toEqual([{ projectId: projects[0].id, actions: ["profiles:select", "config:write"], expiresAt: expiry }]);
     } finally { reopened.close(); }
     // Updating actions must make an explicit expiry choice to avoid clearing a bound.
     const update = ["set-runtime-delegation", "--principal-id", principalId, "--project-id", projects[0].id, "--actions", "projects:read", "--expected-revision", "1"];
@@ -115,6 +116,10 @@ describe("identity management CLI", () => {
     await runAuthCommand(["token", "generate"], appPaths, { write });
     const installation = JSON.parse(lines.pop()!).token;
     await expect(runIdentityCommand(input, appPaths, { environment: { WORKTREE_CONTROL_TOKEN: installation } })).rejects.toThrow("owner session");
+    for (const command of [
+      ["issue-runtime-credential", "--principal-id", owner.principalId, "--label", "configuration", "--projects-json", JSON.stringify([{ projectId: owner.principalId, actions: ["profiles:select", "config:write"] }])],
+      ["rotate-runtime-credential", "--credential-id", owner.credential.id],
+    ]) await expect(runIdentityCommand(command, appPaths, { environment: { WORKTREE_CONTROL_TOKEN: installation } })).rejects.toThrow("owner session");
     const lock = acquireControllerLock(appPaths.controllerLockPath);
     try {
       await expect(runIdentityCommand(input, appPaths, { environment: { WORKTREE_CONTROL_OWNER_TOKEN: owner.token } })).rejects.toThrow("already running");
