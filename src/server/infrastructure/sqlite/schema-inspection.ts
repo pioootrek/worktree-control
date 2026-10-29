@@ -173,6 +173,10 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
         && (!actualChecks.some(x => x.startsWith("(")) || historicalLease)) continue;
       // Migration 11 added this column without a CHECK in upgraded installations.
       if (table === "test_runs" && field === "environment_mode" && !actualChecks.some(x => x.startsWith(field))) continue;
+      // Earlier bootstrap DDL also supplied the migration-25 method set before
+      // its registry entry. Preserve that recognized historical shape after 39.
+      if (table === "knowledge_history" && field === "authentication_method" && version < 25
+        && actualChecks.includes(expected.checks.find(x => x.startsWith(field))!.replace(",'provider_session'", ""))) continue;
       // Bootstrap may have supplied the latest constraint before this migration.
       if (!actualChecks.includes(check) && !actualChecks.includes(expected.checks.find(x => x.startsWith(field ?? check)) ?? check)) refuse(`constraint in ${table}: ${field ?? "lease"}`);
     }

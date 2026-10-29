@@ -12,7 +12,7 @@ export interface Principal {
 }
 
 export type CredentialKind = "owner_session" | "agent_token" | "worker_token";
-/** Stored credentials plus the installation-wide token and the unauthenticated `open` mode. */
+/** Stored credentials, installation authority, or a distinct in-process provider session. */
 export type AuthenticationMethod = CredentialKind | "installation_token" | "none" | "provider_session";
 
 export interface PrincipalCredential {

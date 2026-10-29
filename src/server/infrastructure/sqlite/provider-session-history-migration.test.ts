@@ -11,6 +11,7 @@ import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { SqliteStateStore } from "./sqlite-state-store";
 import { providerSessionHistoryChecksum, providerSessionHistoryMigration } from "./provider-session-history-migration";
+import { rebuildTable } from "./verification-project-migration";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -104,11 +105,11 @@ describe("provider session history migration 39", () => {
       if (kind === "checksum") db.exec("UPDATE schema_migrations SET checksum='bad' WHERE version=39");
       else {
         const table = kind === "constraint" ? "knowledge_history" : "knowledge_import_batches";
-        const row = db.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as { sql: string };
-        const sql = kind === "constraint" ? row.sql.replace(", 'provider_session'", "") : row.sql.replace("'legacy_unknown'))", "'legacy_unknown', 'provider_session'))");
-        db.pragma("writable_schema = ON");
-        db.prepare("UPDATE sqlite_master SET sql=? WHERE name=?").run(sql, table);
-        db.pragma("writable_schema = OFF");
+        db.pragma("foreign_keys = OFF");
+        if (kind === "constraint") rebuildTable(db, table,
+          "CHECK(authentication_method IN ('owner_session', 'agent_token', 'worker_token', 'installation_token', 'none', 'provider_session'))",
+          "CHECK(authentication_method IN ('owner_session', 'agent_token', 'worker_token', 'installation_token', 'none'))");
+        else rebuildTable(db, table, "'legacy_unknown'))", "'legacy_unknown', 'provider_session'))");
       }
     });
     const bytes = readFileSync(f.path);

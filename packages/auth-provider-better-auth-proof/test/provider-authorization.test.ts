@@ -203,6 +203,10 @@ describe("runtime-issued provider-session Knowledge application", () => {
         if (kind === "role") connection.prepare("UPDATE knowledge_role_bindings SET revoked_at=? WHERE principal_id=?").run([new Date().toISOString(), f.actor.principalId]);
         if (kind === "subject") {
           connection.prepare('INSERT INTO authentication_ba_user(id,name,email,emailVerified,createdAt,updatedAt) VALUES(?,?,?,0,?,?)').run(["swapped", "Other", "other@fixture.invalid", new Date().toISOString(), new Date().toISOString()]);
+          // Even a new active subject mapped to the SAME granted principal cannot
+          // replace the originally verified session subject.
+          connection.prepare("UPDATE authentication_provider_subjects SET status='revoked',revoked_at=? WHERE subject=?").run([new Date().toISOString(), f.subject]);
+          connection.prepare("INSERT INTO authentication_provider_subjects VALUES('better-auth','swapped',?,'active',?,NULL)").run([f.actor.principalId, new Date().toISOString()]);
           connection.prepare('UPDATE authentication_ba_session SET userId=? WHERE id=?').run(["swapped", f.sessionId]);
         }
         if (kind === "principal-substitution") {

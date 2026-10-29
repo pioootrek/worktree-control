@@ -493,3 +493,8 @@ INSERT INTO schema_migrations VALUES(35,'2026-10-29T16:03:33.830Z','knowledge-sc
 INSERT INTO schema_migrations VALUES(36,'2026-10-29T16:03:33.832Z','scoped-agent-runtime-access','7b99033b1661c490e24114ae6fd7641b722f7b71ee448035fc12a96ecd89724c');
 INSERT INTO schema_migrations VALUES(37,'2026-10-29T16:03:33.832Z','project-configuration-revision','4ccd035a264287429aaba6ce2d99b6a4878024b1369981763f9c59cfa2af7507');
 INSERT INTO schema_migrations VALUES(38,'2026-10-29T16:03:33.833Z','authentication-provider-storage','33c34c43967fb710a04a976eebc8638f6ea0ead1e320e71536fc2018d0eedae3');
+-- Original initialization data preserved from the frozen v37 lineage.
+INSERT INTO "controller_settings"("key","value_json","updated_at") VALUES('server_capacity','{"enabled":false,"limit":2}','2026-10-29T11:36:31.379Z');
+INSERT INTO "controller_settings"("key","value_json","updated_at") VALUES('test_queue','{"limit":1}','2026-10-29T11:36:31.380Z');
+INSERT INTO "controller_settings"("key","value_json","updated_at") VALUES('authentication','{"mode":"token","token":null,"generation":0}','2026-10-29T11:36:31.389Z');
+INSERT INTO "remote_principals"("id","kind","status") VALUES('installation','installation','active');
