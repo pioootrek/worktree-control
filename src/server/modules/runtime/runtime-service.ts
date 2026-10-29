@@ -2,7 +2,7 @@ import type { GitWorktreeReader } from "@/server/git-worktrees";
 import { NO_SERVER_MESSAGE, type LaunchCommandResolver, type NextTlsConfiguration } from "@/server/launch-command";
 import { type LogWriter } from "@/server/log-writer";
 import type { ProcessManager } from "@/server/process-manager";
-import type { StateStore } from "@/server/state-store";
+import { ReservationError, type StateStore } from "@/server/state-store";
 import type { ClaimedRuntimeAction, ClaimedRuntimeReceipt } from "@/shared/contracts";
 import { createHash, randomUUID } from "node:crypto";
 import type { RuntimeCapacity } from "../lifecycle";
@@ -36,7 +36,7 @@ export class RuntimeService {
     authority: () => void = () => undefined,
   ): Promise<ClaimedRuntimeReceipt> {
     return this.lifecycle.serialized(projectId, async () => {
-      if (signal?.aborted || sessionClosed()) throw new Error("The runtime operation was cancelled before it started.");
+      if (signal?.aborted || sessionClosed()) throw new ScopedRuntimeError("cancelled", "The runtime operation was cancelled before it started.");
       authority();
       const operationId = randomUUID();
       const project = this.lifecycle.requireProject(projectId);
@@ -88,8 +88,9 @@ export class RuntimeService {
               this.store.updateProjectLaunch(projectId, {
                 tlsMode: launch.tls.mode, tlsKeyPath: launch.tls.keyPath, tlsCertPath: launch.tls.certPath,
                 tlsCaPath: launch.tls.caPath, executable: launch.executable, args: launch.args,
-              });
+              }, actorRef);
             }
+            if (project.selectedWorktreePath !== selected.path) this.store.setSelectedWorktree(projectId, selected.path, actorRef);
             await this.startRuntime(projectId, selected.path, actorRef, verify);
           } finally {
             this.lifecycle.releaseCapacity(projectId);
@@ -105,7 +106,8 @@ export class RuntimeService {
       }
       const runtime = this.processes.snapshot(projectId);
       let leaseHeld = false;
-      try { this.lifecycle.requireAgentClaim(projectId, reservationId, actor); leaseHeld = true; } catch { /* report current authority */ }
+      try { this.lifecycle.requireAgentClaim(projectId, reservationId, actor); leaseHeld = true; }
+      catch (error) { if (!(error instanceof ReservationError)) throw error; }
       const capacity = this.lifecycle.capacityStatus();
       const receipt: ClaimedRuntimeReceipt = {
         schemaVersion: 1, operationId, action, projectId, reservationId, outcome, replayed: false,
@@ -152,11 +154,13 @@ export class RuntimeService {
         const launch = this.commands.resolve(worktreePath, project.port, project.launchPreset, {
           mode: project.tlsMode, keyPath: project.tlsKeyPath, certPath: project.tlsCertPath, caPath: project.tlsCaPath,
         });
-        this.store.updateProjectLaunch(projectId, {
-          tlsMode: launch.tls.mode, tlsKeyPath: launch.tls.keyPath, tlsCertPath: launch.tls.certPath,
-          tlsCaPath: launch.tls.caPath, executable: launch.executable, args: launch.args,
-        });
-        if (project.selectedWorktreePath !== worktreePath) this.store.setSelectedWorktree(projectId, worktreePath);
+        if (project.executable !== launch.executable || JSON.stringify(project.args) !== JSON.stringify(launch.args)) {
+          this.store.updateProjectLaunch(projectId, {
+            tlsMode: launch.tls.mode, tlsKeyPath: launch.tls.keyPath, tlsCertPath: launch.tls.certPath,
+            tlsCaPath: launch.tls.caPath, executable: launch.executable, args: launch.args,
+          }, actorRef);
+        }
+        if (project.selectedWorktreePath !== worktreePath) this.store.setSelectedWorktree(projectId, worktreePath, actorRef);
         await this.startRuntime(projectId, worktreePath, actorRef, verify);
       } finally {
         this.lifecycle.releaseCapacity(projectId);
@@ -184,7 +188,8 @@ export class RuntimeService {
   private revalidateClaim(projectId: string, reservationId: string, actor: OperationActor): void {
     try {
       this.lifecycle.requireAgentClaim(projectId, reservationId, actor);
-    } catch {
+    } catch (error) {
+      if (!(error instanceof ReservationError)) throw error;
       throw new ClaimedRuntimeOperationError("claim_stale", "The MCP claim is stale, expired, or no longer active.");
     }
   }

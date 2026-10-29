@@ -222,6 +222,65 @@ describe("scoped agent runtime", () => {
     f.store.close();
   });
 
+  it("does not rewrite unchanged launch configuration on claim starts or their retries", async () => {
+    const f = fixture();
+    f.grant(all);
+    const actor = f.credential(all);
+    const launchWrites = vi.spyOn(f.store, "updateProjectLaunch");
+    const revision = f.store.getProjectConfigurationRevision(f.project.id);
+    const held = await f.claim(actor, { start: true });
+    expect(held.result.error).toBeNull();
+    expect(launchWrites).not.toHaveBeenCalled();
+    await f.service.operateScopedRuntime(actor, f.session, held.leaseToken, f.project.id, held.result.reservationId, "stop");
+    await f.service.claimScopedProject(actor, f.session, {
+      projectId: f.project.id, worktreePath: "/code/web", reason: "scoped test", idempotencyKey: "claim", start: true,
+    }, held.leaseToken);
+    expect(launchWrites).not.toHaveBeenCalled();
+    expect(f.store.getProjectConfigurationRevision(f.project.id)).toBe(revision);
+    f.store.close();
+  });
+
+  it("persists the placement when a reservation-only claim is started, including later ordinary starts", async () => {
+    const f = fixture();
+    f.grant(all);
+    const actor = f.credential(all);
+    f.store.setSelectedWorktree(f.project.id, "/code/web");
+    const held = await f.claim(actor, { worktreePath: "/code/web-feature" });
+    expect(f.store.getProject(f.project.id)?.selectedWorktreePath).toBe("/code/web");
+    const result = await f.service.operateScopedRuntime(actor, f.session, held.leaseToken, f.project.id, held.result.reservationId, "start");
+    expect(result.outcome).toBe("completed");
+    expect(f.store.getProject(f.project.id)?.selectedWorktreePath).toBe("/code/web-feature");
+    await f.service.operateScopedRuntime(actor, f.session, held.leaseToken, f.project.id, held.result.reservationId, "stop");
+    await f.service.releaseScopedClaim(actor, f.session, f.project.id, held.result.reservationId, held.leaseToken);
+    await f.service.operate(f.project.id, "start");
+    expect(f.runtime(f.project.id).worktreePath).toBe("/code/web-feature");
+    f.store.close();
+  });
+
+  it("keeps storage failures distinct from claim conflicts and stale claims without exposing messages", async () => {
+    const f = fixture();
+    f.grant(all);
+    const actor = f.credential(all);
+    const acquire = vi.spyOn(f.store, "acquireReservation");
+    acquire.mockImplementationOnce(() => { throw new Error(`idempotency cancelled ${SENTINEL}`); });
+    await expect(f.claim(actor)).rejects.toMatchObject({ code: "runtime_operation_failed", message: "The scoped runtime operation failed." });
+    const held = await f.claim(actor);
+    await expect(f.claim(actor, { worktreePath: "/code/web-feature", idempotencyKey: "other-path" }))
+      .rejects.toMatchObject({ code: "claim_conflict", message: expect.stringContaining("Reuse or release your own claim") });
+    const operate = () => f.service.operateScopedRuntime(actor, f.session, held.leaseToken, f.project.id, held.result.reservationId, "start");
+    const authorize = vi.spyOn(f.store, "authorizeReservation");
+    authorize.mockImplementationOnce(() => { throw new Error(`cancelled ${SENTINEL}`); });
+    await expect(operate()).rejects.toMatchObject({ code: "runtime_operation_failed", message: "The scoped runtime operation failed." });
+    const audit = vi.spyOn(f.store, "recordProjectEvent");
+    audit.mockImplementationOnce(() => { throw new Error(SENTINEL); });
+    await expect(operate()).rejects.toMatchObject({ code: "runtime_operation_failed", message: "The scoped runtime operation failed." });
+    expect(f.store.getActiveReservation(f.project.id)?.id).toBe(held.result.reservationId);
+    expect(f.start).not.toHaveBeenCalled();
+    f.store.releaseReservation(f.project.id, "local-user", true);
+    await expect(operate()).rejects.toMatchObject({ code: "claim_stale" });
+    f.store.close();
+  });
+
   it("resolves the target worktree launch command before a claim moves the runtime", async () => {
     const f = fixture();
     f.grant(all);
@@ -232,6 +291,7 @@ describe("scoped agent runtime", () => {
       preset: "node", executable: path === "/code/web-feature" ? "npm" : "pnpm", args: ["run", "dev", "--", "--port", "3610"],
       portMethod: "environment", tls: { mode: "off", keyPath: null, certPath: null, caPath: null },
     }));
+    const launchWrites = vi.spyOn(f.store, "updateProjectLaunch");
     const moved = await f.claim(actor, { start: true, worktreePath: "/code/web-feature", idempotencyKey: "move" });
     expect(moved.result.error).toBeNull();
     expect(f.start).toHaveBeenLastCalledWith(
@@ -239,6 +299,7 @@ describe("scoped agent runtime", () => {
       "/code/web-feature", expect.any(Function),
     );
     expect(f.store.getProject(f.project.id)).toMatchObject({ executable: "npm", selectedWorktreePath: "/code/web-feature" });
+    expect(launchWrites).toHaveBeenCalledWith(f.project.id, expect.objectContaining({ executable: "npm" }), expect.stringMatching(/^mcp:/));
     f.store.close();
   });
 

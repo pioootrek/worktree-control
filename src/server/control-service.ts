@@ -135,6 +135,9 @@ export class ControlService {
   setScopedTestPresetTimeout(actor: AuthenticatedPrincipal, session: ScopedConfigurationSession, input: unknown) {
     return this.requireScopedConfiguration().setTestPresetTimeout(actor, session, input);
   }
+  authorizeScopedConfiguration(...args: Parameters<ScopedConfigurationService["authorize"]>): void {
+    this.requireScopedConfiguration().authorize(...args);
+  }
   authorizeScopedConfigurationReplay(...args: Parameters<ScopedConfigurationService["authorizeReplay"]>): void {
     this.requireScopedConfiguration().authorizeReplay(...args);
   }

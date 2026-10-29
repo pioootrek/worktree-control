@@ -134,6 +134,32 @@ async function fixture(clock?: ManualMcpClock, verificationOnly = false) {
 }
 
 describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
+  it("does not let denied configuration requests consume the shared runtime retry ledger", async () => {
+    const f = await fixture();
+    const readonly = f.issue(1, ["projects:read"]);
+    const projectId = f.projects[0].id;
+    // Eight sessions with 64 distinct denied keys used to fill all 512 global entries.
+    for (let index = 0; index < 8; index += 1) {
+      const client = await f.connect(readonly.token);
+      for (let key = 0; key < 64; key += 1) {
+        const input = { projectId, expectedRevision: 2, idempotencyKey: `denied-${key}` };
+        const denied = key % 2 === 0
+          ? await f.call(client, "select_environment_profile", { ...input, name: "staging" })
+          : await f.call(client, "set_test_preset_timeout", { ...input, worktreePath: f.projects[0].repositoryPath, presetId: "node:test", timeoutMs: 1000 });
+        expect(denied.error).toBe(true);
+        expect(denied.output).toMatch(/^project_access_denied:/);
+      }
+    }
+    const { client } = await f.configurationClient();
+    expect((await f.call(client, "select_environment_profile", {
+      projectId, name: "staging", expectedRevision: 2, idempotencyKey: "authorized-config",
+    })).value).toMatchObject({ outcome: "completed" });
+    const held = (await f.claim(client)).value;
+    expect((await f.call(client, "stop_project", {
+      projectId, reservationId: held.reservationId, idempotencyKey: "authorized-runtime",
+    })).value).toMatchObject({ outcome: "noop" });
+  }, 20_000);
+
   it("filters two credentials across discovery/status/worktrees and exposes no privileged runtime capabilities", async () => {
     const f = await fixture();
     for (const index of [0, 1]) {

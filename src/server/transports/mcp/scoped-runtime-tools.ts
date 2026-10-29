@@ -98,6 +98,7 @@ export function registerScopedRuntimeTools(server: McpServer, service: ScopedSer
     }, async ({ projectId, reservationId, idempotencyKey }, extra) => {
       const receipt = await safe(() => {
         const token = session.claimToken(projectId, reservationId);
+        service.authorizeScopedRuntimeReplay(actor, scoped(), token, projectId, reservationId);
         return session.runOperation(idempotencyKey, `${action}\0${projectId}\0${reservationId}`,
           () => service.operateScopedRuntime(actor, scoped(), token, projectId, reservationId, action, extra.signal, () => session.closing()),
           () => service.authorizeScopedRuntimeReplay(actor, scoped(), token, projectId, reservationId));

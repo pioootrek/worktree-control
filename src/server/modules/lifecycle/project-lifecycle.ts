@@ -1,5 +1,5 @@
 import type { ProcessManager } from "@/server/process-manager";
-import type { ReservationBinding, StateStore } from "@/server/state-store";
+import { ReservationError, type ReservationBinding, type StateStore } from "@/server/state-store";
 import type { Project, ProjectSnapshot, ServerCapacityStatus, Worktree } from "@/shared/contracts";
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
@@ -50,16 +50,17 @@ export class ProjectLifecycle {
 
   requireAgentClaim(projectId: string, reservationId: string, actor: OperationActor): import("@/shared/contracts").Reservation {
     if (!actor.owner.startsWith("agent:mcp:") || !actor.leaseToken) {
-      throw new Error("An active MCP agent claim is required.");
+      throw new ReservationError("claim_stale", "An active MCP agent claim is required.");
     }
     let reservation;
     try {
       reservation = this.store.authorizeReservation(projectId, actor.owner, leaseTokenHash(actor.leaseToken), actor.binding ?? null);
-    } catch {
-      throw new Error("The MCP claim is stale, expired, or no longer active.");
+    } catch (error) {
+      if (!(error instanceof ReservationError)) throw error;
+      throw new ReservationError("claim_stale", "The MCP claim is stale, expired, or no longer active.");
     }
     if (!reservation || reservation.kind !== "agent" || reservation.id !== reservationId || reservation.projectId !== projectId) {
-      throw new Error("The MCP claim is stale, expired, or no longer active.");
+      throw new ReservationError("claim_stale", "The MCP claim is stale, expired, or no longer active.");
     }
     return reservation;
   }

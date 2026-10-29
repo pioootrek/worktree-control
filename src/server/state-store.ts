@@ -42,6 +42,14 @@ export interface ReservationBinding {
   credentialId: string;
 }
 
+/** Stable reservation failure categories; messages remain compatible with legacy callers. */
+export class ReservationError extends Error {
+  constructor(readonly code: "claim_conflict" | "idempotency_conflict" | "claim_stale", message: string) {
+    super(message);
+    this.name = "ReservationError";
+  }
+}
+
 export interface ReservationRequest {
   projectId: string;
   worktreePath: string;
@@ -94,7 +102,7 @@ export interface StateStore {
   /** Check durable deletion restrictions before stopping a managed runtime. */
   assertProjectRemovalAllowed(projectId: string): void;
   removeProject(projectId: string, actor: string): void;
-  updateProjectLaunch(projectId: string, input: ProjectLaunchUpdate): void;
+  updateProjectLaunch(projectId: string, input: ProjectLaunchUpdate, actor?: string): void;
   updateProjectEnvironment(projectId: string, environment: Record<string, string>, actor: string): void;
   saveProjectEnvironmentProfile(projectId: string, profile: EnvironmentProfile, actor: string): void;
   deleteProjectEnvironmentProfile(projectId: string, profileName: string, actor: string): void;
@@ -106,7 +114,7 @@ export interface StateStore {
   /** Incremented by every configuration write; null when the project does not exist. */
   getProjectConfigurationRevision(projectId: string): number | null;
   commitScopedConfiguration(input: ScopedConfigurationCommit): ScopedConfigurationCommitResult;
-  setSelectedWorktree(projectId: string, path: string): void;
+  setSelectedWorktree(projectId: string, path: string, actor?: string): void;
   getServerCapacitySettings(): ServerCapacitySettings;
   setServerCapacitySettings(settings: ServerCapacitySettings): void;
   getTestQueueSettings(): TestQueueSettings;

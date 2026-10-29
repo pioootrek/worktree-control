@@ -9,7 +9,7 @@ import type { KnowledgeTaskPage, KnowledgeReplyPage, KnowledgeRelationDestinatio
 import type { KnowledgeMemory, KnowledgeSearchHit, KnowledgeSearchOptions } from "@/shared/contracts/knowledge-memory";
 import type { KnowledgeAttachmentLimits, KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
 import type { KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
-import type { PendingTestRun, ProjectRegistration, ReservationBinding, ReservationRequest, ScopedConfigurationCommit, ScopedConfigurationCommitResult, StateStore, TestRunStatusRecord, WorktreeStorageSample } from "@/server/state-store";
+import { ReservationError, type PendingTestRun, type ProjectRegistration, type ReservationBinding, type ReservationRequest, type ScopedConfigurationCommit, type ScopedConfigurationCommitResult, type StateStore, type TestRunStatusRecord, type WorktreeStorageSample } from "@/server/state-store";
 import type { Project, Reservation, ServerCapacitySettings, TestEnvironmentProfile, TestQueueSettings, TestRun, TestRunPhase, WorktreeStorageSnapshot } from "@/shared/contracts";
 import type {
   RemotePrincipal,
@@ -464,7 +464,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     tlsCaPath: string | null;
     executable: string;
     args: string[];
-  }): void {
+  }, actor = "local-user"): void {
     const now = new Date().toISOString();
     this.database.transaction(() => {
       const result = this.database.prepare(`
@@ -483,7 +483,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
         projectId,
       );
       if (result.changes === 0) throw new Error("Nie znaleziono projektu.");
-      this.audit(projectId, "project.launch_updated", "local-user", input);
+      this.audit(projectId, "project.launch_updated", actor, input);
     })();
   }
 
@@ -666,14 +666,14 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     }).immediate();
   }
 
-  setSelectedWorktree(projectId: string, path: string): void {
+  setSelectedWorktree(projectId: string, path: string, actor = "local-user"): void {
     const now = new Date().toISOString();
     this.database.transaction(() => {
       const result = this.database.prepare(
         "UPDATE projects SET selected_worktree_path = ?, updated_at = ? WHERE id = ?",
       ).run(path, now, projectId);
       if (result.changes === 0) throw new Error("Nie znaleziono projektu.");
-      this.audit(projectId, "worktree.selected", "local-user", { path });
+      this.audit(projectId, "worktree.selected", actor, { path });
     })();
   }
 
@@ -1146,13 +1146,13 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
             || !equalBinding(repeated, input.binding)
             || (repeated.request_fingerprint ?? null) !== (input.requestFingerprint ?? null)
           ) {
-            throw new Error("Klucz idempotencji jest już używany przez inną dzierżawę.");
+            throw new ReservationError("idempotency_conflict", "Klucz idempotencji jest już używany przez inną dzierżawę.");
           }
           return mapReservation(repeated);
         }
       }
       const active = this.getActiveReservation(input.projectId);
-      if (active) throw new Error(`Projekt jest zablokowany przez ${active.owner}.`);
+      if (active) throw new ReservationError("claim_conflict", `Projekt jest zablokowany przez ${active.owner}.`);
       const createdAt = new Date().toISOString();
       const expiresAt = input.kind === "agent"
         ? new Date(Date.now() + input.ttlSeconds! * 1000).toISOString()
@@ -1201,9 +1201,9 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     const reservation = this.getActiveReservation(projectId);
     if (!reservation) return null;
     const row = this.activeReservationRow(projectId)!;
-    if (reservation.owner !== owner) throw new Error(`Projekt jest zablokowany przez ${reservation.owner}.`);
+    if (reservation.owner !== owner) throw new ReservationError("claim_stale", `Projekt jest zablokowany przez ${reservation.owner}.`);
     if (reservation.kind === "agent" && (!leaseTokenHash || !equalHash(row.token_hash, leaseTokenHash) || !equalBinding(row, binding))) {
-      throw new Error("Nieprawidłowy token dzierżawy agenta.");
+      throw new ReservationError("claim_stale", "Nieprawidłowy token dzierżawy agenta.");
     }
     return reservation;
   }

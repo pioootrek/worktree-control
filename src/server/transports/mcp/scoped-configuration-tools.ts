@@ -11,7 +11,7 @@ import { jsonContent, safe, type ScopedSessionPort } from "./scoped-runtime-tool
 
 type ScopedConfigurationApi = Pick<ControlService,
   "scopedEnvironmentProfiles" | "selectScopedEnvironmentProfile" | "scopedProjectConfiguration"
-  | "setScopedTestPresetTimeout" | "authorizeScopedConfigurationReplay">;
+  | "setScopedTestPresetTimeout" | "authorizeScopedConfiguration" | "authorizeScopedConfigurationReplay">;
 
 /**
  * Configuration tools for an agent credential. Registration grants nothing:
@@ -28,10 +28,13 @@ export function registerScopedConfigurationTools(server: McpServer, service: Sco
     operation: ScopedConfigurationOperation,
     input: T,
     execute: () => ReturnType<ScopedConfigurationApi["setScopedTestPresetTimeout"]>,
-  ) => safe(() => session.runOperation(
-    input.idempotencyKey, scopedConfigurationFingerprint(operation, input), execute,
-    () => service.authorizeScopedConfigurationReplay(actor, configurationSession(), operation, input.projectId, input.reservationId),
-  ));
+  ) => safe(() => {
+    service.authorizeScopedConfiguration(actor, operation, input.projectId);
+    return session.runOperation(
+      input.idempotencyKey, scopedConfigurationFingerprint(operation, input), execute,
+      () => service.authorizeScopedConfigurationReplay(actor, configurationSession(), operation, input.projectId, input.reservationId),
+    );
+  });
 
   server.registerTool("list_environment_profiles", {
     description: "List environment profile names, the selected profile and the configuration revision of one project (profiles:select). Names only: no variables or values.",

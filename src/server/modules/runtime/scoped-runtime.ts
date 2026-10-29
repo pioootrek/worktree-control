@@ -1,7 +1,7 @@
 import type { GitWorktreeReader } from "@/server/git-worktrees";
 import type { LogWriter } from "@/server/log-writer";
 import type { ProcessManager } from "@/server/process-manager";
-import type { ReservationBinding, StateStore } from "@/server/state-store";
+import { ReservationError, type ReservationBinding, type StateStore } from "@/server/state-store";
 import type { ClaimedRuntimeAction, ClaimedRuntimeReceipt, Project, Reservation } from "@/shared/contracts";
 import type {
   RuntimeAccessEntry, RuntimeAction, ScopedClaimResult, ScopedOwnClaim, ScopedProjectStatus, ScopedProjectSummary,
@@ -112,10 +112,13 @@ export class ScopedRuntimeService {
           requestFingerprint: createHash("sha256").update(JSON.stringify({ worktreePath: selectedPath, reason, ttlSeconds, start })).digest("hex"),
         });
       } catch (error) {
-        const idempotency = error instanceof Error && /idempotencji|idempotency/i.test(error.message);
-        throw idempotency
-          ? new ScopedRuntimeError("idempotency_conflict", "The idempotency key is already used by a different claim.")
-          : new ScopedRuntimeError("claim_conflict", "The project is claimed by another holder.");
+        if (error instanceof ReservationError && error.code === "idempotency_conflict") {
+          throw new ScopedRuntimeError("idempotency_conflict", "The idempotency key is already used by a different claim.");
+        }
+        if (error instanceof ReservationError && error.code === "claim_conflict") {
+          throw new ScopedRuntimeError("claim_conflict", "The project already has an active claim. Reuse or release your own claim, or wait for the other holder.");
+        }
+        throw new ScopedRuntimeError("runtime_operation_failed", "The scoped runtime operation failed.");
       }
       const actorRef = this.actorRef(session.owner);
       this.logs.controller("agent.claimed", { projectId: project.id, reservationId: reservation.id, owner: session.owner, credentialId: actor.credentialId, worktreePath: selectedPath });
@@ -123,7 +126,7 @@ export class ScopedRuntimeService {
       const verify = () => {
         this.check(actor, project.id, required);
         try { this.lifecycle.requireAgentClaim(project.id, reservation.id, operator); }
-        catch { throw new ScopedRuntimeError("claim_stale", "The claim is stale, expired, or no longer active."); }
+        catch (error) { throw claimFailure(error); }
       };
       const error = start
         ? await this.runtime.placeClaimed(project.id, selectedPath, actorRef, verify)
@@ -160,7 +163,7 @@ export class ScopedRuntimeService {
       this.check(actor, projectId, ["claims:manage"]);
       const operator: OperationActor = { owner: session.owner, leaseToken, binding: bindingOf(actor) };
       try { this.lifecycle.requireAgentClaim(projectId, reservationId, operator); }
-      catch { throw new ScopedRuntimeError("claim_stale", "The claim is stale, expired, or no longer active."); }
+      catch (error) { throw claimFailure(error); }
       this.store.releaseAgentReservation(projectId, reservationId, session.owner, leaseTokenHash(leaseToken), operator.binding);
       this.logs.controller("agent.claim_released", { projectId, reservationId, owner: session.owner, credentialId: actor.credentialId });
     });
@@ -179,8 +182,7 @@ export class ScopedRuntimeService {
       );
     } catch (error) {
       if (error instanceof RuntimeAccessDenied || error instanceof ScopedRuntimeError) throw error;
-      if (error instanceof Error && /cancelled/.test(error.message)) throw new ScopedRuntimeError("cancelled", "The runtime operation was cancelled before it started.");
-      throw new ScopedRuntimeError("claim_stale", "The claim is stale, expired, or no longer active.");
+      throw claimFailure(error);
     }
     return {
       schemaVersion: 1, operationId: receipt.operationId, action: receipt.action, projectId: receipt.projectId,
@@ -197,8 +199,8 @@ export class ScopedRuntimeService {
     this.check(actor, projectId, ["runtime:control"]);
     try {
       this.lifecycle.requireAgentClaim(projectId, reservationId, { owner: session.owner, leaseToken, binding: bindingOf(actor) });
-    } catch {
-      throw new ScopedRuntimeError("claim_stale", "The claim is stale, expired, or no longer active.");
+    } catch (error) {
+      throw claimFailure(error);
     }
   }
 
@@ -252,6 +254,12 @@ export class ScopedRuntimeService {
   private actorRef(owner: string): string {
     return `mcp:${createHash("sha256").update(owner).digest("hex").slice(0, 12)}`;
   }
+}
+
+function claimFailure(error: unknown): ScopedRuntimeError {
+  return error instanceof ReservationError && error.code === "claim_stale"
+    ? new ScopedRuntimeError("claim_stale", "The claim is stale, expired, or no longer active.")
+    : new ScopedRuntimeError("runtime_operation_failed", "The scoped runtime operation failed.");
 }
 
 function bindingOf(actor: AuthenticatedPrincipal): ReservationBinding {

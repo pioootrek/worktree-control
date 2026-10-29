@@ -128,6 +128,11 @@ export class ScopedConfigurationService {
     });
   }
 
+  /** Admission checks precede retry-ledger allocation; operations still recheck at effect boundaries. */
+  authorize(actor: AuthenticatedPrincipal, operation: ScopedConfigurationOperation, projectId: string): void {
+    this.check(actor, projectId, ACTION[operation]);
+  }
+
   /**
    * A retained receipt is released only to current authority and, when the
    * original operation ran under a claim, only while that exact claim is active.
