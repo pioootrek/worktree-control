@@ -41,7 +41,7 @@ afterEach(async () => {
 
 // Own loopback listeners and temporary SQLite. No installed service, real Git,
 // managed process, or configuration from the host participates in this fixture.
-async function fixture(clock?: ManualMcpClock) {
+async function fixture(clock?: ManualMcpClock, verificationOnly = false) {
   const directory = mkdtempSync(join(tmpdir(), "scoped-runtime-transports-"));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   const paths = resolveAppPaths(join(directory, "data"), join(directory, "state"));
@@ -53,7 +53,9 @@ async function fixture(clock?: ManualMcpClock) {
   const identity = new IdentityService(store, undefined, undefined, undefined, authentication, store);
   const ownerSession = identity.bootstrapOwnerSession({ sessionLifetimeSeconds: 300 });
   const owner = identity.authenticateBearer(ownerSession.token);
-  const projects = ["Alpha", "Beta"].map((name, index) => store.addProject({ name, repositoryPath: `/code/${name}`, port: 3620 + index, executable: "pnpm", args: ["run", "dev"] }));
+  const projects = ["Alpha", "Beta"].map((name, index) => store.addProject({ name, repositoryPath: `/code/${name}`, port: 3620 + index,
+    ...(verificationOnly && index === 0 ? { launchPreset: "none" as const, executable: "", args: [] } : { executable: "pnpm", args: ["run", "dev"] }),
+  }));
   for (const project of projects) {
     store.updateProjectEnvironment(project.id, { PRIVATE_API_KEY: SENTINEL }, "test");
     store.saveProjectEnvironmentProfile(project.id, { name: "staging", environment: { PRIVATE_STAGE_KEY: SENTINEL } }, "test");
@@ -430,20 +432,19 @@ describe("independent scoped configuration transport boundaries", () => {
   });
 
   it("changes only future queue admissions project-wide on a verification-only project and bounds metadata", async () => {
-    const f = await fixture(), { client } = await f.configurationClient(0, ["config:write"]);
+    const f = await fixture(undefined, true), { client } = await f.configurationClient(0, ["config:write"]);
     const projectId = f.projects[0].id, worktreePath = f.projects[0].repositoryPath, feature = `${worktreePath}-feature`;
-    f.store.updateProjectLaunch(projectId, { launchPreset: "none", executable: "", args: [] });
     f.worktrees.get(worktreePath)!.push({ ...f.worktrees.get(worktreePath)![0], path: feature });
     await f.service.enqueueTest(projectId, worktreePath, "node:test");
     const admitted = f.enqueue.mock.lastCall![0];
     expect(admitted.command.preset.timeoutMs).toBe(900_000);
-    const request = { projectId, worktreePath: feature, presetId: "node:test", timeoutMs: 1, expectedRevision: 3, idempotencyKey: "future" };
-    expect((await f.call(client, "set_test_preset_timeout", request)).value).toMatchObject({ outcome: "completed", configurationRevision: 4 });
+    const request = { projectId, worktreePath: feature, presetId: "node:test", timeoutMs: 1, expectedRevision: 2, idempotencyKey: "future" };
+    expect((await f.call(client, "set_test_preset_timeout", request)).value).toMatchObject({ outcome: "completed", configurationRevision: 3 });
     await f.service.enqueueTest(projectId, worktreePath, "node:test");
     const overridden = f.enqueue.mock.lastCall![0];
     expect(overridden.command.preset.timeoutMs).toBe(1);
     expect(admitted.command.preset.timeoutMs).toBe(900_000);
-    expect((await f.call(client, "set_test_preset_timeout", { ...request, timeoutMs: null, expectedRevision: 4, idempotencyKey: "restore" })).value).toMatchObject({ outcome: "completed", configurationRevision: 5 });
+    expect((await f.call(client, "set_test_preset_timeout", { ...request, timeoutMs: null, expectedRevision: 3, idempotencyKey: "restore" })).value).toMatchObject({ outcome: "completed", configurationRevision: 4 });
     await f.service.enqueueTest(projectId, feature, "node:test");
     expect(f.enqueue.mock.lastCall![0].command.preset.timeoutMs).toBe(900_000);
     expect(overridden.command.preset.timeoutMs).toBe(1);
@@ -463,7 +464,9 @@ describe("independent scoped configuration transport boundaries", () => {
     expect((await f.call(client, "select_environment_profile", select)).value).toEqual({ ...selected, replayed: true });
     expect((await f.call(client, "select_environment_profile", { ...select, name: "default" })).output).toMatch(/^idempotency_conflict:/);
     // Configuration and runtime operations share one key namespace.
-    expect((await f.claim(client, 0, { idempotencyKey: "select" })).output).toMatch(/^idempotency_conflict:/);
+    const runtimeClaim = (await f.claim(client, 0, { idempotencyKey: "runtime-claim" })).value;
+    expect((await f.call(client, "stop_project", { projectId, reservationId: runtimeClaim.reservationId, idempotencyKey: "select" })).output).toMatch(/^idempotency_conflict:/);
+    await f.call(client, "release_project_claim", { projectId, reservationId: runtimeClaim.reservationId });
     const noOp = (await f.call(client, "select_environment_profile", { ...select, expectedRevision: 3, idempotencyKey: "noop" })).value;
     expect(noOp).toMatchObject({ outcome: "noop", configurationRevision: 3 });
     const stale = { ...select, idempotencyKey: "stale" };
