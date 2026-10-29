@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createControllerShutdown } from "../server/bootstrap/controller-shutdown";
+import { createControllerRestoreFailure, createControllerShutdown } from "../server/bootstrap/controller-shutdown";
 import { createDevVault } from "../server/bootstrap/dev-vault";
 import { runDevVaultCommand } from "./dev-vault";
 import { loadRemoteVerificationConfig, runRemoteVerificationCommand } from "./remote-verification";
@@ -284,7 +284,10 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       execute();
       await main(controllerLock);
     },
-    failure: error => { console.error(error instanceof Error ? error.message : "Restore handoff failed."); void shutdown().finally(() => { controllerLock.release(); process.exit(1); }); },
+    failure: createControllerRestoreFailure({
+      shutdown: handoff => shutdown(handoff), controllerLock,
+      report: message => console.error(message), exit: code => process.exit(code),
+    }),
   });
   const accessToken = randomBytes(32).toString("base64url");
   const sessionId = randomBytes(8).toString("hex");

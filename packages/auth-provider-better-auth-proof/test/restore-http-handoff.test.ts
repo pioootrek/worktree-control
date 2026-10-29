@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createControllerShutdown } from "@/server/bootstrap/controller-shutdown";
+import { createControllerRestoreFailure, createControllerShutdown } from "@/server/bootstrap/controller-shutdown";
 import { ControlService } from "@/server/control-service";
 import { acquireControllerLock } from "@/server/controller-lock";
 import type { DirectoryBrowser } from "@/server/directory-browser";
@@ -23,7 +23,7 @@ vi.mock("@/server/restore-requests", async importOriginal => ({
 afterEach(() => { vi.mocked(executeControllerRestoreRequest).mockReset(); cleanupStrictRoots(); });
 
 describe("installed restore HTTP completion to owning launch", () => {
-  it.each(["finish-close", "close-finish", "already-disconnected", "revoked", "cleanup-unconfirmed"] as const)("hands off once with current authority after contention: %s", async mode => {
+  it.each(["finish-close", "close-finish", "already-disconnected", "revoked", "cleanup-unconfirmed", "listener-unconfirmed", "execution-failed"] as const)("hands off once with current authority after contention: %s", async mode => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults);
     const authentication = new AuthenticationService(f.store);
     const credential = await f.run(() => authentication.generateToken("fixture"));
@@ -35,7 +35,8 @@ describe("installed restore HTTP completion to owning launch", () => {
     const copy = await f.run(() => backups.create(actor, "http-copy")); await backups.drain();
     const service = new ControlService(f.store, { list: async () => [] } as never, new ProcessManager());
     const lockPath = join(f.root, "controller.lock"), controllerLock = acquireControllerLock(lockPath);
-    const failed = vi.fn(), restarted = vi.fn();
+    const restarted = vi.fn(), exit = vi.fn(), report = vi.fn();
+    const failed = vi.fn(createControllerRestoreFailure({ shutdown: handoff => shutdown(handoff), controllerLock, report, exit }));
     let maintenance = false;
     const restart = vi.fn(async (execute: () => void) => {
       await shutdown(true);
@@ -52,8 +53,10 @@ describe("installed restore HTTP completion to owning launch", () => {
     const shutdown = createControllerShutdown({ service, stopping: () => undefined, userSchedules: undefined, backups,
       remoteVerification: null, mcp: null, controller, adminSocket: { close: async () => undefined }, removeServiceAccess: () => undefined, controllerLock });
     if (mode === "cleanup-unconfirmed") vi.spyOn(service, "shutdown").mockRejectedValueOnce(new Error("cleanup_unconfirmed"));
+    if (mode === "listener-unconfirmed") vi.spyOn(controller, "close").mockRejectedValueOnce(new Error("listener_unconfirmed"));
     vi.mocked(executeControllerRestoreRequest).mockImplementation(() => {
       expect(existsSync(lockPath)).toBe(true); expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
+      if (mode === "execution-failed") throw new Error("execution_failed");
       return { operationId: copy.operationId, backupId: copy.backupId!, state: "verified", createdAt: copy.createdAt };
     });
     const launch = vi.spyOn(restores, "launch");
@@ -73,13 +76,19 @@ describe("installed restore HTTP completion to owning launch", () => {
       await vi.waitFor(() => expect(launch).toHaveBeenCalledOnce());
       expect(restart).not.toHaveBeenCalled(); expect(executeControllerRestoreRequest).not.toHaveBeenCalled();
       secondHold.resume(); await secondHold.pending; await revoke;
-      const refused = mode === "revoked" || mode === "cleanup-unconfirmed";
-      await vi.waitFor(() => expect(refused ? failed : restarted).toHaveBeenCalledOnce());
+      const cleanupUnconfirmed = mode === "cleanup-unconfirmed" || mode === "listener-unconfirmed";
+      const refused = mode === "revoked" || cleanupUnconfirmed;
+      const failure = refused || mode === "execution-failed";
+      await vi.waitFor(() => expect(failure ? failed : restarted).toHaveBeenCalledOnce());
+      if (failure) await failed.mock.results[0].value;
       expect(restart).toHaveBeenCalledTimes(mode === "revoked" ? 0 : 1);
       expect(executeControllerRestoreRequest).toHaveBeenCalledTimes(refused ? 0 : 1);
-      expect(restarted).toHaveBeenCalledTimes(refused ? 0 : 1);
-      expect(existsSync(lockPath)).toBe(true);
-      expect(existsSync(`${f.path}.owner.lock`)).toBe(refused);
+      expect(restarted).toHaveBeenCalledTimes(failure ? 0 : 1);
+      expect(exit).toHaveBeenCalledTimes(failure && !cleanupUnconfirmed ? 1 : 0);
+      if (failure && !cleanupUnconfirmed) expect(exit).toHaveBeenCalledWith(1);
+      if (cleanupUnconfirmed) expect(report).toHaveBeenLastCalledWith(expect.stringContaining("ownership retained"));
+      expect(existsSync(lockPath)).toBe(!failure || cleanupUnconfirmed);
+      expect(existsSync(`${f.path}.owner.lock`)).toBe(cleanupUnconfirmed);
       const handoff = JSON.parse(readFileSync(join(backups.recordDirectory, "handoff.json"), "utf8")).payload;
       expect(handoff.state).toBe(refused ? "failed" : "executing");
       // 202 reports durable admission; it does not claim that restore/restart succeeded.

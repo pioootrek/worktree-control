@@ -195,8 +195,11 @@ ownership and database ownership remain separate locks.
 `finish`/`close` callbacks, already-disconnected responses and actual deferred
 restore admission/launch under provider contention. Duplicate callbacks launch
 once, current token revocation denies launch, and refused shutdown prevents
-execution. Successful handoff retains the controller lock and releases the
-database owner before the execution callback. Physical replacement and starting
+execution. The production restore-failure callback joins the same handoff;
+unconfirmed cleanup retains ownership without forcing process exit. Confirmed
+cleanup permits lock release and failure exit, including an execution failure
+after a successful drain. Successful handoff retains the controller lock and
+releases the database owner before the execution callback. Physical replacement and starting
 the next controller are mocked. HTTP 202 means durable admission, not successful
 restore.
 

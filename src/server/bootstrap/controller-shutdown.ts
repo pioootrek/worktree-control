@@ -2,6 +2,26 @@ import type { ControllerLock } from "../controller-lock";
 
 interface Closer { close(): void | Promise<void> }
 
+/** Restore failures must join the original handoff before releasing its owner. */
+export function createControllerRestoreFailure(deps: {
+  shutdown(handoff: boolean): Promise<void>;
+  controllerLock: ControllerLock;
+  report(message: string): void;
+  exit(code: number): void;
+}) {
+  return async (error: unknown): Promise<void> => {
+    deps.report(error instanceof Error ? error.message : "Restore handoff failed.");
+    try {
+      await deps.shutdown(true);
+      deps.controllerLock.release();
+      deps.exit(1);
+    } catch {
+      // No forced exit or lock release while resources may still be owned.
+      deps.report("Restore cleanup is unconfirmed; ownership retained. Operator recovery is required.");
+    }
+  };
+}
+
 /** Owning CLI shutdown sequence. Kept separate so isolated fixtures can exercise its ordering. */
 export function createControllerShutdown(deps: {
   service: { closeAdmission(): void; shutdown(): Promise<void> };

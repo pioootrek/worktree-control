@@ -144,12 +144,14 @@ The bounded acceptance checklist is:
   `provider_session` history attribution. Provider storage revision stays 1;
   migration 1..38 definitions/checksums and owner-only import batches do not widen.
   These are unit-suite cases, not part of the optional proof count.
-- **Tested restore boundary:** five `restore-http-handoff.test.ts` cases use
+- **Tested restore boundary:** seven `restore-http-handoff.test.ts` cases use
   the installed HTTP handler, real durable restore admission/launch and owning
   CLI shutdown. Finish then close, close then finish and an already-disconnected
   response each launch once. Revocation ordered before deferred admission
-  denies restart; unconfirmed cleanup prevents execution and retains both
-  owners. On successful nonconcurrent shutdown the database owner closes
+  denies restart; unconfirmed service/listener cleanup prevents execution and
+  retains both owners through the production failure callback, without forced
+  exit. A refused launch or failed execution releases ownership only after
+  confirmed cleanup. On successful nonconcurrent shutdown the database owner closes
   before the execution callback while the controller lock stays held. Physical
   replacement and starting the next controller are mocked. A 202 response
   records admission, not successful restore.
