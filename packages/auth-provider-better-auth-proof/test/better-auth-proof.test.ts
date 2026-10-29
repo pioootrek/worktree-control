@@ -512,7 +512,7 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
     restoreControllerBackup(backup, restoredPath, join(f.root, "restored-attachments"));
     const restored = new SqliteStateStore(restoredPath);
     try {
-      expect(restored.schemaVersion()).toBe(38);
+      expect(restored.schemaVersion()).toBe(39);
       expect(count(restoredPath, "authentication_provider_subjects")).toBe(1);
       expect(restored.listProjects().map(project => project.name)).toEqual(["after-disposal"]);
       const reloaded = await loadProof(restored);

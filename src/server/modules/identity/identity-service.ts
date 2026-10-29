@@ -11,6 +11,8 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import type {
   AuthenticatedIdentity,
   AuthenticatedPrincipal,
+  CredentialAuthenticatedPrincipal,
+  ProviderSessionAuthority,
   CredentialAuthenticationRecord,
   IdentityStore,
   InstallationAuthority,
@@ -138,6 +140,7 @@ export class IdentityService {
     private readonly secret: () => string = () => randomBytes(32).toString("hex"),
     private readonly installationAuthority?: InstallationAuthority,
     private readonly runtimeAccess?: RuntimeAccessStore,
+    private readonly providerSessions?: ProviderSessionAuthority,
   ) {}
 
   bootstrapOwnerSession(input: BootstrapOwnerInput = {}): BootstrappedOwner {
@@ -172,7 +175,7 @@ export class IdentityService {
     return { principalId: actor.principalId, credential: publicCredential(issued.record), token: issued.token };
   }
 
-  authenticateBearer(token: string): AuthenticatedPrincipal {
+  authenticateBearer(token: string): CredentialAuthenticatedPrincipal {
     const parsed = parseToken(token);
     const record = parsed ? this.store.getCredentialForAuthentication(parsed.id) : null;
     const expected = record && /^[0-9a-f]{64}$/.test(record.verifierHash)
@@ -211,11 +214,11 @@ export class IdentityService {
     if (principal.kind === "installation") {
       return { principal, credential: null, knowledgeGrants: [], installationAuthority: true };
     }
-    const credential = this.store.getCredentialForAuthentication(actor.credentialId)!;
+    const credential = actor.authenticationMethod === "provider_session" ? null : this.store.getCredentialForAuthentication(actor.credentialId)!;
     return {
       principal,
-      credential: publicCredential(credential),
-      ...(principal.kind === "agent" && this.runtimeAccess ? { runtimeAccess: this.currentRuntimeAccess(actor, credential) } : {}),
+      credential: credential ? publicCredential(credential) : null,
+      ...(principal.kind === "agent" && this.runtimeAccess && credential ? { runtimeAccess: this.currentRuntimeAccess(actor, credential) } : {}),
       knowledgeGrants: this.store.listKnowledgeProjectGrants(actor.principalId)
         .filter((grant) => grant.revokedAt === null)
         .map(grant => ({ projectId: grant.projectId, permissions: effectiveKnowledgePermissions(this.subject(actor), grant.projectId, {
@@ -559,7 +562,7 @@ export class IdentityService {
 
   private currentRuntimeAccess(actor: AuthenticatedPrincipal, credential: CredentialAuthenticationRecord): RuntimeAccessEntry[] {
     const store = this.runtimeAccess;
-    if (!store) return [];
+    if (!store || actor.authenticationMethod === "provider_session") return [];
     return store.listRuntimeCredentialScopes(actor.credentialId).flatMap((scope) => {
       const authority = this.runtimeAuthority(actor, scope.projectId);
       const actions = authority ? effectiveRuntimeActions(this.subject(actor), scope.projectId, authority) : [];
@@ -622,6 +625,12 @@ export class IdentityService {
   }
 
   private requireCurrentAuthentication(actor: AuthenticatedPrincipal): void {
+    if (actor.authenticationMethod === "provider_session") {
+      if (!this.providerSessions?.isCurrentProviderSession(actor, this.clock())) {
+        throw new IdentityError("invalid_credential", "Nieprawidłowe lub nieaktywne poświadczenie.");
+      }
+      return;
+    }
     const principal = this.store.getPrincipal(actor.principalId);
     if (actor.principalKind === "installation") {
       if (

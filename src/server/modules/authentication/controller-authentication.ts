@@ -1,4 +1,4 @@
-import type { AuthenticatedPrincipal, ControllerAuthentication, IdentityService } from "@/server/modules/identity";
+import type { CredentialAuthenticatedPrincipal, ControllerAuthentication, IdentityService } from "@/server/modules/identity";
 import { databaseAdmissionFailure } from "@/server/database-admission";
 import type { AuthenticationMode } from "./contracts";
 
@@ -12,8 +12,8 @@ export interface ControllerCredentials {
 export interface ControllerAuthenticationDependencies {
   authentication?: {
     mode(): AuthenticationMode;
-    authenticateInstallation(token: string): AuthenticatedPrincipal | null;
-    anonymousInstallation(): AuthenticatedPrincipal | null;
+    authenticateInstallation(token: string): CredentialAuthenticatedPrincipal | null;
+    anonymousInstallation(): CredentialAuthenticatedPrincipal | null;
   };
   identity?: Pick<IdentityService, "authenticateBearer">;
 }

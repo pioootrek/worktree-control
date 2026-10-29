@@ -15,6 +15,9 @@ export {
 } from "./identity-service";
 export type {
   AuthenticatedPrincipal,
+  CredentialAuthenticatedPrincipal,
+  ProviderSessionActor,
+  ProviderSessionAuthority,
   AuthenticatedIdentity,
   AuthenticationMethod,
   ControllerAuthentication,

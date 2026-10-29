@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { OwnedSqliteDatabase, SqliteStateStore, inspectSchema } from "./index";
 import { initializeSchema } from "./migrations";
 import { verificationProjectChecksum, verificationProjectMigration } from "./verification-project-migration";
-import { WITHOUT_AUTHENTICATION_PROVIDER_STORAGE } from "./fixtures/schema-rewind";
+import { WITHOUT_AUTHENTICATION_PROVIDER_STORAGE, rewindProviderSessionHistory } from "./fixtures/schema-rewind";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -35,7 +35,7 @@ function fixture() {
     db.exec(`INSERT INTO ${table}_old SELECT * FROM ${table}; DROP TABLE ${table}; ALTER TABLE ${table}_old RENAME TO ${table};`);
     for (const index of indexes) db.exec(index.sql);
   }
-  db.exec(WITHOUT_AUTHENTICATION_PROVIDER_STORAGE + "DELETE FROM schema_migrations WHERE version>=30"); db.close();
+  rewindProviderSessionHistory(db); db.exec(WITHOUT_AUTHENTICATION_PROVIDER_STORAGE + "DELETE FROM schema_migrations WHERE version>=30"); db.close();
   return { path };
 }
 function contents(db: Database.Database) {

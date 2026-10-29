@@ -13,7 +13,7 @@ export interface Principal {
 
 export type CredentialKind = "owner_session" | "agent_token" | "worker_token";
 /** Stored credentials plus the installation-wide token and the unauthenticated `open` mode. */
-export type AuthenticationMethod = CredentialKind | "installation_token" | "none";
+export type AuthenticationMethod = CredentialKind | "installation_token" | "none" | "provider_session";
 
 export interface PrincipalCredential {
   id: string;
@@ -33,17 +33,33 @@ export interface CredentialAuthenticationRecord extends PrincipalCredential {
   verifierHash: string;
 }
 
-export interface AuthenticatedPrincipal {
+export interface CredentialAuthenticatedPrincipal {
   principalId: string;
   principalKind: PrincipalKind;
   credentialId: string;
-  authenticationMethod: AuthenticationMethod;
+  authenticationMethod: Exclude<AuthenticationMethod, "provider_session">;
+}
+
+declare const providerSessionActor: unique symbol;
+/** Server-only opaque reference. Only the issuing runtime can authenticate this exact object. */
+export interface ProviderSessionActor {
+  readonly [providerSessionActor]: true;
+  readonly principalId: string;
+  readonly principalKind: "owner";
+  readonly credentialId: null;
+  readonly authenticationMethod: "provider_session";
+}
+export type AuthenticatedPrincipal = CredentialAuthenticatedPrincipal | ProviderSessionActor;
+
+/** Synchronous current-state check on the admitted controller connection; never borrows the provider. */
+export interface ProviderSessionAuthority {
+  isCurrentProviderSession(actor: ProviderSessionActor, now: string): boolean;
 }
 
 export type ControllerAuthentication =
   | { kind: "legacy" }
-  | { kind: "installation"; actor: AuthenticatedPrincipal }
-  | { kind: "principal"; actor: AuthenticatedPrincipal };
+  | { kind: "installation"; actor: CredentialAuthenticatedPrincipal }
+  | { kind: "principal"; actor: CredentialAuthenticatedPrincipal };
 
 /** Confirms that an installation actor still matches the active authentication policy. */
 export interface InstallationAuthority {

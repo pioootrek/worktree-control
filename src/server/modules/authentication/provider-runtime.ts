@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { ProviderSessionActor, ProviderSessionAuthority } from "@/server/modules/identity";
 import {
   AUTHENTICATION_PROVIDER_CONTRACT_VERSION,
   type AuthenticationProviderHost,
@@ -53,6 +54,17 @@ export interface AuthenticationProviderStorage {
   drain(timeoutMs: number): Promise<boolean>;
   createProviderConnection(): ProviderSqliteConnection;
   subjects(providerId: string): ProviderSubjectStore;
+  /** Availability of the sole connection's provider lifetime, including timed-out borrows/drain. */
+  available(): boolean;
+  /** Nonsecret current-state projection. Requires core admission; never uses a provider borrow. */
+  currentSession(providerId: string, sessionId: string): ProviderSessionState | null;
+}
+
+export interface ProviderSessionState {
+  subject: string;
+  principalId: string;
+  createdAt: string;
+  expiresAt: string;
 }
 
 export interface LoadAuthenticationProviderInput {
@@ -172,13 +184,15 @@ export async function loadAuthenticationProvider(input: LoadAuthenticationProvid
 }
 
 /** Controller operations over a loaded provider. Every provider call runs inside one exclusive borrow. */
-export class AuthenticationProviderRuntime {
+export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
   readonly #input: LoadAuthenticationProviderInput;
   readonly #instance: AuthenticationProviderInstance;
   readonly #connection: ProviderSqliteConnection;
   readonly #subjects: ProviderSubjectStore;
   readonly #operations: AsyncLocalStorage<{ invalidationFailed: boolean }>;
   readonly #inFlight = new Set<Promise<unknown>>();
+  // Weak ownership: retaining an actor retains its evidence, never a request ledger.
+  readonly #actors = new WeakMap<ProviderSessionActor, Readonly<ProviderSessionState & { sessionId: string }>>();
   #disposal: Promise<void> | undefined;
   readonly readiness: AuthenticationProviderReadiness;
   readonly implementationVersion: string;
@@ -217,6 +231,40 @@ export class AuthenticationProviderRuntime {
       const principalId = this.#input.storage.runControllerOperation(() => this.#subjects.resolveActivePrincipal(session.subject));
       return principalId ? { session: { ...session, authentication: { method: "password", factors: 1 } }, principalId } : null;
     });
+  }
+
+  /** Resolve outside core admission. Raw `resolve` evidence and structural actor copies never authorize. */
+  async authenticate(headers: Headers): Promise<ProviderSessionActor | null> {
+    if (!this.#supportsSessionAuthority()) throw unavailable("session authority");
+    const resolution = await this.resolve(headers);
+    if (!resolution || this.disposed || !this.#input.storage.available()) return null;
+    const { session, principalId } = resolution;
+    if (!session.sessionId || !session.subject || !principalId || !canonicalDate(session.createdAt)
+      || !canonicalDate(session.expiresAt) || session.createdAt >= session.expiresAt) return null;
+    const actor = Object.freeze({ principalId, principalKind: "owner", credentialId: null, authenticationMethod: "provider_session" }) as ProviderSessionActor;
+    this.#actors.set(actor, Object.freeze({ sessionId: session.sessionId, subject: session.subject, principalId,
+      createdAt: session.createdAt, expiresAt: session.expiresAt }));
+    return actor;
+  }
+
+  /** Every decision reads committed authority on the controller-owned guarded handle. No Kysely or borrow. */
+  isCurrentProviderSession(actor: ProviderSessionActor, now: string): boolean {
+    const original = this.#actors.get(actor);
+    if (!original || this.disposed || !this.#supportsSessionAuthority() || !this.#input.storage.available()
+      || actor.authenticationMethod !== "provider_session" || actor.principalKind !== "owner"
+      || actor.credentialId !== null || actor.principalId !== original.principalId || !Object.isFrozen(actor)
+      || !canonicalDate(now) || original.expiresAt <= now) return false;
+    const current = this.#input.storage.currentSession(this.#input.providerId, original.sessionId);
+    return !!current && current.subject === original.subject && current.principalId === original.principalId
+      && current.createdAt === original.createdAt && canonicalDate(current.createdAt) && canonicalDate(current.expiresAt)
+      && current.createdAt < current.expiresAt && current.createdAt <= now && current.expiresAt > now;
+  }
+
+  #supportsSessionAuthority(): boolean {
+    // This projection is verified only for the fixed migration-38 adapter and pinned library.
+    return this.#input.providerId === "better-auth" && this.#input.storage.storageRevision === 1
+      && this.implementationVersion === "0.0.0-proof.1"
+      && this.readiness.library?.name === "better-auth" && this.readiness.library.version === "1.7.14";
   }
 
   /** Protected local bootstrap: creates a password account and its mapping atomically. */
@@ -313,4 +361,10 @@ export class AuthenticationProviderRuntime {
     pending.then(forget, forget);
     return pending;
   }
+}
+
+function canonicalDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && new Date(time).toISOString() === value;
 }

@@ -32,9 +32,11 @@ export {
   type AuthenticationProviderStorage,
   type LoadAuthenticationProviderInput,
   type ProviderPrincipalResolution,
+  type ProviderSessionState,
   type ProviderSubjectStore,
 } from "./provider-runtime";
 export { AUTHENTICATION_PROVIDER_CONTRACT_VERSION } from "./provider-contract";
+export { ProviderKnowledgeApplication } from "./provider-knowledge-application";
 export type {
   AuthenticationProviderHost,
   AuthenticationProviderInstance,

@@ -1313,6 +1313,8 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       drain: timeoutMs => connection.drainProviders(timeoutMs),
       createProviderConnection: () => connection.createProviderConnection(),
       subjects: providerId => new AuthenticationProviderQueries(database, providerId),
+      available: () => { const state = connection.snapshot(); return state.state === "open" && !state.draining; },
+      currentSession: (providerId, sessionId) => new AuthenticationProviderQueries(database, providerId).currentSession(sessionId),
     };
   }
 

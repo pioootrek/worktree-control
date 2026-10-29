@@ -8,7 +8,7 @@ import type {
   AuthenticationStore,
   InstallationTokenRecord,
 } from "./contracts";
-import type { AuthenticatedPrincipal, InstallationAuthority } from "@/server/modules/identity";
+import type { AuthenticatedPrincipal, CredentialAuthenticatedPrincipal, InstallationAuthority } from "@/server/modules/identity";
 
 export type AuthenticationErrorCode =
   | "auth_provider_unavailable"
@@ -65,7 +65,7 @@ export class AuthenticationService implements InstallationAuthority {
   }
 
   /** Returns the installation actor only while token mode is active and the token is current. */
-  authenticateInstallation(token: string): AuthenticatedPrincipal | null {
+  authenticateInstallation(token: string): CredentialAuthenticatedPrincipal | null {
     const policy = this.store.getAuthenticationPolicy();
     if (policy.mode !== "token" || !policy.token || !this.verifyInstallationToken(token)) return null;
     return {
@@ -77,7 +77,7 @@ export class AuthenticationService implements InstallationAuthority {
   }
 
   /** Open mode: every caller acts as the anonymous installation authority, recorded as `none`. */
-  anonymousInstallation(): AuthenticatedPrincipal | null {
+  anonymousInstallation(): CredentialAuthenticatedPrincipal | null {
     if (this.store.getAuthenticationPolicy().mode !== "open") return null;
     return {
       principalId: INSTALLATION_PRINCIPAL_ID,

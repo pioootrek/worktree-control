@@ -11,7 +11,7 @@ import { SqliteStateStore } from "./sqlite-state-store";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { runtimeAccessChecksum, runtimeAccessMigration } from "./runtime-access-migration";
-import { WITHOUT_AUTHENTICATION_PROVIDER_STORAGE } from "./fixtures/schema-rewind";
+import { WITHOUT_AUTHENTICATION_PROVIDER_STORAGE, rewindProviderSessionHistory } from "./fixtures/schema-rewind";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -39,7 +39,7 @@ function downgradeTo35(path: string): void {
   try {
     db.pragma("foreign_keys = OFF");
     db.transaction(() => {
-      db.exec(WITHOUT_AUTHENTICATION_PROVIDER_STORAGE + "DROP TABLE runtime_credential_scopes; DROP TABLE runtime_delegations; DELETE FROM schema_migrations WHERE version>=36");
+      rewindProviderSessionHistory(db); db.exec(WITHOUT_AUTHENTICATION_PROVIDER_STORAGE + "DROP TABLE runtime_credential_scopes; DROP TABLE runtime_delegations; DELETE FROM schema_migrations WHERE version>=36");
       const table = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='reservations'").get() as { sql: string }).sql;
       const indexes = (db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='reservations' AND sql IS NOT NULL").all() as Array<{ sql: string }>).map(x => x.sql);
       const original = table.replace(/,\s*principal_id TEXT REFERENCES remote_principals\(id\),\s*credential_id TEXT REFERENCES principal_credentials\(id\),\s*request_fingerprint TEXT/, "");
@@ -65,7 +65,7 @@ describe("runtime access migration 36", () => {
       expect(inspectSchema(db).version).toBe(35);
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'runtime_%'").all()).toEqual([]);
       initializeSchema(db, false);
-      expect(inspectSchema(db).version).toBe(38);
+      expect(inspectSchema(db).version).toBe(39);
       expect(db.prepare("SELECT id, owner, token_hash, released_at FROM reservations").all()).toEqual(before);
       expect(db.prepare("SELECT principal_id, credential_id, request_fingerprint FROM reservations").all())
         .toEqual([{ principal_id: null, credential_id: null, request_fingerprint: null }]);

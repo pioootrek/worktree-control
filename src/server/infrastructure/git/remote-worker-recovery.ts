@@ -120,6 +120,7 @@ export class LinuxWorkerRecoveryHost implements WorkerRecoveryHost {
     } catch { return refused("recovery_evidence_unavailable_or_invalid"); }
   }
   audit(provenance: WorkerRecoveryProvenance, operationId: string, actor: AuthenticatedPrincipal): WorkerRecoveryAudit {
+    if (actor.authenticationMethod === "provider_session") fail("recovery_identity_changed");
     const identity = this.identity(), binding = this.binding(false);
     // Re-read immediately before sealing. A failing probe never authorizes recovery.
     if (identity.host !== provenance.host || identity.boot === provenance.boot || binding.installation !== provenance.installation) fail("recovery_identity_changed");

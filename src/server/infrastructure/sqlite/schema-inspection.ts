@@ -1,6 +1,7 @@
 import { knowledgeRoleMigration, knowledgeRoleChecksum } from "./knowledge-role-migration";
 import { runtimeAccessMigration, runtimeAccessChecksum } from "./runtime-access-migration";
 import { configurationRevisionMigration, configurationRevisionChecksum } from "./configuration-revision-migration";
+import { providerSessionHistoryMigration, providerSessionHistoryChecksum } from "./provider-session-history-migration";
 import { authenticationProviderMigration, authenticationProviderChecksum } from "./authentication-provider-migration";
 import { devVaultMigration, devVaultChecksum } from "./dev-vault-migration";
 import { remoteConnectionMigration, remoteConnectionChecksum } from "./remote-connection-migration";
@@ -135,6 +136,7 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : x.version === 36 ? x.name !== runtimeAccessMigration.name || x.checksum !== runtimeAccessChecksum
       : x.version === 37 ? x.name !== configurationRevisionMigration.name || x.checksum !== configurationRevisionChecksum
       : x.version === 38 ? x.name !== authenticationProviderMigration.name || x.checksum !== authenticationProviderChecksum
+      : x.version === 39 ? x.name !== providerSessionHistoryMigration.name || x.checksum !== providerSessionHistoryChecksum
       : true)) refuse("migration checksum or name");
   }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));
@@ -159,6 +161,7 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       if (table === "projects" && version < 30) check = check.replace(",'none'", "");
       if (table === "test_runs" && version < 30) check = check.replace(",'godot'", "");
       if (table === "remote_principals" && version < 25) check = check.replace(",'installation'", "");
+      if (table === "knowledge_history" && version < 39) check = check.replace(",'provider_session'", "");
       if (table === "knowledge_history" && version < 25) check = check.replace(",'installation_token','none'", "");
       if (table === "knowledge_history" && version < 20) check = check.replace(",'memory'", "").replace(",'approved','superseded'", "");
       const field = check.match(/^([a-z_]+?)(?:in\(|between|is|[<>=])/)?.[1];

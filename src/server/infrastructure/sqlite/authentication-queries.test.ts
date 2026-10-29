@@ -31,9 +31,9 @@ function downgradeToMigration24(path: string): void {
     for (const index of indexes) database.exec(index.sql);
   };
   database.exec("DELETE FROM remote_principals WHERE id = 'installation'");
+  stripMigrationProvenance(database);
   restore("remote_principals", "'worker', 'installation'", "'worker'");
   restore("knowledge_history", ", 'installation_token', 'none'", "");
-  stripMigrationProvenance(database);
   database.exec(`
     DELETE FROM controller_settings WHERE key = 'authentication';
     DELETE FROM schema_migrations WHERE version >= 25;
@@ -57,7 +57,7 @@ describe("authentication policy SQLite persistence", () => {
     downgradeToMigration24(path);
 
     const store = new SqliteStateStore(path);
-    expect(store.schemaVersion()).toBe(38);
+    expect(store.schemaVersion()).toBe(39);
     expect(store.getPrincipal("owner-1")).toEqual({ id: "owner-1", kind: "owner", status: "active" });
     expect(store.getPrincipal("installation")).toEqual({ id: "installation", kind: "installation", status: "active" });
     expect(store.getAuthenticationPolicy()).toEqual({ mode: "legacy", token: null, generation: 0 });
