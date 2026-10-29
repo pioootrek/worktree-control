@@ -63,6 +63,32 @@ async function protocol(f: StrictProof, scoped = false, expiresAt?: string, inst
 }
 
 describe("strict in-memory MCP protocol admission", () => {
+  it("does not revive a lease that expires while automatic renewal and a runtime call wait for admission", async () => {
+    const faults: ProofFaultInjection = {}, f = await strictProof(faults), mcp = await protocol(f, true);
+    const start = vi.spyOn(mcp.processes, "start").mockResolvedValue(undefined);
+    const claim = await mcp.client.callTool({ name: "claim_project", arguments: { projectId: mcp.project.id, worktreePath: f.root, reason: "lease expiry", idempotencyKey: "lease", ttlSeconds: 30, start: false } });
+    expect(claim.isError).not.toBe(true);
+    const reservation = (await f.run(() => f.store.getActiveReservation(mcp.project.id)))!;
+    const hold = pauseProvisioning(f, faults, "rollback");
+    try {
+      await hold.paused;
+      mcp.clock.advance(10_000);
+      await vi.waitFor(() => expect(f.store.admissionSnapshot().queuedCore).toBe(1));
+      const input = { name: "start_project", arguments: { projectId: mcp.project.id, reservationId: reservation.id, idempotencyKey: "expired-start" } };
+      const operation = mcp.client.callTool(input);
+      await vi.waitFor(() => expect(f.store.admissionSnapshot().queuedCore).toBe(2));
+      // Only wall-clock time changes. Provider/admission deadlines and SDK timers stay real.
+      vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse(reservation.expiresAt!) + 1);
+      hold.resume(); await hold.pending;
+      expect((await operation).isError).toBe(true);
+      await vi.waitFor(() => expect(mcp.session.claims.size).toBe(0));
+      expect(await f.run(() => f.store.getActiveReservation(mcp.project.id))).toBeNull();
+      expect((await mcp.client.callTool(input)).isError).toBe(true);
+      expect(start).not.toHaveBeenCalled();
+      expect(mcp.diagnostic).toHaveBeenCalledWith("mcp.claim_auto_renew_failed", expect.objectContaining({ reservationId: reservation.id }));
+    } finally { vi.useRealTimers(); hold.resume(); await hold.pending; await mcp.close(); await closeStrictProof(f); }
+  });
+
   it("does not invoke a queued installation mutation after authentication-policy closure", async () => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults), mcp = await protocol(f, false, undefined, true);
     const mutation = vi.spyOn(mcp.service, "setProjectEnvironment");
