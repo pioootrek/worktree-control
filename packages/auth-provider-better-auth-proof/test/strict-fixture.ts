@@ -15,11 +15,11 @@ export function gate() {
   return { open, opened };
 }
 export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-export async function strictProof(faults: ProofFaultInjection = {}, options: ExclusiveConnectionOptions = {}) {
+export async function strictProof(faults: ProofFaultInjection = {}, options: ExclusiveConnectionOptions = {}, identityClock?: () => string) {
   const root = mkdtempSync(join(tmpdir(), "auth-provider-admission-")); roots.push(root);
   const path = join(root, "state.sqlite3");
   const store = new SqliteStateStore(path, undefined, options);
-  const identity = new IdentityService(store, undefined, undefined, undefined, undefined, store);
+  const identity = new IdentityService(store, identityClock, undefined, undefined, undefined, store);
   const owner = identity.bootstrapOwnerSession();
   const ownerActor = identity.authenticateBearer(owner.token);
   store.requireAdmission();

@@ -72,7 +72,7 @@ fixtures and mocks; finite-job cases run a real short Node process.
 | --- | --- | --- |
 | HTTP | Commit/rollback wait, single mutation and receipt replay, queued revocation, malformed 400, initial contention 503 | Two retained failing tests: body-read re-admission timeout is mislabeled 400 on Knowledge/vault routes; broader route inventory |
 | MCP | Actual in-memory request wrapper, commit/rollback wait, current identity after revocation, scoped readiness and retained retry | Full HTTP MCP transport authentication/body behavior and broader tool/resource matrix |
-| Automatic renewal | Contention deadline and retry preserve claim; queued credential revocation and session close prevent renewal | Credential/lease expiry during an admission wait |
+| Automatic renewal | Contention deadline and retry preserve claim; queued credential revocation/expiry and session close prevent renewal | Lease expiry during an admission wait |
 | Remote controller | Poll/report wait on commit/rollback, exact report replay, current worker grant at delivery | Submit/cancel transport races and worker credential expiry |
 | Remote worker | Current-state ACK merge retains cancellation, SQL-free network phase, receipt before preparation, ordered running/terminal outbox | Crash/restart matrix under strict admission and concurrent appended-report ACK race |
 | Workspace preparation | Real preparation adapter, committed recovery provenance before mock Git effect, SQL-free wait and mapping revocation after re-admission | Dependency-installation and all cleanup/refusal paths under strict contention |

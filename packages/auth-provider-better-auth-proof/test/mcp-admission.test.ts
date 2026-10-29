@@ -21,7 +21,7 @@ class SessionClock implements McpSessionClock {
   clearTimeout = (id: unknown) => { this.timers.delete(id as number); };
   advance(ms: number) { this.time += ms; for (const [id, timer] of [...this.timers]) if (timer.at <= this.time) { this.timers.delete(id); timer.callback(); } }
 }
-async function protocol(f: StrictProof, scoped = false) {
+async function protocol(f: StrictProof, scoped = false, expiresAt?: string) {
   const clock = new SessionClock(), governor = new McpSessionGovernor({}, clock), diagnostic = vi.fn();
   const project = await f.run(() => f.store.addProject({ name: "MCP fixture", repositoryPath: f.root, port: 3894, executable: "", args: [], launchPreset: "node" }));
   const actor = await f.run(() => {
@@ -29,7 +29,7 @@ async function protocol(f: StrictProof, scoped = false) {
     if (scoped) {
       const actions = ["projects:read", "claims:manage", "runtime:control"] as const;
       f.identity.setRuntimeDelegation({ principalId: agent.id, projectId: project.id, actions: [...actions], expectedRevision: 0 }, f.ownerActor);
-      const issued = f.identity.issueRuntimeCredential({ principalId: agent.id, label: "MCP fixture", projects: [{ projectId: project.id, actions: [...actions] }] }, f.ownerActor);
+      const issued = f.identity.issueRuntimeCredential({ principalId: agent.id, label: "MCP fixture", expiresAt, projects: [{ projectId: project.id, actions: [...actions] }] }, f.ownerActor);
       return f.identity.authenticateBearer(issued.token);
     }
     const issued = f.identity.issueAgentToken({ principalId: agent.id, label: "MCP fixture" }, f.ownerActor);
@@ -82,8 +82,9 @@ describe("strict in-memory MCP protocol admission", () => {
     } finally { hold.resume(); await hold.pending; await mcp.close(); await closeStrictProof(f); }
   });
 
-  it.each(["renew", "revoke", "close"] as const)("handles automatic renewal queued behind provider: %s", async mode => {
-    const faults: ProofFaultInjection = {}, f = await strictProof(faults, { admissionTimeoutMs: 80 }), mcp = await protocol(f, true);
+  it.each(["renew", "revoke", "expiry", "close"] as const)("handles automatic renewal queued behind provider: %s", async mode => {
+    let now = Date.now();
+    const faults: ProofFaultInjection = {}, f = await strictProof(faults, { admissionTimeoutMs: 80 }, () => new Date(now).toISOString()), mcp = await protocol(f, true, mode === "expiry" ? new Date(now + 1500).toISOString() : undefined);
     const claimResult = await mcp.client.callTool({ name: "claim_project", arguments: { projectId: mcp.project.id, worktreePath: f.root, reason: "strict fixture", idempotencyKey: "claim-once", ttlSeconds: 30, start: false } });
     expect(claimResult.isError, JSON.stringify(claimResult)).not.toBe(true);
     const before = await f.run(() => f.store.getActiveReservation(mcp.project.id));
@@ -96,16 +97,18 @@ describe("strict in-memory MCP protocol admission", () => {
       expect(mcp.session.claims.size).toBe(1);
       let revoke: Promise<unknown> | undefined;
       if (mode === "revoke") revoke = f.run(() => f.identity.revokeCredential(mcp.actor.credentialId, f.ownerActor));
-      if (mode === "close") { await mcp.close(); closed = true; }
+      if (mode === "expiry") now += 2000;
       // The retried callback must recheck session and current authority after admission.
       mcp.clock.advance(1_000);
+      await vi.waitFor(() => expect(f.store.admissionSnapshot().queuedCore).toBeGreaterThan(0));
+      if (mode === "close") { await mcp.close(); closed = true; }
       hold.resume(); await hold.pending; await revoke;
       if (mode === "renew") {
         await vi.waitFor(() => expect(mcp.diagnostic).not.toHaveBeenCalledWith("mcp.claim_auto_renew_failed", expect.anything()));
         await vi.waitFor(() => expect(mcp.clock.timers.size).toBeGreaterThan(1));
         expect(mcp.session.claims.size).toBe(1);
       } else {
-        if (mode === "revoke") await vi.waitFor(() => expect(mcp.session.claims.size).toBe(0));
+        if (mode === "revoke" || mode === "expiry") await vi.waitFor(() => expect(mcp.session.claims.size).toBe(0));
         const after = await f.run(() => f.store.getActiveReservation(mcp.project.id));
         expect(after?.expiresAt).toBe(before?.expiresAt);
       }
@@ -131,7 +134,7 @@ describe("strict in-memory MCP protocol admission", () => {
       ready.open(); await sleep(20); expect(start).toHaveBeenCalledOnce();
       hold.resume(); await hold.pending; await revoked;
       const result = await operation;
-      expect(result.isError).toBe(true); expect(JSON.stringify(result)).toContain("runtime_access_denied");
+      expect(result.isError).toBe(true); expect(JSON.stringify(result)).toContain("project_access_denied");
       expect((await mcp.client.callTool(input)).isError).toBe(true);
       expect(start).toHaveBeenCalledOnce();
     } finally { ready.open(); hold.resume(); await hold.pending; await operation; await mcp.close(); await closeStrictProof(f); }
