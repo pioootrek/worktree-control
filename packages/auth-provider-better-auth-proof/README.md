@@ -21,7 +21,8 @@ On a Worktree Control registered checkout, use `list_worktrees` and
 `list_test_presets`, then queue `node:test:auth-provider-proof` with `run_test`
 against the exact discovered path. Poll to terminal completion and inspect
 process outcome and source attribution. Do not bypass the managed preset with
-the direct command above. No server or listening fixture is needed.
+the direct command above. No development server or TCP port is needed. CLI
+shutdown fixtures bind only temporary Unix sockets inside their isolated roots.
 
 Verification runs serially on a clean local commit: `node:test:auth-provider-proof`,
 `node:check`, `node:build`, `node:test:package:tools`, then `node:test:docs`.
@@ -60,8 +61,9 @@ activation are outside this slice. See the
 
 The strict fixtures use `SqliteStateStore.requireAdmission()` after bootstrap
 and the actual pinned provider, paused inside a real transaction after a write.
-Setup and inspection can enter admission explicitly. HTTP handlers are invoked
-through their installed Node request listener without opening a socket. MCP
+Setup and inspection can enter admission explicitly. Most HTTP tests invoke
+the installed Node request listener without a socket; CLI shutdown tests use
+temporary Unix listeners to exercise Node response draining. MCP
 uses the actual runtime's protocol registration over the SDK in-memory wire.
 Automatic renewal runs its production timer callback with a manual session
 clock. The tests do not wrap boundary calls in extra admission to conceal
@@ -74,13 +76,15 @@ fixtures and mocks; finite-job cases run a real short Node process.
 | MCP | Actual in-memory request wrapper, commit/rollback wait, current identity after revocation, policy closure prevents queued installation mutations, scoped readiness and retained retry; actual HTTP initial and post-body contention preserve Retry-After, post-body queued revocation | Complete SDK HTTP session and broader tool/resource matrix |
 | Finite-job cancellation | Cancellation admitted after the preflight read remains terminal; no stale queued checkpoint or process spawn | Broader preparation/error interleavings |
 | Automatic renewal | Contention deadline and retry preserve claim; queued credential revocation/expiry and session close prevent renewal; lease expiry during the wait prevents renewal, runtime spawn and retained retry | Complete SDK HTTP session lifecycle remains separate |
-| Remote controller | Poll/report wait on commit/rollback, exact report replay, current worker grant at delivery; actual MCP submit/cancel and queued grant revocation; worker expiry at HTTP body-read re-admission | Full listener shutdown and remote cleanup failures |
+| Remote controller | Poll/report wait on commit/rollback, exact report replay, current worker grant at delivery; actual MCP submit/cancel and queued grant revocation; worker expiry at HTTP body-read re-admission; installed listener closes in CLI fixture | Remote worker cleanup/reboot failures; CLI ownership failures below |
 | Remote worker | Current-state ACK merge retains cancellation and a real running report appended during upload; SQL-free network phase, receipt before preparation, ordered terminal outbox; reopened strict owner refuses interrupted execution and retains cleanup block | Real crash/reboot and signed owner-recovery host acceptance under provider contention |
 | Workspace preparation | Real preparation adapter, committed recovery provenance before mock Git effect, SQL-free wait and mapping revocation after re-admission | Dependency-installation and all cleanup/refusal paths under strict contention |
 | Vault | Proof expiry, grant revocation before retained plaintext replay, owner credential revocation | Broader role/grant/once-receipt and expiry combinations; A4 policy unchanged |
-| Schedules/restore | Actual automatic tick, current export grants, deferred launch admission, current restore authority, failed restart retains owner | Complete CLI response/listener shutdown and restore execution handoff |
+| Schedules/restore | Actual automatic tick and current export grants; installed HTTP finish/close/already-disconnected handoff, one deferred launch, current revocation, refused shutdown blocks execution and retains owner | Physical replacement/restart is mocked; concurrent CLI shutdown remains blocked below |
 | Storage/logs | One save per completed scan, duplicate coalescing, close while save waits, retention lookup waiting/refusal preserves files | Global scan backlog bounds and all retention/drain failures |
-| Lifecycle/shutdown | Two same-project operations, provider during idle, no admitted project-lock waiter; owning service refuses new work while real process completion and a driver backup drain; failed drain retains sole-owner lock and retry closes after late provider settlement | Lock-order design acceptance and complete bootstrap shutdown; local readiness authorization gap is characterized separately |
+| Lifecycle/shutdown | Same-project serialization and idle admission; owning service drains real process completion/backup; actual CLI sequence closes HTTP/MCP/admin/remote Unix listeners and accepted responses; service failure retains database owner | Three preserved CLI failures: controller lock released on failed drain, both owners released despite listener failure, concurrent shutdown returns early |
+| Provider Knowledge handoff | 25 real-provider cases: exact opaque actor, current session/mapping/principal/grant/role, queue/idle/lock/replay, failed notification, rollback, substitutions, original-expiry cap, drain/disposal and denied privilege elevation | No transport mounting, login or account-mode activation |
+| Local readiness | Installed HTTP reservation/force-release queue behind readiness; installed admin rotation invalidates the installation actor before the accepted local operation returns 200 | Existing unscoped runtime does not reauthenticate after readiness; injected direct-store takeover is not transport evidence |
 | Shared branches | Joined SQL is refused while a sibling idles; detached participants remain independent | Dashboard fan-out retains admission during Git; this is no blanket safety claim for concurrent joined branches |
 
 `live-admission.test.ts` also retains the original strict proofs for running-job
@@ -124,12 +128,50 @@ The bounded acceptance checklist is:
   both at initial admission and after the body read: 503 with
   `Retry-After: 1`. The same
   file checks initial admission and current post-body credential revocation.
-- **Scope-critical uncovered:** provider evidence still cannot authorize a
-  controller operation safely. The [handoff proposal](../../docs/authentication.md#next-provider-authorization-handoff-proposal)
-  identifies the required current-state check and actor boundary. Complete
-  bootstrap listener/response shutdown, restore execution handoff and the local
-  readiness authorization gap also remain unaccepted. The tests above certify
-  service ownership, not the complete CLI teardown.
+- **Tested handoff:** `provider-authorization.test.ts` now has 25 cases using
+  actual Better Auth and the public `ProviderKnowledgeApplication`, with no
+  outer admission for normal calls. The exact frozen actor belongs to one
+  runtime. Each call checks current stored authority and ordinary Knowledge
+  grants/role ceilings; mapping alone grants nothing. Safe identity metadata
+  uses `credential: null`. Owner administration, token mint/renew, runtime,
+  privileged approval and vault access remain denied. See the
+  [implemented API](../../docs/authentication.md#provider-authorization-handoff).
+- **Migration evidence:** seven existing
+  `src/server/infrastructure/sqlite/provider-session-history-migration.test.ts`
+  cases cover genuine 38-to-39 upgrade/late rollback, old registry rows and
+  indexes, malformed storage refusal, deleted/empty-history watermarks and
+  full/logical backup transfer. Controller schema 39 adds only honest
+  `provider_session` history attribution. Provider storage revision stays 1;
+  migration 1..38 definitions/checksums and owner-only import batches do not widen.
+  These are unit-suite cases, not part of the optional proof count.
+- **Tested restore boundary:** five `restore-http-handoff.test.ts` cases use
+  the installed HTTP handler, real durable restore admission/launch and owning
+  CLI shutdown. Finish then close, close then finish and an already-disconnected
+  response each launch once. Revocation ordered before deferred admission
+  denies restart; unconfirmed cleanup prevents execution and retains both
+  owners. On successful nonconcurrent shutdown the database owner closes
+  before the execution callback while the controller lock stays held. Physical
+  replacement and starting the next controller are mocked. A 202 response
+  records admission, not successful restore.
+- **Blocked CLI gate:** `cli-shutdown-admission.test.ts` invokes the actual
+  shutdown sequence extracted unchanged from `src/cli/index.ts` into
+  `src/server/bootstrap/controller-shutdown.ts`. Installed HTTP/MCP/admin/remote
+  listeners use temporary Unix sockets. The successful test drains accepted
+  HTTP/admin responses and writes once, rejects new work, then releases both
+  locks. Three failing regressions preserve actual defects: failed provider
+  drain releases the controller lock while the database lock remains; failed
+  listener closure still closes the database/releases the controller lock;
+  concurrent handoff shutdown resolves before the first provider drain.
+  `ControlService.shutdown` passing alone does not close these gates.
+- **Readiness classification:** `lifecycle-admission.test.ts` drives installed
+  HTTP operation/reservation/force-release handlers. Both mutations wait behind
+  readiness with no admitted lock waiter; the old direct-store reservation
+  injection is not a supported transport takeover. The installed admin
+  token-rotation handler can change authority during readiness. The old
+  installation actor becomes invalid before the accepted local operation
+  returns 200. This passing characterization records a current-authority
+  limitation of the existing installation runtime path, not scoped/provider
+  authorization acceptance. Scoped natural lease expiry has separate tests.
 - **Separately deferred:** real host reboot/recovery, all dependency-install
   cleanup failures, broader route/tool permutations and global scan-backlog
   bounds need their own focused evidence. Compatible-mode recovery tests in
@@ -138,19 +180,29 @@ The bounded acceptance checklist is:
   not strict held-provider evidence. Account enrollment/factors/browser API,
   A4 vault policy and A5 cutover/external restore fencing remain separate gates.
 
-A provider-to-core resolution handoff is deliberately deferred. Resolving the
-provider inside admitted core work is rejected as reentrant; resolving before
-core admission would leave an authorization gap. Neither is a login integration.
+The implemented handoff resolves the provider outside core admission and checks
+current stored authority synchronously inside each Knowledge call. Resolving
+the provider inside admitted core work is still rejected as reentrant. Call
+the application again after idle/lock waits before a new effect or replay.
+No production provider loading or login integration is added.
 `idle` suspends an entire joined participant and requires sequential SQL phases;
 independent branches need their own detached admission. Project-lock waiters
 release admission, and callbacks re-enter under the lock. Current limits are
 5 seconds for admission, 60 seconds for persistence retry and 10 seconds for
 database drain. They are implementation limits, not account-security defaults.
 
+The independent managed proof on clean `7ea9a1d` ran 123 cases: 120 passed,
+three CLI shutdown regressions failed (run
+`c8e4faaa-e892-4e63-b695-2ac7d7aca674`, exit 1, `observed_match`, confirmed
+cleanup). The first attempt on `385330a` had the same three failures plus an
+incorrect readiness-fixture ordering assumption; that fixture was corrected
+without changing production behavior. Build/fresh package verification are
+withheld because these backend blockers remain. A prebuild artifact scan skip
+or an older build does not certify the changed CLI/static dashboard. Final
+check/docs run evidence belongs in the owning Knowledge task and handoff.
+
 A failed strict regression blocks live-coexistence acceptance. Keep it failing
-until production code is fixed; do not weaken it or run build/package
-verification as evidence that admission is complete. General compatible-mode
-suites and the pre-build resource scan's explicit skip do not close strict
-coverage gaps or certify a fresh Community artifact.
+until production code is fixed; do not weaken it or use build/package success
+as a substitute for admission acceptance.
 
 Upstream licenses are reproduced in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

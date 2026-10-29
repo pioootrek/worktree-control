@@ -25,13 +25,22 @@ Accounts and ENV delivery remain deferred.
 
 The first A3 slice now provides an optional executable provider/SQLite proof.
 It verifies real Better Auth operations through the sole guarded connection,
-controller migration 38 and explicit subject mapping. Account mode remains
+controller migration 38 and explicit subject mapping. The bounded A3 handoff
+now issues opaque runtime-owned provider actors and validates current stored
+session/mapping/principal state inside grant-limited Knowledge operations.
+Controller migration 39 adds honest provider history attribution, preserving
+old history and migrations 1..38; provider storage revision remains 1. Account
+mode remains
 unavailable; enrollment, factors, invitations, roles and GUI are still open.
 Shared core admission, exclusive provider admission and background persistence
 boundaries are implemented as partial infrastructure. Strict integration tests
-cover HTTP body-read admission errors; complete callback coverage and the
-atomic provider-to-core handoff remain open. Safe live
-coexistence is not accepted. The A5 external restore fence is also unfinished;
+cover HTTP body-read admission errors and the installed restore completion
+handoff. Complete CLI acceptance is blocked by three preserved shutdown
+regressions involving failed cleanup and concurrent drain. Supported HTTP
+reservation changes serialize behind readiness, while admin token rotation can
+invalidate an installation actor before an accepted local operation returns 200.
+Safe live coexistence is not accepted. The A5 external restore fence is also
+unfinished;
 restores can revive old sessions and passwords. Native proof responses expose
 session tokens and require a separate browser API design before activation.
 See [the implemented proof boundary](authentication.md#optional-provider-proof-first-a3-slice).
@@ -234,8 +243,15 @@ or revoke a credential at its external provider.
 Better Auth remains an optional identity/session provider mapped to stable
 principals. The first proof exercises adapter transactions/disposal against the
 sole SQLite connection; migration 38 and controller backups include its data.
-Production integration still needs acceptance of safe live admission, the
-atomic provider-resolution-to-core handoff and the remaining account gates.
+The [implemented handoff](authentication.md#provider-authorization-handoff)
+uses an instance-bound frozen actor and synchronous current-state checks, with
+original expiry, ordinary grants/role ceilings and safe `credential: null`
+metadata. It denies owner administration, runtime sponsorship/control,
+privileged approval and vault proof substitution. Schema 39 widens only
+Knowledge history audit attribution; provider storage revision stays 1 and
+migrations 1..38/checksums remain unchanged. Full/logical backup compatibility
+has focused migration tests. Production integration still needs CLI failure/
+concurrency fixes, safe live admission acceptance and the remaining account gates.
 The current 5-second admission wait, 60-second persistence retry budget and
 10-second database drain are implementation limits, not approved account
 security defaults. Keep the static dashboard and use library-supported

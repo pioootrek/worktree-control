@@ -472,7 +472,12 @@ The first A3 slice adds a versioned server-only provider contract and explicit
 local loader, exercised by a private Better Auth workspace proof. Production
 bootstrap does not load it and account mode stays unavailable. Controller
 migration 38 owns the empty namespaced provider tables and explicit subject-to-owner
-mapping. There is no credential or grant backfill. An exclusive connection
+mapping. Controller migration 39 adds only the `provider_session` Knowledge
+history method, preserving rows, IDs, timestamps, indexes and deleted-ID
+watermarks. Migrations 1..38/checksums and provider storage revision 1 remain
+unchanged. Full backups identify schema 39; genuine 38 backups and logical
+history transfers remain supported. There is no credential or grant backfill.
+An exclusive connection
 guard protects core SQL, prepared statements and backups while asynchronous
 provider work borrows the sole connection. Shared core admission and exclusive
 provider admission now coordinate on that gate; see [database admission](#database-admission).
@@ -513,9 +518,13 @@ exercise two operations on one project with a provider between them, but design
 acceptance of this ordering remains separate. Scoped operations recheck current
 authority around effects and before returning retained outcomes. Local
 `RuntimeService.operateLocked` checks reservations before starting and has no
-post-readiness authorization callback. Its separate readiness gap is documented
-by a characterization test; scoped policy must not assume that local behavior
-is sufficient.
+post-readiness authorization callback. Installed HTTP reservation/force-release
+requests queue behind readiness, so direct-store reservation injection does not
+establish a supported transport takeover. The installed admin token-rotation
+handler can change installation authority during readiness; an accepted local
+operation still returns 200 after that actor becomes invalid. This executed
+limitation is distinct from scoped lease expiry. A local completion is historical
+and must not be used as current scoped/provider authorization.
 
 Accepted finite jobs coalesce bounded log/resource checkpoints, preserve event
 timestamps and serialize writes per run. A terminal durability barrier precedes
@@ -539,12 +548,33 @@ admission open for those completions while closing provider admission. It is
 not an external-request firewall. Store close waits for actual provider
 execution, core participants and driver backups. Timeout or failed driver close
 retains database ownership, and restore execution must wait for confirmed
-shutdown. Server-free tests cover the service/lifecycle owner and deferred
-restore callback; they do not certify the complete CLI listener/lock handoff.
+shutdown. Tests cover the owning service and actual CLI shutdown orchestration
+with temporary Unix HTTP/MCP/admin/remote listeners. The success path drains
+accepted HTTP/admin effects once. Three CLI regressions block acceptance:
+unconfirmed provider drain releases the controller lock; listener-close failure
+still closes the database/relinquishes controller ownership; concurrent shutdown
+returns before the first drain completes. The controller lock is separate from
+the SQLite owner lock. The behavior-preserving sequence extraction lives in
+`src/server/bootstrap/controller-shutdown.ts`.
 
-An atomic provider-resolution-to-core handoff is still missing. Loading a
-provider, enabling account mode, browser API design and full callback coverage
-remain separate acceptance gates. The [proof coverage table](../packages/auth-provider-better-auth-proof/README.md#live-admission-coverage)
+The installed restore HTTP completion callbacks and owning deferred launch are
+covered under contention, including finish/close duplication, already-closed
+responses, current revocation and refused shutdown. The execution callback runs
+only after successful shutdown in the nonconcurrent case, with controller
+ownership retained and database ownership closed. Physical replacement/restart
+are mocked. HTTP 202 acknowledges durable admission, not completed restore;
+the concurrent CLI shutdown defect remains an acceptance blocker.
+
+The implemented provider-to-core handoff authenticates outside admission and
+issues an exact runtime-owned frozen actor. `IdentityService` uses that runtime
+as a synchronous current-session authority inside each admitted Knowledge phase.
+Current session/mapping/principal state and original expiry are checked before
+ordinary grants/role ceilings and replay. Safe identity metadata has no A2
+credential. No provider reentry or notification-only cache authorizes work.
+Owner/runtime/vault privileges remain denied. See the
+[implemented API](authentication.md#provider-authorization-handoff).
+Production loading, account mode, browser API design and broader callback
+coverage remain separate acceptance gates. The [proof coverage table](../packages/auth-provider-better-auth-proof/README.md#live-admission-coverage)
 records what the strict integration tests exercise and what remains open.
 
 ## CLI and package

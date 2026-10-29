@@ -31,7 +31,7 @@ refuses to start; it never falls back to another mode.
 ## Optional provider proof (first A3 slice)
 
 The private workspace package `packages/auth-provider-better-auth-proof` is an
-executable, server-free proof using Better Auth 1.7.14, `@better-auth/core`
+executable, isolated proof using Better Auth 1.7.14, `@better-auth/core`
 1.7.14 and Kysely 0.28.17 on the existing `better-sqlite3` 13.0.3 connection.
 It exercises real handler requests, cookies, password changes, session
 revocation and local recovery. The controller's production bootstrap does not
@@ -63,8 +63,10 @@ current authority after those waits. `idle` suspends the whole shared participan
 joined branches cannot use SQL concurrently while a sibling idles. Project-lock
 waiters release admission before waiting, and lock holders re-enter admission
 for database phases. See the [architecture contract](architecture.md#database-admission).
-Provider resolution inside a core scope fails as reentrant. An atomic
-provider-resolution-to-core handoff remains deferred and blocks login mounting.
+Provider resolution inside a core scope fails as reentrant. The implemented
+[provider authorization handoff](#provider-authorization-handoff) resolves outside
+admission and validates current stored authority inside each Knowledge operation.
+It does not mount a login route or enable account mode.
 
 Disposal rejects new provider work and tracks actual execution, including a
 continuation whose public promise timed out. Late SQL and host notifications
@@ -83,8 +85,17 @@ owner ID. Resolution checks the current session, mapping and owner; email and
 display name grant no authority. Cookies never manufacture an `owner_session`.
 A2 machine credentials and scoped runtime policy remain unchanged.
 
-Full controller backups include provider rows and schema 38. Older readers
-reject unsupported schemas. Restoring a snapshot can revive old sessions and
+Controller schema 39 adds `provider_session` only to the Knowledge history
+method constraint. It preserves historical rows, IDs, timestamps, indexes and
+the AUTOINCREMENT watermark, including empty history. Migrations 1..38 and their
+checksums remain unchanged; provider storage revision stays 1. No identity,
+credential, role or grant backfill occurs, and owner-only import batches retain
+their existing method constraint. History metadata and authorized logical
+export/import recognize the honest provider audit method.
+
+Full controller backups now record schema 39 and include provider rows. Genuine
+schema-38 snapshots can be restored and upgraded on open. Older binaries reject
+schema 39; restoring a backup is not a downgrade procedure. Restoring a snapshot can revive old sessions and
 passwords; the external revocation/recovery fence remains A5 work. Better Auth
 stores bearer session tokens, and the proof's native sign-in and password-change
 JSON responses include session tokens. Those responses are not an approved
@@ -98,79 +109,108 @@ package retains its dependency notices and stays outside Community runtime
 dependencies and published assets. See its
 [README](../packages/auth-provider-better-auth-proof/README.md) for verification.
 
-### Next provider authorization handoff (proposal)
+### Provider authorization handoff
 
-This is an implementation brief, not an available login path. Keep account
-mode unavailable and keep provider loading out of production bootstrap.
+This server-only API is implemented for the optional pinned proof. Production
+bootstrap still does not load the provider, existing transports remain
+credential-only, and `better-auth` mode remains unavailable.
 
-`AuthenticationProviderRuntime.resolve` currently returns session evidence and
-the active opaque subject mapping under one exclusive borrow. That return
-value is a snapshot. `resolveControllerAuthentication` is synchronous and
-recognizes only existing credentials/modes. `IdentityService` revalidates
-actors against stored A2 credentials, so a provider session cannot be passed
-through by relabeling it as `owner_session`. Resolving the provider from an
-admitted core callback fails as reentrant. Resolving first and trusting its
-snapshot after a core wait would instead miss intervening revocation.
+`runtime.authenticate(headers)` resolves the actual cookie outside core
+admission and returns a frozen `ProviderSessionActor`, or null. The exact object
+is an opaque reference owned by that runtime's WeakMap. It binds the original
+session ID, subject, principal, creation time and expiry. Copies, structured
+clones, raw `runtime.resolve` evidence and another runtime's actors do not
+authenticate. Its public fields are `principalId`, `principalKind: "owner"`,
+`credentialId: null` and `authenticationMethod: "provider_session"`. No A2
+credential, bearer or `owner_session` is manufactured.
 
-The smallest suggested addition is a server-only provider-session authority
-port with two distinct phases:
+Use the same runtime as `IdentityService`'s seventh constructor argument. The
+application wrapper owns or joins admission for each call:
 
-1. Resolve the cookie through the actual provider outside core admission.
-   Keep its nonsecret session/subject IDs in a runtime-issued opaque reference
-   bound to this provider instance. A client-supplied structural copy of
-   `ProviderPrincipalResolution` must never be sufficient authentication.
-2. Inside the admitted controller operation, validate that reference against
-   current provider availability, the actual stored session's subject and
-   expiry, the active mapping to the same principal, and the current active
-   principal. Then run the ordinary action/resource policy. Repeat that
-   synchronous validation after every `idle`/project-lock wait and before
-   effects, retained results and sensitive delivery. Do not call Kysely or
-   borrow the provider from this admitted phase.
+```ts
+import { ProviderKnowledgeApplication } from "@/server/modules/authentication";
+import { IdentityService } from "@/server/modules/identity";
+import { KnowledgeService } from "@/server/modules/knowledge";
 
-For the existing fixed storage revision, a controller-owned query can project
-session ID, subject and expiry from `authentication_ba_session`, joined to the
-mapping and principal. It needs no token, password or extra connection. Keep
-it behind the storage/authority interface; normalize the pinned adapter's date
-representation and reject missing or malformed evidence. The existing schema
-already contains the needed rows. A different provider/storage revision would
-need its own verified validity adapter. An invalidation-only cache is
-insufficient without proving every mutation path and failed-notification
-behavior; direct current-state validation avoids that extra acceptance claim.
+// `runtime` is explicitly loaded by the isolated proof, never production bootstrap.
+const identity = new IdentityService(store, undefined, undefined, undefined,
+  undefined, store, runtime);
+const application = new ProviderKnowledgeApplication(store.admission, identity,
+  new KnowledgeService(store, identity));
+const actor = await runtime.authenticate(headers); // Outside core admission.
+if (!actor) throw new Error("Authentication required.");
+const result = await application.execute(knowledgeRequest, actor);
+const metadata = await application.describeIdentity(actor);
+```
 
-Give the actor a distinct provider-session authentication method/reference.
-Do not create an A2 credential, issue a bearer, infer permissions from email,
-or translate password-only evidence into MFA. `describeIdentity` must handle
-the absence of an A2 credential safely. Existing owner administration,
-runtime sponsorship and vault proof checks must remain denied unless their
-specific policy is explicitly implemented and tested. Demonstrate the first
-handoff with existing grant-limited Knowledge operations; a mapping alone
-grants no Knowledge action.
+Every authenticated application check synchronously reads the stored session,
+exact active mapping and active owner principal through the guarded SQLite
+owner. The projection selects no token, password, email or name and neither
+calls Kysely nor borrows the provider. Missing authority, foreign/disposed
+runtime, closed/timed-out provider lifetime or connection drain denies access.
+The fixed adapter requires canonical UTC ISO timestamps with milliseconds.
+Malformed/numeric dates and session subject, principal or creation-time
+substitution fail closed. An actor cannot outlive its original expiry even if
+stored expiry extends; fresh authentication obtains a new reference.
 
-The source boundaries for that next change are:
+Committed session deletion denies the next operation even if after-commit
+notification fails. Rollback retains access. The query is authoritative;
+notifications are not an authorization cache. This validity adapter supports
+Better Auth 1.7.14, implementation `0.0.0-proof.1`, storage revision 1. Other
+provider/version combinations need their own verified adapter.
 
-| Files | Required responsibility |
-| --- | --- |
-| `modules/authentication/provider-contract.ts`, `provider-runtime.ts` | Evidence/reference issuance, provider-instance lifetime and admitted validation entry; raw evidence stays non-authorizing |
-| `infrastructure/sqlite/authentication-provider-queries.ts`, `sqlite-state-store.ts` | Current session/mapping/principal projection on the same guarded owner connection |
-| `modules/identity/contracts.ts`, `identity-service.ts` | Distinct actor authentication, current checks and safe metadata without manufactured credentials; preserve existing policy gates |
-| `modules/authentication/controller-authentication.ts` | Keep compatibility mode resolution explicit; any new async preparation must precede admission and cannot enable account mode |
-| `http-server.ts`, `transports/mcp/mcp-runtime.ts` | Later transport adoption must preserve body-read/session-close/abort rechecks; this brief adds no public browser routes |
+Each `ProviderKnowledgeApplication.execute` call is a synchronous Knowledge
+phase with ordinary project/action grants, optional role ceilings, revisions
+and idempotency checks. Mapping alone grants nothing. Call the application
+again after an idle or lifecycle-lock wait to revalidate before the next effect
+or retained result. `describeIdentity` returns safe principal/grant metadata
+with `credential: null`; it returns no provider session/subject identifiers.
 
-Paths in this table are relative to `src/server/`. Keep provider dependencies
-inside the private optional package. Existing `provider-contract.ts` has no
-provider-library imports; preserve that boundary.
+Provider actors do not satisfy owner administration, token issuance/renewal,
+runtime sponsorship/control, privileged Knowledge approval, schedule credential
+persistence, remote recovery attribution or the independent A4 vault proof.
+Password-only provider evidence is not fresh privileged human proof or MFA.
 
-Required strict tests use the actual pinned provider and existing granted
-principal: success executes once; a committed session deletion, mapping
-revocation or principal revocation ordered before core callback entry denies
-the effect; rollback does not invent a committed revocation; expiry and provider
-disposal during the wait deny access; forged references and provider/subject/
-principal substitution fail. Pin the queue ordering explicitly. Repeat a
-revocation after `idle` and verify denial before the next effect or receipt
-release. Check that a session-authenticated caller cannot mint credentials,
-sponsor a runtime agent or satisfy the independent vault proof through this
-handoff. Existing A2 authentication and reentrant-borrow refusal must continue
-to pass. No browser, MFA/lifetime defaults or A5 cutover are part of this step.
+The real-provider tests in `provider-authorization.test.ts` cover current
+session/mapping/principal/grant/role state after queue/idle/project-lock waits,
+receipt replay, failed notifications, rollback, exact object ownership,
+substitution, expiry, disposal, drain and the privilege ceilings. The seven
+`provider-session-history-migration.test.ts` cases cover genuine 38-to-39
+preservation/rollback, malformed schema refusal, watermarks and full/logical
+backup transfer. These checks establish this bounded handoff, not full A3.
+
+### Remaining lifecycle gates
+
+`cli-shutdown-admission.test.ts` exercises the actual owning CLI sequence,
+extracted without behavioral changes to
+`src/server/bootstrap/controller-shutdown.ts`. Temporary Unix listeners cover
+HTTP, MCP, admin and remote closure. Accepted HTTP/admin writes drain once on
+the successful path. Three regressions remain failing: an unconfirmed provider
+drain releases the controller lock while the database owner stays held; a
+listener-close failure still closes the database and releases the controller
+lock; a concurrent shutdown call returns before the first drain settles.
+Controller ownership and database ownership are separate locks. Complete CLI
+shutdown acceptance is blocked by these failures.
+
+`restore-http-handoff.test.ts` exercises the installed HTTP handler's
+`finish`/`close` callbacks, an already-disconnected response and actual owning
+restore admission/launch under provider contention. Duplicate callbacks launch
+once, current token revocation denies launch, and refused shutdown prevents
+execution while retaining ownership. Successful shutdown retains the controller
+lock and releases the database owner before the execution callback. Physical
+replacement and starting the next controller are mocked. HTTP 202 means durable
+admission, not successful restore; concurrent shutdown remains blocked above.
+
+The local readiness test now uses installed HTTP operation/reservation routes
+and the installed admin token-rotation handler. Reservation and force-release
+mutations queue behind the project's readiness lock. The old direct-store
+reservation injection is therefore not a demonstrated transport takeover.
+Admin policy rotation can run during readiness: the old installation actor is
+invalid before the accepted local operation still returns 200. This is an
+executed limitation of the existing installation runtime path, which has no
+post-readiness authentication check. It is distinct from scoped lease expiry
+and grants no provider runtime-control path. General account-mode acceptance
+must not assume current authority from that local result.
 
 ## Knowledge roles (A1)
 
