@@ -101,7 +101,7 @@ describe("runtime-issued provider-session Knowledge application", () => {
       });
       expect(f.changed).not.toHaveBeenCalled();
       const verifier = new Ed25519DevVaultOwnerVerifier(() => { throw new Error("A provider actor must never reach the external key."); });
-      const command = { operation: "list" as const, projectId: "runtime", environment: "DEV" as const, operationId: randomUUID() };
+      const command = { operation: "list" as const, projectId: randomUUID(), environment: "DEV" as const, operationId: randomUUID() };
       expect(verifier.verify(command, f.actor, { issuedAt: new Date().toISOString(), signature: "invalid" }, new Date().toISOString())).toBe("invalid");
       const vault = new DevVaultService(f.store.devVault, { key: () => Buffer.alloc(32) }, f.identity, { verify: () => "valid" });
       await expect(f.run(() => vault.execute({ command }, f.actor))).rejects.toMatchObject({ code: "vault_denied" });

@@ -288,7 +288,7 @@ describe("independent user export schedules", () => {
     const restoredStore = new SqliteStateStore(snapshot); cleanup.push(() => restoredStore.close());
     expect(restoredStore.getKnowledgeProject(laterProject.id)).toBeNull();
     const restoredIdentity = new IdentityService(restoredStore);
-    const deps = { ...f.deps, authorize: (actor: typeof f.owner, projectId?: string) => { restoredIdentity.describeIdentity(actor); if (projectId) { restoredIdentity.authorizeKnowledge(actor, projectId, "knowledge:read"); restoredIdentity.authorizeKnowledge(actor, projectId, "knowledge:export"); } }, projectName: (id: string) => restoredStore.getKnowledgeProject(id)?.name ?? null, restoreGeneration: () => "sqlite-rollback" };
+    const deps = { ...f.deps, authorize: (actor: AuthenticatedPrincipal, projectId?: string) => { restoredIdentity.describeIdentity(actor); if (projectId) { restoredIdentity.authorizeKnowledge(actor, projectId, "knowledge:read"); restoredIdentity.authorizeKnowledge(actor, projectId, "knowledge:export"); } }, projectName: (id: string) => restoredStore.getKnowledgeProject(id)?.name ?? null, restoreGeneration: () => "sqlite-rollback" };
     const restarted = new UserSchedules(f.policy, f.backups, deps); cleanup.push(() => restarted.close());
     expect(restarted.overview(f.owner).mutationGeneration).toBe(f.schedules.overview(f.owner).mutationGeneration);
     expect(restarted.overview(f.owner).schedules[0].version).toBe(6);
