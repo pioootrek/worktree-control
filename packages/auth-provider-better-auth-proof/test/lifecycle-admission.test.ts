@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { ControlService } from "@/server/control-service";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectLifecycle } from "@/server/modules/lifecycle";
 import { ProcessManager } from "@/server/process-manager";
@@ -57,4 +59,53 @@ describe("project lock and strict database admission ordering", () => {
       expect(executions).toBe(1);
     } finally { resume.open(); hold.resume(); await hold.pending; await root; await closeStrictProof(f); }
   });
+
+  it("the owning service rejects new lifecycle work during shutdown while accepted operations and the provider settle", async () => {
+    const faults: ProofFaultInjection = {}, f = await strictProof(faults);
+    const project = await f.run(() => f.store.addProject({ name: "shutdown", repositoryPath: f.root, port: 3896, executable: "node", args: [], launchPreset: "node" }));
+    const processes = new ProcessManager(), ready = gate(), entered = gate();
+    const start = vi.spyOn(processes, "start").mockImplementation(async () => { entered.open(); await f.store.admission.idle(() => ready.opened); });
+    const stopped = vi.spyOn(processes, "stop").mockResolvedValue(undefined);
+    const worktree = { path: f.root, head: "a".repeat(40), shortHead: "aaaaaaa", branch: "main", detached: false, locked: false, prunable: false, dirty: false };
+    const service = new ControlService(f.store, { list: async () => [worktree] } as never, processes, undefined,
+      { resolve: () => ({ preset: "node", executable: "node", args: [], portMethod: "environment", tls: { mode: "off", keyPath: null, certPath: null, caPath: null } }) });
+    const first = service.operate(project.id, "start", f.root); await entered.opened;
+    const second = service.operate(project.id, "stop");
+    const hold = pauseProvisioning(f, faults, "rollback");
+    let shutdown: Promise<void> | undefined;
+    try {
+      await hold.paused;
+      let closed = false; shutdown = service.shutdown().then(() => { closed = true; });
+      await expect(service.operate(project.id, "start", f.root)).rejects.toThrow("zamykany");
+      expect(existsSync(`${f.path}.owner.lock`)).toBe(true);
+      ready.open(); await sleep(20); expect(closed).toBe(false);
+      hold.resume(); await hold.pending; await first; await second; await shutdown;
+      expect(start).toHaveBeenCalledOnce(); expect(stopped).toHaveBeenCalledOnce();
+      expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
+    } finally { ready.open(); hold.resume(); await hold.pending; await Promise.allSettled([first, second]); await shutdown; await closeStrictProof(f); }
+  });
+
+  it("characterizes the separate local readiness gap: a new foreign reservation does not change the completed local result", async () => {
+    const faults: ProofFaultInjection = {}, f = await strictProof(faults);
+    const project = await f.run(() => f.store.addProject({ name: "local readiness", repositoryPath: f.root, port: 3899, executable: "node", args: [], launchPreset: "node" }));
+    const processes = new ProcessManager(), ready = gate(), entered = gate();
+    const start = vi.spyOn(processes, "start").mockImplementation(async () => { entered.open(); await f.store.admission.idle(() => ready.opened); });
+    const worktree = { path: f.root, head: "a".repeat(40), shortHead: "aaaaaaa", branch: "main", detached: false, locked: false, prunable: false, dirty: false };
+    const service = new ControlService(f.store, { list: async () => [worktree] } as never, processes, undefined,
+      { resolve: () => ({ preset: "node", executable: "node", args: [], portMethod: "environment", tls: { mode: "off", keyPath: null, certPath: null, caPath: null } }) });
+    const operation = service.operate(project.id, "start", f.root); await entered.opened;
+    const hold = pauseProvisioning(f, faults, "rollback");
+    try {
+      await hold.paused;
+      // Model a competing administrative state change independently of this project's lock.
+      const changed = f.run(() => f.store.acquireReservation({ projectId: project.id, worktreePath: f.root, owner: "other-owner", kind: "human", reason: "fixture takeover" }));
+      ready.open(); hold.resume(); await hold.pending; await changed;
+      await expect(operation).resolves.toBeUndefined();
+      expect(await f.run(() => f.store.getActiveReservation(project.id)?.owner)).toBe("other-owner");
+      expect(start).toHaveBeenCalledOnce();
+      // Characterization only. Local operateLocked has no post-readiness lease/authority port;
+      // the scoped policy is tested separately and must not inherit this assumption.
+    } finally { ready.open(); hold.resume(); await hold.pending; await operation; await service.shutdown(); await closeStrictProof(f); }
+  });
+
 });

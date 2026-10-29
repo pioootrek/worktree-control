@@ -9,7 +9,7 @@ import { McpSessionGovernor, type GovernedMcpSession, type McpSessionClock } fro
 import { KnowledgeService } from "@/server/modules/knowledge";
 import type { ControllerAuthentication } from "@/server/modules/identity";
 import type { ProofFaultInjection } from "../src/index";
-import { cleanupStrictRoots, closeStrictProof, pauseProvisioning, sleep, strictProof, type StrictProof } from "./strict-fixture";
+import { cleanupStrictRoots, closeStrictProof, gate, pauseProvisioning, sleep, strictProof, type StrictProof } from "./strict-fixture";
 
 afterEach(cleanupStrictRoots);
 /** Manual session timers only: real gate deadlines and real SQLite remain untouched. */
@@ -27,7 +27,7 @@ async function protocol(f: StrictProof, scoped = false) {
   const actor = await f.run(() => {
     const agent = f.identity.createAgent(f.ownerActor);
     if (scoped) {
-      const actions = ["projects:read", "claims:manage"] as const;
+      const actions = ["projects:read", "claims:manage", "runtime:control"] as const;
       f.identity.setRuntimeDelegation({ principalId: agent.id, projectId: project.id, actions: [...actions], expectedRevision: 0 }, f.ownerActor);
       const issued = f.identity.issueRuntimeCredential({ principalId: agent.id, label: "MCP fixture", projects: [{ projectId: project.id, actions: [...actions] }] }, f.ownerActor);
       return f.identity.authenticateBearer(issued.token);
@@ -36,7 +36,8 @@ async function protocol(f: StrictProof, scoped = false) {
     return f.identity.authenticateBearer(issued.token);
   });
   const worktree = { path: f.root, head: "a".repeat(40), shortHead: "aaaaaaa", branch: "main", detached: false, locked: false, prunable: false, dirty: false };
-  const service = new ControlService(f.store, { list: async () => [worktree] } as never, new ProcessManager(), undefined, undefined, undefined, undefined, undefined, undefined, undefined, new KnowledgeService(f.store, f.identity), undefined, f.identity);
+  const processes = new ProcessManager();
+  const service = new ControlService(f.store, { list: async () => [worktree] } as never, processes, undefined, { resolve: () => ({ preset: "node", executable: "node", args: [], portMethod: "environment", tls: { mode: "off", keyPath: null, certPath: null, caPath: null } }) }, undefined, undefined, undefined, undefined, undefined, new KnowledgeService(f.store, f.identity), undefined, f.identity);
   const runtime = new McpRuntime(service, diagnostic, f.identity, undefined, governor);
   const admitted = governor.admit(`principal:${actor.credentialId}`);
   if (!admitted.admitted) throw new Error("fixture session refused");
@@ -50,7 +51,7 @@ async function protocol(f: StrictProof, scoped = false) {
   const client = new Client({ name: "strict-proof", version: "1" });
   await session.server.connect(serverTransport); await client.connect(clientTransport);
   const close = async () => { await session.transport.close(); await client.close(); await session.server.close(); admitted.session.markClosed(); };
-  return { client, clock, diagnostic, actor, project, session, close };
+  return { client, clock, diagnostic, actor, project, session, processes, close };
 }
 
 describe("strict in-memory MCP protocol admission", () => {
@@ -110,4 +111,30 @@ describe("strict in-memory MCP protocol admission", () => {
       }
     } finally { hold.resume(); await hold.pending; if (!closed) await mcp.close(); await closeStrictProof(f); }
   });
+
+  it("rechecks scoped authority after readiness re-admission and refuses a retained retry without repeating spawn", async () => {
+    const faults: ProofFaultInjection = {}, f = await strictProof(faults), mcp = await protocol(f, true);
+    const ready = gate(), entered = gate();
+    const start = vi.spyOn(mcp.processes, "start").mockImplementation(async (project, path, beforeSpawn) => {
+      expect(project.id).toBe(mcp.project.id); expect(path).toBe(f.root);
+      beforeSpawn?.(); entered.open(); await f.store.admission.idle(() => ready.opened);
+    });
+    const claim = await mcp.client.callTool({ name: "claim_project", arguments: { projectId: mcp.project.id, worktreePath: f.root, reason: "readiness fixture", idempotencyKey: "claim", start: false } });
+    expect(claim.isError).not.toBe(true);
+    const reservationId = (await f.run(() => f.store.getActiveReservation(mcp.project.id)))!.id;
+    const input = { name: "start_project", arguments: { projectId: mcp.project.id, reservationId, idempotencyKey: "start-once" } };
+    const operation = mcp.client.callTool(input); await entered.opened;
+    const hold = pauseProvisioning(f, faults, "rollback");
+    try {
+      await hold.paused;
+      const revoked = f.run(() => f.identity.revokeCredential(mcp.actor.credentialId, f.ownerActor));
+      ready.open(); await sleep(20); expect(start).toHaveBeenCalledOnce();
+      hold.resume(); await hold.pending; await revoked;
+      const result = await operation;
+      expect(result.isError).toBe(true); expect(JSON.stringify(result)).toContain("runtime_access_denied");
+      expect((await mcp.client.callTool(input)).isError).toBe(true);
+      expect(start).toHaveBeenCalledOnce();
+    } finally { ready.open(); hold.resume(); await hold.pending; await operation; await mcp.close(); await closeStrictProof(f); }
+  });
+
 });

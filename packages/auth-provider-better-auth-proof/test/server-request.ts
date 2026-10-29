@@ -9,11 +9,12 @@ export function request(server: Server, path: string, token: string, body?: stri
   let status = 0, ended = false;
   let finish!: (value: { status: number; headers: Map<string, unknown>; body: Record<string, unknown> }) => void;
   const completed = new Promise<{ status: number; headers: Map<string, unknown>; body: Record<string, unknown> }>(resolve => { finish = resolve; });
-  const response = Object.assign(new EventEmitter(), {
+  const events = new EventEmitter();
+  const response = Object.assign(events, {
     headersSent: false,
     setHeader(name: string, value: unknown) { headers.set(name.toLowerCase(), value); },
     writeHead(code: number, values: Record<string, unknown> = {}) { status = code; this.headersSent = true; for (const [name, value] of Object.entries(values)) headers.set(name.toLowerCase(), value); return this; },
-    end(value: string) { ended = true; finish({ status, headers, body: JSON.parse(value) }); this.emit("finish"); },
+    end(value: string) { ended = true; finish({ status, headers, body: JSON.parse(value) }); events.emit("finish"); },
     destroy() { throw new Error("Unexpected destroyed proof response"); },
   });
   server.emit("request", incoming as unknown as IncomingMessage, response as unknown as ServerResponse);

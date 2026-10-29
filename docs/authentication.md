@@ -40,10 +40,41 @@ browser authorization or production account endpoints.
 
 The versioned local loader checks readiness and storage compatibility. Local
 modules execute as trusted controller code, with no sandbox. Each operation
-borrows the sole controller-owned connection. Core queries fail with `busy`
-while it is lent out; live background admission and retry remain unfinished.
-Disposal rejects new runtime work, drains accepted operations including queued
-ones, and closes the borrowed facade without closing the database owner.
+borrows the sole controller-owned connection. Shared core admission and exclusive
+provider admission now use one bounded FIFO gate. Admitted controller phases wait
+for a provider transaction to commit or roll back; they cannot join that
+transaction. Strict test fixtures reject every unadmitted core statement, even
+when the connection is idle. Production without a provider keeps compatible
+synchronous store access. This is partial live admission infrastructure, not
+acceptance of safe account-mode coexistence.
+
+HTTP and MCP requests, finite-job persistence, event/status callbacks, remote
+coordination, scans, schedules and restore callbacks have admission boundaries.
+The proof suite exercises selected real boundaries under held Better Auth
+transactions. Coverage and remaining cases are listed in the
+[proof README](../packages/auth-provider-better-auth-proof/README.md#live-admission-coverage).
+It retains failing regressions for Knowledge and vault body-read re-admission:
+a valid request whose database wait expires is currently mislabeled as malformed
+JSON (400) instead of `database_busy` (503 with `Retry-After`). This blocks
+coexistence acceptance.
+
+SQL-free waits release admission and re-enter it afterwards. Callers must recheck
+current authority after those waits. `idle` suspends the whole shared participant;
+joined branches cannot use SQL concurrently while a sibling idles. Project-lock
+waiters release admission before waiting, and lock holders re-enter admission
+for database phases. See the [architecture contract](architecture.md#database-admission).
+Provider resolution inside a core scope fails as reentrant. An atomic
+provider-resolution-to-core handoff remains deferred and blocks login mounting.
+
+Disposal rejects new provider work and tracks actual execution, including a
+continuation whose public promise timed out. Late SQL and host notifications
+are refused. Unsettled execution reports `disposal_unconfirmed`. Database close
+waits for accepted work and driver backup settlement; an unconfirmed drain or
+failed driver close retains ownership. Current implementation limits are a
+5-second admission wait, a 60-second persistence retry budget and a 10-second
+database drain. These are implementation bounds, not approved account-security
+defaults. Operations already invoked are never retried as a whole by the
+admission helper.
 
 Controller migration 38 adds empty, recognized `authentication_ba_*` tables and
 `authentication_provider_subjects`. It performs no account, credential, role or

@@ -1,6 +1,11 @@
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { SystemRemoteWorkerExecution, LinuxWorkerRecoveryHost } from "@/server/infrastructure/git";
+import { ProjectLifecycle } from "@/server/modules/lifecycle";
+import { ProcessManager } from "@/server/process-manager";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nullLogWriter } from "@/server/log-writer";
-import { RemoteVerificationController, RemoteVerificationWorker } from "@/server/modules/remote-verification";
+import { RemoteVerificationController, RemoteVerificationWorker, WorkerRecoveryService } from "@/server/modules/remote-verification";
 import type { EnqueueTestInput } from "@/server/modules/verification";
 import { TestJobManager } from "@/server/test-job-manager";
 import { createRemoteVerificationServer } from "@/server/transports/remote-verification-http";
@@ -80,7 +85,7 @@ describe("strict remote protocol and worker persistence", () => {
   it("merges a delayed ACK into current receipt state after provider wait, retaining cancellation and immutable reports", async () => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults);
     const assignment: RemoteAssignment = { requestId: "request", attemptId: "attempt", projectId: "project", workerId: "worker", presetId: "node:test", commitSha: "a".repeat(40) };
-    const report: RemoteWorkerReport = { attemptId: "attempt", localRunId: "local-run", sequence: 1, phase: "failed", failureKind: "setup", errorCode: "preparation_failed" };
+    const report: RemoteWorkerReport = { attemptId: "attempt", localRunId: "local-run", sequence: 1, phase: "failed", failureKind: "setup", errorCode: "preparation_failed", logs: [] };
     await f.run(() => f.store.remoteConnection.accept({ assignment, localRunId: "local-run", cancellationRequested: false, reports: [report], acknowledgedSequence: 0 }));
     const uploaded = gate(), acknowledge = gate();
     const jobs = { enqueue: vi.fn(), cancel: vi.fn(), blockAdmission: vi.fn() };
@@ -138,4 +143,45 @@ describe("strict remote protocol and worker persistence", () => {
       expect(receipt?.acknowledgedSequence).toBe(3); expect(resolve).toHaveBeenCalledOnce();
     } finally { finish.open(); hold.resume(); await hold.pending; await worker.close(); await jobs.shutdown(); await closeStrictProof(f); }
   });
+
+  it("the real workspace preparation releases admission and rechecks its mapping after provider wait", async () => {
+    const faults: ProofFaultInjection = {}, f = await strictProof(faults);
+    const human = join(f.root, "human"), cache = join(f.root, "cache"), workspaces = join(f.root, "attempts");
+    mkdirSync(join(human, ".git"), { recursive: true }); mkdirSync(join(cache, ".git"), { recursive: true });
+    const local = await f.run(() => {
+      const local = f.store.addProject({ name: "real preparation", repositoryPath: human, port: 3900, executable: "", args: [], launchPreset: "none" });
+      f.store.saveRemotePrincipal({ id: "worker-principal", kind: "worker", status: "active" }, "test");
+      f.store.saveRemoteProjectIdentity({ id: "project", name: "remote", sourceRemote: "origin", status: "active" }, "test");
+      f.store.saveRemoteWorker({ id: "worker", principalId: "worker-principal", name: "worker", status: "active", lastContactAt: null }, "test");
+      f.store.saveRemoteWorkerProjectGrant({ workerId: "worker", projectId: "project", localProjectId: local.id, presetIds: ["node:test"], revokedAt: null }, "test");
+      return local;
+    });
+    const assignment: RemoteAssignment = { requestId: "request", attemptId: "attempt", projectId: "project", workerId: "worker", presetId: "node:test", commitSha: "a".repeat(40) };
+    const receipt = { assignment, localRunId: "local-run", cancellationRequested: false, reports: [], acknowledgedSequence: 0 };
+    await f.run(() => f.store.remoteConnection.accept(receipt));
+    const entered = gate(), resume = gate(), resolveCommand = vi.fn();
+    const preparer = { prepare: vi.fn(async () => {
+      expect(f.store.admissionSnapshot().coreActive).toBe(0);
+      const committed = readCommitted(f.path, db => JSON.parse((db.prepare("SELECT payload_json FROM remote_worker_receipts WHERE attempt_id='attempt'").get() as { payload_json: string }).payload_json));
+      expect(committed.recovery).toBeTruthy(); // Real provenance commits before the mocked Git effect.
+      entered.open(); await resume.opened;
+      return { requestId: assignment.attemptId, path: join(workspaces, "attempt"), repositoryPath: cache, sourceRemote: "origin", requestedCommitSha: assignment.commitSha, executedCommitSha: assignment.commitSha };
+    }), cleanup: vi.fn(async () => undefined) };
+    const execution = new SystemRemoteWorkerExecution("worker", [{ projectId: "project", localProjectId: local.id, sourceCachePath: cache, sourceRemote: "origin", presetIds: ["node:test"] }], f.store,
+      new ProjectLifecycle(f.store, new ProcessManager()), { observe: vi.fn() } as never, { resolve: resolveCommand } as never, preparer, workspaces,
+      new WorkerRecoveryService(f.store.remoteConnection, new LinuxWorkerRecoveryHost(f.path)));
+    const input = await f.run(() => execution.resolve(assignment, receipt, vi.fn()));
+    const preparing = input.preparation!.prepare();
+    const denied = expect(preparing).rejects.toThrow("local_mapping_forbidden");
+    await entered.opened;
+    const hold = pauseProvisioning(f, faults, "rollback");
+    try {
+      await hold.paused;
+      const revoke = f.run(() => f.store.saveRemoteWorkerProjectGrant({ workerId: "worker", projectId: "project", localProjectId: local.id, presetIds: ["node:test"], revokedAt: new Date().toISOString() }, "test"));
+      resume.open(); await sleep(20); expect(resolveCommand).not.toHaveBeenCalled();
+      hold.resume(); await hold.pending; await revoke; await denied;
+      expect(resolveCommand).not.toHaveBeenCalled(); expect(preparer.prepare).toHaveBeenCalledOnce();
+    } finally { resume.open(); hold.resume(); await hold.pending; await denied; await input.preparation!.dispose(); await closeStrictProof(f); }
+  });
+
 });

@@ -27,8 +27,12 @@ The first A3 slice now provides an optional executable provider/SQLite proof.
 It verifies real Better Auth operations through the sole guarded connection,
 controller migration 38 and explicit subject mapping. Account mode remains
 unavailable; enrollment, factors, invitations, roles and GUI are still open.
-Live core admission/retry and the A5 external restore fence are unfinished.
-Restores can revive old sessions and passwords. Native proof responses expose
+Shared core admission, exclusive provider admission and background persistence
+boundaries are implemented as partial infrastructure. Strict integration tests
+still reproduce HTTP body-read error misclassification, and complete callback
+coverage and the atomic provider-to-core handoff remain open. Safe live
+coexistence is not accepted. The A5 external restore fence is also unfinished;
+restores can revive old sessions and passwords. Native proof responses expose
 session tokens and require a separate browser API design before activation.
 See [the implemented proof boundary](authentication.md#optional-provider-proof-first-a3-slice).
 
@@ -230,8 +234,11 @@ or revoke a credential at its external provider.
 Better Auth remains an optional identity/session provider mapped to stable
 principals. The first proof exercises adapter transactions/disposal against the
 sole SQLite connection; migration 38 and controller backups include its data.
-Production integration still needs safe live admission and the remaining
-account acceptance gates. Keep the static dashboard and use library-supported
+Production integration still needs acceptance of safe live admission, the
+atomic provider-resolution-to-core handoff and the remaining account gates.
+The current 5-second admission wait, 60-second persistence retry budget and
+10-second database drain are implementation limits, not approved account
+security defaults. Keep the static dashboard and use library-supported
 password, factor and session handling rather than new cryptographic protocols.
 
 Provision the first owner through protected local recovery/bootstrap; subsequent

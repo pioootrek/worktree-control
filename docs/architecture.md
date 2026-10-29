@@ -474,11 +474,77 @@ bootstrap does not load it and account mode stays unavailable. Controller
 migration 38 owns the empty namespaced provider tables and explicit subject-to-owner
 mapping. There is no credential or grant backfill. An exclusive connection
 guard protects core SQL, prepared statements and backups while asynchronous
-provider work borrows the sole connection. Competing core work currently fails
-with `busy`; production admission/retry remains open. Disposal drains accepted
-provider work and closes only its borrowed facade. Local provider modules are
-trusted code, not sandboxed plugins. See the
+provider work borrows the sole connection. Shared core admission and exclusive
+provider admission now coordinate on that gate; see [database admission](#database-admission).
+The strict proof still has failing HTTP error-classification regressions and
+incomplete integration coverage. Safe live coexistence is not accepted.
+Disposal tracks actual provider settlement and closes only its borrowed facade.
+Local provider modules are trusted code, not sandboxed plugins. See the
 [proof contract and limitations](authentication.md#optional-provider-proof-first-a3-slice).
+
+## Database admission
+
+`SqliteStateStore.admission` uses the owner's existing connection gate. It adds
+no connection, database lock, project lock map or finite-capacity counter.
+`run` joins a live core participant; `detached` creates a separate participant.
+`tryRun` executes synchronous work only when admission needs no wait. `outside`
+starts a background flow without inheriting its caller's participant.
+Consecutive core tickets can share admission, while a queued provider prevents
+later independent core roots from bypassing it. Provider-to-core transaction
+access is restricted to the synchronous controller-operation port. Upgrades
+from core admission to provider borrowing fail immediately.
+
+`idle` releases the participant for a SQL-free wait, then waits for admission
+again before returning. It suspends the whole participant, including joined
+calls. Joined branches must therefore run sequential phases; independently
+idling branches need separate `detached` admissions. The dashboard's existing
+`Promise.all` projection does not idle during bounded Git discovery and retains
+admission until its branches settle. This avoids sibling suspension there but
+can delay provider access. It is not a general proof that all future fan-out is
+safe.
+
+The current `ProjectLifecycle.serialized` implementation releases the caller's
+admission before waiting for the project lock. The callback runs admitted under
+that lock. A holder may idle for readiness, stop, network or preparation work;
+no admitted caller may wait for that lock while retaining admission. This is a
+change from the earlier admission-before-project-lock proposal. Strict tests
+exercise two operations on one project with a provider between them, but design
+acceptance of this ordering remains separate. Scoped operations recheck current
+authority around effects and before returning retained outcomes. Local
+`RuntimeService.operateLocked` checks reservations before starting and has no
+post-readiness authorization callback. Its separate readiness gap is documented
+by a characterization test; scoped policy must not assume that local behavior
+is sufficient.
+
+Accepted finite jobs coalesce bounded log/resource checkpoints, preserve event
+timestamps and serialize writes per run. A terminal durability barrier precedes
+slot release. Background completion uses reserved queue capacity. Retry helpers
+retry only admission refused before callback entry, never a runtime effect,
+attachment publication, backup creation or entire network workflow that already
+ran. Scan completion saves under fresh admission. Log retention awaits current
+retention answers; a failed lookup does not authorize deletion. Remote outbox
+ACKs merge into the current receipt after networking, preserving newer state.
+
+Database admission currently waits at most 5 seconds by default. Persistence
+retry normally has a 60-second budget; log-retention lookup uses 10 seconds.
+Database drain defaults to 10 seconds. These are implementation limits subject
+to review, not approved account-session or security-policy defaults. Compatible
+mode preserves existing synchronous access when no provider is loaded; strict
+mode is enabled after fixture bootstrap to detect missed boundaries.
+
+The owner closes external lifecycle admission and timers before draining
+accepted work. The connection gate's `beginDrain` deliberately leaves core
+admission open for those completions while closing provider admission. It is
+not an external-request firewall. Store close waits for actual provider
+execution, core participants and driver backups. Timeout or failed driver close
+retains database ownership, and restore execution must wait for confirmed
+shutdown. Server-free tests cover the service/lifecycle owner and deferred
+restore callback; they do not certify the complete CLI listener/lock handoff.
+
+An atomic provider-resolution-to-core handoff is still missing. Loading a
+provider, enabling account mode, browser API design and full callback coverage
+remain separate acceptance gates. The [proof coverage table](../packages/auth-provider-better-auth-proof/README.md#live-admission-coverage)
+records what the strict integration tests exercise and what remains open.
 
 ## CLI and package
 
