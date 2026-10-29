@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { acquireControllerLock } from "../server/controller-lock";
 import { resolveAppPaths } from "../server/paths";
+import { SqliteStateStore } from "../server/sqlite-store";
+import { IdentityService } from "../server/modules/identity";
 import { runAuthCommand } from "./auth-management";
 import { runIdentityCommand } from "./identity-management";
 import { writeServiceAccess } from "./service-access";
@@ -26,6 +28,106 @@ afterEach(() => {
 });
 
 describe("identity management CLI", () => {
+  it("grants, issues, inspects, narrows, rotates and revokes runtime access offline", async () => {
+    const appPaths = paths(), lines: string[] = [];
+    const write = (line: string) => lines.push(line);
+    await runIdentityCommand(["bootstrap-owner"], appPaths, { write });
+    const owner = JSON.parse(lines.pop()!);
+    const dependencies = { write, environment: { WORKTREE_CONTROL_OWNER_TOKEN: owner.token } };
+    await runIdentityCommand(["create-agent"], appPaths, dependencies);
+    const principalId = JSON.parse(lines.pop()!).principal.id;
+    const store = new SqliteStateStore(appPaths.databasePath);
+    const projects = ["First", "Second"].map((name, index) => store.addProject({ name, repositoryPath: `/code/${name}`, port: 3510 + index, executable: "node", args: ["server.js"] }));
+    store.close();
+    const expiry = new Date(Date.now() + 3600_000).toISOString();
+    for (const project of projects) {
+      await runIdentityCommand(["set-runtime-delegation", "--principal-id", principalId, "--project-id", project.id, "--actions", "projects:read,claims:manage,profiles:select,config:write", "--expires-at", expiry, "--expected-revision", "0"], appPaths, dependencies);
+      expect(JSON.parse(lines.pop()!).delegation).toMatchObject({ sponsorId: owner.principalId, revision: 1, expiresAt: expiry });
+    }
+    const scopes = projects.map(project => ({ projectId: project.id, actions: ["projects:read", "claims:manage", "profiles:select", "config:write"] }));
+    await runIdentityCommand(["issue-runtime-credential", "--principal-id", principalId, "--label", "Private client", "--projects-json", JSON.stringify(scopes), "--expires-at", expiry], appPaths, dependencies);
+    expect(lines).toHaveLength(1);
+    const issued = JSON.parse(lines.pop()!);
+    expect(issued.token).toMatch(/^wts_/);
+    expect(issued.scopes).toHaveLength(2);
+    expect(issued.scopes.map((scope: { actions: string[] }) => scope.actions)).toEqual(scopes.map(scope => scope.actions));
+    await runIdentityCommand(["list-runtime-access", "--principal-id", principalId], appPaths, dependencies);
+    const report = lines.pop()!;
+    expect(JSON.parse(report).credentials[0].effective).toHaveLength(2);
+    expect(report).not.toContain(issued.token);
+    expect(report).not.toContain("verifierHash");
+    await expect(runIdentityCommand(["rotate-runtime-credential", "--credential-id", issued.credential.id, "--expires-at", new Date(Date.parse(expiry) + 1000).toISOString()], appPaths, dependencies)).rejects.toThrow("extend");
+    await expect(runIdentityCommand(["rotate-runtime-credential", "--credential-id", issued.credential.id, "--projects-json", JSON.stringify([{ projectId: projects[0].id, actions: ["runtime:control"] }])], appPaths, dependencies)).rejects.toThrow("narrow");
+    await runIdentityCommand(["rotate-runtime-credential", "--credential-id", issued.credential.id, "--projects-json", JSON.stringify([{ projectId: projects[0].id, actions: ["profiles:select", "config:write"] }])], appPaths, dependencies);
+    expect(lines).toHaveLength(1);
+    const rotated = JSON.parse(lines.pop()!);
+    expect(rotated).toMatchObject({ replacedCredentialId: issued.credential.id, credential: { expiresAt: expiry } });
+    expect(rotated.scopes).toHaveLength(1);
+    const reopened = new SqliteStateStore(appPaths.databasePath);
+    try {
+      const identity = new IdentityService(reopened, undefined, undefined, undefined, undefined, reopened);
+      expect(() => identity.authenticateBearer(issued.token)).toThrow();
+      expect(identity.runtimeAccessFor(identity.authenticateBearer(rotated.token))).toEqual([{ projectId: projects[0].id, actions: ["profiles:select", "config:write"], expiresAt: expiry }]);
+    } finally { reopened.close(); }
+    // Updating actions must make an explicit expiry choice to avoid clearing a bound.
+    const update = ["set-runtime-delegation", "--principal-id", principalId, "--project-id", projects[0].id, "--actions", "projects:read", "--expected-revision", "1"];
+    await expect(runIdentityCommand(update, appPaths, dependencies)).rejects.toThrow("updates require --expires-at");
+    await runIdentityCommand([...update, "--expires-at", expiry], appPaths, dependencies);
+    expect(JSON.parse(lines.pop()!).delegation.expiresAt).toBe(expiry);
+    await runIdentityCommand([...update.slice(0, -1), "2", "--expires-at", "none"], appPaths, dependencies);
+    expect(JSON.parse(lines.pop()!).delegation.expiresAt).toBeNull();
+    await runIdentityCommand(["revoke-runtime-delegation", "--principal-id", principalId, "--project-id", projects[0].id, "--expected-revision", "3"], appPaths, dependencies);
+    expect(JSON.parse(lines.pop()!).delegation).toMatchObject({ revision: 4, revokedAt: expect.any(String) });
+    await runIdentityCommand(["revoke-token", "--credential-id", rotated.credential.id], appPaths, dependencies);
+    lines.pop();
+    await runIdentityCommand(["list-runtime-access", "--principal-id", principalId], appPaths, dependencies);
+    expect(JSON.parse(lines.pop()!).credentials.every((entry: { effective: unknown[] }) => entry.effective.length === 0)).toBe(true);
+  });
+
+  it.each([
+    ["list-runtime-access", "--principal-id", "agent", "--principal-id", "again"],
+    ["list-runtime-access", "--principal-id"],
+    ["list-runtime-access", "--principal-id", "agent", "--token", "secret"],
+    ["list-runtime-access", "--principal-id", "agent", "trailing"],
+    ["issue-runtime-credential", "--principal-id", "agent", "--label", "client", "--projects-json", "@file"],
+    ["issue-runtime-credential", "--principal-id", "agent", "--label", "client", "--projects-json", '[{"projectId":"p","actions":["tests:run"]}]'],
+    ["issue-runtime-credential", "--principal-id", "agent", "--label", "client", "--projects-json", '[{"projectId":"p","actions":["projects:read"],"sponsorId":"owner"}]'],
+    ["issue-runtime-credential", "--principal-id", "agent", "--label", "client"],
+    ["rotate-runtime-credential", "--credential-id", "id", "--label", "a", "--label", "b"],
+    ["set-runtime-delegation", "--principal-id", "agent", "--project-id", "p", "--actions", "projects:read", "--expected-revision", "1e0"],
+    ["set-runtime-delegation", "--principal-id", "agent", "--project-id", "p", "--actions", "projects:read,", "--expected-revision", "0"],
+    ["set-runtime-delegation", "--principal-id", "agent", "--project-id", "p", "--actions", "projects:read", "--expected-revision", "0", "--sponsor-id", "owner"],
+    ["revoke-runtime-delegation", "--principal-id", "agent", "--project-id", "p", "--expected-revision", "-1"],
+  ])("rejects malformed runtime flags before acquiring the lock: %j", async (...args) => {
+    const appPaths = paths(), lock = acquireControllerLock(appPaths.controllerLockPath);
+    try {
+      const failure = await runIdentityCommand(args, appPaths, { environment: {}, write: () => { throw new Error("Unexpected output"); } }).catch((error: Error) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(String(failure)).not.toContain("already running");
+    } finally { lock.release(); }
+  });
+
+  it("rejects runtime administration by installation and anonymous authority and preserves the offline lock", async () => {
+    const appPaths = paths(), lines: string[] = [];
+    const write = (line: string) => lines.push(line);
+    await runIdentityCommand(["bootstrap-owner"], appPaths, { write });
+    const owner = JSON.parse(lines.pop()!);
+    const input = ["list-runtime-access", "--principal-id", owner.principalId];
+    await runAuthCommand(["token", "generate"], appPaths, { write });
+    const installation = JSON.parse(lines.pop()!).token;
+    await expect(runIdentityCommand(input, appPaths, { environment: { WORKTREE_CONTROL_TOKEN: installation } })).rejects.toThrow("owner session");
+    for (const command of [
+      ["issue-runtime-credential", "--principal-id", owner.principalId, "--label", "configuration", "--projects-json", JSON.stringify([{ projectId: owner.principalId, actions: ["profiles:select", "config:write"] }])],
+      ["rotate-runtime-credential", "--credential-id", owner.credential.id],
+    ]) await expect(runIdentityCommand(command, appPaths, { environment: { WORKTREE_CONTROL_TOKEN: installation } })).rejects.toThrow("owner session");
+    const lock = acquireControllerLock(appPaths.controllerLockPath);
+    try {
+      await expect(runIdentityCommand(input, appPaths, { environment: { WORKTREE_CONTROL_OWNER_TOKEN: owner.token } })).rejects.toThrow("already running");
+    } finally { lock.release(); }
+    await runAuthCommand(["mode", "set", "open"], appPaths, { write });
+    await expect(runIdentityCommand(input, appPaths, { environment: {} })).rejects.toThrow("owner session");
+  });
+
   it("administers role revisions offline and rejects unexpected options", async () => {
     const appPaths = paths(), lines: string[] = [];
     const write = (line: string) => lines.push(line);

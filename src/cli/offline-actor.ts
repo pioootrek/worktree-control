@@ -9,7 +9,7 @@ import type { SqliteStateStore } from "../server/sqlite-store";
  */
 export function authenticateOfflineActor(store: SqliteStateStore, token: string | undefined, missingCredential?: string): { identity: IdentityService; actor: AuthenticatedPrincipal } {
   const authentication = new AuthenticationService(store);
-  const identity = new IdentityService(store, undefined, undefined, undefined, authentication);
+  const identity = new IdentityService(store, undefined, undefined, undefined, authentication, store);
   const result = resolveControllerAuthentication({ authentication, identity }, { bearer: token ?? null, legacySecretValid: () => false });
   if (!result || result.kind === "legacy") {
     if (!token && missingCredential) throw new Error(missingCredential);

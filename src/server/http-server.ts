@@ -333,9 +333,21 @@ function identityAdministration(
   actor: AuthenticatedPrincipal,
   value: unknown,
 ): unknown {
-  const record = strictRecord(value, ["action", "principalId", "credentialId", "projectId", "label", "expiresAt", "name", "permissions", "sessionLifetimeSeconds", "role", "expectedRevision"]);
+  const record = strictRecord(value, ["action", "principalId", "credentialId", "projectId", "label", "expiresAt", "name", "permissions", "sessionLifetimeSeconds", "role", "expectedRevision", "actions", "projects"]);
   const action = requiredString(record, "action", 80);
+  // Runtime administration validates its own strict schemas and requires a current owner session.
+  const runtimeInput = () => Object.fromEntries(Object.entries(record).filter(([key]) => key !== "action"));
   switch (action) {
+    case "set-runtime-delegation":
+      return { delegation: service.setRuntimeDelegation(runtimeInput(), actor) };
+    case "revoke-runtime-delegation":
+      return { delegation: service.revokeRuntimeDelegation(runtimeInput(), actor) };
+    case "list-runtime-access":
+      return service.listRuntimeAccess(runtimeInput(), actor);
+    case "issue-runtime-credential":
+      return service.issueRuntimeCredential(runtimeInput(), actor);
+    case "rotate-runtime-credential":
+      return service.rotateRuntimeCredential(runtimeInput(), actor);
     case "set-knowledge-role":
     case "revoke-knowledge-role":
     case "list-knowledge-roles": {
@@ -561,7 +573,7 @@ export function createControllerServer(options: {
           try {
             json(response, 200, identityAdministration(options.identity, actor, await readJson(request)));
           } catch (error) {
-            if (error instanceof IdentityError && error.code === "role_revision_conflict") {
+            if (error instanceof IdentityError && (error.code === "role_revision_conflict" || error.code === "runtime_revision_conflict")) {
               json(response, 409, { code: error.code, error: localizeServerMessage(error.message, locale) });
               return;
             }

@@ -1,7 +1,7 @@
 ---
 audience: "people running Worktree Control and choosing how callers authenticate"
-last_reviewed: "2026-10-28"
-source_of_truth: "authentication modes, the auth CLI, and migration from legacy access"
+last_reviewed: "2026-10-29"
+source_of_truth: "authentication modes, owner CLI and scoped runtime agent workflow"
 status: "active"
 ---
 
@@ -9,7 +9,9 @@ status: "active"
 
 For planned human accounts, project roles, scoped agents and ENV permissions,
 see the [identity and authorization plan](identity-authorization-plan.md).
-That plan does not change the implemented modes described here.
+A1 Knowledge roles and A2 scoped projects, claims, runtime control, profile
+selection and timeout configuration are implemented below. Account login and
+ENV roles remain planned.
 
 One authentication policy applies to the dashboard, the HTTP API, live updates,
 MCP and the online CLI. The controller stores the policy in its database and
@@ -17,8 +19,8 @@ applies the active mode to every request.
 
 | Mode | Who uses it | Access |
 | --- | --- | --- |
-| `token` | New installations | One installation token authorizes every function, including knowledge |
-| `open` | Explicit choice | No authentication; every caller has full access |
+| `token` | New installations | Installation-wide compatibility authority, including Knowledge; cannot sponsor scoped runtime agents |
+| `open` | Explicit choice | Anonymous installation-wide compatibility authority; cannot sponsor scoped runtime agents |
 | `legacy` | Installations created before modes existed | Browser pairing token, MCP `mcp-token`, owner sessions for knowledge |
 | `better-auth` | Reserved | Not available yet; selecting it fails with `auth_provider_unavailable` |
 
@@ -70,14 +72,277 @@ The online CLI calls `/api/identity/admin`; the offline CLI uses the same servic
 under the controller lock. Unknown fields and role options are rejected.
 
 The compatibility installation authority in `open`/`token` mode still bypasses
-Knowledge roles. This is not account-mode RBAC. Human account login, credential
-scopes/TTL, scoped runtime operations and ENV roles remain later slices. The
+Knowledge roles. This is not account-mode RBAC. Human account login and ENV roles remain later slices. Runtime credential
+scopes and optional expiry are available through A2 below. The
 shared policy denies reserved ENV actions; the existing DEV vault continues to
 require its separate signed proof and exact grants, with `use` unavailable.
 
 Full backups retain bindings, revisions, tombstones and audit. As with existing
 credentials, restoring an older snapshot can restore older authorization state;
 external revocation fences are an A5 gate before account-mode activation.
+
+## Scoped runtime agents (A2)
+
+A scoped agent can discover registered runtime projects, reserve one discovered
+worktree, control its claimed managed server, select an existing literal profile
+and configure preset timeouts. The accepted runtime actions are:
+
+| Action | Operations |
+| --- | --- |
+| `projects:read` | Filtered `list_projects`, safe `get_project_status`, `list_worktrees` |
+| `claims:manage` | Acquire, renew and release the session's own lease |
+| `runtime:control` | Start, restart and stop under an active own lease; also required for `claim_project` with `start: true` |
+| `profiles:select` | List literal profile names/selection/revision and select an existing profile while stopped |
+| `config:write` | Read discovered preset IDs/default/override timeouts and change project-wide timeout overrides for future enqueues |
+
+The owner delegates actions to a stable agent for each registered runtime
+project. Each credential has an exact project/action ceiling. Effective access
+is their intersection, requiring an active agent, credential, delegation and
+stored owner sponsor. Both credential and delegation expiry apply. A sponsor
+is derived from the authenticated owner session; callers cannot supply one.
+The owner's session may expire without ending durable sponsorship. Revoking the
+owner principal blocks sponsored authority. Knowledge grants, DEV vault grants
+and remote-verification grants remain independent.
+Adding actions to a delegation never widens an existing credential. Issue a new
+credential with the intended ceiling; rotation can only preserve or narrow it.
+These actions assign no manager role and grant no ENV or secret access.
+
+### Owner workflow
+
+Run these commands as the installation's OS owner, against the intended data
+and state directories. They are examples, not automatic installation changes.
+If no owner session exists, `identity bootstrap-owner` creates the first one;
+`identity recover-owner` is the protected local OS recovery operation for an
+existing owner. Recovery requires the stopped controller's singleton lock.
+Save the returned owner session privately. Load it through your secret manager
+into `WORKTREE_CONTROL_OWNER_TOKEN`, never as a command-line token argument.
+`WORKTREE_CONTROL_TOKEN` is the fallback for older identity commands, but an
+installation token cannot authorize these new commands. Open mode ignores
+bearer credentials and cannot administer scoped runtime access.
+
+```bash
+worktree-control identity bootstrap-owner --label 'Local owner'
+```
+
+After bootstrap, load the private owner-token environment variable, then run:
+
+```bash
+worktree-control identity create-agent
+```
+
+Record the returned principal ID as `AGENT_ID` and the intended
+registered runtime project ID as `PROJECT_ID`. Runtime project IDs come from
+existing project registration, not Knowledge project IDs. This example assumes
+those nonsecret variables are set and creates a delegation with no expiry:
+
+```bash
+worktree-control identity set-runtime-delegation \
+  --principal-id "$AGENT_ID" --project-id "$PROJECT_ID" \
+  --actions projects:read,claims:manage,runtime:control --expected-revision 0
+worktree-control identity issue-runtime-credential \
+  --principal-id "$AGENT_ID" --label 'Private MCP client' \
+  --projects-json "[{\"projectId\":\"$PROJECT_ID\",\"actions\":[\"projects:read\",\"claims:manage\",\"runtime:control\"]}]"
+worktree-control identity list-runtime-access --principal-id "$AGENT_ID"
+```
+
+`--projects-json` is a JSON array of 1–64 unique project IDs with explicit action
+arrays. It supports several projects without combining their scopes. Unknown
+fields/actions, repeated flags, missing values and trailing arguments are
+rejected. No command accepts a raw token flag or reads scope files. Listing
+returns credential metadata, stored ceilings, delegations and current effective
+access, never raw tokens. Issuance and rotation print the new raw token once;
+only verifiers and nonsecret metadata persist.
+
+There is no default credential or delegation lifetime. Add `--expires-at` with
+a future ISO timestamp when a bound is needed. `set-runtime-delegation` replaces
+the delegation. At revision `0`, omitting `--expires-at` means no expiry.
+For updates/restoration with a later revision, the CLI requires `--expires-at`:
+pass the current future timestamp to preserve its bound or `none` to explicitly
+remove it. Read `list-runtime-access` before changing actions. The HTTP/service
+contract preserves the existing expiry when the field is omitted on an update,
+including an already expired bound. Explicit null removes it; omission on creation
+means no expiry. Updates and revocations require the current revision.
+Revocation retains a tombstone; restoration is a new set with its revision.
+Stale mutations fail with a revision conflict (HTTP 409).
+
+### Private MCP configuration and runtime use
+
+Use the MCP URL configured for this installation. `worktree-control config mcp`
+shows its endpoint, but generates compatibility configuration rather than a
+scoped credential configuration. In the client's private secret store/config,
+replace its authorization header with the once-issued agent token. A template
+is shown here; replace both placeholders locally:
+
+```json
+{
+  "mcpServers": {
+    "worktree-control-scoped": {
+      "type": "http",
+      "url": "<configured MCP endpoint>",
+      "headers": { "Authorization": "Bearer <once-issued runtime credential>" }
+    }
+  }
+}
+```
+
+Keep the actual configuration and tokens out of repository files, `AGENTS.md`,
+`CLAUDE.md`, prompts, chat, logs and issues. The agent receives its own token,
+never the owner's session or the installation token.
+
+In that client, call `get_identity` to inspect `runtimeAccess`, then
+`list_projects`, `list_worktrees` and `get_project_status`. Use the exact
+returned worktree path with `claim_project`, a reason, a stable idempotency key
+and an optional TTL of 30–1800 seconds. A scoped claim defaults to `start: false`.
+It reserves the worktree without starting or moving the server. Set `start: true`
+explicitly when execution is authorized; both `claims:manage` and
+`runtime:control` are required. Alternatively acquire without starting and call
+`start_project` with the returned project/reservation IDs and a new idempotency
+key. `restart_project` and `stop_project` use the same own-lease requirement.
+If the previous holder left a server running on another worktree, explicit
+`start_project` or `restart_project` stops it and starts the claimed worktree.
+`stop_project` stops the project's managed server without changing the selected
+worktree or releasing the claim. Every operation still requires current
+`runtime:control`; a reservation alone does not authorize runtime changes.
+For example, these are MCP tool argument objects, with placeholders replaced
+by discovery/claim results:
+
+```json
+{
+  "projectId": "<registered project UUID>",
+  "worktreePath": "<exact discovered path>",
+  "reason": "Verify the requested change",
+  "idempotencyKey": "verify-claim-1",
+  "ttlSeconds": 900,
+  "start": true
+}
+```
+
+Call `claim_project` with that object. To start a previously acquired claim,
+call `start_project` with:
+
+```json
+{
+  "projectId": "<registered project UUID>",
+  "reservationId": "<claim result reservation UUID>",
+  "idempotencyKey": "verify-start-1"
+}
+```
+
+Reuse a claim's idempotency key only with the same worktree, reason, TTL and
+`start` choice. Conflicting retries are rejected; identical retries keep the
+existing renewal deadline. After startup, the controller checks the lease and
+all required actions again before reporting success. An expired or released
+lease produces a stale-claim error; revoked authority produces a denial.
+
+Check `leaseHeld`, `error` and current safe status after an operation. Release
+with `release_project_claim` when finished; release does not stop the server.
+
+These scoped tools omit ENV and profile content editing, local test admission,
+logs, storage, capacity and foreign lease details. Runtime resources,
+`get_project_status_compact` and `wait_for_status_change` are unavailable to
+scoped agents. The HTTP runtime/dashboard API continues to reject their
+credentials, including existing configuration routes; runtime access is through
+these MCP tools. Test/log/ENV permissions such as `tests:run` cannot be granted.
+
+### Independent profile and timeout access
+
+An owner can grant either action without discovery, claim or runtime control.
+For a new agent whose returned ID is `PROFILE_AGENT_ID`, grant selection only:
+
+```bash
+worktree-control identity set-runtime-delegation \
+  --principal-id "$PROFILE_AGENT_ID" --project-id "$PROJECT_ID" \
+  --actions profiles:select --expected-revision 0
+worktree-control identity issue-runtime-credential \
+  --principal-id "$PROFILE_AGENT_ID" --label 'Profile selection only' \
+  --projects-json "[{\"projectId\":\"$PROJECT_ID\",\"actions\":[\"profiles:select\"]}]"
+```
+
+For another new agent, `CONFIG_AGENT_ID`, grant timeout configuration only:
+
+```bash
+worktree-control identity set-runtime-delegation \
+  --principal-id "$CONFIG_AGENT_ID" --project-id "$PROJECT_ID" \
+  --actions config:write --expected-revision 0
+worktree-control identity issue-runtime-credential \
+  --principal-id "$CONFIG_AGENT_ID" --label 'Preset timeout configuration only' \
+  --projects-json "[{\"projectId\":\"$PROJECT_ID\",\"actions\":[\"config:write\"]}]"
+```
+
+Use the owner session and private client setup described above. Supply the
+registered project ID and, for timeout operations, an exact discovered worktree
+path through the task context when the agent lacks `projects:read`. Neither
+action implies the other, `claims:manage`, `runtime:control` or a human role.
+
+The [MCP configuration workflow](reservations-and-mcp.md#scoped-configuration-workflow)
+defines the four tools, revision handling and claim rules. Profile selection
+accepts an exact existing name and never creates, edits, deletes or restarts a
+profile. A changed selection requires no owned process or pending cleanup.
+When runtime control is separately authorized, use explicit stop, select, start
+operations under the own claim. Re-selecting the current profile can be a no-op
+while running, but still checks the expected revision.
+
+`config:write` currently means preset timeout overrides only. It cannot change
+commands, launch/TLS settings, ENV, literal/test profile content, preset-profile
+assignments, identities, global settings or vaults. Both mutations are useful
+without a claim, including on verification-only projects. Any active human or
+agent reservation blocks them unless the request proves that session's exact
+own agent claim. Supplying a stale reservation never falls back to unclaimed
+access. A timeout request must target the claim's worktree, even when a claim
+acquired with `start: false` left the selected runtime worktree elsewhere.
+
+### Rotate and revoke
+
+```bash
+worktree-control identity rotate-runtime-credential --credential-id "$CREDENTIAL_ID"
+worktree-control identity revoke-token --credential-id "$REPLACEMENT_CREDENTIAL_ID"
+worktree-control identity revoke-runtime-delegation \
+  --principal-id "$AGENT_ID" --project-id "$PROJECT_ID" --expected-revision 1
+```
+
+Rotation revokes the old credential atomically and prints the replacement once.
+Omit `--projects-json` and `--expires-at` to preserve the old ceiling and expiry.
+Supply a project/action subset or an earlier future expiry to narrow it.
+Rotation cannot add projects/actions or extend a finite expiry. Update the
+client's private secret and reconnect; the new session cannot adopt the old
+session's claim. Credential-bound vault grants are not copied by rotation.
+
+Revoking a credential, agent or delegation denies the next applicable call,
+including retained claim/runtime/configuration receipts and failures. Automatic renewal rechecks
+current authority and stops when denied. Existing leases retain their remaining
+TTL; revocation does not release the lease or stop its server. Manual renew and
+release also require current authority. A replacement session must wait for
+expiry or ask a human to review the reservation. Already returned data cannot
+be recalled.
+
+### Upgrade and backup boundary
+
+Schema migration 36 adds delegations, per-credential ceilings and optional
+principal/credential lease bindings on the existing SQLite connection. Existing
+principal IDs, credentials, Knowledge/vault/remote grants and unbound leases
+remain intact. Existing agents receive no runtime backfill. Installation-token,
+open and legacy compatibility callers retain their previous broad runtime
+authority; scoped credentials do not isolate those callers. Migration 37 adds
+the project configuration revision. Existing compatibility configuration
+writes increment it alongside scoped changes; no old credential gains actions.
+
+Opening an older database with this version applies the pending migrations. Plan an
+installation upgrade with a stopped-controller backup and a compatible restore
+version; do not use a live database as a test fixture or open it with an older
+binary after upgrade. Full backups preserve runtime grants, ceilings and lease
+bindings. Restoring an older snapshot can restore older credential/delegation
+state; A5 still owns external revocation fences and cutover acceptance.
+
+The controller removes its token and keyfile environment variables from managed
+process inheritance. Scoped authorization is not an OS sandbox: repository code
+still executes with the controller's host identity and its permitted filesystem
+access. The original A2 projects/claims/profiles/configuration criteria are
+implemented; completion requires recorded verification. Scoped finite-job
+admission/own-run access (`415205f2-4583-4b13-a508-49a9b618a19e`) and scoped
+resources/compact status/wait (`e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`) remain
+separate followups and are denied. A3 owns account GUI/human administration, A4
+ENV policy and A5 compatibility cutover. This describes source behavior, not a
+live installation upgrade.
 
 ## The `auth` command
 
@@ -126,7 +391,8 @@ Run it in a terminal, save the token, then repeat the command.
   Offline `project` and `auth` commands need no token.
 - **Knowledge and identity administration:** `identity`, `knowledge` and
   `backup` project commands accept `WORKTREE_CONTROL_TOKEN` when no owner or
-  knowledge token is set. The installation token acts as the owner.
+  knowledge token is set. The installation token retains compatibility administration authority.
+  New runtime delegation/credential commands require a real owner session.
 - **MCP:** send `Authorization: Bearer <token>`. `config mcp` prints a
   placeholder, or the real token when `WORKTREE_CONTROL_TOKEN` is set.
 
@@ -153,7 +419,9 @@ knowledge CLI and identity administration omit the `Authorization` header and
 the controller applies the active mode. Offline identity administration, Hub
 `knowledge execute-import` and logical `backup export-project` /
 `import-project` read the persisted mode after acquiring the singleton lock.
-Every such caller acts as the anonymous installation authority. Knowledge
+Every such caller acts as the anonymous installation authority. New runtime
+delegation/credential administration rejects that authority, even if an owner
+token variable is set; use `token` or `legacy` mode with an owner session. Knowledge
 history records it as `authenticationMethod: none`; Hub import batches record
 only the `installation` principal. A token variable set in
 `open` mode is ignored. In `token` and `legacy` modes the same commands still

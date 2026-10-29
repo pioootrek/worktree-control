@@ -1,6 +1,6 @@
 ---
 audience: "owner, implementers and reviewers of human, agent and ENV access"
-last_reviewed: "2026-10-28"
+last_reviewed: "2026-10-29"
 source_of_truth: "planned identity, role and environment authorization contracts and acceptance gates"
 status: "active"
 ---
@@ -9,15 +9,19 @@ status: "active"
 
 ## Status and decision boundary
 
-This document describes the target design; only the A1 Knowledge policy subset
-is implemented so far. See [implemented Knowledge roles](authentication.md#knowledge-roles-a1)
-for its compatibility limits.
+This document describes the target design. A1 Knowledge policy and A2 scoped
+projects, claims, runtime control, profile selection and timeout configuration
+are implemented. See [Knowledge roles](authentication.md#knowledge-roles-a1)
+and [scoped runtime agents](authentication.md#scoped-runtime-agents-a2)
+for their compatibility limits.
 The owner accepted role-based access, shared application authorization,
 Better Auth human accounts and agent-specific identities/scopes on 2026-10-28,
 and explicitly requested ENV roles fitting existing workflows and OWASP guidance.
 The initial slice delivered this document and Knowledge planning. The subsequent
-A1 slice adds shared Knowledge policy and optional role restrictions; it does
-not activate accounts, scoped runtime access or ENV delivery.
+A1 slice adds shared Knowledge policy and optional role restrictions. The A2
+implementation adds owner-sponsored runtime credentials, filtered MCP discovery,
+credential/session-bound leases and separately authorized configuration tools.
+Accounts and ENV delivery remain deferred.
 
 Knowledge project `k7a-worktree-switcher` holds design task
 `e3e2e52e-7b95-4088-8234-0e6d35c39f86` and direction memory
@@ -37,14 +41,16 @@ coordinator remain architecture constraints.
 
 ## Baseline verified against source
 
-Baseline: `f71bad97f921bc6ff42cacb585afd0c4258a06bc`.
+Historical main baseline: `f71bad97f921bc6ff42cacb585afd0c4258a06bc`.
+A2 backend contract checked at `1d18574013c87ee0c4ee49385c54959b1bbbcd15`;
+the CLI, transport verification and operational docs extend that contract.
 
 | Area | Implemented baseline | Remaining work |
 | --- | --- | --- |
 | Installation authentication | `token`, `open`, `legacy`; rotation and policy invalidation | `better-auth` still rejects activation |
-| Identity | Owner, agent, worker and installation principals; revocable credentials | Separate human identity from the owner role; scoped role bindings |
-| Knowledge | Project grants and permission checks; installation authority bypasses grants | Shared policy integration and explicit human approval in account mode |
-| MCP | Principal sessions register Knowledge, DEV vault and enabled remote-verification tools before returning | General runtime discovery, claims and configuration still lack scoped-agent access |
+| Identity | Owner, agent, worker and installation principals; revocable credentials | Account-backed humans and general role administration |
+| Knowledge | Shared policy, explicit grants and optional Knowledge role ceilings; installation compatibility bypass | Explicit human approval in account mode |
+| MCP | Agent sessions add filtered discovery, explicit-start claims, claimed control, literal profile selection and preset timeout overrides; Knowledge/vault/remote grants stay independent | Scoped finite-job admission/own-run access, runtime resources, compact status and wait API are separate followups |
 | Remote verification | Separate submitter/project and worker/project/preset grants | Integrate without replacing both checks with a broad project role |
 | DEV vault | Encrypted profiles, signed owner operations, exact agent grants; backend and GUI on main | General role integration; execution delivery remains unavailable |
 
@@ -120,9 +126,12 @@ grant to themselves or to their own agents to bypass a missing permission.
 Managers may assign only reader/operator within their own project. All grant
 operations verify both grantor authority and recipient type/constraints.
 
-The initial action vocabulary below is proposed, not a published API. Existing
-permission names are preserved where their meaning matches. Domain-specific
-guards still apply even when an action is allowed.
+The role assignments below are proposed. A2 implements its five runtime actions
+through explicit owner-sponsored delegation and credential ceilings, without
+assigning these roles. In particular, an agent can hold timeout-only
+`config:write` without a manager role. Other action groups remain subject to
+their slice's implementation; `tests:run` and scoped logs are still denied.
+Domain-specific guards apply even when an action is allowed.
 
 | Action group | Default assignment | Additional restriction |
 | --- | --- | --- |
@@ -233,10 +242,10 @@ secrets out of URLs and browser persistent storage. Remote account access needs
 HTTPS; failure or missing provider never falls back to anonymous access.
 
 Machine credentials are separate: server-generated opaque secrets with only
-verifiers retained, shown once, narrowed actions/resources and finite expiry.
-Initial proposal: task tokens default to two hours with a 24-hour issue ceiling;
-unattended worker renewal policy is a distinct explicit operator configuration.
-These are proposed product defaults, not changes to existing non-expiring tokens.
+verifiers retained, shown once, narrowed actions/resources and optional expiry
+in the implemented A2 contract. No two-hour default or 24-hour issue ceiling is
+implemented or approved. Such finite defaults remain a proposal; unattended
+worker renewal requires its own explicit operator configuration.
 MCP clients may inspect their effective access and request more, but cannot
 mint tokens or approve their own elevation. OAuth later reuses the same policy.
 
@@ -334,13 +343,33 @@ execution or secret exfiltration from an already approved process.
 ## Delivery slices and gates
 
 Knowledge owns status, discussion and validation; this table defines intended
-boundaries. A0 supplied the design; A1 now implements the first policy workflow.
+boundaries. A0 supplied the design; A1 implements Knowledge policy. The original
+A2 projects/claims/profiles/configuration criteria are implemented through five
+actions: `projects:read`, `claims:manage`, `runtime:control`, `profiles:select`
+and `config:write`. Closure requires recorded verification of the final source.
+Migration 36 adds scoped authority without backfill; migration 37 adds the
+configuration revision. Existing credentials never gain actions automatically.
+This status does not authorize a live upgrade, installation changes or publication.
+
+A2 configuration is deliberately narrow: existing literal profile names and
+stopped selection; discovered preset metadata and future-enqueue timeout
+overrides. `config:write` grants no manager role, ENV, profile editing,
+preset-profile assignment, launch/TLS/global or identity rights. Current agent,
+credential, delegation and owner sponsor constrain every call and cached retry.
+Active reservations require exact own-session/credential/secret/ID proof;
+unclaimed mutations remain useful without claim/runtime rights. See the
+[operational contract](reservations-and-mcp.md#scoped-configuration-workflow).
+
+Scoped finite-job admission and own-run access remain denied under followup
+`415205f2-4583-4b13-a508-49a9b618a19e`. Scoped resources, compact status and
+bounded wait remain denied under `e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`.
+These are separate followups, not delivered A2 behavior or part of A3–A5.
 
 | Slice and Knowledge task | Deliverable | Acceptance gate |
 | --- | --- | --- |
 | A0 — `e3e2e52e-7b95-4088-8234-0e6d35c39f86` | This design, ENV matrix, OWASP mapping and reconciled backlog | Documentation validation and code-checked baseline; proposals distinguished from owner direction |
 | A1 — `77819572-5ba1-44e5-9315-e870a513d534` | Principal/role/action contract, additive storage and shared policy with Knowledge read/write/discovery as first real workflow | Stable IDs, existing grant compatibility, cross-project/field/revocation tests across HTTP/MCP/CLI; existing modes preserved |
-| A2 — `eea2897a7bc8412b681ba00d4c8eb672` | Scoped agent runtime access and human CLI credential administration, then account-authenticated GUI after A3 | Project filtering, separate claim/config rights, sponsor/TTL limits, no self-mint; reservation ownership preserved |
+| A2 — `eea2897a7bc8412b681ba00d4c8eb672` | Scoped projects/claims/runtime, literal profile selection, timeout-only configuration and human CLI credential administration | Project/action/credential isolation, sponsor/expiry limits, exact own claims, strict fields, CAS/replay/audit verification; no self-mint or secrets |
 | A3 — `ec4c7258770328ca33fb1801be6831f6` | Provider adapter proof first; then human accounts/factors/sessions and role administration | Single SQLite owner, provider lifecycle, enrollment/recovery, session/CSRF tests and private package boundary |
 | A4 — `6645ffce-dc9e-4a88-ab94-6b2cf9ca34b6` | ENV roles through shared policy; independent read/write/use eligibility and signed human custody | Existing proof/grant/revision/retry tests preserved; no automatic admin secret access; use still unavailable |
 | A5 — `1436bb74-d52a-48ec-ad3a-c35c838eeecc` | Complete transport inventory, account-mode cutover and recovery acceptance | All unconverted operations denied, old shared-token paths closed, isolated upgrade/restore and OS trust-boundary runbook |

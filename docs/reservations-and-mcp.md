@@ -1,6 +1,6 @@
 ---
 audience: "product owner and contributors discussing agent coordination"
-last_reviewed: "2026-10-23"
+last_reviewed: "2026-10-29"
 source_of_truth: "implemented reservation and local MCP integration design"
 status: "active"
 ---
@@ -73,16 +73,23 @@ uses one atomic move operation so ownership is never briefly dropped.
 
 ## Conflict behavior
 
-Acquisition is an atomic compare-and-set operation. A conflict returns the
-current owner, reason, pinned worktree, and expiry without switching anything.
+Acquisition is an atomic compare-and-set operation. A compatibility caller
+receives the current owner, reason, pinned worktree and expiry on conflict.
+Scoped agents receive a safe conflict code without foreign lease details.
 The existing holder is never silently displaced.
 
 The controller implements acquisition as one SQLite write transaction that
 expires stale leases, checks the current claim, records the new claim, and
 appends its audit event. UI, CLI, and MCP never open the database directly.
 
-The preferred agent operation atomically reserves and switches the server. A
-separate `acquire` followed by `switch` would leave a race between the calls.
+The compatibility claim operation atomically reserves and switches the server.
+Scoped claims reserve only unless the caller explicitly requests `start: true`
+and holds `runtime:control`. A later explicit `start_project` or `restart_project`
+under that lease can move a server left running on another worktree;
+`stop_project` can stop it without changing the selection or releasing the lease.
+These operations hold the shared project lock and revalidate the exact lease and
+current runtime authority before effects, including after stopping and before
+spawning. The reservation-only claim itself never moves or stops a server.
 If switching fails, the result reports both the failed runtime transition and
 whether the lease remains held so recovery is unambiguous.
 
@@ -104,11 +111,168 @@ http://127.0.0.1:47832/mcp
 
 It runs inside the existing controller, so connecting an agent does not create
 another persistent Node.js process. The MCP SDK is loaded lazily on first use.
-In `token` mode the endpoint requires the installation token as a bearer token;
+In `token` mode the endpoint accepts the installation token or an active
+owner/agent/worker bearer credential;
 `legacy` installations use a persistent token stored in an owner-only file, and
 `open` mode requires none. `worktree-control config mcp` prints the client
 configuration on explicit request. See [authentication modes](authentication.md). A future stdio command may act as a compatibility proxy for clients
 without Streamable HTTP support.
+
+### Scoped agent runtime tools (A2)
+
+The [owner workflow](authentication.md#scoped-runtime-agents-a2) grants
+registered runtime projects and issues private credentials. Scoped agent MCP
+sessions expose only these runtime tools alongside independently authorized
+Knowledge, vault and remote-verification tools:
+
+| Tool | Required runtime action and behavior |
+| --- | --- |
+| `list_projects`, `get_project_status`, `list_worktrees` | `projects:read`; filtered DTOs omit ENV, command/profile/TLS configuration, logs, detailed errors, capacity and foreign lease identity |
+| `claim_project` | `claims:manage`; defaults to `start: false`; explicit `start: true` also requires `runtime:control` |
+| `renew_project_claim`, `release_project_claim` | `claims:manage`; exact active lease owned by this session, principal and credential |
+| `start_project`, `restart_project`, `stop_project` | `runtime:control`; exact active lease owned by this session, principal and credential |
+| `list_environment_profiles`, `select_environment_profile` | `profiles:select`; names/selection/revision only; changed selection requires no owned process or cleanup |
+| `get_project_configuration`, `set_test_preset_timeout` | `config:write`; exact discovered worktree and preset; project-wide timeout overrides only |
+
+A claim without `start: true` leaves the runtime in its current placement and
+phase. Explicit start uses the discovered claimed worktree. Claims with only
+`claims:manage` return no project status unless the credential also has
+`projects:read`. A safe status reports claim relation `none`, `own` or `other`;
+only `own` includes the reservation handle and expiry. Unauthorized and missing
+projects return the same denial before Git discovery.
+
+Scoped runtime sessions have no runtime resources, compact status, wait API,
+logs, capacity/storage tools, local test tools, profile editing or ENV
+administration. They do not accept `responseMode`. New identity administration
+and credential minting are owner-session CLI/HTTP operations, never MCP tools.
+The HTTP runtime API does not accept a scoped credential.
+
+Every operation and cached retry rechecks current authority. A cached runtime
+outcome also requires the original active claim with the same session, secret
+and principal/credential binding; a released or expired claim cannot replay it.
+Renewal stops on
+credential/delegation expiry or revocation, or loss of the active stored owner
+sponsor. Owner-session expiry alone leaves sponsorship intact. Denied leases
+retain their remaining TTL without early release or server termination. A
+replacement credential/session cannot adopt the lease. Runtime DTOs contain
+only allowlisted fields and fixed failure codes/messages; compatibility
+resources and receipt capacity projections below do not apply to them.
+
+### Scoped configuration workflow
+
+All four tools below require an agent session and their exact action under the
+current credential ceiling and owner-sponsored delegation. Tool registration
+grants no access. Configuration metadata does not require `projects:read`, and
+`projects:read` does not permit configuration metadata or mutations.
+
+For `profiles:select`, call `list_environment_profiles` with
+`{ "projectId": "<registered project UUID>" }`. Its response has this shape:
+
+```json
+{
+  "schemaVersion": 1,
+  "projectId": "<registered project UUID>",
+  "configurationRevision": 7,
+  "selectedProfile": "default",
+  "profiles": [{ "name": "default" }, { "name": "staging" }]
+}
+```
+
+Only existing literal profile names are returned, with no ENV names, counts or
+values. Call `select_environment_profile` using that revision and exact name:
+
+```json
+{
+  "projectId": "<registered project UUID>",
+  "name": "staging",
+  "expectedRevision": 7,
+  "idempotencyKey": "select-staging-1"
+}
+```
+
+A changed selection requires a stopped runtime with no owned process or cleanup,
+including leftovers in a failed state. It applies to future starts and never
+restarts the server. `restart`, ENV and profile editing fields are rejected.
+If runtime control is separately granted and the task authorizes it, explicitly
+claim, stop, read the revision, select, then start using separate operation keys.
+Include the active own `reservationId` in the selection. Re-selecting the
+current profile is a no-op, but still validates `expectedRevision`.
+
+For `config:write`, call `get_project_configuration` with:
+
+```json
+{
+  "projectId": "<registered project UUID>",
+  "worktreePath": "<exact discovered worktree path>"
+}
+```
+
+The response is `{schemaVersion, projectId, configurationRevision, presets}`.
+Each preset is `{id, timeoutMs, overrideTimeoutMs}`: `timeoutMs` is the discovered
+default, and the effective timeout for a future enqueue is
+`overrideTimeoutMs ?? timeoutMs`. Metadata has at most 256 entries and contains
+no commands, ENV, profiles or secret values. Use a currently returned preset ID
+with `set_test_preset_timeout`:
+
+```json
+{
+  "projectId": "<registered project UUID>",
+  "worktreePath": "<exact discovered worktree path>",
+  "presetId": "node:test",
+  "timeoutMs": 60000,
+  "expectedRevision": 7,
+  "idempotencyKey": "timeout-test-1"
+}
+```
+
+Use an integer from 1 through 86400000 milliseconds or `null` to remove the
+override. The override is project-wide for that preset across worktrees; the
+controller validates the exact supplied worktree and its current discovery.
+At most 256 overrides may exist. Changes affect future enqueues only; queued
+and running jobs keep their admitted timeout. This permission cannot run or
+cancel jobs, edit test profiles or assign a profile to a preset.
+
+Both mutations allow an unclaimed project, including a verification-only
+project. When any reservation is active, include its `reservationId` and prove
+the exact active agent claim through the same session, principal, credential
+and retained lease secret. A copied ID, another session using the same token,
+a rotated credential, a human lock or a stale claim cannot write. Timeout
+requests must use the claim's worktree. `start: false` does not change the
+runtime's selected worktree, so that selection is not the ownership reference.
+A supplied stale claim never falls back to unclaimed access.
+
+Successful mutation receipts contain `schemaVersion`, `operationId`, `projectId`,
+`operation`, `configurationRevision`, `outcome` (`completed` or `noop`),
+`replayed` and `observedAt`. Selection adds `selectedProfile`; timeout changes
+add `presetId` and `timeoutMs`. A completed change atomically increments the
+revision and writes audit attribution to the principal, credential and operation.
+No-op and refused changes write no configuration audit. Audit contains no ENV
+names/values, lease secrets, session handles or bearer tokens.
+
+Read the current revision immediately before each new mutation. Compatibility
+ENV/profile/test-profile/assignment/timeout/launch/TLS changes also invalidate
+it. On `revision_conflict`, reread the appropriate metadata, reconsider the
+change and submit with the new revision and a **new idempotency key**.
+Reusing the failed key cannot turn its retained failure into a new operation.
+
+Reuse a key only for an identical retry after transport uncertainty. The bounded
+ledger is shared with runtime operations (64 entries per session, 512 globally).
+Changed operation, arguments, revision or reservation context conflict. Identical
+retries return a historical receipt with `replayed: true` and one state/audit
+effect. Current authority and the original exact claim are checked before
+returning cached success or failure. The guarantee ends when a session/ledger
+entry is lost or the controller restarts; it is not cross-session persistence.
+
+All inputs reject unknown fields. `config:write` assigns no manager role and
+cannot mutate ENV, profiles, commands, launch/TLS/global settings, identities or
+vaults. Scoped finite verification remains denied under followup
+`415205f2-4583-4b13-a508-49a9b618a19e`; scoped resources, compact status and
+bounded wait remain denied under `e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`.
+
+### Compatibility tools and resources
+
+The lists and detailed projections in this section describe installation/open/legacy
+compatibility sessions. Scoped agent sessions use the smaller API above.
 
 Read-only MCP resources:
 

@@ -1,1 +1,1 @@
-export { effectiveKnowledgePermissions, isAuthorized, type AuthorizationSubject, type KnowledgeAuthority } from "./policy";
+export { effectiveKnowledgePermissions, effectiveRuntimeActions, isAuthorized, type AuthorizationSubject, type KnowledgeAuthority, type RuntimeAuthority } from "./policy";

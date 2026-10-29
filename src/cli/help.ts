@@ -10,7 +10,7 @@ export const CLI_HELP = [
   "  project            Registered projects: add <path>, list, remove <id>",
   "  doctor             Check Node.js, Git and the application state",
   "  knowledge          Project knowledge operations and Hub imports",
-  "  identity           Owners, agents, agent tokens and knowledge grants",
+  "  identity           Owners, agents, runtime delegations/credentials and knowledge grants",
   "  vault              DEV-only encrypted vault; signed owner approval, JSON on stdin",
   "  remote-verification  Local owner provisioning: provision --file FILE, revoke-token --credential-id ID; start opts in with --remote-verification-config FILE",
   "  config mcp         Print the MCP client configuration",
@@ -18,6 +18,9 @@ export const CLI_HELP = [
   "  mcp diagnostics    Print MCP session diagnostics of the running controller",
   "  help, --help, -h   Show this help",
   "  --version, -v      Print the version",
+  "",
+  "Scoped runtime actions: projects:read, claims:manage, runtime:control, profiles:select, config:write (preset timeouts only).",
+  "Runtime delegation and credential administration requires a private owner session.",
   "",
   "Guides: README.md and docs/ in the installed package.",
 ].join("\n");

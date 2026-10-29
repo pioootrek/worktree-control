@@ -1,5 +1,6 @@
 import type { KnowledgePermission, KnowledgeRoleBinding } from "@/shared/contracts/authorization";
 import type { KnowledgeProject } from "@/shared/contracts/knowledge";
+import type { RuntimeAccessEntry, RuntimeCredentialScope, RuntimeDelegation } from "@/shared/contracts/runtime-access";
 /** `installation` is the single installation-wide authority; it never holds credentials or grants. */
 export type PrincipalKind = "owner" | "agent" | "worker" | "installation";
 export type IdentityStatus = "active" | "revoked";
@@ -64,6 +65,8 @@ export interface AuthenticatedIdentity {
   /** Null for the installation authority, which has no stored credential or grants. */
   credential: PrincipalCredential | null;
   knowledgeGrants: Array<Pick<KnowledgeProjectGrant, "projectId" | "permissions">>;
+  /** Present for agents: the credential's current effective runtime scope. */
+  runtimeAccess?: RuntimeAccessEntry[];
   installationAuthority?: true;
 }
 
@@ -95,4 +98,20 @@ export interface IdentityStore {
   saveKnowledgeRoleBinding(binding: KnowledgeRoleBinding, expectedRevision: number, actor: string): boolean;
   getKnowledgeProjectRuntimeLink(projectId: string): KnowledgeProjectRuntimeLink | null;
   saveKnowledgeProjectRuntimeLink(link: KnowledgeProjectRuntimeLink, actor: string): void;
+}
+
+/**
+ * Runtime delegation and credential ceilings on the controller-owned connection.
+ * Multi-row writes are atomic; revisions are compare-and-set.
+ */
+export interface RuntimeAccessStore {
+  hasRuntimeProject(projectId: string): boolean;
+  getRuntimeDelegation(principalId: string, projectId: string): RuntimeDelegation | null;
+  listRuntimeDelegations(principalId: string): RuntimeDelegation[];
+  saveRuntimeDelegation(delegation: RuntimeDelegation, expectedRevision: number, actor: string): boolean;
+  getRuntimeCredentialScope(credentialId: string, projectId: string): RuntimeCredentialScope | null;
+  listRuntimeCredentialScopes(credentialId: string): RuntimeCredentialScope[];
+  issueScopedCredential(credential: CredentialAuthenticationRecord, scopes: RuntimeCredentialScope[], actor: string): void;
+  /** Inserts the replacement and revokes the still-active original in one transaction; false if it was no longer active. */
+  rotateScopedCredential(replacedId: string, revokedAt: string, credential: CredentialAuthenticationRecord, scopes: RuntimeCredentialScope[], actor: string): boolean;
 }

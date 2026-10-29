@@ -33,7 +33,7 @@ describe("vault SQLite atomicity and backup", () => {
     const read = f.command({ operation: "read", ...f.imported, grantId: grant.id });
     f.execute(read, f.first.actor);
     const manifest = await createControllerBackup(f.store, backup, { applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") });
-    expect(manifest.database.schemaVersion).toBe(35);
+    expect(manifest.database.schemaVersion).toBe(37);
     expect(readdirSync(backup).sort()).toEqual(["attachments", "manifest.json", "state.sqlite3"]);
     for (const file of ["state.sqlite3", "manifest.json"]) {
       const bytes = readFileSync(join(backup, file));

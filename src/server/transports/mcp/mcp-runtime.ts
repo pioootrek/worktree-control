@@ -4,6 +4,10 @@ import { testPresetTimeoutSchema, testHistorySchema, testMetricsSchema, testSumm
 import type { McpDiagnosticsSnapshot, McpSessionDiagnostics } from "@/shared/contracts/mcp-diagnostics";
 import { registerKnowledgeTools } from "./knowledge-tools";
 import { registerRemoteVerificationTools } from "./remote-verification-tools";
+import { registerScopedRuntimeTools, type ScopedSessionPort } from "./scoped-runtime-tools";
+import { registerScopedConfigurationTools } from "./scoped-configuration-tools";
+import { ScopedRuntimeError } from "../../modules/runtime";
+import type { AuthenticatedPrincipal } from "../../modules/identity";
 import { McpDiagnostics, type McpSessionObservation, type McpCloseReason } from "../../mcp-diagnostics";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -14,7 +18,7 @@ import { ErrorCode, McpError, isInitializeRequest } from "@modelcontextprotocol/
 import * as z from "zod/v4";
 
 import packageJson from "../../../../package.json";
-import type { ClaimedRuntimeAction, ClaimedRuntimeReceipt, ProjectSnapshot } from "@/shared/contracts";
+import type { ClaimedRuntimeAction, ProjectSnapshot } from "@/shared/contracts";
 import { localizeServerMessage } from "../../../i18n/server-errors";
 import type { ControlService } from "../../control-service";
 import type { ControllerAuthentication, IdentityService } from "../../modules/identity";
@@ -26,6 +30,8 @@ interface ClaimSecret {
   token: string;
   ttlSeconds: number;
   timer: McpTimer | null;
+  /** Re-reads the caller's current authority; scoped claims stop renewing when it is lost. */
+  renew: (ttlSeconds: number) => void;
 }
 
 interface McpSession {
@@ -53,7 +59,7 @@ interface McpSession {
 
 interface RuntimeOperationEntry {
   fingerprint: string;
-  promise: Promise<ClaimedRuntimeReceipt>;
+  promise: Promise<{ replayed: boolean }>;
   settled: boolean;
   counted: boolean;
 }
@@ -430,7 +436,14 @@ export class McpRuntime {
         return jsonContent(this.identity.describeIdentity(actor));
       });
       // Scoped credentials stop here; the installation authority also controls the runtime.
-      if (session.authentication.kind === "principal") return server;
+      if (session.authentication.kind === "principal") {
+        if (actor.principalKind === "agent" && this.service.scopedRuntimeEnabled?.()) {
+          const port = this.scopedPort(session, actor);
+          registerScopedRuntimeTools(server, this.service, actor, port);
+          registerScopedConfigurationTools(server, this.service, actor, port);
+        }
+        return server;
+      }
     }
     const owner = () => {
       if (!session.owner) throw new Error("MCP session is not initialized.");
@@ -758,6 +771,7 @@ export class McpRuntime {
         token: result.leaseToken,
         ttlSeconds: ttlSeconds ?? 1800,
         timer: null,
+        renew: (ttl) => { this.service.renewAgentClaim(projectId, result.reservation.id, session.owner, result.leaseToken, ttl); },
       };
       if (!session.claims.has(result.reservation.id)) this.diagnostics.change(session.observation, "claims", 1);
       const previous = session.claims.get(result.reservation.id);
@@ -792,7 +806,10 @@ export class McpRuntime {
       }, async ({ projectId, reservationId, idempotencyKey }, extra) => {
         const claim = this.requireClaim(session, projectId, reservationId);
         const receipt = await english(() => this.runRuntimeOperation(
-          session, idempotencyKey, projectId, reservationId, action, claim, extra.signal,
+          session, idempotencyKey, `${action}\0${projectId}\0${reservationId}`,
+          () => this.service.operateClaimedRuntime(
+            projectId, reservationId, action, { owner: session.owner, leaseToken: claim.token }, extra.signal, () => session.closing,
+          ),
         ));
         return jsonContent(receipt);
       });
@@ -837,30 +854,35 @@ export class McpRuntime {
     return claim;
   }
 
-  private async runRuntimeOperation(
+  /** Session-scoped idempotency ledger; `beforeReplay` re-authorizes before a retained receipt is returned. */
+  private async runRuntimeOperation<T extends { replayed: boolean }>(
     session: McpSession,
     idempotencyKey: string,
-    projectId: string,
-    reservationId: string,
-    action: ClaimedRuntimeAction,
-    claim: ClaimSecret,
-    signal?: AbortSignal,
-  ): Promise<ClaimedRuntimeReceipt> {
-    const fingerprint = `${action}\0${projectId}\0${reservationId}`;
+    fingerprint: string,
+    execute: () => Promise<T>,
+    beforeReplay: () => void = () => undefined,
+  ): Promise<T> {
     const existing = session.runtimeOperations.get(idempotencyKey);
     if (existing) {
-      if (existing.fingerprint !== fingerprint) throw new Error("The idempotency key was already used for a different runtime operation.");
-      return { ...(await existing.promise), replayed: true };
+      if (existing.fingerprint !== fingerprint) throw new ScopedRuntimeError("idempotency_conflict", "The idempotency key was already used for a different operation in this MCP session.");
+      let receipt: T;
+      try {
+        receipt = await existing.promise as T;
+      } catch (error) {
+        // A retained failure is also released only to current authority.
+        beforeReplay();
+        throw error;
+      }
+      beforeReplay();
+      return { ...receipt, replayed: true };
     }
-    if (session.closing) throw new Error("The MCP session is closed.");
+    if (session.closing) throw new ScopedRuntimeError("session_closed", "The MCP session is closed.");
     if (session.runtimeOperations.size >= 64 || this.runtimeOperationCount >= 512) {
-      throw new Error("The runtime operation retry ledger is full. Start a new MCP session before submitting another operation.");
+      throw new ScopedRuntimeError("retry_ledger_full", "The runtime operation retry ledger is full. Start a new MCP session before submitting another operation.");
     }
-    const entry: RuntimeOperationEntry = { fingerprint, promise: null as unknown as Promise<ClaimedRuntimeReceipt>, settled: false, counted: true };
+    const entry: RuntimeOperationEntry = { fingerprint, promise: null as unknown as Promise<T>, settled: false, counted: true };
     this.runtimeOperationCount += 1;
-    entry.promise = this.service.operateClaimedRuntime(
-      projectId, reservationId, action, { owner: session.owner, leaseToken: claim.token }, signal, () => session.closing,
-    ).then((receipt) => {
+    const promise = execute().then((receipt) => {
       entry.settled = true;
       return receipt;
     }, (error) => {
@@ -869,8 +891,55 @@ export class McpRuntime {
     }).finally(() => {
       if (session.closed) this.releaseRuntimeOperationEntry(session, idempotencyKey, entry);
     });
+    entry.promise = promise;
     session.runtimeOperations.set(idempotencyKey, entry);
-    return entry.promise;
+    return promise;
+  }
+
+  /** Scoped tools reach session secrets, renewal and the retry ledger only through this port. */
+  private scopedPort(session: McpSession, actor: AuthenticatedPrincipal): ScopedSessionPort {
+    const owner = () => {
+      if (!session.owner) throw new ScopedRuntimeError("session_uninitialized", "MCP session is not initialized.");
+      return session.owner;
+    };
+    return {
+      owner,
+      closing: () => session.closing,
+      claimToken: (projectId, reservationId) => {
+        const claim = session.claims.get(reservationId);
+        if (!claim || claim.projectId !== projectId) throw new ScopedRuntimeError("claim_not_owned", "This MCP session does not own the requested claim.");
+        return claim.token;
+      },
+      existingToken: scope => session.idempotencyTokens.get(scope),
+      track: ({ projectId, reservationId, token, ttlSeconds, idempotencyScope }) => {
+        session.idempotencyTokens.set(idempotencyScope, token);
+        // An identical acquisition retry does not renew the persisted lease.
+        // Keep its current timer and any TTL selected by an explicit renewal.
+        if (session.claims.has(reservationId)) return;
+        const claim: ClaimSecret = {
+          projectId, reservationId, token, ttlSeconds, timer: null,
+          renew: (ttl) => { this.service.renewScopedClaim(actor, { owner: owner() }, projectId, reservationId, token, ttl); },
+        };
+        if (!session.claims.has(reservationId)) this.diagnostics.change(session.observation, "claims", 1);
+        const previous = session.claims.get(reservationId);
+        if (previous?.timer) { this.clock.clearTimeout(previous.timer); this.diagnostics.change(session.observation, "renewalTimers", -1); }
+        session.claims.set(reservationId, claim);
+        this.scheduleRenewal(session, claim);
+      },
+      renewed: (reservationId, ttlSeconds) => {
+        const claim = session.claims.get(reservationId);
+        if (!claim) return;
+        claim.ttlSeconds = ttlSeconds;
+        this.scheduleRenewal(session, claim);
+      },
+      forget: (reservationId) => {
+        const claim = session.claims.get(reservationId);
+        if (!claim) return;
+        if (claim.timer) { this.clock.clearTimeout(claim.timer); claim.timer = null; this.diagnostics.change(session.observation, "renewalTimers", -1); }
+        if (session.claims.delete(reservationId)) this.diagnostics.change(session.observation, "claims", -1);
+      },
+      runOperation: (idempotencyKey, fingerprint, execute, beforeReplay) => this.runRuntimeOperation(session, idempotencyKey, fingerprint, execute, beforeReplay),
+    };
   }
 
   private disposeRuntimeOperations(session: McpSession): void {
@@ -904,7 +973,8 @@ export class McpRuntime {
         return;
       }
       try {
-        this.service.renewAgentClaim(claim.projectId, claim.reservationId, session.owner, claim.token, claim.ttlSeconds);
+        // Scoped claims re-read credential, delegation and sponsor here; a denial ends renewal below.
+        claim.renew(claim.ttlSeconds);
         this.diagnostics.renewed(session.observation, true);
         this.scheduleRenewal(session, claim);
       } catch (error) {
