@@ -8,15 +8,19 @@ import { createControllerServer } from "@/server/http-server";
 import { EventStream } from "@/server/events";
 import type { DirectoryBrowser } from "@/server/directory-browser";
 import { request } from "./server-request";
+import { join } from "node:path";
+import { listenAdminSocket, requestAdminSocket } from "@/server/admin-socket";
+import { authenticationAdminHandler } from "@/server/authentication-admin";
 import type { ProofFaultInjection } from "../src/index";
 import { cleanupStrictRoots, closeStrictProof, gate, pauseProvisioning, sleep, strictProof } from "./strict-fixture";
 
 afterEach(cleanupStrictRoots);
 describe("project lock and strict database admission ordering", () => {
-  it("queues a supported HTTP reservation and force-release behind local HTTP readiness; no transport reservation changes before operation completion", async () => {
+  it("queues supported HTTP reservation changes behind readiness, while supported admin token rotation can precede the local 200", async () => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults);
     const authentication = new AuthenticationService(f.store);
     const credential = await f.run(() => authentication.generateToken("fixture"));
+    const initialActor = await f.run(() => authentication.authenticateInstallation(credential.token)!);
     const project = await f.run(() => f.store.addProject({ name: "HTTP readiness", repositoryPath: f.root, port: 3903, executable: "node", args: [], launchPreset: "node" }));
     const processes = new ProcessManager(), ready = gate(), entered = gate(), effects: string[] = [];
     const start = vi.spyOn(processes, "start").mockImplementation(async () => { effects.push("readiness-entered"); entered.open(); await f.store.admission.idle(() => ready.opened); effects.push("readiness-returned"); });
@@ -30,11 +34,16 @@ describe("project lock and strict database admission ordering", () => {
       directoryBrowser: {} as DirectoryBrowser, events: new EventStream(f.store.admission),
       mcpStatus: () => ({ phase: "disabled", endpoint: null, transport: "streamable-http", network: "loopback", authentication: "bearer", activeSessions: 0 }),
       webRoot: f.root, host: "127.0.0.1", port: 0, accessToken: "fixture" });
+    const adminHandler = authenticationAdminHandler({ authentication, closeMcpSessions: async () => undefined, disconnectEvents: () => undefined });
+    const adminPath = join(f.root, "readiness-admin.sock");
+    const admin = await listenAdminSocket(adminPath, value => f.store.admission.run(() => adminHandler(value)));
     const operation = request(http.server, `/api/projects/${project.id}/operation`, credential.token, JSON.stringify({ operation: "start", worktreePath: f.root }));
     await entered.opened;
+    const reserveCall = vi.spyOn(service, "reserve"), releaseCall = vi.spyOn(service, "release");
     const reservation = request(http.server, `/api/projects/${project.id}/reservation`, credential.token, JSON.stringify({ action: "acquire", worktreePath: f.root, reason: "supported competitor" }));
     const releasing = request(http.server, `/api/projects/${project.id}/reservation`, credential.token, JSON.stringify({ action: "force-release" }));
-    const reserveCall = vi.spyOn(service, "reserve"), releaseCall = vi.spyOn(service, "release");
+    // Reach both installed application entry points before taking provider admission.
+    await vi.waitFor(() => { expect(reserveCall).toHaveBeenCalledOnce(); expect(releaseCall).toHaveBeenCalledOnce(); });
     const hold = pauseProvisioning(f, faults, "rollback");
     try {
       await hold.paused;
@@ -42,7 +51,12 @@ describe("project lock and strict database admission ordering", () => {
       expect(reserve).not.toHaveBeenCalled(); expect(release).not.toHaveBeenCalled();
       expect(reservation.ended).toBe(false); expect(releasing.ended).toBe(false);
       expect(f.store.admissionSnapshot()).toMatchObject({ coreActive: 0, queuedCore: 0 });
-      ready.open(); hold.resume(); await hold.pending;
+      const rotated = requestAdminSocket(adminPath, { command: "token rotate" });
+      await vi.waitFor(() => expect(f.store.admissionSnapshot().queuedCore).toBe(1));
+      hold.resume(); await hold.pending; await rotated;
+      expect(await f.run(() => authentication.isCurrentInstallationActor(initialActor))).toBe(false);
+      expect(operation.ended).toBe(false); expect(reserve).not.toHaveBeenCalled();
+      ready.open();
       expect(await operation.completed).toMatchObject({ status: 200, body: { ok: true } });
       expect(await reservation.completed).toMatchObject({ status: 200 }); expect(await releasing.completed).toMatchObject({ status: 200 });
       expect(effects).toEqual(["readiness-entered", "readiness-returned", "reserved", "released"]); expect(start).toHaveBeenCalledOnce();
@@ -50,7 +64,9 @@ describe("project lock and strict database admission ordering", () => {
       // HTTP bytes can arrive after subsequent serialized mutations. This 200 is
       // a historical operation result and makes no claim of a continuing lease.
       expect(await f.run(() => f.store.getActiveReservation(project.id))).toBeNull();
-    } finally { ready.open(); hold.resume(); await hold.pending; await Promise.allSettled([operation.completed, reservation.completed, releasing.completed]); await http.close(); await service.shutdown(); await closeStrictProof(f); }
+      // Characterization of existing installation runtime authority, not provider
+      // handoff acceptance: local operations do not reauthenticate after readiness.
+    } finally { ready.open(); hold.resume(); await hold.pending; await Promise.allSettled([operation.completed, reservation.completed, releasing.completed]); await admin.close(); await http.close(); await service.shutdown(); await closeStrictProof(f); }
   });
 
   it("serializes two operations without retaining admission in a project-lock wait, lets the provider run during readiness, and drains accepted work", async () => {
