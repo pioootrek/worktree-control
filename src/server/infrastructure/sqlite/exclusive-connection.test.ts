@@ -44,6 +44,26 @@ function gate() {
 }
 
 describe("exclusive provider borrow of the controller connection", () => {
+  it.each([false, true])("releases a synchronously throwing provider callback (open transaction: %s)", async (openTransaction) => {
+    const f = fixture();
+    const kept = f.project("kept", 3501);
+    const connection = f.storage.createProviderConnection();
+    const failure = new Error("provider failed before returning a promise");
+    const result = f.storage.borrow(() => {
+      if (openTransaction) {
+        connection.prepare("BEGIN").run([]);
+        connection.prepare(insertUser).run(userValues("rolled-back"));
+      }
+      throw failure;
+    });
+    if (openTransaction) await expect(result).rejects.toMatchObject({ code: "provider_closed" });
+    else await expect(result).rejects.toBe(failure);
+    expect(f.store.getProject(kept.id)?.name).toBe("kept");
+    expect(providerUsers(f.path)).toBe(0);
+    if (openTransaction) await expect(f.storage.borrow(async () => undefined)).rejects.toMatchObject({ code: "provider_closed" });
+    else await expect(f.storage.borrow(async () => "usable")).resolves.toBe("usable");
+  });
+
   it("exposes no path from core or borrowed handles back to the raw connection", async () => {
     const f = fixture();
     const statement = f.core.prepare("SELECT 1");

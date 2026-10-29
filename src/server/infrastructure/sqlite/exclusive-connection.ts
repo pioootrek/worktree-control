@@ -98,7 +98,9 @@ export class ExclusiveSqliteConnection {
     const borrow: Borrow = { active: false, authorized: 0 };
     await this.#admit(borrow);
     let settled = false;
-    const execution = this.#context.run(borrow, operation);
+    // A provider may throw before returning its promise. Keep that failure on
+    // the same release/rollback path as an asynchronous rejection.
+    const execution = this.#context.run(borrow, async () => operation());
     const expiry = new Promise<never>((_, reject) => {
       borrow.timer = setTimeout(() => {
         if (settled) return;
