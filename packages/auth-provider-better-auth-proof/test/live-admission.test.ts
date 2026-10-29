@@ -1,18 +1,16 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import type { ServerResponse } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createControllerBackup } from "@/server/controller-backup";
 import { EventStream } from "@/server/events";
-import { SqliteStateStore } from "@/server/infrastructure/sqlite";
 import { nullLogWriter } from "@/server/log-writer";
 import { resolveControllerAuthentication } from "@/server/modules/authentication";
-import { IdentityService } from "@/server/modules/identity";
 import { StatusService } from "@/server/modules/status";
 import { TestJobManager } from "@/server/test-job-manager";
 import type { ProofFaultInjection } from "../src/index";
-import { cleanupRoots, count, loadProof, OWNER_EMAIL, OWNER_PASSWORD, readCommitted } from "./fixture";
+import { cleanupRoots, count, OWNER_EMAIL, OWNER_PASSWORD, readCommitted } from "./fixture";
+import { cleanupStrictRoots, pauseProvisioning, sleep, strictProof } from "./strict-fixture";
 
 /**
  * Live coexistence of the real pinned provider with admitted controller work on
@@ -20,44 +18,12 @@ import { cleanupRoots, count, loadProof, OWNER_EMAIL, OWNER_PASSWORD, readCommit
  * with) a held library transaction, background producers persist in order
  * afterwards, and long waits never hold admission.
  */
-const roots: string[] = [];
-afterEach(() => { cleanupRoots(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { cleanupRoots(); cleanupStrictRoots(); });
 
-function gate() {
-  let open!: () => void;
-  const opened = new Promise<void>(resolve => { open = resolve; });
-  return { open, opened };
-}
 const errorCode = async (operation: () => Promise<unknown>) => {
   try { await operation(); } catch (error) { return (error as { code?: string }).code ?? String(error); }
   return undefined;
 };
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-async function strictProof(faults: ProofFaultInjection, options: { borrowTimeoutMs?: number } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "auth-provider-admission-")); roots.push(root);
-  const path = join(root, "state.sqlite3");
-  const store = new SqliteStateStore(path, undefined, { borrowTimeoutMs: options.borrowTimeoutMs });
-  const identity = new IdentityService(store);
-  const owner = identity.bootstrapOwnerSession();
-  const ownerActor = identity.authenticateBearer(owner.token);
-  // Bootstrap is done: from here every core statement must be admitted.
-  store.requireAdmission();
-  const run = <T>(operation: () => T | Promise<T>) => store.admission.run(operation);
-  const { runtime, evidence } = await loadProof(store, faults);
-  return { root, path, store, identity, owner, ownerActor, runtime, evidence, run };
-}
-type Proof = Awaited<ReturnType<typeof strictProof>>;
-
-/** Pauses the real library transaction after its first write until released. */
-function pauseProvisioning(f: Proof, faults: ProofFaultInjection, outcome: "rollback" | "commit") {
-  const paused = gate(), resume = gate();
-  faults.afterProvisionedUser = async () => { paused.open(); await resume.opened; if (outcome === "rollback") throw new Error("abort after write"); };
-  const pending = f.runtime.provisionLocal({ principalId: f.owner.principalId, email: OWNER_EMAIL, name: "Owner", password: OWNER_PASSWORD, actor: "test" })
-    .then(() => "committed", (error: unknown) => (error as { code?: string }).code ?? "failed");
-  return { paused: paused.opened, resume: resume.open, pending };
-}
-
 function fakeClient() {
   const writes: string[] = [];
   const client = { write: (chunk: string) => { writes.push(chunk); return true; }, once: () => client, end: () => undefined } as unknown as ServerResponse;
