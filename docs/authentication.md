@@ -159,8 +159,9 @@ the delegation. At revision `0`, omitting `--expires-at` means no expiry.
 For updates/restoration with a later revision, the CLI requires `--expires-at`:
 pass the current future timestamp to preserve its bound or `none` to explicitly
 remove it. Read `list-runtime-access` before changing actions. The HTTP/service
-contract accepts omission or null as no expiry; the CLI guard prevents an
-accidental removal on update. Updates and revocations require the current revision.
+contract preserves the existing expiry when the field is omitted on an update,
+including an already expired bound. Explicit null removes it; omission on creation
+means no expiry. Updates and revocations require the current revision.
 Revocation retains a tombstone; restoration is a new set with its revision.
 Stale mutations fail with a revision conflict (HTTP 409).
 

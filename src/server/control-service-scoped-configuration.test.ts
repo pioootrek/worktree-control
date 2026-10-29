@@ -30,7 +30,7 @@ const MISSING = "00000000-0000-4000-8000-00000000dead";
 
 type Database = { prepare(sql: string): { all(...args: unknown[]): Array<Record<string, unknown>>; run(...args: unknown[]): unknown } };
 
-function fixture() {
+function fixture(withWorktreeErrors = true) {
   const directory = mkdtempSync(join(tmpdir(), "worktree-control-scoped-config-"));
   directories.push(directory);
   const store = new SqliteStateStore(join(directory, "state.sqlite3"));
@@ -42,7 +42,7 @@ function fixture() {
   const foreign = store.addProject({ name: `Foreign-${SENTINEL}`, repositoryPath: "/code/foreign", port: 3622, executable: "pnpm", args: ["run", "dev"] });
   store.updateProjectEnvironment(project.id, { API_KEY: SENTINEL }, "test");
   store.saveProjectEnvironmentProfile(project.id, { name: "staging", environment: { STAGING_SECRET: SENTINEL } }, "test");
-  const worktree = (path: string): Worktree => ({ path, head: "abc", shortHead: "abc", branch: "main", detached: false, locked: false, prunable: false, dirty: false, statusError: SENTINEL });
+  const worktree = (path: string): Worktree => ({ path, head: "abc", shortHead: "abc", branch: "main", detached: false, locked: false, prunable: false, dirty: false, statusError: withWorktreeErrors ? SENTINEL : undefined });
   const trees: Record<string, Worktree[]> = {
     "/code/web": [worktree("/code/web"), worktree("/code/web-feature")],
     "/code/tests": [worktree("/code/tests")],
@@ -124,7 +124,7 @@ function expectNoLeak(value: unknown, extra: string[] = []): void {
 
 describe("scoped configuration actions", () => {
   it("invalidates warm dashboard presets after scoped timeout changes but not after no-ops or refusals", async () => {
-    const f = fixture();
+    const f = fixture(false);
     f.grant(all);
     const actor = f.credential(["config:write"], [f.project.id]);
     const { session } = f.sessionFor("agent:mcp:dashboard");
