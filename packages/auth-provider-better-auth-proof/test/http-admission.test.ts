@@ -1,6 +1,3 @@
-import { EventEmitter } from "node:events";
-import type { IncomingMessage, Server, ServerResponse } from "node:http";
-import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ControlService } from "@/server/control-service";
 import type { DirectoryBrowser } from "@/server/directory-browser";
@@ -10,26 +7,10 @@ import { KnowledgeService } from "@/server/modules/knowledge";
 import type { ProofFaultInjection } from "../src/index";
 import { cleanupStrictRoots, closeStrictProof, pauseProvisioning, sleep, strictProof, type StrictProof } from "./strict-fixture";
 
+import { request } from "./server-request";
+
 afterEach(cleanupStrictRoots);
 
-/** Exercise Node's installed request handler without listening or reserving a port. */
-function request(server: Server, path: string, token: string, body?: string) {
-  const incoming = Object.assign(new PassThrough(), { method: "POST", url: path, headers: { host: "controller.test", authorization: `Bearer ${token}` } });
-  const headers = new Map<string, unknown>();
-  let status = 0, ended = false;
-  let finish!: (value: { status: number; headers: Map<string, unknown>; body: Record<string, unknown> }) => void;
-  const completed = new Promise<{ status: number; headers: Map<string, unknown>; body: Record<string, unknown> }>(resolve => { finish = resolve; });
-  const response = Object.assign(new EventEmitter(), {
-    headersSent: false,
-    setHeader(name: string, value: unknown) { headers.set(name.toLowerCase(), value); },
-    writeHead(code: number, values: Record<string, unknown> = {}) { status = code; this.headersSent = true; for (const [name, value] of Object.entries(values)) headers.set(name.toLowerCase(), value); return this; },
-    end(value: string) { ended = true; finish({ status, headers, body: JSON.parse(value) }); this.emit("finish"); },
-    destroy() { throw new Error("Unexpected destroyed proof response"); },
-  });
-  server.emit("request", incoming as unknown as IncomingMessage, response as unknown as ServerResponse);
-  if (body !== undefined) incoming.end(body);
-  return { completed, send: (value: string) => incoming.end(value), get ended() { return ended; } };
-}
 function web(f: StrictProof) {
   const knowledge = new KnowledgeService(f.store, f.identity);
   const execute = vi.fn((input: unknown, actor: Parameters<KnowledgeService["execute"]>[1]) => knowledge.execute(input, actor));
@@ -44,7 +25,11 @@ function web(f: StrictProof) {
 describe("strict HTTP admission with a real paused provider", () => {
   it.each(["commit", "rollback"] as const)("waits through provider %s, executes once, and distinguishes invalid credentials and malformed bodies", async outcome => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults), http = web(f);
-    const project = await f.run(() => f.identity.createKnowledgeProject({ name: "HTTP fixture" }, f.ownerActor));
+    const project = await f.run(() => {
+      const project = f.identity.createKnowledgeProject({ name: "HTTP fixture" }, f.ownerActor);
+      f.identity.setKnowledgeGrant({ principalId: f.owner.principalId, projectId: project.id, permissions: ["knowledge:read", "knowledge:write"] }, f.ownerActor);
+      return project;
+    });
     const body = JSON.stringify({ operation: "create_task", input: { projectId: project.id, title: "Once", description: "boundary", idempotencyKey: "http-once" } });
     const hold = pauseProvisioning(f, faults, outcome);
     try {

@@ -14,14 +14,14 @@ describe("project lock and strict database admission ordering", () => {
     const first = lifecycle.serialized(project.id, async () => {
       expect(f.store.getProject(project.id)?.name).toBe("lifecycle"); effects.push("first-start"); reached.open();
       await f.store.admission.idle(() => ready.opened);
-      effects.push("first-finish"); f.store.recordProjectEvent(project.id, "fixture.first", "test");
+      effects.push("first-finish"); f.store.recordProjectEvent(project.id, "fixture.first", "test", {});
     });
     await reached.opened;
     const hold = pauseProvisioning(f, faults, "rollback");
     try {
       await hold.paused;
       const second = lifecycle.serialized(project.id, async () => {
-        expect(f.store.getProject(project.id)?.name).toBe("lifecycle"); effects.push("second"); f.store.recordProjectEvent(project.id, "fixture.second", "test");
+        expect(f.store.getProject(project.id)?.name).toBe("lifecycle"); effects.push("second"); f.store.recordProjectEvent(project.id, "fixture.second", "test", {});
       });
       await sleep(20); expect(effects).toEqual(["first-start"]);
       // Second is waiting on the project, not holding a database participant.
