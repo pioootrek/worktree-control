@@ -35,6 +35,13 @@ To reproduce dependency resolution, run `pnpm install --frozen-lockfile` at the
 root. Its workspace importer pins Better Auth and core at 1.7.14 and Kysely at
 0.28.17; the existing root driver is `better-sqlite3` 13.0.3.
 
+The pinned library snapshots only 100 rows for bulk session-deletion hooks.
+The proof wraps its shared `deleteUserSessions` operation in a transaction and
+queues a subject-wide invalidation after commit, covering local revocation,
+recovery and native password/reset/revocation handlers regardless of session
+count. Single-session deletion retains its narrower notification. Tests cover
+101 sessions and verify that rolled-back changes emit no invalidation.
+
 This password-only proof does not satisfy MFA or establish ASVS Level 2.
 Its numeric limits are experimental settings. Standard Better Auth stores
 bearer session tokens and includes native session tokens in sign-in and

@@ -153,6 +153,16 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
     // Construction only starts this check and logs failures; readiness must await it.
     if (typeof context.checkSchema !== "function") throw new Error("Library schema verification is unavailable.");
     await context.checkSchema();
+    // In 1.7.14 deleteManyWithHooks snapshots only the default first 100 rows,
+    // though it deletes all matches. Wrap the shared bulk operation so native
+    // password/reset/revoke handlers and local administration notify the whole
+    // subject. Queue first, but deliver only after the enclosing commit; a
+    // failing per-session listener must not suppress the complete notification.
+    const deleteUserSessions = context.internalAdapter.deleteUserSessions.bind(context.internalAdapter);
+    context.internalAdapter.deleteUserSessions = async subject => runWithTransaction(context.adapter, async () => {
+      await queueAfterTransactionHook(async () => { this.#host.invalidated({ kind: "subject", providerId: PROVIDER_ID, subject }); });
+      await deleteUserSessions(subject);
+    });
     return { providerId: PROVIDER_ID, implementationVersion: IMPLEMENTATION_VERSION, library: { name: "better-auth", version: BETTER_AUTH_VERSION }, schema: "verified" };
   }
 
@@ -206,7 +216,6 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
       if (await context.internalAdapter.findCredentialAccount(subject)) await context.internalAdapter.updatePassword(subject, hash);
       else await context.internalAdapter.linkAccount({ userId: subject, providerId: "credential", accountId: subject, password: hash });
       this.#host.subjects.record("authentication.provider.password_recovered", { subject, principalId: input.principalId, actor: input.actor });
-      await queueAfterTransactionHook(async () => { this.#host.invalidated({ kind: "subject", providerId: PROVIDER_ID, subject }); });
       await this.#options.faultInjection?.beforeRecoveryCommit?.();
     });
   }

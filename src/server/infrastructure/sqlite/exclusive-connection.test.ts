@@ -44,6 +44,63 @@ function gate() {
 }
 
 describe("exclusive provider borrow of the controller connection", () => {
+  it("preserves omitted boolean arguments on core database and statement methods", () => {
+    const f = fixture();
+    expect(f.core.prepare("SELECT 1 n").pluck().get()).toBe(1);
+    expect(f.core.prepare("SELECT 1 n").expand().get()).toEqual({ $: { n: 1 } });
+    expect(f.core.prepare("SELECT 1 n").raw().get()).toEqual([1]);
+    expect(f.core.prepare("SELECT 1 n").safeIntegers().get()).toEqual({ n: 1n });
+    expect(f.core.defaultSafeIntegers()).toBe(f.core);
+    expect(f.core.prepare("SELECT 1 n").get()).toEqual({ n: 1n });
+    f.core.defaultSafeIntegers(false);
+    expect(f.core.prepare("SELECT 1 n").get()).toEqual({ n: 1 });
+    expect(f.core.unsafeMode()).toBe(f.core);
+    f.core.unsafeMode(false);
+    // Explicit undefined is not an omitted argument in the pinned driver.
+    expect(() => f.core.prepare("SELECT 1").pluck(undefined)).toThrow(TypeError);
+  });
+
+  it.each(["return", "unstarted", "throw", "transaction", "expire", "close"] as const)("closes abandoned provider iterators on %s", async outcome => {
+    const f = fixture({ borrowTimeoutMs: 100 });
+    const connection = f.storage.createProviderConnection();
+    const paused = gate(), resume = gate();
+    let iterator: IterableIterator<unknown> | undefined;
+    const borrowed = f.storage.borrow(async () => {
+      if (outcome === "transaction") {
+        connection.prepare("BEGIN").run([]);
+        connection.prepare(insertUser).run(userValues("rollback-with-iterator"));
+      }
+      iterator = connection.prepare("SELECT 1 UNION ALL SELECT 2").iterate([]);
+      if (outcome !== "unstarted") iterator.next();
+      paused.open();
+      if (outcome === "expire" || outcome === "close") await resume.opened;
+      if (outcome === "throw") throw new Error("fixture failure");
+    });
+    // Observe rejection immediately, including forced timeout/closure paths.
+    const result = borrowed.then(() => undefined, (error: unknown) => error);
+    await paused.opened;
+    if (outcome === "close") {
+      f.store.close();
+      resume.open();
+    }
+    const failure = await result;
+    resume.open();
+    if (outcome === "transaction") expect(failure).toMatchObject({ code: "provider_closed" });
+    if (outcome === "expire") expect(failure).toMatchObject({ code: "expired" });
+    if (outcome === "throw") expect(failure).toMatchObject({ message: "fixture failure" });
+    if (outcome !== "close") {
+      expect(providerUsers(f.path)).toBe(0);
+      f.project("after-iterator", 3510);
+      expect(() => iterator!.next()).toThrow();
+      f.store.close();
+    }
+    stores.splice(stores.indexOf(f.store), 1);
+    expect(f.core.open).toBe(false);
+    expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
+    const reopened = new SqliteStateStore(f.path); stores.push(reopened);
+    expect(reopened.schemaVersion()).toBe(38);
+  });
+
   it.each([false, true])("releases a synchronously throwing provider callback (open transaction: %s)", async (openTransaction) => {
     const f = fixture();
     const kept = f.project("kept", 3501);

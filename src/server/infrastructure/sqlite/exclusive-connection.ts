@@ -37,7 +37,7 @@ export interface ExclusiveConnectionOptions {
   rollback?: (connection: Database.Database) => void;
 }
 
-interface Borrow { active: boolean; authorized: number; timer?: NodeJS.Timeout }
+interface Borrow { active: boolean; authorized: number; iterators: Set<IterableIterator<unknown>>; timer?: NodeJS.Timeout }
 interface Waiter { borrow: Borrow; grant: () => void; refuse: (error: ExclusiveConnectionError) => void; timer: NodeJS.Timeout }
 type State = "open" | "provider_closed" | "poisoned" | "closed";
 
@@ -95,7 +95,7 @@ export class ExclusiveSqliteConnection {
     if (!this.#active && this.#raw.inTransaction) throw fail("in_transaction", "The connection cannot be lent from inside a transaction.");
     if (this.#queue.length >= this.#options.maxQueued) throw fail("queue_full", "Too many provider operations are waiting for the database.");
     this.#everBorrowed = true;
-    const borrow: Borrow = { active: false, authorized: 0 };
+    const borrow: Borrow = { active: false, authorized: 0, iterators: new Set() };
     await this.#admit(borrow);
     let settled = false;
     // A provider may throw before returning its promise. Keep that failure on
@@ -147,7 +147,7 @@ export class ExclusiveSqliteConnection {
         return borrowedStatement(this.#raw.prepare(sql), () => {
           if (facade.closed) throw fail("closed", "The provider connection was closed.");
           if (!borrow.active || this.#currentBorrow() !== borrow) throw this.#released();
-        });
+        }, borrow.iterators);
       },
       close: (): void => { facade.closed = true; },
     };
@@ -246,12 +246,21 @@ export class ExclusiveSqliteConnection {
     if (this.#active !== borrow) return undefined;
     borrow.active = false;
     let error: ExclusiveConnectionError | undefined;
+    // better-sqlite3 keeps a query busy even when its iterator was never read.
+    // Release cursors before rollback, or SQLite cannot roll back or close.
+    for (const iterator of borrow.iterators) {
+      try { iterator.return?.(); } catch {
+        this.#state = "poisoned";
+        error = fail("poisoned", "A provider cursor could not be closed; the database connection is unusable.");
+      }
+    }
+    borrow.iterators.clear();
     if (this.#raw.open && this.#raw.inTransaction) {
       try { this.#options.rollback(this.#raw); } catch { /* checked below */ }
       if (this.#raw.inTransaction) {
         this.#state = "poisoned";
         error = fail("poisoned", "A provider transaction could not be rolled back; the database connection is unusable.");
-      } else {
+      } else if (!error) {
         error = fail("provider_closed", "A provider operation left a transaction open; it was rolled back and provider admission is closed.");
       }
     }
@@ -272,22 +281,38 @@ export class ExclusiveSqliteConnection {
   }
 }
 
-function borrowedStatement(statement: Database.Statement, check: () => void): BorrowedSqliteStatement {
+function borrowedStatement(statement: Database.Statement, check: () => void, iterators: Set<IterableIterator<unknown>>): BorrowedSqliteStatement {
   return {
     reader: statement.reader,
     all(parameters) { check(); return statement.all(...parameters); },
     run(parameters) { check(); return statement.run(...parameters); },
-    iterate(parameters) { check(); return guardedIterator(statement.iterate(...parameters), check); },
+    iterate(parameters) {
+      check();
+      const iterator = statement.iterate(...parameters);
+      iterators.add(iterator);
+      return guardedIterator(iterator, check, () => { iterators.delete(iterator); });
+    },
   };
 }
 
-function guardedIterator<T>(iterator: IterableIterator<T>, check: () => void): IterableIterator<T> {
+function guardedIterator<T>(iterator: IterableIterator<T>, check: () => void, finished: () => void = () => undefined): IterableIterator<T> {
   const guarded: IterableIterator<T> = {
     next() {
-      try { check(); } catch (error) { iterator.return?.(); throw error; }
-      return iterator.next();
+      try {
+        check();
+        const result = iterator.next();
+        if (result.done) finished();
+        return result;
+      } catch (error) {
+        try { iterator.return?.(); finished(); } catch { /* retained for borrow cleanup */ }
+        throw error;
+      }
     },
-    return(value?: unknown) { return iterator.return?.(value) ?? { done: true, value: undefined as T }; },
+    return(value?: unknown) {
+      const result = iterator.return?.(value) ?? { done: true, value: undefined as T };
+      finished();
+      return result;
+    },
     [Symbol.iterator]() { return guarded; },
   };
   return guarded;
@@ -331,10 +356,10 @@ function coreFacade(
     aggregate(name: string, options: Database.AggregateOptions) { assert(); raw.aggregate(name, options); return facade; },
     loadExtension(path: string) { assert(); raw.loadExtension(path); return facade; },
     close() { assert(); raw.close(); return facade; },
-    defaultSafeIntegers(toggle?: boolean) { assert(); raw.defaultSafeIntegers(toggle); return facade; },
+    defaultSafeIntegers(...parameters: [boolean?]) { assert(); raw.defaultSafeIntegers(...parameters); return facade; },
     backup,
     table(name: string, options: Parameters<Database.Database["table"]>[1]) { assert(); raw.table(name, options); return facade; },
-    unsafeMode(unsafe?: boolean) { assert(); raw.unsafeMode(unsafe); return facade; },
+    unsafeMode(...parameters: [boolean?]) { assert(); raw.unsafeMode(...parameters); return facade; },
     serialize(options?: Database.SerializeOptions) { assert(); return raw.serialize(options); },
   };
   return facade as unknown as Database.Database;
@@ -351,12 +376,12 @@ function coreStatement(statement: Database.Statement, database: Database.Databas
     get(...parameters: unknown[]) { assert(); return statement.get(...parameters); },
     all(...parameters: unknown[]) { assert(); return statement.all(...parameters); },
     iterate(...parameters: unknown[]) { assert(); return guardedIterator(statement.iterate(...parameters), assert); },
-    pluck(toggle?: boolean) { statement.pluck(toggle); return wrapper; },
-    expand(toggle?: boolean) { statement.expand(toggle); return wrapper; },
-    raw(toggle?: boolean) { statement.raw(toggle); return wrapper; },
+    pluck(...parameters: [boolean?]) { statement.pluck(...parameters); return wrapper; },
+    expand(...parameters: [boolean?]) { statement.expand(...parameters); return wrapper; },
+    raw(...parameters: [boolean?]) { statement.raw(...parameters); return wrapper; },
     bind(...parameters: unknown[]) { statement.bind(...parameters); return wrapper; },
     columns() { return statement.columns(); },
-    safeIntegers(toggle?: boolean) { statement.safeIntegers(toggle); return wrapper; },
+    safeIntegers(...parameters: [boolean?]) { statement.safeIntegers(...parameters); return wrapper; },
   };
   return wrapper as unknown as Database.Statement;
 }

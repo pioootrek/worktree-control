@@ -85,6 +85,53 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
     } finally { f.store.close(); }
   });
 
+  it.each(["dispose-throws.mjs", "partial-dispose-throws.mjs"])("closes the facade and sanitizes synchronous loader disposal failures: %s", async name => {
+    const f = storeFixture();
+    try {
+      const error = await loadProof(f.store, undefined, fixtureModule(name)).catch((reason: unknown) => reason);
+      expect(error).toMatchObject({ code: "provider_unavailable" });
+      expect(String(error)).not.toContain("fixture-secret");
+      const probe = (globalThis as unknown as { __loaderProbe: { disposed: number; host: { connection: { prepare(sql: string): unknown } } } }).__loaderProbe;
+      expect(probe.disposed).toBe(1);
+      expect(() => probe.host.connection.prepare("SELECT 1")).toThrow(/closed/);
+      expect(f.store.listProjects()).toEqual([]);
+      const loaded = await loadProof(f.store);
+      await loaded.runtime.dispose();
+    } finally { f.store.close(); }
+  });
+
+  it.each(["admin", "change-password", "reset-password", "recovery", "revoke-sessions"] as const)("invalidates every session beyond the library's 100-row hook snapshot: %s", async operation => {
+    const f = await provisioned();
+    try {
+      const client = new Client(f.runtime, `203.0.113.${110 + ["admin", "change-password", "reset-password", "recovery", "revoke-sessions"].indexOf(operation)}`);
+      expect((await client.signIn()).status).toBe(200);
+      // Use the same owner connection to seed volume without 100 password hashes.
+      // Revocation itself runs through the real library and actual HTTP handlers.
+      const storage = f.store.authenticationProviderStorage();
+      const connection = storage.createProviderConnection();
+      await storage.borrow(async () => {
+        const insert = connection.prepare('INSERT INTO authentication_ba_session (id, token, userId, expiresAt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)');
+        for (let index = 0; index < 100; index++) insert.run([`extra-${index}`, `fixture-session-${index}`, f.subject, Date.now() + 60_000, Date.now(), Date.now()]);
+      });
+      expect(count(f.path, "authentication_ba_session")).toBe(101);
+      const originalIds = readCommitted(f.path, db => db.prepare("SELECT id FROM authentication_ba_session").all() as Array<{ id: string }>);
+      if (operation === "admin") await f.runtime.revokePrincipalSessions(f.owner.principalId);
+      else if (operation === "recovery") await f.runtime.recoverLocal({ principalId: f.owner.principalId, newPassword: NEW_PASSWORD, actor: "fixture" });
+      else if (operation === "reset-password") {
+        expect((await client.call("/request-password-reset", { body: { email: OWNER_EMAIL } })).status).toBe(200);
+        expect((await client.call("/reset-password", { body: { token: f.evidence.resets[0]!.token, newPassword: NEW_PASSWORD } })).status).toBe(200);
+      } else if (operation === "change-password") {
+        expect((await client.call("/change-password", { body: { currentPassword: OWNER_PASSWORD, newPassword: NEW_PASSWORD, revokeOtherSessions: true } })).status).toBe(200);
+      } else expect((await client.call("/revoke-sessions", { body: {} })).status).toBe(200);
+      const remaining = readCommitted(f.path, db => db.prepare("SELECT id FROM authentication_ba_session").all() as Array<{ id: string }>);
+      expect(remaining).toHaveLength(operation === "change-password" ? 1 : 0);
+      for (const { id } of originalIds) {
+        expect(remaining.some(row => row.id === id)).toBe(false);
+        expect(f.evidence.events.some(event => event.subject === f.subject && (event.kind === "subject" || event.sessionId === id))).toBe(true);
+      }
+    } finally { await f.runtime.dispose(); f.store.close(); }
+  });
+
   it.each([false, true])("cleans up a loaded provider's synchronous failure (open transaction: %s)", async openTransaction => {
     const f = storeFixture();
     const { runtime } = await loadProof(f.store, undefined, fixtureModule("synchronous-handle.mjs"));
@@ -286,8 +333,8 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
       expect((await new Client(f.runtime, "203.0.113.41").signIn()).status).toBe(401);
       expect((await new Client(f.runtime, "203.0.113.42").signIn(NEW_PASSWORD)).status).toBe(200);
       expect(f.evidence.events).toEqual([
-        { kind: "session", providerId: "better-auth", sessionId: expect.any(String), subject: f.subject },
         { kind: "subject", providerId: "better-auth", subject: f.subject },
+        { kind: "session", providerId: "better-auth", sessionId: expect.any(String), subject: f.subject },
       ]);
       expect(f.identity.authenticateBearer(agentToken).principalId).toBe(agent.id);
       expect(f.identity.authenticateBearer(f.owner.token).principalId).toBe(f.owner.principalId);

@@ -144,7 +144,9 @@ export async function loadAuthenticationProvider(input: LoadAuthenticationProvid
     if (!isRecord(instance) || REQUIRED_METHODS.some(method => typeof (instance as unknown as Record<string, unknown>)[method] !== "function")) {
       const partial = instance as unknown as Record<string, unknown> | undefined;
       instance = undefined;
-      if (isRecord(partial) && typeof partial.dispose === "function") await Promise.resolve((partial.dispose as () => unknown)()).catch(() => undefined);
+      if (isRecord(partial) && typeof partial.dispose === "function") {
+        try { await (partial.dispose as () => unknown).call(partial); } catch { /* preserve the safe compatibility error */ }
+      }
       throw unavailable("incompatible instance");
     }
     const ready = instance;
@@ -154,9 +156,9 @@ export async function loadAuthenticationProvider(input: LoadAuthenticationProvid
       || readiness.implementationVersion !== provider.implementationVersion) throw unavailable("readiness");
     return new AuthenticationProviderRuntime(input, provider, ready, connection, subjects, operations, Object.freeze({ ...readiness, library: Object.freeze({ ...readiness.library }) }));
   } catch (error) {
-    await instance?.dispose().catch(() => undefined);
-    connection.close();
-    throw error;
+    try { await instance?.dispose(); } catch { /* preserve the safe load error */ }
+    finally { connection.close(); }
+    throw safeError(error);
   }
 }
 
