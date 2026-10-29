@@ -71,7 +71,7 @@ fixtures and mocks; finite-job cases run a real short Node process.
 | Boundary | Strict held-provider evidence | Remaining acceptance work |
 | --- | --- | --- |
 | HTTP | Commit/rollback wait, single mutation and receipt replay, queued revocation, malformed 400, initial and body-read re-admission contention 503 with Retry-After (Knowledge, vault, backups and user backups) | Broader route inventory |
-| MCP | Actual in-memory request wrapper, commit/rollback wait, current identity after revocation, policy closure prevents queued installation mutations, scoped readiness and retained retry; actual HTTP initial contention and post-body queued revocation | Retained HTTP body-read regression requires Retry-After on 503; complete SDK HTTP session and broader tool/resource matrix |
+| MCP | Actual in-memory request wrapper, commit/rollback wait, current identity after revocation, policy closure prevents queued installation mutations, scoped readiness and retained retry; actual HTTP initial and post-body contention preserve Retry-After, post-body queued revocation | Complete SDK HTTP session and broader tool/resource matrix |
 | Finite-job cancellation | Cancellation admitted after the preflight read remains terminal; no stale queued checkpoint or process spawn | Broader preparation/error interleavings |
 | Automatic renewal | Contention deadline and retry preserve claim; queued credential revocation/expiry and session close prevent renewal; lease expiry during the wait prevents renewal, runtime spawn and retained retry | Complete SDK HTTP session lifecycle remains separate |
 | Remote controller | Poll/report wait on commit/rollback, exact report replay, current worker grant at delivery; actual MCP submit/cancel and queued grant revocation; worker expiry at HTTP body-read re-admission | Full listener shutdown and remote cleanup failures |
@@ -117,12 +117,12 @@ The bounded acceptance checklist is:
 - **Tested:** `mcp-admission.test.ts`'s `does not revive a lease` case queues
   both the production renewal callback and `start_project`, then advances only
   wall-clock time past the stored lease. Neither renewal nor retry can spawn.
-- **Retained failing regression:** `mcp-http-admission.test.ts`'s `preserves
+- **Regression coverage:** `mcp-http-admission.test.ts`'s `preserves
   Retry-After` case invokes the actual installed `/mcp` listener. It authenticates,
   waits for body bytes without admission, then times out re-admission behind
-  the provider. `mcp-http-server.ts` sets Retry-After for initial contention but
-  omits it in the catch after the body read. The expected response is 503 with
-  `Retry-After: 1`; keep that expectation until the backend is fixed. The same
+  the provider. `mcp-http-server.ts` preserves the retryable classification
+  both at initial admission and after the body read: 503 with
+  `Retry-After: 1`. The same
   file checks initial admission and current post-body credential revocation.
 - **Scope-critical uncovered:** provider evidence still cannot authorize a
   controller operation safely. The [handoff proposal](../../docs/authentication.md#next-provider-authorization-handoff-proposal)

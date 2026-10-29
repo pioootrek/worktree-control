@@ -150,7 +150,10 @@ export function createMcpControllerServer(options: {
           error: error instanceof Error ? error.message : String(error),
         });
         const failure = databaseAdmissionFailure(error);
-        if (!response.headersSent) jsonError(response, failure?.status ?? 500, failure ? "The controller database is unavailable; retry the request." : "MCP request failed.");
+        if (!response.headersSent) {
+          if (failure?.retryable) response.setHeader("Retry-After", "1");
+          jsonError(response, failure?.status ?? 500, failure ? "The controller database is unavailable; retry the request." : "MCP request failed.");
+        }
       }
     })();
   });
