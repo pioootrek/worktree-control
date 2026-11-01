@@ -181,7 +181,7 @@ describe("A3-I13 durable admission, real library, one owner (no accepted replay 
     const f = await create(); const { browser, authenticator } = await setup(f, OWNER_EMAIL, false);
     const notifications = f.evidence.events.length;
     f.control.admission.pause = async stage => {
-      if (stage === "after-native") f.control.fault = { sql: /^(commit|SELECT \* FROM factor_admission_receipts)/i, when: "after", remaining: 2 };
+      if (stage === "after-native") f.control.fault = { sql: /^(commit|SELECT \* FROM factor_admission_receipts)/i, afterSql: /^commit$/i, when: "after", remaining: 2 };
     };
     const result = await verify(browser, authenticator.code());
     expect(result.status).toBe(503); expect(result.json?.outcome === "outcome_unconfirmed").toBe(true);
