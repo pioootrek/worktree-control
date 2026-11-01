@@ -22,13 +22,14 @@ export function validateProviderEntry(entry: string): string {
     let path = entry;
     if (entry.startsWith("file:")) {
       const url = new URL(entry);
-      if (url.host || url.search || url.hash) throw new Error();
+      if (url.host || url.search || url.hash || entry.includes("?") || entry.includes("#")) throw new Error();
       path = fileURLToPath(url);
     }
     if (!isAbsolute(path)) throw new Error();
     for (let current = path; ; current = dirname(current)) {
       const stat = lstatSync(current);
       if (stat.isSymbolicLink() || (stat.mode & 0o022) && !(stat.isDirectory() && (stat.mode & 0o1000))) throw new Error();
+      if (process.getuid && stat.uid !== process.getuid() && stat.uid !== 0) throw new Error();
       if (current === path && (!stat.isFile() || (process.getuid && stat.uid !== process.getuid() && stat.uid !== 0))) throw new Error();
       if (current === dirname(current)) break;
     }
@@ -38,7 +39,7 @@ export function validateProviderEntry(entry: string): string {
 function originBaseURL(value: string): string {
   try {
     const url = new URL(value);
-    if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error();
+    if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.pathname !== "/" || url.search || url.hash || value.includes("?") || value.includes("#")) throw new Error();
     return `${url.origin}/api/auth`;
   } catch { throw new ProviderAdminError("configuration_invalid"); }
 }

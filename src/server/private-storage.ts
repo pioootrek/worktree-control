@@ -117,6 +117,7 @@ export function validateSensitivePath(path: string, excludedRoots: readonly stri
       if (stat.isSymbolicLink()) unsafe();
       if (!first) {
         if (!stat.isDirectory() || ((stat.mode & 0o022) && !(stat.mode & 0o1000))) unsafe();
+        if (stat.uid !== 0 && !owned(stat.uid)) unsafe();
         if (current === dirname(absolute) && (!owned(stat.uid) || (stat.mode & 0o077))) unsafe();
         if (existsSync(join(current, ".git"))) unsafe();
       }

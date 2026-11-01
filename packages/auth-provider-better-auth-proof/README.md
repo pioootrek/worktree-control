@@ -263,7 +263,8 @@ explicit trusted fixture peer. No TCP listener or managed development server is
 started. The active boot snapshot is open, with optional adapter composition
 limited to the fixture. Pending token selection never reconstructs that snapshot.
 No production selector, environment switch or fourth product mode is introduced.
-Production main still cannot select/load/mount this provider.
+Production main cannot select or mount this provider. Only protected maintenance
+explicitly loads it, without composing the browser adapter.
 
 The fixture demonstrates strict login/session/logout/password DTOs and cookies,
 then calls the same HTTP `/api/knowledge` with explicit grants, including write

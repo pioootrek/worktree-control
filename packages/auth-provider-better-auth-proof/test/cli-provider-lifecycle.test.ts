@@ -9,6 +9,7 @@ import { Client, OWNER_EMAIL, OWNER_PASSWORD, count } from "./fixture";
 import { onlineCliFixture } from "./cli-provider-fixture";
 import { gate } from "./strict-fixture";
 import type { ProofFaultInjection } from "../src/index";
+import type { OwnedSqliteDatabase } from "@/server/infrastructure/sqlite";
 
 afterEach(() => vi.restoreAllMocks());
 const enrollment = { email: OWNER_EMAIL, name: "Owner", password: OWNER_PASSWORD };
@@ -124,6 +125,26 @@ describe("actual CLI/admin lifetime and ownership", () => {
       await expect(shutdownFor(f)()).rejects.toThrow("did not complete cleanly"); assertOwned(f); expect(f.loads()).toBe(1);
     } finally {
       resume.open(); await f.admin.close(); await f.store.closeAfterDrain(); f.lock.release(); f.remove();
+    }
+  });
+
+  it.each(["listener", "driver-close"] as const)("retains both owners on %s failure after actual provider administration", async stage => {
+    const f = await onlineCliFixture();
+    try {
+      await f.run(["enroll", "--principal-id", f.principalId, ...f.input(enrollment)]);
+      if (stage === "listener") vi.spyOn(f.admin, "close").mockRejectedValueOnce(new Error("sentinel-listener-close"));
+      else {
+        // Fault at the actual owned driver's close, after the provider has disposed.
+        const owned = (f.store as unknown as { ownedDatabase: OwnedSqliteDatabase }).ownedDatabase;
+        vi.spyOn(owned.database, "close").mockImplementationOnce(() => { throw new Error("sentinel-driver-close"); });
+      }
+      const shutdown = shutdownFor(f);
+      await expect(shutdown()).rejects.toThrow("did not complete cleanly"); assertOwned(f);
+      await expect(shutdown()).rejects.toThrow("did not complete cleanly");
+      await expect(f.administration.execute({ command: "auth-provider", action: "recover", principalId: f.principalId,
+        input: { newPassword: "fixture-refused-after-shutdown" } })).rejects.toMatchObject({ code: "maintenance" });
+    } finally {
+      vi.restoreAllMocks(); await f.admin.close(); await f.administration.dispose(); await f.store.closeAfterDrain(); f.lock.release(); f.remove();
     }
   });
 });

@@ -2,7 +2,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runAuthCommand } from "@/cli/auth-management";
-import { AdminRequestError } from "@/server/admin-socket";
+import { AdminRequestError, requestAdminSocket } from "@/server/admin-socket";
 import { FileProviderConfiguration } from "@/server/authentication-provider-configuration";
 import { SqliteStateStore } from "@/server/infrastructure/sqlite";
 import { loadAuthenticationProvider, ProviderKnowledgeApplication } from "@/server/modules/authentication";
@@ -12,6 +12,11 @@ import { Client, count, OWNER_EMAIL, OWNER_PASSWORD, readCommitted } from "./fix
 import { cliFixture, onlineCliFixture } from "./cli-provider-fixture";
 import { gate } from "./strict-fixture";
 import type { ProofFaultInjection } from "../src/index";
+import { createControllerServer } from "@/server/http-server";
+import type { ControlService } from "@/server/control-service";
+import type { DirectoryBrowser } from "@/server/directory-browser";
+import { EventStream } from "@/server/events";
+import { BrowserClient } from "./browser-authentication-fixture";
 
 afterEach(() => vi.restoreAllMocks());
 const enrollment = { email: OWNER_EMAIL, name: "Owner", password: OWNER_PASSWORD };
@@ -194,5 +199,46 @@ describe("protected CLI provider administration against actual SQLite/Better Aut
       expect(count(f.paths.databasePath, "authentication_ba_user")).toBe(1); expect(count(f.paths.databasePath, "authentication_provider_subjects")).toBe(1);
       await expect(f.create()).rejects.toMatchObject({ code: "owner_already_initialized" });
     } finally { await f.close(); }
+  });
+
+  it("keeps production public login unavailable after real maintenance and rejects forged private fields", async () => {
+    const f = await onlineCliFixture();
+    const http = createControllerServer({ service: {} as ControlService, authentication: f.authentication,
+      identity: new IdentityService(f.store), admission: f.store.admission, directoryBrowser: {} as DirectoryBrowser,
+      events: new EventStream(f.store.admission), webRoot: f.root, host: "127.0.0.1", port: 0, accessToken: "fixture",
+      mcpStatus: () => ({ phase: "disabled", endpoint: null, transport: "streamable-http", network: "loopback", authentication: "bearer", activeSessions: 0 }) });
+    try {
+      for (const extra of ["actor", "subject", "role", "faultInjection", "mode", "credentialId"]) {
+        await expect(requestAdminSocket(f.paths.adminSocketPath, { command: "auth-provider", action: "owner-create", [extra]: "sentinel" }))
+          .rejects.toMatchObject({ code: "invalid_input" });
+      }
+      expect(f.loads()).toBe(0);
+      await f.run(["enroll", "--principal-id", f.principalId, ...f.input(enrollment)]);
+      await f.run(["recover", "--principal-id", f.principalId, ...f.input({ newPassword: nextPassword })]);
+      const socket = join(f.root, "public.sock");
+      await new Promise<void>(resolve => { http.server.listen(socket, resolve); });
+      const browser = new BrowserClient(socket);
+      expect(await browser.call("/api/auth/status", { method: "GET" })).toMatchObject({ status: 200, body: { mode: "open", loginAvailable: false } });
+      for (const path of ["/api/auth/sign-in/email", "/api/auth/enroll", "/api/auth/recover", "/api/auth/provider", "/api/auth/mode"]) {
+        expect((await browser.call(path, { body: { command: "auth-provider", action: "recover", principalId: f.principalId, input: { newPassword: nextPassword } } })).status).toBe(404);
+      }
+      expect(f.loads()).toBe(1); expect(count(f.paths.databasePath, "principal_credentials")).toBe(0);
+    } finally { await http.close(); await f.close(); }
+  });
+
+  it("never replays a recovery after private IPC timeout and reports no fabricated rollback", async () => {
+    const entered = gate(), resume = gate(), faults: ProofFaultInjection = {}, f = await onlineCliFixture({ faults });
+    try {
+      await f.run(["enroll", "--principal-id", f.principalId, ...f.input(enrollment)]);
+      faults.beforeRecoveryCommit = async () => { entered.open(); await resume.opened; };
+      const call = requestAdminSocket(f.paths.adminSocketPath, { command: "auth-provider", action: "recover", principalId: f.principalId,
+        input: { newPassword: nextPassword } }, 15, 16 * 1024).catch(error => error);
+      await entered.opened;
+      const failure = await call; expect(failure).toMatchObject({ code: "admin_timeout" }); expect(failure).not.toHaveProperty("committed");
+      resume.open();
+      await vi.waitFor(() => expect(rows(f.paths.databasePath, "controller_audit_events").filter(row =>
+        (row as { event_type: string }).event_type === "authentication.provider.password_recovered")).toHaveLength(1));
+      expect((await client(f).signIn(nextPassword)).status).toBe(200);
+    } finally { resume.open(); await f.close(); }
   });
 });
