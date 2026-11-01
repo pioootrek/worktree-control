@@ -39,7 +39,7 @@ async function currentMode(paths: AppPaths, dependencies: McpConfigDependencies)
   }
   try {
     const store = new SqliteStateStore(paths.databasePath);
-    try { return new AuthenticationService(store).mode(); } finally { store.close(); }
+    try { return new AuthenticationService(store, undefined, undefined, undefined, undefined, "offline").mode(); } finally { store.close(); }
   } finally {
     lock.release();
   }

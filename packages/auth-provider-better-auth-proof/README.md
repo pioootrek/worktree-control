@@ -203,3 +203,31 @@ until production code is fixed; do not weaken it or use build/package success
 as a substitute for admission acceptance.
 
 Upstream licenses are reproduced in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+
+## Restart-only mode selection
+
+`mode-restart-admission.test.ts` uses the actual CLI, private Unix admin listener,
+HTTP/MCP runtime, sole-owner locks and owning shutdown helper. Its temporary
+Unix sockets never start a managed development server. It selects a future
+mode in boot A, verifies current HTTP/MCP authority and retained sessions, drains
+and closes ownership, then reopens the same database for boot B. It covers
+token/open, legacy upgrade, offline status, token prerequisites, cancellation,
+current rotation, public setter refusals, maintenance admission and startup
+failure. Existing runtime/readiness rotation regressions remain in the suite.
+Mode is the only boot snapshot; credentials and current grants stay live.
+
+Restore unit fixtures separately exercise physical replacement, format-2 active
+execution authority versus pending configuration, format-1 compatibility and
+malformed new-record refusal. Startup applies configured policy before the new
+snapshot. Controller schema 39, provider storage revision 1 and migration
+checksums do not change. External A5 session/password restore fencing remains
+open. Positive production third-mode tests belong after account/MFA and complete
+A5 transport enforcement; this suite does not make `better-auth` selectable.
+
+The next browser adapter assignment must resolve provider sessions outside core
+admission and preserve the existing current-authority handoff. It needs an exact
+route allowlist with sanitized JSON/cookies, strict canonical HTTPS/Host/Origin
+and CSRF boundaries, bounded requests and peer-based limiting, durable logout,
+authenticated password-change rechecks, and protected CLI provisioning/recovery.
+Production provider mounting and full RBAC activation remain gated.

@@ -25,7 +25,7 @@ afterEach(() => { vi.mocked(executeControllerRestoreRequest).mockReset(); cleanu
 describe("installed restore HTTP completion to owning launch", () => {
   it.each(["finish-close", "close-finish", "already-disconnected", "revoked", "cleanup-unconfirmed", "listener-unconfirmed", "execution-failed"] as const)("hands off once with current authority after contention: %s", async mode => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults);
-    const authentication = new AuthenticationService(f.store);
+    const authentication = await f.run(() => new AuthenticationService(f.store));
     const credential = await f.run(() => authentication.generateToken("fixture"));
     const actor = await f.run(() => authentication.authenticateInstallation(credential.token)!);
     const backups = new BackupOperations(backupPolicySchema.parse({ directory: join(f.root, "copies"), uiActions: ["create", "restore"] }), {
@@ -44,7 +44,7 @@ describe("installed restore HTTP completion to owning launch", () => {
       restarted(); // No second controller or service is actually launched.
     });
     const restores = new RestoreOperations(backups, f.path, join(f.root, "attachments"), {
-      authentication: () => f.store.getAuthenticationPolicy(), enterMaintenance: () => { maintenance = true; service.closeAdmission(); }, restart, failure: failed,
+      authentication: () => f.store.getAuthenticationPolicy(), executionMode: () => authentication.mode(), enterMaintenance: () => { maintenance = true; service.closeAdmission(); }, restart, failure: failed,
     });
     const controller = createControllerServer({ service, identity: f.identity, authentication, admission: f.store.admission,
       directoryBrowser: {} as DirectoryBrowser, events: new EventStream(f.store.admission),

@@ -495,12 +495,12 @@ describe("K6b Hub import execution",()=>{
   it("keeps the creation method across a reopen, different authorized method, no-op and failed reset",()=>{
     const root=mkdtempSync(join(tmpdir(),"hub-import-method-"));roots.push(root);
     const path=join(root,"state.sqlite3");let store=new SqliteStateStore(path);
-    let auth=new AuthenticationService(store),identity=new IdentityService(store,()=>NOW,undefined,undefined,auth);
+    let auth=new AuthenticationService(store,undefined,undefined,undefined,undefined,"offline"),identity=new IdentityService(store,()=>NOW,undefined,undefined,auth);
     const token=auth.generateToken("test").token,tokenActor=auth.authenticateInstallation(token)!;
     const source=plan([mapping("docs/backlog/feature/one.json","task","task",{id:"one",title:"One"}),mapping("docs/backlog/feature/two.json","task","task",{id:"two",title:"Two"})]);
     const input={plan:source,targetProjectId:"method",targetProjectName:"Method",chunkSize:1,batchId:"method-batch"};
     expect(execute(store,identity,tokenActor,input)).toMatchObject({status:"staging",authenticationMethod:"installation_token"});
-    store.close();store=new SqliteStateStore(path);auth=new AuthenticationService(store);identity=new IdentityService(store,()=>NOW,undefined,undefined,auth);
+    store.close();store=new SqliteStateStore(path);auth=new AuthenticationService(store,undefined,undefined,undefined,undefined,"offline");identity=new IdentityService(store,()=>NOW,undefined,undefined,auth);
     auth.setMode("open","test");const openActor=auth.anonymousInstallation()!;
     const published=execute(store,identity,openActor,input);
     expect(published).toMatchObject({status:"published",authenticationMethod:"installation_token",actorPrincipalId:"installation"});

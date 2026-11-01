@@ -1,6 +1,6 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-10-29"
+last_reviewed: "2026-11-01"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
@@ -455,8 +455,28 @@ worktree before every start. Django therefore uses a worktree-local `.venv` or
 
 ## Installation authentication
 
-The shared authentication module enforces the stored installation mode across
-HTTP, MCP and live subscriptions. New databases default to `token` and cannot
+The shared authentication module captures the active installation mode once per
+controller boot, after migrations and restore recovery, and enforces it across
+HTTP, MCP and live subscriptions. The existing stored policy mode is the
+next-start selection. Protected CLI administration alone can select it;
+activation requires a separate service restart. Private status distinguishes
+active/configured mode and restart requirement. Offline status has no active
+mode. Public HTTP, GUI and MCP expose no selector. Selection does not change
+sessions, listeners or live client access records; rotation still invalidates
+credentials and derived sessions immediately. Every authentication reads current
+token IDs/verifiers and current principal/grant authority. Serialized admitted
+selection rereads fresh policy and atomically saves selection plus audit, with
+no schema or configuration-revision change. Maintenance is checked inside
+admission after waits.
+
+Version-2 restore handoffs persist active `executionMode` separately from the
+latest configured authentication policy. Execution uses the former and the
+current captured token ID; startup restores the latter before capturing the new
+boot mode. Old format-1 handoffs use their historical policy mode. New malformed,
+unknown or inconsistent records fail closed. Existing restore revocation fences
+and owner locks remain; A5 provider-session resurrection remains unresolved.
+
+New databases default to `token` and cannot
 start until a token has been generated. Existing databases migrate to `legacy`;
 `open` is explicit and `better-auth` is an unavailable provider. Installation
 tokens are stored as verifiers, and rotation invalidates active sessions.

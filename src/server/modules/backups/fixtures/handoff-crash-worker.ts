@@ -29,6 +29,6 @@ const store = new SqliteStateStore(database), authentication = new Authenticatio
 const actor = authentication.authenticateInstallation(fs.readFileSync(join(root, "current-token"), "utf8"))!;
 let maintenance = false;
 const backups = new BackupOperations(policy, { databasePath: database, attachmentDirectory: attachments, applicationVersion: "fixture", source: store, estimateBytes: () => store.backupEstimateBytes(), authorize: actor => authentication.isCurrentInstallationActor(actor), maintenance: () => maintenance });
-const restores = new RestoreOperations(backups, database, attachments, { authentication: () => store.getAuthenticationPolicy(), enterMaintenance: () => { maintenance = true; }, restart: async execute => { await backups.close(); store.close(); if (point === "closed") hold(); execute(); if (point === "receipt") hold(); }, failure: error => { throw error; } });
+const restores = new RestoreOperations(backups, database, attachments, { authentication: () => store.getAuthenticationPolicy(), executionMode: () => authentication.mode(), enterMaintenance: () => { maintenance = true; }, restart: async execute => { await backups.close(); store.close(); if (point === "closed") hold(); execute(); if (point === "receipt") hold(); }, failure: error => { throw error; } });
 const input = { action: "restore", backupId: fs.readFileSync(join(root, "backup-id"), "utf8"), idempotencyKey: "crash-restore", confirmation: "replace-entire-installation" };
 await restores.admit(actor, input); restores.launch(actor, input);

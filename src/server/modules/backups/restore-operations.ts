@@ -9,12 +9,30 @@ import { backupCommandSchema } from "@/shared/contracts/backups";
 import { executeControllerRestoreRequest, finishControllerRestoreRequest, getControllerRestoreRequestStatus, requestControllerRestoreAsync, type RestoreRequestPolicy } from "@/server/restore-requests";
 import { restoreActorSchema, type RestoreActor } from "@/server/infrastructure/sqlite";
 import { privateDirectory } from "@/server/private-storage";
-import type { AuthenticationPolicy, AuthenticationStore } from "@/server/modules/authentication";
+import type { AuthenticationMode, AuthenticationPolicy, AuthenticationStore } from "@/server/modules/authentication";
 import type { IdentityStore } from "@/server/modules/identity";
 import { BackupCatalog } from "./catalog";
 
 const authenticationSchema = z.object({ mode: z.enum(["legacy", "open", "token", "better-auth"]), generation: z.number().int().nonnegative(), token: z.object({ id: z.uuid(), prefix: z.string(), verifierHash: z.string().regex(/^[0-9a-f]{64}$/), createdAt: z.iso.datetime() }).strict().nullable() }).strict();
-const handoffSchema = z.object({ format: z.literal(1), actor: restoreActorSchema, operationId: z.uuid(), createdAt: z.iso.datetime(), state: z.enum(["requested", "maintenance", "executing", "verified", "interrupted", "failed"]), authentication: authenticationSchema.nullable(), local: z.boolean() }).strict();
+const handoffFields = {
+  actor: restoreActorSchema, operationId: z.uuid(), createdAt: z.iso.datetime(),
+  state: z.enum(["requested", "maintenance", "executing", "verified", "interrupted", "failed"]),
+  authentication: authenticationSchema.nullable(), local: z.boolean(),
+};
+// Format 1 predates pending selections: its policy mode was also execution authority.
+const handoffSchema = z.union([
+  z.object({ format: z.literal(1), ...handoffFields }).strict(),
+  z.object({ format: z.literal(2), ...handoffFields,
+    executionMode: z.enum(["legacy", "open", "token", "better-auth"]),
+  }).strict().superRefine((record, context) => {
+    if ((record.authentication?.token && record.authentication.token.prefix !== `wsi_${record.authentication.token.id}`)
+      || (["maintenance", "executing", "verified"].includes(record.state) && !record.authentication)
+      || (!record.local && (record.executionMode !== "token"
+        || (record.authentication !== null && record.actor.actorId !== `installation:${record.authentication.token?.id}`)))) {
+      context.addIssue({ code: "custom", message: "Invalid restore execution authority." });
+    }
+  }),
+]);
 export type RestoreHandoff = z.infer<typeof handoffSchema>;
 const handoffPath = (database: string) => join(privateDirectory(`${database}.backup-operations`), "handoff.json");
 const publicStatus = (record: RestoreHandoff): RestoreOperation => ({ operationId: record.operationId, backupId: record.actor.backupId, createdAt: record.createdAt, state: record.state });
@@ -40,7 +58,7 @@ export function assertNoUnfinishedBackupHandoff(database: string): RestoreHandof
 function executionPolicy(record: RestoreHandoff, policy: BackupPolicy, catalog: BackupCatalog): RestoreRequestPolicy {
   return {
     authorize(actorId, backupId) {
-      if (record.actor.actorId !== actorId || record.actor.backupId !== backupId || (!record.local && (!policy.uiActions.includes("restore") || record.authentication?.mode !== "token" || record.actor.actorId !== `installation:${record.authentication.token?.id}`))) throw new BackupError("backup_forbidden", 403);
+      if (record.actor.actorId !== actorId || record.actor.backupId !== backupId || (!record.local && (!policy.uiActions.includes("restore") || (record.format === 1 ? record.authentication?.mode : record.executionMode) !== "token" || record.actor.actorId !== `installation:${record.authentication.token?.id}`))) throw new BackupError("backup_forbidden", 403);
     },
     resolveBackup: id => catalog.path(id),
   };
@@ -74,6 +92,8 @@ export class RestoreOperations {
   private pending: { actorId: string; backupId: string; key: string; promise: Promise<RestoreOperation> } | null = null;
   constructor(private readonly backups: BackupOperations, private readonly database: string, private readonly attachments: string, private readonly deps: {
     authentication: () => AuthenticationPolicy;
+    /** Immutable active boot mode; configured policy is captured separately at launch. */
+    executionMode: () => AuthenticationMode;
     enterMaintenance: () => void;
     restart: (execute: () => void) => Promise<void>;
     failure: (error: unknown) => void;
@@ -124,7 +144,7 @@ export class RestoreOperations {
     this.backups.authorize(actor, "restore");
     this.backups.assertAdmission();
     if (status.state === "verified") return { ...status, state: "verified" };
-    const record: RestoreHandoff = { format: 1, actor: { actorId: sameActor(actor), backupId: input.backupId, idempotencyKey: input.idempotencyKey }, operationId: status.operationId, createdAt: status.createdAt, state: "requested", authentication: null, local: actor === "local-admin" };
+    const record: RestoreHandoff = { format: 2, executionMode: this.deps.executionMode(), actor: { actorId: sameActor(actor), backupId: input.backupId, idempotencyKey: input.idempotencyKey }, operationId: status.operationId, createdAt: status.createdAt, state: "requested", authentication: null, local: actor === "local-admin" };
     writeRecord(handoffPath(this.database), record);
     this.busy = true; this.deps.enterMaintenance();
     return publicStatus(record);

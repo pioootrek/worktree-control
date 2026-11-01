@@ -30,24 +30,24 @@ export function authenticationCommandFromArgs(args: string[]): AuthenticationCom
   throw new Error(AUTHENTICATION_COMMAND_USAGE);
 }
 
-/** Runs one administrator command. `policyChanged` tells a live controller to drop derived sessions. */
+/** Runs one administrator command. Configuration selection and immediate credential invalidation are separate effects. */
 export function executeAuthenticationCommand(
   service: AuthenticationService,
   request: AuthenticationCommand,
   actor: string,
-): { result: unknown; policyChanged: boolean } {
+): { result: unknown; configurationChanged: boolean; credentialsInvalidated: boolean } {
   switch (request.command) {
     case "status":
-      return { result: service.status(), policyChanged: false };
+      return { result: service.status(), configurationChanged: false, credentialsInvalidated: false };
     case "token generate":
       // A new token changes nothing that existing sessions rely on.
-      return { result: service.generateToken(actor), policyChanged: false };
+      return { result: service.generateToken(actor), configurationChanged: false, credentialsInvalidated: false };
     case "token rotate":
-      return { result: service.rotateToken(actor), policyChanged: true };
+      return { result: service.rotateToken(actor), configurationChanged: false, credentialsInvalidated: true };
     case "mode set": {
-      const before = service.status().mode;
+      const before = service.status().configuredMode;
       const result = service.setMode(request.value, actor);
-      return { result, policyChanged: result.mode !== before };
+      return { result, configurationChanged: result.configuredMode !== before, credentialsInvalidated: false };
     }
   }
 }

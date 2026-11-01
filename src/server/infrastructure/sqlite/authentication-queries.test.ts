@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthenticationService } from "@/server/modules/authentication";
 import { SqliteStateStore } from "./index";
+import { AuthenticationQueries } from "./authentication-queries";
 
 const directories: string[] = [];
 const NOW = "2026-09-26T12:00:00.000Z";
@@ -128,4 +129,23 @@ describe("authentication policy SQLite persistence", () => {
     raw.close();
     expect(() => new SqliteStateStore(path)).toThrow(/authentication policy/);
   });
+});
+
+
+it("rolls back next-start configuration and its audit when the atomic audit write fails", () => {
+  const db = new Database(":memory:");
+  try {
+    db.exec(`CREATE TABLE controller_settings(key TEXT PRIMARY KEY, value_json TEXT, updated_at TEXT);
+      CREATE TABLE controller_audit_events(event_type TEXT, actor TEXT, details_json TEXT, created_at TEXT);`);
+    db.prepare("INSERT INTO controller_settings VALUES ('authentication', ?, ?)").run(JSON.stringify({ mode: "open", token: null, generation: 0 }), NOW);
+    const queries = new AuthenticationQueries(db), auth = new AuthenticationService(queries);
+    auth.generateToken("fixture");
+    const before = queries.getAuthenticationPolicy();
+    db.exec(`CREATE TRIGGER refuse_mode_audit BEFORE INSERT ON controller_audit_events
+      WHEN NEW.event_type = 'authentication.mode_selected' BEGIN SELECT RAISE(ABORT, 'audit refused'); END;`);
+    expect(() => auth.setMode("token", "fixture")).toThrow("audit refused");
+    expect(queries.getAuthenticationPolicy()).toEqual(before);
+    expect(db.prepare("SELECT count(*) n FROM controller_audit_events").get()).toEqual({ n: 1 });
+    expect(auth.status()).toMatchObject({ activeMode: "open", configuredMode: "open", restartRequired: false });
+  } finally { db.close(); }
 });

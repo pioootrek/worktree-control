@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ import { IdentityService } from "@/server/modules/identity";
 import { BackupOperations } from "./backup-operations";
 import { backupPolicySchema } from "./policy";
 import { RestoreOperations, recoverBackupHandoff, finishBackupHandoff, assertBackupHandoffCompleted } from "./restore-operations";
+import { writeRecord } from "./records";
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 async function fixture(restartFailure?: string) {
@@ -28,7 +29,7 @@ async function fixture(restartFailure?: string) {
   store.addProject({ name: "After", repositoryPath: join(root, "second"), port: 4401, executable: "node", args: [] });
   const failure = vi.fn();
   let work: (() => void) | null = null;
-  const restores = new RestoreOperations(backups, database, attachments, { authentication: () => store.getAuthenticationPolicy(), enterMaintenance: () => { maintenance = true; }, restart: async execute => { if (restartFailure) throw new Error(restartFailure); work = execute; }, failure });
+  const restores = new RestoreOperations(backups, database, attachments, { authentication: () => store.getAuthenticationPolicy(), executionMode: () => authentication.mode(), enterMaintenance: () => { maintenance = true; }, restart: async execute => { if (restartFailure) throw new Error(restartFailure); work = execute; }, failure });
   cleanups.push(() => rmSync(root, { recursive: true, force: true }), () => store.close(), () => backups.close());
   const input = { action: "restore", backupId: backup.backupId, idempotencyKey: "restore-one", confirmation: "replace-entire-installation" };
   return { root, database, attachments, store, policy, backups, restores, current, input, authentication, oldToken, newToken, owner, failure, execute: () => { if (!work) throw new Error("No handoff"); work(); } };
@@ -134,6 +135,54 @@ describe("operator restore orchestration", () => {
     await vi.waitFor(() => expect(f.failure).toHaveBeenCalledOnce());
     expect(() => f.execute()).toThrow("No handoff");
     expect(f.restores.status(f.current, f.input.backupId, f.input.idempotencyKey).state).toBe("failed");
+    expect(f.store.listProjects()).toHaveLength(2);
+  });
+});
+
+
+describe("restore execution mode versus next boot selection", () => {
+  it("executes with current token authority, then applies pending open before the new boot", async () => {
+    const f = await fixture();
+    f.authentication.setMode("open", "fixture");
+    await f.restores.admit(f.current, f.input); f.restores.launch(f.current, f.input);
+    const path = join(`${f.database}.backup-operations`, "handoff.json");
+    expect(JSON.parse(readFileSync(path, "utf8")).payload).toMatchObject({ format: 2, executionMode: "token", authentication: { mode: "open" } });
+    await f.backups.close(); f.store.close(); f.execute();
+    const handoff = recoverBackupHandoff(f.database, f.attachments, f.policy)!;
+    const restored = new SqliteStateStore(f.database);
+    try {
+      finishBackupHandoff(f.database, handoff, restored);
+      const next = new AuthenticationService(restored);
+      expect(next.assertStartupPolicy()).toMatchObject({ activeMode: "open", configuredMode: "open", restartRequired: false });
+      expect(next.anonymousInstallation()).not.toBeNull();
+      expect(next.authenticateInstallation(f.newToken)).toBeNull();
+      expect(next.verifyInstallationToken(f.newToken)).toBe(true);
+      expect(next.verifyInstallationToken(f.oldToken)).toBe(false);
+    } finally { restored.close(); }
+  });
+
+  it("reads old executing format-1 handoffs using their captured policy as execution authority", async () => {
+    const f = await fixture(); await f.restores.admit(f.current, f.input); f.restores.launch(f.current, f.input);
+    await f.backups.close(); f.store.close(); f.execute();
+    const path = join(`${f.database}.backup-operations`, "handoff.json");
+    const record = JSON.parse(readFileSync(path, "utf8")).payload;
+    delete record.executionMode; record.format = 1; writeRecord(path, record);
+    const recovered = recoverBackupHandoff(f.database, f.attachments, f.policy)!;
+    expect(recovered.format).toBe(1);
+    const restored = new SqliteStateStore(f.database);
+    try { finishBackupHandoff(f.database, recovered, restored); expect(new AuthenticationService(restored).mode()).toBe("token"); }
+    finally { restored.close(); }
+  });
+
+  it.each(["missing", "unknown", "inconsistent", "future"])("refuses %s new handoff authority even with a valid record checksum", async invalid => {
+    const f = await fixture(); await f.restores.admit(f.current, f.input); f.restores.launch(f.current, f.input);
+    const path = join(`${f.database}.backup-operations`, "handoff.json"), record = JSON.parse(readFileSync(path, "utf8")).payload;
+    if (invalid === "missing") delete record.executionMode;
+    else if (invalid === "future") record.format = 3;
+    else record.executionMode = invalid === "unknown" ? "unknown" : "open";
+    writeRecord(path, record);
+    expect(() => assertBackupHandoffCompleted(f.database)).toThrow();
+    expect(() => recoverBackupHandoff(f.database, f.attachments, f.policy)).toThrow();
     expect(f.store.listProjects()).toHaveLength(2);
   });
 });

@@ -25,7 +25,7 @@ class SessionClock implements McpSessionClock {
 async function protocol(f: StrictProof, scoped = false, expiresAt?: string, installation = false) {
   const clock = new SessionClock(), governor = new McpSessionGovernor({}, clock), diagnostic = vi.fn();
   const project = await f.run(() => f.store.addProject({ name: "MCP fixture", repositoryPath: f.root, port: 3894, executable: "", args: [], launchPreset: "node" }));
-  const authentication = new AuthenticationService(f.store);
+  const authentication = await f.run(() => new AuthenticationService(f.store));
   const actor = await f.run(() => {
     if (installation) {
       const issued = authentication.generateToken("fixture");

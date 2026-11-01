@@ -47,7 +47,7 @@ export async function runAuthCommand(
   let store: SqliteStateStore | null = null;
   try {
     store = new SqliteStateStore(paths.databasePath);
-    const { result } = executeAuthenticationCommand(new AuthenticationService(store), request, AUTH_CLI_ACTOR);
+    const { result } = executeAuthenticationCommand(new AuthenticationService(store, undefined, undefined, undefined, undefined, "offline"), request, AUTH_CLI_ACTOR);
     write(JSON.stringify(result, null, 2));
   } finally {
     store?.close();

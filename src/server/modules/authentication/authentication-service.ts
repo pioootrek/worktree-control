@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
+import { validateAuthenticationPolicy } from "./policy-validation";
 import { INSTALLATION_PRINCIPAL_ID } from "./contracts";
 import type {
   AuthenticationMode,
@@ -39,35 +40,31 @@ function hashToken(token: string): Buffer {
   return createHash("sha256").update(token, "utf8").digest();
 }
 
-function publicStatus(policy: AuthenticationPolicy): AuthenticationStatus {
-  return {
-    mode: policy.mode,
-    token: policy.token ? { id: policy.token.id, prefix: policy.token.prefix, createdAt: policy.token.createdAt } : null,
-    generation: policy.generation,
-  };
-}
-
 export class AuthenticationService implements InstallationAuthority {
+  private readonly bootMode: AuthenticationMode;
   constructor(
     private readonly store: AuthenticationStore,
     private readonly clock: () => string = () => new Date().toISOString(),
     private readonly id: () => string = randomUUID,
     private readonly secret: () => string = () => randomBytes(32).toString("hex"),
     private readonly enforcedModes: ReadonlySet<AuthenticationMode> = ENFORCED_MODES,
-  ) {}
+    private readonly context: "controller" | "offline" = "controller",
+  ) {
+    this.bootMode = this.readPolicy().mode;
+  }
 
   status(): AuthenticationStatus {
-    return publicStatus(this.store.getAuthenticationPolicy());
+    return this.publicStatus(this.readPolicy());
   }
 
   mode(): AuthenticationMode {
-    return this.store.getAuthenticationPolicy().mode;
+    return this.context === "controller" ? this.bootMode : this.readPolicy().mode;
   }
 
   /** Returns the installation actor only while token mode is active and the token is current. */
   authenticateInstallation(token: string): CredentialAuthenticatedPrincipal | null {
-    const policy = this.store.getAuthenticationPolicy();
-    if (policy.mode !== "token" || !policy.token || !this.verifyInstallationToken(token)) return null;
+    const policy = this.readPolicy();
+    if (this.mode() !== "token" || !policy.token || !this.verifyInstallationToken(token)) return null;
     return {
       principalId: INSTALLATION_PRINCIPAL_ID,
       principalKind: "installation",
@@ -78,7 +75,7 @@ export class AuthenticationService implements InstallationAuthority {
 
   /** Open mode: every caller acts as the anonymous installation authority, recorded as `none`. */
   anonymousInstallation(): CredentialAuthenticatedPrincipal | null {
-    if (this.store.getAuthenticationPolicy().mode !== "open") return null;
+    if (this.mode() !== "open") return null;
     return {
       principalId: INSTALLATION_PRINCIPAL_ID,
       principalKind: "installation",
@@ -88,16 +85,16 @@ export class AuthenticationService implements InstallationAuthority {
   }
 
   isCurrentInstallationActor(actor: AuthenticatedPrincipal): boolean {
-    const policy = this.store.getAuthenticationPolicy();
+    const policy = this.readPolicy();
     if (actor.principalId !== INSTALLATION_PRINCIPAL_ID || actor.principalKind !== "installation") return false;
-    if (actor.authenticationMethod === "none") return policy.mode === "open" && actor.credentialId === OPEN_CREDENTIAL_ID;
+    if (actor.authenticationMethod === "none") return this.mode() === "open" && actor.credentialId === OPEN_CREDENTIAL_ID;
     return actor.authenticationMethod === "installation_token"
-      && policy.mode === "token"
+      && this.mode() === "token"
       && policy.token?.id === actor.credentialId;
   }
 
   generateToken(actor: string): IssuedInstallationToken {
-    const policy = this.store.getAuthenticationPolicy();
+    const policy = this.readPolicy();
     if (policy.token) {
       throw new AuthenticationError("installation_token_exists", "Token instalacji już istnieje. Użyj auth token rotate, aby go wymienić.");
     }
@@ -105,41 +102,58 @@ export class AuthenticationService implements InstallationAuthority {
   }
 
   rotateToken(actor: string): IssuedInstallationToken {
-    const policy = this.store.getAuthenticationPolicy();
+    const policy = this.readPolicy();
     if (!policy.token) {
       throw new AuthenticationError("installation_token_missing", "Brak tokena instalacji. Użyj auth token generate.");
     }
     return this.issue(policy, "authentication.token_rotated", actor);
   }
 
+  /** Selects next-start mode only. A running controller keeps its immutable boot mode. */
   setMode(value: string, actor: string): AuthenticationStatus {
     const mode = value as AuthenticationMode;
     if (!MODES.has(mode) || mode === "legacy") {
       throw new AuthenticationError("invalid_request", "Dostępne tryby: open, token, better-auth.");
     }
-    const policy = this.store.getAuthenticationPolicy();
+    const policy = this.readPolicy();
     this.requireSelectable(mode, policy);
-    if (policy.mode === mode) return publicStatus(policy);
+    if (policy.mode === mode) return this.publicStatus(policy);
     const next = { ...policy, mode };
-    this.store.saveAuthenticationPolicy(next, "authentication.mode_changed", actor);
-    return publicStatus(next);
+    this.store.saveAuthenticationPolicy(next, "authentication.mode_selected", actor);
+    return this.publicStatus(next);
   }
 
   /** Fails closed before a controller exposes operations under a policy it cannot enforce. */
   assertStartupPolicy(): AuthenticationStatus {
-    const policy = this.store.getAuthenticationPolicy();
-    this.requireSelectable(policy.mode, policy);
-    return publicStatus(policy);
+    const policy = this.readPolicy();
+    this.requireSelectable(this.mode(), policy);
+    return this.publicStatus(policy);
   }
 
   verifyInstallationToken(token: string): boolean {
-    const record = this.store.getAuthenticationPolicy().token;
+    const record = this.readPolicy().token;
     const match = /^wsi_([0-9a-f-]{36})_[0-9a-f]{64}$/.exec(token);
     const expected = record && /^[0-9a-f]{64}$/.test(record.verifierHash)
       ? Buffer.from(record.verifierHash, "hex")
       : Buffer.alloc(32);
     const matches = timingSafeEqual(expected, hashToken(token));
     return Boolean(record && match && match[1] === record.id && matches);
+  }
+
+  private readPolicy(): AuthenticationPolicy {
+    return validateAuthenticationPolicy(this.store.getAuthenticationPolicy());
+  }
+
+  private publicStatus(policy: AuthenticationPolicy): AuthenticationStatus {
+    const activeMode = this.context === "controller" ? this.bootMode : null;
+    return {
+      mode: activeMode ?? policy.mode,
+      activeMode,
+      configuredMode: policy.mode,
+      restartRequired: activeMode !== null && activeMode !== policy.mode,
+      token: policy.token ? { id: policy.token.id, prefix: policy.token.prefix, createdAt: policy.token.createdAt } : null,
+      generation: policy.generation,
+    };
   }
 
   private requireSelectable(mode: AuthenticationMode, policy: AuthenticationPolicy): void {
@@ -166,7 +180,8 @@ export class AuthenticationService implements InstallationAuthority {
       createdAt: this.clock(),
     };
     const next = { ...policy, token: record, generation: policy.generation + 1 };
+    validateAuthenticationPolicy(next);
     this.store.saveAuthenticationPolicy(next, event, actor);
-    return { status: publicStatus(next), token };
+    return { status: this.publicStatus(next), token };
   }
 }

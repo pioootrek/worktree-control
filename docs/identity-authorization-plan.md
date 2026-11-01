@@ -1,6 +1,6 @@
 ---
 audience: "owner, implementers and reviewers of human, agent and ENV access"
-last_reviewed: "2026-10-29"
+last_reviewed: "2026-11-01"
 source_of_truth: "planned identity, role and environment authorization contracts and acceptance gates"
 status: "active"
 ---
@@ -311,8 +311,17 @@ events remain unattributed; a new role assignment does not rewrite history.
 | Identity, backup/restore and administration | Inventory every privileged route; explicit human authority/fresh proof or deny before account-mode activation |
 | Unix admin socket and offline CLI | Trusted operator boundary with OS protection and protected recovery; singleton lock alone is not authentication |
 
-Keep existing explicit `open`, `token` and `legacy` compatibility until a
-deliberate mode change. They do not provide the new account-mode isolation:
+The permanent product modes are `open`, one shared installation `token`, and
+full individual RBAC. `legacy` remains upgrade compatibility and cannot be
+selected anew. Mode selection is protected CLI-only and effective only after
+service restart. The stored selection and immutable active boot mode are now
+separate; selecting a future mode leaves live access and sessions unchanged.
+Token/session revocation and current principal/grant checks remain immediate.
+Production `better-auth` selection/startup still fail closed until account/MFA
+and A5 enforcement gates are complete. This slice proves token/open restart
+behavior and explicit third-mode refusal, not positive production RBAC support.
+
+Keep existing active compatibility authority until the explicit restart. They do not provide the new account-mode isolation:
 `open` remains anonymous full access and `token` retains its documented shared
 authority. Do not relabel either as individual RBAC. Account mode rejects shared
 installation/legacy bearers, even if their stored verifier remains for recovery;
@@ -328,12 +337,14 @@ Migration procedure to implement and test on an isolated copy:
    copied into Knowledge, repository files or audit.
 3. Verify complete policy coverage, recovery and current backup/restore policy.
    Unconverted privileged operations remain denied in account mode.
-4. Atomically switch policy, invalidate incompatible sessions/subscriptions and
-   confirm old installation/legacy credentials fail across all transports.
-   Managed process lifecycle remains a separate operator action.
+4. Select the next-start policy atomically through protected CLI, then restart
+   explicitly. Confirm the new boot applies RBAC and old installation/legacy
+   credentials fail across all transports. Selection alone does not invalidate
+   current sessions or control managed process lifecycle.
 5. Exercise loss-of-provider recovery and restore. Recovery may explicitly choose
    token mode through the protected operator path, with fresh credentials and
-   recorded loss of account-mode isolation; it must not resurrect old tokens.
+   recorded loss of account-mode isolation, then restart explicitly. It must not
+   resurrect old tokens.
    Backup restore must preserve external revocation/recovery fences.
 
 An agent with the controller's OS account can access its administrative socket,

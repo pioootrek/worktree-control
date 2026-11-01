@@ -1,6 +1,6 @@
 ---
 audience: "people running Worktree Control and choosing how callers authenticate"
-last_reviewed: "2026-10-29"
+last_reviewed: "2026-11-01"
 source_of_truth: "authentication modes, owner CLI and scoped runtime agent workflow"
 status: "active"
 ---
@@ -14,8 +14,15 @@ selection and timeout configuration are implemented below. Account login and
 ENV roles remain planned.
 
 One authentication policy applies to the dashboard, the HTTP API, live updates,
-MCP and the online CLI. The controller stores the policy in its database and
-applies the active mode to every request.
+MCP and the online CLI. The controller stores the next-start selection in its
+database and captures the
+active mode once per boot, after migration and restore recovery. Only the CLI
+selects a mode; the new selection takes effect at the next service restart.
+Token rotation, credential revocation and current grants still apply immediately.
+The permanent product modes are open access, a shared installation token, and
+individual RBAC. Full RBAC remains gated on the account/MFA and A5 work; the
+current controller refuses `better-auth` selection and startup. `legacy` is
+upgrade compatibility and cannot be selected anew.
 
 | Mode | Who uses it | Access |
 | --- | --- | --- |
@@ -541,9 +548,30 @@ worktree-control auth mode set <open|token|better-auth>
 When the controller is stopped, the command opens the database under the
 controller's singleton lock. When it runs, the command talks to it through an
 owner-only Unix socket, `admin.sock` in the state directory. The socket is
-`0600` inside a `0700` directory. A policy change takes effect at once. The
-controller closes MCP sessions and live dashboard connections, and those
-callers must authenticate again.
+`0600` inside a `0700` directory. Access to this private IPC channel is OS-user
+authority, not proof of which executable made the request. Public HTTP, GUI and
+MCP have no mode selector.
+
+`auth mode set` saves the next-start selection and its audit atomically. It does
+not restart the service, rebind listeners, disconnect clients or change live
+access links. Selecting the same configured mode is a no-op. Selecting the
+active mode cancels a pending selection. Changing modes never generates or
+rotates a token; select `token` only after explicitly generating one.
+
+Private CLI/admin status reports `mode`, `activeMode`, `configuredMode` and
+`restartRequired`, alongside the existing safe token metadata and generation.
+For example, running token mode after selecting open reports
+`mode: token, activeMode: token, configuredMode: open, restartRequired: true`.
+When stopped, `activeMode` is null, `mode` is the configured selection, and
+`restartRequired` is false. These fields are private administration data, not
+public browser metadata. Live client configuration continues to use active mode.
+
+Only mode is captured at boot. Each authorization still reads current token
+ID/verifier, principal status and grants. Rotation invalidates the previous
+bearer and retained installation actors immediately, even with a pending mode.
+It also closes MCP sessions and live dashboard connections. Token generation
+and future-mode selection do not disconnect them. New selectors are refused
+after maintenance begins, including selectors queued behind database work.
 
 `token generate` and `token rotate` print the token once. The first `start` or
 `service install` of a new installation does the same; see
@@ -595,7 +623,11 @@ badge and the controller prints its listening address on start.
 
 ```bash
 worktree-control auth mode set open
+worktree-control service restart
 ```
+
+The explicit restart activates the selection. Until then, the running controller
+continues to enforce its previous mode.
 
 ### CLI in open mode
 
@@ -622,9 +654,11 @@ their grants.
 2. Generate the token and save it privately:
    `worktree-control auth token generate`. Token mode cannot be selected
    without it.
-3. Switch the mode: `worktree-control auth mode set token`. The pairing link
-   and `mcp-token` stop working immediately.
-4. Sign in to the dashboard with the token in each browser.
+3. Select the next-start mode: `worktree-control auth mode set token`.
+   Pairing and `mcp-token` keep working in the running legacy boot.
+4. Restart explicitly with `worktree-control service restart`. The new boot
+   applies token mode and stops accepting pairing and `mcp-token`. Sign in to
+   the dashboard with the token in each browser.
 5. Replace the bearer token in every MCP client with the installation token.
    Agents that use scoped `wts_` tokens need no change.
 6. Export `WORKTREE_CONTROL_TOKEN` where you run online CLI commands.
@@ -640,8 +674,9 @@ apply after the upgrade:
 
 - **No downgrade.** The upgrade applies database migration 25. Controller
   backups record schema version 25, and older versions refuse to restore them.
-- **No return to `legacy`.** After you select `token` or `open`, the pairing
-  link and `mcp-token` stop working permanently.
+- **No return to `legacy`.** After a restart activates `token` or `open`,
+  the pairing link and `mcp-token` stop working. A pending selection can still
+  be cancelled by selecting another supported mode; `legacy` is never selectable.
 - **Knowledge exports.** History entries can record the `installation_token`
   and `none` authentication methods. Older versions reject such exports.
 - **Owner bootstrap over HTTP** (`/api/identity/bootstrap`) works only in
@@ -657,3 +692,20 @@ New installations differ from earlier releases:
 - `config mcp` prints a token placeholder unless `WORKTREE_CONTROL_TOKEN` is
   set.
 - Online CLI commands need `WORKTREE_CONTROL_TOKEN`.
+
+## Restore and pending mode selection
+
+A token-authorized restore keeps the immutable active execution mode separate
+from the configured policy restored into the next boot. Format-2 durable
+handoffs require `executionMode`; format-1 records retain their historical
+`authentication.mode` interpretation. Missing, unknown or inconsistent new
+records fail closed. The captured token ID remains current, and existing
+credential/revocation fences and ownership locks still apply. A pending open
+selection therefore cannot authorize a restore or invalidate an admitted token
+restore. Recovery writes the captured configured policy before constructing the
+new boot's authentication service. No SQLite migration is needed; controller
+schema stays 39 and provider storage revision stays 1.
+
+This does not solve A5 provider-session resurrection after restoring older
+password/session data. External restore revocation fencing, full account/MFA
+support and complete transport coverage still gate production RBAC activation.

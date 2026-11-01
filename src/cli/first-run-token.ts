@@ -83,7 +83,7 @@ export function bootstrapServiceInstallationToken(paths: AppPaths, options: Firs
       throw error;
     }
     if (!store) return false;
-    return bootstrapInstallationToken(new AuthenticationService(store), options);
+    return bootstrapInstallationToken(new AuthenticationService(store, undefined, undefined, undefined, undefined, "offline"), options);
   } finally {
     store?.close();
     lock.release();

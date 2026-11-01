@@ -206,10 +206,11 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   } catch (error) { store?.close(); controllerLock.release(); throw error; }
   // Every producer below shares this store's single connection gate for database admission.
   const events = new EventStream(store.admission);
-  const authentication = new AuthenticationService(store);
+  let authentication: AuthenticationService;
   const serviceMode = process.argv.includes("--service-mode");
   let logs: FileLogWriter;
   try {
+    authentication = new AuthenticationService(store);
     // Only a first start may issue the token; a restore handoff keeps the restored policy as is.
     if (!retainedLock) bootstrapInstallationToken(authentication, { terminal: process.stdout, locale, serviceMode });
     authentication.assertStartupPolicy();
@@ -278,6 +279,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const service = new ControlService(store, git, processes, logs, undefined, storage, undefined, undefined, tests, lifecycle, knowledge, remoteVerification?.controller, identity);
   const restores = new RestoreOperations(backups, paths.databasePath, paths.knowledgeAttachmentDirectory, {
     authentication: () => store.getAuthenticationPolicy(),
+    executionMode: () => authentication.mode(),
     enterMaintenance: () => { maintenance = true; lifecycle.closeAdmission(); },
     restart: async execute => {
       await shutdown(true);
@@ -388,6 +390,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   try {
     const authenticationHandler = authenticationAdminHandler({
       authentication,
+      maintenance: () => maintenance,
       closeMcpSessions: () => store.admission.idle(async () => { await mcp?.closeSessions(); }),
       disconnectEvents: () => events.disconnectAll(),
       onPolicyChanged: (command) => {

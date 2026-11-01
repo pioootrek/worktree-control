@@ -24,6 +24,10 @@ async function fixture(mode: "token" | "legacy" | "open" = "token", publicOrigin
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   const store = new SqliteStateStore(join(directory, "state.sqlite3"));
   cleanups.push(() => store.close());
+  const configuration = new AuthenticationService(store);
+  const installationToken = configuration.generateToken("test").token;
+  if (mode === "legacy") store.saveAuthenticationPolicy({ ...store.getAuthenticationPolicy(), mode }, "test", "test");
+  else configuration.setMode(mode, "test");
   const authentication = new AuthenticationService(store);
   let identityNow = Date.now();
   const identity = new IdentityService(store, () => new Date(identityNow).toISOString(), undefined, undefined, authentication);
@@ -41,9 +45,6 @@ async function fixture(mode: "token" | "legacy" | "open" = "token", publicOrigin
     verifierHash: createHash("sha256").update(workerToken).digest("hex"),
   }, owner.principalId);
   const agentToken = issuedAgent.token;
-  const installationToken = authentication.generateToken("test").token;
-  if (mode === "legacy") store.saveAuthenticationPolicy({ ...store.getAuthenticationPolicy(), mode: "legacy" }, "test", "test");
-  else authentication.setMode(mode, "test");
   const waits = { waiters: 2, waiterTimers: 2, targets: 1, samplerTimers: 1 };
   const service = { remoteVerificationEnabled: () => false, statusWaitDiagnostics: (sessionKey?: string) => sessionKey ? { waiters: 1, waiterTimers: 1 } : waits } as unknown as ControlService;
   const mcp = createMcpControllerServer({ service, identity, authentication, accessToken: "mcp-pairing", port: 0 });

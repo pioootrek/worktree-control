@@ -18,7 +18,7 @@ afterEach(cleanupStrictRoots);
 describe("project lock and strict database admission ordering", () => {
   it.each([[false, false], [true, false], [true, true]])("serializes HTTP changes and revalidates waits (rotation: %s, before spawn: %s)", async (rotate, beforeSpawnWait) => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults);
-    const authentication = new AuthenticationService(f.store);
+    const authentication = await f.run(() => new AuthenticationService(f.store));
     const credential = await f.run(() => authentication.generateToken("fixture"));
     const initialActor = await f.run(() => authentication.authenticateInstallation(credential.token)!);
     const project = await f.run(() => f.store.addProject({ name: "HTTP readiness", repositoryPath: f.root, port: 3903, executable: "node", args: [], launchPreset: "node" }));

@@ -49,13 +49,13 @@ describe("strict scheduled export and restore callbacks", () => {
 
   it.each(["revoked", "cleanup_unconfirmed"] as const)("reauthorizes a response-completion restore launch and preserves ownership on %s", async mode => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults);
-    const authentication = new AuthenticationService(f.store);
+    const authentication = await f.run(() => new AuthenticationService(f.store));
     const actor = await f.run(() => authentication.authenticateInstallation(authentication.generateToken("fixture").token)!);
     const backups = new BackupOperations(backupPolicySchema.parse({ directory: join(f.root, "copies"), uiActions: ["create", "restore"] }), { source: f.store, databasePath: f.path, attachmentDirectory: join(f.root, "attachments"), applicationVersion: "test", estimateBytes: () => f.store.backupEstimateBytes(), authorize: actor => authentication.isCurrentInstallationActor(actor), maintenance: () => false, admission: f.store.admission });
     const copy = await f.run(() => backups.create(actor, "fixture-copy")); await backups.drain();
     const input = { action: "restore", backupId: copy.backupId, idempotencyKey: "restore-fixture", confirmation: "replace-entire-installation" };
     const failure = vi.fn(), restart = vi.fn(async (execute: () => void) => { void execute; throw new Error("cleanup_unconfirmed"); });
-    const restores = new RestoreOperations(backups, f.path, join(f.root, "attachments"), { authentication: () => f.store.getAuthenticationPolicy(), enterMaintenance: () => undefined, restart, failure });
+    const restores = new RestoreOperations(backups, f.path, join(f.root, "attachments"), { authentication: () => f.store.getAuthenticationPolicy(), executionMode: () => authentication.mode(), enterMaintenance: () => undefined, restart, failure });
     await f.run(() => restores.admit(actor, input)); // Arrange the durable admission as the HTTP request would.
     const hold = pauseProvisioning(f, faults, "rollback");
     try {
