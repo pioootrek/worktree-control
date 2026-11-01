@@ -1,4 +1,5 @@
 import { writeFileSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Authenticator, Browser, cleanupFactorRoots, closeFactor, factorFixture, factorState, fixtureSql, loadFactorProvider, withFault, type FactorFixture } from "./factor-fixture";
 import { COOKIE, FACTOR_MODEL } from "./factor-provider";
@@ -230,7 +231,7 @@ describe("SQL failure boundaries", () => {
     const f = await create(); const { browser, authenticator } = await setup(f, false);
     const before = await state(f); f.evidence.events.length = 0;
     const result = await withFault(f, 'BEFORE UPDATE OF "verified" ON "authentication_ba_two_factor"', () => verify(browser, authenticator.code()));
-    expect(result.status).toBe(500); expect(result.setCookie).toEqual([]);
+    expect(result.status).toBe(500); expect(result.setCookie.length).toBe(0);
     expect(await state(f)).toMatchObject({ enabled: 1, verified: 0 });
     expect((await state(f)).sessions).not.toEqual(before.sessions);
     expect(await browser.resolve()).toBeNull();
@@ -252,7 +253,7 @@ describe("SQL failure boundaries", () => {
     const before = await state(f); f.evidence.events.length = 0; f.control.trace.length = 0;
     f.control.fault = { sql, when: sql.source === "^commit$" ? "before" : "after", remaining: 1 };
     const result = await verify(browser, authenticator.code());
-    expect(result.status).toBe(500); expect(result.setCookie).toEqual([]);
+    expect(result.status).toBe(500); expect(result.setCookie.length).toBe(0);
     expect(await state(f)).toEqual(before);
     expect(f.evidence.events).toEqual([]);
     expect(f.control.trace.some(x => x.sql === "rollback")).toBe(true);
@@ -265,7 +266,7 @@ describe("SQL failure boundaries", () => {
     const before = await state(f);
     f.control.fault = { sql: /^insert into "authentication_ba_two_factor"/i, when: "after", remaining: 1 };
     const result = await browser.post("/two-factor/enable", { password: OWNER_PASSWORD });
-    expect(result.status).toBe(500); expect(result.json?.totpURI).toBeUndefined();
+    expect(result.status).toBe(500); expect(result.json?.totpURI === undefined).toBe(true);
     expect(await state(f)).toEqual(before);
   });
 
@@ -279,7 +280,7 @@ describe("SQL failure boundaries", () => {
     f.control.fault = { sql, when: "after", remaining: 1,
       ...(sql.source.includes("delete") ? { afterSql: /^update "authentication_ba_two_factor" set "backupCodes"/i } : {}) };
     const result = await browser.post("/two-factor/verify-backup-code", { code: codes[0] });
-    expect(result.status).toBe(500); expect(result.setCookie).toEqual([]);
+    expect(result.status).toBe(500); expect(result.setCookie.length).toBe(0);
     const after = await state(f);
     expect(after.codes).toBe(before.codes); expect(after.sessions).toEqual(before.sessions);
     expect(after.evidence).toEqual(before.evidence);
@@ -293,7 +294,7 @@ describe("SQL failure boundaries", () => {
     const f = await create("bounded"); const { authenticator } = await setup(f);
     const browser = await pending(f); const before = await state(f); f.control[fault] = true;
     const result = await verify(browser, authenticator.code());
-    expect(result.status).toBe(500); expect(result.setCookie).toEqual([]);
+    expect(result.status).toBe(500); expect(result.setCookie.length).toBe(0);
     const after = await state(f);
     expect(after.sessions).toEqual(before.sessions); expect(after.evidence).toEqual(before.evidence);
     expect(f.control.burned).toBe(1); expect(after.verifications).toBe(0);
@@ -314,7 +315,7 @@ describe("SQL failure boundaries", () => {
     const browser = await pending(f); const before = await state(f);
     f.control.vetoSessionCreate = true;
     const result = await browser.post("/two-factor/verify-backup-code", { code: codes[0] });
-    expect(result.status).toBe(500); expect(result.setCookie).toEqual([]);
+    expect(result.status).toBe(500); expect(result.setCookie.length).toBe(0);
     expect(f.control.outcomes.at(-1)).toBe("response");
     const after = await state(f);
     expect(after.codes === before.codes).toBe(mode === "bounded");
@@ -348,19 +349,19 @@ describe("bounded exclusions and restricted recovery", () => {
     const native = await pending(f);
     expect((await native.post("/two-factor/verify-totp", { code: authenticator.code(), trustDevice: true })).status).toBe(200);
     native.cookies.delete(COOKIE.session); f.control.mode = "bounded";
-    expect((await native.signIn()).json).toMatchObject({ outcome: "challenge" });
+    expect((await native.signIn()).json?.outcome === "challenge").toBe(true);
     expect(native.cookies.has(COOKIE.session)).toBe(false);
     expect((await native.post("/two-factor/verify-totp", { code: authenticator.code(), trustDevice: true })).status).toBe(400);
     const before = await state(f); f.control.forwardTrustRegression = true;
     const result = await verify(native, authenticator.code());
-    expect(result.status).toBe(500); expect(result.setCookie).toEqual([]);
+    expect(result.status).toBe(500); expect(result.setCookie.length).toBe(0);
     expect((await state(f)).sessions).toEqual(before.sessions);
   });
 
   it.each(["/two-factor/disable", "/two-factor/send-otp", "/two-factor/verify-otp", "/two-factor/get-totp-uri", "/two-factor/generate-backup-codes", "/two-factor/view-backup-codes", "/totp/generate", "/sign-up/email", "/unknown"])("does not expose native catch-all %s", async path => {
     const f = await create("bounded");
     const result = await new Browser(f).post(path, {});
-    expect(result.status).toBe(404); expect(result.setCookie).toEqual([]);
+    expect(result.status).toBe(404); expect(result.setCookie.length).toBe(0);
   });
 
   it("classifies recovery as restricted and admits only one concurrent same-code submission", async () => {
@@ -368,7 +369,7 @@ describe("bounded exclusions and restricted recovery", () => {
     const a = await pending(f), b = await pending(f);
     const results = await Promise.all([a.post("/two-factor/verify-backup-code", { code: codes[0] }), b.post("/two-factor/verify-backup-code", { code: codes[0] })]);
     expect(results.map(r => r.status).sort()).toEqual([200, 401]);
-    expect(results.find(r => r.status === 200)!.json).toEqual({ outcome: "recovery", method: "recovery_code", restricted: true });
+    expect(isDeepStrictEqual(results.find(r => r.status === 200)!.json, { outcome: "recovery", method: "recovery_code", restricted: true })).toBe(true);
     expect((await state(f)).evidence).toContainEqual({ method: "recovery_code", restricted: 1 });
     await expect(f.runtime.authenticate(new Headers({ cookie: a.cookieHeader() }))).rejects.toMatchObject({ code: "provider_unavailable" });
   });
