@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Readable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseProviderArguments, providerCommandFromArgs, readProviderStdin } from "./auth-provider-input";
+import { isProviderCommandArgs, parseProviderArguments, providerCommandFromArgs, readProviderStdin } from "./auth-provider-input";
 import { FileProviderConfiguration, decodeProviderJson } from "../server/authentication-provider-configuration";
 import { parseProviderAdminCommand } from "../server/modules/authentication";
 import { readPrivateBoundedFile } from "../server/private-storage";
@@ -29,8 +29,18 @@ describe("protected provider input", () => {
     ["provider", "owner", "create", "--principal-id", "chosen"],
     ["provider", "enroll", "--input-stdin"], ["provider", "status", "--input-stdin"],
     ["provider", "recover", "--principal-id", "p", "--input-stdin", "--role", "owner"],
+    ["--data-dir", "/tmp/a", "--data-dir", "/tmp/b", "provider", "status"],
+    ["--state-dir", "/tmp/a", "provider", "status", "--state-dir", "/tmp/b"],
   ])("rejects raw flags before reading sensitive bytes %j", (...args) => {
     expect(() => parseProviderArguments(args)).toThrowError(expect.objectContaining({ code: "invalid_input" }));
+  });
+
+  it("recognizes global paths before the provider family without dropping raw validation", () => {
+    const args = ["--data-dir", "/private/data", "provider", "status", "--state-dir", "/private/state"];
+    expect(isProviderCommandArgs(args)).toBe(true);
+    expect(parseProviderArguments(args)).toMatchObject({ action: "status", dataDir: "/private/data", stateDir: "/private/state" });
+    expect(isProviderCommandArgs(["mode", "set", "provider"])).toBe(false);
+    expect(isProviderCommandArgs(["status", "--data-dir", "provider"])).toBe(false);
   });
 
   it("reads one bounded strict UTF-8 JSON value and rejects injected IPC authority", async () => {

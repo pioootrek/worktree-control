@@ -4,11 +4,18 @@ import { decodeProviderJson, PROVIDER_INPUT_LIMIT } from "../server/authenticati
 import { parseProviderAdminCommand, ProviderAdminError, type ProviderAdminCommand } from "../server/modules/authentication";
 
 /** Parses raw flags before global path stripping, secret reads, locks or SQLite. */
+export function isProviderCommandArgs(args: readonly string[]): boolean {
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === "--data-dir" || args[index] === "--state-dir") { index++; continue; }
+    return args[index] === "provider";
+  }
+  return false;
+}
+
 export function parseProviderArguments(args: readonly string[]) {
-  if (args[0] !== "provider") throw new ProviderAdminError("invalid_input");
   const positional: string[] = [], values = new Map<string, string | true>();
   const valueFlags = new Set(["--data-dir", "--state-dir", "--principal-id", "--input-file"]);
-  for (let index = 1; index < args.length; index++) {
+  for (let index = 0; index < args.length; index++) {
     const value = args[index]!;
     if (!value.startsWith("-")) { positional.push(value); continue; }
     if (values.has(value)) throw new ProviderAdminError("invalid_input");
@@ -19,6 +26,7 @@ export function parseProviderArguments(args: readonly string[]) {
       values.set(value, next);
     } else throw new ProviderAdminError("invalid_input");
   }
+  if (positional.shift() !== "provider") throw new ProviderAdminError("invalid_input");
   const action = positional.join(" ");
   if (!["status", "configure", "owner create", "enroll", "recover"].includes(action)) throw new ProviderAdminError("invalid_input");
   const sensitive = action === "configure" || action === "enroll" || action === "recover";

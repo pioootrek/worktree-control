@@ -11,7 +11,7 @@ import type { Readable } from "node:stream";
 import { createAuthenticationAdministration, retainAuthenticationOwnership, type AuthenticationAdministrationOptions } from "../server/bootstrap/authentication-administration";
 import { ProviderAdminError, providerAdminFailure } from "../server/modules/authentication";
 import { AdminRequestError } from "../server/admin-socket";
-import { providerCommandFromArgs } from "./auth-provider-input";
+import { isProviderCommandArgs, providerCommandFromArgs } from "./auth-provider-input";
 
 export interface AuthCommandDependencies {
   write?: (line: string) => void;
@@ -32,7 +32,7 @@ export async function runAuthCommand(
   paths: AppPaths,
   dependencies: AuthCommandDependencies = {},
 ): Promise<void> {
-  if (args[0] === "provider") return runProviderCommand(args, paths, dependencies);
+  if (isProviderCommandArgs(args)) return runProviderCommand(args, paths, dependencies);
   const write = dependencies.write ?? console.log;
   const request = authenticationCommandFromArgs(args);
 

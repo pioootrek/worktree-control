@@ -35,7 +35,7 @@ import {
 import { writeCliLine } from "./output";
 import { cliInformation } from "./help";
 import { runAuthCommand } from "./auth-management";
-import { parseProviderArguments } from "./auth-provider-input";
+import { isProviderCommandArgs, parseProviderArguments } from "./auth-provider-input";
 import { createAuthenticationAdministration, retainAuthenticationOwnership } from "../server/bootstrap/authentication-administration";
 import { ProviderAdminError, providerAdminErrorBody } from "../server/modules/authentication";
 import { bootstrapInstallationToken, bootstrapServiceInstallationToken } from "./first-run-token";
@@ -93,7 +93,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   }
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
-  if (command === "auth" && process.argv[3] === "provider") {
+  if (command === "auth" && isProviderCommandArgs(process.argv.slice(3))) {
     const raw = process.argv.slice(3), parsed = parseProviderArguments(raw);
     const providerPaths = resolveAppPaths(parsed.dataDir, parsed.stateDir);
     assertBackupHandoffCompleted(providerPaths.databasePath);
@@ -686,7 +686,7 @@ function findLanAddress(): string | null {
 }
 
 main().catch((error) => {
-  if (process.argv[2] === "auth" && process.argv[3] === "provider") {
+  if (process.argv[2] === "auth" && isProviderCommandArgs(process.argv.slice(3))) {
     const body = error instanceof AdminRequestError
       ? { code: error.code ?? "admin_outcome_unknown", error: error.message,
         ...(error.committed ? { committed: true } : {}), ...(error.cleanupConfirmed === false ? { cleanupConfirmed: false } : {}) }

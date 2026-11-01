@@ -63,6 +63,15 @@ try {
   // Exercise raw main dispatch before global stripping. No input read or data publication on duplicate paths.
   const invalid = await cli(installation, ["status", "--data-dir", join(temporary, "must-not-create")], undefined, 1);
   assert.equal(invalid.code, "invalid_input"); assert(!existsSync(join(temporary, "must-not-create")));
+  const prefixA = join(temporary, "prefix-rejected-a"), prefixB = join(temporary, "prefix-rejected-b");
+  const prefixed = await finish(start(["dist/cli/index.js", "auth", "--data-dir", prefixA,
+    "--data-dir", prefixB, "provider", "status"]));
+  assert.equal(prefixed.code, 1, "duplicate global paths BEFORE provider must be rejected before ownership");
+  assert.equal(JSON.parse(prefixed.stderr).code, "invalid_input");
+  assert(!existsSync(prefixA)); assert(!existsSync(prefixB));
+  const prefixValid = await finish(start(["dist/cli/index.js", "auth", "--data-dir", join(installation, "data"),
+    "provider", "status", "--state-dir", join(installation, "state"), "--principal-id", principalId]));
+  assert.equal(prefixValid.code, 0); assert.equal(JSON.parse(prefixValid.stdout).principal.enrollment, "active");
 
   // A real finite CLI child must remain alive with both actual locks after an uncertain dispose.
   const failingModule = join(emitted, "dispose-failure.mjs");
