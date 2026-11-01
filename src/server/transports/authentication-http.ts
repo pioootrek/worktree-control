@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { containsProviderCookie, browserChangePasswordSchema, browserSignInSchema, browserSignOutSchema, type BrowserAuthenticationStatus } from "@/shared/contracts/authentication";
 import { IdentityError } from "@/server/modules/identity";
+import { knowledgeFailure } from "@/server/modules/knowledge";
 import { databaseAdmissionFailure, type DatabaseAdmission } from "@/server/database-admission";
 import { AuthenticationProviderError, type AuthenticationProviderRuntime, type ProviderKnowledgeApplication } from "@/server/modules/authentication";
 
@@ -120,7 +121,14 @@ export class AuthenticationHttp {
         if (!actor) fail(401, "invalid_credential");
         await this.deps.admission.run(() => {
           if (this.deps.maintenance?.()) fail(503, "database_unavailable");
-          const result = this.deps.knowledge.executeAdmitted(input, actor);
+          let result: unknown;
+          try { result = this.deps.knowledge.executeAdmitted(input, actor); }
+          catch (error) {
+            if (databaseAdmissionFailure(error)) throw error;
+            const failure = knowledgeFailure(error);
+            authenticationJson(response, failure.status, failure.body);
+            return;
+          }
           authenticationJson(response, 200, result);
         }); return true;
       }

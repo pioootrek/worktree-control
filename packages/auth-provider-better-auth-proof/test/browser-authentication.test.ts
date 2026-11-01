@@ -43,6 +43,28 @@ describe("actual controller browser adapter with pinned Better Auth", () => {
     } finally { await f.close(); }
   });
 
+  it("preserves Knowledge validation and conflict responses without repeating effects", async () => {
+    const f = await browserFixture(), client = await f.client().authenticated();
+    try {
+      await f.grant();
+      expect(await client.call("/api/knowledge", { body: {} })).toMatchObject({ status: 400, body: { code: "invalid_request" } });
+      const created = await client.call("/api/knowledge", { body: write(f) });
+      expect(created.status).toBe(200);
+      const task = created.body.value as { id: string; revision: number };
+      const update = { operation: "update_task", input: { projectId: f.project.id, taskId: task.id,
+        title: "Updated", description: "One update", priority: "now", status: "in_progress",
+        expectedRevision: task.revision, idempotencyKey: "browser-update" } };
+      expect((await client.call("/api/knowledge", { body: update })).status).toBe(200);
+      expect(await client.call("/api/knowledge", { body: { ...update, input: { ...update.input, idempotencyKey: "stale-update" } } }))
+        .toMatchObject({ status: 409, body: { code: "revision_conflict", currentRevision: task.revision + 1 } });
+      expect(await client.call("/api/knowledge", { body: { ...write(f), input: { ...write(f).input, title: "Different" } } }))
+        .toMatchObject({ status: 409, body: { code: "idempotency_conflict" } });
+      const tasks = await f.run(() => f.store.listTasks(f.project.id, 10, 0));
+      expect(tasks.items).toHaveLength(1);
+      expect(tasks.items[0]).toMatchObject({ id: task.id, title: "Updated", revision: task.revision + 1 });
+    } finally { await f.close(); }
+  });
+
   it("keeps production composition login unavailable and rejects provider cookies with open active and token pending", async () => {
     const f = await browserFixture(), client = await f.client().authenticated();
     const browserCalls = vi.spyOn(f.runtime, "browser");
