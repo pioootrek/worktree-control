@@ -1,0 +1,422 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { getCurrentAdapter, runWithTransaction } from "@better-auth/core/context";
+import { betterAuth, type BetterAuthOptions } from "better-auth";
+import { createAuthMiddleware } from "better-auth/api";
+import { twoFactor } from "better-auth/plugins/two-factor";
+import { Kysely, SqliteDialect } from "kysely";
+import type {
+  AuthenticationProviderHost,
+  AuthenticationProviderInstance,
+  AuthenticationProviderModule,
+  AuthenticationProviderOptions,
+  AuthenticationProviderReadiness,
+  ProviderInvalidation,
+  ProviderSqliteConnection,
+  VerifiedProviderSession,
+} from "../../../src/server/modules/authentication/provider-contract";
+
+/**
+ * A3-I12 compatibility experiment. Never production code: TOTP is a candidate
+ * already present in the installed library, not an adopted factor. This module
+ * is only reachable from `factor-fixture.ts`, runs on a temporary extended
+ * schema, and its implementation version is deliberately outside the runtime's
+ * session-authority allowlist, so it can never mint a controller actor.
+ * Numeric limits are observed library defaults, not product policy.
+ */
+export const FACTOR_IMPLEMENTATION_VERSION = "0.0.0-proof.factor";
+export const FACTOR_MODEL = "authentication_ba_two_factor";
+export const EVIDENCE_TABLE = "factor_fixture_evidence";
+export const COOKIE = {
+  session: "__Secure-wtc.session_token",
+  challenge: "__Secure-wtc.two_factor",
+  trust: "__Secure-wtc.trust_device",
+  remember: "__Secure-wtc.dont_remember",
+} as const;
+
+/**
+ * - `native`: the real handler, untouched.
+ * - `handler-transaction`: naive `runWithTransaction` around `auth.handler`.
+ * - `server-api-transaction`: the same around the server API, which skips the router.
+ * - `bounded`: closed fixture operations, transaction-scoped Kysely, experimental outcome policy.
+ */
+export type FactorMode = "native" | "handler-transaction" | "server-api-transaction" | "bounded";
+/** Experimental policy only. Passing characterization does not accept it for production. */
+export type CommitPolicy = "classified" | "commit-every-response" | "rollback-every-failure";
+
+/** SQL text only. Parameters, which could carry credentials, are never recorded. */
+export interface TracedStatement { sql: string; inTransaction: boolean }
+
+/** Mutable from tests, like `ProofFaultInjection`. Holds no credentials. */
+export interface FactorControl {
+  mode: FactorMode;
+  policy: CommitPolicy;
+  /** Simulates a wrapper regression that lets a trust request reach the native handler. */
+  forwardTrustRegression: boolean;
+  /** A real library hook veto: createSession yields null, which becomes an error Response. */
+  vetoSessionCreate: boolean;
+  trace: TracedStatement[];
+  /** Whether a real transaction was still open when a library after-hook ran. */
+  afterHookInTransaction: boolean[];
+  /** Burns of a challenge after a rolled-back verification; a separate committed write. */
+  burned: number;
+  fault?: { sql: RegExp; when: "before" | "after"; remaining: number; afterSql?: RegExp; armed?: boolean };
+  outcomes: Array<"response" | "exception">;
+  failCookie: boolean;
+  failEvidence: boolean;
+  probeAdapters: boolean;
+  adapterScopes: Array<{ direct: boolean; internal: boolean }>;
+}
+
+export const newFactorControl = (mode: FactorMode): FactorControl => ({
+  mode, policy: "classified", forwardTrustRegression: false, vetoSessionCreate: false, trace: [], afterHookInTransaction: [], burned: 0, outcomes: [], failCookie: false, failEvidence: false, probeAdapters: false, adapterScopes: [],
+});
+
+type FactorOptions = AuthenticationProviderOptions & { factorControl: FactorControl };
+type LibraryConnection = Pick<AuthenticationProviderOptions, "baseURL" | "secret" | "clientIpHeader">;
+
+/** The same settings as the password proof plus the candidate plugin. */
+export function factorLibraryOptions(options: LibraryConnection, database: Kysely<never>, hooks: NonNullable<BetterAuthOptions["databaseHooks"]> = {}, transaction = true) {
+  const base = new URL(options.baseURL);
+  return {
+    appName: "Worktree Control",
+    baseURL: base.origin,
+    basePath: base.pathname,
+    secret: options.secret,
+    database: { db: database, type: "sqlite", transaction },
+    user: { modelName: "authentication_ba_user" },
+    session: { modelName: "authentication_ba_session", expiresIn: 8 * 60 * 60, updateAge: 60 * 60, freshAge: 10 * 60, cookieCache: { enabled: false } },
+    account: { modelName: "authentication_ba_account", accountLinking: { enabled: false } },
+    verification: { modelName: "authentication_ba_verification", storeIdentifier: "hashed" },
+    emailAndPassword: { enabled: true, disableSignUp: true, autoSignIn: false, minPasswordLength: 12, maxPasswordLength: 256 },
+    trustedOrigins: [base.origin],
+    rateLimit: { enabled: true, storage: "memory", window: 60, max: 100, customRules: { "/sign-in/email": { window: 60, max: 5 } } },
+    advanced: {
+      useSecureCookies: true,
+      cookiePrefix: "wtc",
+      disableCSRFCheck: false,
+      disableOriginCheck: false,
+      defaultCookieAttributes: { httpOnly: true, secure: true, sameSite: "strict" },
+      ipAddress: { ipAddressHeaders: [options.clientIpHeader] },
+      database: { validateSchema: true },
+    },
+    telemetry: { enabled: false },
+    onAPIError: { throw: true },
+    logger: { disabled: true },
+    databaseHooks: hooks,
+    plugins: [twoFactor({ issuer: "Worktree Control", twoFactorTable: FACTOR_MODEL, skipVerificationOnEnable: false, allowPasswordless: false })],
+  } satisfies BetterAuthOptions;
+}
+
+/** SQL-only tracing and per-fixture restored fault injection, never library patches. */
+function tracedConnection(connection: ProviderSqliteConnection, control: FactorControl, state: { open: boolean }): ProviderSqliteConnection {
+  const execute = <T>(sql: string, work: () => T): T => {
+    const fault = control.fault;
+    if (fault?.afterSql?.test(sql)) fault.armed = true;
+    const matches = fault && (!fault.afterSql || fault.armed) && fault.remaining > 0 && fault.sql.test(sql);
+    const fail = () => { fault!.remaining--; throw new Error("fixture SQL boundary"); };
+    if (matches && fault.when === "before") fail();
+    const result = work();
+    const verb = sql.trim().toLowerCase();
+    if (verb === "begin") state.open = true;
+    control.trace.push({ sql, inTransaction: state.open });
+    if (verb === "commit" || verb === "rollback") state.open = false;
+    if (matches && fault.when === "after") fail();
+    return result;
+  };
+  return {
+    prepare(sql) {
+      const statement = connection.prepare(sql);
+      return {
+        reader: statement.reader,
+        all: parameters => execute(sql, () => statement.all(parameters)),
+        run: parameters => execute(sql, () => statement.run(parameters)),
+        iterate: parameters => execute(sql, () => statement.iterate(parameters)),
+      };
+    },
+    close() { connection.close(); },
+  };
+}
+
+interface Route { fields: readonly string[]; kind: "sign-in" | "enable" | "totp" | "recovery" }
+/** The closed bounded surface. Everything else, including every other native route, is 404. */
+const ROUTES = new Map<string, Route>([
+  ["/sign-in/email", { fields: ["email", "password"], kind: "sign-in" }],
+  ["/two-factor/enable", { fields: ["password"], kind: "enable" }],
+  ["/two-factor/verify-totp", { fields: ["code"], kind: "totp" }],
+  ["/two-factor/verify-backup-code", { fields: ["code"], kind: "recovery" }],
+]);
+/** A failed guess is the one failure whose writes must survive. */
+const ACCOUNTED_FAILURES = new Set(["INVALID_CODE", "INVALID_BACKUP_CODE", "TOO_MANY_ATTEMPTS_REQUEST_NEW_CODE"]);
+
+const isDeletion = (line: string) => /max-age=0/i.test(line) || /^[^=]+=;/.test(line);
+const cookieName = (line: string) => line.slice(0, line.indexOf("="));
+
+function fixed(status: number, body: Record<string, unknown>, cookies: readonly string[] = []): Response {
+  const headers = new Headers({ "content-type": "application/json", "cache-control": "no-store" });
+  for (const line of cookies) headers.append("set-cookie", line);
+  return new Response(JSON.stringify(body), { status, headers });
+}
+const denied = (status: number, reason: string, cookies: readonly string[] = []) => fixed(status, { outcome: "denied", reason }, cookies);
+
+/** Duplicates are refused rather than resolved: a second value is never a choice to make here. */
+function parseCookies(header: string | null): Map<string, string> | null {
+  const cookies = new Map<string, string>();
+  for (const part of (header ?? "").split(";")) {
+    const index = part.indexOf("=");
+    if (index < 0) continue;
+    const name = part.slice(0, index).trim();
+    if (cookies.has(name)) return null;
+    cookies.set(name, part.slice(index + 1).trim());
+  }
+  return cookies;
+}
+/** Signed cookie values are `value.signature`; only the library verifies the signature. */
+const signedValue = (raw: string) => decodeURIComponent(raw).split(".")[0]!;
+
+class Rollback extends Error {
+  constructor(readonly response: Response) { super("rollback"); }
+}
+
+class FactorProofProvider implements AuthenticationProviderInstance {
+  readonly #host: AuthenticationProviderHost;
+  readonly #options: FactorOptions;
+  readonly #control: FactorControl;
+  readonly #transaction = { open: false };
+  readonly #notifications = new AsyncLocalStorage<ProviderInvalidation[]>();
+  #expectedAdapter: unknown;
+  #connection: ProviderSqliteConnection | undefined;
+  #database: Kysely<never> | undefined;
+  #auth: ReturnType<FactorProofProvider["createLibrary"]> | undefined;
+  readonly #active = new AsyncLocalStorage<ReturnType<FactorProofProvider["createLibrary"]>>();
+
+  constructor(host: AuthenticationProviderHost, options: FactorOptions) {
+    this.#host = host;
+    this.#options = options;
+    this.#control = options.factorControl;
+  }
+
+  /** Only awaits readiness. The temporary owner applies DDL; a provider never migrates. */
+  async initialize(): Promise<AuthenticationProviderReadiness> {
+    this.#connection = tracedConnection(this.#host.connection, this.#control, this.#transaction);
+    this.#database = new Kysely<never>({ dialect: new SqliteDialect({ database: this.#connection }) });
+    const auth = this.createLibrary(this.#database);
+    this.#auth = auth;
+    const context = await auth.$context;
+    if (typeof context.checkSchema !== "function") throw new Error("Library schema verification is unavailable.");
+    await context.checkSchema();
+    return { providerId: "better-auth", implementationVersion: FACTOR_IMPLEMENTATION_VERSION, library: { name: "better-auth", version: "1.7.14" }, schema: "verified" };
+  }
+
+  createLibrary(database: Kysely<never>, transaction = true) {
+    const options = factorLibraryOptions(this.#options, database, {
+      session: {
+        create: { before: async () => (this.#control.vetoSessionCreate ? false : undefined) },
+        delete: { after: async (session: { id: string; userId: string }) => {
+          this.#control.afterHookInTransaction.push(this.#transaction.open);
+          const event: ProviderInvalidation = { kind: "session", providerId: "better-auth", sessionId: session.id, subject: session.userId };
+          const buffered = this.#notifications.getStore();
+          if (buffered) buffered.push(event); else this.#host.invalidated(event);
+        } },
+      },
+    }, transaction);
+    return betterAuth({ ...options, hooks: { before: createAuthMiddleware(async ctx => {
+      if (!this.#control.probeAdapters) return;
+      this.#control.adapterScopes.push({
+        direct: ctx.context.adapter === this.#expectedAdapter,
+        internal: await getCurrentAdapter(ctx.context.adapter) === this.#expectedAdapter,
+      });
+      return ctx.json({ fixtureAdapterProbe: true });
+    }) } });
+  }
+
+  async handle(request: Request): Promise<Response> {
+    const auth = this.#ready();
+    switch (this.#control.mode) {
+      case "bounded": return this.#bounded(request);
+      case "handler-transaction": {
+        const { adapter } = await auth.$context;
+        return runWithTransaction(adapter, async () => {
+          this.#expectedAdapter = await getCurrentAdapter(adapter);
+          return auth.handler(request);
+        });
+      }
+      case "server-api-transaction": {
+        const { adapter } = await auth.$context;
+        const body = await request.json() as { code: string };
+        return runWithTransaction(adapter, async () => {
+          this.#expectedAdapter = await getCurrentAdapter(adapter);
+          return auth.api.verifyTOTP({ headers: request.headers, body, asResponse: true });
+        });
+      }
+      default:
+        try {
+          const result = await auth.handler(request);
+          this.#control.outcomes.push("response");
+          return result;
+        } catch { this.#control.outcomes.push("exception"); return new Response(null, { status: 500 }); }
+    }
+  }
+
+  async #bounded(request: Request): Promise<Response> {
+    const base = new URL(this.#options.baseURL);
+    const url = new URL(request.url);
+    const path = url.pathname.startsWith(`${base.pathname}/`) ? url.pathname.slice(base.pathname.length) : "";
+    const route = ROUTES.get(path);
+    if (!route || request.method !== "POST" || url.search) return denied(404, "not_found");
+    let body: unknown;
+    try { body = JSON.parse(await request.text()); } catch { return denied(400, "invalid_body"); }
+    const input = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
+    const keys = Object.keys(input).sort();
+    if (keys.join() !== [...route.fields].sort().join() || keys.some(key => typeof input[key] !== "string")) return denied(400, "invalid_fields");
+    const cookies = parseCookies(request.headers.get("cookie"));
+    if (!cookies) return denied(400, "ambiguous_cookies");
+    const session = route.kind === "sign-in" ? undefined : cookies.get(COOKIE.session);
+    const challenge = route.kind === "totp" || route.kind === "recovery" ? cookies.get(COOKIE.challenge) : undefined;
+    if (session && challenge) return denied(400, "ambiguous_cookies");
+    if (route.kind !== "sign-in" && !session && !challenge) return denied(401, "unauthenticated");
+
+    const headers = new Headers({ "content-type": "application/json" });
+    for (const name of ["origin", this.#options.clientIpHeader]) {
+      const value = request.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+    // Only the one credential for this operation reaches native code, so trust,
+    // dont-remember and unrelated session cookies cannot select another branch.
+    if (session) headers.set("cookie", `${COOKIE.session}=${session}`);
+    if (challenge) headers.set("cookie", `${COOKIE.challenge}=${challenge}`);
+    const forwarded = route.kind === "enable" ? { ...input, method: "totp" }
+      : route.kind === "sign-in" ? input
+        : { ...input, trustDevice: this.#control.forwardTrustRegression };
+    return this.#atomic(route, new Request(request.url, { method: "POST", headers, body: JSON.stringify(forwarded) }), challenge);
+  }
+
+  /** The library has no such boundary: step-up and unconfirmed-factor rules are enforced here. */
+  async #preflight(route: Route, session: string | undefined, challenge: string | undefined, headers: Headers): Promise<Response | null> {
+    if (route.kind !== "totp" && route.kind !== "recovery") return null;
+    const context = await this.#ready().$context;
+    const factorFor = (userId: string) => context.adapter.findOne<{ verified: boolean | null }>({ model: "twoFactor", where: [{ field: "userId", value: userId }] });
+    if (session) {
+      if (route.kind === "recovery") return denied(403, "recovery_cannot_upgrade_session");
+      const current = await this.#ready().api.getSession({ headers: new Headers({ cookie: headers.get("cookie") ?? "" }), query: { disableCookieCache: true } });
+      const factor = current && await factorFor(current.user.id);
+      return factor && factor.verified === false ? null : denied(403, "step_up_unsupported");
+    }
+    const pending = await context.internalAdapter.findVerificationValue(signedValue(challenge!));
+    if (!pending) return null;
+    const factor = await factorFor(pending.value);
+    return factor && factor.verified !== true ? denied(400, "factor_unconfirmed") : null;
+  }
+
+  async #atomic(route: Route, request: Request, challenge: string | undefined): Promise<Response> {
+    const notifications: ProviderInvalidation[] = [];
+    let result: Response;
+    try {
+      // Kysely Transaction is itself a supported Kysely database. Every adapter
+      // on this short-lived auth instance receives that SAME transaction object.
+      // Disable only nested library transactions; the outer transaction is real.
+      // No mutation of context.adapter/internalAdapter or global library state.
+      result = await this.#notifications.run(notifications, () => this.#database!.transaction().execute(async trx => {
+        const scoped = this.createLibrary(trx, false);
+        await (await scoped.$context).checkSchema!();
+        return this.#active.run(scoped, async () => {
+          const cookies = parseCookies(request.headers.get("cookie"))!;
+          const refused = await this.#preflight(route, cookies.get(COOKIE.session), cookies.get(COOKIE.challenge), request.headers);
+          if (refused) throw new Rollback(refused);
+          const native = await scoped.handler(request);
+          this.#control.outcomes.push("response");
+          const decision = await this.#decide(route, native, challenge !== undefined);
+          if ("rollback" in decision) throw new Rollback(decision.rollback);
+          return decision.commit;
+        });
+      }));
+    } catch (error) {
+      if (!(error instanceof Rollback)) this.#control.outcomes.push("exception");
+      const response = error instanceof Rollback ? error.response : denied(500, "rolled_back");
+      // Fixture containment only: invalidate this challenge after rollback.
+      // This is NOT durable account-level failed-guess accounting on SQL errors.
+      if (challenge && response.status >= 500) await this.#burn(challenge);
+      return response;
+    }
+    // Library after-hooks ran while the outer transaction was open; deliver only now.
+    for (const event of notifications) this.#host.invalidated(event);
+    return result;
+  }
+
+  async #burn(challenge: string): Promise<void> {
+    const { internalAdapter } = await this.#ready().$context;
+    const identifier = signedValue(challenge);
+    try {
+      await internalAdapter.consumeVerificationValue(identifier);
+      await internalAdapter.consumeVerificationValue(`2fa-attempts-${identifier}`);
+      this.#control.burned++;
+    } catch { this.#host.log("error", "A failed challenge could not be spent."); }
+  }
+
+  async #decide(route: Route, native: Response, usesChallenge: boolean): Promise<{ commit: Response } | { rollback: Response }> {
+    if (this.#control.failCookie) return { rollback: denied(500, "cookie_refused") };
+    const parsed = await native.clone().json().catch(() => null) as Record<string, unknown> | null;
+    const lines = native.headers.getSetCookie();
+    if (lines.some(line => line.startsWith(`${COOKIE.trust}=`) && !isDeletion(line))) return { rollback: denied(500, "trust_cookie_refused") };
+    // Native cookies stay private except session/challenge lines and approved deletions.
+    const cookies = lines.filter(line => [COOKIE.session, COOKIE.challenge].includes(cookieName(line) as typeof COOKIE.session) || isDeletion(line));
+    const { policy } = this.#control;
+    const code = typeof parsed?.code === "string" ? parsed.code : "native_failure";
+    if (!native.ok) {
+      const response = denied(native.status, code, cookies);
+      if (policy === "commit-every-response") return { commit: response };
+      const accounted = (route.kind === "totp" || route.kind === "recovery") && ACCOUNTED_FAILURES.has(code);
+      return policy === "rollback-every-failure" || !accounted ? { rollback: denied(native.status, code) } : { commit: response };
+    }
+    if (route.kind === "enable") return { commit: fixed(200, { outcome: "enrollment", totpURI: parsed?.totpURI, backupCodes: parsed?.backupCodes }) };
+    if (route.kind === "sign-in" && parsed?.twoFactorRedirect === true) return { commit: fixed(200, { outcome: "challenge" }, cookies) };
+    // A session is only ever the cookie plus its persisted row. The JSON token is never read.
+    const line = lines.find(value => value.startsWith(`${COOKIE.session}=`) && !isDeletion(value));
+    const token = line && signedValue(line.slice(COOKIE.session.length + 1).split(";")[0]!);
+    const [row] = (token ? this.#connection!.prepare('SELECT "id" FROM "authentication_ba_session" WHERE "token" = ?').all([token]) : []) as Array<{ id: string }>;
+    if (!row) return { rollback: denied(500, "session_unconfirmed") };
+    const method = route.kind === "recovery" ? "recovery_code" : route.kind === "sign-in" ? "password" : usesChallenge ? "password_totp" : "enrollment";
+    // Would-be controller evidence: same connection, so it shares the transaction.
+    if (this.#control.failEvidence) throw new Error("fixture evidence failure");
+    this.#connection!.prepare(`INSERT INTO "${EVIDENCE_TABLE}" ("sessionId", "method", "restricted", "verifiedAt") VALUES (?, ?, ?, ?)`)
+      .run([row.id, method, route.kind === "recovery" ? 1 : 0, new Date().toISOString()]);
+    return { commit: fixed(200, { outcome: route.kind === "recovery" ? "recovery" : "session", method, restricted: route.kind === "recovery" }, cookies) };
+  }
+
+  async signOut(request: Request): Promise<Response> { return this.handle(request); }
+
+  /** Claims only what the contract can state. Nothing here can express a second factor. */
+  async resolveSession(headers: Headers): Promise<VerifiedProviderSession | null> {
+    const result = await this.#ready().api.getSession({ headers, query: { disableCookieCache: true } });
+    if (!result) return null;
+    return {
+      providerId: "better-auth", sessionId: result.session.id, subject: result.user.id,
+      createdAt: new Date(result.session.createdAt).toISOString(), expiresAt: new Date(result.session.expiresAt).toISOString(),
+      authentication: { method: "password", factors: 1 },
+    };
+  }
+
+  async provisionLocal(): Promise<{ subject: string }> { throw new Error("The factor fixture does not provision accounts."); }
+  async recoverLocal(): Promise<void> { throw new Error("The factor fixture does not recover accounts."); }
+  async revokeSession(): Promise<void> { throw new Error("The factor fixture does not revoke sessions."); }
+  async revokeSubjectSessions(): Promise<void> { throw new Error("The factor fixture does not revoke sessions."); }
+
+  async dispose(): Promise<void> {
+    const database = this.#database;
+    this.#auth = undefined;
+    this.#database = undefined;
+    await database?.destroy();
+  }
+
+  #ready() {
+    if (!this.#auth) throw new Error("Provider is not initialized.");
+    return this.#active.getStore() ?? this.#auth;
+  }
+}
+
+export const authenticationProvider: AuthenticationProviderModule = {
+  contractVersion: 2,
+  providerId: "better-auth",
+  implementationVersion: FACTOR_IMPLEMENTATION_VERSION,
+  storageRevision: 1,
+  create(host, options) { return new FactorProofProvider(host, options as FactorOptions); },
+};

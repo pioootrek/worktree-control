@@ -352,3 +352,97 @@ cleanup is confirmed. Same-OS-user agents share this administrative trust bounda
 Protected configuration/secret persistence, fresh-principal enrollment, CLI input
 and IPC schema, multi-human roles, factors/MFA and complete A5 enforcement are
 future work. Do not add a password-proof activation flag to reach that work.
+
+## A3-I12 factor compatibility experiment
+
+`test/factor-compatibility.test.ts` runs the installed Better Auth/core 1.7.14
+`twoFactor` plugin on the controller's sole temporary SQLite owner. TOTP is a
+compatibility candidate, not the owner's selected factor. Production remains
+schema 39, provider storage revision 1 and contract 2. This experiment changes no
+production provider, route, actor, mode or migration. Account mode remains
+unavailable; A4, A5, roles and GUI remain separate.
+
+The fixture first provisions an ordinary password account. Its temporary owner
+then compiles pinned `getMigrations` SQL, applies that SQL in an exclusive borrow,
+and awaits real `checkSchema`. A second generation pass must have no outstanding
+changes. The extended fixture is never reopened as a recognized production
+store. Every fixture read and write uses that owner's borrow; there is no second
+SQLite connection. Disposal drains provider work before closing SQLite and
+checks owner-lock release. Generated SQL contains table definitions only and is
+saved to `/tmp/a3-i12-factor-generated-ddl.sql` by the schema test.
+
+The default `node:test:auth-provider-proof` preset includes both passing
+characterization and ordinary failing `UNMET PRODUCT ACCEPTANCE` tests. The
+latter assert that one accepted TOTP cannot authenticate another password
+challenge, including reuse of an enrollment code. They are neither skipped nor
+marked as expected failures. The pinned plugin accepts those reuses, including
+through the bounded wrapper, so the proof suite stays red. Challenge single-use
+and TOTP single-use are separate properties. A further acceptance regression
+requires the account failure count to survive rollback after a failed guess.
+
+Observed native behavior includes unverified enrollment followed by flag changes
+and session-cookie rotation. Enrollment's JSON token names the deleted session;
+the cookie identifies the persisted replacement. Password sign-in produces a
+pending cookie without an authenticated session, and one queued completion wins.
+Wrong guesses survive normally, the challenge budget exhausts, and account
+lockout spans independent challenges. A fresh peer per request and a fixed,
+restored clock keep the plugin's unrelated per-peer limiter and TOTP boundaries
+out of those results. The observed five-guess challenge budget, ten-failure
+account lock and other numeric library settings are fixture evidence only. Native
+verification with an existing session counts neither the challenge nor the
+account budget, even across eleven wrong guesses with distinct peers.
+
+Recovery codes consume once across queued independent challenges and regenerated
+codes replace the old set. Native verification also accepts a code from an
+unverified factor. Native trusted-device login bypasses a later factor challenge.
+Native sessions have no method or factor-verification timestamp. An old password
+session survives another session's enrollment; the enabled flag does not prove
+that session completed a factor.
+
+`test/factor-provider.ts` retains native handler mode and two supported-context
+probes. An outer core `runWithTransaction` is masked by `auth.handler`'s
+`runWithAdapter`; the direct server API preserves the internal adapter context
+but its direct `context.adapter` still differs. The probes return before an
+unjoined SQL call could wait on Kysely's single connection. They do not claim to
+execute that deadlock.
+
+The bounded experiment instead supplies a real Kysely `Transaction` as the
+short-lived Better Auth instance's database and sets its library transaction
+option to false to avoid nested transactions. The outer Kysely transaction
+remains real. Adapter methods, library globals and installed files are unchanged.
+SQL traces verify that both direct factor writes and internal challenge/session
+writes, fixture preflight and the stand-in evidence insert share that transaction.
+This is fixture feasibility evidence, not an accepted production design.
+
+Faults cover factor creation, flags, rotation, recovery-code and challenge
+consumption, session creation, stand-in evidence, commit and cookie refusal.
+A temporary SQLite trigger demonstrates partial native enrollment commits on a
+later factor-write failure. A library create-session veto returns an error
+Response after consuming a recovery code, while a SQL exception throws. The
+wrapper rolls back success-critical writes and withholds cookies on failure,
+and buffers invalidation until after commit. A failed notification remains
+`committed:true`. Blanket rollback of every 401 erases failure accounting;
+blanket commit of every error Response loses a recovery code without a session.
+
+The bounded classifier and its separate challenge burn are experimental. Burning
+a challenge is not durable account-level failed-guess accounting after a SQL
+failure. A post-increment fault currently rolls that count back to zero; the
+challenge burn does not repair it. The stand-in evidence table is not an approved evidence schema or a
+controller authority source. Recovery results are marked restricted; this
+implementation version cannot issue any controller actor. The wrapper fixes
+`trustDevice:false`, rejects caller trust fields, strips incoming trust cookies
+and rolls back any nondeletion trust cookie. Its closed route map denies native
+OTP, disable, URI/code viewing, generation and catch-all routes. There is no
+public factor integration.
+
+Integration remains blocked on cross-challenge TOTP replay, authoritative
+session-specific method/time and security-revision/purpose evidence, and a
+reviewed durable failure-accounting design. This proof does not choose a recovery
+policy, absolute/freshness deadlines, session caps, restore fence or production
+factor. It does not certify disconnect cleanup, process restart, browser UX or
+complete A3 acceptance. Further work must use supported library capabilities or
+an explicitly reviewed alternative; no custom production replay crypto is added.
+
+Primary API references: [Better Auth two-factor plugin](https://better-auth.com/docs/plugins/2fa),
+[Kysely transactions](https://kysely-org.github.io/kysely-apidoc/classes/Kysely.html#transaction).
+Installed pinned source and the runnable cases determine these findings.
