@@ -84,6 +84,25 @@ atomic filesystem/SQLite config audit, exactly-once recovery, MFA or full A3
 acceptance is claimed. See the exact
 [operator workflow](../../docs/authentication.md#protected-provider-maintenance).
 
+After a fresh managed build, `node:test:integration:provider-administration`
+starts the actual built CLI controller with zero managed projects and temporary
+ports, data and state. It exercises configure/status/owner creation/enrollment/
+recovery through private IPC, active open and token modes with pending mode
+changes, exact CLI conflict errors, secret exclusion, sole SQLite ownership and
+SIGTERM cleanup. These cases execute `main` rather than reconstruct its dispatcher.
+
+The same preset covers a real admin-listener start refusal and injected SQLite
+close failures during startup cleanup and SIGTERM. A child-only Node preload
+arms the driver failure after setup; no production fault flag is added. The
+restore case invokes the actual HTTP restore route and confirms provider disposal
+before the injected driver failure. Its regression currently fails because the
+restore-failure callback reports retained ownership, then the process exits 0
+with both lock files left behind. The test remains failing pending a core fix.
+This demonstrates failure handling under a controlled storage fault, not a way
+for an unprivileged caller to cause that fault. Listener-cleanup uncertainty
+after an accepted request, OS service recovery and full A3 acceptance remain
+separate gates.
+
 ## Live admission coverage
 
 The strict fixtures use `SqliteStateStore.requireAdmission()` after bootstrap
