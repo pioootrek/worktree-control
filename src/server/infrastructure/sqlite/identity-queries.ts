@@ -89,6 +89,19 @@ export class IdentityQueries implements IdentityStore {
       .get() as Principal | undefined) ?? null;
   }
 
+  ownerPrincipals(): Principal[] {
+    return this.database.prepare("SELECT id, kind, status FROM remote_principals WHERE kind = 'owner' ORDER BY id LIMIT 2").all() as Principal[];
+  }
+
+  createFirstOwnerPrincipal(principal: Principal, actor: string): boolean {
+    return this.database.transaction(() => {
+      if (this.database.prepare("SELECT 1 FROM remote_principals WHERE kind = 'owner' LIMIT 1").get()) return false;
+      this.database.prepare("INSERT INTO remote_principals(id, kind, status) VALUES (?, 'owner', 'active')").run(principal.id);
+      this.audit("identity.owner_principal_created", actor, { principalId: principal.id });
+      return true;
+    }).immediate();
+  }
+
   listPrincipals(kind?: Principal["kind"]): Principal[] {
     const rows = kind
       ? this.database.prepare("SELECT id, kind, status FROM remote_principals WHERE kind = ? ORDER BY id").all(kind)

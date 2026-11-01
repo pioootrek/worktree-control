@@ -24,6 +24,7 @@ export type AuthenticationProviderErrorCode =
   | "invalid_session" | "invalid_input" | "invalidation_failed" | "provider_disposed" | "provider_failed" | "disposal_unconfirmed";
 
 /** Safe to show: messages are fixed text, never library errors, input values or secrets. */
+const retainedFailureResources = new WeakMap<AuthenticationProviderError, unknown>();
 export class AuthenticationProviderError extends Error {
   constructor(
     readonly code: AuthenticationProviderErrorCode,
@@ -34,10 +35,14 @@ export class AuthenticationProviderError extends Error {
     super(message);
     this.name = "AuthenticationProviderError";
   }
+  /** Retain uncertain partial plugin resources with the owning error, without serialization. */
+  retainResource(resource: unknown): this { retainedFailureResources.set(this, resource); return this; }
 }
 
 /** Synchronous controller-owned mapping operations; callers run them inside a borrow. */
 export interface ProviderSubjectStore extends ProviderSubjectRegistry {
+  isActiveOwner(principalId: string): boolean;
+  hasSubjectHistory(principalId: string): boolean;
   /** The mapped principal when the mapping is active and the principal is a current active owner. */
   resolveActivePrincipal(subject: string): string | null;
   revoke(input: { subject: string; actor: string }): ProviderSubjectMapping;
@@ -166,7 +171,7 @@ export async function loadAuthenticationProvider(input: LoadAuthenticationProvid
       const partial = instance as unknown as Record<string, unknown> | undefined;
       instance = undefined;
       if (isRecord(partial) && typeof partial.dispose === "function") {
-        try { await (partial.dispose as () => unknown).call(partial); } catch { throw new AuthenticationProviderError("disposal_unconfirmed", "Authentication provider disposal was not confirmed."); }
+        try { await (partial.dispose as () => unknown).call(partial); } catch { throw new AuthenticationProviderError("disposal_unconfirmed", "Authentication provider disposal was not confirmed.").retainResource(partial); }
       }
       throw unavailable("incompatible instance");
     }
@@ -177,7 +182,7 @@ export async function loadAuthenticationProvider(input: LoadAuthenticationProvid
       || readiness.implementationVersion !== provider.implementationVersion) throw unavailable("readiness");
     return new AuthenticationProviderRuntime(input, provider, ready, connection, subjects, operations, Object.freeze({ ...readiness, library: Object.freeze({ ...readiness.library }) }));
   } catch (error) {
-    try { await instance?.dispose(); } catch { throw new AuthenticationProviderError("disposal_unconfirmed", "Authentication provider disposal was not confirmed."); }
+    try { await instance?.dispose(); } catch { throw new AuthenticationProviderError("disposal_unconfirmed", "Authentication provider disposal was not confirmed.").retainResource(instance); }
     finally { connection.close(); }
     throw safeError(error);
   }
@@ -343,7 +348,11 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
       if (typeof value !== "string" || !value || value.length > 1024) return Promise.reject(new AuthenticationProviderError("invalid_input", "Provisioning input is invalid."));
     }
     return this.#run(async () => {
-      if (this.#input.storage.runControllerOperation(() => this.#subjects.findByPrincipal(input.principalId))) {
+      const state = this.#input.storage.runControllerOperation(() => ({
+        active: this.#subjects.isActiveOwner(input.principalId), history: this.#subjects.hasSubjectHistory(input.principalId),
+      }));
+      if (!state.active) throw new AuthenticationProviderError("principal_unavailable", "Only an existing active owner principal can be linked.");
+      if (state.history) {
         throw new AuthenticationProviderError("subject_conflict", "The principal already has a provider account.");
       }
       return this.#instance.provisionLocal(input);
@@ -358,6 +367,9 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     return this.#run(async () => {
       const linked = this.#input.storage.runControllerOperation(() => this.#subjects.findByPrincipal(input.principalId));
       if (!linked) throw new AuthenticationProviderError("not_linked", "The principal has no provider account.");
+      if (this.#input.storage.runControllerOperation(() => this.#subjects.resolveActivePrincipal(linked.subject)) !== input.principalId) {
+        throw new AuthenticationProviderError("principal_unavailable", "The active owner principal is unavailable.");
+      }
       await this.#instance.recoverLocal(input);
     });
   }

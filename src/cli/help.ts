@@ -6,6 +6,8 @@ export const CLI_HELP = [
   "  start              Run the controller in this terminal (default command; --host, --port, --mcp-port, --data-dir, --state-dir)",
   "  service            Manage the user service: install, status, start, stop, restart, url, open, uninstall",
   "  auth               Authentication: status, token generate, token rotate, mode set <open|token|better-auth> (applies after service restart)",
+  "  auth provider      Protected maintenance: status [--principal-id ID], configure, owner create, enroll/recover --principal-id ID",
+  "                     configure/enroll/recover require --input-stdin or --input-file ABSOLUTE_PATH (strict private JSON; no secret arguments)",
   "  backup             Installation backups: create, restore, now, list, status, monitor, remote, export-project, import-project, user-cleanup",
   "  project            Registered projects: add <path>, list, remove <id>",
   "  doctor             Check Node.js, Git and the application state",

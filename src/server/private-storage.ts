@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { accessSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, parse, resolve } from "node:path";
+import { accessSync, closeSync, constants, existsSync, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 
 function owned(uid: number): boolean { return !process.getuid || uid === process.getuid(); }
 function unsafe(): never {
@@ -99,4 +99,60 @@ export function durableJson(path: string, value: unknown): void {
   } finally {
     if (!published) { try { rmSync(temporary, { force: true }); } catch { /* Preserve the original failure. */ } }
   }
+}
+
+/** New sensitive inputs reject aliases rather than repairing permissions or following parents. */
+export function validateSensitivePath(path: string, excludedRoots: readonly string[] = [], allowMissing = false): void {
+  if (!isAbsolute(path)) unsafe();
+  const absolute = resolve(path);
+  for (const root of excludedRoots) {
+    const inside = relative(resolve(root), absolute);
+    if (!inside || (inside !== ".." && !inside.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(inside))) unsafe();
+  }
+  let current = absolute, first = true;
+  for (let depth = 0; ; depth++) {
+    if (depth > 128) unsafe();
+    try {
+      const stat = lstatSync(current);
+      if (stat.isSymbolicLink()) unsafe();
+      if (!first) {
+        if (!stat.isDirectory() || ((stat.mode & 0o022) && !(stat.mode & 0o1000))) unsafe();
+        if (current === dirname(absolute) && (!owned(stat.uid) || (stat.mode & 0o077))) unsafe();
+        if (existsSync(join(current, ".git"))) unsafe();
+      }
+    } catch (error) {
+      if (!allowMissing || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (current === dirname(current)) break;
+    current = dirname(current); first = false;
+  }
+}
+
+/** Fixed allocation, no-follow/nonblocking descriptor read, checked before AND after reading. */
+export function readPrivateBoundedFile(path: string, maxBytes: number, excludedRoots: readonly string[] = []): Buffer {
+  let fd: number | undefined;
+  try {
+    validateSensitivePath(path, excludedRoots);
+    const before = lstatSync(path);
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const opened = fstatSync(fd);
+    const safe = (stat: typeof opened) => stat.isFile() && stat.nlink === 1 && owned(stat.uid)
+      && (stat.mode & 0o077) === 0 && stat.size > 0 && stat.size <= maxBytes;
+    if (!safe(before) || !safe(opened) || before.dev !== opened.dev || before.ino !== opened.ino) unsafe();
+    const bytes = Buffer.alloc(maxBytes + 1);
+    let size = 0;
+    while (size < bytes.length) {
+      const read = readSync(fd, bytes, size, bytes.length - size, null);
+      if (!read) break;
+      size += read;
+    }
+    const after = fstatSync(fd), named = lstatSync(path);
+    for (const stat of [after, named]) {
+      if (!safe(stat) || stat.dev !== opened.dev || stat.ino !== opened.ino || stat.size !== opened.size
+        || stat.mtimeMs !== opened.mtimeMs || stat.ctimeMs !== opened.ctimeMs) unsafe();
+    }
+    if (size !== opened.size || size > maxBytes) unsafe();
+    return bytes.subarray(0, size);
+  } catch { unsafe(); }
+  finally { if (fd !== undefined) closeSync(fd); }
 }

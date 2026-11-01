@@ -96,6 +96,9 @@ export interface KnowledgeProjectRuntimeLink {
 export interface IdentityStore {
   getPrincipal(id: string): Principal | null;
   getOwnerPrincipal(): Principal | null;
+  /** Bounded first-owner inspection, including revoked owners. */
+  ownerPrincipals(): Principal[];
+  createFirstOwnerPrincipal(principal: Principal, actor: string): boolean;
   listPrincipals(kind?: PrincipalKind): Principal[];
   savePrincipal(principal: Principal, actor: string): void;
   getCredentialForAuthentication(id: string): CredentialAuthenticationRecord | null;

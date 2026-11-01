@@ -53,6 +53,11 @@ function fixture(installationAuthority?: InstallationAuthority) {
   const store: IdentityStore = {
     getPrincipal: (id) => principals.get(id) ?? null,
     getOwnerPrincipal: () => [...principals.values()].find(({ kind }) => kind === "owner") ?? null,
+    ownerPrincipals: () => [...principals.values()].filter(({ kind }) => kind === "owner").slice(0, 2),
+    createFirstOwnerPrincipal: principal => {
+      if ([...principals.values()].some(({ kind }) => kind === "owner")) return false;
+      principals.set(principal.id, principal); return true;
+    },
     listPrincipals: (kind) => [...principals.values()].filter((principal) => !kind || principal.kind === kind),
     savePrincipal: (principal) => { principals.set(principal.id, principal); },
     getCredentialForAuthentication: (id) => credentials.get(id) ?? null,

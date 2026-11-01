@@ -842,6 +842,18 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     return this.identity.getOwnerPrincipal();
   }
 
+  ownerPrincipals(): Principal[] { return this.identity.ownerPrincipals(); }
+  createFirstOwnerPrincipal(principal: Principal, actor: string): boolean {
+    return this.identity.createFirstOwnerPrincipal(principal, actor);
+  }
+
+  hasAuthenticationProviderData(): boolean {
+    return Boolean(this.database.prepare(`SELECT 1 WHERE
+      EXISTS(SELECT 1 FROM authentication_provider_subjects) OR
+      EXISTS(SELECT 1 FROM authentication_ba_user) OR EXISTS(SELECT 1 FROM authentication_ba_account) OR
+      EXISTS(SELECT 1 FROM authentication_ba_session) OR EXISTS(SELECT 1 FROM authentication_ba_verification)`).get());
+  }
+
   listPrincipals(kind?: Principal["kind"]): Principal[] {
     return this.identity.listPrincipals(kind);
   }

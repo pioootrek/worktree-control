@@ -35,6 +35,9 @@ import {
 import { writeCliLine } from "./output";
 import { cliInformation } from "./help";
 import { runAuthCommand } from "./auth-management";
+import { parseProviderArguments } from "./auth-provider-input";
+import { createAuthenticationAdministration, retainAuthenticationOwnership } from "../server/bootstrap/authentication-administration";
+import { ProviderAdminError, providerAdminErrorBody } from "../server/modules/authentication";
 import { bootstrapInstallationToken, bootstrapServiceInstallationToken } from "./first-run-token";
 import { runIdentityCommand } from "./identity-management";
 import { runBackupCommand } from "./backup-management";
@@ -44,7 +47,7 @@ import { openProjectGateway, runDoctorCommand, runProjectCommand } from "./proje
 import { controllerAccessToken, localDashboardEndpoint, publicDashboardEndpoint, readServiceAccess, removeServiceAccess, writeServiceAccess } from "./service-access";
 import { mcpConfigToken } from "./mcp-config";
 import { mcpDiagnosticsAdminHandler } from "../server/mcp-diagnostics-admin";
-import { requestAdminSocket, listenAdminSocket, type AdminSocketServer } from "../server/admin-socket";
+import { AdminRequestError, AdminSocketStartupError, requestAdminSocket, listenAdminSocket, type AdminSocketServer } from "../server/admin-socket";
 import { buildServiceStartArguments } from "./service-install";
 import { resolveServiceInstallArguments, serviceSettingChanges, validateServiceCommand } from "./service-options";
 import { legacyServiceWarning, renderLaunchAgent, renderSystemdUnit, UserServiceManager, type ServiceInstallOptions } from "./service-manager";
@@ -90,6 +93,13 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   }
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
+  if (command === "auth" && process.argv[3] === "provider") {
+    const raw = process.argv.slice(3), parsed = parseProviderArguments(raw);
+    const providerPaths = resolveAppPaths(parsed.dataDir, parsed.stateDir);
+    assertBackupHandoffCompleted(providerPaths.databasePath);
+    await runAuthCommand(raw, providerPaths, { write: writeCliLine });
+    return;
+  }
   if (command === "service") {
     const args = process.argv.slice(3);
     validateServiceCommand(args);
@@ -387,6 +397,9 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     authenticationMode: authentication.mode(),
   });
   let adminSocket: AdminSocketServer;
+  const providerAdministration = createAuthenticationAdministration({ store, authentication, dataDirectory: paths.dataDirectory,
+    actor: "local-admin", maintenance: () => maintenance,
+    configurationEvent: () => logs.controller("authentication.provider_configuration_written", {}) });
   try {
     const authenticationHandler = authenticationAdminHandler({
       authentication,
@@ -401,6 +414,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     const backupHandler = backupAdminHandler(backups, restores, userSchedules);
     const mcpDiagnosticsHandler = mcpDiagnosticsAdminHandler(readMcpDiagnostics);
     adminSocket = await listenAdminSocket(paths.adminSocketPath, body => {
+      if (body && typeof body === "object" && "command" in body && body.command === "auth-provider") return providerAdministration.execute(body);
       if (body && typeof body === "object" && "command" in body && (body.command === "backup" || body.command === "backup-remote" || body.command === "backup-monitor" || body.command === "user-export-recovery")) return backupHandler(body);
       if (body && typeof body === "object" && "command" in body && body.command === "mcp-diagnostics") {
         return mcpDiagnosticsHandler(body);
@@ -409,12 +423,17 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       return store.admission.run(() => authenticationHandler(body));
     });
   } catch (error) {
-    userSchedules?.close(); await backups.close();
-    await mcp?.close();
-    await controller.close();
-    await remoteVerification?.close();
-    await service.shutdown();
-    controllerLock.release();
+    const cleanup = createControllerShutdown({
+      service: { closeAdmission: () => { maintenance = true; service.closeAdmission(); }, shutdown: () => service.shutdown() },
+      stopping() {}, userSchedules, backups, remoteVerification, mcp, controller, controllerLock,
+      adminSocket: error instanceof AdminSocketStartupError ? error.owner : { close() {} },
+      authenticationProvider: providerAdministration, removeServiceAccess() {},
+    });
+    try { await cleanup(); }
+    catch {
+      retainAuthenticationOwnership({ providerAdministration, store, controllerLock, cleanup });
+      throw new ProviderAdminError("disposal_unconfirmed", undefined, false);
+    }
     throw error;
   }
   writeCliLine(translate(locale, "cli.listening", { host, port }));
@@ -439,6 +458,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const shutdown = createControllerShutdown({
     service: { closeAdmission: () => { maintenance = true; service.closeAdmission(); }, shutdown: () => service.shutdown() },
     userSchedules, backups, remoteVerification, mcp, controller, adminSocket, controllerLock,
+    authenticationProvider: providerAdministration,
     stopping: () => {
       process.removeListener("SIGINT", handleSignal);
       process.removeListener("SIGTERM", handleSignal);
@@ -450,7 +470,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     () => process.exit(0),
     (error) => {
       console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      retainAuthenticationOwnership({ providerAdministration, store, controllerLock });
     },
   );
   process.once("SIGINT", handleSignal);
@@ -666,6 +686,13 @@ function findLanAddress(): string | null {
 }
 
 main().catch((error) => {
+  if (process.argv[2] === "auth" && process.argv[3] === "provider") {
+    const body = error instanceof AdminRequestError
+      ? { code: error.code ?? "admin_outcome_unknown", error: error.message,
+        ...(error.committed ? { committed: true } : {}), ...(error.cleanupConfirmed === false ? { cleanupConfirmed: false } : {}) }
+      : providerAdminErrorBody(error instanceof ProviderAdminError ? error : new ProviderAdminError("provider_failed"));
+    console.error(JSON.stringify(body)); process.exitCode = 1; return;
+  }
   console.error(error instanceof KnowledgeError ? JSON.stringify(knowledgeFailure(error).body) : error instanceof Error ? error.message : error);
   process.exitCode = 1;
 });

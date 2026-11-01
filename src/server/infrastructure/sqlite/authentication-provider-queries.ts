@@ -15,6 +15,14 @@ const map = (row: SubjectRow): ProviderSubjectMapping => ({
 export class AuthenticationProviderQueries implements ProviderSubjectStore {
   constructor(private readonly database: Database.Database, private readonly providerId: string) {}
 
+  isActiveOwner(principalId: string): boolean {
+    return Boolean(this.database.prepare("SELECT 1 FROM remote_principals WHERE id = ? AND kind = 'owner' AND status = 'active'").get(principalId));
+  }
+
+  hasSubjectHistory(principalId: string): boolean {
+    return Boolean(this.database.prepare("SELECT 1 FROM authentication_provider_subjects WHERE provider_id = ? AND principal_id = ? LIMIT 1").get(this.providerId, principalId));
+  }
+
   /** Core-only authority projection: deliberately excludes token, password and account contact data. */
   currentSession(sessionId: string): ProviderSessionState | null {
     if (this.providerId !== "better-auth") return null;
@@ -52,14 +60,14 @@ export class AuthenticationProviderQueries implements ProviderSubjectStore {
   }
 
   findByPrincipal(principalId: string): ProviderSubjectMapping | null {
-    const row = this.database.prepare("SELECT * FROM authentication_provider_subjects WHERE provider_id = ? AND principal_id = ? AND status = 'active'").get(this.providerId, principalId) as SubjectRow | undefined;
+    const row = this.database.prepare("SELECT * FROM authentication_provider_subjects WHERE provider_id = ? AND principal_id = ? AND status = 'active' AND revoked_at IS NULL").get(this.providerId, principalId) as SubjectRow | undefined;
     return row ? map(row) : null;
   }
 
   resolveActivePrincipal(subject: string): string | null {
     const row = this.database.prepare(`SELECT s.principal_id FROM authentication_provider_subjects s
       JOIN remote_principals p ON p.id = s.principal_id
-      WHERE s.provider_id = ? AND s.subject = ? AND s.status = 'active' AND p.kind = 'owner' AND p.status = 'active'`)
+      WHERE s.provider_id = ? AND s.subject = ? AND s.status = 'active' AND s.revoked_at IS NULL AND p.kind = 'owner' AND p.status = 'active'`)
       .get(this.providerId, subject) as { principal_id: string } | undefined;
     return row?.principal_id ?? null;
   }

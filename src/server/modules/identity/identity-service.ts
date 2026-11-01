@@ -153,6 +153,21 @@ export class IdentityService {
     return { principalId: principal.id, credential: publicCredential(issued.record), token: issued.token };
   }
 
+  /** Protected operator operation. Deliberately issues no credential, role or grant. */
+  createFirstOwnerPrincipal(actor: "local-cli" | "local-admin"): Principal {
+    const principal: Principal = { id: this.id(), kind: "owner", status: "active" };
+    if (!this.store.createFirstOwnerPrincipal(principal, actor)) {
+      throw new IdentityError("owner_already_initialized", "An owner principal already exists.");
+    }
+    return principal;
+  }
+
+  ownerPrincipalStatus(): { state: "none" | "single" | "ambiguous"; principal?: Principal } {
+    const owners = this.store.ownerPrincipals();
+    return owners.length === 0 ? { state: "none" } : owners.length === 1
+      ? { state: "single", principal: owners[0] } : { state: "ambiguous" };
+  }
+
   recoverOwnerSession(input: BootstrapOwnerInput = {}): BootstrappedOwner {
     const principal = this.store.getOwnerPrincipal();
     if (!principal || principal.status !== "active") {

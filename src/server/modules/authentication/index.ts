@@ -37,6 +37,11 @@ export {
 } from "./provider-runtime";
 export { AUTHENTICATION_PROVIDER_CONTRACT_VERSION } from "./provider-contract";
 export { ProviderKnowledgeApplication } from "./provider-knowledge-application";
+export { ProviderAdminApplication } from "./provider-admin-application";
+export type { ProviderConfiguration, ProviderConfigurationPort, ProviderMaintenanceState, ProviderAdministrationIdentity } from "./provider-admin-application";
+export { ProviderAdminError, parseProviderAdminCommand, providerAdminFailure, providerAdminErrorBody,
+  providerConfigurationInputSchema, providerEnrollmentInputSchema, providerRecoveryInputSchema } from "./provider-admin-commands";
+export type { ProviderAdminCommand, ProviderAdminErrorCode, ProviderConfigurationInput } from "./provider-admin-commands";
 export type {
   AuthenticationProviderHost,
   AuthenticationProviderInstance,
