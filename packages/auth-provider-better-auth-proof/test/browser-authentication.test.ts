@@ -4,7 +4,7 @@ import { createMcpControllerServer } from "@/server/mcp-http-server";
 import type { ControlService } from "@/server/control-service";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSessionActor } from "@/server/modules/identity";
-import { OWNER_PASSWORD, OWNER_EMAIL, count, readCommitted } from "./fixture";
+import { ORIGIN, OWNER_PASSWORD, OWNER_EMAIL, count, readCommitted } from "./fixture";
 import { BrowserClient, browserFixture, write, type BrowserFixture } from "./browser-authentication-fixture";
 import { cleanupStrictRoots, gate } from "./strict-fixture";
 import type { ProofFaultInjection } from "../src/index";
@@ -52,7 +52,8 @@ describe("actual controller browser adapter with pinned Better Auth", () => {
       await new Promise<void>(resolve => prod.server.listen(socketPath, resolve));
       const production = new BrowserClient(socketPath); production.cookie = client.cookie;
       await f.run(() => { f.authentication.generateToken("local-cli"); f.authentication.setMode("token", "local-cli"); });
-      expect(await production.call("/api/auth/status", { method: "GET" })).toMatchObject({ status: 200, body: { mode: "open", loginAvailable: false } });
+      const status = await production.call("/api/auth/status", { method: "GET" });
+      expect(status.status).toBe(200); expect(status.body).toEqual({ mode: "open", loginAvailable: false });
       expect((await production.call("/api/auth/sign-in/email", { body: { email: OWNER_EMAIL, password: OWNER_PASSWORD } })).status).toBe(401);
       expect((await production.call("/api/knowledge", { body: write(f) })).status).toBe(401);
       expect((await production.call("/api/projects", { method: "GET" })).status).toBe(401);
@@ -240,7 +241,7 @@ describe("actual controller browser adapter with pinned Better Auth", () => {
     try {
       const mutation = client.call("/api/auth/change-password", { body: { currentPassword: OWNER_PASSWORD, newPassword: "fixture-new-password-2" } });
       await entered.opened;
-      await vi.waitFor(() => expect(f.store.admissionSnapshot().queuedProvider).toBe(2));
+      await vi.waitFor(() => expect(f.store.admissionSnapshot().queuedProviders).toBe(2));
       release.open(); await hold; await revoke;
       expect((await mutation).status).toBe(401);
       expect(wrote).not.toHaveBeenCalled();
