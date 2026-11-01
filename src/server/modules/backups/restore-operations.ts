@@ -25,7 +25,8 @@ const handoffSchema = z.union([
   z.object({ format: z.literal(2), ...handoffFields,
     executionMode: z.enum(["legacy", "open", "token", "better-auth"]),
   }).strict().superRefine((record, context) => {
-    if ((record.authentication?.token && record.authentication.token.prefix !== `wsi_${record.authentication.token.id}`)
+    if (record.local !== (record.actor.actorId === "local-admin")
+      || (record.authentication?.token && record.authentication.token.prefix !== `wsi_${record.authentication.token.id}`)
       || (["maintenance", "executing", "verified"].includes(record.state) && !record.authentication)
       || (!record.local && (record.executionMode !== "token"
         || (record.authentication !== null && record.actor.actorId !== `installation:${record.authentication.token?.id}`)))) {

@@ -62,10 +62,10 @@ async function fixture(mode: "token" | "open" | "legacy", withToken = true) {
 }
 async function boot(root: string, paths: AppPaths) {
   const controllerLock = acquireControllerLock(paths.controllerLockPath);
-  let store: SqliteStateStore;
+  let store: SqliteStateStore | undefined;
   let authentication: AuthenticationService;
   try { store = new SqliteStateStore(paths.databasePath); authentication = new AuthenticationService(store); authentication.assertStartupPolicy(); }
-  catch (error) { store!?.close(); controllerLock.release(); throw error; }
+  catch (error) { store?.close(); controllerLock.release(); throw error; }
   const identity = new IdentityService(store, undefined, undefined, undefined, authentication, store);
   const owner = store.getOwnerPrincipal() ? identity.recoverOwnerSession() : identity.bootstrapOwnerSession(), ownerActor = identity.authenticateBearer(owner.token);
   store.requireAdmission();
@@ -146,19 +146,39 @@ describe("restart-only CLI mode selection across real private/public listeners",
   it.each(["token", "open"] as const)("rotates immediately with %s active and the other mode pending", async mode => {
     const f = await fixture(mode), live = await boot(f.root, f.paths);
     try {
+      const session = await live.initialize(mode === "token" ? f.token : undefined);
+      expect(session.status).toBe(200);
       const actor = await live.run(() => mode === "token" ? live.authentication.authenticateInstallation(f.token!)! : live.authentication.anonymousInstallation()!);
       await cli(f.paths, ["mode", "set", mode === "token" ? "open" : "token"]);
+      expect((await live.rpc(mode === "token" ? f.token : undefined, "tools/list", {}, session.session)).status).toBe(200);
       const output: string[] = []; await runAuthCommand(["token", "rotate"], f.paths, { write: line => output.push(line) });
       const rotated = JSON.parse(output[0]!) as { token: string };
       expect((await call(live.httpPath, "/api/metrics", f.token)).status).toBe(mode === "token" ? 401 : 200);
       expect((await call(live.httpPath, "/api/metrics", rotated.token)).status).toBe(200);
       expect(await live.run(() => live.authentication.isCurrentInstallationActor(actor))).toBe(mode === "open");
       expect(live.closeSessions).toHaveBeenCalledOnce(); expect(live.disconnect).toHaveBeenCalledOnce();
+      expect((await live.rpc(mode === "token" ? rotated.token : undefined, "tools/list", {}, session.session)).status).toBe(404);
       // A later selection rereads and preserves the newly rotated verifier/generation.
       await cli(f.paths, ["mode", "set", mode]);
       expect(await live.run(() => live.authentication.verifyInstallationToken(rotated.token))).toBe(true);
       expect(await cli(f.paths, ["status"])).toMatchObject({ generation: 2, restartRequired: false });
     } finally { await live.shutdown(); }
+  });
+
+  it("selects after a queued rotation using its fresh verifier and generation", async () => {
+    const f = await fixture("token"), live = await boot(f.root, f.paths);
+    const hold = pauseProvisioning(live, live.faults, "rollback");
+    try {
+      await hold.paused;
+      const rotation = live.run(() => live.authentication.rotateToken("fixture"));
+      const selection = cli(f.paths, ["mode", "set", "open"]);
+      await vi.waitFor(() => expect(live.store.admissionSnapshot().queuedCore).toBe(2));
+      hold.resume(); await hold.pending;
+      const issued = await rotation;
+      expect(await selection).toMatchObject({ activeMode: "token", configuredMode: "open", restartRequired: true, generation: 2 });
+      expect(await live.run(() => live.authentication.verifyInstallationToken(issued.token))).toBe(true);
+      expect(await live.run(() => live.authentication.verifyInstallationToken(f.token!))).toBe(false);
+    } finally { hold.resume(); await hold.pending; await live.shutdown(); }
   });
 
   it("rejects public selectors, identity admin and MCP tools/resources without policy or audit writes", async () => {
@@ -172,7 +192,7 @@ describe("restart-only CLI mode selection across real private/public listeners",
       const init = await live.initialize(f.token);
       for (const method of ["tools/call", "resources/read"]) {
         const response = await live.rpc(f.token, method, method === "tools/call" ? { name: "auth_mode_set", arguments: { value: "open" } } : { uri: "worktree-control://auth/mode?value=open" }, init.session);
-        expect(response.body).not.toHaveProperty("result.configuredMode");
+        expect(response.body.error).toBeDefined();
       }
       expect(save).not.toHaveBeenCalled();
       expect(await live.run(() => live.store.getAuthenticationPolicy())).toEqual(before);
@@ -181,6 +201,7 @@ describe("restart-only CLI mode selection across real private/public listeners",
 
   it("refuses a queued selector after maintenance starts, preserving fresh rotated credentials", async () => {
     const f = await fixture("token"), live = await boot(f.root, f.paths);
+    const save = vi.spyOn(live.store, "saveAuthenticationPolicy");
     const hold = pauseProvisioning(live, live.faults, "rollback");
     try {
       await hold.paused;
@@ -190,6 +211,8 @@ describe("restart-only CLI mode selection across real private/public listeners",
       await vi.waitFor(() => expect(live.store.admissionSnapshot().queuedCore).toBe(2));
       live.maintenance(); hold.resume(); await hold.pending;
       const issued = await rotation; await refused;
+      expect(save).toHaveBeenCalledOnce();
+      expect(save.mock.calls[0]?.[1]).toBe("authentication.token_rotated");
       expect(await live.run(() => live.authentication.verifyInstallationToken(issued.token))).toBe(true);
       expect(await live.run(() => live.authentication.status())).toMatchObject({ mode: "token", configuredMode: "token", generation: 2 });
     } finally { hold.resume(); await hold.pending; await live.shutdown(); }

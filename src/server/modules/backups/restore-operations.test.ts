@@ -174,11 +174,14 @@ describe("restore execution mode versus next boot selection", () => {
     finally { restored.close(); }
   });
 
-  it.each(["missing", "unknown", "inconsistent", "future"])("refuses %s new handoff authority even with a valid record checksum", async invalid => {
+  it.each(["missing", "unknown", "inconsistent", "future", "local-mismatch", "token-mismatch", "missing-policy"])("refuses %s new handoff authority even with a valid record checksum", async invalid => {
     const f = await fixture(); await f.restores.admit(f.current, f.input); f.restores.launch(f.current, f.input);
     const path = join(`${f.database}.backup-operations`, "handoff.json"), record = JSON.parse(readFileSync(path, "utf8")).payload;
     if (invalid === "missing") delete record.executionMode;
     else if (invalid === "future") record.format = 3;
+    else if (invalid === "local-mismatch") record.local = true;
+    else if (invalid === "token-mismatch") record.actor.actorId = "installation:unknown";
+    else if (invalid === "missing-policy") record.authentication = null;
     else record.executionMode = invalid === "unknown" ? "unknown" : "open";
     writeRecord(path, record);
     expect(() => assertBackupHandoffCompleted(f.database)).toThrow();
