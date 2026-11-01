@@ -36,8 +36,8 @@ describe("installed restore HTTP completion to owning launch", () => {
     const copy = await f.run(() => backups.create(actor, "http-copy")); await backups.drain();
     const service = new ControlService(f.store, { list: async () => [] } as never, new ProcessManager());
     const lockPath = join(f.root, "controller.lock"), controllerLock = acquireControllerLock(lockPath);
-    const restarted = vi.fn(), exit = vi.fn(), report = vi.fn();
-    const failed = vi.fn(createControllerRestoreFailure({ shutdown: handoff => shutdown(handoff), controllerLock, report, exit }));
+    const restarted = vi.fn(), exit = vi.fn(), report = vi.fn(), retainOwnership = vi.fn();
+    const failed = vi.fn(createControllerRestoreFailure({ shutdown: handoff => shutdown(handoff), controllerLock, report, exit, retainOwnership }));
     let maintenance = false;
     const restart = vi.fn(async (execute: () => void) => {
       await shutdown(true);
@@ -86,6 +86,7 @@ describe("installed restore HTTP completion to owning launch", () => {
       expect(executeControllerRestoreRequest).toHaveBeenCalledTimes(refused ? 0 : 1);
       expect(restarted).toHaveBeenCalledTimes(failure ? 0 : 1);
       expect(exit).toHaveBeenCalledTimes(failure && !cleanupUnconfirmed ? 1 : 0);
+      expect(retainOwnership).toHaveBeenCalledTimes(cleanupUnconfirmed ? 1 : 0);
       if (failure && !cleanupUnconfirmed) expect(exit).toHaveBeenCalledWith(1);
       if (cleanupUnconfirmed) expect(report).toHaveBeenLastCalledWith(expect.stringContaining("ownership retained"));
       expect(existsSync(lockPath)).toBe(!failure || cleanupUnconfirmed);

@@ -8,6 +8,8 @@ export function createControllerRestoreFailure(deps: {
   controllerLock: ControllerLock;
   report(message: string): void;
   exit(code: number): void;
+  /** Keep a referenced process lifetime and failed exit state after unconfirmed cleanup. */
+  retainOwnership(): void;
 }) {
   return async (error: unknown): Promise<void> => {
     deps.report(error instanceof Error ? error.message : "Restore handoff failed.");
@@ -17,6 +19,7 @@ export function createControllerRestoreFailure(deps: {
       deps.exit(1);
     } catch {
       // No forced exit or lock release while resources may still be owned.
+      deps.retainOwnership();
       deps.report("Restore cleanup is unconfirmed; ownership retained. Operator recovery is required.");
     }
   };

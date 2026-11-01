@@ -299,6 +299,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     failure: createControllerRestoreFailure({
       shutdown: handoff => shutdown(handoff), controllerLock,
       report: message => console.error(message), exit: code => process.exit(code),
+      retainOwnership: () => retainAuthenticationOwnership({ store, controllerLock, shutdown }),
     }),
   });
   const accessToken = randomBytes(32).toString("base64url");

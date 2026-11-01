@@ -95,9 +95,10 @@ The same preset covers a real admin-listener start refusal and injected SQLite
 close failures during startup cleanup and SIGTERM. A child-only Node preload
 arms the driver failure after setup; no production fault flag is added. The
 restore case invokes the actual HTTP restore route and confirms provider disposal
-before the injected driver failure. Its regression currently fails because the
-restore-failure callback reports retained ownership, then the process exits 0
-with both lock files left behind. The test remains failing pending a core fix.
+before the injected driver failure. The restore-failure callback now retains a
+referenced process lifetime and a nonzero exit state when cleanup is unconfirmed.
+The regression requires a live owner that refuses both controller and SQLite
+takeover after provider disposal, rather than only leftover lock files.
 This demonstrates failure handling under a controlled storage fault, not a way
 for an unprivileged caller to cause that fault. Listener-cleanup uncertainty
 after an accepted request, OS service recovery and full A3 acceptance remain
