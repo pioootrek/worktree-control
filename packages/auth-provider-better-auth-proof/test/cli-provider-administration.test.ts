@@ -223,7 +223,8 @@ describe("protected CLI provider administration against actual SQLite/Better Aut
       const browser = new BrowserClient(socket);
       expect(await browser.call("/api/auth/status", { method: "GET" })).toMatchObject({ status: 200, body: { mode: "open", loginAvailable: false } });
       for (const path of ["/api/auth/sign-in/email", "/api/auth/enroll", "/api/auth/recover", "/api/auth/provider", "/api/auth/mode"]) {
-        expect((await browser.call(path, { body: { command: "auth-provider", action: "recover", principalId: f.principalId, input: { newPassword: nextPassword } } })).status).toBe(404);
+        expect(await browser.call(path, { body: { command: "auth-provider", action: "recover", principalId: f.principalId, input: { newPassword: nextPassword } } }))
+          .toMatchObject({ status: 401, body: { code: "invalid_credential" } });
       }
       expect(f.loads()).toBe(1); expect(count(f.paths.databasePath, "principal_credentials")).toBe(0);
     } finally { await http.close(); await f.close(); }
