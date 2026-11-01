@@ -7,7 +7,7 @@
  * migrations, backups and principals; the provider reaches the database only
  * through the borrowed connection in its host, inside a controller borrow.
  */
-export const AUTHENTICATION_PROVIDER_CONTRACT_VERSION = 1;
+export const AUTHENTICATION_PROVIDER_CONTRACT_VERSION = 2;
 
 /** Kysely-compatible statement; valid only during the borrow that prepared it. */
 export interface ProviderSqliteStatement {
@@ -64,7 +64,7 @@ export interface AuthenticationProviderHost {
   readonly subjects: ProviderSubjectRegistry;
   /** May throw; a failure here never means the committed change was rolled back. */
   invalidated(event: ProviderInvalidation): void;
-  /** Receives library messages only, never their arguments. */
+  /** Runtime drops library text and emits a fixed event. */
   log(level: "error" | "warn" | "info" | "debug", message: string): void;
 }
 
@@ -108,6 +108,8 @@ export interface AuthenticationProviderInstance {
   /** Must await the library's actual schema verification before resolving. */
   initialize(): Promise<AuthenticationProviderReadiness>;
   handle(request: Request): Promise<Response>;
+  /** Native sign-out plus explicit durable deletion verification; native success alone is insufficient. */
+  signOut(request: Request): Promise<Response>;
   resolveSession(headers: Headers): Promise<VerifiedProviderSession | null>;
   provisionLocal(input: LocalProvisionInput): Promise<{ subject: string }>;
   recoverLocal(input: LocalRecoveryInput): Promise<void>;

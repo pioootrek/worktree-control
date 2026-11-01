@@ -32,6 +32,8 @@ export function createControllerShutdown(deps: {
   mcp: Closer | null;
   controller: Closer;
   adminSocket: Closer;
+  /** Drained after external producers/listeners, before service closes SQLite. */
+  authenticationProvider?: { dispose(): Promise<void> };
   removeServiceAccess(): void;
   controllerLock: ControllerLock;
 }) {
@@ -63,6 +65,7 @@ export function createControllerShutdown(deps: {
         failures.push(...listeners.filter(result => result.status === "rejected").map(result => result.reason));
         // Never close SQLite while a producer/listener might still use it.
         if (failures.length) throw new AggregateError(failures);
+        await deps.authenticationProvider?.dispose();
         await deps.service.shutdown();
         deps.removeServiceAccess();
         if (!handoff) deps.controllerLock.release();

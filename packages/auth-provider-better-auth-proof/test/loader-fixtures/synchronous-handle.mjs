@@ -1,5 +1,5 @@
 export const authenticationProvider = {
-  contractVersion: 1, providerId: "better-auth", implementationVersion: "1", storageRevision: 1,
+  contractVersion: 2, providerId: "better-auth", implementationVersion: "1", storageRevision: 1,
   create(host) {
     return {
       initialize() {
@@ -12,6 +12,7 @@ export const authenticationProvider = {
         }
         throw new Error("fixture-secret from a synchronous provider failure");
       },
+      async signOut() {},
       async resolveSession() { return null; },
       async provisionLocal() { throw new Error("unused"); },
       async recoverLocal() { throw new Error("unused"); },

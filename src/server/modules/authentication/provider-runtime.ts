@@ -21,7 +21,7 @@ import {
 
 export type AuthenticationProviderErrorCode =
   | "provider_unavailable" | "principal_unavailable" | "subject_conflict" | "not_linked"
-  | "invalid_input" | "invalidation_failed" | "provider_disposed" | "provider_failed" | "disposal_unconfirmed";
+  | "invalid_session" | "invalid_input" | "invalidation_failed" | "provider_disposed" | "provider_failed" | "disposal_unconfirmed";
 
 /** Safe to show: messages are fixed text, never library errors, input values or secrets. */
 export class AuthenticationProviderError extends Error {
@@ -84,7 +84,7 @@ export interface ProviderPrincipalResolution {
   principalId: string;
 }
 
-const REQUIRED_METHODS = ["initialize", "handle", "resolveSession", "provisionLocal", "recoverLocal", "revokeSession", "revokeSubjectSessions", "dispose"] as const;
+const REQUIRED_METHODS = ["initialize", "handle", "signOut", "resolveSession", "provisionLocal", "recoverLocal", "revokeSession", "revokeSubjectSessions", "dispose"] as const;
 const unavailable = (reason: string) => new AuthenticationProviderError("provider_unavailable", `Authentication provider is unavailable (${reason}).`);
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 /**
@@ -157,7 +157,7 @@ export async function loadAuthenticationProvider(input: LoadAuthenticationProvid
         throw new AuthenticationProviderError("invalidation_failed", "A committed change could not notify active sessions.", true);
       }
     },
-    log(level: "error" | "warn" | "info" | "debug", message: string) { if (input.storage.operationActive()) input.log?.(level, message); },
+    log(level: "error" | "warn" | "info" | "debug", _message: string) { if (input.storage.operationActive()) input.log?.(level, "Authentication provider event."); },
   });
   let instance: AuthenticationProviderInstance | undefined;
   try {
@@ -166,7 +166,7 @@ export async function loadAuthenticationProvider(input: LoadAuthenticationProvid
       const partial = instance as unknown as Record<string, unknown> | undefined;
       instance = undefined;
       if (isRecord(partial) && typeof partial.dispose === "function") {
-        try { await (partial.dispose as () => unknown).call(partial); } catch { /* preserve the safe compatibility error */ }
+        try { await (partial.dispose as () => unknown).call(partial); } catch { throw new AuthenticationProviderError("disposal_unconfirmed", "Authentication provider disposal was not confirmed."); }
       }
       throw unavailable("incompatible instance");
     }
@@ -177,7 +177,7 @@ export async function loadAuthenticationProvider(input: LoadAuthenticationProvid
       || readiness.implementationVersion !== provider.implementationVersion) throw unavailable("readiness");
     return new AuthenticationProviderRuntime(input, provider, ready, connection, subjects, operations, Object.freeze({ ...readiness, library: Object.freeze({ ...readiness.library }) }));
   } catch (error) {
-    try { await instance?.dispose(); } catch { /* preserve the safe load error */ }
+    try { await instance?.dispose(); } catch { throw new AuthenticationProviderError("disposal_unconfirmed", "Authentication provider disposal was not confirmed."); }
     finally { connection.close(); }
     throw safeError(error);
   }
@@ -238,6 +238,10 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     if (!this.#supportsSessionAuthority()) throw unavailable("session authority");
     const resolution = await this.resolve(headers);
     if (!resolution || this.disposed || !this.#input.storage.available()) return null;
+    return this.#issueActor(resolution);
+  }
+
+  #issueActor(resolution: ProviderPrincipalResolution): ProviderSessionActor | null {
     const { session, principalId } = resolution;
     if (!session.sessionId || !session.subject || !principalId || !canonicalDate(session.createdAt)
       || !canonicalDate(session.expiresAt) || session.createdAt >= session.expiresAt) return null;
@@ -260,10 +264,75 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
       && current.createdAt < current.expiresAt && current.createdAt <= now && current.expiresAt > now;
   }
 
+  /** Fixed browser operations only. Called outside core admission; no caller callbacks. */
+  browser(operation: "sign-in" | "session" | "sign-out" | "password", request: Request, actor?: ProviderSessionActor | null): Promise<{ response: Response; actor: ProviderSessionActor | null }> {
+    const paths = { "sign-in": "/sign-in/email", session: "/get-session", "sign-out": "/sign-out", password: "/change-password" };
+    if (request.url !== `${this.#input.options.baseURL}${paths[operation]}`
+      || request.method !== (operation === "session" ? "GET" : "POST") || !this.#supportsSessionAuthority()) {
+      return Promise.reject(new AuthenticationProviderError("invalid_input", "Invalid browser operation."));
+    }
+    return this.#run(async () => {
+      if (operation === "password") {
+        // This check runs inside the ACTUAL queued borrow, immediately before native work.
+        const valid = actor && this.#input.storage.runControllerOperation(() => this.isCurrentProviderSession(actor, new Date().toISOString()));
+        const original = actor && this.#actors.get(actor);
+        const incoming = await this.#instance.resolveSession(request.headers);
+        if (!valid || !original || incoming?.sessionId !== original.sessionId || incoming.subject !== original.subject) {
+          throw new AuthenticationProviderError("invalid_session", "Invalid browser session.");
+        }
+      }
+      const native = operation === "sign-out" ? await this.#instance.signOut(request) : await this.#instance.handle(request);
+      // Consume a bounded native body inside the borrow. Never expose its tokens or error text.
+      const reader = native.body?.getReader();
+      let bytes = 0;
+      try {
+        if (reader) for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          bytes += chunk.value.byteLength;
+          if (bytes > 16 * 1024) throw new AuthenticationProviderError("provider_failed", "Invalid provider response.");
+        }
+      } finally { await reader?.cancel(); }
+      const response = new Response(null, { status: native.status, headers: native.headers });
+      if (!native.ok || operation === "sign-out") return { response, actor: null };
+      const headers = new Headers(request.headers);
+      const cookies = native.headers.getSetCookie();
+      if (operation !== "session" || cookies.some(line => line.startsWith("__Secure-wtc.session_token="))) {
+        const token = cookies.find(line => line.startsWith("__Secure-wtc.session_token="));
+        if (token) headers.set("cookie", token.split(";")[0]!);
+        else if (operation !== "session") throw new AuthenticationProviderError("provider_failed", "Invalid provider response.");
+      }
+      const session = await this.#instance.resolveSession(headers);
+      if (!session) return { response, actor: null };
+      const principalId = this.#input.storage.runControllerOperation(() => this.#subjects.resolveActivePrincipal(session.subject));
+      const issued = principalId && this.#issueActor({ session, principalId });
+      if (!issued || (operation === "password" && issued.principalId !== actor?.principalId)) {
+        if (operation !== "session") await this.#instance.revokeSession(session.sessionId);
+        return { response, actor: null };
+      }
+      return { response, actor: issued };
+    });
+  }
+
+  /** Safe public projection, only during a current admitted decision. */
+  browserSession(actor: ProviderSessionActor) {
+    if (!this.isCurrentProviderSession(actor, new Date().toISOString())) throw new AuthenticationProviderError("invalid_session", "Invalid browser session.");
+    const original = this.#actors.get(actor)!;
+    return { authenticated: true as const, principal: { id: actor.principalId, kind: actor.principalKind },
+      expiresAt: original.expiresAt, authentication: { method: "password" as const, factors: 1 as const } };
+  }
+
+  /** Discard an unreleased login/replacement cookie without accepting caller session IDs. */
+  discardBrowserSession(actor: ProviderSessionActor): Promise<void> {
+    const evidence = this.#actors.get(actor);
+    if (!evidence) return Promise.reject(new AuthenticationProviderError("invalid_session", "Invalid browser session."));
+    return this.#run(() => this.#instance.revokeSession(evidence.sessionId));
+  }
+
   #supportsSessionAuthority(): boolean {
     // This projection is verified only for the fixed migration-38 adapter and pinned library.
     return this.#input.providerId === "better-auth" && this.#input.storage.storageRevision === 1
-      && this.implementationVersion === "0.0.0-proof.1"
+      && this.implementationVersion === "0.0.0-proof.2"
       && this.readiness.library?.name === "better-auth" && this.readiness.library.version === "1.7.14";
   }
 
@@ -328,7 +397,7 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     this.#disposal ??= (async () => {
       await Promise.allSettled([...this.#inFlight]);
       const settled = await this.#input.storage.drain(options.timeoutMs ?? 10_000);
-      try { await this.#instance.dispose(); } catch { this.#input.log?.("error", "Authentication provider disposal failed."); }
+      try { await this.#instance.dispose(); } catch { throw new AuthenticationProviderError("disposal_unconfirmed", "Authentication provider disposal was not confirmed."); }
       finally { this.#connection.close(); }
       if (!settled) throw new AuthenticationProviderError("disposal_unconfirmed", "Authentication provider work did not settle before disposal.");
     })();

@@ -16,7 +16,7 @@ import type {
 /** Exact pinned library this proof was verified against. */
 export const BETTER_AUTH_VERSION = "1.7.14";
 const PROVIDER_ID = "better-auth";
-const IMPLEMENTATION_VERSION = "0.0.0-proof.1";
+const IMPLEMENTATION_VERSION = "0.0.0-proof.2";
 
 /** Model names frozen in controller migration 38. */
 const MODELS = {
@@ -32,6 +32,8 @@ const MODELS = {
  */
 export interface ProofFaultInjection {
   afterProvisionedUser?: () => Promise<void>;
+  afterDispose?: () => Promise<void>;
+  beforeSessionDelete?: () => Promise<void>;
   beforeRecoveryCommit?: () => Promise<void>;
   /** Runs in the library's account update hook, inside its password transaction. */
   beforePasswordWrite?: () => Promise<void>;
@@ -121,6 +123,7 @@ function libraryOptions(host: AuthenticationProviderHost, options: ProofOptions,
       },
       session: {
         delete: {
+          before: async () => { await options.faultInjection?.beforeSessionDelete?.(); },
           // Better Auth queues `after` hooks until the surrounding transaction commits.
           after: async (session: { id: string; userId: string }) => {
             host.invalidated({ kind: "session", providerId: PROVIDER_ID, sessionId: session.id, subject: session.userId });
@@ -171,6 +174,16 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
     // The library trusts the configured base URL; refuse any other Host here.
     if (new URL(request.url).origin !== base.origin) return new Response(null, { status: 421 });
     return this.#ready().handler(request);
+  }
+
+  async signOut(request: Request): Promise<Response> {
+    // Keep the real handler's CSRF and limiter. Its deletion failure can be swallowed.
+    const session = await this.resolveSession(request.headers);
+    const response = await this.handle(request);
+    if (!response.ok) return response;
+    if (session) await this.revokeSession(session.sessionId);
+    if (await this.resolveSession(request.headers)) throw new Error("Session deletion was not confirmed.");
+    return response;
   }
 
   async resolveSession(headers: Headers): Promise<VerifiedProviderSession | null> {
@@ -238,6 +251,7 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
       this.#database = undefined;
       // Kysely's destroy calls the borrowed facade's close, never SQLite's.
       await database?.destroy();
+      await this.#options.faultInjection?.afterDispose?.();
     })();
     return this.#disposal;
   }
@@ -253,7 +267,7 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
 }
 
 export const authenticationProvider: AuthenticationProviderModule = {
-  contractVersion: 1,
+  contractVersion: 2,
   providerId: PROVIDER_ID,
   implementationVersion: IMPLEMENTATION_VERSION,
   storageRevision: 1,

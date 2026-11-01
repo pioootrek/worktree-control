@@ -40,7 +40,7 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
         kysely: packageVersion(packageDirectory, "kysely"),
         driver: packageVersion(join(packageDirectory, "../.."), "better-sqlite3"),
       }).toEqual({ betterAuth: "1.7.14", core: "1.7.14", kysely: "0.28.17", driver: "13.0.3" });
-      expect(f.runtime.readiness).toEqual({ providerId: "better-auth", implementationVersion: "0.0.0-proof.1", library: { name: "better-auth", version: "1.7.14" }, schema: "verified" });
+      expect(f.runtime.readiness).toEqual({ providerId: "better-auth", implementationVersion: "0.0.0-proof.2", library: { name: "better-auth", version: "1.7.14" }, schema: "verified" });
       const authentication = new AuthenticationService(f.store);
       expect(() => authentication.setMode("better-auth", "test")).toThrow(expect.objectContaining({ code: "auth_provider_unavailable" }));
       expect(resolveControllerAuthentication(
@@ -85,11 +85,11 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
     } finally { f.store.close(); }
   });
 
-  it.each(["dispose-throws.mjs", "partial-dispose-throws.mjs"])("closes the facade and sanitizes synchronous loader disposal failures: %s", async name => {
+  it.each(["dispose-throws.mjs", "partial-dispose-throws.mjs"])("closes the facade and reports unconfirmed synchronous loader disposal failures: %s", async name => {
     const f = storeFixture();
     try {
       const error = await loadProof(f.store, undefined, fixtureModule(name)).catch((reason: unknown) => reason);
-      expect(error).toMatchObject({ code: "provider_unavailable" });
+      expect(error).toMatchObject({ code: "disposal_unconfirmed" });
       expect(String(error)).not.toContain("fixture-secret");
       const probe = (globalThis as unknown as { __loaderProbe: { disposed: number; host: { connection: { prepare(sql: string): unknown } } } }).__loaderProbe;
       expect(probe.disposed).toBe(1);

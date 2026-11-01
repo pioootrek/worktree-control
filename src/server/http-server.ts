@@ -1,3 +1,4 @@
+import { authenticationJson, hasProviderCookie, type AuthenticationHttp } from "./transports/authentication-http";
 import type { DevVaultOperations } from "./modules/dev-vault";
 import { devVaultFailure, executeDevVault } from "./transports/dev-vault";
 import { testPresetTimeoutSchema } from "./modules/verification";
@@ -430,6 +431,8 @@ export function createControllerServer(options: {
   devVault?: DevVaultOperations;
   authentication?: ControllerAuthenticationDependencies["authentication"];
   publicOrigin?: string;
+  /** Explicit isolated composition seam; production does not load or mount a provider. */
+  browserAuthentication?: AuthenticationHttp;
   backups?: BackupOperations;
   restores?: RestoreOperations;
   userSchedules?: UserSchedules;
@@ -471,7 +474,16 @@ export function createControllerServer(options: {
     return result && result.kind !== "legacy" ? result.actor : null;
   };
   const server = createServer((request, response) => {
-    void admission.run(() => handleRequest(request, response)).catch((error: unknown) => {
+    void (async () => {
+      if (options.browserAuthentication && await options.browserAuthentication.handle(request, response)) return;
+      if (request.url === "/api/auth/status" && request.method === "GET") {
+        authenticationJson(response, 200, { mode: options.authentication?.mode() ?? "legacy", loginAvailable: false }); return;
+      }
+      if (hasProviderCookie(request) || (request.url ?? "").startsWith("/api/auth")) {
+        authenticationJson(response, 401, { code: "invalid_credential" }); return;
+      }
+      await admission.run(() => handleRequest(request, response));
+    })().catch((error: unknown) => {
       // Admission refused before the handler ran, or a fault after it already answered.
       const failure = databaseAdmissionFailure(error);
       if (response.headersSent) { response.destroy(); return; }
