@@ -105,6 +105,9 @@ export function durableJson(path: string, value: unknown): void {
 export function validateSensitivePath(path: string, excludedRoots: readonly string[] = [], allowMissing = false): void {
   if (!isAbsolute(path)) unsafe();
   const absolute = resolve(path);
+  // Validate the same spelling passed to the kernel: link/../file can traverse
+  // a symlink even when lexical normalization removes that component.
+  if (absolute !== path) unsafe();
   for (const root of excludedRoots) {
     const inside = relative(resolve(root), absolute);
     if (!inside || (inside !== ".." && !inside.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(inside))) unsafe();

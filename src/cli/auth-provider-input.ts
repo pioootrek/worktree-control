@@ -39,7 +39,9 @@ export function parseProviderArguments(args: readonly string[]) {
     stateDir: values.get("--state-dir") as string | undefined };
 }
 
-export function readProviderStdin(input: Readable, timeoutMs = 10_000): Promise<Buffer> {
+export function readProviderStdin(input: Readable & { isTTY?: boolean }, timeoutMs = 10_000): Promise<Buffer> {
+  // Sensitive input must come from a private pipe, never an echoing terminal.
+  if (input.isTTY) return Promise.reject(new ProviderAdminError("invalid_input"));
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []; let bytes = 0;
     const finish = (error?: Error) => {

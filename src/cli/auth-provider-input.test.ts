@@ -59,6 +59,33 @@ describe("protected provider input", () => {
     expect(held.listenerCount("data")).toBe(0); held.destroy();
   });
 
+  it("refuses terminal stdin before reading any sensitive bytes", async () => {
+    let reads = 0;
+    const terminal = Object.assign(new Readable({ read() { reads++; } }), { isTTY: true });
+    try {
+      await expect(providerCommandFromArgs(["provider", "enroll", "--principal-id", "owner", "--input-stdin"], terminal))
+        .rejects.toMatchObject({ code: "invalid_input" });
+      expect(reads).toBe(0);
+      expect(terminal.listenerCount("data")).toBe(0);
+      expect(terminal.readableFlowing).toBeNull();
+    } finally { terminal.destroy(); }
+  });
+
+  it("refuses parent traversal that hides a symlink before private-file validation", async () => {
+    const { root } = fixture();
+    const privateRoot = join(root, "private"), otherRoot = join(root, "other");
+    mkdirSync(privateRoot, { mode: 0o700 }); mkdirSync(otherRoot, { mode: 0o700 });
+    mkdirSync(join(otherRoot, "dir"), { mode: 0o700 }); mkdirSync(join(otherRoot, ".git"));
+    writeFileSync(join(privateRoot, "input.json"), "{}", { mode: 0o600 });
+    writeFileSync(join(otherRoot, "input.json"), '{"newPassword":"sentinel-hidden-by-alias"}', { mode: 0o600 });
+    symlinkSync(join(otherRoot, "dir"), join(privateRoot, "link"));
+    const path = `${privateRoot}/link/../input.json`;
+    expect(readFileSync(path, "utf8")).toContain("sentinel-hidden-by-alias");
+    expect(() => readPrivateBoundedFile(path, 8192)).toThrow();
+    await expect(providerCommandFromArgs(["provider", "recover", "--principal-id", "owner", "--input-file", path]))
+      .rejects.toMatchObject({ code: "invalid_input" });
+  });
+
   it("refuses unsafe private files and never repairs their permissions", () => {
     const { root } = fixture(), path = join(root, "input.json");
     writeFileSync(path, "{}", { mode: 0o600 });
