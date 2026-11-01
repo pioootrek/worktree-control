@@ -446,3 +446,74 @@ an explicitly reviewed alternative; no custom production replay crypto is added.
 Primary API references: [Better Auth two-factor plugin](https://better-auth.com/docs/plugins/2fa),
 [Kysely transactions](https://kysely-org.github.io/kysely-apidoc/classes/Kysely.html#transaction).
 Installed pinned source and the runnable cases determine these findings.
+
+## Isolated durable admission and receipt proof (A3-I13)
+
+The separately selected `admitted` fixture candidate adds
+`test/factor-admission.ts` and `test/factor-admission.test.ts`. Native and bounded
+I12 candidates keep their original assertions, including all five negative
+acceptance baselines. This candidate supplies no TOTP replay remedy and cannot
+issue a controller actor. Production schema 39, storage 1, contract 2 and the
+password provider are unchanged.
+
+The temporary owner creates five additional `factor_admission_*` tables for
+subjects, contexts, budgets, receipts and evidence. `FixtureAdmission` exposes
+`bindContext`, `admit`, `settleSuccess` and `readReceipt` over its borrowed
+connection. It owns no connection, scheduler or lock. The fixture policy is four
+charged attempts per subject per fixed 60-second window, a 15-second ticket,
+64 rows per bounded table and pruning batches of eight. Tests vary these inputs;
+none is an approved product default. Charges include successful attempts. No
+refund, success reset or administrative reset exists.
+
+A native database session hook observes the subject and original password
+session dates. Only the completed handler's actual challenge outcome permits a
+binding: the whole issued opaque cookie is hashed with standard SHA-256 and
+bound to that subject, native verification row, immutable purpose, security
+revision, factor fingerprint and deadlines. Input cookies are never decoded to
+choose a subject. Enrollment uses the supported current-session lookup and an
+issued setup context. Current mapping, principal, native challenge and factor
+state are checked before admission. TOTP and recovery share one subject budget;
+new challenges and provider reload cannot reset it. Unknown, forged, expired,
+revoked and mismatched contexts never reach native verification.
+
+Within the same exclusive borrow, a short Kysely transaction commits the charge
+and server-owned attempt receipt. The caller confirms the receipt before a
+separate transaction invokes the real native handler on a transaction-scoped
+Kysely instance. Persisted session/cookie confirmation, password evidence and
+success receipt join that second transaction. Evidence retains the original
+password authentication time/deadline; factor sessions are capped to the original
+deadline. TOTP, enrollment and recovery observations explicitly have
+`authorizingMfa:0` and retain method `password`. They cannot supply stronger
+authority from this known replaying backend.
+
+SQL fault seams distinguish errors before COMMIT from errors after the driver
+actually commits. Admission errors always stop evaluation, even when a durable
+charge is reconciled. Success errors read the durable completion receipt under
+the same owner. A known committed success withholds cookies on lost
+acknowledgment, returns only receipt status and delivers buffered notifications.
+Notification failure retains `committed:true`. Internal duplicate IDs return
+status without evaluating any submitted credential or minting another session.
+Clients cannot choose these IDs. Returned native errors, SQL faults, session,
+cookie and evidence vetoes roll back success writes while retaining the charge.
+Cancellation checks run before admission, before native continuation and after
+native completion. A timed-out borrow closes provider admission, refuses late
+SQL and retains a charged row; teardown waits for the actual execution to drain.
+An unresolved charged receipt is never evicted to make room.
+
+Tests use real correct and wrong credentials, two provisioned subjects, fixed
+restored time, serialized queued requests and the actual module-global memory
+IP limiter across short-lived auth instances and provider reload. Peer addresses
+come only from the trusted fixture transport. There is no server-API verification
+path in this candidate. SQL traces contain statement text and transaction flags,
+never parameters. Sentinel tests also exercise failed assertion diagnostics.
+Trace artifacts are written privately under `/tmp/a3-i13-*-trace.json`.
+
+This is reload on one temporary owner, not process restart, backup or production
+schema acceptance. One timeout test reads the existing owner's admitted core
+facade after provider admission has closed; it opens no connection. Receipt
+pruning is bounded and removes only expired terminal rows. Uncertain live rows
+can permanently consume capacity until a separately designed reconciliation
+policy exists. Password/challenge-creation admission, global fairness, final
+numeric policy, external restore fencing, public transport and disconnected
+response cleanup remain integration work. Password sessions still require the
+existing production evidence/authority gates. Full A3 remains in progress.

@@ -4,6 +4,7 @@ import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { createAuthMiddleware } from "better-auth/api";
 import { twoFactor } from "better-auth/plugins/two-factor";
 import { Kysely, SqliteDialect } from "kysely";
+import { FixtureAdmission, FIXTURE_ADMISSION_POLICY, serverAttemptId, type AdmissionPolicy, type Ticket, type SessionEvidence } from "./factor-admission";
 import type {
   AuthenticationProviderHost,
   AuthenticationProviderInstance,
@@ -39,7 +40,7 @@ export const COOKIE = {
  * - `server-api-transaction`: the same around the server API, which skips the router.
  * - `bounded`: closed fixture operations, transaction-scoped Kysely, experimental outcome policy.
  */
-export type FactorMode = "native" | "handler-transaction" | "server-api-transaction" | "bounded";
+export type FactorMode = "native" | "handler-transaction" | "server-api-transaction" | "bounded" | "admitted";
 /** Experimental policy only. Passing characterization does not accept it for production. */
 export type CommitPolicy = "classified" | "commit-every-response" | "rollback-every-failure";
 
@@ -48,6 +49,14 @@ export interface TracedStatement { sql: string; inTransaction: boolean }
 
 /** Mutable from tests, like `ProofFaultInjection`. Holds no credentials. */
 export interface FactorControl {
+  /** I13 test-only controls. Never taken from a request field/header. */
+  admission: {
+    policy: AdmissionPolicy;
+    internalAttemptId?: string;
+    lastAttemptId?: string;
+    entries: Array<{ attemptId: string; charged: boolean; inTransaction: boolean }>;
+    pause?: (stage: "after-admission" | "native-entry" | "after-native", connection: ProviderSqliteConnection) => Promise<void>;
+  };
   mode: FactorMode;
   policy: CommitPolicy;
   /** Simulates a wrapper regression that lets a trust request reach the native handler. */
@@ -68,6 +77,7 @@ export interface FactorControl {
 }
 
 export const newFactorControl = (mode: FactorMode): FactorControl => ({
+  admission: { policy: { ...FIXTURE_ADMISSION_POLICY }, entries: [] },
   mode, policy: "classified", forwardTrustRegression: false, vetoSessionCreate: false, trace: [], afterHookInTransaction: [], burned: 0, outcomes: [], failCookie: false, failEvidence: false, probeAdapters: false, adapterScopes: [],
 });
 
@@ -178,6 +188,7 @@ class Rollback extends Error {
 }
 
 class FactorProofProvider implements AuthenticationProviderInstance {
+  readonly #operation = new AsyncLocalStorage<{ subject?: string; origin?: Pick<SessionEvidence, "authenticatedAt" | "originalDeadline">; ticket?: Ticket; request: Request }>();
   readonly #host: AuthenticationProviderHost;
   readonly #options: FactorOptions;
   readonly #control: FactorControl;
@@ -210,7 +221,14 @@ class FactorProofProvider implements AuthenticationProviderInstance {
   createLibrary(database: Kysely<never>, transaction = true) {
     const options = factorLibraryOptions(this.#options, database, {
       session: {
-        create: { before: async () => (this.#control.vetoSessionCreate ? false : undefined) },
+        create: { before: async session => {
+          const operation = this.#operation.getStore();
+          if (operation) {
+            operation.subject = session.userId;
+            operation.origin = { authenticatedAt: new Date(session.createdAt).toISOString(), originalDeadline: new Date(session.expiresAt).toISOString() };
+          }
+          return this.#control.vetoSessionCreate ? false : undefined;
+        } },
         delete: { after: async (session: { id: string; userId: string }) => {
           this.#control.afterHookInTransaction.push(this.#transaction.open);
           const event: ProviderInvalidation = { kind: "session", providerId: "better-auth", sessionId: session.id, subject: session.userId };
@@ -220,6 +238,16 @@ class FactorProofProvider implements AuthenticationProviderInstance {
       },
     }, transaction);
     return betterAuth({ ...options, hooks: { before: createAuthMiddleware(async ctx => {
+      const operation = this.#operation.getStore();
+      if (this.#control.mode === "admitted" && operation?.ticket && ctx.path.startsWith("/two-factor/verify-")) {
+        const policy = new FixtureAdmission(this.#connection!, this.#control.admission.policy);
+        const charged = policy.readReceipt(operation.ticket.attemptId)?.state === "charged";
+        const entries = this.#control.admission.entries;
+        if (entries.length >= 256) throw new Error("Fixture trace capacity.");
+        entries.push({ attemptId: operation.ticket.attemptId, charged, inTransaction: this.#transaction.open });
+        await this.#control.admission.pause?.("native-entry", this.#connection!);
+        if (operation.request.signal.aborted || !policy.usable(operation.ticket, Date.now())) throw new Error("Expired operation.");
+      }
       if (!this.#control.probeAdapters) return;
       this.#control.adapterScopes.push({
         direct: ctx.context.adapter === this.#expectedAdapter,
@@ -233,6 +261,7 @@ class FactorProofProvider implements AuthenticationProviderInstance {
     const auth = this.#ready();
     switch (this.#control.mode) {
       case "bounded": return this.#bounded(request);
+      case "admitted": return this.#bounded(request);
       case "handler-transaction": {
         const { adapter } = await auth.$context;
         return runWithTransaction(adapter, async () => {
@@ -263,6 +292,7 @@ class FactorProofProvider implements AuthenticationProviderInstance {
     const path = url.pathname.startsWith(`${base.pathname}/`) ? url.pathname.slice(base.pathname.length) : "";
     const route = ROUTES.get(path);
     if (!route || request.method !== "POST" || url.search) return denied(404, "not_found");
+    if (this.#control.mode === "admitted" && request.headers.get("origin") !== base.origin) return denied(403, "origin_refused");
     let body: unknown;
     try { body = JSON.parse(await request.text()); } catch { return denied(400, "invalid_body"); }
     const input = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
@@ -287,7 +317,111 @@ class FactorProofProvider implements AuthenticationProviderInstance {
     const forwarded = route.kind === "enable" ? { ...input, method: "totp" }
       : route.kind === "sign-in" ? input
         : { ...input, trustDevice: this.#control.forwardTrustRegression };
-    return this.#atomic(route, new Request(request.url, { method: "POST", headers, body: JSON.stringify(forwarded) }), challenge);
+    const sanitized = new Request(request.url, { method: "POST", headers, body: JSON.stringify(forwarded), signal: request.signal });
+    return this.#control.mode === "admitted" ? this.#admittedAtomic(route, sanitized, session, challenge) : this.#atomic(route, sanitized, challenge);
+  }
+
+  /** I13 only. Two transactions, one borrow and one underlying SQLite owner. */
+  async #admittedAtomic(route: Route, request: Request, session: string | undefined, challenge: string | undefined): Promise<Response> {
+    const policy = new FixtureAdmission(this.#connection!, this.#control.admission.policy);
+    const attemptId = this.#control.admission.internalAttemptId ?? serverAttemptId();
+    this.#control.admission.lastAttemptId = attemptId;
+    let ticket: Ticket | undefined;
+    const factorRoute = route.kind === "totp" || route.kind === "recovery";
+    if (request.signal.aborted) return denied(409, "cancelled_before_admission");
+    try {
+      // Never a client-selected replay key. Even an internal duplicate only reads status.
+      const duplicate = policy.readReceipt(attemptId);
+      if (duplicate) return fixed(409, { outcome: "receipt", state: duplicate.state, committed: duplicate.state === "succeeded" });
+      if (factorRoute) {
+        if (!challenge && route.kind === "recovery") return denied(403, "recovery_cannot_upgrade_session");
+        if (session) {
+          const current = await this.#ready().api.getSession({ headers: request.headers, query: { disableCookieCache: true } });
+          if (!current) return denied(401, "context_unavailable");
+        }
+        const context = policy.bindContext(challenge ?? session!, challenge ? "login" : "enrollment", Date.now());
+        if (!context) return denied(401, "context_unavailable");
+        try {
+          ticket = await this.#database!.transaction().execute(async () => policy.admit(context, attemptId, Date.now()) ?? undefined);
+        } catch {
+          // Includes an error AFTER real COMMIT. Reconcile, but never evaluate on this call.
+          const receipt = policy.readReceipt(attemptId);
+          if (receipt) policy.finishFailure(attemptId);
+          return fixed(503, { outcome: "admission_error", charged: receipt !== null, reconciled: true, committed: receipt !== null });
+        }
+        if (!ticket) return denied(429, "admission_denied");
+        // The synchronous confirmation is outside both transactions.
+        if (policy.readReceipt(attemptId)?.state !== "charged") return denied(503, "charge_unconfirmed");
+        await this.#control.admission.pause?.("after-admission", this.#connection!);
+        if (request.signal.aborted || !policy.usable(ticket, Date.now())) throw new Rollback(denied(409, "cancelled_or_expired"));
+      }
+      const notifications: ProviderInvalidation[] = [];
+      const operation = { request, ticket, subject: undefined as string | undefined, origin: undefined as Pick<SessionEvidence, "authenticatedAt" | "originalDeadline"> | undefined };
+      let response: Response;
+      try {
+        response = await this.#notifications.run(notifications, () => this.#database!.transaction().execute(async trx => {
+          const scoped = this.createLibrary(trx, false);
+          await (await scoped.$context).checkSchema!();
+          return this.#active.run(scoped, () => this.#operation.run(operation, async () => {
+            const native = await scoped.handler(request);
+            await this.#control.admission.pause?.("after-native", this.#connection!);
+            if (request.signal.aborted) throw new Rollback(denied(409, "cancelled"));
+            if (!native.ok) throw new Rollback(denied(native.status, "native_failure"));
+            const decision = await this.#decide(route, native, challenge !== undefined);
+            if ("rollback" in decision) throw new Rollback(decision.rollback);
+            const body = await decision.commit.clone().json() as Record<string, unknown>;
+            if (body.outcome === "challenge") {
+              const issued = native.headers.getSetCookie().find(line => line.startsWith(`${COOKIE.challenge}=`) && !isDeletion(line));
+              const opaque = issued?.slice(COOKIE.challenge.length + 1).split(";")[0];
+              // This unsigned identifier is extracted ONLY from our native issued response,
+              // never from a presented client cookie. The complete opaque cookie is bound.
+              const pending = opaque && await (await scoped.$context).internalAdapter.findVerificationValue(signedValue(opaque));
+              if (!opaque || !pending || !operation.subject || !operation.origin || pending.value !== operation.subject) throw new Error("Issued context unconfirmed.");
+              policy.issue(opaque, operation.subject, "login", new Date(pending.expiresAt).getTime(), pending.id, Date.now(), operation.origin);
+              const bound = policy.bindContext(opaque, "login", Date.now());
+              if (!bound) throw new Error("Issued binding unconfirmed.");
+              policy.operationReceipt(attemptId, bound, Date.now());
+            } else if (route.kind === "enable") {
+              const current = await scoped.api.getSession({ headers: request.headers, query: { disableCookieCache: true } });
+              if (!current || !session) throw new Error("Enrollment context unconfirmed.");
+              policy.issue(session, current.user.id, "enrollment", new Date(current.session.expiresAt).getTime(), null, Date.now(), { authenticatedAt: new Date(current.session.createdAt).toISOString(), originalDeadline: new Date(current.session.expiresAt).toISOString() });
+              const bound = policy.bindContext(session, "enrollment", Date.now());
+              if (!bound) throw new Error("Enrollment binding unconfirmed.");
+              policy.operationReceipt(attemptId, bound, Date.now());
+            } else {
+              const current = await scoped.api.getSession({ headers: new Headers({ cookie: decision.commit.headers.getSetCookie().map(line => line.split(";")[0]).join("; ") }), query: { disableCookieCache: true } });
+              if (!current || (ticket && current.user.id !== ticket.subject)) throw new Error("Session subject unconfirmed.");
+              const evidence: SessionEvidence = {
+                sessionId: current.session.id, subject: current.user.id,
+                authenticatedAt: new Date(current.session.createdAt).toISOString(), originalDeadline: new Date(current.session.expiresAt).toISOString(),
+                observation: route.kind === "sign-in" ? "password" : route.kind === "recovery" ? "recovery_code" : challenge ? "password_totp" : "enrollment",
+              };
+              if (ticket) policy.settleSuccess(ticket, evidence, Date.now());
+              else policy.passwordEvidence(attemptId, evidence, policy.generation(current.user.id));
+            }
+            if (factorRoute) return fixed(200, { outcome: "observation", authorizingMfa: false }, decision.commit.headers.getSetCookie());
+            return decision.commit;
+          }));
+        }));
+      } catch (error) {
+        // Kysely may have thrown after the driver committed. A durable success
+        // receipt resolves that ambiguity; it never triggers verifier re-entry.
+        const receipt = policy.readReceipt(attemptId);
+        if (receipt?.state === "succeeded") {
+          for (const event of notifications) this.#host.invalidated(event);
+          return fixed(503, { outcome: "completion_receipt", committed: true, state: "succeeded" });
+        }
+        if (ticket) policy.finishFailure(attemptId);
+        return error instanceof Rollback ? error.response : fixed(500, { outcome: "success_error", committed: false });
+      }
+      for (const event of notifications) this.#host.invalidated(event);
+      return response;
+    } catch (error) {
+      // Invalidation errors already carry committed:true through the host/runtime.
+      if (typeof error === "object" && error && "committed" in error && error.committed === true) throw error;
+      try { if (ticket) policy.finishFailure(attemptId); } catch { return fixed(503, { outcome: "outcome_unconfirmed" }); }
+      return error instanceof Rollback ? error.response : fixed(503, { outcome: "outcome_unconfirmed" });
+    }
   }
 
   /** The library has no such boundary: step-up and unconfirmed-factor rules are enforced here. */

@@ -474,3 +474,18 @@ it("CHARACTERIZES native authenticated TOTP verification without challenge/accou
   expect((await verify(browser, authenticator.code())).status).toBe(200);
   expect(browser.cookieHeader() === cookie).toBe(true);
 });
+
+it("keeps failed cookie, URI and body assertion diagnostics free of credential sentinels", () => {
+  const sentinel = "I13-diagnostic-credential-sentinel";
+  const checks = [
+    () => expect([`${COOKIE.session}=${sentinel}`].length).toBe(0),
+    () => expect(({ totpURI: sentinel }).totpURI === undefined).toBe(true),
+    () => expect(isDeepStrictEqual({ token: sentinel }, { outcome: "denied" })).toBe(true),
+  ];
+  for (const check of checks) {
+    let message = "";
+    try { check(); } catch (error) { message = String(error); }
+    expect(message.length > 0).toBe(true);
+    expect(message.includes(sentinel)).toBe(false);
+  }
+});

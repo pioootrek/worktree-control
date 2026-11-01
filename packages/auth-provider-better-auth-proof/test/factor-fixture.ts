@@ -1,4 +1,4 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,7 @@ import { loadAuthenticationProvider } from "@/server/modules/authentication";
 import { IdentityService } from "@/server/modules/identity";
 import { BASE_URL, IP_HEADER, loadProof, ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, SECRET, type ProviderEvidence } from "./fixture";
 import { EVIDENCE_TABLE, factorLibraryOptions, FACTOR_MODEL, newFactorControl, type FactorControl, type FactorMode } from "./factor-provider";
+import { ADMISSION_DDL } from "./factor-admission";
 
 const FACTOR_ENTRY = fileURLToPath(new URL("./factor-provider.ts", import.meta.url));
 const SETTINGS = { baseURL: BASE_URL, secret: SECRET, clientIpHeader: IP_HEADER };
@@ -19,7 +20,7 @@ const roots: string[] = [];
 export function cleanupFactorRoots() { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); }
 
 /** A normal store at the recognized schema, with one account provisioned by the real password proof. */
-export async function factorStore(connectionOptions: ExclusiveConnectionOptions = {}) {
+export async function factorStore(connectionOptions: ExclusiveConnectionOptions = {}, additionalEmails: string[] = []) {
   const root = mkdtempSync(join(tmpdir(), "auth-provider-factor-")); roots.push(root);
   const path = join(root, "state.sqlite3");
   const store = new SqliteStateStore(path, undefined, connectionOptions);
@@ -33,7 +34,18 @@ export async function factorStore(connectionOptions: ExclusiveConnectionOptions 
         principalId: owner.principalId, email: OWNER_EMAIL, name: "Owner",
         password: OWNER_PASSWORD, actor: "local-bootstrap",
       });
-      return { root, path, store, owner, subject, storage: store.authenticationProviderStorage() };
+      const subjects = [subject];
+      for (const email of additionalEmails) {
+        // Fixture-only second owner. Public multi-user provisioning is outside A3-I13.
+        const principalId = randomUUID();
+        const storage = store.authenticationProviderStorage();
+        await storage.borrow(async () => {
+          const connection = storage.createProviderConnection();
+          try { connection.prepare("INSERT INTO remote_principals (id, kind, status) VALUES (?, 'owner', 'active')").run([principalId]); } finally { connection.close(); }
+        });
+        subjects.push((await password.runtime.provisionLocal({ principalId, email, name: "Additional fixture subject", password: OWNER_PASSWORD, actor: "local-bootstrap" })).subject);
+      }
+      return { root, path, store, owner, subject, subjects, storage: store.authenticationProviderStorage() };
     } finally { await password.runtime.dispose(); }
   } catch (error) { await store.closeAfterDrain(); throw error; }
 }
@@ -52,7 +64,7 @@ export function fixtureSql({ storage }: FactorStore, sql: string, parameters: re
  * inside one exclusive borrow. Nothing here changes migrations or the inspector,
  * and this database must not be reopened as a recognized store.
  */
-export async function applyFactorDdl({ storage }: FactorStore) {
+export async function applyFactorDdl({ storage }: FactorStore, admitted = false) {
   return storage.borrow(async () => {
     const connection = storage.createProviderConnection();
     const database = new Kysely<never>({ dialect: new SqliteDialect({ database: connection }) });
@@ -67,6 +79,7 @@ export async function applyFactorDdl({ storage }: FactorStore) {
         for (const statement of statements) connection.prepare(statement).run([]);
         // Fixture stand-in for controller-owned evidence; no such table is proposed here.
         connection.prepare(`CREATE TABLE "${EVIDENCE_TABLE}" ("sessionId" text not null primary key references "authentication_ba_session" ("id") on delete cascade, "method" text not null, "restricted" integer not null, "verifiedAt" text not null)`).run([]);
+        if (admitted) for (const statement of ADMISSION_DDL) connection.prepare(statement).run([]);
         transaction("COMMIT");
       } catch (error) { transaction("ROLLBACK"); throw error; }
       const after = await getMigrations(options);
@@ -96,10 +109,10 @@ export async function loadFactorProvider(base: FactorStore, control: FactorContr
   return { runtime, evidence };
 }
 
-export async function factorFixture(mode: FactorMode = "native", connectionOptions: ExclusiveConnectionOptions = { admission: "strict" }) {
-  const base = await factorStore(connectionOptions);
+export async function factorFixture(mode: FactorMode = "native", connectionOptions: ExclusiveConnectionOptions = { admission: "strict" }, additionalEmails: string[] = []) {
+  const base = await factorStore(connectionOptions, additionalEmails);
   try {
-    const ddl = await applyFactorDdl(base);
+    const ddl = await applyFactorDdl(base, mode === "admitted");
     const control = newFactorControl(mode);
     const { runtime, evidence } = await loadFactorProvider(base, control);
     return { ...base, ddl, control, runtime, evidence };
@@ -205,14 +218,14 @@ export class Browser {
   /** Another browser presenting exactly this one's cookies, e.g. a replayed or concurrent request. */
   clone(): Browser { const copy = new Browser(this.f); for (const [name, value] of this.cookies) copy.cookies.set(name, value); return copy; }
 
-  async post(path: string, body: unknown = {}, init: { ip?: string; origin?: string | null; cookie?: string; method?: string } = {}): Promise<BrowserResult> {
+  async post(path: string, body: unknown = {}, init: { ip?: string; origin?: string | null; cookie?: string; method?: string; signal?: AbortSignal } = {}): Promise<BrowserResult> {
     const headers = new Headers({ [IP_HEADER]: init.ip ?? freshIp() });
     if (init.origin !== null) headers.set("origin", init.origin ?? ORIGIN);
     const cookie = init.cookie ?? this.cookieHeader();
     if (cookie) headers.set("cookie", cookie);
     if (init.method !== "GET") headers.set("content-type", "application/json");
     const response = await this.f.runtime.handle(new Request(`${BASE_URL}${path}`, {
-      method: init.method ?? "POST", headers, ...(init.method === "GET" ? {} : { body: JSON.stringify(body) }),
+      method: init.method ?? "POST", headers, signal: init.signal, ...(init.method === "GET" ? {} : { body: JSON.stringify(body) }),
     }));
     const setCookie = response.headers.getSetCookie();
     for (const line of setCookie) {
