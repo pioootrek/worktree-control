@@ -165,7 +165,8 @@ Private `authentication-provider.json` in the data directory is the durable
 authority. File fsync, rename and directory fsync publish it. Uncertainty before
 or after rename returns `configuration_write_unconfirmed`; inspect private status
 before another intentional command. Configuration emits a fixed nonsecret
-operational event, without claiming atomic SQLite/filesystem audit. Back up the
+operational event (stderr for stopped CLI, controller log online), without
+claiming atomic SQLite/filesystem audit. Back up the
 file separately under protected custody. SQLite snapshots and Knowledge/user
 exports do not include it. Database restoration can still revive historical
 passwords/sessions until A5 provides an external recovery fence.

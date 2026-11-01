@@ -130,7 +130,10 @@ describe("protected CLI provider administration against actual SQLite/Better Aut
       expect(rows(f.paths.databasePath, "authentication_ba_user")).toEqual(users);
       await f.runCore(() => f.store.saveKnowledgeRoleBinding({ principalId: f.principalId, projectId: project.id, role: "reader", revision: 1,
         updatedAt: new Date().toISOString(), revokedAt: new Date().toISOString() }, 0, "fixture"));
+      const tombstones = rows(f.paths.databasePath, "knowledge_role_bindings"), grants = rows(f.paths.databasePath, "knowledge_project_grants");
       await f.run(["recover", "--principal-id", f.principalId, ...f.input({ newPassword: OWNER_PASSWORD })]);
+      expect(rows(f.paths.databasePath, "knowledge_role_bindings")).toEqual(tombstones);
+      expect(rows(f.paths.databasePath, "knowledge_project_grants")).toEqual(grants);
       const relogin = client(f); await relogin.signIn(); const denied = await f.runtime().authenticate(new Headers({ cookie: relogin.cookieHeader() }));
       expect((await app.describeIdentity(denied!)).knowledgeGrants).toEqual([]);
       await expect(app.execute({ operation: "tasks", input: { projectId: project.id } }, denied!)).rejects.toMatchObject({ code: "knowledge_forbidden" });

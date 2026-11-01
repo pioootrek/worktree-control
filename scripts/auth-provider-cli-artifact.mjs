@@ -33,6 +33,7 @@ async function cli(directory, args, input, expectedCode = 0) {
   const result = await finish(start(["dist/cli/index.js", "auth", "provider", ...args, "--data-dir", join(directory, "data"), "--state-dir", join(directory, "state")], input));
   assert.equal(result.code, expectedCode, `emitted CLI result: ${result.stderr}`);
   assert(!`${result.stdout}${result.stderr}`.includes(sentinel));
+  if (expectedCode === 0 && args[0] === "configure") assert.equal(result.stderr.trim(), '{"event":"authentication.provider_configuration_written"}');
   return JSON.parse(expectedCode === 0 ? result.stdout : result.stderr);
 }
 try {

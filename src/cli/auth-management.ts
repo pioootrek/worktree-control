@@ -88,7 +88,9 @@ async function runProviderCommand(args: string[], paths: AppPaths, dependencies:
   try {
     administration = createAuthenticationAdministration({ store, dataDirectory: paths.dataDirectory,
       authentication: new AuthenticationService(store, undefined, undefined, undefined, undefined, "offline"),
-      actor: AUTH_CLI_ACTOR, ...dependencies.provider });
+      actor: AUTH_CLI_ACTOR,
+      configurationEvent: () => { process.stderr.write('{"event":"authentication.provider_configuration_written"}\n'); },
+      ...dependencies.provider });
     result = await administration.execute(request);
   } catch (error) { effectFailure = providerAdminFailure(error); }
   try {
