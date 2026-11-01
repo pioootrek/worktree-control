@@ -153,6 +153,6 @@ export function readPrivateBoundedFile(path: string, maxBytes: number, excludedR
     }
     if (size !== opened.size || size > maxBytes) unsafe();
     return bytes.subarray(0, size);
-  } catch { unsafe(); }
+  } catch { return unsafe(); }
   finally { if (fd !== undefined) closeSync(fd); }
 }

@@ -2,7 +2,7 @@
 
 Private, unpublished proof that Better Auth 1.7.14 with Kysely 0.28.17 can run
 against the Worktree Control controller's single SQLite connection. It is not
-part of the Community package, is not loaded by the controller, and does not
+part of the Community package, is not loaded at controller startup, and does not
 make the `better-auth` authentication mode selectable.
 
 The proof harness loads it from an explicit local path through the server-only
@@ -53,9 +53,35 @@ synchronous store access. Live coexistence remains unaccepted while broader
 coverage and design gates are open. Restoring backups can restore old
 sessions and passwords until A5 adds an external revocation fence. A2 credentials
 remain unchanged; A4 vault authorization still requires its separate proof.
-Human enrollment, factors, invitations, role administration, GUI and account
-activation are outside this slice. See the
+Factors, invitations, role administration, GUI and account activation remain
+outside this slice. Protected CLI enrollment/recovery is described below. See the
 [authentication contract](../../docs/authentication.md#optional-provider-proof-first-a3-slice).
+
+## Protected CLI maintenance proof
+
+A3-I10 adds strict configuration/status, first-principal-only creation,
+enrollment and recovery through actual `runAuthCommand` and the private Unix
+socket. `cli-provider-administration.test.ts` uses the real pinned provider and
+sole SQLite owner. Fixtures create principals without compatibility bearers,
+then explicitly enroll. Lifecycle cases cover accepted work after disconnect,
+lazy initialization, queued maintenance refusal and failed disposal ownership.
+The browser proof remains isolated; no production browser route is mounted and
+`better-auth` selection remains unavailable.
+
+After a fresh managed `node:build`, queue `node:test:auth-provider-cli-artifact`.
+It emits a private JavaScript provider with the existing bundler, then invokes
+the built CLI for configure/create/enroll/recover with stdin. It tests duplicate
+global paths and a finite child whose actual provider disposal rejects after
+destruction. That child must report committed effect/uncertain cleanup while
+retaining its process and both locks. The harness then terminates only that
+owned temporary child and removes fixtures. No install, service change or
+persistent test daemon is involved. Emitted code stays under the private
+package's ignored `dist`, outside Community assets.
+
+Private signing configuration requires separate protected backup. No rotation,
+atomic filesystem/SQLite config audit, exactly-once recovery, MFA or full A3
+acceptance is claimed. See the exact
+[operator workflow](../../docs/authentication.md#protected-provider-maintenance).
 
 ## Live admission coverage
 

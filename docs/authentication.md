@@ -41,8 +41,9 @@ The private workspace package `packages/auth-provider-better-auth-proof` is an
 executable, isolated proof using Better Auth 1.7.14, `@better-auth/core`
 1.7.14 and Kysely 0.28.17 on the existing `better-sqlite3` 13.0.3 connection.
 It exercises real handler requests, cookies, password changes, session
-revocation and local recovery. The controller's production bootstrap does not
-load it. Selecting `better-auth` still fails; this slice adds no login UI,
+revocation and local recovery. Startup does not load it. Explicit protected CLI
+maintenance can load a configured module without activating accounts.
+Selecting `better-auth` still fails; this slice adds no login UI,
 production browser authorization or account endpoints. A bounded browser adapter
 is composed only by isolated proof fixtures; see [browser adapter](#bounded-browser-adapter).
 
@@ -113,11 +114,101 @@ browser API design. Password-only evidence is neither MFA nor an ASVS Level 2
 claim. Numeric session, reset, password and rate limits are proof settings,
 not approved product defaults. A4 vault proof remains separate.
 
-Human enrollment, factors, invitations, roles, GUI and the A5 activation gates
+Factors, invitations, roles, GUI and the A5 activation gates
 remain open in Knowledge task `ec4c7258770328ca33fb1801be6831f6`. The optional
 package retains its dependency notices and stays outside Community runtime
 dependencies and published assets. See its
 [README](../packages/auth-provider-better-auth-proof/README.md) for verification.
+
+### Protected provider maintenance
+
+The protected local commands are:
+
+```text
+auth provider status [--principal-id ID]
+auth provider configure --input-stdin
+auth provider owner create
+auth provider enroll --principal-id ID --input-stdin
+auth provider recover --principal-id ID --input-stdin
+```
+
+Sensitive commands also accept `--input-file ABSOLUTE_PATH` instead of stdin.
+Input is exactly one strict UTF-8 JSON object, at most 8 KiB; stdin has a
+ten-second deadline. Files must be regular, current-user-owned, single-linked,
+private (no group/other access), outside Git working trees and supervised
+repositories, with no symlink components. Unknown/repeated flags, including
+global data/state directory flags, and extra JSON fields are refused. Passwords
+and signing material have no argument or environment option. Use a private pipe
+or file; keep secrets out of shell history.
+
+Configure input has exactly `module`, `origin`, and `signingSecret`. The module
+is an absolute local JavaScript path or file URL, without a symlink entry, query
+or fragment. It is trusted in-process code owned by the operator or system and
+not writable by others. Origin must be HTTPS without credentials, non-root path,
+query or fragment. The core fixes `/api/auth` and its internal client-IP header.
+This nonsecret example shows the structure:
+
+```json
+{"module":"/protected/provider/index.js","origin":"https://controller.example","signingSecret":{"kind":"generate"}}
+```
+
+Only explicit initial `generate` creates 32 random bytes. Alternatively supply
+`{"kind":"supplied","value":"<canonical base64url material>"}` with 32–128
+bytes from a cryptographically secure generator. Format and length cannot prove
+entropy; the operator must supply randomness. Later configuration requires
+`{"kind":"preserve"}` or exactly the existing supplied value. There is no
+rotation/delete command. Existing provider data with missing configuration
+requires restoring the original material, never generation. Invalid existing
+configuration refuses maintenance.
+
+Private `authentication-provider.json` in the data directory is the durable
+authority. File fsync, rename and directory fsync publish it. Uncertainty before
+or after rename returns `configuration_write_unconfirmed`; inspect private status
+before another intentional command. Configuration emits a fixed nonsecret
+operational event, without claiming atomic SQLite/filesystem audit. Back up the
+file separately under protected custody. SQLite snapshots and Knowledge/user
+exports do not include it. Database restoration can still revive historical
+passwords/sessions until A5 provides an external recovery fence.
+
+`owner create` writes one stable active owner and ID-only transactional audit,
+with no credential, token, role or grant. Any existing owner, including revoked,
+prevents creation. Status reports none/single/ambiguous; existing installations
+choose an active ID explicitly. Enrollment input is exactly `{email,name,password}`;
+recovery input is `{newPassword}`. The pinned proof requires 12–256-character
+passwords, which remains experimental policy. Email never selects an identity.
+Principal creation and enrollment are separate transactions. Failed enrollment
+leaves a harmless uncredentialed principal for inspection and explicit retry.
+Any mapping history, including revoked, prevents re-enrollment.
+
+Recovery checks the exact active owner/mapping inside the actual queued borrow,
+then atomically replaces the password, deletes every subject session and audits.
+It preserves principal/provider IDs, grants, bindings and tombstones. Revoked
+principals/mappings are not reactivated. Session revocation is immediate despite
+a pending next-start mode selection.
+
+Online commands use the existing owner-only Unix socket and store. Configure,
+status and principal creation do not import code. The first explicit enroll or
+recover loads one retained runtime; concurrent commands share initialization.
+Changed loaded configuration blocks account mutations until a new owner boot.
+Status omits secrets, paths, email and provider subjects/sessions. `ready` means
+maintenance initialized only. There is no hot reload, browser activation, mode
+fallback, compatibility bearer or default grant. Public login stays unavailable.
+
+Stopped commands acquire both owners and start no listeners. Success is printed
+only after provider disposal/drain, SQLite close and lock release. Unconfirmed
+cleanup reports `cleanupConfirmed:false` and retains the actual process, resources
+and locks for operator recovery. There is no forced exit or recovery daemon.
+Real process death permits stale-PID lock recovery, but does not prove cleanup
+of arbitrary external effects from trusted module code.
+
+Errors are fixed structured DTOs; no effect is automatically replayed.
+`committed:true` preserves a known committed effect despite notification/cleanup
+failure. Its absence does not imply rollback. After a lost enrollment response,
+inspect principal enrollment status. Recovery has no durable receipt; after a
+lost response its outcome is unknown. Another intentional recovery is a new
+password/revoke-all effect, including sessions created since the first.
+Same-OS-user agents share operator authority. Host isolation, MFA, role
+administration, full A3 acceptance and production RBAC remain separate gates.
 
 ### Bounded browser adapter
 
@@ -189,8 +280,7 @@ revoked. Failed cleanup still denies. Committed notification failures return a
 fixed error with `committed:true`; they do not promise rollback or trigger retry.
 Current database state, exact actor ownership and original expiry remain the
 authority. Protected recovery invalidates sessions immediately despite pending
-mode selection. It is exercised through runtime APIs only; CLI enrollment and
-recovery commands are a later assignment.
+mode selection, including the protected CLI recovery workflow above.
 
 The same real HTTP fixture logs in and calls `/api/knowledge` with explicit
 grants. `executeAdmitted` releases each Knowledge result in the same synchronous
@@ -212,7 +302,8 @@ not completed A3 or safe production RBAC.
 ### Provider authorization handoff
 
 This server-only API is implemented for the optional pinned proof. Production
-bootstrap still does not load the provider. Production transports remain
+startup still does not load the provider; protected maintenance is explicit.
+Production browser transports remain
 credential-only, and `better-auth` mode remains unavailable.
 
 `runtime.authenticate(headers)` resolves the actual cookie outside core

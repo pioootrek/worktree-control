@@ -29,7 +29,7 @@ describe("protected provider input", () => {
     ["provider", "owner", "create", "--principal-id", "chosen"],
     ["provider", "enroll", "--input-stdin"], ["provider", "status", "--input-stdin"],
     ["provider", "recover", "--principal-id", "p", "--input-stdin", "--role", "owner"],
-  ])("rejects raw flags before reading sensitive bytes %j", args => {
+  ])("rejects raw flags before reading sensitive bytes %j", (...args) => {
     expect(() => parseProviderArguments(args)).toThrowError(expect.objectContaining({ code: "invalid_input" }));
   });
 

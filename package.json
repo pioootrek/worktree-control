@@ -106,6 +106,7 @@
     "test:remote-verification": "vitest run src/server/modules/remote-verification src/server/infrastructure/git/remote-verification-workspace.test.ts src/server/infrastructure/sqlite/remote-verification-queries.test.ts src/server/transports/remote-verification-http.test.ts src/cli/remote-verification.test.ts src/server/test-job-manager.test.ts",
     "test:dev-vault": "vitest run src/server/modules/dev-vault src/server/infrastructure/dev-vault src/server/infrastructure/sqlite/dev-vault-queries.test.ts src/server/infrastructure/sqlite/dev-vault-migration.test.ts src/server/dev-vault-transports.test.ts src/cli/dev-vault.test.ts src/features/dev-vault src/architecture.test.ts",
     "test:auth-provider-proof": "vitest run --config vitest.auth-provider-proof.config.ts",
+    "test:auth-provider-cli-artifact": "node scripts/build-fingerprint.mjs --check && node scripts/auth-provider-cli-artifact.mjs",
     "test:ui:dev-vault": "playwright test tests/ui/dev-vault.spec.ts",
     "test:docs": "python3 scripts/docs.py fmt && python3 scripts/docs.py check && git diff --check"
   },

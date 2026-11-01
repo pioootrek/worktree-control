@@ -328,11 +328,18 @@ checks are described in [authentication](authentication.md#bounded-browser-adapt
 Contract 2 specializes durable logout; password changes recheck authority inside
 the actual provider borrow. No provider cookie gains installation authority on
 unconverted HTTP/MCP operations, even during an open-mode proof boot. Provider
-loading/browser composition has no production CLI caller or enable flag.
+browser composition has no production CLI caller or enable flag. Protected CLI
+maintenance can explicitly load a configured provider without mounting it.
 Schema 39/provider storage revision 1 stay unchanged. Experimental password-only
 numbers and single-factor DTOs do not establish full RBAC, MFA or ASVS Level 2.
-Protected CLI enrollment/recovery remains the next integration assignment;
-production account activation still waits for factors, roles and complete A5.
+Protected CLI configuration, principal-only creation, enrollment and recovery
+are implemented as bounded A3-I10 maintenance. They preserve the existing boot
+authentication object and mode, issue no bearer/grant/role, and recheck active
+principal/mapping history inside provider admission. Configuration/status do not
+load code; changed loaded material requires a new owner boot. Private signing
+configuration needs its own protected backup. Production account activation
+still waits for factors, roles and complete A5. See the
+[operator workflow](authentication.md#protected-provider-maintenance).
 
 Keep existing active compatibility authority until the explicit restart.
 These modes do not provide individual account isolation:

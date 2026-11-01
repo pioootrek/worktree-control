@@ -127,7 +127,7 @@ describe("protected CLI provider administration against actual SQLite/Better Aut
       await f.run(["recover", "--principal-id", f.principalId, ...f.input({ newPassword: OWNER_PASSWORD })]);
       const relogin = client(f); await relogin.signIn(); const denied = await f.runtime().authenticate(new Headers({ cookie: relogin.cookieHeader() }));
       expect((await app.describeIdentity(denied!)).knowledgeGrants).toEqual([]);
-      await expect(app.execute({ operation: "list_tasks", input: { projectId: project.id } }, denied!)).rejects.toMatchObject({ code: "knowledge_forbidden" });
+      await expect(app.execute({ operation: "tasks", input: { projectId: project.id } }, denied!)).rejects.toMatchObject({ code: "knowledge_forbidden" });
     } finally { await f.close(); }
   });
 

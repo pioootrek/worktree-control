@@ -489,8 +489,9 @@ Knowledge CLI, identity administration and logical import/export now apply
 the active policy when no token variable is present, including open mode.
 
 The first A3 slice adds a versioned server-only provider contract and explicit
-local loader, exercised by a private Better Auth workspace proof. Production
-bootstrap does not load it and account mode stays unavailable. Controller
+local loader, exercised by a private Better Auth workspace proof. Startup
+does not load it and account mode stays unavailable. Explicit protected CLI
+maintenance uses a single lazy runtime without mounting browser login. Controller
 migration 38 owns the empty namespaced provider tables and explicit subject-to-owner
 mapping. Controller migration 39 adds only the `provider_session` Knowledge
 history method, preserving rows, IDs, timestamps, indexes and deleted-ID
@@ -512,7 +513,8 @@ inside the actual queued borrow. Converted Knowledge effects/results use
 `ProviderKnowledgeApplication.executeAdmitted` in that same synchronous phase.
 Unconverted HTTP and separate MCP requests carrying provider cookies are denied
 before compatible installation authority, including open mode. Production main
-still has no provider-loading or browser-composition caller. See the
+has no browser-composition caller. Provider maintenance is reached only through
+the protected CLI/private Unix socket. See the
 [browser contract](authentication.md#bounded-browser-adapter).
 
 Provider API contract 2 requires durable `signOut`; version 1 fails compatibility
@@ -526,6 +528,19 @@ also reported honestly. Raw library logs/router errors are replaced with fixed
 events, including errors that the native router would otherwise print directly.
 Local provider modules are trusted code, not sandboxed plugins. See the
 [proof contract and limitations](authentication.md#optional-provider-proof-first-a3-slice).
+
+Protected provider administration shares one server-only application across
+offline CLI and the private socket. Short config/status/principal phases use
+core admission; loading and account effects run outside it. A storage decorator
+rechecks maintenance and pinned configuration in the actual queued borrow,
+using the existing gate. One retained initialization promise belongs to each
+controller. Shutdown joins accepted commands even after client disconnect,
+then partial loading, provider disposal/drain, service/SQLite close and owner
+release. Unconfirmed cleanup retains ownership and a referenced process lifetime.
+The private durable configuration needs separate backup; its operational event
+does not claim atomic filesystem/SQLite audit. Principal-only creation and
+enrollment intentionally commit separately without issuing a credential/grant.
+See [protected maintenance](authentication.md#protected-provider-maintenance).
 
 ## Database admission
 
