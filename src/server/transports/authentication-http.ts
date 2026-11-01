@@ -110,9 +110,9 @@ export class AuthenticationHttp {
       if (knowledge) {
         const actor = await this.deps.runtime.authenticate(nativeHeaders);
         if (!actor) fail(401, "invalid_credential");
-        const result = await this.deps.knowledge.execute(input, actor);
         await this.deps.admission.run(() => {
-          this.deps.runtime.browserSession(actor);
+          if (this.deps.maintenance?.()) fail(503, "database_unavailable");
+          const result = this.deps.knowledge.executeAdmitted(input, actor);
           authenticationJson(response, 200, result);
         }); return true;
       }

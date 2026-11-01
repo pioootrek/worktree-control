@@ -87,7 +87,7 @@ describe("actual controller browser adapter with pinned Better Auth", () => {
         headers: { "x-worktree-control-client-ip": `203.0.113.${i}`, "x-forwarded-for": `203.0.113.${i}`, forwarded: `for=203.0.113.${i}`, authorization: "Bearer sentinel-token", "x-worktree-control-token": "sentinel-token" } });
       expect(last).toMatchObject({ status: 429, headers: { "retry-after": "60" }, body: { code: "rate_limited" } });
       const native = invoke.mock.calls[0][1];
-      expect(native.headers.get("x-worktree-control-client-ip")).toBe("198.51.100.12");
+      expect(native.headers.get("x-worktree-control-client-ip")).toBe(f.peer);
       for (const header of ["authorization", "forwarded", "x-forwarded-for", "x-worktree-control-token"]) expect(native.headers.has(header)).toBe(false);
       expect(JSON.stringify(last)).not.toContain("sentinel");
       expect(f.evidence.logs.join("\n")).not.toContain("sentinel");
@@ -109,7 +109,7 @@ describe("actual controller browser adapter with pinned Better Auth", () => {
     } finally { held.abort(); await f.close(); }
   });
 
-  it("preserves validated refresh Set-Cookie and denies actors copied or past their original expiry", async () => {
+  it("preserves validated refresh Set-Cookie and denies structural actor copies", async () => {
     const f = await browserFixture(), client = await f.client().authenticated();
     try {
       const actor = (await f.runtime.authenticate(sessionCookie(client.cookie)))!;

@@ -106,6 +106,9 @@ function libraryOptions(host: AuthenticationProviderHost, options: ProofOptions,
       database: { validateSchema: true },
     },
     telemetry: { enabled: false },
+    // Better Call otherwise console.error's arbitrary exceptions after its default handler.
+    // Rethrow through our handle boundary so only fixed events leave this package.
+    onAPIError: { throw: true },
     logger: { level: "warn", log: (level: "error" | "warn" | "info" | "debug", message: string) => host.log(level, message) },
     hooks: {
       before: createAuthMiddleware(async context => {
@@ -173,7 +176,8 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
     const base = new URL(this.#options.baseURL);
     // The library trusts the configured base URL; refuse any other Host here.
     if (new URL(request.url).origin !== base.origin) return new Response(null, { status: 421 });
-    return this.#ready().handler(request);
+    try { return await this.#ready().handler(request); }
+    catch { this.#host.log("error", "Authentication provider request failed."); return new Response(null, { status: 500 }); }
   }
 
   async signOut(request: Request): Promise<Response> {

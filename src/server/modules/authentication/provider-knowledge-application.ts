@@ -21,10 +21,15 @@ export class ProviderKnowledgeApplication {
 
   execute(value: unknown, actor: ProviderSessionActor, options?: DatabaseAdmissionOptions) {
     return this.admission.run(() => {
-      this.requireProviderActor(actor);
-      this.identity.describeIdentity(actor);
-      return this.knowledge.execute(value, actor);
+      return this.executeAdmitted(value, actor);
     }, options);
+  }
+
+  /** Synchronous phase for transports that release a response in the same admitted callback. */
+  executeAdmitted(value: unknown, actor: ProviderSessionActor) {
+    this.requireProviderActor(actor);
+    this.identity.describeIdentity(actor);
+    return this.knowledge.execute(value, actor);
   }
 
   describeIdentity(actor: ProviderSessionActor, options?: DatabaseAdmissionOptions) {

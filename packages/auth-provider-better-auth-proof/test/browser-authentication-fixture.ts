@@ -5,14 +5,13 @@ import type { ControlService } from "@/server/control-service";
 import type { DirectoryBrowser } from "@/server/directory-browser";
 import { EventStream } from "@/server/events";
 import { createControllerServer } from "@/server/http-server";
-import { AuthenticationService, ProviderKnowledgeApplication } from "@/server/modules/authentication";
-import { IdentityService } from "@/server/modules/identity";
-import { KnowledgeService } from "@/server/modules/knowledge";
-import { AuthenticationHttp } from "@/server/transports/authentication-http";
+import { AuthenticationService } from "@/server/modules/authentication";
+import { composeIsolatedBrowserAuthentication } from "@/server/bootstrap/authentication";
 import type { ProofFaultInjection } from "../src/index";
 import { ORIGIN, OWNER_EMAIL, OWNER_PASSWORD } from "./fixture";
 import { closeStrictProof, strictProof } from "./strict-fixture";
 
+let peerSequence = 1;
 export async function browserFixture(faults: ProofFaultInjection = {}, options = {}, maxInFlight = 8) {
   const f = await strictProof(faults, options);
   await f.runtime.provisionLocal({ principalId: f.owner.principalId, email: OWNER_EMAIL, name: "Owner", password: OWNER_PASSWORD, actor: "test" });
@@ -20,14 +19,12 @@ export async function browserFixture(faults: ProofFaultInjection = {}, options =
   // No production selector, env switch or alternate product mode exists.
   await f.run(() => new AuthenticationService(f.store).setMode("open", "local-cli"));
   const authentication = await f.run(() => new AuthenticationService(f.store));
-  const identity = new IdentityService(f.store, undefined, undefined, undefined, undefined, f.store, f.runtime);
-  const knowledge = new KnowledgeService(f.store, identity);
-  const app = new ProviderKnowledgeApplication(f.store.admission, identity, knowledge);
   let maintenance = false;
-  const adapter = new AuthenticationHttp({ origin: ORIGIN, runtime: f.runtime, admission: f.store.admission,
-    knowledge: app, status: () => ({ mode: authentication.mode(), loginAvailable: true }), maxInFlight,
+  const peer = `198.18.0.${peerSequence++}`;
+  const { identity, providerKnowledge: app, browserAuthentication: adapter } = composeIsolatedBrowserAuthentication({
+    store: f.store, authentication, origin: ORIGIN, runtime: f.runtime, admission: f.store.admission, maxInFlight,
     // A Unix peer has no IP. Explicitly trusted ONLY for temporary isolated fixture transport.
-    trustedFixturePeer: "198.51.100.12", maintenance: () => maintenance });
+    trustedFixturePeer: peer, maintenance: () => maintenance });
   const service = { dashboard: () => { throw new Error("unconverted provider route reached installation authority"); } } as unknown as ControlService;
   const http = createControllerServer({ service, identity, authentication, admission: f.store.admission, browserAuthentication: adapter,
     directoryBrowser: {} as DirectoryBrowser, events: new EventStream(f.store.admission),
@@ -39,7 +36,7 @@ export async function browserFixture(faults: ProofFaultInjection = {}, options =
   const grant = () => f.run(() => f.identity.setKnowledgeGrant({ principalId: f.owner.principalId, projectId: project.id,
     permissions: ["knowledge:read", "knowledge:write"] }, f.ownerActor));
   const client = () => new BrowserClient(socketPath);
-  return { ...f, authentication, identity, app, adapter, http, project, grant, client, setMaintenance: () => { maintenance = true; },
+  return { ...f, peer, authentication, identity, app, adapter, http, project, grant, client, setMaintenance: () => { maintenance = true; },
     close: async () => { await http.close(); await closeStrictProof(f); } };
 }
 export type BrowserFixture = Awaited<ReturnType<typeof browserFixture>>;
