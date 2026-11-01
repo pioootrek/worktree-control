@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
+import type { AuthenticationProviderRuntime } from "@/server/modules/authentication";
 import { directAdmission } from "@/server/database-admission";
 import { describe, expect, it, vi } from "vitest";
 import { approvedAuthenticationCookies, AuthenticationHttp } from "./authentication-http";
@@ -42,7 +43,7 @@ function outgoing() {
   });
 }
 function adapter() {
-  const browser = vi.fn(async (_operation: string, _request: Request) => ({ response: new Response(null), actor: null }));
+  const browser = vi.fn<AuthenticationProviderRuntime["browser"]>().mockResolvedValue({ response: new Response(null), actor: null });
   const value = new AuthenticationHttp({ origin: "https://controller.test", admission: directAdmission,
     runtime: { browser } as never, knowledge: {} as never, status: () => ({ mode: "open", loginAvailable: true }), maxInFlight: 1 });
   return { value, browser };

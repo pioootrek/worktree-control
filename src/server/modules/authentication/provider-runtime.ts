@@ -275,9 +275,9 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     return this.#run(async () => {
       if (operation === "password") {
         // This check runs inside the ACTUAL queued borrow, immediately before native work.
-        const valid = actor && this.#input.storage.runControllerOperation(() => this.isCurrentProviderSession(actor, new Date().toISOString()));
         const original = actor && this.#actors.get(actor);
         const incoming = await this.#instance.resolveSession(request.headers);
+        const valid = actor && this.#input.storage.runControllerOperation(() => this.isCurrentProviderSession(actor, new Date().toISOString()));
         if (!valid || !original || incoming?.sessionId !== original.sessionId || incoming.subject !== original.subject) {
           throw new AuthenticationProviderError("invalid_session", "Invalid browser session.");
         }

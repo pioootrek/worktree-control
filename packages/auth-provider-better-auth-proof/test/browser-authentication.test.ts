@@ -4,7 +4,7 @@ import { createMcpControllerServer } from "@/server/mcp-http-server";
 import type { ControlService } from "@/server/control-service";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSessionActor } from "@/server/modules/identity";
-import { ORIGIN, OWNER_PASSWORD, OWNER_EMAIL, count, readCommitted } from "./fixture";
+import { OWNER_PASSWORD, OWNER_EMAIL, count, readCommitted } from "./fixture";
 import { BrowserClient, browserFixture, write, type BrowserFixture } from "./browser-authentication-fixture";
 import { cleanupStrictRoots, gate } from "./strict-fixture";
 import type { ProofFaultInjection } from "../src/index";
@@ -145,6 +145,20 @@ describe("actual controller browser adapter with pinned Better Auth", () => {
     } finally { held.abort(); await f.close(); }
   });
 
+  it("rechecks Knowledge grants after a real HTTP body wait, including retained write replay", async () => {
+    const f = await browserFixture(), client = await f.client().authenticated();
+    try {
+      await f.grant();
+      expect((await client.call("/api/knowledge", { body: write(f) })).status).toBe(200);
+      const dispatch = vi.spyOn(f.adapter, "handle"), held = client.start("/api/knowledge");
+      await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
+      await f.run(() => f.identity.revokeKnowledgeGrant(f.owner.principalId, f.project.id, f.ownerActor));
+      held.send(JSON.stringify(write(f)));
+      expect((await held.completed).status).toBe(403);
+      expect((await f.run(() => f.store.listTasks(f.project.id, 10, 0))).items).toHaveLength(1);
+    } finally { await f.close(); }
+  });
+
   it("preserves validated refresh Set-Cookie and denies structural actor copies", async () => {
     const f = await browserFixture(), client = await f.client().authenticated();
     try {
@@ -202,7 +216,9 @@ describe("actual controller browser adapter with pinned Better Auth", () => {
     const wrote = vi.fn(), faults: ProofFaultInjection = { beforePasswordWrite: async () => { wrote(); } };
     const f = await browserFixture(faults), client = await f.client().authenticated();
     try {
+      const dispatch = vi.spyOn(f.adapter, "handle");
       const held = client.start("/api/auth/change-password");
+      await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
       await f.runtime.revokePrincipalSessions(f.owner.principalId);
       held.send(JSON.stringify({ currentPassword: OWNER_PASSWORD, newPassword: "fixture-new-password-2" }));
       expect((await held.completed).status).toBe(401); expect(wrote).not.toHaveBeenCalled();
@@ -213,16 +229,22 @@ describe("actual controller browser adapter with pinned Better Auth", () => {
     const wrote = vi.fn(), faults: ProofFaultInjection = { beforePasswordWrite: async () => { wrote(); } };
     const f = await browserFixture(faults), client = await f.client().authenticated();
     const entered = gate(), release = gate();
-    const actor = (await f.runtime.authenticate(sessionCookie(client.cookie)))!;
-    const hold = f.run(async () => { entered.open(); await release.opened; });
-    try {
+    const original = f.runtime.browser.bind(f.runtime);
+    let hold: Promise<unknown> | undefined, revoke: Promise<void> | undefined;
+    vi.spyOn(f.runtime, "browser").mockImplementation(async (...args) => {
+      hold = f.run(async () => { entered.open(); await release.opened; });
       await entered.opened;
-      const revoke = f.runtime.revokePrincipalSessions(f.owner.principalId);
-      const mutation = f.runtime.browser("password", new Request(`${ORIGIN}/api/auth/change-password`, { method: "POST", headers: { origin: ORIGIN, cookie: client.cookie, "content-type": "application/json" }, body: JSON.stringify({ currentPassword: OWNER_PASSWORD, newPassword: "fixture-new-password-2", revokeOtherSessions: true }) }), actor);
-      const refusal = expect(mutation).rejects.toMatchObject({ code: "invalid_session" });
-      release.open(); await hold; await revoke; await refusal;
+      revoke = f.runtime.revokePrincipalSessions(f.owner.principalId);
+      return original(...args);
+    });
+    try {
+      const mutation = client.call("/api/auth/change-password", { body: { currentPassword: OWNER_PASSWORD, newPassword: "fixture-new-password-2" } });
+      await entered.opened;
+      await vi.waitFor(() => expect(f.store.admissionSnapshot().queuedProvider).toBe(2));
+      release.open(); await hold; await revoke;
+      expect((await mutation).status).toBe(401);
       expect(wrote).not.toHaveBeenCalled();
-    } finally { release.open(); await hold; await f.close(); }
+    } finally { release.open(); await hold; await revoke; await f.close(); }
   });
 
   it("denies a login result revoked while final admission waits and cleans up its unreleased cookie", async () => {
