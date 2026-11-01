@@ -16,6 +16,8 @@ export interface AuthenticationAdministrationOptions {
   onInvalidation?: (event: ProviderInvalidation) => void;
   configurationEvent?: () => void;
   drainTimeoutMs?: number;
+  /** Finite fixtures may own/release their handle after observing terminal failure. */
+  holdLifetime?: () => () => void;
 }
 
 /** One lazy maintenance lifetime owned by the controller or stopped CLI, never a browser mount. */
@@ -23,6 +25,13 @@ export function createAuthenticationAdministration(d: AuthenticationAdministrati
   let stopping = false, state: ProviderMaintenanceState = "not_loaded";
   let pinned: ProviderConfiguration | undefined, loaded: Promise<AuthenticationProviderRuntime> | undefined;
   let runtime: AuthenticationProviderRuntime | undefined, failure: unknown, disposal: Promise<void> | undefined;
+  let releaseLifetime: (() => void) | undefined;
+  const retainLifetime = () => {
+    releaseLifetime ??= d.holdLifetime?.() ?? (() => {
+      const lifetime = setInterval(() => { void runtime; void failure; }, 60_000);
+      return () => clearInterval(lifetime);
+    })();
+  };
   const accepted = new Set<Promise<unknown>>(), storage = d.store.authenticationProviderStorage();
   const configuration = new FileProviderConfiguration(join(d.dataDirectory, "authentication-provider.json"),
     () => d.store.listProjects().map(project => project.repositoryPath), d.configurationEvent);
@@ -30,8 +39,8 @@ export function createAuthenticationAdministration(d: AuthenticationAdministrati
     (!current || current.entry !== pinned.entry || current.baseURL !== pinned.baseURL || current.secret !== pinned.secret);
   const maintenance = () => stopping || Boolean(d.maintenance?.());
   const guard = () => {
-    if (maintenance()) throw new ProviderAdminError("maintenance");
-    if (changed(configuration.read())) throw new ProviderAdminError("provider_configuration_restart_required");
+    if (maintenance()) throw new AuthenticationProviderError("maintenance", "Controller provider administration is in maintenance.");
+    if (changed(configuration.read())) throw new AuthenticationProviderError("provider_configuration_restart_required", "Provider configuration requires a new owner boot.");
   };
   // Reuse the ONE existing connection gate. Guard runs when the queued borrow actually executes.
   const guardedStorage: AuthenticationProviderStorage = { ...storage,
@@ -88,6 +97,7 @@ export function createAuthenticationAdministration(d: AuthenticationAdministrati
   return {
     execute(body: unknown): Promise<unknown> {
       if (maintenance()) return Promise.reject(new ProviderAdminError("maintenance"));
+      retainLifetime();
       const pending = application.execute(body);
       accepted.add(pending);
       const forget = () => { accepted.delete(pending); };
@@ -96,6 +106,7 @@ export function createAuthenticationAdministration(d: AuthenticationAdministrati
     },
     dispose(): Promise<void> {
       if (disposal) return disposal;
+      retainLifetime();
       stopping = true; state = "disposing";
       disposal = Promise.resolve().then(async () => {
         await Promise.allSettled([...accepted]);
@@ -103,6 +114,7 @@ export function createAuthenticationAdministration(d: AuthenticationAdministrati
         if (failure instanceof AuthenticationProviderError && failure.code === "disposal_unconfirmed") throw failure;
         await runtime?.dispose({ timeoutMs: d.drainTimeoutMs });
         if (!await storage.drain(d.drainTimeoutMs ?? 10_000)) throw new ProviderAdminError("disposal_unconfirmed", undefined, false);
+        releaseLifetime?.(); releaseLifetime = undefined;
       }).catch(error => { failure = error; state = "disposal_unconfirmed"; throw new ProviderAdminError("disposal_unconfirmed", undefined, false); });
       return disposal;
     },

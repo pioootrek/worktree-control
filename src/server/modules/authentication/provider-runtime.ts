@@ -21,7 +21,8 @@ import {
 
 export type AuthenticationProviderErrorCode =
   | "provider_unavailable" | "principal_unavailable" | "subject_conflict" | "not_linked"
-  | "invalid_session" | "invalid_input" | "invalidation_failed" | "provider_disposed" | "provider_failed" | "disposal_unconfirmed";
+  | "invalid_session" | "invalid_input" | "invalidation_failed" | "provider_disposed" | "provider_failed" | "disposal_unconfirmed"
+  | "maintenance" | "provider_configuration_restart_required";
 
 /** Safe to show: messages are fixed text, never library errors, input values or secrets. */
 const retainedFailureResources = new WeakMap<AuthenticationProviderError, unknown>();

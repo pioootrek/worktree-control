@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -10,7 +10,7 @@ import { setTimeout as pause } from "node:timers/promises";
 // Finite, private proof artifact only. Nothing is installed into the service or Community dist.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const temporary = mkdtempSync(join(tmpdir(), "provider-emitted-cli-"));
-const emitted = join(root, "packages/auth-provider-better-auth-proof/dist", `cli-${randomUUID()}`);
+const emitted = join(temporary, `emitted-${randomUUID()}`);
 const children = new Set();
 const sentinel = "fixture-sensitive-cli-password-123";
 function start(args, input) {
@@ -37,6 +37,7 @@ async function cli(directory, args, input, expectedCode = 0) {
 }
 try {
   mkdirSync(emitted, { recursive: true, mode: 0o700 });
+  symlinkSync(join(root, "packages/auth-provider-better-auth-proof/node_modules"), join(emitted, "node_modules"), "dir");
   const build = await finish(start(["node_modules/tsup/dist/cli-default.js", "packages/auth-provider-better-auth-proof/src/index.ts",
     "--format", "esm", "--platform", "node", "--target", "node22", "--out-dir", emitted,
     "--external", "better-auth", "--external", "@better-auth/core", "--external", "kysely"]));

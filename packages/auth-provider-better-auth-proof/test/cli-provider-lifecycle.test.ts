@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { request as httpRequest } from "node:http";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -100,10 +101,29 @@ describe("actual CLI/admin lifetime and ownership", () => {
       await f.configure("https://controller.test", "preserve", entry);
       await expect(f.run(["enroll", "--principal-id", f.principalId, ...f.input(enrollment)])).rejects.toMatchObject({ code: "disposal_unconfirmed", cleanupConfirmed: false });
       expect((await f.run(["status"])).maintenance).toBe("disposal_unconfirmed");
+      const current = JSON.parse(readFileSync(join(f.paths.dataDirectory, "authentication-provider.json"), "utf8"));
+      await f.run(["configure", ...f.input({ module: current.entry, origin: "https://controller.test", signingSecret: { kind: "preserve" } })]);
       await expect(f.run(["enroll", "--principal-id", f.principalId, ...f.input(enrollment)])).rejects.toMatchObject({ code: "disposal_unconfirmed" });
       expect(f.loads()).toBe(1);
       await expect(shutdownFor(f)()).rejects.toThrow("did not complete cleanly"); assertOwned(f);
       await expect(f.administration.dispose()).rejects.toMatchObject({ cleanupConfirmed: false });
     } finally { await f.admin.close(); await f.store.closeAfterDrain(); f.lock.release(); f.remove(); }
+  });
+
+  it("retains owners after actual execution expiry/drain failure and never reloads the terminal provider", async () => {
+    const entered = gate(), resume = gate(), faults: ProofFaultInjection = {};
+    const f = await onlineCliFixture({ faults, storeOptions: { borrowTimeoutMs: 1000 }, drainTimeoutMs: 10 });
+    try {
+      await f.run(["enroll", "--principal-id", f.principalId, ...f.input(enrollment)]);
+      faults.beforeRecoveryCommit = async () => { entered.open(); await resume.opened; };
+      const recovery = f.run(["recover", "--principal-id", f.principalId, ...f.input({ newPassword: "fixture-expiring-new-password" })]).catch(error => error);
+      await entered.opened;
+      expect(await recovery).toMatchObject({ code: "database_admission_error" });
+      expect((await f.run(["status"])).maintenance).toBe("failed");
+      await expect(f.run(["recover", "--principal-id", f.principalId, ...f.input({ newPassword: "fixture-expiring-new-password" })])).rejects.toMatchObject({ code: "database_unavailable" });
+      await expect(shutdownFor(f)()).rejects.toThrow("did not complete cleanly"); assertOwned(f); expect(f.loads()).toBe(1);
+    } finally {
+      resume.open(); await f.admin.close(); await f.store.closeAfterDrain(); f.lock.release(); f.remove();
+    }
   });
 });

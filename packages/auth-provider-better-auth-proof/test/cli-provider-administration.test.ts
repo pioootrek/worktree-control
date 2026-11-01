@@ -87,6 +87,7 @@ describe("protected CLI provider administration against actual SQLite/Better Aut
       await f.runtime().revokeSubject({ principalId: f.principalId, actor: "fixture" });
       expect(await f.run(["status", "--principal-id", f.principalId])).toMatchObject({ principal: { enrollment: "revoked" } });
       await expect(f.run(["enroll", "--principal-id", f.principalId, ...f.input(enrollment)])).rejects.toMatchObject({ code: "subject_conflict" });
+      await expect(f.run(["recover", "--principal-id", f.principalId, ...f.input({ newPassword: nextPassword })])).rejects.toMatchObject({ code: "not_linked" });
       expect(f.loads()).toBe(1);
     } finally { await f.close(); }
   });
@@ -175,5 +176,23 @@ describe("protected CLI provider administration against actual SQLite/Better Aut
       await expect(f.run(["recover", "--principal-id", id, ...f.input({ newPassword: nextPassword })])).rejects.toMatchObject({ code: "configuration_missing" });
       expect(existsSync(join(f.paths.dataDirectory, "authentication-provider.json"))).toBe(false);
     } finally { f.remove(); }
+  });
+
+  it("reports ambiguous historical owners honestly, refuses wrong principal kinds and never maps duplicate email", async () => {
+    const f = await onlineCliFixture();
+    try {
+      await f.runCore(() => {
+        f.store.savePrincipal({ id: "historical-owner", kind: "owner", status: "active" }, "fixture");
+        f.store.savePrincipal({ id: "machine-agent", kind: "agent", status: "active" }, "fixture");
+      });
+      expect(await f.run(["status"])).toMatchObject({ owner: { state: "ambiguous" } });
+      expect((await f.run(["status"])).owner).not.toHaveProperty("principal");
+      await expect(f.run(["enroll", "--principal-id", "machine-agent", ...f.input(enrollment)])).rejects.toMatchObject({ code: "principal_unavailable" });
+      await f.run(["enroll", "--principal-id", f.principalId, ...f.input(enrollment)]);
+      await expect(f.run(["enroll", "--principal-id", "historical-owner", ...f.input(enrollment)])).rejects.toMatchObject({ code: "provider_failed" });
+      expect(await f.run(["status", "--principal-id", "historical-owner"])).toMatchObject({ principal: { enrollment: "absent" } });
+      expect(count(f.paths.databasePath, "authentication_ba_user")).toBe(1); expect(count(f.paths.databasePath, "authentication_provider_subjects")).toBe(1);
+      await expect(f.create()).rejects.toMatchObject({ code: "owner_already_initialized" });
+    } finally { await f.close(); }
   });
 });

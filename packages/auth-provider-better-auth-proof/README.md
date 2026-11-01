@@ -75,8 +75,9 @@ global paths and a finite child whose actual provider disposal rejects after
 destruction. That child must report committed effect/uncertain cleanup while
 retaining its process and both locks. The harness then terminates only that
 owned temporary child and removes fixtures. No install, service change or
-persistent test daemon is involved. Emitted code stays under the private
-package's ignored `dist`, outside Community assets.
+persistent test daemon is involved. Emitted code stays in the harness's private
+temporary directory, outside Community assets; its dependencies resolve through
+a temporary link to the existing pinned proof dependencies.
 
 Private signing configuration requires separate protected backup. No rotation,
 atomic filesystem/SQLite config audit, exactly-once recovery, MFA or full A3

@@ -39,7 +39,7 @@ describe("configuration publication and descriptor uncertainty", () => {
     const f = fixture(), path = join(f.root, "input.json"); fs.writeFileSync(path, "{}", { mode: 0o600 });
     const read = fs.readSync;
     vi.spyOn(fs, "readSync").mockImplementation(((fd: number, buffer: Buffer, offset: number, length: number, position: number | null) => {
-      fs.appendFileSync(path, " "); return read(fd, buffer, offset, length, position);
+      if (offset === 0) fs.appendFileSync(path, " "); return read(fd, buffer, offset, length, position);
     }) as typeof fs.readSync);
     expect(() => readPrivateBoundedFile(path, 8192)).toThrow(); vi.restoreAllMocks();
     const stat = fs.fstatSync;
