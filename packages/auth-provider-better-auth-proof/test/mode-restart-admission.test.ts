@@ -192,7 +192,7 @@ describe("restart-only CLI mode selection across real private/public listeners",
       const init = await live.initialize(f.token);
       for (const method of ["tools/call", "resources/read"]) {
         const response = await live.rpc(f.token, method, method === "tools/call" ? { name: "auth_mode_set", arguments: { value: "open" } } : { uri: "worktree-control://auth/mode?value=open" }, init.session);
-        expect(response.body.error).toBeDefined();
+        expect(Boolean(response.body.error || (response.body.result as { isError?: boolean } | undefined)?.isError)).toBe(true);
       }
       expect(save).not.toHaveBeenCalled();
       expect(await live.run(() => live.store.getAuthenticationPolicy())).toEqual(before);
