@@ -87,7 +87,9 @@ async function enroll(f: ControllerFixture, source = entry) {
 async function assertNoSecrets(f: ControllerFixture) {
   const config = JSON.parse(await readFile(join(f.paths.data, "authentication-provider.json"), "utf8"));
   let logs = f.diagnostics();
-  for (const name of await readdir(join(f.paths.state, "logs"))) logs += await readFile(join(f.paths.state, "logs", name), "utf8");
+  const files = await readdir(join(f.paths.state, "logs"), { recursive: true, withFileTypes: true });
+  expect(files.length).toBeLessThan(100);
+  for (const file of files) if (file.isFile()) logs += await readFile(join(file.parentPath, file.name), "utf8");
   for (const secret of [password, replacement, config.secret, "fixture-driver-close-private-sentinel"]) expect(logs.includes(secret), "Sensitive provider material must not appear in logs.").toBe(false);
 }
 
@@ -155,6 +157,22 @@ describe("actual built CLI provider administration (isolated controller, zero ma
     } finally { await f.terminateFailedController(); }
   });
 
+  it("retains the actual startup owner when admin binding refuses and subsequent SQLite cleanup fails", async () => {
+    const f = fixture = await startControllerFixture(0, [], { nodeArguments: ["--import", faultHook] });
+    await f.stop();
+    await writeFile(join(f.paths.state, "admin.sock"), "fixture-foreign-file", { mode: 0o600 });
+    await writeFile(join(f.paths.data, "fixture-driver-close-failure"), "armed");
+    const restarting = f.restart().catch(error => error);
+    try {
+      await waitFor(() => f.diagnostics().includes("Provider cleanup is unconfirmed; ownership is retained.") || null,
+        10_000, () => "Actual listener-start failure retention branch did not run.");
+      expect(f.diagnostics()).toContain("fixture.driver_close_refused");
+      await pause(250); expect(f.processState().code).toBeNull(); expect(f.processState().signal).toBeNull();
+      await assertOwners(f, true);
+      await expect(fetch(`${f.endpoint}/api/auth/status`)).rejects.toThrow();
+    } finally { await f.terminateFailedController(); await restarting; }
+  });
+
   it("retains the actual restore-failure process and both owners after successful provider disposal then failed SQLite close", async () => {
     const f = fixture = await startControllerFixture(0, [], { backups: true, nodeArguments: ["--import", faultHook] });
     try {
@@ -170,6 +188,16 @@ describe("actual built CLI provider administration (isolated controller, zero ma
       expect(f.diagnostics().indexOf("fixture.provider_disposed")).toBeLessThan(f.diagnostics().indexOf("fixture.driver_close_refused"));
       // Wait for natural event-loop exhaustion, not merely the synchronous callback return.
       await pause(500);
+      const paths = [join(f.paths.state, "controller.lock"), join(f.paths.data, "state.sqlite3.owner.lock")];
+      const lockFilesPresent = paths.every(existsSync);
+      const lockPidsMatch = (await Promise.all(paths.map(path => readFile(path, "utf8"))))
+        .every(value => JSON.parse(value).pid === f.processState().pid);
+      let ownerAlive = true;
+      try { process.kill(f.processState().pid!, 0); } catch { ownerAlive = false; }
+      console.log("restore-retention-evidence", JSON.stringify({ injectedDriverCloseFailure: true, providerDisposed: true,
+        restoreFailureCallbackObserved: true, ...f.processState(), lockFilesPresent, lockPidsMatch, ownerAlive }));
+      expect(lockFilesPresent).toBe(true); expect(lockPidsMatch).toBe(true);
+      await assertNoSecrets(f);
       expect(f.processState(), "Restore cleanup claimed retained ownership, but the owner must remain alive.").toMatchObject({ code: null, signal: null });
       await assertOwners(f, true); await assertNoSecrets(f);
     } finally { await f.terminateFailedController(); }

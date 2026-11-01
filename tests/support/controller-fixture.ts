@@ -134,20 +134,21 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
   const start = async () => {
     let output = "";
     child = spawn(process.execPath, [...(options.nodeArguments ?? []), artifactCli, "start", "--service-mode", "--host", "127.0.0.1", "--port", String(controllerPort), "--mcp-port", String(mcpPort), "--no-open", "--data-dir", data, "--state-dir", state, "--browse-root", base, "--web-root", artifactWeb, ...(options.backups ? ["--backup-dir", join(base, "backups"), "--backup-ui-actions", "create,restore"] : []), ...(options.userBackups ? ["--user-backup-enabled", "--user-backup-scopes", "knowledge-discussions", "--user-backup-projects", userBackupProjectId!, "--user-backup-target", `local=${join(base, "user-exports")}`, "--user-backup-min-interval-seconds", "60"] : []), ...(options.startupArguments ?? [])], { cwd: repositoryRoot, env: runtimeEnvironment, stdio: ["ignore", "pipe", "pipe"] });
+    const starting = child;
     lastProcess = child;
     const capture = (chunk: Buffer) => { output += chunk.toString(); controllerOutput = (controllerOutput + chunk.toString()).slice(-8000); };
     child.stdout?.on("data", capture); child.stderr?.on("data", capture);
     let access: { accessUrl: string };
     try {
       access = await waitFor(async () => {
-        if (child!.exitCode !== null || child!.signalCode !== null) throw new Error(`Controller startup failed.\n${output}`);
+        if (starting.exitCode !== null || starting.signalCode !== null) throw new Error(`Controller startup failed.\n${output}`);
         try { return JSON.parse(await readFile(join(state, "service-access.json"), "utf8")) as { accessUrl: string }; } catch { return null; }
       }, WAIT_MS, () => `Controller did not publish service access.\n${output}`);
     } catch (error) {
       // Confirm exit even for deliberately failed listener starts before handing paths back.
-      const failed = child;
+      const failed = starting;
       if (failed.exitCode === null && failed.signalCode === null) await closeFixtureChild(failed);
-      child = undefined;
+      if (child === starting) child = undefined;
       throw error;
     }
     // Token mode publishes no secret; the browser receives the installation token in the fragment.
