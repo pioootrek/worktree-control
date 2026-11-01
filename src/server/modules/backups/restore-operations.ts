@@ -29,7 +29,7 @@ const handoffSchema = z.union([
       || (record.authentication?.token && record.authentication.token.prefix !== `wsi_${record.authentication.token.id}`)
       || (["maintenance", "executing", "verified"].includes(record.state) && !record.authentication)
       || (!record.local && (record.executionMode !== "token"
-        || (record.authentication !== null && record.actor.actorId !== `installation:${record.authentication.token?.id}`)))) {
+        || (record.authentication !== null && record.actor.actorId !== `installation:${record.authentication?.token?.id}`)))) {
       context.addIssue({ code: "custom", message: "Invalid restore execution authority." });
     }
   }),
@@ -59,7 +59,7 @@ export function assertNoUnfinishedBackupHandoff(database: string): RestoreHandof
 function executionPolicy(record: RestoreHandoff, policy: BackupPolicy, catalog: BackupCatalog): RestoreRequestPolicy {
   return {
     authorize(actorId, backupId) {
-      if (record.actor.actorId !== actorId || record.actor.backupId !== backupId || (!record.local && (!policy.uiActions.includes("restore") || (record.format === 1 ? record.authentication?.mode : record.executionMode) !== "token" || record.actor.actorId !== `installation:${record.authentication.token?.id}`))) throw new BackupError("backup_forbidden", 403);
+      if (record.actor.actorId !== actorId || record.actor.backupId !== backupId || (!record.local && (!policy.uiActions.includes("restore") || (record.format === 1 ? record.authentication?.mode : record.executionMode) !== "token" || record.actor.actorId !== `installation:${record.authentication?.token?.id}`))) throw new BackupError("backup_forbidden", 403);
     },
     resolveBackup: id => catalog.path(id),
   };

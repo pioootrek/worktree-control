@@ -23,11 +23,12 @@ vi.mock("@/server/restore-requests", async importOriginal => ({
 afterEach(() => { vi.mocked(executeControllerRestoreRequest).mockReset(); cleanupStrictRoots(); });
 
 describe("installed restore HTTP completion to owning launch", () => {
-  it.each(["finish-close", "close-finish", "already-disconnected", "revoked", "cleanup-unconfirmed", "listener-unconfirmed", "execution-failed"] as const)("hands off once with current authority after contention: %s", async mode => {
+  it.each(["finish-close", "close-finish", "already-disconnected", "pending-open", "revoked", "cleanup-unconfirmed", "listener-unconfirmed", "execution-failed"] as const)("hands off once with current authority after contention: %s", async mode => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults);
     const authentication = await f.run(() => new AuthenticationService(f.store));
     const credential = await f.run(() => authentication.generateToken("fixture"));
     const actor = await f.run(() => authentication.authenticateInstallation(credential.token)!);
+    if (mode === "pending-open") await f.run(() => authentication.setMode("open", "fixture"));
     const backups = new BackupOperations(backupPolicySchema.parse({ directory: join(f.root, "copies"), uiActions: ["create", "restore"] }), {
       source: f.store, databasePath: f.path, attachmentDirectory: join(f.root, "attachments"), applicationVersion: "test",
       estimateBytes: () => f.store.backupEstimateBytes(), authorize: current => authentication.isCurrentInstallationActor(current), maintenance: () => false, admission: f.store.admission,
@@ -91,6 +92,7 @@ describe("installed restore HTTP completion to owning launch", () => {
       expect(existsSync(`${f.path}.owner.lock`)).toBe(cleanupUnconfirmed);
       const handoff = JSON.parse(readFileSync(join(backups.recordDirectory, "handoff.json"), "utf8")).payload;
       expect(handoff.state).toBe(refused ? "failed" : "executing");
+      if (mode === "pending-open") expect(handoff).toMatchObject({ format: 2, executionMode: "token", authentication: { mode: "open" } });
       // 202 reports durable admission; it does not claim that restore/restart succeeded.
     } finally {
       hold?.resume(); await hold?.pending; secondHold?.resume(); await secondHold?.pending;

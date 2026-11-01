@@ -321,7 +321,8 @@ Production `better-auth` selection/startup still fail closed until account/MFA
 and A5 enforcement gates are complete. This slice proves token/open restart
 behavior and explicit third-mode refusal, not positive production RBAC support.
 
-Keep existing active compatibility authority until the explicit restart. They do not provide the new account-mode isolation:
+Keep existing active compatibility authority until the explicit restart.
+These modes do not provide individual account isolation:
 `open` remains anonymous full access and `token` retains its documented shared
 authority. Do not relabel either as individual RBAC. Account mode rejects shared
 installation/legacy bearers, even if their stored verifier remains for recovery;
