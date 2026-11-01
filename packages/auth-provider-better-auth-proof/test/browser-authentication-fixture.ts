@@ -26,17 +26,18 @@ export async function browserFixture(faults: ProofFaultInjection = {}, options =
     // A Unix peer has no IP. Explicitly trusted ONLY for temporary isolated fixture transport.
     trustedFixturePeer: peer, maintenance: () => maintenance });
   const service = { dashboard: () => { throw new Error("unconverted provider route reached installation authority"); } } as unknown as ControlService;
-  const http = createControllerServer({ service, identity, authentication, admission: f.store.admission, browserAuthentication: adapter,
+  const httpOptions = { service, identity, authentication, admission: f.store.admission, browserAuthentication: adapter,
     directoryBrowser: {} as DirectoryBrowser, events: new EventStream(f.store.admission),
-    mcpStatus: () => ({ phase: "disabled", endpoint: null, transport: "streamable-http", network: "loopback", authentication: "bearer", activeSessions: 0 }),
-    webRoot: f.root, host: "127.0.0.1", port: 0, accessToken: "fixture" });
+    mcpStatus: () => ({ phase: "disabled" as const, endpoint: null, transport: "streamable-http" as const, network: "loopback" as const, authentication: "bearer" as const, activeSessions: 0 }),
+    webRoot: f.root, host: "127.0.0.1", port: 0, accessToken: "fixture" };
+  const http = createControllerServer(httpOptions);
   const socketPath = join(f.root, "browser.sock");
   await new Promise<void>((resolve, reject) => { http.server.once("error", reject); http.server.listen(socketPath, resolve); });
   const project = await f.run(() => f.identity.createKnowledgeProject({ name: "Browser grant" }, f.ownerActor));
   const grant = () => f.run(() => f.identity.setKnowledgeGrant({ principalId: f.owner.principalId, projectId: project.id,
     permissions: ["knowledge:read", "knowledge:write"] }, f.ownerActor));
   const client = () => new BrowserClient(socketPath);
-  return { ...f, peer, authentication, identity, app, adapter, http, project, grant, client, setMaintenance: () => { maintenance = true; },
+  return { ...f, httpOptions, peer, authentication, identity, app, adapter, http, project, grant, client, setMaintenance: () => { maintenance = true; },
     close: async () => { await http.close(); await closeStrictProof(f); } };
 }
 export type BrowserFixture = Awaited<ReturnType<typeof browserFixture>>;

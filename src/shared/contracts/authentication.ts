@@ -11,3 +11,8 @@ export type BrowserSession = { authenticated: false } | {
 export const browserSignInSchema = z.object({ email: z.string().email().max(254), password: z.string().min(1).max(256) }).strict();
 export const browserSignOutSchema = z.object({}).strict();
 export const browserChangePasswordSchema = z.object({ currentPassword: z.string().min(1).max(256), newPassword: z.string().min(12).max(256) }).strict();
+
+/** Provider cookies never identify an installation caller on unconverted transports. */
+export function containsProviderCookie(cookie: string | undefined): boolean {
+  return /(?:^|;\s*)(?:__Secure-)?wtc\.[^=;]+=/i.test(cookie ?? "");
+}

@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
-import { browserChangePasswordSchema, browserSignInSchema, browserSignOutSchema, type BrowserAuthenticationStatus } from "@/shared/contracts/authentication";
+import { containsProviderCookie, browserChangePasswordSchema, browserSignInSchema, browserSignOutSchema, type BrowserAuthenticationStatus } from "@/shared/contracts/authentication";
 import { IdentityError } from "@/server/modules/identity";
 import { databaseAdmissionFailure, type DatabaseAdmission } from "@/server/database-admission";
 import { AuthenticationProviderError, type AuthenticationProviderRuntime, type ProviderKnowledgeApplication } from "@/server/modules/authentication";
@@ -18,7 +18,7 @@ class BoundaryError extends Error {
 const fail = (status: number, code: string): never => { throw new BoundaryError(status, code); };
 
 export function hasProviderCookie(request: IncomingMessage): boolean {
-  return /(?:^|;\s*)(?:__Secure-)?wtc\.[^=;]+=/i.test(request.headers.cookie ?? "");
+  return containsProviderCookie(request.headers.cookie);
 }
 export function authenticationJson(response: ServerResponse, status: number, body: unknown, cookies: string[] = []): void {
   response.setHeader("Cache-Control", "no-store");
@@ -50,7 +50,10 @@ export function approvedAuthenticationCookies(headers: Headers): string[] {
       || attrs.get("samesite")?.toLowerCase() !== "strict"
       || [...attrs.keys()].some(key => !["path", "secure", "httponly", "samesite", "max-age", "expires"].includes(key))) fail(502, "provider_failed");
     if (attrs.has("max-age") && !/^(?:0|[1-9][0-9]{0,8})$/.test(attrs.get("max-age")!)) fail(502, "provider_failed");
-    if (attrs.has("expires") && !Number.isFinite(Date.parse(attrs.get("expires")!))) fail(502, "provider_failed");
+    if (attrs.has("expires")) {
+      const expiry = new Date(attrs.get("expires")!);
+      if (!Number.isFinite(expiry.getTime()) || expiry.toUTCString() !== attrs.get("expires")) fail(502, "provider_failed");
+    }
     const deletion = !value && attrs.get("max-age") === "0";
     if (name !== SESSION_COOKIE && !(DELETION_COOKIES.has(name) && deletion)) fail(502, "provider_failed");
   }
@@ -85,7 +88,11 @@ export class AuthenticationHttp {
     const path = request.url ?? "";
     const cookie = hasProviderCookie(request);
     if (!path.includes("auth") && !cookie) return false;
-    let counted = false;
+    let counted = false, operationFinished = false, responseFinished = response.writableFinished || response.destroyed;
+    const release = () => {
+      if (counted && operationFinished && responseFinished) { counted = false; this.#active--; }
+    };
+    const finished = () => { responseFinished = true; release(); };
     let discard: Awaited<ReturnType<AuthenticationProviderRuntime["authenticate"]>> = null;
     try {
       this.boundary(request);
@@ -99,6 +106,7 @@ export class AuthenticationHttp {
       if (request.method !== (knowledge ? "POST" : route![0])) fail(405, "method_not_allowed");
       if (this.#active >= (this.deps.maxInFlight ?? 8)) fail(503, "database_busy");
       this.#active++; counted = true;
+      response.once("finish", finished); response.once("close", finished);
       const nativeHeaders = this.headers(request);
       let input: unknown;
       if (request.method === "POST") {
@@ -162,7 +170,7 @@ export class AuthenticationHttp {
       if (status === 429 || status === 503) response.setHeader("Retry-After", status === 429 ? "60" : "1");
       response.setHeader("Connection", "close");
       authenticationJson(response, status, { code, ...(error instanceof AuthenticationProviderError && error.committed ? { committed: true } : {}) });
-    } finally { if (counted) this.#active--; }
+    } finally { operationFinished = true; release(); }
     return true;
   }
 
@@ -172,13 +180,15 @@ export class AuthenticationHttp {
     if (request.headers.host !== this.#authority || countHeader(request, "host") > 1) fail(421, "invalid_authority");
     if (countHeader(request, "origin") > 1 || (request.headers.origin !== undefined && request.headers.origin !== this.#origin)
       || (request.headers["sec-fetch-site"] !== undefined && request.headers["sec-fetch-site"] !== "same-origin")) fail(403, "origin_forbidden");
+    if (request.method === "GET" && (request.headers["transfer-encoding"] || (request.headers["content-length"] && request.headers["content-length"] !== "0"))) fail(400, "invalid_request");
     if ((request.headers.cookie?.length ?? 0) > 8192) fail(400, "invalid_request");
   }
   private headers(request: IncomingMessage): Headers {
     const peer = this.deps.trustedFixturePeer ?? request.socket.remoteAddress;
     if (!peer || !isIP(peer)) fail(503, "database_unavailable");
     // Rebuild from an allowlist; Authorization, product tokens, internal IP and all forwarding headers disappear.
-    const headers = new Headers({ "x-worktree-control-client-ip": peer, "content-type": "application/json" });
+    const canonicalPeer = isIP(peer) === 6 ? (peer.toLowerCase().startsWith("::ffff:") && isIP(peer.slice(7)) === 4 ? peer.slice(7) : new URL(`http://[${peer}]/`).hostname.slice(1, -1)) : peer;
+    const headers = new Headers({ "x-worktree-control-client-ip": canonicalPeer, "content-type": "application/json" });
     for (const name of ["origin", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest"] as const) {
       const value = request.headers[name]; if (typeof value === "string") headers.set(name, value);
     }

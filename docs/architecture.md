@@ -504,7 +504,26 @@ provider admission now coordinate on that gate; see [database admission](#databa
 The strict proof includes HTTP error-classification regressions; broader
 integration coverage and design acceptance remain open. Safe live coexistence
 is not accepted.
-Disposal tracks actual provider settlement and closes only its borrowed facade.
+The bounded browser adapter is dispatched outside blanket core admission in
+explicit isolated composition. It reads strict bounded bodies, borrows the
+provider, then checks current authority and releases safe DTOs/cookies in a
+synchronous admitted phase. Sensitive password changes recheck the exact actor
+inside the actual queued borrow. Converted Knowledge effects/results use
+`ProviderKnowledgeApplication.executeAdmitted` in that same synchronous phase.
+Unconverted HTTP and separate MCP requests carrying provider cookies are denied
+before compatible installation authority, including open mode. Production main
+still has no provider-loading or browser-composition caller. See the
+[browser contract](authentication.md#bounded-browser-adapter).
+
+Provider API contract 2 requires durable `signOut`; version 1 fails compatibility
+checks. This is not a storage migration: schema 39 and provider revision 1 stay
+unchanged. Disposal tracks actual provider settlement and closes only its borrowed facade.
+The owning shutdown helper disposes the optional provider after external
+producers/listeners/accepted responses drain and before service/SQLite close.
+A rejected disposal reports unconfirmed cleanup and retains both owner locks;
+concurrent calls share completion or failure. Partial-load disposal failure is
+also reported honestly. Raw library logs/router errors are replaced with fixed
+events, including errors that the native router would otherwise print directly.
 Local provider modules are trusted code, not sandboxed plugins. See the
 [proof contract and limitations](authentication.md#optional-provider-proof-first-a3-slice).
 

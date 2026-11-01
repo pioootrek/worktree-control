@@ -43,7 +43,8 @@ executable, isolated proof using Better Auth 1.7.14, `@better-auth/core`
 It exercises real handler requests, cookies, password changes, session
 revocation and local recovery. The controller's production bootstrap does not
 load it. Selecting `better-auth` still fails; this slice adds no login UI,
-browser authorization or production account endpoints.
+production browser authorization or account endpoints. A bounded browser adapter
+is composed only by isolated proof fixtures; see [browser adapter](#bounded-browser-adapter).
 
 The versioned local loader checks readiness and storage compatibility. Local
 modules execute as trusted controller code, with no sandbox. Each operation
@@ -73,11 +74,13 @@ for database phases. See the [architecture contract](architecture.md#database-ad
 Provider resolution inside a core scope fails as reentrant. The implemented
 [provider authorization handoff](#provider-authorization-handoff) resolves outside
 admission and validates current stored authority inside each Knowledge operation.
-It does not mount a login route or enable account mode.
+The isolated browser composition below mounts it in a temporary fixture only.
+Production account mode remains unavailable.
 
 Disposal rejects new provider work and tracks actual execution, including a
 continuation whose public promise timed out. Late SQL and host notifications
-are refused. Unsettled execution reports `disposal_unconfirmed`. Database close
+are refused. Unsettled execution or a rejected provider disposal reports
+`disposal_unconfirmed`; repeated disposal calls share the same failure. Database close
 waits for accepted work and driver backup settlement; an unconfirmed drain or
 failed driver close retains ownership. Current implementation limits are a
 5-second admission wait, a 60-second persistence retry budget and a 10-second
@@ -116,10 +119,100 @@ package retains its dependency notices and stays outside Community runtime
 dependencies and published assets. See its
 [README](../packages/auth-provider-better-auth-proof/README.md) for verification.
 
+### Bounded browser adapter
+
+`AuthenticationHttp` is an exported core-owned Node HTTP adapter. The isolated
+`composeIsolatedBrowserAuthentication` helper wires the existing immutable
+`AuthenticationService`, loaded runtime, seventh-argument identity authority and
+`ProviderKnowledgeApplication`. `createControllerServer` calls it before blanket
+core admission. The production CLI has no caller, configuration switch or flag
+for that composition. It neither loads the optional package nor makes
+`better-auth` selectable. No login GUI is implemented.
+
+The public production `GET /api/auth/status` returns only active `mode` and
+`loginAvailable: false`. It exposes no pending selection, token metadata, account
+existence, provider path, diagnostics or grants. The isolated adapter supports:
+
+| Exact request | Strict input | Sanitized success |
+| --- | --- | --- |
+| `POST /api/auth/sign-in/email` | `{email,password}` | `{authenticated:true}` and validated cookie |
+| `GET /api/auth/get-session` | No query or body | `{authenticated:false}` or `{authenticated:true,principal:{id,kind},expiresAt,authentication:{method:"password",factors:1}}` |
+| `POST /api/auth/sign-out` | `{}` | `{authenticated:false}` after durable deletion |
+| `POST /api/auth/change-password` | `{currentPassword,newPassword}` | `{changed:true}` and replacement cookie |
+
+All other native routes, methods, extra fields and path aliases are denied
+before provider invocation. There is no native catch-all, signup, reset,
+redirect, social/linking, factor, user-update or administration endpoint.
+Original Host must exactly match the canonical HTTPS origin's authority. Raw
+paths cannot contain queries, percent escapes, dot segments, repeated slashes,
+trailing aliases, userinfo or absolute-form targets. Browser mutations require
+that exact Origin, including initial login. Missing/null/foreign origins and
+foreign Fetch Metadata are refused. Native CSRF/origin checks remain enabled;
+no CORS or Referer fallback is added.
+
+The adapter rebuilds provider headers from an allowlist. Installation bearer,
+product token, Forwarded, X-Forwarded and incoming internal-IP headers are
+stripped. It derives the internal peer header from a validated socket address;
+missing or invalid peers fail closed. Only temporary Unix fixtures supply an
+explicit trusted peer. Behind a reverse proxy all clients share the proxy peer
+until a separate trusted-proxy design exists. The native in-memory per-peer/path
+limiter remains enabled, including its IPv6 subnet normalization. This is not
+account-based throttling or durable restart protection. Rate limiting returns
+429 with fixed `Retry-After: 60`; contention returns 503 with `Retry-After: 1`.
+
+Current experimental adapter bounds are eight in-flight requests (including
+body reads and response completion), 4 KiB auth bodies, 64 KiB Knowledge bodies,
+a ten-second body deadline, 8 KiB incoming cookies and 16 KiB native response
+bodies. Native password/session/rate numbers remain proof settings, not approved
+production defaults. The adapter never replays a login or password effect after
+failure. Only fresh JSON, no-store/nosniff and approved cookies cross the boundary.
+Cookies are host-only Secure/HttpOnly/SameSite=Strict, Path=/, with no Domain.
+`Headers.getSetCookie()` preserves separate cookies and Expires commas; disabled
+cache cookies may only be deleted. Native tokens, user/session/subject records,
+arbitrary headers, Location and error text are discarded. Provider library logs
+and router exceptions produce fixed events without raw messages or arguments.
+
+Bodies are read outside core admission. Provider calls borrow exclusively;
+current session/mapping/principal checks run synchronously under admission
+before releasing the response or cookie. Password changes additionally recheck
+the exact runtime-issued actor through `runControllerOperation` inside the actual
+queued borrow immediately before native work. They force
+`revokeOtherSessions:true`, invalidate all old cookies and return the native
+replacement only after validation. Native sign-out can swallow deletion errors;
+contract version 2 requires a specialized `signOut` operation that verifies
+caller-session deletion using the sanctioned delete API. Old version-1 modules
+fail compatibility checks. This contract change is independent of controller
+schema 39/provider storage revision 1; neither changes here.
+
+Login sessions without a current mapping/principal receive no cookie and are
+revoked. Failed cleanup still denies. Committed notification failures return a
+fixed error with `committed:true`; they do not promise rollback or trigger retry.
+Current database state, exact actor ownership and original expiry remain the
+authority. Protected recovery invalidates sessions immediately despite pending
+mode selection. It is exercised through runtime APIs only; CLI enrollment and
+recovery commands are a later assignment.
+
+The same real HTTP fixture logs in and calls `/api/knowledge` with explicit
+grants. `executeAdmitted` releases each Knowledge result in the same synchronous
+admitted callback as its authorization/effect. Unconverted provider-cookie
+requests are denied before installation authority, including open mode. This
+covers runtime/reservations/configuration, identity/token administration, vault,
+backups, downloads, SSE and the separate MCP HTTP listener. Ordinary open/token
+clients retain their existing paths. Provider actors do not gain owner-session
+or independent vault authority.
+
+The owning shutdown helper disposes the optional provider after accepted
+responses, listeners and external producers settle, before the service closes
+SQLite. Unconfirmed disposal retains both ownership locks and the shared failure.
+The real temporary Unix fixture exercises that order and rejection. Production
+loading, OS restart, full restore/reboot, factors/MFA, roles and A5 transport and
+external restore fences remain separate gates. This is bounded backend evidence,
+not completed A3 or safe production RBAC.
+
 ### Provider authorization handoff
 
 This server-only API is implemented for the optional pinned proof. Production
-bootstrap still does not load the provider, existing transports remain
+bootstrap still does not load the provider. Production transports remain
 credential-only, and `better-auth` mode remains unavailable.
 
 `runtime.authenticate(headers)` resolves the actual cookie outside core
@@ -163,7 +256,7 @@ stored expiry extends; fresh authentication obtains a new reference.
 Committed session deletion denies the next operation even if after-commit
 notification fails. Rollback retains access. The query is authoritative;
 notifications are not an authorization cache. This validity adapter supports
-Better Auth 1.7.14, implementation `0.0.0-proof.1`, storage revision 1. Other
+Better Auth 1.7.14, implementation `0.0.0-proof.2`, storage revision 1. Other
 provider/version combinations need their own verified adapter.
 
 Each `ProviderKnowledgeApplication.execute` call is a synchronous Knowledge

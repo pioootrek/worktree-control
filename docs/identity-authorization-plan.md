@@ -321,6 +321,19 @@ Production `better-auth` selection/startup still fail closed until account/MFA
 and A5 enforcement gates are complete. This slice proves token/open restart
 behavior and explicit third-mode refusal, not positive production RBAC support.
 
+A3-I9 adds an isolated core browser adapter and actual HTTP-cookie-to-Knowledge
+fixture with explicit grants. Its exact allowlist, secure cookies, canonical
+HTTPS/Host/Origin checks, socket-peer native limiting and current-authority
+checks are described in [authentication](authentication.md#bounded-browser-adapter).
+Contract 2 specializes durable logout; password changes recheck authority inside
+the actual provider borrow. No provider cookie gains installation authority on
+unconverted HTTP/MCP operations, even during an open-mode proof boot. Provider
+loading/browser composition has no production CLI caller or enable flag.
+Schema 39/provider storage revision 1 stay unchanged. Experimental password-only
+numbers and single-factor DTOs do not establish full RBAC, MFA or ASVS Level 2.
+Protected CLI enrollment/recovery remains the next integration assignment;
+production account activation still waits for factors, roles and complete A5.
+
 Keep existing active compatibility authority until the explicit restart.
 These modes do not provide individual account isolation:
 `open` remains anonymous full access and `token` retains its documented shared

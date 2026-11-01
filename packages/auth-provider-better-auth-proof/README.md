@@ -83,7 +83,7 @@ fixtures and mocks; finite-job cases run a real short Node process.
 | Schedules/restore | Actual automatic tick and current export grants; installed HTTP finish/close/already-disconnected handoff, one deferred launch, current revocation, refused shutdown blocks execution and retains owner | Physical replacement/restart is mocked; host recovery remains separate |
 | Storage/logs | One save per completed scan, duplicate coalescing, close while save waits, retention lookup waiting/refusal preserves files | Global scan backlog bounds and all retention/drain failures |
 | Lifecycle/shutdown | Same-project serialization and idle admission; owning service drains real process completion/backup; actual CLI sequence closes HTTP/MCP/admin/remote Unix listeners, refuses queued HTTP dispatch in maintenance and drains accepted admin completion; service failure retains database owner | Failed listener/process/provider cleanup retains ownership; concurrent same-mode callers join completion; failures stay failures |
-| Provider Knowledge handoff | 25 real-provider cases: exact opaque actor, current session/mapping/principal/grant/role, queue/idle/lock/replay, failed notification, rollback, substitutions, original-expiry cap, drain/disposal and denied privilege elevation | No transport mounting, login or account-mode activation |
+| Provider Knowledge handoff | 25 real-provider cases: exact opaque actor, current session/mapping/principal/grant/role, queue/idle/lock/replay, failed notification, rollback, substitutions, original-expiry cap, drain/disposal and denied privilege elevation | No production transport mounting or account-mode activation; isolated browser evidence below |
 | Local readiness | Installed HTTP reservation/force-release queue behind readiness; current authority is rechecked before effects and replies after admin rotation | Other installation workflows need separate review; injected direct-store takeover is not transport evidence |
 | Shared branches | Joined SQL is refused while a sibling idles; detached participants remain independent | Dashboard fan-out retains admission during Git; this is no blanket safety claim for concurrent joined branches |
 
@@ -174,14 +174,15 @@ The bounded acceptance checklist is:
   bounds need their own focused evidence. Compatible-mode recovery tests in
   `src/server/modules/remote-verification/remote-worker-recovery.test.ts` and
   `worker-owner-recovery.test.ts` cover many of these state machines; they are
-  not strict held-provider evidence. Account enrollment/factors/browser API,
+  not strict held-provider evidence. Account enrollment/factors/production browser activation,
   A4 vault policy and A5 cutover/external restore fencing remain separate gates.
 
 The implemented handoff resolves the provider outside core admission and checks
 current stored authority synchronously inside each Knowledge call. Resolving
 the provider inside admitted core work is still rejected as reentrant. Call
 the application again after idle/lock waits before a new effect or replay.
-No production provider loading or login integration is added.
+No production provider loading or login integration is added. The isolated
+browser composition below exercises the exported core adapter.
 `idle` suspends an entire joined participant and requires sequential SQL phases;
 independent branches need their own detached admission. Project-lock waiters
 release admission, and callbacks re-enter under the lock. Current limits are
@@ -225,9 +226,81 @@ checksums do not change. External A5 session/password restore fencing remains
 open. Positive production third-mode tests belong after account/MFA and complete
 A5 transport enforcement; this suite does not make `better-auth` selectable.
 
-The next browser adapter assignment must resolve provider sessions outside core
-admission and preserve the existing current-authority handoff. It needs an exact
-route allowlist with sanitized JSON/cookies, strict canonical HTTPS/Host/Origin
-and CSRF boundaries, bounded requests and peer-based limiting, durable logout,
-authenticated password-change rechecks, and protected CLI provisioning/recovery.
-Production provider mounting and full RBAC activation remain gated.
+## Isolated bounded browser integration
+
+`browser-authentication.test.ts` composes the exported
+`composeIsolatedBrowserAuthentication` and `AuthenticationHttp` with the actual
+`createControllerServer`, strict sole SQLite owner and pinned provider. Requests
+use temporary Unix sockets with canonical HTTPS Host/Origin and a distinct
+explicit trusted fixture peer. No TCP listener or managed development server is
+started. The active boot snapshot is open, with optional adapter composition
+limited to the fixture. Pending token selection never reconstructs that snapshot.
+No production selector, environment switch or fourth product mode is introduced.
+Production main still cannot select/load/mount this provider.
+
+The fixture demonstrates strict login/session/logout/password DTOs and cookies,
+then calls the same HTTP `/api/knowledge` with explicit grants, including write
+and receipt replay. It denies unmapped/revoked principals uniformly, discards
+unreleased login sessions, rejects native endpoints/aliases/extra fields before
+dispatch, validates original Host/Origin, strips spoofed IP/bearer/forwarding
+headers, saturates the real native limiter, bounds body/in-flight work, preserves
+refresh cookies and checks current actors around waits. Password change replaces
+its cookie and revokes all old sessions; protected runtime recovery also
+invalidates old cookies with a pending mode selection. Tests retain exact actor,
+original-expiry and privilege cases from the earlier suite.
+
+The provider implements API contract 2, implementation `0.0.0-proof.2`.
+Version-1 modules fail closed, including the retained incompatible-loader fixture.
+`signOut` keeps the native handler/limiter and explicitly deletes/verifies the
+caller session, covering a real delete-hook failure that native sign-out swallows.
+The core drops native bodies and arbitrary headers; no bearer token is returned
+in browser JSON. Library logs/router exceptions become fixed events. After-commit
+notification failures remain `committed:true`, without automatic mutation replay.
+Schema 39, provider storage revision 1 and pinned dependencies do not change.
+
+Provider-cookie requests to unconverted HTTP operations and the actual separate
+MCP listener are denied before installation authority, even with open active.
+Owner-session/vault authority is not synthesized. The fixture also assembles the
+production HTTP shape without the optional adapter: login is unavailable and
+public status exposes active mode only, including when token is pending.
+
+`browser-authentication-shutdown.test.ts` invokes the actual owning shutdown
+helper with an accepted real HTTP password transaction. Listener/response drain
+precedes provider disposal, which precedes SQLite close. Disposal rejection
+invalidates provider actors/facade but retains both locks and the shared failure.
+The injected fault runs after real Kysely destruction solely to permit isolated
+fixture cleanup; production must treat unconfirmed cleanup as failure.
+
+Experimental bounds and proxy limitations are documented in the
+[browser API contract](../../docs/authentication.md#bounded-browser-adapter).
+The native limiter is in-memory and per peer/path, not per account. Behind a
+proxy all remote clients share its peer until explicit trusted-proxy design.
+No production security defaults, MFA/ASVS Level 2, full transport cutover,
+external restore fence, GUI, OS restart or completed A3 claim follows.
+
+## Next protected CLI integration contract
+
+Keep mode selection separate from provider material and keep the same live boot
+snapshot. Add strict operator commands through the private OS-owned Unix socket
+while running, or under both singleton owners offline. Read bounded secrets from
+private input/stdin or prompts; never argv, public HTTP/MCP, logs or output.
+Validate private module/signing material and canonical HTTPS configuration before
+loading. Configuration presence must not activate account mode.
+
+Enrollment explicitly chooses a stable active principal, then calls
+`runtime.provisionLocal({principalId,email,name,password,actor})`. A fresh
+installation needs a narrow local principal-creation operation; do not call
+owner-session bootstrap/recovery merely to mint a compatibility bearer. Mapping
+by email and implicit grants are forbidden. Initial grants/bindings must be
+explicit. Recovery calls
+`runtime.recoverLocal({principalId,newPassword,actor})`, retaining principal and
+grants while revoking all sessions atomically; do not reactivate revoked mappings
+or principals. Give committed notification failures honest operator feedback.
+
+Offline provider use starts no service and disposes/drains before SQLite close.
+Running use stays with the sole controller owner. Pass the optional resource to
+`createControllerShutdown`; rejected load/disposal must retain ownership until
+cleanup is confirmed. Same-OS-user agents share this administrative trust boundary.
+Protected configuration/secret persistence, fresh-principal enrollment, CLI input
+and IPC schema, multi-human roles, factors/MFA and complete A5 enforcement are
+future work. Do not add a password-proof activation flag to reach that work.

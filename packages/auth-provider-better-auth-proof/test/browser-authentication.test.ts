@@ -1,7 +1,11 @@
+import { join } from "node:path";
+import { createControllerServer } from "@/server/http-server";
+import { createMcpControllerServer } from "@/server/mcp-http-server";
+import type { ControlService } from "@/server/control-service";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSessionActor } from "@/server/modules/identity";
-import { ORIGIN, OWNER_PASSWORD, OWNER_EMAIL, count } from "./fixture";
-import { browserFixture, write, type BrowserFixture } from "./browser-authentication-fixture";
+import { ORIGIN, OWNER_PASSWORD, OWNER_EMAIL, count, readCommitted } from "./fixture";
+import { BrowserClient, browserFixture, write, type BrowserFixture } from "./browser-authentication-fixture";
 import { cleanupStrictRoots, gate } from "./strict-fixture";
 import type { ProofFaultInjection } from "../src/index";
 
@@ -32,9 +36,41 @@ describe("actual controller browser adapter with pinned Better Auth", () => {
       for (const path of ["/api/dashboard", "/api/projects/x/reservation", "/api/projects/x/start", "/api/config", "/api/identity", "/api/identity/admin", "/api/dev-vault", "/api/backups", "/api/user-backups", "/api/downloads/secret", "/api/events", "/mcp"]) {
         expect(await client.call(path, { body: {} })).toMatchObject({ status: 401, body: { code: "invalid_credential" } });
       }
-      const serialized = JSON.stringify({ login: login.body, session: session.body, logs: f.evidence.logs });
-      for (const secret of [OWNER_PASSWORD, OWNER_EMAIL, client.cookie, f.root]) expect(serialized).not.toContain(secret);
+      const native = readCommitted(f.path, db => db.prepare('SELECT token FROM authentication_ba_session LIMIT 1').get() as { token: string });
+      const audit = readCommitted(f.path, db => db.prepare("SELECT * FROM controller_audit_events").all());
+      const serialized = JSON.stringify({ login: login.body, session: session.body, logs: f.evidence.logs, audit });
+      for (const secret of [OWNER_PASSWORD, OWNER_EMAIL, client.cookie, native.token, f.root]) expect(serialized).not.toContain(secret);
     } finally { await f.close(); }
+  });
+
+  it("keeps production composition login unavailable and rejects provider cookies with open active and token pending", async () => {
+    const f = await browserFixture(), client = await f.client().authenticated();
+    const browserCalls = vi.spyOn(f.runtime, "browser");
+    const prod = createControllerServer({ ...f.httpOptions, browserAuthentication: undefined });
+    try {
+      const socketPath = join(f.root, "production-shape.sock");
+      await new Promise<void>(resolve => prod.server.listen(socketPath, resolve));
+      const production = new BrowserClient(socketPath); production.cookie = client.cookie;
+      await f.run(() => { f.authentication.generateToken("local-cli"); f.authentication.setMode("token", "local-cli"); });
+      expect(await production.call("/api/auth/status", { method: "GET" })).toMatchObject({ status: 200, body: { mode: "open", loginAvailable: false } });
+      expect((await production.call("/api/auth/sign-in/email", { body: { email: OWNER_EMAIL, password: OWNER_PASSWORD } })).status).toBe(401);
+      expect((await production.call("/api/knowledge", { body: write(f) })).status).toBe(401);
+      expect((await production.call("/api/projects", { method: "GET" })).status).toBe(401);
+      expect(browserCalls).not.toHaveBeenCalled();
+    } finally { await prod.close(); await f.close(); }
+  });
+
+  it("denies a provider cookie on the actual separate MCP HTTP listener even in open mode", async () => {
+    const f = await browserFixture(), client = await f.client().authenticated();
+    const mcp = createMcpControllerServer({ service: { admission: f.store.admission } as unknown as ControlService,
+      identity: f.identity, authentication: f.authentication, accessToken: "fixture", port: 0 });
+    try {
+      const socketPath = join(f.root, "mcp-browser.sock");
+      await new Promise<void>(resolve => mcp.server.listen(socketPath, resolve));
+      const machine = new BrowserClient(socketPath); machine.cookie = client.cookie;
+      expect((await machine.call("/mcp", { omitOrigin: true, body: { jsonrpc: "2.0", id: 1, method: "initialize", params: {} } })).status).toBe(401);
+      expect((await mcp.diagnosticsSnapshot()).sessions).toEqual([]);
+    } finally { await mcp.close(); await f.close(); }
   });
 
   it.each(["unmapped", "revoked-mapping", "revoked-principal"])("denies %s login uniformly and deletes its unreleased native session", async state => {
@@ -214,16 +250,18 @@ describe("actual controller browser adapter with pinned Better Auth", () => {
 
   it("reports committed notification failure honestly and never replays password effects", async () => {
     const faults: ProofFaultInjection = {}, f = await browserFixture(faults), client = await f.client().authenticated();
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
     const wrote = vi.fn(); faults.beforePasswordWrite = async () => { wrote(); };
     try {
       f.evidence.failInvalidation = true;
       const result = await client.call("/api/auth/change-password", { body: { currentPassword: OWNER_PASSWORD, newPassword: "fixture-new-password-2" } });
       expect(result).toMatchObject({ status: 500, body: { code: "committed_notification_failed", committed: true } });
       expect(result.headers["set-cookie"]).toBeUndefined(); expect(wrote).toHaveBeenCalledOnce();
+      expect(stderr).not.toHaveBeenCalled();
       expect(await client.session()).toMatchObject({ body: { authenticated: false } });
       f.evidence.failInvalidation = false;
       expect((await f.client().login("fixture-new-password-2")).status).toBe(200);
-    } finally { f.evidence.failInvalidation = false; await f.close(); }
+    } finally { stderr.mockRestore(); f.evidence.failInvalidation = false; await f.close(); }
   });
 
   it("returns 503 plus Retry-After for refused provider admission without replaying sensitive work", async () => {

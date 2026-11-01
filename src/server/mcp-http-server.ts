@@ -1,3 +1,4 @@
+import { containsProviderCookie } from "@/shared/contracts/authentication";
 import type { DevVaultOperations } from "./modules/dev-vault";
 import type { McpDiagnosticsSnapshot } from "@/shared/contracts/mcp-diagnostics";
 import { McpDiagnostics, type McpCloseReason } from "./mcp-diagnostics";
@@ -125,6 +126,8 @@ export function createMcpControllerServer(options: {
     response.setHeader("Cache-Control", "no-store");
     void (async () => {
       if (request.url !== "/mcp") return jsonError(response, 404, "MCP endpoint not found.");
+      // This transport is not converted to provider sessions. Never promote a cookie in open mode.
+      if (containsProviderCookie(request.headers.cookie)) return jsonError(response, 401, "Provider sessions are unavailable on this transport.");
       let authentication;
       try { authentication = await admission.run(() => authenticate(request, options.accessToken, options)); }
       catch (error) {
