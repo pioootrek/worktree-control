@@ -141,6 +141,31 @@ describe("A3-I13 durable admission, real library, one owner (no accepted replay 
     expect((await factorState(f)).verified).toBe(1);
   });
 
+  it("3: failed COMMIT and ROLLBACK never publish an uncommitted receipt or notification", async () => {
+    const f = await create(); const { browser, authenticator } = await setup(f, OWNER_EMAIL, false);
+    const before = await factorState(f); const notifications = f.evidence.events.length;
+    f.control.fault = { sql: /^(commit|rollback)$/i, afterSql: /insert into factor_admission_evidence/i, when: "before", remaining: 2 };
+    const outcome = await verify(browser, authenticator.code()).then(
+      result => ({ committed: result.json?.committed === true }),
+      (error: { committed?: boolean }) => ({ committed: error.committed === true }),
+    );
+    expect(outcome.committed).toBe(false);
+    expect(f.control.fault.remaining).toBe(0);
+    expect(f.evidence.events.length).toBe(notifications);
+    // The owner rolls back the still-open transaction and refuses further provider work.
+    expect(f.store.admissionSnapshot()).toMatchObject({ state: "provider_closed", providerExecutions: 0 });
+    const state = await f.store.admission.run(() => {
+      const core = (f.store as unknown as { database: Database.Database }).database;
+      return {
+        sessions: (core.prepare('SELECT id FROM authentication_ba_session ORDER BY id').all() as { id: string }[]).map(row => row.id),
+        verified: (core.prepare(`SELECT verified FROM ${FACTOR_MODEL}`).get() as { verified: number }).verified,
+        charged: (core.prepare(`SELECT sum(charged) n FROM ${ADMISSION.budgets}`).get() as { n: number }).n,
+        receipt: (core.prepare(`SELECT state FROM ${ADMISSION.receipts} WHERE attemptId = ?`).get(f.control.admission.lastAttemptId!) as { state: string }).state,
+      };
+    });
+    expect(state).toEqual({ sessions: before.sessions, verified: 0, charged: 1, receipt: "charged" });
+  });
+
   it.each(["api-error", "sql", "session-veto", "cookie-veto", "evidence-veto"] as const)("4: %s preserves a charge and rolls back all success writes", async kind => {
     const f = await create(); const { authenticator } = await setup(f); const b = await pending(f);
     const before = (await factorState(f)).sessions.length;
@@ -326,6 +351,23 @@ describe("A3-I13 durable admission, real library, one owner (no accepted replay 
     const r = await receipt(f);
     const [evidence] = await rows(f, `SELECT authenticatedAt, originalDeadline, observation, method, authorizingMfa FROM ${ADMISSION.evidence} WHERE sessionId = ?`, [r!.sessionId]);
     expect(evidence).toMatchObject({ authenticatedAt: new Date(start).toISOString(), originalDeadline: new Date(start + 8 * 60 * 60 * 1000).toISOString(), method: "password", observation: "password_totp", authorizingMfa: 0 });
+  });
+
+  it.each([false, true])("9: delayed enrollment preserves password evidence despite native refresh (resolve first: %s)", async resolveFirst => {
+    const f = await create(); const b = new Browser(f);
+    expect((await b.signIn()).status).toBe(200);
+    const [original] = await rows<{ authenticatedAt: string; originalDeadline: string }>(f, `SELECT authenticatedAt, originalDeadline FROM ${ADMISSION.evidence}`);
+    vi.setSystemTime(Date.now() + 3_601_000);
+    if (resolveFirst) expect((await b.resolve()) !== null).toBe(true);
+    const enabled = await b.post("/two-factor/enable", { password: OWNER_PASSWORD });
+    expect(enabled.status).toBe(200);
+    const authenticator = new Authenticator(enabled.json!.totpURI as string);
+    expect((await verify(b, authenticator.code())).status).toBe(200);
+    const completed = await receipt(f);
+    const [evidence] = await rows(f, `SELECT authenticatedAt, originalDeadline FROM ${ADMISSION.evidence} WHERE sessionId = ?`, [completed!.sessionId]);
+    expect(evidence).toEqual(original);
+    const [session] = await rows<{ expiresAt: number }>(f, 'SELECT "expiresAt" FROM authentication_ba_session WHERE id = ?', [completed!.sessionId]);
+    expect(Number(session!.expiresAt)).toBeLessThanOrEqual(Date.parse(original!.originalDeadline));
   });
 
   it("10: ticket expiry and window rollover never refund; pruning never evicts live charges", async () => {
