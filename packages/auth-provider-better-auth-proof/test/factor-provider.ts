@@ -27,6 +27,7 @@ import type {
 export const FACTOR_IMPLEMENTATION_VERSION = "0.0.0-proof.factor";
 export const FACTOR_MODEL = "authentication_ba_two_factor";
 export const EVIDENCE_TABLE = "factor_fixture_evidence";
+export const FACTOR_SQL_TRACE_LIMIT = 1024;
 export const COOKIE = {
   session: "__Secure-wtc.session_token",
   challenge: "__Secure-wtc.two_factor",
@@ -128,6 +129,7 @@ function tracedConnection(connection: ProviderSqliteConnection, control: FactorC
     const result = work();
     const verb = sql.trim().toLowerCase();
     if (verb === "begin") state.open = true;
+    if (control.trace.length >= FACTOR_SQL_TRACE_LIMIT) control.trace.shift();
     control.trace.push({ sql, inTransaction: state.open });
     if (verb === "commit" || verb === "rollback") state.open = false;
     if (matches && fault.when === "after") fail();
@@ -345,6 +347,8 @@ class FactorProofProvider implements AuthenticationProviderInstance {
           ticket = await this.#database!.transaction().execute(async () => policy.admit(context, attemptId, Date.now()) ?? undefined);
         } catch {
           // Includes an error AFTER real COMMIT. Reconcile, but never evaluate on this call.
+          // Reads on an unresolved transaction can see its own uncommitted writes.
+          if (this.#transaction.open) return fixed(503, { outcome: "outcome_unconfirmed" });
           const receipt = policy.readReceipt(attemptId);
           if (receipt) policy.finishFailure(attemptId);
           return fixed(503, { outcome: "admission_error", charged: receipt !== null, reconciled: true, committed: receipt !== null });
@@ -384,7 +388,9 @@ class FactorProofProvider implements AuthenticationProviderInstance {
             } else if (route.kind === "enable") {
               const current = await scoped.api.getSession({ headers: request.headers, query: { disableCookieCache: true } });
               if (!current || !session) throw new Error("Enrollment context unconfirmed.");
-              policy.issue(session, current.user.id, "enrollment", new Date(current.session.expiresAt).getTime(), null, Date.now(), { authenticatedAt: new Date(current.session.createdAt).toISOString(), originalDeadline: new Date(current.session.expiresAt).toISOString() });
+              const origin = policy.enrollmentOrigin(current.session.id, current.user.id, Date.now());
+              if (!origin) throw new Error("Enrollment origin unavailable.");
+              policy.issue(session, current.user.id, "enrollment", Math.min(new Date(current.session.expiresAt).getTime(), Date.parse(origin.originalDeadline)), null, Date.now(), origin);
               const bound = policy.bindContext(session, "enrollment", Date.now());
               if (!bound) throw new Error("Enrollment binding unconfirmed.");
               policy.operationReceipt(attemptId, bound, Date.now());
@@ -406,6 +412,9 @@ class FactorProofProvider implements AuthenticationProviderInstance {
       } catch (error) {
         // Kysely may have thrown after the driver committed. A durable success
         // receipt resolves that ambiguity; it never triggers verifier re-entry.
+        // Leave unresolved rollback to the owning gate, without publishing or
+        // modifying receipts that may still be part of the open transaction.
+        if (this.#transaction.open) return fixed(503, { outcome: "outcome_unconfirmed" });
         const receipt = policy.readReceipt(attemptId);
         if (receipt?.state === "succeeded") {
           for (const event of notifications) this.#host.invalidated(event);
@@ -419,6 +428,7 @@ class FactorProofProvider implements AuthenticationProviderInstance {
     } catch (error) {
       // Invalidation errors already carry committed:true through the host/runtime.
       if (typeof error === "object" && error && "committed" in error && error.committed === true) throw error;
+      if (this.#transaction.open) return fixed(503, { outcome: "outcome_unconfirmed" });
       try { if (ticket) policy.finishFailure(attemptId); } catch { return fixed(503, { outcome: "outcome_unconfirmed" }); }
       return error instanceof Rollback ? error.response : fixed(503, { outcome: "outcome_unconfirmed" });
     }

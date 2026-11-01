@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { ADMISSION, capabilityId, FixtureAdmission } from "./factor-admission";
 import { Authenticator, Browser, cleanupFactorRoots, closeFactor, factorFixture, factorState, fixtureSql, loadFactorProvider, type FactorFixture } from "./factor-fixture";
-import { COOKIE, FACTOR_MODEL } from "./factor-provider";
+import { COOKIE, FACTOR_MODEL, FACTOR_SQL_TRACE_LIMIT } from "./factor-provider";
 import { OWNER_EMAIL, OWNER_PASSWORD, SECRET } from "./fixture";
 
 const fixtures: FactorFixture[] = [];
@@ -164,6 +164,36 @@ describe("A3-I13 durable admission, real library, one owner (no accepted replay 
       };
     });
     expect(state).toEqual({ sessions: before.sessions, verified: 0, charged: 1, receipt: "charged" });
+  });
+
+  it("3: failed admission reconciliation refuses evaluation without refund or a rollback claim", async () => {
+    const f = await create(); const { authenticator } = await setup(f); const b = await pending(f);
+    const entries = f.control.admission.entries.length;
+    f.control.fault = { sql: /^SELECT \* FROM factor_admission_receipts/i, afterSql: /^commit$/i, when: "before", remaining: 1 };
+    const result = await verify(b, authenticator.code());
+    expect(result.status).toBe(503); expect(result.json?.outcome === "outcome_unconfirmed").toBe(true);
+    expect(result.json?.committed === undefined).toBe(true); expect(result.setCookie.length).toBe(0);
+    expect(f.control.admission.entries.length).toBe(entries); expect(await charged(f)).toBe(2);
+    expect((await receipt(f))?.state).toBe("failed");
+  });
+
+  it("3: a receipt read failure after actual COMMIT never claims rollback or re-evaluates", async () => {
+    const f = await create(); const { browser, authenticator } = await setup(f, OWNER_EMAIL, false);
+    const notifications = f.evidence.events.length;
+    f.control.admission.pause = async stage => {
+      if (stage === "after-native") f.control.fault = { sql: /^(commit|SELECT \* FROM factor_admission_receipts)/i, when: "after", remaining: 2 };
+    };
+    const result = await verify(browser, authenticator.code());
+    expect(result.status).toBe(503); expect(result.json?.outcome === "outcome_unconfirmed").toBe(true);
+    expect(result.json?.committed === undefined).toBe(true); expect(result.setCookie.length).toBe(0);
+    expect(f.control.fault?.remaining).toBe(0); expect(f.evidence.events.length).toBe(notifications);
+    const completed = await receipt(f); expect(completed?.state).toBe("succeeded");
+    expect((await rows(f, `SELECT sessionId FROM ${ADMISSION.evidence} WHERE sessionId = ?`, [completed!.sessionId])).length).toBe(1);
+    expect((await factorState(f)).verified).toBe(1); expect(await charged(f)).toBe(1);
+    const entries = f.control.admission.entries.length;
+    f.control.admission.internalAttemptId = completed!.attemptId;
+    expect((await verify(browser, authenticator.code())).status).toBe(409);
+    expect(f.control.admission.entries.length).toBe(entries);
   });
 
   it.each(["api-error", "sql", "session-veto", "cookie-veto", "evidence-veto"] as const)("4: %s preserves a charge and rolls back all success writes", async kind => {
@@ -368,6 +398,36 @@ describe("A3-I13 durable admission, real library, one owner (no accepted replay 
     expect(evidence).toEqual(original);
     const [session] = await rows<{ expiresAt: number }>(f, 'SELECT "expiresAt" FROM authentication_ba_session WHERE id = ?', [completed!.sessionId]);
     expect(Number(session!.expiresAt)).toBeLessThanOrEqual(Date.parse(original!.originalDeadline));
+  });
+
+  it.each(["missing", "generation", "expired"] as const)("9: enrollment refuses %s password evidence even with a native live session", async kind => {
+    const f = await create(); const b = new Browser(f);
+    expect((await b.signIn()).status).toBe(200);
+    if (kind === "missing") await fixtureSql(f, `DELETE FROM ${ADMISSION.evidence}`);
+    if (kind === "generation") await fixtureSql(f, `UPDATE ${ADMISSION.subjects} SET generation = generation + 1`);
+    if (kind === "expired") {
+      vi.setSystemTime(Date.now() + 4 * 60 * 60 * 1000);
+      expect((await b.resolve()) !== null).toBe(true); // Native refresh extends beyond the original deadline.
+      vi.setSystemTime(Date.now() + 4 * 60 * 60 * 1000 + 1);
+      expect((await b.resolve()) !== null).toBe(true);
+    }
+    const before = await factorState(f);
+    const result = await b.post("/two-factor/enable", { password: OWNER_PASSWORD });
+    expect(result.status >= 400).toBe(true); expect(result.json?.totpURI === undefined).toBe(true);
+    expect(result.setCookie.length).toBe(0); expect(await factorState(f)).toEqual(before);
+  });
+
+  it("10: SQL diagnostics retain a bounded tail without parameters", async () => {
+    const f = await create(); const { authenticator } = await setup(f); const b = await pending(f);
+    const sentinel = "trace-parameter-must-not-appear";
+    f.control.admission.pause = async (stage, connection) => {
+      if (stage !== "after-admission") return;
+      for (let index = 0; index <= FACTOR_SQL_TRACE_LIMIT; index++) connection.prepare("SELECT ?").all([sentinel]);
+    };
+    expect((await verify(b, authenticator.code())).status).toBe(200);
+    expect(f.control.trace.length).toBe(FACTOR_SQL_TRACE_LIMIT);
+    expect(JSON.stringify(f.control.trace).includes(sentinel)).toBe(false);
+    expect(f.control.trace.at(-1)?.sql).toBe("commit");
   });
 
   it("10: ticket expiry and window rollover never refund; pruning never evicts live charges", async () => {

@@ -471,7 +471,10 @@ binding: the whole issued opaque cookie is hashed with standard SHA-256 and
 bound to that subject, native verification row, immutable purpose, security
 revision, factor fingerprint and deadlines. Input cookies are never decoded to
 choose a subject. Enrollment uses the supported current-session lookup and an
-issued setup context. Current mapping, principal, native challenge and factor
+issued setup context. Its original password time and deadline come from persisted
+evidence for that exact session, subject and security generation; native session
+refresh cannot extend them. Missing, stale or expired evidence refuses enrollment.
+Current mapping, principal, native challenge and factor
 state are checked before admission. TOTP and recovery share one subject budget;
 new challenges and provider reload cannot reset it. Unknown, forged, expired,
 revoked and mismatched contexts never reach native verification.
@@ -489,7 +492,10 @@ authority from this known replaying backend.
 SQL fault seams distinguish errors before COMMIT from errors after the driver
 actually commits. Admission errors always stop evaluation, even when a durable
 charge is reconciled. Success errors read the durable completion receipt under
-the same owner. A known committed success withholds cookies on lost
+the same owner, only after confirming that the transaction has ended. Failed
+COMMIT plus failed ROLLBACK cannot publish its uncommitted receipt or notifications;
+the owner performs final rollback and closes provider admission. A failed receipt
+read reports an unconfirmed outcome without retrying verification. A known committed success withholds cookies on lost
 acknowledgment, returns only receipt status and delivers buffered notifications.
 Notification failure retains `committed:true`. Internal duplicate IDs return
 status without evaluating any submitted credential or minting another session.

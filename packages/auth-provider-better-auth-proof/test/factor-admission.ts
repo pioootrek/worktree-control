@@ -70,6 +70,20 @@ export class FixtureAdmission implements AdmissionPort {
     return factor ? capabilityId(`${factor.id}:${factor.secret}`) : null;
   }
 
+  /** Native session refresh cannot redefine the original password lifetime. */
+  enrollmentOrigin(sessionId: string, subject: string, now: number): Pick<SessionEvidence, "authenticatedAt" | "originalDeadline"> | null {
+    const row = this.#rows<{ authenticatedAt: string; originalDeadline: string }>(
+      `SELECT e.authenticatedAt, e.originalDeadline FROM ${ADMISSION.evidence} e
+       JOIN authentication_ba_session s ON s.id = e.sessionId AND s."userId" = e.subject
+       JOIN ${ADMISSION.subjects} g ON g.subject = e.subject AND g.generation = e.generation
+       WHERE e.sessionId = ? AND e.subject = ? AND e.method = 'password' AND e.authorizingMfa = 0 AND s."expiresAt" > ?`,
+      [sessionId, subject, now],
+    )[0];
+    if (!row || !this.#current(subject)) return null;
+    const start = Date.parse(row.authenticatedAt), deadline = Date.parse(row.originalDeadline);
+    return Number.isFinite(start) && Number.isFinite(deadline) && start <= now && deadline > now && start < deadline ? row : null;
+  }
+
   /** Only called with a capability from a completed, successful native outcome. */
   issue(opaque: string, subject: string, purpose: Purpose, deadline: number, nativeId: string | null, now: number, origin: Pick<SessionEvidence, "authenticatedAt" | "originalDeadline">): void {
     this.prune(now);
