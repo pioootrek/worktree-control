@@ -15,7 +15,7 @@ const ROUTES = new Map([
 class BoundaryError extends Error {
   constructor(readonly status: number, readonly code: string) { super(code); }
 }
-const fail = (status: number, code: string): never => { throw new BoundaryError(status, code); };
+function fail(status: number, code: string): never { throw new BoundaryError(status, code); }
 
 export function hasProviderCookie(request: IncomingMessage): boolean {
   return containsProviderCookie(request.headers.cookie);
@@ -38,7 +38,7 @@ export function approvedAuthenticationCookies(headers: Headers): string[] {
     const [pair, ...attributes] = line.split(";").map(part => part.trim());
     if (!pair || /[\r\n]/.test(line)) fail(502, "provider_failed");
     const equals = pair.indexOf("="), name = pair.slice(0, equals), value = pair.slice(equals + 1);
-    if (equals < 1 || seen.has(name) || !/^[\x21-\x2b\x2d-\x3a\x3c-\x7e]*$/.test(value)) fail(502, "provider_failed");
+    if (equals < 1 || seen.has(name) || !/^[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]*$/.test(value)) fail(502, "provider_failed");
     seen.add(name);
     const attrs = new Map<string, string>();
     for (const attr of attributes) {

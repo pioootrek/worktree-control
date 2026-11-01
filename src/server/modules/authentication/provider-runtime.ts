@@ -157,7 +157,7 @@ export async function loadAuthenticationProvider(input: LoadAuthenticationProvid
         throw new AuthenticationProviderError("invalidation_failed", "A committed change could not notify active sessions.", true);
       }
     },
-    log(level: "error" | "warn" | "info" | "debug", _message: string) { if (input.storage.operationActive()) input.log?.(level, "Authentication provider event."); },
+    log(level: "error" | "warn" | "info" | "debug") { if (input.storage.operationActive()) input.log?.(level, "Authentication provider event."); },
   });
   let instance: AuthenticationProviderInstance | undefined;
   try {
