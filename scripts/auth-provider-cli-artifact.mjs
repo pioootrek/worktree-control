@@ -42,10 +42,10 @@ try {
     "--format", "esm", "--platform", "node", "--target", "node22", "--out-dir", emitted,
     "--external", "better-auth", "--external", "@better-auth/core", "--external", "kysely"]));
   assert.equal(build.code, 0, build.stderr);
-  const module = join(emitted, "index.js");
-  assert(existsSync(module));
+  const entry = join(emitted, "index.js");
+  assert(existsSync(entry));
   const installation = join(temporary, "healthy"); mkdirSync(installation, { mode: 0o700 });
-  const configInput = { module, origin: "https://controller.test", signingSecret: { kind: "generate" } };
+  const configInput = { module: entry, origin: "https://controller.test", signingSecret: { kind: "generate" } };
   await cli(installation, ["configure", "--input-stdin"], configInput);
   const configuration = join(installation, "data/authentication-provider.json"), material = readFileSync(configuration);
   const principalId = (await cli(installation, ["owner", "create"])).principal.id;
@@ -65,7 +65,7 @@ try {
 
   // A real finite CLI child must remain alive with both actual locks after an uncertain dispose.
   const failingModule = join(emitted, "dispose-failure.mjs");
-  writeFileSync(failingModule, `import { authenticationProvider as provider } from ${JSON.stringify(pathToFileURL(module).href)};
+  writeFileSync(failingModule, `import { authenticationProvider as provider } from ${JSON.stringify(pathToFileURL(entry).href)};
 export const authenticationProvider = { ...provider, async create(host, options) {
   const instance = await provider.create(host, options);
   return new Proxy(instance, { get(target, key) {
@@ -87,7 +87,7 @@ export const authenticationProvider = { ...provider, async create(host, options)
   assert(existsSync(join(fatal, "state/controller.lock"))); assert(existsSync(join(fatal, "data/state.sqlite3.owner.lock")));
   assert.equal((await cli(fatal, ["status"], undefined, 1)).code, "admin_outcome_unknown");
   retained.child.kill("SIGKILL"); await retained.done; // Only our finite fixture process. Production never forces this exit.
-  console.log(JSON.stringify({ result: "passed", emittedModuleSha256: createHash("sha256").update(readFileSync(module)).digest("hex"),
+  console.log(JSON.stringify({ result: "passed", emittedModuleSha256: createHash("sha256").update(readFileSync(entry)).digest("hex"),
     verified: ["fresh-built-cli-local-js-import", "offline-configure-owner-enroll-recover", "strict-global-path-flags", "stable-material", "real-fatal-owner-process-retention"] }));
 } finally {
   for (const child of children) child.kill("SIGKILL");

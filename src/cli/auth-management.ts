@@ -94,12 +94,12 @@ async function runProviderCommand(args: string[], paths: AppPaths, dependencies:
   try {
     await administration?.dispose();
     await store.closeAfterDrain();
+    lock.release();
   } catch {
     retainAuthenticationOwnership({ store, administration, lock });
     const committed = (result !== undefined && request.action !== "status") || providerAdminFailure(effectFailure).committed;
     throw new ProviderAdminError("disposal_unconfirmed", committed ? true : undefined, false);
   }
-  lock.release();
   if (effectFailure) throw effectFailure;
   write(JSON.stringify(result, null, 2));
 }

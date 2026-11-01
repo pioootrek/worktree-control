@@ -27,9 +27,9 @@ export function cliFixture() {
   const configure = (origin = ORIGIN, kind: "generate" | "preserve" = "generate", source = PROVIDER_ENTRY) => {
     // The checkout deliberately permits group writes. Trust a private entry; transitive code
     // remains the actual pinned fixture module (the loader is not a dependency-tree sandbox).
-    const module = join(root, `provider-${++sequence}.mjs`);
-    writeFileSync(module, `export { authenticationProvider } from ${JSON.stringify(source)};`, { mode: 0o600 });
-    return run(["configure", ...input({ module, origin, signingSecret: { kind } })]);
+    const entry = join(root, `provider-${++sequence}.mjs`);
+    writeFileSync(entry, `export { authenticationProvider } from ${JSON.stringify(source)};`, { mode: 0o600 });
+    return run(["configure", ...input({ module: entry, origin, signingSecret: { kind } })]);
   };
   const create = async () => ((await run(["owner", "create"])).principal as { id: string }).id;
   return { root, paths, input, run, configure, create, remove: () => rmSync(root, { recursive: true, force: true }) };
