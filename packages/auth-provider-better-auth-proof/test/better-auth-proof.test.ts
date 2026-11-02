@@ -40,7 +40,7 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
         kysely: packageVersion(packageDirectory, "kysely"),
         driver: packageVersion(join(packageDirectory, "../.."), "better-sqlite3"),
       }).toEqual({ betterAuth: "1.7.14", core: "1.7.14", kysely: "0.28.17", driver: "13.0.3" });
-      expect(f.runtime.readiness).toEqual({ providerId: "better-auth", implementationVersion: "0.0.0-proof.3", library: { name: "better-auth", version: "1.7.14" }, schema: "verified" });
+      expect(f.runtime.readiness).toEqual({ providerId: "better-auth", implementationVersion: "0.0.0-proof.4", library: { name: "better-auth", version: "1.7.14" }, schema: "verified" });
       const authentication = new AuthenticationService(f.store);
       expect(() => authentication.setMode("better-auth", "test")).toThrow(expect.objectContaining({ code: "auth_provider_unavailable" }));
       expect(resolveControllerAuthentication(
@@ -69,6 +69,20 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
       f.store.addProject({ name: "core-after-failures", repositoryPath: join(f.root, "p"), port: 3701, executable: "node", args: [] });
       expect(f.store.listProjects()).toHaveLength(1);
     } finally { f.store.close(); }
+  });
+
+  it("refuses the previous host protocol before creating a contract-3 provider", async () => {
+    const f = storeFixture();
+    const probe = globalThis as unknown as { __legacyProviderCreated?: boolean };
+    delete probe.__legacyProviderCreated;
+    try {
+      expect(await errorCode(() => loadProof(f.store, undefined, fixtureModule("legacy-contract-3.mjs")))).toBe("provider_unavailable");
+      expect(probe.__legacyProviderCreated).toBeUndefined();
+      // A refused module did not consume or poison the owner's provider facade.
+      const { runtime: current } = await loadProof(f.store);
+      expect(current.implementationVersion).toBe("0.0.0-proof.4");
+      await current.dispose();
+    } finally { delete probe.__legacyProviderCreated; f.store.close(); }
   });
 
   it("disposes a provider whose initialization fails inside its borrow, rolls back what it began and stops further provider admission", async () => {

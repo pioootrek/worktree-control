@@ -416,7 +416,7 @@ stored expiry extends; fresh authentication obtains a new reference.
 Committed session deletion denies the next operation even if after-commit
 notification fails. Rollback retains access. The query is authoritative;
 notifications are not an authorization cache. This validity adapter supports
-Better Auth 1.7.14, implementation `0.0.0-proof.3`, storage revision 2. Other
+Better Auth 1.7.14, implementation `0.0.0-proof.4`, storage revision 2. Other
 provider/version combinations need their own verified adapter.
 
 Each `ProviderKnowledgeApplication.execute` call is a synchronous Knowledge
@@ -455,9 +455,14 @@ authorize nothing until a fresh real sign-in. Subject-keyed rows restrict deleti
 so recreating an opaque subject cannot reset a step or generation.
 
 `AccountProtection` is the one application-owned policy for both methods. It reaches
-the provider as `host.protection` on contract 3, joined to the provider's open
-transaction on the sole connection. The supported combination is contract 3,
-storage revision 2, implementation `0.0.0-proof.3` and library 1.7.14.
+the provider as `host.protection` on contract 4, joined to the provider's open
+transaction on the sole connection. The supported combination is contract 4,
+storage revision 2, implementation `0.0.0-proof.4` and library 1.7.14.
+Contract 4 adds the explicit issuance/WebAuthn limits and named admission and
+settlement refusals. Contract-3 modules are rejected before initialization;
+there is no mixed-version compatibility allowlist. This change does not alter
+schema 40 or storage revision 2. A native passkey failure after verified proof
+is a fixed provider error, rather than a wrong-credential response.
 
 - **Evidence.** The success transaction records the verified method (`password`,
   `password_totp` or `passkey_uv`), original authentication time and deadline,
@@ -520,7 +525,7 @@ fencing stay separate gates. See the
 ### Closed factor HTTP API
 
 A3-I20 mounts login and first enrollment through the isolated composition only. It
-uses the same provider, schema 40, contract 3, `AccountProtection` and sole
+uses the same provider, schema 40, contract 4, `AccountProtection` and sole
 connection as [integrated factor authority](#integrated-factor-authority). Production
 main still has no caller or flag, account mode stays refused, and recovery, removal,
 replacement, additional passkeys and trusted devices stay refused.

@@ -298,14 +298,15 @@ its cookie and revokes all old sessions; protected runtime recovery also
 invalidates old cookies with a pending mode selection. Tests retain exact actor,
 original-expiry and privilege cases from the earlier suite.
 
-The provider implements API contract 3, implementation `0.0.0-proof.3`.
+The provider implements API contract 4, implementation `0.0.0-proof.4`.
 Older modules fail closed, including the retained incompatible-loader fixture.
 `signOut` keeps the native handler/limiter and explicitly deletes/verifies the
 caller session, covering a real delete-hook failure that native sign-out swallows.
 The core drops native bodies and arbitrary headers; no bearer token is returned
 in browser JSON. Library logs/router exceptions become fixed events. After-commit
 notification failures remain `committed:true`, without automatic mutation replay.
-Schema 39, provider storage revision 1 and pinned dependencies do not change.
+The current composition uses schema 40 and provider storage revision 2; the
+contract-4 boundary update changes neither storage nor pinned dependencies.
 
 Provider-cookie requests to unconverted HTTP operations and the actual separate
 MCP listener are denied before installation authority, even with open active.

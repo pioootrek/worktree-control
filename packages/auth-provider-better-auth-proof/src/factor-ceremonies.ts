@@ -393,8 +393,10 @@ export class FactorCeremonies {
       const native = await scoped.handler(this.#native(kind, request, nativeCookie, { response }));
       await this.#pause("after-native");
       this.#live(request.signal);
-      // Native answers 500 for a credential it could not verify. That is a refusal, not a fault.
-      if (!native.ok) throw new Rollback(denied(native.status >= 500 ? 401 : native.status, "native_failure"));
+      // Native uses 500 for some verification refusals. Once its trusted callback
+      // has accepted the proof, however, a 5xx is a provider/persistence fault.
+      // Neither the native reason nor its response body crosses this boundary.
+      if (!native.ok) throw new Rollback(denied(native.status >= 500 && !operation.verified ? 401 : native.status, "native_failure"));
       if (!operation.verified) throw new Rollback(denied(500, "verification_unconfirmed"));
       const raw = await native.text();
       if (raw.length > MAX_NATIVE_RESPONSE) throw new Rollback(denied(500, "invalid_native_response"));

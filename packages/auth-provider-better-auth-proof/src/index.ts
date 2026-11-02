@@ -22,7 +22,7 @@ export type { ProofFaultInjection } from "./library";
 /** Exact pinned library this proof was verified against. */
 export const BETTER_AUTH_VERSION = "1.7.14";
 const PROVIDER_ID = "better-auth";
-const IMPLEMENTATION_VERSION = "0.0.0-proof.3";
+const IMPLEMENTATION_VERSION = "0.0.0-proof.4";
 
 /** Native password routes that create no session. Every other path is refused below. */
 const NATIVE_ROUTES = new Map([
@@ -384,7 +384,7 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
 }
 
 export const authenticationProvider: AuthenticationProviderModule = {
-  contractVersion: 3,
+  contractVersion: 4,
   providerId: PROVIDER_ID,
   implementationVersion: IMPLEMENTATION_VERSION,
   storageRevision: 2,

@@ -640,7 +640,7 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
   #supportsSessionAuthority(): boolean {
     // This projection is verified only for the fixed migration-40 adapter and pinned library.
     return this.#input.providerId === "better-auth" && this.#input.storage.storageRevision === 2
-      && this.implementationVersion === "0.0.0-proof.3"
+      && this.implementationVersion === "0.0.0-proof.4"
       && this.readiness.library?.name === "better-auth" && this.readiness.library.version === "1.7.14";
   }
 

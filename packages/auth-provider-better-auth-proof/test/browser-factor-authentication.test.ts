@@ -312,6 +312,41 @@ describe("signed WebAuthn evidence over HTTP", () => {
   });
 });
 
+describe("native failures after passkey verification", () => {
+  it("reports a session creation veto as a provider fault and rolls back the valid assertion", async () => {
+    const faults: ProofFaultInjection = {}, f = await create({ faults }), client = await f.client().authenticated();
+    const authenticator = await enrollPasskey(client);
+    const pending = await options(client, "authenticate"), before = await protectionState(f);
+    faults.vetoSession = true;
+    const result = await post(client, "passkey/verify-authentication", { response: authenticator.assert(pending, { counter: 1 }) });
+    faults.vetoSession = false;
+    refused(result, 502, "provider_failed");
+    const after = await protectionState(f);
+    expect(after.sessions).toEqual(before.sessions);
+    expect(after.evidence).toEqual(before.evidence);
+    expect(after.credentials).toEqual(before.credentials);
+    expect(after.charged).toBe(before.charged + 1);
+    secretFree(f, result.body);
+  });
+
+  it("reports registration persistence failure after verification as a provider fault", async () => {
+    const faults: ProofFaultInjection = {}, f = await create({ faults }), client = await f.client().authenticated();
+    const authenticator = new PasskeyAuthenticator(), pending = await options(client, "register"), before = await protectionState(f);
+    faults.sqlFault = { sql: /insert into "authentication_ba_passkey"/i, when: "before", remaining: 1 };
+    const result = await post(client, "passkey/verify-registration", { response: authenticator.register(pending, { attestationNone: true }) });
+    expect(faults.sqlFault.remaining).toBe(0);
+    faults.sqlFault = undefined;
+    refused(result, 502, "provider_failed");
+    const after = await protectionState(f);
+    expect(after.sessions).toEqual(before.sessions);
+    expect(after.credentials).toEqual(before.credentials);
+    expect(after.staged).toBe(before.staged);
+    expect(after.trusted).toBe(before.trusted);
+    expect(after.charged).toBe(before.charged + 1);
+    secretFree(f, result.body);
+  });
+});
+
 describe("final release against current state", () => {
   const revoke = (f: BrowserFixture) => () => f.runtime.revokeSubject({ principalId: f.owner.principalId, actor: "test" });
   it("withholds a challenge whose mapping ended before release", async () => {

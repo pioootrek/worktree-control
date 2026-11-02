@@ -9,7 +9,7 @@
  */
 import type { BrowserWebAuthnBounds } from "@/shared/contracts/authentication";
 
-export const AUTHENTICATION_PROVIDER_CONTRACT_VERSION = 3;
+export const AUTHENTICATION_PROVIDER_CONTRACT_VERSION = 4;
 
 /** Kysely-compatible statement; valid only during the borrow that prepared it. */
 export interface ProviderSqliteStatement {
