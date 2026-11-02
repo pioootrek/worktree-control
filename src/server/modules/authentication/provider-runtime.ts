@@ -54,8 +54,9 @@ export class AuthenticationProviderError extends Error {
 /** Synchronous controller-owned mapping operations; callers run them inside a borrow. */
 export interface ProviderSubjectStore extends ProviderSubjectRegistry {
   isActiveOwner(principalId: string): boolean;
+  activeAccountKind(principalId: string): "owner" | "human" | null;
   hasSubjectHistory(principalId: string): boolean;
-  /** The mapped principal when the mapping is active and the principal is a current active owner. */
+  /** The mapped principal when the mapping is active and the principal is a current active owner or human. */
   resolveActivePrincipal(subject: string): string | null;
   revoke(input: { subject: string; actor: string }): ProviderSubjectMapping;
 }
@@ -111,9 +112,11 @@ export interface ProviderPrincipalResolution {
   principalId: string;
 }
 /** Only a supported combination carries committed evidence, and only that issues an actor. */
-type ActorResolution = ProviderPrincipalResolution & { evidence?: ProviderSessionEvidence };
+type ActorResolution = ProviderPrincipalResolution & { evidence?: ProviderSessionEvidence; principalKind?: "owner" | "human"; mappingLinkedAt?: string };
 
 interface ActorEvidence {
+  principalKind: "owner" | "human";
+  mappingLinkedAt: string;
   sessionId: string;
   subject: string;
   principalId: string;
@@ -441,7 +444,7 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     const authority = state && evaluateSessionAuthority(state, new Date().toISOString());
     if (!state || !authority || state.subject !== session.subject || state.createdAt !== session.createdAt
       || session.authentication?.method !== authority.authentication.method) return null;
-    return { session: { ...session, expiresAt: authority.deadline, authentication: authority.authentication }, principalId: state.principalId, evidence: authority.evidence };
+    return { session: { ...session, expiresAt: authority.deadline, authentication: authority.authentication }, principalId: state.principalId, principalKind: state.principalKind, mappingLinkedAt: state.mappingLinkedAt, evidence: authority.evidence };
   }
 
   /** Resolve outside core admission. Raw `resolve` evidence and structural actor copies never authorize. */
@@ -462,12 +465,12 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
   }
 
   #issueActor(resolution: ActorResolution): ProviderSessionActor | null {
-    const { session, principalId, evidence } = resolution;
-    if (session.providerId !== this.#input.providerId || !evidence || evidence.sessionId !== session.sessionId || evidence.subject !== session.subject
+    const { session, principalId, principalKind, mappingLinkedAt, evidence } = resolution;
+    if ((principalKind !== "owner" && principalKind !== "human") || !mappingLinkedAt || session.providerId !== this.#input.providerId || !evidence || evidence.sessionId !== session.sessionId || evidence.subject !== session.subject
       || !session.sessionId || !session.subject || !principalId || !canonicalInstant(session.createdAt)
       || !canonicalInstant(session.expiresAt) || session.createdAt >= session.expiresAt) return null;
-    const actor = Object.freeze({ principalId, principalKind: "owner", credentialId: null, authenticationMethod: "provider_session" }) as ProviderSessionActor;
-    this.#actors.set(actor, Object.freeze({ sessionId: session.sessionId, subject: session.subject, principalId,
+    const actor = Object.freeze({ principalId, principalKind, credentialId: null, authenticationMethod: "provider_session" }) as ProviderSessionActor;
+    this.#actors.set(actor, Object.freeze({ sessionId: session.sessionId, subject: session.subject, principalId, principalKind, mappingLinkedAt,
       createdAt: session.createdAt, expiresAt: session.expiresAt, evidence: Object.freeze({ ...evidence }), authentication: Object.freeze({ ...session.authentication }) }));
     return actor;
   }
@@ -476,13 +479,13 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
   isCurrentProviderSession(actor: ProviderSessionActor, now: string): boolean {
     const original = this.#actors.get(actor);
     if (!original || this.disposed || !this.#supportsSessionAuthority() || !this.#input.storage.available()
-      || actor.authenticationMethod !== "provider_session" || actor.principalKind !== "owner"
+      || actor.authenticationMethod !== "provider_session" || actor.principalKind !== original.principalKind
       || actor.credentialId !== null || actor.principalId !== original.principalId || !Object.isFrozen(actor)
       || !canonicalInstant(now) || original.expiresAt <= now) return false;
     const current = this.#input.storage.currentSession(this.#input.providerId, original.sessionId);
     const authority = current && evaluateSessionAuthority(current, now);
     if (!current || !authority || current.subject !== original.subject || current.principalId !== original.principalId
-      || current.createdAt !== original.createdAt) return false;
+      || current.principalKind !== original.principalKind || current.mappingLinkedAt !== original.mappingLinkedAt || current.createdAt !== original.createdAt) return false;
     const evidence = authority.evidence, frozen = original.evidence;
     return evidence.method === frozen.method && evidence.authenticatedAt === frozen.authenticatedAt && evidence.originalDeadline === frozen.originalDeadline
       && evidence.generation === frozen.generation && evidence.policyRevision === frozen.policyRevision && evidence.credential === frozen.credential
@@ -838,9 +841,9 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     }
     return this.#run(async () => {
       const state = this.#input.storage.runControllerOperation(() => ({
-        active: this.#subjects.isActiveOwner(input.principalId), history: this.#subjects.hasSubjectHistory(input.principalId),
+        active: this.#subjects.activeAccountKind(input.principalId) !== null, history: this.#subjects.hasSubjectHistory(input.principalId),
       }));
-      if (!state.active) throw new AuthenticationProviderError("principal_unavailable", "Only an existing active owner principal can be linked.");
+      if (!state.active) throw new AuthenticationProviderError("principal_unavailable", "Only an existing active account principal can be linked.");
       if (state.history) {
         throw new AuthenticationProviderError("subject_conflict", "The principal already has a provider account.");
       }
@@ -856,7 +859,7 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     return this.#run(async () => {
       const linked = this.#input.storage.runControllerOperation(() => this.#subjects.findByPrincipal(input.principalId));
       if (!linked) throw new AuthenticationProviderError("not_linked", "The principal has no provider account.");
-      if (this.#input.storage.runControllerOperation(() => this.#subjects.resolveActivePrincipal(linked.subject)) !== input.principalId) {
+      if (this.#input.storage.runControllerOperation(() => this.#subjects.isActiveOwner(input.principalId) && this.#subjects.resolveActivePrincipal(linked.subject) === input.principalId) !== true) {
         throw new AuthenticationProviderError("principal_unavailable", "The active owner principal is unavailable.");
       }
       await this.#instance.recoverLocal(input);

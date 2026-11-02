@@ -13,9 +13,12 @@ export function validateDatabase(database: Database.Database, version: number): 
   if (version >= 36 && database.prepare(`SELECT 1 FROM reservations WHERE (principal_id IS NULL) <> (credential_id IS NULL)
     OR (principal_id IS NOT NULL AND kind <> 'agent') LIMIT 1`).get()) fail("lease binding");
   if (version >= 37 && database.prepare("SELECT 1 FROM projects WHERE typeof(configuration_revision) <> 'integer' OR configuration_revision < 0 LIMIT 1").get()) fail("configuration revision");
-  // Provider accounts map only to owner principals; an unmapped provider row authorizes nothing.
+  // Historical provider mappings remain owner-only; ordinary humans begin at schema 42.
   if (version >= 38 && database.prepare(`SELECT 1 FROM authentication_provider_subjects s
-    JOIN remote_principals p ON p.id=s.principal_id WHERE p.kind<>'owner' LIMIT 1`).get()) fail("provider subject principal");
+    JOIN remote_principals p ON p.id=s.principal_id WHERE ${version >= 42 ? "p.kind NOT IN ('owner','human')" : "p.kind<>'owner'"} LIMIT 1`).get()) fail("provider subject principal");
+  if (version >= 42 && database.prepare(`SELECT 1 FROM principal_credentials c JOIN remote_principals p ON p.id=c.principal_id
+    WHERE (c.kind='owner_session' AND p.kind<>'owner') OR (c.kind='agent_token' AND p.kind<>'agent')
+      OR (c.kind='worker_token' AND p.kind<>'worker') LIMIT 1`).get()) fail("credential principal kind");
   // Evidence and trust describe one provider account. Selected-protection flags are
   // checked per account at every decision, so one inconsistent row refuses only itself.
   if (version >= 40 && database.prepare(`SELECT 1 FROM authentication_session_evidence e

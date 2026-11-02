@@ -4,7 +4,7 @@ import { z } from "zod";
 export interface BrowserAuthenticationStatus { mode: "legacy" | "open" | "token" | "better-auth"; loginAvailable: boolean }
 export type BrowserSession = { authenticated: false } | {
   authenticated: true;
-  principal: { id: string; kind: "owner" };
+  principal: { id: string; kind: "owner" | "human" };
   expiresAt: string;
   /** What the session proved. Authentication strength never grants authority. */
   authentication: { method: "password"; factors: 1 } | { method: "password_totp"; factors: 2 } | { method: "passkey_uv"; factors: 2 };

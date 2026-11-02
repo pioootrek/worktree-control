@@ -1,3 +1,4 @@
+import { HumanAccountQueries } from "./human-account-queries";
 import type { KnowledgeRoleBinding, KnowledgePermission } from "@/shared/contracts/authorization";
 import { DevVaultQueries } from "./dev-vault-queries";
 import type { DevVaultStore } from "@/server/modules/dev-vault";
@@ -210,6 +211,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   publishHubImport(batchId: string, now: string, attachmentDirectory?: string, limits: KnowledgeAttachmentLimits = DEFAULT_ATTACHMENT_LIMITS): HubImportBatch {
     try{return this.database.transaction(() => {
       const batch=this.getHubImport(batchId); if(!batch) throw new KnowledgeError("not_found","Import batch not found.");
+      if(this.identity.getPrincipal(batch.actorPrincipalId)?.kind === "human") throw new KnowledgeError("invalid_request", "Human imports are unavailable.");
       if(batch.status==="published") return batch;
       if(batch.status!=="staging"||batch.cursor!==batch.totalItems) throw new KnowledgeError("revision_conflict","Import batch is incomplete.");
       const target=this.database.prepare("SELECT name,revision FROM knowledge_projects WHERE id = ?").get(batch.targetProjectId) as {name:string;revision:number}|undefined;
@@ -837,6 +839,8 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   saveRemotePrincipal(principal: RemotePrincipal, actor: string): void {
     this.identity.savePrincipal(principal, actor);
   }
+
+  humanAccounts(): HumanAccountQueries { return new HumanAccountQueries(this.database); }
 
   getPrincipal(id: string): Principal | null {
     return this.identity.getPrincipal(id);

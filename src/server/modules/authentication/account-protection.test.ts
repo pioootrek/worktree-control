@@ -3,7 +3,7 @@ import { evaluateSessionAuthority, validateFactorLimits, type ProviderSessionSta
 
 const now = "2026-11-02T12:00:00.000Z";
 const state = (change: { [K in keyof ProviderSessionState]?: unknown } = {}, evidence: Record<string, unknown> = {}, account: Record<string, unknown> = {}) => ({
-  subject: "s", principalId: "p", createdAt: "2026-11-02T11:00:00.000Z", expiresAt: "2026-11-02T19:00:00.000Z",
+  principalKind: "owner", mappingLinkedAt: "2026-11-02T10:00:00.000Z", subject: "s", principalId: "p", createdAt: "2026-11-02T11:00:00.000Z", expiresAt: "2026-11-02T19:00:00.000Z",
   evidence: { sessionId: "x", subject: "s", method: "password", authenticatedAt: "2026-11-02T11:00:00.000Z", originalDeadline: "2026-11-02T18:00:00.000Z",
     generation: 2, policyRevision: 3, credential: null, credentialBinding: null, attemptId: "a", ...evidence },
   account: { generation: 2, policyRevision: 3, totpSelected: false, passkeySelected: false, consistent: true, ...account },

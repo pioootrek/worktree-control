@@ -32,7 +32,7 @@ export class AuthenticationProtectionQueries implements ProtectionStore {
   activePrincipal(subject: string): string | null {
     const row = this.database.prepare(`SELECT s.principal_id FROM authentication_provider_subjects s
       JOIN remote_principals p ON p.id = s.principal_id
-      WHERE s.provider_id = ? AND s.subject = ? AND s.status = 'active' AND s.revoked_at IS NULL AND p.kind = 'owner' AND p.status = 'active'`)
+      WHERE s.provider_id = ? AND s.subject = ? AND s.status = 'active' AND s.revoked_at IS NULL AND p.kind IN ('owner','human') AND p.status = 'active'`)
       .get(this.providerId, subject) as { principal_id: string } | undefined;
     return row?.principal_id ?? null;
   }
@@ -64,11 +64,11 @@ export class AuthenticationProtectionQueries implements ProtectionStore {
 
   /** Core-only authority projection: excludes token, password, ciphertext and contact data. */
   sessionState(sessionId: string): ProviderSessionState | null {
-    const row = this.database.prepare(`SELECT s."userId" AS subject, s."createdAt" AS createdAt, s."expiresAt" AS expiresAt, m.principal_id AS principalId
+    const row = this.database.prepare(`SELECT s."userId" AS subject, s."createdAt" AS createdAt, s."expiresAt" AS expiresAt, m.principal_id AS principalId, p.kind AS principalKind, m.linked_at AS mappingLinkedAt
       FROM "authentication_ba_session" s
       JOIN authentication_provider_subjects m ON m.provider_id = ? AND m.subject = s."userId"
       JOIN remote_principals p ON p.id = m.principal_id
-      WHERE s."id" = ? AND m.status = 'active' AND m.revoked_at IS NULL AND p.kind = 'owner' AND p.status = 'active'`)
+      WHERE s."id" = ? AND m.status = 'active' AND m.revoked_at IS NULL AND p.kind IN ('owner','human') AND p.status = 'active'`)
       .get(this.providerId, sessionId) as Omit<ProviderSessionState, "evidence" | "account" | "currentBinding"> | undefined;
     if (!row) return null;
     const evidence = this.evidence(sessionId), account = this.account(row.subject), native = this.native(row.subject);

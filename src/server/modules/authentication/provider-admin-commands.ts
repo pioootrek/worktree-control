@@ -1,3 +1,5 @@
+import { humanPageSchema, humanMembershipPageSchema, humanKnowledgeSetSchema, humanKnowledgeRevokeSchema } from "@/shared/contracts/human-accounts";
+import { HumanAccountError } from "../identity";
 import { z } from "zod";
 import { databaseAdmissionFailure } from "../../database-admission";
 import { AuthenticationProviderError } from "./provider-runtime";
@@ -19,6 +21,12 @@ const commandSchema = z.discriminatedUnion("action", [
   z.object({ command, action: z.literal("status"), principalId: text.optional() }).strict(),
   z.object({ command, action: z.literal("configure"), input: providerConfigurationInputSchema }).strict(),
   z.object({ command, action: z.literal("owner-create") }).strict(),
+  z.object({ command, action: z.literal("human-create") }).strict(),
+  z.object({ command, action: z.literal("human-list"), input: humanPageSchema }).strict(),
+  z.object({ command, action: z.literal("human-disable"), principalId: z.string().min(1).max(160) }).strict(),
+  z.object({ command, action: z.literal("knowledge-access-list"), input: humanMembershipPageSchema }).strict(),
+  z.object({ command, action: z.literal("knowledge-access-set"), input: humanKnowledgeSetSchema }).strict(),
+  z.object({ command, action: z.literal("knowledge-access-revoke"), input: humanKnowledgeRevokeSchema }).strict(),
   z.object({ command, action: z.literal("enroll"), principalId: text, input: providerEnrollmentInputSchema }).strict(),
   z.object({ command, action: z.literal("recover"), principalId: text, input: providerRecoveryInputSchema }).strict(),
 ]);
@@ -28,7 +36,8 @@ const messages = {
   invalid_input: "Invalid protected provider administration input.",
   provider_unavailable: "The authentication provider is unavailable.",
   provider_failed: "The authentication provider operation failed; inspect state before another explicit operation.",
-  principal_unavailable: "The requested active owner principal is unavailable.",
+  principal_unavailable: "The requested account principal is unavailable.",
+  membership_revision_conflict: "Human Knowledge membership revision changed; inspect current state before another explicit operation.",
   owner_already_initialized: "An owner principal already exists. Inspect private provider status.",
   subject_conflict: "The principal has provider enrollment history; enrollment is refused.",
   not_linked: "The principal has no active provider enrollment.",
@@ -60,6 +69,7 @@ export function parseProviderAdminCommand(value: unknown): ProviderAdminCommand 
 /** Only trusted core error types can assert a committed effect or uncertain cleanup. */
 export function providerAdminFailure(error: unknown): ProviderAdminError {
   if (error instanceof ProviderAdminError) return error;
+  if (error instanceof HumanAccountError) return new ProviderAdminError(error.code);
   if (error instanceof AuthenticationProviderError) {
     const code = error.code in messages ? error.code as ProviderAdminErrorCode : "provider_failed";
     return new ProviderAdminError(code, error.committed ? true : undefined,

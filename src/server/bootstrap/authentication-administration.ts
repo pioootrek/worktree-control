@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { FileProviderConfiguration, validateProviderEntry } from "../authentication-provider-configuration";
-import { IdentityService, IdentityError } from "../modules/identity";
+import { IdentityService, IdentityError, HumanAccountService } from "../modules/identity";
 import {
   ProviderAdminApplication, ProviderAdminError, AuthenticationProviderError, loadAuthenticationProvider,
   type AuthenticationProviderRuntime, type AuthenticationProviderStorage, type AuthenticationService,
@@ -51,6 +51,7 @@ export function createAuthenticationAdministration(d: AuthenticationAdministrati
   };
   const identity = new IdentityService(d.store);
   const application = new ProviderAdminApplication({
+    humans: new HumanAccountService(d.store.humanAccounts(), d.actor),
     admission: d.store.admission, authentication: d.authentication, configuration, maintenance, actor: d.actor,
     identity: {
       ownerStatus: () => identity.ownerPrincipalStatus(),

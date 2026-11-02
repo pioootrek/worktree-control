@@ -237,7 +237,7 @@ export class IdentityService {
       knowledgeGrants: this.store.listKnowledgeProjectGrants(actor.principalId)
         .filter((grant) => grant.revokedAt === null)
         .map(grant => ({ projectId: grant.projectId, permissions: effectiveKnowledgePermissions(this.subject(actor), grant.projectId, {
-          grant, binding: this.store.getKnowledgeRoleBinding(actor.principalId, grant.projectId),
+          ordinaryHuman: principal.kind === "human", grant, binding: this.store.getKnowledgeRoleBinding(actor.principalId, grant.projectId),
         }) }))
         .filter(grant => grant.permissions.length > 0),
     };
@@ -339,7 +339,7 @@ export class IdentityService {
     const principal = this.store.getPrincipal(input.principalId);
     const project = this.store.getKnowledgeProject(input.projectId);
     const permissions = [...new Set(input.permissions)].sort();
-    if (!principal || principal.status !== "active" || principal.kind === "worker" || principal.kind === "installation") {
+    if (!principal || principal.status !== "active" || !["owner", "agent"].includes(principal.kind)) {
       throw new IdentityError("invalid_request", "Grant można nadać wyłącznie aktywnemu właścicielowi lub agentowi.");
     }
     if (!project || project.status !== "active") {
@@ -367,6 +367,7 @@ export class IdentityService {
 
   revokeKnowledgeGrant(principalId: string, projectId: string, actor: AuthenticatedPrincipal): KnowledgeProjectGrant {
     this.requireOwnerSession(actor);
+    if (this.store.getPrincipal(principalId)?.kind === "human") throw new IdentityError("invalid_request", "Use protected human membership operations.");
     const grant = this.store.getKnowledgeProjectGrant(principalId, projectId);
     if (!grant || grant.revokedAt !== null) throw new IdentityError("invalid_request", "Nie znaleziono aktywnego grantu.");
     const revoked = { ...grant, revokedAt: this.clock() };
@@ -404,8 +405,14 @@ export class IdentityService {
       project: knowledge ? this.store.getKnowledgeProject(resource.id) : null,
       grant: knowledge ? this.store.getKnowledgeProjectGrant(actor.principalId, resource.id) : null,
       binding: knowledge ? this.store.getKnowledgeRoleBinding(actor.principalId, resource.id) : null,
+      ordinaryHuman: this.store.getPrincipal(actor.principalId)?.kind === "human",
       allowArchived: context.allowArchived,
     })) throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
+  }
+
+  authorizeKnowledgeRuntimeLink(actor: AuthenticatedPrincipal): void {
+    this.requireCurrentAuthentication(actor);
+    if (this.store.getPrincipal(actor.principalId)?.kind === "human") throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
   }
 
   private subject(actor: AuthenticatedPrincipal): AuthorizationSubject {
@@ -619,6 +626,7 @@ export class IdentityService {
     const parsed = revokeKnowledgeRoleSchema.safeParse(value);
     if (!parsed.success) throw new IdentityError("invalid_request", "Nieprawidłowe przypisanie roli.");
     const input = parsed.data;
+    if (this.store.getPrincipal(input.principalId)?.kind === "human") throw new IdentityError("invalid_request", "Use protected human membership operations.");
     const current = this.store.getKnowledgeRoleBinding(input.principalId, input.projectId);
     if (!current || current.revokedAt !== null || current.revision !== input.expectedRevision) {
       throw new IdentityError("role_revision_conflict", "Nieaktualna rewizja przypisania roli.");

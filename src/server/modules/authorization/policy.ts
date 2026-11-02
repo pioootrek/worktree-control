@@ -12,18 +12,22 @@ const rolePermissions: Record<KnowledgeRole, readonly KnowledgePermission[]> = {
   manager: knowledgePermissions,
 };
 export interface KnowledgeAuthority {
+  /** Current stored kind from IdentityService, never a request claim. */
+  ordinaryHuman?: boolean;
   grant: { principalId: string; projectId: string; permissions: readonly KnowledgePermission[]; revokedAt: string | null } | null;
   binding: KnowledgeRoleBinding | null;
 }
 
 /** Trusted application facts only. Roles restrict grants; they never create access. */
 export function effectiveKnowledgePermissions(subject: AuthorizationSubject, projectId: string, authority: KnowledgeAuthority): KnowledgePermission[] {
-  const { grant, binding } = authority;
+  const { grant, binding, ordinaryHuman } = authority;
+  if (ordinaryHuman && (!binding || !["reader", "operator"].includes(binding.role))) return [];
   if (subject.kind !== "human" && subject.kind !== "agent") return [];
   if (!grant || grant.principalId !== subject.id || grant.projectId !== projectId || grant.revokedAt !== null) return [];
   if (binding && (binding.principalId !== subject.id || binding.projectId !== projectId || binding.revokedAt !== null
     || (binding.role === "manager" && subject.kind !== "human"))) return [];
-  return knowledgePermissions.filter(permission => grant.permissions.includes(permission)
+  return knowledgePermissions.filter(permission => (!ordinaryHuman || permission === "knowledge:read" || permission === "knowledge:write")
+    && grant.permissions.includes(permission)
     && (!binding || rolePermissions[binding.role]?.includes(permission))
     && (permission !== "knowledge:approve" || (subject.kind === "human" && subject.humanSession)));
 }

@@ -36,6 +36,8 @@ export interface ProviderAccountState {
 
 /** Nonsecret current-state projection. Holds digests, never tokens, passwords or ciphertext. */
 export interface ProviderSessionState {
+  principalKind: "owner" | "human";
+  mappingLinkedAt: string;
   subject: string;
   principalId: string;
   createdAt: string;

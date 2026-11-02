@@ -289,6 +289,7 @@ export class KnowledgeService {
   setRuntimeLink(projectId: string, runtimeProjectId: string | null, expectedRevision: number, options: KnowledgeWriteOptions, actor: AuthenticatedPrincipal): KnowledgeMutationResult<KnowledgeRuntimeLinkResult> {
     this.identity.authorizeKnowledge(actor, projectId, "knowledge:write", { allowArchived: true });
     this.revision(expectedRevision);
+    this.identity.authorizeKnowledgeRuntimeLink(actor);
     const context = this.context("project.runtime_link", projectId, { runtimeProjectId, expectedRevision }, options, actor);
     const replay = this.store.findIdempotentResult<KnowledgeRuntimeLinkResult>("project.runtime_link", context);
     if (replay) return replay;

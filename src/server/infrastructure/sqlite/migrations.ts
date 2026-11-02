@@ -1,3 +1,4 @@
+import { applyHumanPrincipalMigration } from "./human-principal-migration";
 import { applyKnowledgeRoleMigration } from "./knowledge-role-migration";
 import { applyRuntimeAccessMigration } from "./runtime-access-migration";
 import { applyConfigurationRevisionMigration } from "./configuration-revision-migration";
@@ -371,6 +372,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyProviderSessionHistoryMigration(database);
       applyAuthenticationFactorMigration(database);
       applyAuthenticationSessionIssuanceMigration(database);
+      applyHumanPrincipalMigration(database);
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();

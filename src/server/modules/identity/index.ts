@@ -35,3 +35,5 @@ export type {
   PrincipalKind,
   RuntimeAccessStore,
 } from "./contracts";
+
+export { HumanAccountService, HumanAccountError, type HumanAccountStore } from "./human-account-service";

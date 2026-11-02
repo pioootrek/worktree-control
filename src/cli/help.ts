@@ -7,6 +7,8 @@ export const CLI_HELP = [
   "  service            Manage the user service: install, status, start, stop, restart, url, open, uninstall",
   "  auth               Authentication: status, token generate, token rotate, mode set <open|token|better-auth> (applies after service restart)",
   "    provider         Protected maintenance: status [--principal-id ID], configure, owner create, enroll/recover --principal-id ID",
+  "                     human create|list [--limit N --after ID]|disable --principal-id ID",
+  "                     knowledge-access list --principal-id ID [--limit N --after ID]; set|revoke --input-stdin|--input-file PATH",
   "                     configure/enroll/recover require --input-stdin or --input-file ABSOLUTE_PATH (strict private JSON; no secret arguments)",
   "  backup             Installation backups: create, restore, now, list, status, monitor, remote, export-project, import-project, user-cleanup",
   "  project            Registered projects: add <path>, list, remove <id>",

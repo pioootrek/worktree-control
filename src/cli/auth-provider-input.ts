@@ -14,7 +14,7 @@ export function isProviderCommandArgs(args: readonly string[]): boolean {
 
 export function parseProviderArguments(args: readonly string[]) {
   const positional: string[] = [], values = new Map<string, string | true>();
-  const valueFlags = new Set(["--data-dir", "--state-dir", "--principal-id", "--input-file"]);
+  const valueFlags = new Set(["--data-dir", "--state-dir", "--principal-id", "--input-file", "--limit", "--after"]);
   for (let index = 0; index < args.length; index++) {
     const value = args[index]!;
     if (!value.startsWith("-")) { positional.push(value); continue; }
@@ -28,14 +28,18 @@ export function parseProviderArguments(args: readonly string[]) {
   }
   if (positional.shift() !== "provider") throw new ProviderAdminError("invalid_input");
   const action = positional.join(" ");
-  if (!["status", "configure", "owner create", "enroll", "recover"].includes(action)) throw new ProviderAdminError("invalid_input");
-  const sensitive = action === "configure" || action === "enroll" || action === "recover";
+  if (!["status", "configure", "owner create", "enroll", "recover", "human create", "human list", "human disable", "knowledge-access list", "knowledge-access set", "knowledge-access revoke"].includes(action)) throw new ProviderAdminError("invalid_input");
+  const sensitive = action === "configure" || action === "enroll" || action === "recover" || action === "knowledge-access set" || action === "knowledge-access revoke";
   const stdin = values.has("--input-stdin"), file = values.get("--input-file") as string | undefined;
   const principalId = values.get("--principal-id") as string | undefined;
   if (sensitive ? Number(stdin) + Number(Boolean(file)) !== 1 : stdin || file) throw new ProviderAdminError("invalid_input");
-  if ((action === "enroll" || action === "recover") ? !principalId : action !== "status" && principalId) throw new ProviderAdminError("invalid_input");
+  if ((action === "enroll" || action === "recover" || action === "human disable" || action === "knowledge-access list") ? !principalId : action !== "status" && principalId) throw new ProviderAdminError("invalid_input");
   if (principalId && principalId.length > 1024) throw new ProviderAdminError("invalid_input");
-  return { action, principalId, stdin, file, dataDir: values.get("--data-dir") as string | undefined,
+  const limitText = values.get("--limit"), after = values.get("--after") as string | undefined;
+  const page = action === "human list" || action === "knowledge-access list";
+  if (!page && (limitText !== undefined || after !== undefined)) throw new ProviderAdminError("invalid_input");
+  if (limitText !== undefined && (typeof limitText !== "string" || !/^[1-9][0-9]?$/.test(limitText) || Number(limitText) > 20)) throw new ProviderAdminError("invalid_input");
+  return { action, principalId, stdin, file, limit: limitText === undefined ? undefined : Number(limitText), after, dataDir: values.get("--data-dir") as string | undefined,
     stateDir: values.get("--state-dir") as string | undefined };
 }
 
@@ -69,7 +73,10 @@ export async function providerCommandFromArgs(args: string[], input: Readable = 
     try { body = decodeProviderJson(parsed.file ? readPrivateBoundedFile(parsed.file, PROVIDER_INPUT_LIMIT) : await readProviderStdin(input)); }
     catch { throw new ProviderAdminError("invalid_input"); }
   }
-  const action = parsed.action === "owner create" ? "owner-create" : parsed.action;
+  const action = parsed.action.replace(" ", "-");
+  if (action === "human-list" || action === "knowledge-access-list") return parseProviderAdminCommand({ command: "auth-provider", action,
+    input: { ...(parsed.principalId === undefined ? {} : { principalId: parsed.principalId }),
+      ...(parsed.limit === undefined ? {} : { limit: parsed.limit }), ...(parsed.after === undefined ? {} : { after: parsed.after }) } });
   return parseProviderAdminCommand({ command: "auth-provider", action,
     ...(parsed.principalId === undefined ? {} : { principalId: parsed.principalId }),
     ...(parsed.stdin || parsed.file ? { input: body } : {}) });

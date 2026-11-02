@@ -8,7 +8,7 @@ const map = (row: SubjectRow): ProviderSubjectMapping => ({
 });
 
 /**
- * Explicit provider-subject to owner-principal mapping (migration 38). Links
+ * Explicit provider-subject to account-principal mapping (migrations 38/42). Links
  * only by opaque subject ID; audit details hold IDs, never credentials or
  * contact data. Runs on the guarded core handle inside a provider borrow.
  */
@@ -19,6 +19,11 @@ export class AuthenticationProviderQueries implements ProviderSubjectStore {
     return Boolean(this.database.prepare("SELECT 1 FROM remote_principals WHERE id = ? AND kind = 'owner' AND status = 'active'").get(principalId));
   }
 
+  activeAccountKind(principalId: string): "owner" | "human" | null {
+    const row = this.database.prepare("SELECT kind FROM remote_principals WHERE id=? AND kind IN ('owner','human') AND status='active'").get(principalId) as { kind: "owner" | "human" } | undefined;
+    return row?.kind ?? null;
+  }
+
   hasSubjectHistory(principalId: string): boolean {
     return Boolean(this.database.prepare("SELECT 1 FROM authentication_provider_subjects WHERE provider_id = ? AND principal_id = ? LIMIT 1").get(this.providerId, principalId));
   }
@@ -26,7 +31,7 @@ export class AuthenticationProviderQueries implements ProviderSubjectStore {
   link(input: { subject: string; principalId: string; actor: string }): ProviderSubjectMapping {
     return this.database.transaction(() => {
       const principal = this.database.prepare("SELECT kind, status FROM remote_principals WHERE id = ?").get(input.principalId) as { kind: string; status: string } | undefined;
-      if (principal?.kind !== "owner" || principal.status !== "active") throw new AuthenticationProviderError("principal_unavailable", "Only an existing active owner principal can be linked.");
+      if (!principal || !["owner", "human"].includes(principal.kind) || principal.status !== "active") throw new AuthenticationProviderError("principal_unavailable", "Only an existing active account principal can be linked.");
       if (!this.database.prepare('SELECT 1 FROM "authentication_ba_user" WHERE "id" = ?').get(input.subject)) throw new AuthenticationProviderError("invalid_input", "The provider account does not exist.");
       const existing = this.find(input.subject);
       if (existing) {
@@ -34,6 +39,7 @@ export class AuthenticationProviderQueries implements ProviderSubjectStore {
         throw new AuthenticationProviderError("subject_conflict", "The provider account is already linked.");
       }
       if (this.findByPrincipal(input.principalId)) throw new AuthenticationProviderError("subject_conflict", "The principal already has a provider account.");
+      if (this.hasSubjectHistory(input.principalId)) throw new AuthenticationProviderError("subject_conflict", "The principal has provider enrollment history.");
       const now = new Date().toISOString();
       this.database.prepare("INSERT INTO authentication_provider_subjects(provider_id, subject, principal_id, status, linked_at, revoked_at) VALUES (?, ?, ?, 'active', ?, NULL)")
         .run(this.providerId, input.subject, input.principalId, now);
@@ -54,7 +60,7 @@ export class AuthenticationProviderQueries implements ProviderSubjectStore {
   resolveActivePrincipal(subject: string): string | null {
     const row = this.database.prepare(`SELECT s.principal_id FROM authentication_provider_subjects s
       JOIN remote_principals p ON p.id = s.principal_id
-      WHERE s.provider_id = ? AND s.subject = ? AND s.status = 'active' AND s.revoked_at IS NULL AND p.kind = 'owner' AND p.status = 'active'`)
+      WHERE s.provider_id = ? AND s.subject = ? AND s.status = 'active' AND s.revoked_at IS NULL AND p.kind IN ('owner','human') AND p.status = 'active'`)
       .get(this.providerId, subject) as { principal_id: string } | undefined;
     return row?.principal_id ?? null;
   }

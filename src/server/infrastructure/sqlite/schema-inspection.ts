@@ -1,3 +1,4 @@
+import { humanPrincipalMigration, humanPrincipalChecksum } from "./human-principal-migration";
 import { knowledgeRoleMigration, knowledgeRoleChecksum } from "./knowledge-role-migration";
 import { runtimeAccessMigration, runtimeAccessChecksum } from "./runtime-access-migration";
 import { configurationRevisionMigration, configurationRevisionChecksum } from "./configuration-revision-migration";
@@ -146,6 +147,7 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : x.version === 39 ? x.name !== providerSessionHistoryMigration.name || x.checksum !== providerSessionHistoryChecksum
       : x.version === 40 ? x.name !== authenticationFactorMigration.name || x.checksum !== authenticationFactorChecksum
       : x.version === 41 ? x.name !== authenticationSessionIssuanceMigration.name || x.checksum !== authenticationSessionIssuanceChecksum
+      : x.version === 42 ? x.name !== humanPrincipalMigration.name || x.checksum !== humanPrincipalChecksum
       : true)) refuse("migration checksum or name");
   }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));
@@ -165,12 +167,15 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       if (version >= (columnVersions[`${table}.${column.name}`] ?? introduced) && !columns.some(x => x.name === column.name)) refuse();
     }
     const actualChecks = checks((database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql);
+    if (table === "remote_principals" && version < 42
+      && (actualChecks.some(check => check.includes("'human'")) || database.prepare("SELECT 1 FROM remote_principals WHERE kind='human' LIMIT 1").get())) refuse("human principal precedes migration 42");
     const historicalLease = table === "reservations" && actualChecks.includes(historicalLeaseCheck);
     // A known historical expression must not hide additional, unknown CHECKs.
     if (historicalLease && (actualChecks.length !== 2 || !actualChecks.includes("kindin('human','agent')"))) refuse("constraint in reservations: lease");
     for (let check of expected.checks) {
       if (table === "projects" && version < 30) check = check.replace(",'none'", "");
       if (table === "test_runs" && version < 30) check = check.replace(",'godot'", "");
+      if (table === "remote_principals" && version < 42) check = check.replace(",'human'", "");
       if (table === "remote_principals" && version < 25) check = check.replace(",'installation'", "");
       if (table === "knowledge_history" && version < 39) check = check.replace(",'provider_session'", "");
       if (table === "knowledge_history" && version < 25) check = check.replace(",'installation_token','none'", "");

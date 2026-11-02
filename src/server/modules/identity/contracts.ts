@@ -2,7 +2,7 @@ import type { KnowledgePermission, KnowledgeRoleBinding } from "@/shared/contrac
 import type { KnowledgeProject } from "@/shared/contracts/knowledge";
 import type { RuntimeAccessEntry, RuntimeCredentialScope, RuntimeDelegation } from "@/shared/contracts/runtime-access";
 /** `installation` is the single installation-wide authority; it never holds credentials or grants. */
-export type PrincipalKind = "owner" | "agent" | "worker" | "installation";
+export type PrincipalKind = "owner" | "human" | "agent" | "worker" | "installation";
 export type IdentityStatus = "active" | "revoked";
 
 export interface Principal {
@@ -45,7 +45,7 @@ declare const providerSessionActor: unique symbol;
 export interface ProviderSessionActor {
   readonly [providerSessionActor]: true;
   readonly principalId: string;
-  readonly principalKind: "owner";
+  readonly principalKind: "owner" | "human";
   readonly credentialId: null;
   readonly authenticationMethod: "provider_session";
 }

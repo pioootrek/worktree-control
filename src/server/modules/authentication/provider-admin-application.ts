@@ -1,5 +1,5 @@
 import type { DatabaseAdmission } from "../../database-admission";
-import type { Principal } from "../identity";
+import type { HumanAccountService, Principal } from "../identity";
 import type { AuthenticationService } from "./authentication-service";
 import type { AuthenticationProviderRuntime } from "./provider-runtime";
 import { parseProviderAdminCommand, ProviderAdminError, providerAdminFailure, type ProviderConfigurationInput } from "./provider-admin-commands";
@@ -32,6 +32,7 @@ export class ProviderAdminApplication {
     configuration: ProviderConfigurationPort; identity: ProviderAdministrationIdentity;
     runtime: ProviderAdministrationRuntime; maintenance(): boolean;
     actor: "local-cli" | "local-admin";
+    humans: HumanAccountService;
   }) {}
 
   async execute(body: unknown): Promise<unknown> {
@@ -57,6 +58,12 @@ export class ProviderAdminApplication {
         return { configured: true, configurationRestartRequired: d.runtime.configurationRestartRequired(d.configuration.read()) };
       });
       if (request.action === "owner-create") return await phase(() => ({ principal: d.identity.createOwner(d.actor) }));
+      if (request.action === "human-create") return await phase(() => ({ principal: d.humans.create() }));
+      if (request.action === "human-list") return await phase(() => d.humans.list(request.input));
+      if (request.action === "human-disable") return await phase(() => d.humans.disable(request.principalId));
+      if (request.action === "knowledge-access-list") return await phase(() => d.humans.memberships(request.input));
+      if (request.action === "knowledge-access-set") return await phase(() => d.humans.set(request.input));
+      if (request.action === "knowledge-access-revoke") return await phase(() => d.humans.revoke(request.input));
       const material = await phase(() => {
         const current = d.configuration.read();
         if (!current) throw new ProviderAdminError("configuration_missing");
