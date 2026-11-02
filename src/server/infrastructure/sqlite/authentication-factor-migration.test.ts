@@ -8,11 +8,7 @@ import { openControllerStore } from "@/server/controller-storage";
 import { authenticationFactorChecksum, authenticationFactorMigration } from "./authentication-factor-migration";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
-import { SqliteStateStore as UntimedSqliteStateStore } from "./sqlite-state-store";
-
-import { timedSqliteStore, recordTiming } from "@/server/sqlite-timing-diagnostic";
-type SqliteStateStore = UntimedSqliteStateStore;
-const SqliteStateStore = timedSqliteStore(UntimedSqliteStateStore);
+import { SqliteStateStore } from "./sqlite-state-store";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -24,8 +20,7 @@ function directory() {
   return { root, path: join(root, "data", "state.sqlite3") };
 }
 function raw<T>(path: string, operation: (db: Database.Database) => T): T {
-  const started = performance.now();
-  const db = new Database(path); try { return operation(db); } finally { db.close(); recordTiming("raw-fixture", started); }
+  const db = new Database(path); try { return operation(db); } finally { db.close(); }
 }
 /** A genuine schema 39 holding a password account, a live session and a grant. */
 function genuine39() {

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "./controller-backup";
-import { acquireDatabaseOwnership, SqliteStateStore as UntimedSqliteStateStore, SUPPORTED_SCHEMA_VERSION } from "./infrastructure/sqlite";
+import { acquireDatabaseOwnership, SqliteStateStore, SUPPORTED_SCHEMA_VERSION } from "./infrastructure/sqlite";
 import { IdentityService } from "./modules/identity";
 import { KnowledgeAttachmentService, KnowledgeService } from "./modules/knowledge";
 import { BACKUP_LIMITS, hashFile } from "./infrastructure/sqlite";
@@ -17,16 +17,11 @@ import { getOwnedRestoreStatus, prepareOwnedRestore, recoverOwnedRestore, restor
 import { executeControllerRestoreRequest, getControllerRestoreRequestStatus, requestControllerRestore } from "./restore-requests";
 
 vi.mock("node:fs", async importOriginal => ({ ...await importOriginal<typeof import("node:fs")>() }));
-import { timedSqliteStore, recordTiming } from "@/server/sqlite-timing-diagnostic";
-type SqliteStateStore = UntimedSqliteStateStore;
-const SqliteStateStore = timedSqliteStore(UntimedSqliteStateStore);
-
 const roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })); });
 const actor = { actorId: "operator", backupId: "catalog-one", idempotencyKey: "confirmed-one" };
 const bytes = Buffer.from("new attachment bytes"), sha = createHash("sha256").update(bytes).digest("hex");
 async function fixture() {
-  const started = performance.now();
   const root = mkdtempSync(join(tmpdir(), ".restore-crash-")); roots.push(root);
   const source = join(root, "source.sqlite3"), database = join(root, "state.sqlite3"), attachments = join(root, "attachments"), backup = join(root, "backup");
   const store = new SqliteStateStore(source);
@@ -42,11 +37,9 @@ async function fixture() {
   const old = new SqliteStateStore(database); old.addProject({ name: "Old runtime", repositoryPath: root, port: 4568, executable: "pnpm", args: ["dev"] }); old.close();
   mkdirSync(attachments, { mode: 0o700 }); writeFileSync(join(attachments, "retained-orphan"), "old bytes", { mode: 0o600 });
   for (const suffix of ["-wal", "-shm", "-journal", ".initializing"]) writeFileSync(`${database}${suffix}`, `old${suffix}`, { mode: 0o600 });
-  recordTiming("restore-fixture", started);
   return { root, database, attachments, backup, before: readFileSync(database) };
 }
 async function kill(f: Awaited<ReturnType<typeof fixture>>, point: string, mode = "restore") {
-  const ipcStarted = performance.now();
   const child = fork(fileURLToPath(new URL("./infrastructure/sqlite/fixtures/restore-crash-worker.ts", import.meta.url)), [f.root, point, mode], { execArgv: ["--import", "tsx"], stdio: ["ignore", "ignore", "pipe", "ipc"] });
   let stderr = ""; child.stderr?.on("data", data => { stderr += data.toString(); });
   const abort = new AbortController(), timeout = setTimeout(() => abort.abort(), 10_000);
@@ -54,7 +47,6 @@ async function kill(f: Awaited<ReturnType<typeof fixture>>, point: string, mode 
     const message = once(child, "message", { signal: abort.signal });
     const early = once(child, "exit").then(() => { throw new Error(`Restore fixture exited early: ${stderr}`); });
     expect((await Promise.race([message, early]))[0]).toEqual({ point });
-    recordTiming("restore-ipc", ipcStarted);
   } finally {
     clearTimeout(timeout);
     if (child.exitCode === null && child.signalCode === null) { const ended = once(child, "exit"); child.kill("SIGKILL"); expect((await ended)[1]).toBe("SIGKILL"); }
