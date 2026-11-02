@@ -47,8 +47,8 @@ describe("A3-I12 native characterization (passing here does not accept MFA)", ()
     expect(f.ddl.created).toEqual([]);
     expect(f.ddl.added).toEqual([]);
     expect(f.ddl.outstanding).toEqual({ created: 0, added: 0, indexes: 0, problems: 0 });
-    expect(f.storage.storageRevision).toBe(2);
-    expect((await state(f)).schemaVersion).toBe(40);
+    expect(f.storage.storageRevision).toBe(3);
+    expect((await state(f)).schemaVersion).toBe(41);
   });
 
   it("keeps enrollment unverified then rotates the cookie, while the native body contains the deleted token", async () => {

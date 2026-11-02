@@ -234,6 +234,12 @@ export class AuthenticationHttp {
     }
     // A closed response gets nothing, including an error.
     if (!lifetime.open) return;
+    // Headers already on the wire cannot be replaced by an error response.
+    // Preserve may_publish and end the partial response without a second write.
+    if (response.headersSent) { response.destroy(); return; }
+    // A failed success write may have staged its cookie without sending it.
+    // Never carry that credential into the replacement error response.
+    response.removeHeader("Set-Cookie");
     const known = committed ? new AuthenticationProviderError("outcome_committed", "The change committed.", true) : error;
     const { status, code, committed: proven } = failure(known, knowledge);
     if (status === 429 || status === 503) response.setHeader("Retry-After", status === 429 ? "60" : "1");

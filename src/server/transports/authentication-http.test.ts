@@ -39,6 +39,7 @@ function outgoing() {
   const headers = new Map<string, unknown>();
   return Object.assign(new EventEmitter(), { headers, status: 0, body: {}, writableFinished: false, destroyed: false,
     setHeader(name: string, value: unknown) { headers.set(name.toLowerCase(), value); },
+    removeHeader(name: string) { headers.delete(name.toLowerCase()); },
     writeHead(status: number) { this.status = status; return this; },
     end(body: string) { this.body = JSON.parse(body); },
   });
@@ -54,6 +55,18 @@ function adapter() {
   return { value, browser };
 }
 describe("authentication request lifetime and socket peer", () => {
+  it("closes a partially sent response without attempting a replacement error write", async () => {
+    const f = adapter(), response = Object.assign(outgoing(), { headersSent: false, destroy: vi.fn() });
+    response.destroy.mockImplementation(() => { response.destroyed = true; response.emit("close"); });
+    const writes = vi.spyOn(response, "writeHead").mockImplementation(() => {
+      response.headersSent = true;
+      throw new Error("fixture partial response");
+    });
+    await expect(f.value.handle(incoming("127.0.0.1") as never, response as never)).resolves.toBe(true);
+    expect(writes).toHaveBeenCalledTimes(1);
+    expect(response.destroy).toHaveBeenCalledOnce();
+  });
+
   it.each([undefined, "not-an-address"])("fails closed without a valid socket peer: %s", async peer => {
     const f = adapter(), response = outgoing();
     await f.value.handle(incoming(peer) as never, response as never);

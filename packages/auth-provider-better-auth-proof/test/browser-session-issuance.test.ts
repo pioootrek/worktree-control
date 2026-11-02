@@ -135,6 +135,7 @@ describe("durable publication", () => {
     });
     const result = await signIn(f.client());
     expect(result.status).toBe(500);
+    expect(result.headers["set-cookie"]).toBeUndefined();
     expect(await markers(f)).toEqual([expect.objectContaining({ state: "may_publish" })]);
     expect(count(f.path, "authentication_ba_session")).toBe(1);
     await f.http.close();
