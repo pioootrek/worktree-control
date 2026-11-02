@@ -1,140 +1,61 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import { runWithTransaction, queueAfterTransactionHook } from "@better-auth/core/context";
-import { betterAuth, type BetterAuthOptions } from "better-auth";
-import { APIError, createAuthMiddleware } from "better-auth/api";
+import { betterAuth } from "better-auth";
 import { Kysely, SqliteDialect } from "kysely";
 import type {
   AuthenticationProviderHost,
   AuthenticationProviderInstance,
   AuthenticationProviderModule,
-  AuthenticationProviderOptions,
   AuthenticationProviderReadiness,
   LocalProvisionInput,
   LocalRecoveryInput,
+  ProviderInvalidation,
+  ProviderSqliteConnection,
   VerifiedProviderSession,
 } from "../../../src/server/modules/authentication/provider-contract";
+import { COOKIE, denied, FACTOR_ROUTES, FactorCeremonies, fixed, issuedCookie, parseCookies, Rollback, signedValue, type CeremonyOperation, type ScopedLibrary } from "./factor-ceremonies";
+import { libraryOptions, type LibraryCallbacks, type ProofFaultInjection, type ProofOptions } from "./library";
+
+export type { ProofFaultInjection } from "./library";
 
 /** Exact pinned library this proof was verified against. */
 export const BETTER_AUTH_VERSION = "1.7.14";
 const PROVIDER_ID = "better-auth";
-const IMPLEMENTATION_VERSION = "0.0.0-proof.2";
+const IMPLEMENTATION_VERSION = "0.0.0-proof.3";
 
-/** Model names frozen in controller migration 38. */
-const MODELS = {
-  user: "authentication_ba_user",
-  session: "authentication_ba_session",
-  account: "authentication_ba_account",
-  verification: "authentication_ba_verification",
-} as const;
+/** Native password routes that create no session. Every other path is refused below. */
+const NATIVE_ROUTES = new Map([
+  ["/get-session", "GET"], ["/sign-out", "POST"], ["/request-password-reset", "POST"], ["/reset-password", "POST"], ["/revoke-sessions", "POST"], ["/update-user", "POST"],
+]);
 
-/**
- * Proof-only fault points inside real library transactions. Never set outside
- * tests; the controller contract does not know about them.
- */
-export interface ProofFaultInjection {
-  afterProvisionedUser?: () => Promise<void>;
-  afterDispose?: () => Promise<void>;
-  beforeSessionDelete?: () => Promise<void>;
-  beforeRecoveryCommit?: () => Promise<void>;
-  /** Runs in the library's account update hook, inside its password transaction. */
-  beforePasswordWrite?: () => Promise<void>;
-  /** Makes the library expect a user column that controller storage lacks. */
-  expectUnmigratedColumn?: boolean;
-}
-type ProofOptions = AuthenticationProviderOptions & { faultInjection?: ProofFaultInjection };
-
-/**
- * Proposed proof settings, not approved product defaults: 8-hour sessions,
- * 15-minute reset tokens, 12–256 character passwords and per-IP limits.
- */
-function libraryOptions(host: AuthenticationProviderHost, options: ProofOptions, database: Kysely<never>) {
-  const base = new URL(options.baseURL);
-  if (base.protocol !== "https:" && base.hostname !== "localhost") throw new Error("Provider base URL must use HTTPS.");
-  if (options.secret.length < 32) throw new Error("Provider secret is too short.");
+/** Tracks the real transaction state, including a failed COMMIT. SQL fault seam for tests only. */
+function trackedConnection(connection: ProviderSqliteConnection, state: { open: boolean }, faults: ProofFaultInjection | undefined): ProviderSqliteConnection {
+  const execute = <T>(sql: string, work: () => T): T => {
+    const fault = faults?.sqlFault;
+    if (fault?.afterSql?.test(sql)) fault.armed = true;
+    const matches = fault && (!fault.afterSql || fault.armed) && fault.remaining > 0 && fault.sql.test(sql);
+    const fail = () => { fault!.remaining--; throw new Error("Fixture SQL boundary."); };
+    if (matches && fault.when === "before") fail();
+    const result = work();
+    const verb = sql.trim().toLowerCase();
+    if (verb === "begin") state.open = true;
+    if (verb === "commit" || verb === "rollback") state.open = false;
+    if (matches && fault.when === "after") fail();
+    return result;
+  };
   return {
-    appName: "Worktree Control",
-    baseURL: base.origin,
-    basePath: base.pathname.replace(/\/+$/, "") || "/api/auth",
-    secret: options.secret,
-    database: { db: database, type: "sqlite", transaction: true },
-    user: {
-      modelName: MODELS.user,
-      ...(options.faultInjection?.expectUnmigratedColumn ? { additionalFields: { proofUnmigrated: { type: "string" as const, required: false } } } : {}),
+    prepare(sql) {
+      const statement = connection.prepare(sql);
+      return {
+        reader: statement.reader,
+        all: parameters => execute(sql, () => statement.all(parameters)),
+        run: parameters => execute(sql, () => statement.run(parameters)),
+        iterate: parameters => execute(sql, () => statement.iterate(parameters)),
+      };
     },
-    session: {
-      modelName: MODELS.session,
-      expiresIn: 8 * 60 * 60,
-      updateAge: 60 * 60,
-      freshAge: 10 * 60,
-      cookieCache: { enabled: false },
-    },
-    account: { modelName: MODELS.account, accountLinking: { enabled: false } },
-    verification: { modelName: MODELS.verification, storeIdentifier: "hashed" },
-    emailAndPassword: {
-      enabled: true,
-      disableSignUp: true,
-      autoSignIn: false,
-      minPasswordLength: 12,
-      maxPasswordLength: 256,
-      revokeSessionsOnPasswordReset: true,
-      resetPasswordTokenExpiresIn: 15 * 60,
-      ...(options.passwordResetDelivery ? {
-        sendResetPassword: async ({ user, token }: { user: { id: string }; token: string }) => {
-          await options.passwordResetDelivery!({ subject: user.id, token });
-        },
-      } : {}),
-    },
-    trustedOrigins: [base.origin],
-    rateLimit: {
-      enabled: true,
-      storage: "memory",
-      window: 60,
-      max: 100,
-      customRules: {
-        "/sign-in/email": { window: 60, max: 5 },
-        "/request-password-reset": { window: 60, max: 3 },
-        "/reset-password": { window: 60, max: 5 },
-        "/change-password": { window: 60, max: 5 },
-      },
-    },
-    advanced: {
-      useSecureCookies: true,
-      cookiePrefix: "wtc",
-      disableCSRFCheck: false,
-      disableOriginCheck: false,
-      defaultCookieAttributes: { httpOnly: true, secure: true, sameSite: "strict" },
-      ipAddress: { ipAddressHeaders: [options.clientIpHeader] },
-      database: { validateSchema: true },
-    },
-    telemetry: { enabled: false },
-    // Better Call otherwise console.error's arbitrary exceptions after its default handler.
-    // Rethrow through our handle boundary so only fixed events leave this package.
-    onAPIError: { throw: true },
-    logger: { level: "warn", log: (level: "error" | "warn" | "info" | "debug", message: string) => host.log(level, message) },
-    hooks: {
-      before: createAuthMiddleware(async context => {
-        // Password changes always end every other session.
-        if (context.path === "/change-password" && (context.body as { revokeOtherSessions?: unknown } | undefined)?.revokeOtherSessions !== true) {
-          throw new APIError("BAD_REQUEST", { message: "Password changes must revoke other sessions." });
-        }
-      }),
-    },
-    databaseHooks: {
-      account: {
-        update: {
-          before: async () => { await options.faultInjection?.beforePasswordWrite?.(); },
-        },
-      },
-      session: {
-        delete: {
-          before: async () => { await options.faultInjection?.beforeSessionDelete?.(); },
-          // Better Auth queues `after` hooks until the surrounding transaction commits.
-          after: async (session: { id: string; userId: string }) => {
-            host.invalidated({ kind: "session", providerId: PROVIDER_ID, sessionId: session.id, subject: session.userId });
-          },
-        },
-      },
-    },
-  } satisfies BetterAuthOptions;
+    close() { connection.close(); },
+  };
 }
 
 const iso = (value: Date | string) => new Date(value).toISOString();
@@ -142,19 +63,60 @@ const iso = (value: Date | string) => new Date(value).toISOString();
 class BetterAuthProofProvider implements AuthenticationProviderInstance {
   readonly #host: AuthenticationProviderHost;
   readonly #options: ProofOptions;
+  readonly #operation = new AsyncLocalStorage<CeremonyOperation>();
+  readonly #notifications = new AsyncLocalStorage<ProviderInvalidation[]>();
+  readonly #active = new AsyncLocalStorage<ReturnType<BetterAuthProofProvider["createLibrary"]>>();
+  readonly #transaction = { open: false };
+  readonly #ceremonies: FactorCeremonies;
+  #connection: ProviderSqliteConnection | undefined;
   #database: Kysely<never> | undefined;
-  #auth: ReturnType<typeof betterAuth<ReturnType<typeof libraryOptions>>> | undefined;
+  #auth: ReturnType<BetterAuthProofProvider["createLibrary"]> | undefined;
   #disposal: Promise<void> | undefined;
 
   constructor(host: AuthenticationProviderHost, options: ProofOptions) {
     this.#host = host;
     this.#options = options;
+    this.#ceremonies = new FactorCeremonies({
+      protection: host.protection,
+      baseURL: options.baseURL,
+      clientIpHeader: options.clientIpHeader,
+      connection: () => this.#connection!,
+      faults: () => this.#options.faultInjection,
+      transactionOpen: () => this.#transaction.open,
+      root: () => this.#ready() as unknown as ScopedLibrary,
+      commit: work => this.#database!.transaction().execute(async () => work()),
+      atomic: input => this.#atomic(input),
+      withOperation: (operation, work) => this.#operation.run(operation, work),
+    });
+  }
+
+  createLibrary(database: Kysely<never>, transaction = true) {
+    const callbacks: LibraryCallbacks = {
+      sessionCreating: session => {
+        const operation = this.#operation.getStore();
+        if (operation) {
+          operation.subject = session.userId;
+          operation.origin = { authenticatedAt: iso(session.createdAt), originalDeadline: iso(session.expiresAt) };
+        }
+        return this.#options.faultInjection?.vetoSession ? false : undefined;
+      },
+      sessionDeleted: async session => {
+        const event: ProviderInvalidation = { kind: "session", providerId: PROVIDER_ID, sessionId: session.id, subject: session.userId };
+        const buffered = this.#notifications.getStore();
+        if (buffered) buffered.push(event); else this.#host.invalidated(event);
+      },
+      beforeNative: async path => { const operation = this.#operation.getStore(); if (operation) await this.#ceremonies.beforeNative(operation, path); },
+      registered: input => { this.#ceremonies.registered(this.#operation.getStore(), input); },
+      authenticated: input => { this.#ceremonies.authenticated(this.#operation.getStore(), input); },
+    };
+    return betterAuth(libraryOptions(this.#host, this.#options, database, callbacks, transaction));
   }
 
   /** Builds the library inside the initialization borrow and awaits its own schema check. */
   async initialize(): Promise<AuthenticationProviderReadiness> {
-    this.#database = new Kysely<never>({ dialect: new SqliteDialect({ database: this.#host.connection }) });
-    this.#auth = betterAuth(libraryOptions(this.#host, this.#options, this.#database));
+    this.#connection = trackedConnection(this.#host.connection, this.#transaction, this.#options.faultInjection);
+    this.#database = new Kysely<never>({ dialect: new SqliteDialect({ database: this.#connection }) });
+    this.#auth = this.createLibrary(this.#database);
     const context = await this.#auth.$context;
     // Construction only starts this check and logs failures; readiness must await it.
     if (typeof context.checkSchema !== "function") throw new Error("Library schema verification is unavailable.");
@@ -172,35 +134,164 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
     return { providerId: PROVIDER_ID, implementationVersion: IMPLEMENTATION_VERSION, library: { name: "better-auth", version: BETTER_AUTH_VERSION }, schema: "verified" };
   }
 
+  /**
+   * A scoped instance whose every adapter receives the same Kysely transaction,
+   * with nested library transactions off. Its notifications wait in a buffer
+   * until the outer COMMIT is known. Nothing shared is mutated.
+   */
+  async #scoped(database: Kysely<never>) {
+    const scoped = this.createLibrary(database, false);
+    const context = await scoped.$context;
+    await context.checkSchema!();
+    const deleteUserSessions = context.internalAdapter.deleteUserSessions.bind(context.internalAdapter);
+    context.internalAdapter.deleteUserSessions = async subject => {
+      this.#notifications.getStore()?.push({ kind: "subject", providerId: PROVIDER_ID, subject });
+      await deleteUserSessions(subject);
+    };
+    return scoped;
+  }
+
+  /**
+   * One native operation and its controller evidence commit together, or neither
+   * does. An uncertain commit never releases a cookie, and known commit alone
+   * releases notifications. Current authority never depends on those: it reads
+   * committed state at every decision.
+   */
+  async #atomic(input: { attemptId: string; ticket?: unknown; work: (scoped: ScopedLibrary) => Promise<Response> }): Promise<Response> {
+    const notifications: ProviderInvalidation[] = [];
+    const publish = () => { for (const event of notifications) this.#host.invalidated(event); };
+    let response: Response;
+    try {
+      response = await this.#notifications.run(notifications, () => this.#database!.transaction().execute(async trx => {
+        const scoped = await this.#scoped(trx as unknown as Kysely<never>);
+        return this.#active.run(scoped, () => input.work(scoped as unknown as ScopedLibrary));
+      }));
+    } catch (error) {
+      if (this.#transaction.open) return fixed(503, { outcome: "outcome_unconfirmed" });
+      let outcome;
+      try {
+        outcome = this.#host.protection.outcome(input.attemptId);
+        if (outcome !== "succeeded" && input.ticket) this.#host.protection.fail(input.attemptId);
+      } catch { return fixed(503, { outcome: "outcome_unconfirmed" }); }
+      if (outcome === "succeeded") {
+        publish();
+        return fixed(503, { outcome: "completion_receipt", committed: true });
+      }
+      if (error instanceof Rollback) return error.response;
+      this.#host.log("error", "Authentication provider transaction failed.");
+      return fixed(500, { outcome: "rolled_back", committed: false });
+    }
+    publish();
+    return response;
+  }
+
   async handle(request: Request): Promise<Response> {
     const base = new URL(this.#options.baseURL);
+    const url = new URL(request.url);
     // The library trusts the configured base URL; refuse any other Host here.
-    if (new URL(request.url).origin !== base.origin) return new Response(null, { status: 421 });
-    try { return await this.#ready().handler(request); }
-    catch { this.#host.log("error", "Authentication provider request failed."); return new Response(null, { status: 500 }); }
+    if (url.origin !== base.origin) return new Response(null, { status: 421 });
+    try {
+      const path = url.pathname.startsWith(`${base.pathname}/`) ? url.pathname.slice(base.pathname.length) : "";
+      const factor = FACTOR_ROUTES.get(path);
+      if (factor) return factor.method === request.method && !url.search ? await this.#ceremonies.handle(factor, request) : denied(404, "not_found");
+      if (path === "/sign-in/email" && request.method === "POST") return await this.#signIn(request);
+      if (path === "/change-password" && request.method === "POST") return await this.#changePassword(request);
+      if (NATIVE_ROUTES.get(path) !== request.method) return denied(404, "not_found");
+      return await this.#ready().handler(request);
+    } catch (error) {
+      if (typeof error === "object" && error && "committed" in error && error.committed === true) throw error;
+      this.#host.log("error", "Authentication provider request failed.");
+      return new Response(null, { status: 500 });
+    }
+  }
+
+  /** The same request without cookies, so no trust cookie can select a native branch. */
+  async #cookieless(request: Request, cookie?: string): Promise<Request> {
+    const headers = new Headers(request.headers);
+    headers.delete("cookie");
+    if (cookie) headers.set("cookie", cookie);
+    return new Request(request.url, { method: "POST", headers, body: await request.text(), signal: request.signal });
+  }
+
+  /** Native evidence for what it verified, in the transaction that creates the session. */
+  async #signIn(request: Request): Promise<Response> {
+    const forwarded = await this.#cookieless(request), attemptId = randomUUID();
+    const operation: CeremonyOperation = { signal: request.signal };
+    return this.#atomic({ attemptId, work: scoped => this.#operation.run(operation, async () => {
+      const native = await scoped.handler(forwarded);
+      await this.#options.faultInjection?.factorPause?.("after-native", this.#connection!);
+      if (request.signal.aborted) throw new Rollback(denied(409, "cancelled"));
+      if (!native.ok) throw new Rollback(native);
+      const lines = native.headers.getSetCookie();
+      const result = await native.clone().json().catch(() => null) as { twoFactorRedirect?: unknown } | null;
+      if (result?.twoFactorRedirect === true) {
+        const opaque = issuedCookie(lines, COOKIE.challenge);
+        const pending = opaque && await (await scoped.$context).internalAdapter.findVerificationValue(signedValue(opaque));
+        const { subject, origin } = operation;
+        if (!opaque || !pending || !subject || !origin || pending.value !== subject) throw new Rollback(denied(500, "challenge_unconfirmed"));
+        if (!this.#host.protection.issueTotpLogin({ opaque, subject, nativeId: pending.id, nativeDeadline: new Date(pending.expiresAt).getTime(), ...origin, now: Date.now() })) throw new Rollback(denied(403, "protection_required"));
+        await this.#options.faultInjection?.factorPause?.("before-commit", this.#connection!);
+        if (request.signal.aborted) throw new Rollback(denied(409, "cancelled"));
+        return fixed(200, { outcome: "challenge" }, lines.filter(line => line.startsWith(`${COOKIE.challenge}=`)));
+      }
+      const issued = issuedCookie(lines, COOKIE.session);
+      const current = issued && await scoped.api.getSession({ headers: new Headers({ cookie: `${COOKIE.session}=${issued}` }), query: { disableCookieCache: true, disableRefresh: true } });
+      if (!current) throw new Rollback(denied(500, "session_unconfirmed"));
+      // A selected method is an alternative to this password, never something it can skip.
+      if (!this.#host.protection.recordPasswordSession({ sessionId: current.session.id, subject: current.user.id, attemptId, now: Date.now() })) throw new Rollback(denied(403, "protection_required"));
+      await this.#options.faultInjection?.factorPause?.("before-commit", this.#connection!);
+      if (request.signal.aborted) throw new Rollback(denied(409, "cancelled"));
+      return native;
+    }) });
+  }
+
+  /** Native replaces the session; the replacement inherits the original authentication and deadline. */
+  async #changePassword(request: Request): Promise<Response> {
+    const cookies = parseCookies(request.headers.get("cookie"));
+    const session = cookies?.get(COOKIE.session);
+    const cookie = session ? `${COOKIE.session}=${session}` : undefined;
+    const forwarded = await this.#cookieless(request, cookie), attemptId = randomUUID();
+    return this.#atomic({ attemptId, work: async scoped => {
+      const before = cookie ? await scoped.api.getSession({ headers: new Headers({ cookie }), query: { disableCookieCache: true, disableRefresh: true } }) : null;
+      const evidence = before && this.#host.protection.currentEvidence(before.session.id, Date.now());
+      if (before && !evidence) throw new Rollback(denied(401, "session_refused"));
+      const native = await scoped.handler(forwarded);
+      if (!native.ok || !evidence) throw new Rollback(native);
+      const issued = issuedCookie(native.headers.getSetCookie(), COOKIE.session);
+      const current = issued && await scoped.api.getSession({ headers: new Headers({ cookie: `${COOKIE.session}=${issued}` }), query: { disableCookieCache: true, disableRefresh: true } });
+      if (!current || current.user.id !== evidence.subject) throw new Rollback(denied(500, "session_unconfirmed"));
+      this.#host.protection.inheritSession(evidence, { sessionId: current.session.id, attemptId });
+      return native;
+    } });
+  }
+
+  async #nativeSession(headers: Headers) {
+    return this.#ready().api.getSession({ headers, query: { disableCookieCache: true } });
   }
 
   async signOut(request: Request): Promise<Response> {
     // Keep the real handler's CSRF and limiter. Its deletion failure can be swallowed.
-    const session = await this.resolveSession(request.headers);
+    const session = await this.#nativeSession(request.headers);
     const response = await this.handle(request);
     if (!response.ok) return response;
-    if (session) await this.revokeSession(session.sessionId);
-    if (await this.resolveSession(request.headers)) throw new Error("Session deletion was not confirmed.");
+    if (session) await this.revokeSession(session.session.id);
+    if (await this.#nativeSession(request.headers)) throw new Error("Session deletion was not confirmed.");
     return response;
   }
 
+  /** A native session authorizes only through current controller evidence. */
   async resolveSession(headers: Headers): Promise<VerifiedProviderSession | null> {
-    const result = await this.#ready().api.getSession({ headers, query: { disableCookieCache: true } });
-    if (!result) return null;
-    // Email and password is the only enabled sign-in method.
+    const result = await this.#nativeSession(headers);
+    const evidence = result && this.#host.protection.currentEvidence(result.session.id, Date.now());
+    if (!result || !evidence) return null;
+    const authentication = evidence.method === "password" ? { method: "password", factors: 1 } as const : { method: evidence.method, factors: 2 } as const;
     return {
       providerId: PROVIDER_ID,
       sessionId: result.session.id,
       subject: result.user.id,
       createdAt: iso(result.session.createdAt),
       expiresAt: iso(result.session.expiresAt),
-      authentication: { method: "password", factors: 1 },
+      authentication,
     };
   }
 
@@ -253,6 +344,7 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
       const database = this.#database;
       this.#auth = undefined;
       this.#database = undefined;
+      this.#connection = undefined;
       // Kysely's destroy calls the borrowed facade's close, never SQLite's.
       await database?.destroy();
       await this.#options.faultInjection?.afterDispose?.();
@@ -262,7 +354,7 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
 
   #ready() {
     if (!this.#auth || this.#disposal) throw new Error("Provider is not initialized.");
-    return this.#auth;
+    return this.#active.getStore() ?? this.#auth;
   }
 
   #assertPassword(config: { minPasswordLength: number; maxPasswordLength: number }, password: string): void {
@@ -271,10 +363,10 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
 }
 
 export const authenticationProvider: AuthenticationProviderModule = {
-  contractVersion: 2,
+  contractVersion: 3,
   providerId: PROVIDER_ID,
   implementationVersion: IMPLEMENTATION_VERSION,
-  storageRevision: 1,
+  storageRevision: 2,
   create(host, options) {
     return new BetterAuthProofProvider(host, options);
   },

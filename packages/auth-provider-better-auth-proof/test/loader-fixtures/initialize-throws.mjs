@@ -1,6 +1,6 @@
 const methods = ["handle", "signOut", "resolveSession", "provisionLocal", "recoverLocal", "revokeSession", "revokeSubjectSessions"];
 export const authenticationProvider = {
-  contractVersion: 2, providerId: "better-auth", implementationVersion: "1", storageRevision: 1,
+  contractVersion: 3, providerId: "better-auth", implementationVersion: "1", storageRevision: 2,
   create(host) {
     const probe = globalThis.__loaderProbe = { host, disposed: 0, statements: [] };
     const instance = Object.fromEntries(methods.map(name => [name, async () => { throw new Error("unused"); }]));

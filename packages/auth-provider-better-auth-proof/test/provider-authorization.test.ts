@@ -54,7 +54,7 @@ async function fence(f: Fixture, mutation?: (connection: ProviderSqliteConnectio
 }
 
 describe("runtime-issued provider-session Knowledge application", () => {
-  it("caps an actor at its original expiry even if the stored session extends; fresh authentication gets fresh evidence", async () => {
+  it("caps an actor at its original expiry even if the stored session extends; a fresh sign-in gets fresh evidence", async () => {
     let now = new Date().toISOString();
     const f = await fixture({}, {}, () => now);
     try {
@@ -65,7 +65,12 @@ describe("runtime-issued provider-session Knowledge application", () => {
         .run([new Date(Date.parse(now) + 60_000).toISOString(), f.sessionId]));
       hold.release(); await hold.pending;
       await denied(f.app.execute(write(f), f.actor));
-      const fresh = (await f.runtime.authenticate(new Headers({ cookie: f.client.cookieHeader() })))!;
+      // The stored extension changes nothing: the original deadline is immutable evidence.
+      const extended = (await f.runtime.authenticate(new Headers({ cookie: f.client.cookieHeader() })))!;
+      await denied(f.app.execute(write(f), extended));
+      const signedIn = new Client(f.runtime, "198.51.100.250");
+      expect((await signedIn.signIn()).status).toBe(200);
+      const fresh = (await f.runtime.authenticate(new Headers({ cookie: signedIn.cookieHeader() })))!;
       expect(fresh).not.toBeNull();
       expect(await f.app.execute(write(f), fresh)).toMatchObject({ replayed: false });
       expect(f.changed).toHaveBeenCalledOnce();

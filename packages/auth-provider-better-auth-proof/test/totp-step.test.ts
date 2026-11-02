@@ -34,8 +34,8 @@ describe("A3-I17 reusable TOTP step helper", () => {
     expect(Object.isFrozen(TOTP_SETTINGS)).toBe(true);
   });
 
-  it("is not imported by the default provider, so importing the package activates nothing", () => {
-    expect(readFileSync(new URL("../src/index.ts", import.meta.url), "utf8").includes("totp-step")).toBe(false);
+  it("reaches the provider only through its ceremonies; importing the package activates nothing", () => {
+    expect(readFileSync(new URL("../src/factor-ceremonies.ts", import.meta.url), "utf8").includes("totp-step")).toBe(true);
   });
 
   it.each([[1, "287082"], [2, "359152"], [3, "969429"], [4, "338314"], [5, "254676"], [6, "287922"], [7, "162583"], [8, "399871"], [9, "520489"]])("finds the RFC 4226 vector at counter %i", async (counter, code) => {

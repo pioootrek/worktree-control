@@ -36,8 +36,8 @@ CREATE UNIQUE INDEX authentication_provider_subjects_principal
 export const authenticationProviderChecksum = createHash("sha256")
   .update(`${authenticationProviderMigration.version}\0${authenticationProviderMigration.name}\0${authenticationProviderMigration.sql}`).digest("hex");
 
-/** Provider storage contract revision that migration 38 implements. */
-export const AUTHENTICATION_PROVIDER_STORAGE_REVISION = 1;
+/** Provider storage contract revision: migration 40's factor and evidence storage over migration 38. */
+export const AUTHENTICATION_PROVIDER_STORAGE_REVISION = 2;
 
 /** Runs inside the schema owner's transaction after migration 37. Any pre-existing table fails it. */
 export function applyAuthenticationProviderMigration(database: Database.Database): void {

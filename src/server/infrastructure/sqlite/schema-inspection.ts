@@ -2,6 +2,7 @@ import { knowledgeRoleMigration, knowledgeRoleChecksum } from "./knowledge-role-
 import { runtimeAccessMigration, runtimeAccessChecksum } from "./runtime-access-migration";
 import { configurationRevisionMigration, configurationRevisionChecksum } from "./configuration-revision-migration";
 import { providerSessionHistoryMigration, providerSessionHistoryChecksum } from "./provider-session-history-migration";
+import { authenticationFactorMigration, authenticationFactorChecksum } from "./authentication-factor-migration";
 import { authenticationProviderMigration, authenticationProviderChecksum } from "./authentication-provider-migration";
 import { devVaultMigration, devVaultChecksum } from "./dev-vault-migration";
 import { remoteConnectionMigration, remoteConnectionChecksum } from "./remote-connection-migration";
@@ -21,6 +22,10 @@ type ForeignKey = { table: string; from: string; to: string; on_delete: string; 
 // Historical installations may already have tables from the bootstrap DDL. Require
 // them only after their introducing migration, but validate any that are present.
 const tableVersions: Record<string, number> = {
+  authentication_ba_two_factor: 40, authentication_ba_passkey: 40, authentication_account_policies: 40,
+  authentication_totp_steps: 40, authentication_passkey_trust: 40, authentication_passkey_staged: 40,
+  authentication_factor_contexts: 40, authentication_factor_budgets: 40, authentication_factor_receipts: 40,
+  authentication_session_evidence: 40,
   authentication_ba_user: 38, authentication_ba_session: 38, authentication_ba_account: 38,
   authentication_ba_verification: 38, authentication_provider_subjects: 38,
   runtime_delegations: 36, runtime_credential_scopes: 36,
@@ -56,6 +61,7 @@ const columnVersions: Record<string, number> = {
   "test_runs.inherited_server_profile": 11, "test_runs.environment_variable_names_json": 11,
   "test_runs.telemetry_json": 29, "test_runs.source_json": 12, "knowledge_import_sources.target_revision": 23,
   "knowledge_import_batches.authentication_method": 26,
+  "authentication_ba_user.twoFactorEnabled": 40,
 };
 const historicalLeaseCheck = "(kind='human'andexpires_atisnull)or(kind='agent'andexpires_atisnotnull)";
 interface TableShape { columns: Column[]; foreignKeys: ForeignKey[]; checks: string[]; uniqueKeys: string[]; indexes: string[] }
@@ -137,6 +143,7 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : x.version === 37 ? x.name !== configurationRevisionMigration.name || x.checksum !== configurationRevisionChecksum
       : x.version === 38 ? x.name !== authenticationProviderMigration.name || x.checksum !== authenticationProviderChecksum
       : x.version === 39 ? x.name !== providerSessionHistoryMigration.name || x.checksum !== providerSessionHistoryChecksum
+      : x.version === 40 ? x.name !== authenticationFactorMigration.name || x.checksum !== authenticationFactorChecksum
       : true)) refuse("migration checksum or name");
   }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));
@@ -149,6 +156,8 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
     for (const column of columns) {
       const known = expected.columns.find(x => x.name === column.name);
       if (!known || known.type !== column.type || known.pk !== column.pk || known.notnull !== column.notnull) refuse();
+      // A strict column may not appear before the migration that introduces it.
+      if (introduced >= STRICT_TABLES_FROM && version < (columnVersions[`${table}.${column.name}`] ?? introduced)) refuse(`${table}.${column.name} precedes its migration`);
     }
     for (const column of expected.columns) {
       if (version >= (columnVersions[`${table}.${column.name}`] ?? introduced) && !columns.some(x => x.name === column.name)) refuse();

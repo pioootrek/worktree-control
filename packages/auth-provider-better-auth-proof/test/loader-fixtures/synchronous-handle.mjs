@@ -1,5 +1,5 @@
 export const authenticationProvider = {
-  contractVersion: 2, providerId: "better-auth", implementationVersion: "1", storageRevision: 1,
+  contractVersion: 3, providerId: "better-auth", implementationVersion: "1", storageRevision: 2,
   create(host) {
     return {
       initialize() {

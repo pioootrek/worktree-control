@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteStateStore } from "@/server/infrastructure/sqlite";
 import type { ExclusiveConnectionOptions } from "@/server/infrastructure/sqlite/exclusive-connection";
+import type { ProviderFactorOptions } from "@/server/modules/authentication";
 import { IdentityService } from "@/server/modules/identity";
 import type { ProofFaultInjection } from "../src/index";
 import { loadProof, OWNER_EMAIL, OWNER_PASSWORD } from "./fixture";
@@ -15,7 +16,7 @@ export function gate() {
   return { open, opened };
 }
 export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-export async function strictProof(faults: ProofFaultInjection = {}, options: ExclusiveConnectionOptions = {}, identityClock?: () => string) {
+export async function strictProof(faults: ProofFaultInjection = {}, options: ExclusiveConnectionOptions = {}, identityClock?: () => string, factors?: ProviderFactorOptions) {
   const root = mkdtempSync(join(tmpdir(), "auth-provider-admission-")); roots.push(root);
   const path = join(root, "state.sqlite3");
   const store = new SqliteStateStore(path, undefined, options);
@@ -24,7 +25,7 @@ export async function strictProof(faults: ProofFaultInjection = {}, options: Exc
   const ownerActor = identity.authenticateBearer(owner.token);
   store.requireAdmission();
   const run = <T>(operation: () => T | Promise<T>) => store.admission.run(operation);
-  const { runtime, evidence } = await loadProof(store, faults);
+  const { runtime, evidence } = await loadProof(store, faults, undefined, factors);
   return { root, path, store, identity, owner, ownerActor, runtime, evidence, run };
 }
 export type StrictProof = Awaited<ReturnType<typeof strictProof>>;

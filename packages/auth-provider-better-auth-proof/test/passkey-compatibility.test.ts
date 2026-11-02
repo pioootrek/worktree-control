@@ -35,11 +35,10 @@ async function owned(fn:(f:PasskeyFixture)=>Promise<void>, additionalEmails:stri
 }
 
 describe("A3-I14 pinned real passkey proof, nonauthorizing",() => {
-  test("owner generates candidate DDL, readiness verifies it, core39/storage1/contract2 stay unchanged",async () => owned(async f => {
-    expect(f.ddl.created).toEqual(["authentication_ba_passkey"]);expect(f.ddl.outstanding).toBe(0);
-    expect(f.ddl.statements.join("\n")).toContain('"credentialID"');
+  test("finds the frozen plugin storage and readiness verifies it",async () => owned(async f => {
+    expect(f.ddl.created).toEqual([]);expect(f.ddl.outstanding).toBe(0);
     expect(f.runtime.implementationVersion).toBe(PASSKEY_IMPLEMENTATION);
-    expect((await passkeyState(f)).schema).toBe(39);
+    expect((await passkeyState(f)).schema).toBe(40);
     success(await new Browser(f).signIn());
     expect((await passkeyState(f)).evidence.map(e=>e.method)).toEqual(["password"]);
   }));

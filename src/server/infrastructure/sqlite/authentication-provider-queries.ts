@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { AuthenticationProviderError, type ProviderAuditEvent, type ProviderSubjectMapping, type ProviderSubjectStore, type ProviderSessionState } from "@/server/modules/authentication";
+import { AuthenticationProviderError, type ProviderAuditEvent, type ProviderSubjectMapping, type ProviderSubjectStore } from "@/server/modules/authentication";
 
 type SubjectRow = { provider_id: string; subject: string; principal_id: string; status: "active" | "revoked"; linked_at: string; revoked_at: string | null };
 const map = (row: SubjectRow): ProviderSubjectMapping => ({
@@ -21,19 +21,6 @@ export class AuthenticationProviderQueries implements ProviderSubjectStore {
 
   hasSubjectHistory(principalId: string): boolean {
     return Boolean(this.database.prepare("SELECT 1 FROM authentication_provider_subjects WHERE provider_id = ? AND principal_id = ? LIMIT 1").get(this.providerId, principalId));
-  }
-
-  /** Core-only authority projection: deliberately excludes token, password and account contact data. */
-  currentSession(sessionId: string): ProviderSessionState | null {
-    if (this.providerId !== "better-auth") return null;
-    const row = this.database.prepare(`SELECT s."userId" AS subject, s."createdAt" AS createdAt,
-      s."expiresAt" AS expiresAt, m.principal_id AS principalId
-      FROM authentication_ba_session s
-      JOIN authentication_provider_subjects m ON m.provider_id = ? AND m.subject = s."userId"
-      JOIN remote_principals p ON p.id = m.principal_id
-      WHERE s.id = ? AND m.status = 'active' AND m.revoked_at IS NULL
-        AND p.kind = 'owner' AND p.status = 'active'`).get(this.providerId, sessionId) as ProviderSessionState | undefined;
-    return row ?? null;
   }
 
   link(input: { subject: string; principalId: string; actor: string }): ProviderSubjectMapping {

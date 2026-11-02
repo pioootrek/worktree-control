@@ -40,7 +40,7 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
         kysely: packageVersion(packageDirectory, "kysely"),
         driver: packageVersion(join(packageDirectory, "../.."), "better-sqlite3"),
       }).toEqual({ betterAuth: "1.7.14", core: "1.7.14", kysely: "0.28.17", driver: "13.0.3" });
-      expect(f.runtime.readiness).toEqual({ providerId: "better-auth", implementationVersion: "0.0.0-proof.2", library: { name: "better-auth", version: "1.7.14" }, schema: "verified" });
+      expect(f.runtime.readiness).toEqual({ providerId: "better-auth", implementationVersion: "0.0.0-proof.3", library: { name: "better-auth", version: "1.7.14" }, schema: "verified" });
       const authentication = new AuthenticationService(f.store);
       expect(() => authentication.setMode("better-auth", "test")).toThrow(expect.objectContaining({ code: "auth_provider_unavailable" }));
       expect(resolveControllerAuthentication(
@@ -512,7 +512,7 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
     restoreControllerBackup(backup, restoredPath, join(f.root, "restored-attachments"));
     const restored = new SqliteStateStore(restoredPath);
     try {
-      expect(restored.schemaVersion()).toBe(39);
+      expect(restored.schemaVersion()).toBe(40);
       expect(count(restoredPath, "authentication_provider_subjects")).toBe(1);
       expect(restored.listProjects().map(project => project.name)).toEqual(["after-disposal"]);
       const reloaded = await loadProof(restored);

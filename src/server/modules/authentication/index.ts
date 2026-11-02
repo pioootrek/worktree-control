@@ -32,9 +32,13 @@ export {
   type AuthenticationProviderStorage,
   type LoadAuthenticationProviderInput,
   type ProviderPrincipalResolution,
-  type ProviderSessionState,
   type ProviderSubjectStore,
 } from "./provider-runtime";
+export { AccountProtection, canonicalInstant, evaluateSessionAuthority, passkeyFingerprint, ProviderStaleStepError, totpBinding, validateFactorLimits } from "./account-protection";
+export type {
+  BoundedProtectionTable, NativeProtectionState, ProtectionContextRow, ProtectionReceiptRow, ProtectionStagedRow, ProtectionStore, ProtectionTrustRow,
+  ProviderAccountState, ProviderSessionAuthority, ProviderSessionState,
+} from "./account-protection";
 export { AUTHENTICATION_PROVIDER_CONTRACT_VERSION } from "./provider-contract";
 export { ProviderKnowledgeApplication } from "./provider-knowledge-application";
 export { ProviderAdminApplication } from "./provider-admin-application";
@@ -50,8 +54,17 @@ export type {
   AuthenticationProviderReadiness,
   LocalProvisionInput,
   LocalRecoveryInput,
+  ProviderAccountProtection,
   ProviderAuditEvent,
+  ProviderAuthenticationEvidence,
+  ProviderAuthenticationMethod,
+  ProviderFactorLimits,
+  ProviderFactorOptions,
+  ProviderFactorOutcome,
+  ProviderFactorPurpose,
+  ProviderFactorTicket,
   ProviderInvalidation,
+  ProviderSessionEvidence,
   ProviderSqliteConnection,
   ProviderSqliteStatement,
   ProviderSubjectMapping,

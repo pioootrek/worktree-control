@@ -37,10 +37,11 @@ import type {
 } from "@/server/modules/identity";
 import type { RuntimeCredentialScope, RuntimeDelegation } from "@/shared/contracts/runtime-access";
 import { RuntimeAccessQueries } from "./runtime-access-queries";
-import type { AuthenticationPolicy, AuthenticationProviderStorage, AuthenticationStore } from "@/server/modules/authentication";
+import { AccountProtection, type AuthenticationPolicy, type AuthenticationProviderStorage, type AuthenticationStore } from "@/server/modules/authentication";
 import { ExclusiveSqliteConnection, type AdmissionSnapshot, type ExclusiveConnectionOptions } from "./exclusive-connection";
 import type { DatabaseAdmission } from "@/server/database-admission";
 import { AuthenticationProviderQueries } from "./authentication-provider-queries";
+import { AuthenticationProtectionQueries } from "./authentication-protection-queries";
 import { AUTHENTICATION_PROVIDER_STORAGE_REVISION } from "./authentication-provider-migration";
 import type { HubImportBatch, HubImportExecutionStore, HubImportMapping, KnowledgeHistoryEntry, KnowledgeMutationContext, KnowledgeMutationResult, KnowledgePage, KnowledgeProjectSnapshot, KnowledgeRelation, KnowledgeReply, KnowledgeRuntimeLinkResult, KnowledgeStore, KnowledgeTask, KnowledgeThread } from "@/server/modules/knowledge";
 import { KnowledgeError, publishKnowledgeAttachment, DEFAULT_ATTACHMENT_LIMITS, assertAttachmentCapacity } from "@/server/modules/knowledge";
@@ -1326,7 +1327,8 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       createProviderConnection: () => connection.createProviderConnection(),
       subjects: providerId => new AuthenticationProviderQueries(database, providerId),
       available: () => { const state = connection.snapshot(); return state.state === "open" && !state.draining; },
-      currentSession: (providerId, sessionId) => new AuthenticationProviderQueries(database, providerId).currentSession(sessionId),
+      currentSession: (providerId, sessionId) => new AuthenticationProtectionQueries(database, providerId).sessionState(sessionId),
+      protection: (providerId, limits) => new AccountProtection(new AuthenticationProtectionQueries(database, providerId), limits),
     };
   }
 

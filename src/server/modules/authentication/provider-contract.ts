@@ -7,7 +7,7 @@
  * migrations, backups and principals; the provider reaches the database only
  * through the borrowed connection in its host, inside a controller borrow.
  */
-export const AUTHENTICATION_PROVIDER_CONTRACT_VERSION = 2;
+export const AUTHENTICATION_PROVIDER_CONTRACT_VERSION = 3;
 
 /** Kysely-compatible statement; valid only during the borrow that prepared it. */
 export interface ProviderSqliteStatement {
@@ -57,11 +57,118 @@ export type ProviderInvalidation =
   | { kind: "session"; providerId: string; sessionId: string; subject: string }
   | { kind: "subject"; providerId: string; subject: string };
 
+/**
+ * What the provider verified for a session. A strength label only: it carries no
+ * roles or permissions, and it never raises what the principal may do.
+ */
+export type ProviderAuthenticationEvidence =
+  | { method: "password"; factors: 1 }
+  | { method: "password_totp"; factors: 2 }
+  | { method: "passkey_uv"; factors: 2 };
+export type ProviderAuthenticationMethod = ProviderAuthenticationEvidence["method"];
+
+/** Immutable record of one session's original authentication. Refresh never rewrites it. */
+export interface ProviderSessionEvidence {
+  sessionId: string;
+  subject: string;
+  method: ProviderAuthenticationMethod;
+  authenticatedAt: string;
+  originalDeadline: string;
+  generation: number;
+  policyRevision: number;
+  /** Row the method verified: a two-factor row ID or a WebAuthn credential ID. */
+  credential: string | null;
+  /** Digest of that credential as verified. Compared, never decoded. */
+  credentialBinding: string | null;
+  attemptId: string;
+}
+
+export type ProviderFactorPurpose = "totp_enrollment" | "totp_login" | "passkey_registration" | "passkey_confirmation" | "passkey_authentication";
+
+/**
+ * Integration limits supplied by the deployment. There are deliberately no
+ * defaults: without them factor routes stay closed and selected protection
+ * refuses. These bound the controller's own wrapper; the library's native
+ * rate limits and failed-verification counters remain separate.
+ */
+export interface ProviderFactorLimits {
+  totp: { attempts: number; windowMs: number };
+  passkey: { attempts: number; windowMs: number };
+  /** Lifetime of a committed charge before native evaluation must have started. */
+  ticketMs: number;
+  /** Enrollment window, measured from the session's original authentication. */
+  stagingMs: number;
+  /** Maximum rows per bounded admission table. Evidence follows sessions instead. */
+  capacity: number;
+  pruneBatch: number;
+}
+
+export interface ProviderFactorOptions { rpId: string; rpName: string; limits: ProviderFactorLimits }
+
+/** A committed admission. Opaque to the provider except for fields it must compare. */
+export interface ProviderFactorTicket {
+  attemptId: string;
+  capability: string;
+  purpose: ProviderFactorPurpose;
+  subject: string;
+  credential: string | null;
+  binding: string | null;
+  generation: number;
+  policyRevision: number;
+  sessionId: string | null;
+  handle: string | null;
+}
+
+export type ProviderFactorOutcome = "charged" | "succeeded" | "failed";
+
+/**
+ * Controller-owned selected-protection policy shared by every method. All calls
+ * are synchronous and join the provider's open transaction, so a charge commits
+ * before native evaluation and a settlement commits with native success.
+ * Evaluation of current authority stays in the controller.
+ */
+export interface ProviderAccountProtection {
+  /** False without validated limits. Factor operations then refuse. */
+  readonly enabled: boolean;
+  /** Current evidence that still authorizes, or null. Reads committed state only. */
+  currentEvidence(sessionId: string, now: number): ProviderSessionEvidence | null;
+  /** False once any method is selected, or when the account's state is inconsistent. */
+  recordPasswordSession(input: { sessionId: string; subject: string; attemptId: string; now: number }): boolean;
+  /** A native session replacement keeps the original authentication and deadline. */
+  inheritSession(evidence: ProviderSessionEvidence, input: { sessionId: string; attemptId: string }): void;
+
+  issueTotpEnrollment(input: { opaque: string; sessionId: string; subject: string; now: number }): boolean;
+  issueTotpLogin(input: { opaque: string; subject: string; nativeId: string; nativeDeadline: number; authenticatedAt: string; originalDeadline: string; now: number }): boolean;
+  issuePasskeyRegistration(input: { opaque: string; sessionId: string; subject: string; handle: string; nativeId: string; nativeDeadline: number; now: number }): boolean;
+  /** Returns the credential the browser must confirm, or null. */
+  issuePasskeyConfirmation(input: { opaque: string; source: string; sessionId: string; subject: string; nativeId: string; nativeDeadline: number; now: number }): string | null;
+  issuePasskeyAuthentication(input: { opaque: string; nativeId: string; nativeDeadline: number; now: number }): boolean;
+
+  contextSubject(opaque: string, purpose: ProviderFactorPurpose, now: number): { subject: string | null; sessionId: string | null } | null;
+  /** Run in its own short transaction, committed before any native evaluation. No refund exists. */
+  admit(input: { opaque: string; purpose: ProviderFactorPurpose; attemptId: string; credential: string | null; now: number }): ProviderFactorTicket | null;
+  usable(ticket: ProviderFactorTicket, now: number): boolean;
+  /** A native WebAuthn result may proceed: trusted or bound staged credential, exact user handle. */
+  passkeyAcceptable(ticket: ProviderFactorTicket, credential: string, userHandle: string | null | undefined, now: number): boolean;
+
+  /** Throws an error named `ProviderStaleStepError` when `step` is not newer than the subject's last one. */
+  settleTotpEnrollment(ticket: ProviderFactorTicket, step: number, now: number): void;
+  /** Same guarded step rule as enrollment, in the transaction that records login evidence. */
+  settleTotpLogin(ticket: ProviderFactorTicket, sessionId: string, step: number, now: number): void;
+  stagePasskey(ticket: ProviderFactorTicket, credential: string, now: number): void;
+  promotePasskey(ticket: ProviderFactorTicket, now: number): void;
+  settlePasskeyLogin(ticket: ProviderFactorTicket, sessionId: string, now: number): void;
+  fail(attemptId: string): void;
+  /** Reconciles an ambiguous commit. Never re-enters native code. */
+  outcome(attemptId: string): ProviderFactorOutcome | null;
+}
+
 export interface AuthenticationProviderHost {
   readonly providerId: string;
   readonly storageRevision: number;
   readonly connection: ProviderSqliteConnection;
   readonly subjects: ProviderSubjectRegistry;
+  readonly protection: ProviderAccountProtection;
   /** May throw; a failure here never means the committed change was rolled back. */
   invalidated(event: ProviderInvalidation): void;
   /** Runtime drops library text and emits a fixed event. */
@@ -80,6 +187,8 @@ export interface AuthenticationProviderOptions {
    * provider refuses reset requests. The token must never be logged.
    */
   passwordResetDelivery?: (delivery: { subject: string; token: string }) => Promise<void>;
+  /** Enables the bounded factor ceremonies. Absent means closed routes, not a default policy. */
+  factors?: ProviderFactorOptions;
 }
 
 /** Nonsecret evidence of a provider session. Carries no roles, permissions or authority. */
@@ -89,8 +198,8 @@ export interface VerifiedProviderSession {
   subject: string;
   createdAt: string;
   expiresAt: string;
-  /** Only what the provider verified. Password-only sign-in is a single factor, not MFA. */
-  authentication: { method: "password"; factors: 1 };
+  /** The provider's claim. Authority comes from committed evidence, which must agree with it. */
+  authentication: ProviderAuthenticationEvidence;
 }
 
 export interface LocalProvisionInput { principalId: string; email: string; name: string; password: string; actor: string }

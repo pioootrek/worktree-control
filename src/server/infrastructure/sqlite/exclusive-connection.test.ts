@@ -114,7 +114,7 @@ describe("exclusive provider borrow of the controller connection", () => {
     expect(f.core.open).toBe(false);
     expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
     const reopened = new SqliteStateStore(f.path); stores.push(reopened);
-    expect(reopened.schemaVersion()).toBe(39);
+    expect(reopened.schemaVersion()).toBe(40);
   });
 
   it.each([false, true])("releases a synchronously throwing provider callback (open transaction: %s)", async (openTransaction) => {
@@ -292,7 +292,7 @@ describe("exclusive provider borrow of the controller connection", () => {
     expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
     const reopened = new SqliteStateStore(f.path); stores.push(reopened);
     expect(providerUsers(f.path)).toBe(0);
-    expect(reopened.schemaVersion()).toBe(39);
+    expect(reopened.schemaVersion()).toBe(40);
   });
 
   it("waits for a running core backup before lending the connection", async () => {

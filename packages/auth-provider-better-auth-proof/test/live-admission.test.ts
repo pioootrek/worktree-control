@@ -260,7 +260,7 @@ describe("live admission of controller work beside the real provider", () => {
       expect(existsSync(join(f.root, "verified"))).toBe(false);
       hold.resume();
       await hold.pending;
-      expect((await copy).database.schemaVersion).toBe(39);
+      expect((await copy).database.schemaVersion).toBe(40);
     } finally { await f.runtime.dispose(); await f.store.closeAfterDrain(); }
   });
 });

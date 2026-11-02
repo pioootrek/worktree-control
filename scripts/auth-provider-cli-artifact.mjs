@@ -41,7 +41,7 @@ try {
   symlinkSync(join(root, "packages/auth-provider-better-auth-proof/node_modules"), join(emitted, "node_modules"), "dir");
   const build = await finish(start(["node_modules/tsup/dist/cli-default.js", "packages/auth-provider-better-auth-proof/src/index.ts",
     "--format", "esm", "--platform", "node", "--target", "node22", "--out-dir", emitted,
-    "--external", "better-auth", "--external", "@better-auth/core", "--external", "kysely"]));
+    "--external", "better-auth", "--external", "@better-auth/core", "--external", "kysely", "--external", "@better-auth/passkey", "--external", "@better-auth/utils"]));
   assert.equal(build.code, 0, build.stderr);
   const entry = join(emitted, "index.js");
   assert(existsSync(entry));

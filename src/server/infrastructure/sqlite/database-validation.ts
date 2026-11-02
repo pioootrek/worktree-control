@@ -16,6 +16,12 @@ export function validateDatabase(database: Database.Database, version: number): 
   // Provider accounts map only to owner principals; an unmapped provider row authorizes nothing.
   if (version >= 38 && database.prepare(`SELECT 1 FROM authentication_provider_subjects s
     JOIN remote_principals p ON p.id=s.principal_id WHERE p.kind<>'owner' LIMIT 1`).get()) fail("provider subject principal");
+  // Evidence and trust describe one provider account. Selected-protection flags are
+  // checked per account at every decision, so one inconsistent row refuses only itself.
+  if (version >= 40 && database.prepare(`SELECT 1 FROM authentication_session_evidence e
+    JOIN "authentication_ba_session" s ON s."id"=e.session_id WHERE s."userId"<>e.subject LIMIT 1`).get()) fail("session evidence subject");
+  if (version >= 40 && database.prepare(`SELECT 1 FROM authentication_passkey_trust t
+    JOIN "authentication_ba_passkey" c ON c."id"=t.native_id WHERE c."userId"<>t.subject OR c."credentialID"<>t.credential_id LIMIT 1`).get()) fail("passkey trust subject");
   if (version >= 25) {
     try { new AuthenticationQueries(database).getAuthenticationPolicy(); } catch { fail("authentication policy"); }
     if (!database.prepare("SELECT 1 FROM remote_principals WHERE id='installation' AND kind='installation' AND status='active'").get()) fail("installation principal");

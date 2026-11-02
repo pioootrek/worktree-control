@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
-import { loadAuthenticationProvider, type AuthenticationProviderRuntime, type ProviderInvalidation } from "@/server/modules/authentication";
+import { loadAuthenticationProvider, type AuthenticationProviderRuntime, type ProviderFactorOptions, type ProviderInvalidation } from "@/server/modules/authentication";
 import { IdentityService } from "@/server/modules/identity";
 import { SqliteStateStore } from "@/server/infrastructure/sqlite";
 import type { ProofFaultInjection } from "../src/index";
@@ -31,7 +31,7 @@ export function storeFixture() {
 
 export interface ProviderEvidence { events: ProviderInvalidation[]; logs: string[]; resets: Array<{ subject: string; token: string }>; failInvalidation: boolean }
 
-export async function loadProof(store: SqliteStateStore, faultInjection?: ProofFaultInjection, entry = PROVIDER_ENTRY) {
+export async function loadProof(store: SqliteStateStore, faultInjection?: ProofFaultInjection, entry = PROVIDER_ENTRY, factors?: ProviderFactorOptions) {
   const evidence: ProviderEvidence = { events: [], logs: [], resets: [], failInvalidation: false };
   const runtime = await loadAuthenticationProvider({
     entry,
@@ -41,6 +41,7 @@ export async function loadProof(store: SqliteStateStore, faultInjection?: ProofF
       baseURL: BASE_URL, secret: SECRET, clientIpHeader: IP_HEADER,
       passwordResetDelivery: async delivery => { evidence.resets.push(delivery); },
       ...(faultInjection ? { faultInjection } : {}),
+      ...(factors ? { factors } : {}),
     } as Parameters<typeof loadAuthenticationProvider>[0]["options"],
     onInvalidation: event => {
       if (evidence.failInvalidation) throw new Error("listener failure");

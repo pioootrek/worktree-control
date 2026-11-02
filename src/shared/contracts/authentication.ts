@@ -6,7 +6,8 @@ export type BrowserSession = { authenticated: false } | {
   authenticated: true;
   principal: { id: string; kind: "owner" };
   expiresAt: string;
-  authentication: { method: "password"; factors: 1 };
+  /** What the session proved. Authentication strength never grants authority. */
+  authentication: { method: "password"; factors: 1 } | { method: "password_totp"; factors: 2 } | { method: "passkey_uv"; factors: 2 };
 };
 export const browserSignInSchema = z.object({ email: z.string().email().max(254), password: z.string().min(1).max(256) }).strict();
 export const browserSignOutSchema = z.object({}).strict();

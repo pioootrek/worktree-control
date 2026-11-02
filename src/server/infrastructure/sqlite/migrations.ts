@@ -2,6 +2,7 @@ import { applyKnowledgeRoleMigration } from "./knowledge-role-migration";
 import { applyRuntimeAccessMigration } from "./runtime-access-migration";
 import { applyConfigurationRevisionMigration } from "./configuration-revision-migration";
 import { applyProviderSessionHistoryMigration } from "./provider-session-history-migration";
+import { applyAuthenticationFactorMigration } from "./authentication-factor-migration";
 import { applyAuthenticationProviderMigration } from "./authentication-provider-migration";
 import { applyDevVaultMigration } from "./dev-vault-migration";
 import { applyRemoteConnectionMigration } from "./remote-connection-migration";
@@ -367,6 +368,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyConfigurationRevisionMigration(database);
       applyAuthenticationProviderMigration(database);
       applyProviderSessionHistoryMigration(database);
+      applyAuthenticationFactorMigration(database);
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();

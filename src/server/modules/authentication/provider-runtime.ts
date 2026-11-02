@@ -12,12 +12,17 @@ import {
   type AuthenticationProviderReadiness,
   type LocalProvisionInput,
   type LocalRecoveryInput,
+  type ProviderAccountProtection,
+  type ProviderAuthenticationEvidence,
+  type ProviderFactorLimits,
   type ProviderInvalidation,
   type ProviderSqliteConnection,
   type ProviderSubjectMapping,
   type ProviderSubjectRegistry,
+  type ProviderSessionEvidence,
   type VerifiedProviderSession,
 } from "./provider-contract";
+import { canonicalInstant, evaluateSessionAuthority, validateFactorLimits, type ProviderSessionState } from "./account-protection";
 
 export type AuthenticationProviderErrorCode =
   | "provider_unavailable" | "principal_unavailable" | "subject_conflict" | "not_linked"
@@ -64,13 +69,8 @@ export interface AuthenticationProviderStorage {
   available(): boolean;
   /** Nonsecret current-state projection. Requires core admission; never uses a provider borrow. */
   currentSession(providerId: string, sessionId: string): ProviderSessionState | null;
-}
-
-export interface ProviderSessionState {
-  subject: string;
-  principalId: string;
-  createdAt: string;
-  expiresAt: string;
+  /** Application policy over this connection. Without limits it reads evidence and refuses factor work. */
+  protection(providerId: string, limits?: ProviderFactorLimits): ProviderAccountProtection;
 }
 
 export interface LoadAuthenticationProviderInput {
@@ -88,6 +88,28 @@ export interface LoadAuthenticationProviderInput {
 export interface ProviderPrincipalResolution {
   session: VerifiedProviderSession;
   principalId: string;
+}
+/** Only a supported combination carries committed evidence, and only that issues an actor. */
+type ActorResolution = ProviderPrincipalResolution & { evidence?: ProviderSessionEvidence };
+
+interface ActorEvidence {
+  sessionId: string;
+  subject: string;
+  principalId: string;
+  createdAt: string;
+  expiresAt: string;
+  evidence: ProviderSessionEvidence;
+  authentication: ProviderAuthenticationEvidence;
+}
+
+/** Bound at load; every call is controller work joined to the current borrow. */
+const PROTECTION_METHODS = ["currentEvidence", "recordPasswordSession", "inheritSession", "issueTotpEnrollment", "issueTotpLogin", "issuePasskeyRegistration",
+  "issuePasskeyConfirmation", "issuePasskeyAuthentication", "contextSubject", "admit", "usable", "passkeyAcceptable", "settleTotpEnrollment", "settleTotpLogin",
+  "stagePasskey", "promotePasskey", "settlePasskeyLogin", "fail", "outcome"] as const satisfies ReadonlyArray<keyof ProviderAccountProtection>;
+function guardedProtection(protection: ProviderAccountProtection, controller: <T>(operation: () => T) => T): ProviderAccountProtection {
+  const methods = Object.fromEntries(PROTECTION_METHODS.map(name => [name, (...input: unknown[]) =>
+    controller(() => (protection[name] as (...value: unknown[]) => unknown).call(protection, ...input))]));
+  return Object.freeze({ ...methods, enabled: protection.enabled }) as unknown as ProviderAccountProtection;
 }
 
 const REQUIRED_METHODS = ["initialize", "handle", "signOut", "resolveSession", "provisionLocal", "recoverLocal", "revokeSession", "revokeSubjectSessions", "dispose"] as const;
@@ -137,10 +159,13 @@ export async function loadAuthenticationProvider(input: LoadAuthenticationProvid
   let loaded: unknown;
   try { loaded = await import(/* webpackIgnore: true */ url); } catch { throw unavailable("import"); }
   const provider = compatibleModule(loaded, input);
+  let limits: ProviderFactorLimits | undefined;
+  try { limits = input.options.factors ? validateFactorLimits(input.options.factors.limits) : undefined; } catch { throw unavailable("factor limits"); }
   const connection = input.storage.createProviderConnection();
   const operations = new AsyncLocalStorage<{ invalidationFailed: boolean }>();
   const subjects = input.storage.subjects(input.providerId);
   const controller = <T>(operation: () => T) => input.storage.runControllerOperation(operation);
+  const protection = guardedProtection(input.storage.protection(input.providerId, limits), controller);
   const host: AuthenticationProviderHost = Object.freeze({
     providerId: input.providerId,
     storageRevision: input.storage.storageRevision,
@@ -151,6 +176,7 @@ export async function loadAuthenticationProvider(input: LoadAuthenticationProvid
       findByPrincipal: (principalId: string) => controller(() => subjects.findByPrincipal(principalId)),
       record: (...value: Parameters<ProviderSubjectRegistry["record"]>) => controller(() => subjects.record(...value)),
     }),
+    protection,
     invalidated(event: ProviderInvalidation) {
       // A continuation that outlived its borrow lost SQL access; it also loses notification.
       if (!input.storage.operationActive()) {
@@ -198,7 +224,7 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
   readonly #operations: AsyncLocalStorage<{ invalidationFailed: boolean }>;
   readonly #inFlight = new Set<Promise<unknown>>();
   // Weak ownership: retaining an actor retains its evidence, never a request ledger.
-  readonly #actors = new WeakMap<ProviderSessionActor, Readonly<ProviderSessionState & { sessionId: string }>>();
+  readonly #actors = new WeakMap<ProviderSessionActor, Readonly<ActorEvidence>>();
   #disposal: Promise<void> | undefined;
   readonly readiness: AuthenticationProviderReadiness;
   readonly implementationVersion: string;
@@ -228,33 +254,54 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     return this.#run(() => this.#instance.handle(request));
   }
 
-  /** Current provider session and current active owner mapping, both read under one borrow. */
-  resolve(headers: Headers): Promise<ProviderPrincipalResolution | null> {
+  /** Current provider session, committed evidence and active owner mapping, all read under one borrow. */
+  async resolve(headers: Headers): Promise<ProviderPrincipalResolution | null> {
+    const resolved = await this.#resolve(headers);
+    return resolved && { session: resolved.session, principalId: resolved.principalId };
+  }
+
+  #resolve(headers: Headers): Promise<ActorResolution | null> {
     return this.#run(async () => {
       const session = await this.#instance.resolveSession(headers);
-      if (!session) return null;
-      if (session.providerId !== this.#input.providerId || session.authentication?.method !== "password") return null;
-      const principalId = this.#input.storage.runControllerOperation(() => this.#subjects.resolveActivePrincipal(session.subject));
-      return principalId ? { session: { ...session, authentication: { method: "password", factors: 1 } }, principalId } : null;
+      if (!session || session.providerId !== this.#input.providerId) return null;
+      return this.#input.storage.runControllerOperation(() => this.#resolution(session));
     });
+  }
+
+  /**
+   * An unverified combination resolves password claims only and can never issue
+   * an actor. A supported one takes its authority from committed evidence, and a
+   * provider claim that disagrees with that evidence refuses.
+   */
+  #resolution(session: VerifiedProviderSession): ActorResolution | null {
+    if (!this.#supportsSessionAuthority()) {
+      if (session.authentication?.method !== "password") return null;
+      const principalId = this.#subjects.resolveActivePrincipal(session.subject);
+      return principalId ? { session: { ...session, authentication: { method: "password", factors: 1 } }, principalId } : null;
+    }
+    const state = this.#input.storage.currentSession(this.#input.providerId, session.sessionId);
+    const authority = state && evaluateSessionAuthority(state, new Date().toISOString());
+    if (!state || !authority || state.subject !== session.subject || state.createdAt !== session.createdAt
+      || session.authentication?.method !== authority.authentication.method) return null;
+    return { session: { ...session, expiresAt: authority.deadline, authentication: authority.authentication }, principalId: state.principalId, evidence: authority.evidence };
   }
 
   /** Resolve outside core admission. Raw `resolve` evidence and structural actor copies never authorize. */
   async authenticate(headers: Headers): Promise<ProviderSessionActor | null> {
     if (!this.#supportsSessionAuthority()) throw unavailable("session authority");
-    const resolution = await this.resolve(headers);
+    const resolution = await this.#resolve(headers);
     if (!resolution || this.disposed || !this.#input.storage.available()) return null;
     return this.#issueActor(resolution);
   }
 
-  #issueActor(resolution: ProviderPrincipalResolution): ProviderSessionActor | null {
-    const { session, principalId } = resolution;
-    if (session.providerId !== this.#input.providerId || session.authentication?.method !== "password" || session.authentication.factors !== 1
-      || !session.sessionId || !session.subject || !principalId || !canonicalDate(session.createdAt)
-      || !canonicalDate(session.expiresAt) || session.createdAt >= session.expiresAt) return null;
+  #issueActor(resolution: ActorResolution): ProviderSessionActor | null {
+    const { session, principalId, evidence } = resolution;
+    if (session.providerId !== this.#input.providerId || !evidence || evidence.sessionId !== session.sessionId || evidence.subject !== session.subject
+      || !session.sessionId || !session.subject || !principalId || !canonicalInstant(session.createdAt)
+      || !canonicalInstant(session.expiresAt) || session.createdAt >= session.expiresAt) return null;
     const actor = Object.freeze({ principalId, principalKind: "owner", credentialId: null, authenticationMethod: "provider_session" }) as ProviderSessionActor;
     this.#actors.set(actor, Object.freeze({ sessionId: session.sessionId, subject: session.subject, principalId,
-      createdAt: session.createdAt, expiresAt: session.expiresAt }));
+      createdAt: session.createdAt, expiresAt: session.expiresAt, evidence: Object.freeze({ ...evidence }), authentication: Object.freeze({ ...session.authentication }) }));
     return actor;
   }
 
@@ -264,11 +311,15 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     if (!original || this.disposed || !this.#supportsSessionAuthority() || !this.#input.storage.available()
       || actor.authenticationMethod !== "provider_session" || actor.principalKind !== "owner"
       || actor.credentialId !== null || actor.principalId !== original.principalId || !Object.isFrozen(actor)
-      || !canonicalDate(now) || original.expiresAt <= now) return false;
+      || !canonicalInstant(now) || original.expiresAt <= now) return false;
     const current = this.#input.storage.currentSession(this.#input.providerId, original.sessionId);
-    return !!current && current.subject === original.subject && current.principalId === original.principalId
-      && current.createdAt === original.createdAt && canonicalDate(current.createdAt) && canonicalDate(current.expiresAt)
-      && current.createdAt < current.expiresAt && current.createdAt <= now && current.expiresAt > now;
+    const authority = current && evaluateSessionAuthority(current, now);
+    if (!current || !authority || current.subject !== original.subject || current.principalId !== original.principalId
+      || current.createdAt !== original.createdAt) return false;
+    const evidence = authority.evidence, frozen = original.evidence;
+    return evidence.method === frozen.method && evidence.authenticatedAt === frozen.authenticatedAt && evidence.originalDeadline === frozen.originalDeadline
+      && evidence.generation === frozen.generation && evidence.policyRevision === frozen.policyRevision && evidence.credential === frozen.credential
+      && evidence.credentialBinding === frozen.credentialBinding && evidence.attemptId === frozen.attemptId;
   }
 
   /** Fixed browser operations only. Called outside core admission; no caller callbacks. */
@@ -311,8 +362,8 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
       }
       const session = await this.#instance.resolveSession(headers);
       if (!session) return { response, actor: null };
-      const principalId = this.#input.storage.runControllerOperation(() => this.#subjects.resolveActivePrincipal(session.subject));
-      const issued = principalId && this.#issueActor({ session, principalId });
+      const resolution = this.#input.storage.runControllerOperation(() => this.#resolution(session));
+      const issued = resolution && this.#issueActor(resolution);
       if (!issued || (operation === "password" && issued.principalId !== actor?.principalId)) {
         if (operation !== "session") await this.#instance.revokeSession(session.sessionId);
         return { response, actor: null };
@@ -326,7 +377,7 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     if (!this.isCurrentProviderSession(actor, new Date().toISOString())) throw new AuthenticationProviderError("invalid_session", "Invalid browser session.");
     const original = this.#actors.get(actor)!;
     return { authenticated: true as const, principal: { id: actor.principalId, kind: actor.principalKind },
-      expiresAt: original.expiresAt, authentication: { method: "password" as const, factors: 1 as const } };
+      expiresAt: original.expiresAt, authentication: original.authentication };
   }
 
   /** Discard an unreleased login/replacement cookie without accepting caller session IDs. */
@@ -337,9 +388,9 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
   }
 
   #supportsSessionAuthority(): boolean {
-    // This projection is verified only for the fixed migration-38 adapter and pinned library.
-    return this.#input.providerId === "better-auth" && this.#input.storage.storageRevision === 1
-      && this.implementationVersion === "0.0.0-proof.2"
+    // This projection is verified only for the fixed migration-40 adapter and pinned library.
+    return this.#input.providerId === "better-auth" && this.#input.storage.storageRevision === 2
+      && this.implementationVersion === "0.0.0-proof.3"
       && this.readiness.library?.name === "better-auth" && this.readiness.library.version === "1.7.14";
   }
 
@@ -444,10 +495,4 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     pending.then(forget, forget);
     return pending;
   }
-}
-
-function canonicalDate(value: unknown): value is string {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return false;
-  const time = Date.parse(value);
-  return Number.isFinite(time) && new Date(time).toISOString() === value;
 }

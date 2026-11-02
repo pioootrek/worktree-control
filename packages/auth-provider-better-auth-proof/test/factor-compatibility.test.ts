@@ -41,16 +41,14 @@ afterEach(async () => {
 });
 
 describe("A3-I12 native characterization (passing here does not accept MFA)", () => {
-  it("generates temporary namespaced DDL, awaits real schema readiness and leaves production versions unchanged", async () => {
+  it("finds the plugin storage frozen in migration 40 and awaits real schema readiness", async () => {
     const f = await create();
     expect(f.runtime.readiness.schema).toBe("verified");
-    expect(f.ddl.created).toContain(FACTOR_MODEL);
-    expect(f.ddl.added).toContainEqual({ table: "authentication_ba_user", fields: ["twoFactorEnabled"] });
+    expect(f.ddl.created).toEqual([]);
+    expect(f.ddl.added).toEqual([]);
     expect(f.ddl.outstanding).toEqual({ created: 0, added: 0, indexes: 0, problems: 0 });
-    expect(f.ddl.statements.join("\n")).toContain('"verified"');
-    expect(f.storage.storageRevision).toBe(1);
-    expect((await state(f)).schemaVersion).toBe(39);
-    writeFileSync("/tmp/a3-i12-factor-generated-ddl.sql", `${f.ddl.statements.join(";\n")} ;\n`, { mode: 0o600 });
+    expect(f.storage.storageRevision).toBe(2);
+    expect((await state(f)).schemaVersion).toBe(40);
   });
 
   it("keeps enrollment unverified then rotates the cookie, while the native body contains the deleted token", async () => {
