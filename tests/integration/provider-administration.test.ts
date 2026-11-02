@@ -42,7 +42,9 @@ afterEach(async () => { const current = fixture; fixture = undefined; await curr
 afterAll(async () => { if (emitted) await rm(emitted, { recursive: true, force: true }); });
 
 function body(result: FixtureCliResult, code = 0) {
-  expect(result.code).toBe(code); expect(result.signal).toBeNull();
+  let diagnostic = "unparseable";
+  try { const parsed = JSON.parse(result.stderr); if (typeof parsed.code === "string" && /^[a-z_]{1,80}$/.test(parsed.code)) diagnostic = parsed.code; } catch { /* Success has no stderr. */ }
+  expect(result.code, `Sanitized CLI error code: ${diagnostic}`).toBe(code); expect(result.signal).toBeNull();
   expect(result.stdout + result.stderr).not.toContain(password);
   expect(result.stdout + result.stderr).not.toContain(replacement);
   if (code === 0) { expect(result.stderr).toBe(""); return JSON.parse(result.stdout); }
