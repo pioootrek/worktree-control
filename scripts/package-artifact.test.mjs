@@ -64,9 +64,9 @@ test("the optional Better Auth provider stays outside the Community manifest and
   }
   const proof = JSON.parse(await readFile(join(root, "packages/auth-provider-better-auth-proof/package.json"), "utf8"));
   assert.equal(proof.private, true, "the proof package must never be publishable");
-  assert.deepEqual(proof.dependencies, { "@better-auth/core": "1.7.14", "@better-auth/passkey": "1.7.14", "better-auth": "1.7.14", kysely: "0.28.17" }, "provider pins stay exact");
+  assert.deepEqual(proof.dependencies, { "@better-auth/core": "1.7.14", "@better-auth/passkey": "1.7.14", "@better-auth/utils": "0.5.1", "better-auth": "1.7.14", kysely: "0.28.17" }, "provider pins stay exact");
   const notices = await readFile(join(root, "packages/auth-provider-better-auth-proof/THIRD_PARTY_NOTICES.md"), "utf8");
-  for (const name of ["better-auth@1.7.14", "@better-auth/core@1.7.14", "kysely@0.28.17", "@better-auth/passkey@1.7.14", "@simplewebauthn/server@13.3.3", "@simplewebauthn/browser@13.3.0"]) assert(notices.includes(`## ${name}\n`), `missing notice for ${name}`);
+  for (const name of ["better-auth@1.7.14", "@better-auth/core@1.7.14", "kysely@0.28.17", "@better-auth/passkey@1.7.14", "@better-auth/utils@0.5.1", "@simplewebauthn/server@13.3.3", "@simplewebauthn/browser@13.3.0"]) assert(notices.includes(`## ${name}\n`), `missing notice for ${name}`);
   const lock = await readFile(join(root, "pnpm-lock.yaml"), "utf8");
   const rootImporter = lock.slice(lock.indexOf("\n  .:\n"), lock.indexOf("\n  packages/auth-provider-better-auth-proof:\n"));
   assert(rootImporter.length > 0, "the lockfile lists the root importer before the proof importer");
