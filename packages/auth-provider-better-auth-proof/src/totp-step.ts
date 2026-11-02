@@ -37,8 +37,9 @@ export const isTotpCode = (code: string): boolean => code.length === TOTP_SETTIN
 
 /**
  * Every counter the native window can reach while its clock sample stays between
- * the two observed instants. Clock movement that was never observed is outside
- * this claim: it can only lead to `no_match` or the guarded consumption failing.
+ * the two observed instants. An unobserved excursion can let native accept an
+ * older counter while these digits also match a newer observed witness. Such a
+ * collision can succeed; this interval does not prove native-counter provenance.
  */
 export function totpStepBracket(startedAt: number, finishedAt: number): TotpStepBracket {
   if (!Number.isSafeInteger(startedAt) || !Number.isSafeInteger(finishedAt) || startedAt < 0) return { ok: false, reason: "invalid_time" };

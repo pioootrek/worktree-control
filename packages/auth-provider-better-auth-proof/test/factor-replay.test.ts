@@ -608,6 +608,75 @@ describe("A3-I17 TOTP step consumption, actual native verifier", () => {
     f.control.admission.pause = undefined; expect((await verify(b, app.code())).status).toBe(200);
   });
 
+  it.each(["enrollment", "login", "reauthentication"] as const)("cancellation while the real observer is pending rolls back %s", async ceremony => {
+    const f = await create(); const { browser, app } = await setup(f, ceremony !== "enrollment");
+    const b = ceremony === "login" ? await pending(f) : browser;
+    const context = ceremony === "reauthentication" ? await reauthContext(b) : undefined;
+    const before = await factorState(f), steps = await stepRows(f), evidence = await rows(f, `SELECT * FROM ${ADMISSION.evidence}`), charged = await charges(f);
+    const notices = f.evidence.events.length, abort = new AbortController();
+    let entered!: () => void, release!: () => void;
+    const pendingObserver = new Promise<void>(resolve => { entered = resolve; });
+    const resumed = new Promise<void>(resolve => { release = resolve; });
+    f.control.admission.pause = async stage => { if (stage === "observer-pending") { entered(); await resumed; } };
+    const resultPromise = context ? reauth(b, context, app.code(), { signal: abort.signal }) : verify(b, app.code(), { signal: abort.signal });
+    try {
+      await Promise.race([pendingObserver, resultPromise.then(() => { throw new Error("Real observer was not reached."); })]);
+      abort.abort();
+    } finally { release(); }
+    const result = await resultPromise; f.control.admission.pause = undefined;
+    expect(result.status).toBe(409); expect(result.setCookie.length).toBe(0);
+    expect(await factorState(f)).toEqual(before); expect(await stepRows(f)).toEqual(steps);
+    expect(await rows(f, `SELECT * FROM ${ADMISSION.evidence}`)).toEqual(evidence);
+    expect(f.evidence.events.length).toBe(notices); expect(await charges(f)).toBe(charged + 1);
+    expect((await receipt(f))?.state).toBe("failed");
+    if (context) {
+      expect((await reauth(b, context, app.code())).status).toBe(401);
+      expect((await reauth(b, await reauthContext(b), app.code())).status).toBe(200);
+    } else expect((await verify(b, app.code())).status).toBe(200);
+  });
+
+  it.each(["enrollment", "login", "reauthentication", "recovery"] as const)("cancellation after settlement before COMMIT rolls back %s", async ceremony => {
+    const f = await create(); const { browser, app, recovery } = await setup(f, ceremony !== "enrollment");
+    const b = ceremony === "login" || ceremony === "recovery" ? await pending(f) : browser;
+    const context = ceremony === "reauthentication" ? await reauthContext(b) : undefined;
+    const before = await factorState(f), steps = await stepRows(f), evidence = await rows(f, `SELECT * FROM ${ADMISSION.evidence}`), charged = await charges(f);
+    const notices = f.evidence.events.length, abort = new AbortController();
+    f.control.admission.pause = async stage => { if (stage === "before-commit") abort.abort(); };
+    const result = ceremony === "recovery" ? await b.post("/two-factor/verify-backup-code", { code: recovery[0] }, { signal: abort.signal })
+      : context ? await reauth(b, context, app.code(), { signal: abort.signal }) : await verify(b, app.code(), { signal: abort.signal });
+    f.control.admission.pause = undefined;
+    expect(result.status).toBe(409); expect(result.setCookie.length).toBe(0);
+    expect(await factorState(f)).toEqual(before); expect(await stepRows(f)).toEqual(steps);
+    expect(await rows(f, `SELECT * FROM ${ADMISSION.evidence}`)).toEqual(evidence);
+    expect(f.evidence.events.length).toBe(notices); expect(await charges(f)).toBe(charged + 1);
+    expect((await receipt(f))?.state).toBe("failed");
+  });
+
+  it("cancelled context replacement preserves the prior unused capability", async () => {
+    const f = await create(); const { browser, app } = await setup(f); const context = await reauthContext(browser);
+    const before = await rows(f, `SELECT * FROM ${ADMISSION.contexts}`), abort = new AbortController();
+    f.control.admission.pause = async stage => { if (stage === "before-commit") abort.abort(); };
+    const result = await browser.post("/two-factor/reauthentication-context", {}, { signal: abort.signal });
+    f.control.admission.pause = undefined;
+    expect(result.status).toBeGreaterThanOrEqual(400); expect(result.setCookie.length).toBe(0);
+    expect(await rows(f, `SELECT * FROM ${ADMISSION.contexts}`)).toEqual(before);
+    expect((await reauth(browser, context, app.code())).status).toBe(200);
+  });
+
+  it("unobserved native clock excursion can coexist with a newer colliding policy witness", async () => {
+    const oldTime = 59_788_416 * 30_000 + 5_000, laterTime = 59_788_440 * 30_000 + 5_000;
+    vi.setSystemTime(oldTime);
+    const f = await create(); const prepared = await setup(f, false); await installRfcKey(f);
+    expect((await verify(prepared.browser, "393421")).status).toBe(200);
+    const browser = await pending(f);
+    // Native still samples the old clock. The observer sees the two later
+    // endpoints; a hidden excursion between those endpoints cannot be excluded.
+    f.control.admission.observationClock = () => laterTime;
+    expect((await verify(browser, "393421")).status).toBe(200);
+    f.control.admission.observationClock = undefined;
+    expect(Date.now()).toBe(oldTime); expect(await lastStep(f)).toBe(59_788_440);
+  });
+
   it("lost response is reconciled as observation only; a new attempt cannot spend the same step", async () => {
     const f = await create(); const { app } = await setup(f); const b = await pending(f), lost = b.clone(), step = stepAt();
     commitFault(f, ADMISSION.steps, "after"); expect((await verify(b, app.code())).status).toBe(503);

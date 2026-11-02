@@ -58,7 +58,7 @@ export interface FactorControl {
     lastAttemptId?: string;
     entries: Array<{ attemptId: string; charged: boolean; inTransaction: boolean }>;
     /** `verification-start` runs after the start sample and before native evaluates the code. */
-    pause?: (stage: "after-admission" | "native-entry" | "verification-start" | "after-native", connection: ProviderSqliteConnection) => Promise<void>;
+    pause?: (stage: "after-admission" | "native-entry" | "verification-start" | "after-native" | "observer-pending" | "before-commit", connection: ProviderSqliteConnection) => Promise<void>;
     /** Replaces only the observer's two time samples. Native always uses its own clock. */
     observationClock?: (sample: "start" | "finish") => number;
   };
@@ -359,6 +359,8 @@ class FactorProofProvider implements AuthenticationProviderInstance {
           const opaque = serverAttemptId();
           policy.issue(opaque, current.user.id, "reauthentication", Math.min(Date.now() + this.#control.admission.policy.ticketMs, Date.parse(origin.originalDeadline)), null, Date.now(), origin, current.session.id);
           if (!policy.bindContext(opaque, "reauthentication", Date.now())) throw new Error("Context unavailable.");
+          await this.#control.admission.pause?.("before-commit", this.#connection!);
+          if (request.signal.aborted) throw new Rollback(denied(409, "cancelled"));
           return fixed(200, { outcome: "reauthentication_context", context: opaque });
         });
       }
@@ -433,9 +435,13 @@ class FactorProofProvider implements AuthenticationProviderInstance {
                 observation: route.kind === "reauth-totp" ? "reauthentication" : route.kind === "sign-in" ? "password" : route.kind === "recovery" ? "recovery_code" : challenge ? "password_totp" : "enrollment",
               };
               if (!ticket && policy.factor(current.user.id)?.verified === 1) throw new Error("Selected protection requires verification.");
-              if (ticket) await this.#settle(policy, route, ticket, evidence, input.code as string, operation.startedAt, finishedAt);
+              if (request.signal.aborted) throw new Rollback(denied(409, "cancelled"));
+              if (ticket) await this.#settle(policy, route, ticket, evidence, input.code as string, operation.startedAt, finishedAt, request.signal);
               else policy.passwordEvidence(attemptId, evidence, policy.generation(current.user.id));
             }
+            if (request.signal.aborted) throw new Rollback(denied(409, "cancelled"));
+            await this.#control.admission.pause?.("before-commit", this.#connection!);
+            if (request.signal.aborted) throw new Rollback(denied(409, "cancelled"));
             if (factorRoute) return fixed(200, { outcome: "observation", authorizingMfa: false }, decision.commit.headers.getSetCookie());
             return decision.commit;
           }));
@@ -473,15 +479,20 @@ class FactorProofProvider implements AuthenticationProviderInstance {
    * Native success is already in hand. The observer and the guarded step update
    * can only refuse it: any refusal rolls the whole success transaction back.
    */
-  async #settle(policy: FixtureAdmission, route: Route, ticket: Ticket, evidence: SessionEvidence, code: string, startedAt: number | undefined, finishedAt: number): Promise<void> {
+  async #settle(policy: FixtureAdmission, route: Route, ticket: Ticket, evidence: SessionEvidence, code: string, startedAt: number | undefined, finishedAt: number, signal: AbortSignal): Promise<void> {
     const refused = () => new Rollback(denied(409, "presentation_refused"));
+    if (signal.aborted) throw new Rollback(denied(409, "cancelled"));
     if (route.kind === "recovery") return policy.settleSuccess(ticket, evidence, Date.now());
     const factor = policy.factor(ticket.subject);
     if (!factor || startedAt === undefined) throw refused();
     const { secretConfig } = await this.#ready().$context;
     const observation = await readNativeTotpSecret(secretConfig, factor.secret)
-      .then(secret => observeTotpStep({ secret, code, startedAt, finishedAt }))
+      .then(async secret => (await Promise.all([
+        observeTotpStep({ secret, code, startedAt, finishedAt }),
+        this.#control.admission.pause?.("observer-pending", this.#connection!),
+      ]))[0])
       .catch(() => ({ ok: false as const }));
+    if (signal.aborted) throw new Rollback(denied(409, "cancelled"));
     if (!observation.ok) throw refused();
     try { policy.settleSuccess(ticket, evidence, Date.now(), observation.step); } catch (error) {
       throw error instanceof StaleTotpStep ? refused() : error;

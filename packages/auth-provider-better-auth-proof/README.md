@@ -561,8 +561,11 @@ The rule runs only after a real native success:
 
 Any refusal rolls the whole native success back: no cookie, session, evidence or
 step. A match is a policy witness inside an observed interval. It is not native's
-exact matched counter, and clock movement nothing observed is not covered. It
-can only produce an empty set or a refused update. Wrong codes write no step, and
+exact matched counter. Coverage of native's window assumes its clock sample lies
+between the observed instants. An unobserved excursion may let native accept an
+older counter while the same digits match a newer observed witness; that
+collision can succeed. Exact native-counter provenance would require a separate
+clock/verifier contract or native metadata. Wrong codes write no step, and
 the earlier committed charge stays. Failed COMMIT plus ROLLBACK, unreadable
 receipts and lost acknowledgments keep the existing no-output, no-cookie and
 no-automatic-retry rules.
