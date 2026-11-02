@@ -35,7 +35,7 @@ export interface CredentialAuthenticationRecord extends PrincipalCredential {
 
 export interface CredentialAuthenticatedPrincipal {
   principalId: string;
-  principalKind: PrincipalKind;
+  principalKind: Exclude<PrincipalKind, "human">;
   credentialId: string;
   authenticationMethod: Exclude<AuthenticationMethod, "provider_session">;
 }

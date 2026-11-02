@@ -209,6 +209,7 @@ export class IdentityService {
       || (record.expiresAt !== null && record.expiresAt <= now)
       || !principal
       || principal.status !== "active"
+      || principal.kind === "human"
       || !credentialMatchesPrincipal(record, principal.kind)
     ) {
       throw new IdentityError("invalid_credential", "Nieprawidłowe lub nieaktywne poświadczenie.");

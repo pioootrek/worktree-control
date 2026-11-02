@@ -52,7 +52,7 @@ function recordSummary(record: KnowledgeTask | KnowledgeThread) {
 export class KnowledgeService {
   constructor(
     private readonly store: KnowledgeStore,
-    private readonly identity: Pick<IdentityService, "authorizeKnowledge" | "describeIdentity">,
+    private readonly identity: Pick<IdentityService, "authorizeKnowledge" | "describeIdentity" | "authorizeKnowledgeRuntimeLink">,
     private readonly clock: () => string = () => new Date().toISOString(),
     private readonly id: () => string = randomUUID,
     private readonly changed: (projectId: string) => void = () => undefined,
