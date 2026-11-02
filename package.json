@@ -78,6 +78,7 @@
     "test:e2e": "node scripts/build-fingerprint.mjs --check && playwright test --config playwright.e2e.config.ts",
     "bench:resources": "node scripts/resource-benchmark.mjs",
     "test:resources": "node --test scripts/*.test.mjs",
+    "test:sqlite-recovery": "vitest run --maxWorkers 1 src/server/restore-recovery.test.ts src/server/infrastructure/sqlite/authentication-factor-migration.test.ts src/server/infrastructure/sqlite/authentication-provider-migration.test.ts src/server/infrastructure/sqlite/authentication-session-issuance-migration.test.ts src/server/infrastructure/sqlite/durable-migrations.test.ts",
     "test:sqlite-cost": "tsx scripts/sqlite-write-cost.ts",
     "test:backups": "vitest run src/server/modules/backups src/cli/backup-policy-options.test.ts src/server/backup-admin.test.ts src/server/transports/backup-http.test.ts src/server/control-service-storage.test.ts",
     "test:ui:backups": "playwright test tests/ui/backups.spec.ts",

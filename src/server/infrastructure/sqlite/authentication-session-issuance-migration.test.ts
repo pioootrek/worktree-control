@@ -11,7 +11,11 @@ import { authenticationSessionIssuanceChecksum, authenticationSessionIssuanceMig
 import { initializeSchema } from "./migrations";
 import { OwnedSqliteDatabase } from "./owned-database";
 import { inspectSchema } from "./schema-inspection";
-import { SqliteStateStore } from "./sqlite-state-store";
+import { SqliteStateStore as UntimedSqliteStateStore } from "./sqlite-state-store";
+
+import { timedSqliteStore, recordTiming } from "@/server/sqlite-timing-diagnostic";
+type SqliteStateStore = UntimedSqliteStateStore;
+const SqliteStateStore = timedSqliteStore(UntimedSqliteStateStore);
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -23,7 +27,8 @@ function directory() {
   return { root, path: join(root, "data", "state.sqlite3") };
 }
 function raw<T>(path: string, operation: (db: Database.Database) => T): T {
-  const db = new Database(path); try { return operation(db); } finally { db.close(); }
+  const started = performance.now();
+  const db = new Database(path); try { return operation(db); } finally { db.close(); recordTiming("raw-fixture", started); }
 }
 const session = (id: string, expires = DEADLINE) => `INSERT INTO "authentication_ba_session"("id","expiresAt","token","createdAt","updatedAt","userId") VALUES('${id}','${expires}','token-${id}','2026-10-28T00:00:00.000Z','2026-10-28T00:00:00.000Z','subject');`;
 const evidence = (id: string, deadline = DEADLINE, subject = "subject") => `INSERT INTO authentication_session_evidence VALUES('${id}','better-auth','${subject}','password','2026-10-28T00:00:00.000Z','${deadline}',1,1,NULL,NULL,'attempt-${id}');`;

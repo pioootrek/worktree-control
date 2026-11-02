@@ -7,9 +7,13 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createControllerBackup } from "@/server/controller-backup";
-import { OwnedSqliteDatabase, SqliteStateStore } from "./index";
+import { OwnedSqliteDatabase, SqliteStateStore as UntimedSqliteStateStore } from "./index";
 import { assertDurability } from "./database-validation";
 import { registryChecksum, registryMigration } from "./migration-registry";
+
+import { timedSqliteStore, recordTiming } from "@/server/sqlite-timing-diagnostic";
+type SqliteStateStore = UntimedSqliteStateStore;
+const SqliteStateStore = timedSqliteStore(UntimedSqliteStateStore);
 
 const roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -25,7 +29,8 @@ function fixture(version?: 12 | 24 | 26) {
   return { root, path };
 }
 function raw(path: string, operation: (db: Database.Database) => void) {
-  const db = new Database(path); try { operation(db); } finally { db.close(); }
+  const started = performance.now();
+  const db = new Database(path); try { operation(db); } finally { db.close(); recordTiming("raw-fixture", started); }
 }
 function released(path: string) { expect(existsSync(`${path}.owner.lock`)).toBe(false); }
 function historicalLeaseFixture(constraint = "(kind = 'human' AND expires_at IS NULL) OR (kind = 'agent' AND expires_at IS NOT NULL)", additionalCheck = "") {
@@ -150,9 +155,10 @@ describe("durable SQLite initialization and migration", () => {
 
   it.each(["fresh","migration"])("recovers a real SIGKILL during uncommitted %s without auth downgrade",async stage=>{
     const f=fixture(stage==="fresh"?undefined:26);
+    const ipcStarted = performance.now();
     const child=fork(fileURLToPath(new URL("./fixtures/initialization-crash-worker.ts",import.meta.url)),[f.path,stage],{execArgv:["--import","tsx"],stdio:["ignore","ignore","pipe","ipc"]});
     try {
-      const [message]=await once(child,"message",{signal:AbortSignal.timeout(5000)});expect(message).toEqual({interrupted:true});
+      const [message]=await once(child,"message",{signal:AbortSignal.timeout(5000)});recordTiming(`initialization-ipc-${stage}`, ipcStarted);expect(message).toEqual({interrupted:true});
     } finally { const ended=once(child,"exit");child.kill("SIGKILL");await ended; }
     const retry=new SqliteStateStore(f.path);try{expect(retry.schemaVersion()).toBe(41);expect(retry.getAuthenticationPolicy().mode).toBe("token");}finally{retry.close();}
     released(f.path);

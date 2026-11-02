@@ -7,7 +7,11 @@ import { openControllerStore } from "@/server/controller-storage";
 import { authenticationProviderChecksum, authenticationProviderMigration } from "./authentication-provider-migration";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
-import { SqliteStateStore } from "./sqlite-state-store";
+import { SqliteStateStore as UntimedSqliteStateStore } from "./sqlite-state-store";
+
+import { timedSqliteStore, recordTiming } from "@/server/sqlite-timing-diagnostic";
+type SqliteStateStore = UntimedSqliteStateStore;
+const SqliteStateStore = timedSqliteStore(UntimedSqliteStateStore);
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -19,7 +23,8 @@ function directory() {
   return { root, path: join(root, "data", "state.sqlite3") };
 }
 function raw<T>(path: string, operation: (db: Database.Database) => T): T {
-  const db = new Database(path); try { return operation(db); } finally { db.close(); }
+  const started = performance.now();
+  const db = new Database(path); try { return operation(db); } finally { db.close(); recordTiming("raw-fixture", started); }
 }
 /** A database written by the A2 release (migrations.ts at 7dd311e), plus representative identity rows. */
 function genuineV37() {
