@@ -169,6 +169,7 @@ describe("password replacement settlement", () => {
     advance(2 * 60 * 60_000);
     const result = await browser.post("/change-password", { currentPassword: OWNER_PASSWORD, newPassword: replacementPassword, revokeOtherSessions: true });
     expect(result.status).toBe(200);
+    expect(result.setCookie.filter(line => line.startsWith(`${SESSION}=`)).length).toBe(1);
     const replaced = await evidenceRows(f);
     expect(replaced).toHaveLength(1);
     const { session_id: oldSession, attempt_id: oldAttempt, ...originalAuthority } = original;

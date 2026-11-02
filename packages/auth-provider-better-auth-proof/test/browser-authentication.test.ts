@@ -235,6 +235,27 @@ describe("actual controller browser adapter with pinned Better Auth", () => {
     } finally { await f.close(); }
   });
 
+  it("returns one replacement cookie when native refresh is due during an actual HTTP password change", async () => {
+    const f = await browserFixture(), client = await f.client().authenticated();
+    const old = client.cookie;
+    try {
+      const original = await client.session();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(Date.now() + 2 * 60 * 60_000);
+      const changed = await client.call("/api/auth/change-password", { body: { currentPassword: OWNER_PASSWORD, newPassword: "fixture-new-password-2" } });
+      expect(changed.status).toBe(200); expect(changed.body).toEqual({ changed: true });
+      const cookies = changed.headers["set-cookie"];
+      expect(Array.isArray(cookies)).toBe(true);
+      expect((cookies as string[]).filter(line => line.startsWith("__Secure-wtc.session_token=")).length).toBe(1);
+      expect(client.cookie === old).toBe(false);
+      const session = await client.session();
+      expect(session.status).toBe(200); expect(session.body.authenticated).toBe(true);
+      expect(session.body.expiresAt).toBe(original.body.expiresAt);
+      const retained = await client.call("/api/auth/get-session", { method: "GET", cookie: old });
+      expect(retained.body.authenticated).toBe(false);
+    } finally { vi.useRealTimers(); await f.close(); }
+  });
+
   it("rechecks current session after the HTTP body wait before sensitive password work", async () => {
     const wrote = vi.fn(), faults: ProofFaultInjection = { beforePasswordWrite: async () => { wrote(); } };
     const f = await browserFixture(faults), client = await f.client().authenticated();

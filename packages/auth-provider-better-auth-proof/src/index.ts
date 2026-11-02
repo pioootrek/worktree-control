@@ -269,7 +269,16 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
       // replacement against its inherited deadline and current account state
       // inside this transaction, before password/revocation effects commit.
       if (!this.#host.protection.currentEvidence(current.session.id, Date.now())) throw new Rollback(denied(401, "session_refused"));
-      return native;
+      // The strict browser boundary accepts one cookie per name. Discard the
+      // native middleware's refresh of the now-deleted session, keeping only
+      // its final replacement; do not relax validation of arbitrary cookies.
+      const lines = native.headers.getSetCookie(), headers = new Headers(native.headers);
+      const lastSession = lines.findLastIndex(line => line.startsWith(`${COOKIE.session}=`));
+      headers.delete("set-cookie");
+      for (const [index, line] of lines.entries()) {
+        if (!line.startsWith(`${COOKIE.session}=`) || index === lastSession) headers.append("set-cookie", line);
+      }
+      return new Response(native.body, { status: native.status, statusText: native.statusText, headers });
     } });
   }
 
