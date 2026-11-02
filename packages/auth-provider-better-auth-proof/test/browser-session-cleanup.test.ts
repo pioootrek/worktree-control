@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { composeIsolatedBrowserAuthentication } from "@/server/bootstrap/authentication";
 import { AuthenticationProtectionQueries } from "@/server/infrastructure/sqlite/authentication-protection-queries";
+import { AuthenticationSessionIssuanceQueries } from "@/server/infrastructure/sqlite/authentication-session-issuance-queries";
 import { loadAuthenticationProvider } from "@/server/modules/authentication";
 import type { ProofFaultInjection } from "../src/index";
 import { browserFixture, TRANSPORT_LIMITS, type BrowserClient, type BrowserFixture, type HttpResult } from "./browser-authentication-fixture";
 import { betweenResultAndRelease, enableTotp, enrollPasskey, enrollTotp, live, options, passkeyLogin, post, refused, S, signIn, stage, strength, totpLogin, unauthenticated } from "./browser-factor-helpers";
-import { BASE_URL, cleanupRoots, count, IP_HEADER, ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, PROVIDER_ENTRY, SECRET, storeFixture } from "./fixture";
+import { BASE_URL, cleanupRoots, count, IP_HEADER, ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, PROVIDER_ENTRY, readyIssuance, SECRET, SESSION_POLICY, storeFixture } from "./fixture";
 import { advance, factorOptions, protectionState, STEP } from "./integrated-fixture";
 import { PasskeyAuthenticator } from "./passkey-authenticator";
 import { cleanupStrictRoots, gate, sleep } from "./strict-fixture";
@@ -29,7 +30,14 @@ const closeListeners = async (f: BrowserFixture) => { opened.splice(opened.index
 const losingResponses = (f: BrowserFixture) => {
   const handle = vi.spyOn(f.adapter, "handle");
   let current: ReturnType<BrowserClient["start"]> | undefined;
-  betweenResultAndRelease(f, "sign-in", async () => { current?.abort(); current = undefined; await sleep(10); });
+  // Wait for the server's own close, not a duration: a response still open would really be published.
+  betweenResultAndRelease(f, "sign-in", async () => {
+    const response = handle.mock.calls.at(-1)?.[1], closed = response && new Promise(resolve => { response.once("close", resolve); });
+    const lost = current;
+    current = undefined;
+    lost?.abort();
+    if (lost) await closed;
+  });
   return async () => {
     const before = handle.mock.results.length, call = f.client().start(LOGIN);
     call.completed.catch(() => undefined);
@@ -152,8 +160,10 @@ describe("bounded ownership of unreleased sessions", () => {
   });
 
   it("requires a valid explicit bound, and no session work runs without one", async () => {
-    const store = storeFixture(), load = (unreleasedSessions: number | undefined) => loadAuthenticationProvider({ entry: PROVIDER_ENTRY, providerId: "better-auth",
-      storage: store.store.authenticationProviderStorage(), unreleasedSessions, options: { baseURL: BASE_URL, secret: SECRET, clientIpHeader: IP_HEADER } });
+    const store = storeFixture();
+    await readyIssuance(store.store);
+    const load = (unreleasedSessions: number | undefined) => loadAuthenticationProvider({ entry: PROVIDER_ENTRY, providerId: "better-auth",
+      storage: store.store.authenticationProviderStorage(), unreleasedSessions, ...(unreleasedSessions === undefined ? {} : SESSION_POLICY), options: { baseURL: BASE_URL, secret: SECRET, clientIpHeader: IP_HEADER } });
     try {
       for (const bound of [0, -1, 1.5]) await expect(load(bound)).rejects.toMatchObject({ code: "provider_unavailable" });
       const runtime = await load(undefined);
@@ -330,20 +340,23 @@ describe("reconciliation failures", () => {
 
   it("an unreadable session row keeps cleanup owned until it can be read", async () => {
     const faults: ProofFaultInjection = {}, f = await create({ faults, unreleased: 1 }), client = await f.client().authenticated(), kept = await sessions(f);
-    const original = AuthenticationProtectionQueries.prototype.session;
+    const original = AuthenticationSessionIssuanceQueries.prototype.state;
     lostAcknowledgment(faults);
-    const read = vi.spyOn(AuthenticationProtectionQueries.prototype, "session").mockImplementation(function (this: AuthenticationProtectionQueries, sessionId) {
+    const read = vi.spyOn(AuthenticationSessionIssuanceQueries.prototype, "state").mockImplementation(function (this: AuthenticationSessionIssuanceQueries, sessionId) {
       if (faults.sqlFault?.remaining === 0) throw new Error("fixture session fault");
       return original.call(this, sessionId);
     });
     knownCommitted(await signIn(f.client()));
-    await settledSessions(f, kept);
+    // Unreadable is not pending. Nothing deletes a session whose durable state it cannot classify.
+    await sleep(10);
+    expect(await sessions(f)).toHaveLength(kept.length + 1);
     advance(61_000);
     refused(await signIn(f.client()), 503, "database_busy");
     read.mockRestore();
     faults.sqlFault = undefined;
     advance(61_000);
     expect((await signIn(f.client())).status).toBe(200);
+    expect(await sessions(f)).toHaveLength(kept.length + 1);
     await strength(client, "password");
   });
 });

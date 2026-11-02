@@ -1,13 +1,13 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
 import { SqliteStateStore } from "@/server/infrastructure/sqlite";
-import { AuthenticationProviderError, AuthenticationService, resolveControllerAuthentication } from "@/server/modules/authentication";
+import { AuthenticationProviderError, AuthenticationService, loadAuthenticationProvider, resolveControllerAuthentication } from "@/server/modules/authentication";
 import type { ProofFaultInjection } from "../src/index";
-import { cleanupRoots, Client, count, loadProof, ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, proofFixture, readCommitted, storeFixture } from "./fixture";
+import { BASE_URL, cleanupRoots, Client, count, IP_HEADER, loadProof, ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, proofFixture, PROVIDER_ENTRY, readCommitted, SECRET, SESSION_POLICY, storeFixture } from "./fixture";
 
 afterEach(() => { vi.useRealTimers(); cleanupRoots(); });
 
@@ -40,7 +40,7 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
         kysely: packageVersion(packageDirectory, "kysely"),
         driver: packageVersion(join(packageDirectory, "../.."), "better-sqlite3"),
       }).toEqual({ betterAuth: "1.7.14", core: "1.7.14", kysely: "0.28.17", driver: "13.0.3" });
-      expect(f.runtime.readiness).toEqual({ providerId: "better-auth", implementationVersion: "0.0.0-proof.4", library: { name: "better-auth", version: "1.7.14" }, schema: "verified" });
+      expect(f.runtime.readiness).toEqual({ providerId: "better-auth", implementationVersion: "0.0.0-proof.5", library: { name: "better-auth", version: "1.7.14" }, schema: "verified" });
       const authentication = new AuthenticationService(f.store);
       expect(() => authentication.setMode("better-auth", "test")).toThrow(expect.objectContaining({ code: "auth_provider_unavailable" }));
       expect(resolveControllerAuthentication(
@@ -80,9 +80,29 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
       expect(probe.__legacyProviderCreated).toBeUndefined();
       // A refused module did not consume or poison the owner's provider facade.
       const { runtime: current } = await loadProof(f.store);
-      expect(current.implementationVersion).toBe("0.0.0-proof.4");
+      expect(current.implementationVersion).toBe("0.0.0-proof.5");
       await current.dispose();
     } finally { delete probe.__legacyProviderCreated; f.store.close(); }
+  });
+
+  it.each(["legacy-contract-4.mjs", "legacy-contract-4-storage-3.mjs", "wrong-storage.mjs"])("refuses the mixed identity %s before creating it", async name => {
+    const f = storeFixture();
+    const probe = globalThis as unknown as { __legacyProviderCreated?: boolean };
+    delete probe.__legacyProviderCreated;
+    try {
+      expect(await errorCode(() => loadProof(f.store, undefined, fixtureModule(name)))).toBe("provider_unavailable");
+      expect(probe.__legacyProviderCreated).toBeUndefined();
+    } finally { delete probe.__legacyProviderCreated; f.store.close(); }
+  });
+
+  it("is refused by the previous host's frozen rule, while that rule still accepted its own provider", async () => {
+    const frozen = (name: string) => import(/* @vite-ignore */ pathToFileURL(fixtureModule(name)).href);
+    const { previousHostAccepts } = await frozen("frozen-host-contract-4.mjs") as { previousHostAccepts(provider: unknown): boolean };
+    const { authenticationProvider: legacy } = await frozen("legacy-contract-4.mjs") as { authenticationProvider: unknown };
+    const { authenticationProvider: current } = await import("../src/index");
+    expect(previousHostAccepts(legacy)).toBe(true);
+    expect(previousHostAccepts(current)).toBe(false);
+    expect(current).toMatchObject({ contractVersion: 5, storageRevision: 3, implementationVersion: "0.0.0-proof.5" });
   });
 
   it("disposes a provider whose initialization fails inside its borrow, rolls back what it began and stops further provider admission", async () => {
@@ -526,15 +546,19 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
     restoreControllerBackup(backup, restoredPath, join(f.root, "restored-attachments"));
     const restored = new SqliteStateStore(restoredPath);
     try {
-      expect(restored.schemaVersion()).toBe(40);
+      expect(restored.schemaVersion()).toBe(41);
       expect(count(restoredPath, "authentication_provider_subjects")).toBe(1);
       expect(restored.listProjects().map(project => project.name)).toEqual(["after-disposal"]);
-      const reloaded = await loadProof(restored);
+      // Its marked rows may be older than what was published, so this owner never gets issuance bounds.
+      await expect(restored.recoverIssuedSessions(SESSION_POLICY)).rejects.toThrow("provenance");
+      await expect(loadProof(restored)).rejects.toThrow();
+      const reloaded = await loadAuthenticationProvider({ entry: PROVIDER_ENTRY, providerId: "better-auth", storage: restored.authenticationProviderStorage(),
+        options: { baseURL: BASE_URL, secret: SECRET, clientIpHeader: IP_HEADER } });
       try {
         // A restored snapshot brings back its sessions; external revocation fences are A5 work.
-        expect((await new Client(reloaded.runtime).resolve(client.cookieHeader()))?.principalId).toBe(f.owner.principalId);
-        expect((await new Client(reloaded.runtime, "203.0.113.80").signIn(NEW_PASSWORD)).status).toBe(200);
-      } finally { await reloaded.runtime.dispose(); }
+        expect((await new Client(reloaded).resolve(client.cookieHeader()))?.principalId).toBe(f.owner.principalId);
+        expect((await new Client(reloaded, "203.0.113.80").signIn(NEW_PASSWORD)).status).toBe(503);
+      } finally { await reloaded.dispose(); }
     } finally { restored.close(); }
   });
 

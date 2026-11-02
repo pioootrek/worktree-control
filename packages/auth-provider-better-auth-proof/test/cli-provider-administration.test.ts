@@ -8,7 +8,7 @@ import { SqliteStateStore } from "@/server/infrastructure/sqlite";
 import { loadAuthenticationProvider, ProviderKnowledgeApplication } from "@/server/modules/authentication";
 import { IdentityService } from "@/server/modules/identity";
 import { KnowledgeService } from "@/server/modules/knowledge";
-import { Client, count, OWNER_EMAIL, OWNER_PASSWORD, readCommitted } from "./fixture";
+import { Client, count, ISSUANCE, OWNER_EMAIL, OWNER_PASSWORD, readCommitted, readyIssuance } from "./fixture";
 import { cliFixture, onlineCliFixture } from "./cli-provider-fixture";
 import { gate } from "./strict-fixture";
 import type { ProofFaultInjection } from "../src/index";
@@ -43,7 +43,8 @@ describe("protected CLI provider administration against actual SQLite/Better Aut
       expect(existsSync(f.paths.adminSocketPath)).toBe(false); expect(existsSync(f.paths.controllerLockPath)).toBe(false);
       expect(existsSync(`${f.paths.databasePath}.owner.lock`)).toBe(false);
       const store = new SqliteStateStore(f.paths.databasePath), config = new FileProviderConfiguration(join(f.paths.dataDirectory, "authentication-provider.json")).read()!;
-      const runtime = await loadAuthenticationProvider({ entry: config.entry, providerId: "better-auth", storage: store.authenticationProviderStorage(),
+      await readyIssuance(store);
+      const runtime = await loadAuthenticationProvider({ entry: config.entry, providerId: "better-auth", storage: store.authenticationProviderStorage(), ...ISSUANCE,
         options: { baseURL: config.baseURL, secret: config.secret, clientIpHeader: "x-worktree-control-client-ip" } });
       try {
         expect((await new Client(runtime, "198.19.1.1").signIn()).status).toBe(401);

@@ -5,7 +5,7 @@ import { getMigrations } from "better-auth/db/migration";
 import { Kysely, SqliteDialect } from "kysely";
 import { loadAuthenticationProvider } from "@/server/modules/authentication";
 import type { ExclusiveConnectionOptions } from "@/server/infrastructure/sqlite/exclusive-connection";
-import { BASE_URL, IP_HEADER, SECRET, type ProviderEvidence } from "./fixture";
+import { BASE_URL, IP_HEADER, ISSUANCE, readyIssuance, SECRET, type ProviderEvidence } from "./fixture";
 import { applyFactorDdl, factorStore, type FactorStore } from "./factor-fixture";
 import { PASSKEY_DDL,PasskeyAdmission } from "./passkey-admission";
 import { newPasskeyControl, passkeyLibraryOptions, type PasskeyControl } from "./passkey-provider";
@@ -13,8 +13,9 @@ import { newPasskeyControl, passkeyLibraryOptions, type PasskeyControl } from ".
 const SETTINGS = { baseURL:BASE_URL,secret:SECRET,clientIpHeader:IP_HEADER };
 export async function loadPasskey(base: FactorStore,control: PasskeyControl) {
   const evidence: ProviderEvidence = {events:[],logs:[],resets:[],failInvalidation:false};
+  await readyIssuance(base.store);
   const runtime = await loadAuthenticationProvider({
-    entry:fileURLToPath(new URL("./passkey-provider.ts",import.meta.url)),providerId:"better-auth",storage:base.storage,
+    entry:fileURLToPath(new URL("./passkey-provider.ts",import.meta.url)),providerId:"better-auth",storage:base.storage,...ISSUANCE,
     options:{...SETTINGS,passkeyControl:control} as Parameters<typeof loadAuthenticationProvider>[0]["options"],
     onInvalidation(event) { if (evidence.failInvalidation) throw new Error("Fixture listener failed."); evidence.events.push(event); },
     log(level,message) { evidence.logs.push(`${level}: ${message}`); },

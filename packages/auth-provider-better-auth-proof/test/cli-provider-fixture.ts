@@ -9,7 +9,7 @@ import { SqliteStateStore } from "@/server/infrastructure/sqlite";
 import { AuthenticationService, loadAuthenticationProvider, type AuthenticationProviderRuntime } from "@/server/modules/authentication";
 import { resolveAppPaths } from "@/server/paths";
 import type { ProofFaultInjection } from "../src/index";
-import { ORIGIN, PROVIDER_ENTRY } from "./fixture";
+import { ISSUANCE, ORIGIN, PROVIDER_ENTRY, readyIssuance } from "./fixture";
 
 export function cliFixture() {
   const root = mkdtempSync(join(tmpdir(), "provider-cli-")), paths = resolveAppPaths(join(root, "data"), join(root, "state"));
@@ -51,7 +51,8 @@ export async function onlineCliFixture(options: { faults?: ProofFaultInjection; 
     holdLifetime: () => { const timer = setInterval(() => {}, 60_000); lifetimes.push(timer); return () => clearInterval(timer); },
     loadProvider: async input => {
       loads++; await options.beforeLoad?.();
-      runtime = await loadAuthenticationProvider({ ...input, options: { ...input.options, faultInjection: options.faults } as typeof input.options });
+      await readyIssuance(store);
+      runtime = await loadAuthenticationProvider({ ...input, ...ISSUANCE, options: { ...input.options, faultInjection: options.faults } as typeof input.options });
       await options.afterLoad?.(); return runtime;
     } });
   const admin = await listenAdminSocket(f.paths.adminSocketPath, body => administration.execute(body));

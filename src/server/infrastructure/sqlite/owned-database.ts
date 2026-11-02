@@ -28,15 +28,28 @@ export function acquireDatabaseOwnership(input: string, options?: { inspectOnly:
   } catch (error) { lock.release(); throw error; }
 }
 
+/**
+ * What this owner can say about how its database file came to be. `restored`
+ * and `unconfirmed` both mean a snapshot may stand behind the current rows, so
+ * nothing there may be read as left over from an ordinary crash. A manual file
+ * replacement leaves no trace and is not covered.
+ */
+export type DatabaseProvenance = "ordinary" | "restored" | "unconfirmed";
+function databaseProvenance(path: string): DatabaseProvenance {
+  try { return getOwnedRestoreStatus(path) ? "restored" : "ordinary"; } catch { return "unconfirmed"; }
+}
+
 /** One connection and database lock, transferable from inspection to migration. */
 export class OwnedSqliteDatabase {
   private connection: Database.Database;
   readonly inspection: SchemaInspection;
   private readonly ownership: ReturnType<typeof acquireDatabaseOwnership>;
   private closed = false;
+  readonly provenance: DatabaseProvenance;
 
   constructor(path: string, create = false) {
     this.ownership = acquireDatabaseOwnership(path);
+    this.provenance = databaseProvenance(this.ownership.path);
     let connection: Database.Database | undefined;
     try {
       const marker = `${this.ownership.path}.initializing`;

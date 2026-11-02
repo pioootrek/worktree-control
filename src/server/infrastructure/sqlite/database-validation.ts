@@ -22,6 +22,13 @@ export function validateDatabase(database: Database.Database, version: number): 
     JOIN "authentication_ba_session" s ON s."id"=e.session_id WHERE s."userId"<>e.subject LIMIT 1`).get()) fail("session evidence subject");
   if (version >= 40 && database.prepare(`SELECT 1 FROM authentication_passkey_trust t
     JOIN "authentication_ba_passkey" c ON c."id"=t.native_id WHERE c."userId"<>t.subject OR c."credentialID"<>t.credential_id LIMIT 1`).get()) fail("passkey trust subject");
+  // A marker never authorizes, but malformed state must not reach destructive recovery. A native
+  // row without a marker is unclassified and valid; only a marker makes a claim to check here.
+  if (version >= 41 && database.prepare(`SELECT 1 FROM authentication_session_issuance i
+    LEFT JOIN authentication_session_evidence e ON e.session_id=i.session_id
+    LEFT JOIN "authentication_ba_session" s ON s."id"=i.session_id
+    WHERE i.state NOT IN ('pending','may_publish') OR e.session_id IS NULL OR s."id" IS NULL OR e.original_deadline<>i.original_deadline
+      OR i.original_deadline IS NOT strftime('%Y-%m-%dT%H:%M:%fZ',i.original_deadline) LIMIT 1`).get()) fail("session issuance");
   if (version >= 25) {
     try { new AuthenticationQueries(database).getAuthenticationPolicy(); } catch { fail("authentication policy"); }
     if (!database.prepare("SELECT 1 FROM remote_principals WHERE id='installation' AND kind='installation' AND status='active'").get()) fail("installation principal");

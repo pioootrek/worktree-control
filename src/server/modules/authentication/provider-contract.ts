@@ -9,7 +9,7 @@
  */
 import type { BrowserWebAuthnBounds } from "@/shared/contracts/authentication";
 
-export const AUTHENTICATION_PROVIDER_CONTRACT_VERSION = 4;
+export const AUTHENTICATION_PROVIDER_CONTRACT_VERSION = 5;
 
 /** Kysely-compatible statement; valid only during the borrow that prepared it. */
 export interface ProviderSqliteStatement {
@@ -140,6 +140,11 @@ export type ProviderFactorOutcome = "charged" | "succeeded" | "failed";
  * are synchronous and join the provider's open transaction, so a charge commits
  * before native evaluation and a settlement commits with native success.
  * Evaluation of current authority stays in the controller.
+ *
+ * Since contract 5, evidence for a session (`recordPasswordSession`, `inheritSession`,
+ * `settleTotpLogin`, `settlePasskeyLogin`) requires the native session's own open
+ * transaction, because that session's durable issuance marker joins it. Called
+ * outside one it throws, and a session whose marker cannot be written must roll back.
  */
 export interface ProviderAccountProtection {
   /** False without validated limits. Factor operations then refuse. */

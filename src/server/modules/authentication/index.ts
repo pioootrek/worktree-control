@@ -35,6 +35,8 @@ export {
   type ProviderSubjectStore,
 } from "./provider-runtime";
 export { AccountProtection, canonicalInstant, evaluateSessionAuthority, passkeyFingerprint, ProviderAdmissionRefusedError, ProviderSettlementRefusedError, ProviderStaleStepError, totpBinding, validateFactorLimits } from "./account-protection";
+export { recoverIssuedSessions, SessionIssuance, SessionIssuanceError, validateSessionRowPolicy } from "./session-issuance";
+export type { SessionIssuanceState, SessionIssuanceStore, SessionRowPolicy } from "./session-issuance";
 export { BROWSER_COOKIE, BROWSER_OPERATIONS, browserOperationRequires } from "./browser-operations";
 export type { BrowserLifetime, BrowserOperation, BrowserOutcome, BrowserRelease, BrowserResultBody } from "./browser-operations";
 export type {

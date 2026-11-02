@@ -188,7 +188,9 @@ export class AuthenticationHttp {
       const result = await execution.result;
       unreleased = result;
       const lines = this.cookies(browser, result, cookies);
-      // Last current-authority check and response release form one synchronous admitted phase.
+      // Last current-authority check, durable publication marker and response release form one
+      // synchronous admitted phase. Nothing awaits between them, and a marked session stays marked
+      // whatever happens to this response. No client acknowledgment exists or is implied.
       await this.deps.admission.run(() => {
         if (this.deps.maintenance?.()) fail(503, "database_unavailable");
         if (!lifetime.open) fail(499, "client_closed");

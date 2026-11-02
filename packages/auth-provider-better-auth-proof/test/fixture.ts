@@ -33,13 +33,20 @@ export interface ProviderEvidence { events: ProviderInvalidation[]; logs: string
 
 /** Finite test input, chosen to prove the bound. It is not a product default. */
 export const UNRELEASED_SESSIONS = 16;
-export async function loadProof(store: SqliteStateStore, faultInjection?: ProofFaultInjection, entry = PROVIDER_ENTRY, factors?: ProviderFactorOptions, unreleasedSessions = UNRELEASED_SESSIONS) {
+/** Finite row bounds, large enough for ordinary tests. Not a product default either. */
+export const SESSION_POLICY = { sessionRows: 1024, sessionReconcileBatch: 16 };
+export const ISSUANCE = { unreleasedSessions: UNRELEASED_SESSIONS, ...SESSION_POLICY };
+/** What an owner boot does before any issuer may load. Once per store, whoever asks. */
+export const readyIssuance = async (store: SqliteStateStore, policy = SESSION_POLICY) => { await store.recoverIssuedSessions(policy); return policy; };
+export async function loadProof(store: SqliteStateStore, faultInjection?: ProofFaultInjection, entry = PROVIDER_ENTRY, factors?: ProviderFactorOptions, unreleasedSessions = UNRELEASED_SESSIONS, sessionPolicy = SESSION_POLICY) {
+  await readyIssuance(store, sessionPolicy);
   const evidence: ProviderEvidence = { events: [], logs: [], resets: [], failInvalidation: false };
   const runtime = await loadAuthenticationProvider({
     entry,
     providerId: "better-auth",
     storage: store.authenticationProviderStorage(),
     unreleasedSessions,
+    ...sessionPolicy,
     options: {
       baseURL: BASE_URL, secret: SECRET, clientIpHeader: IP_HEADER,
       passwordResetDelivery: async delivery => { evidence.resets.push(delivery); },

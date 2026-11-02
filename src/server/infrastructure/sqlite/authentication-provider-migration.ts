@@ -37,7 +37,7 @@ export const authenticationProviderChecksum = createHash("sha256")
   .update(`${authenticationProviderMigration.version}\0${authenticationProviderMigration.name}\0${authenticationProviderMigration.sql}`).digest("hex");
 
 /** Provider storage contract revision: migration 40's factor and evidence storage over migration 38. */
-export const AUTHENTICATION_PROVIDER_STORAGE_REVISION = 2;
+export const AUTHENTICATION_PROVIDER_STORAGE_REVISION = 3;
 
 /** Runs inside the schema owner's transaction after migration 37. Any pre-existing table fails it. */
 export function applyAuthenticationProviderMigration(database: Database.Database): void {

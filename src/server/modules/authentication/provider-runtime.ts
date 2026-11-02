@@ -27,6 +27,7 @@ import { browserFactorSchemas, type BrowserWebAuthnBounds } from "@/shared/contr
 import { BROWSER_COOKIE, BROWSER_OPERATIONS, browserOperationRequires, type BrowserLifetime, type BrowserOperation, type BrowserOutcome, type BrowserRelease, type BrowserResultBody } from "./browser-operations";
 import { IssuanceWindow } from "./factor-issuance";
 import { UnreleasedSessions, type UnreleasedSession } from "./unreleased-sessions";
+import { SessionIssuance, validateSessionRowPolicy, type SessionIssuanceState, type SessionIssuanceStore, type SessionRowPolicy } from "./session-issuance";
 
 export type AuthenticationProviderErrorCode =
   | "provider_unavailable" | "principal_unavailable" | "subject_conflict" | "not_linked"
@@ -76,9 +77,12 @@ export interface AuthenticationProviderStorage {
   /** Nonsecret current-state projection. Requires core admission; never uses a provider borrow. */
   currentSession(providerId: string, sessionId: string): ProviderSessionState | null;
   /** Cleanup reconciliation when no borrow is possible. Waits for reserved core admission itself. */
-  sessionPresent(providerId: string, sessionId: string): Promise<boolean>;
+  issuanceState(sessionId: string): Promise<SessionIssuanceState>;
+  /** True once this owner finished its one ordinary-restart recovery. Nothing else clears it. */
+  sessionRecoveryComplete(): boolean;
+  sessionIssuance(): SessionIssuanceStore;
   /** Application policy over this connection. Without limits it reads evidence and refuses factor work. */
-  protection(providerId: string, limits?: ProviderFactorLimits): ProviderAccountProtection & ProviderReleaseProtection;
+  protection(providerId: string, limits?: ProviderFactorLimits, issuance?: SessionIssuance): ProviderAccountProtection & ProviderReleaseProtection;
 }
 
 export interface LoadAuthenticationProviderInput {
@@ -89,10 +93,13 @@ export interface LoadAuthenticationProviderInput {
   options: AuthenticationProviderOptions;
   /**
    * Most sessions this runtime may own between minting and release or cleanup.
-   * A required explicit input for browser login: there is no default, and
-   * without it no session-producing browser operation runs.
+   * Required with `sessionRows` and `sessionReconcileBatch`, or absent with them:
+   * there are no defaults, and a load without all three can administer but never mint.
    */
   unreleasedSessions?: number;
+  /** Most native sessions this installation may hold, across every boot. See `SessionRowPolicy`. */
+  sessionRows?: number;
+  sessionReconcileBatch?: number;
   /** Called after commit. A throw is reported as `invalidation_failed` with `committed: true`. */
   onInvalidation?: (event: ProviderInvalidation) => void;
   log?: (level: "error" | "warn" | "info" | "debug", message: string) => void;
@@ -190,12 +197,15 @@ export async function loadAuthenticationProvider(input: LoadAuthenticationProvid
   const provider = compatibleModule(loaded, input);
   let limits: ProviderFactorLimits | undefined;
   try { limits = input.options.factors ? validateFactorLimits(input.options.factors.limits) : undefined; } catch { throw unavailable("factor limits"); }
-  if (input.unreleasedSessions !== undefined && !(Number.isSafeInteger(input.unreleasedSessions) && input.unreleasedSessions > 0)) throw unavailable("unreleased session bound");
+  const policy = sessionPolicy(input);
+  // A new owner recovers before any issuer exists. This load cannot do it, or skip it.
+  if (policy && !input.storage.sessionRecoveryComplete()) throw unavailable("session recovery");
   const connection = input.storage.createProviderConnection();
   const operations = new AsyncLocalStorage<ProviderOperation>();
   const subjects = input.storage.subjects(input.providerId);
   const controller = <T>(operation: () => T) => input.storage.runControllerOperation(operation);
-  const owned = input.storage.protection(input.providerId, limits);
+  const issuance = new SessionIssuance(input.storage.sessionIssuance(), policy);
+  const owned = input.storage.protection(input.providerId, limits, issuance);
   const protection = guardedProtection(owned, controller, sessionId => { operations.getStore()?.issued?.(sessionId); });
   const host: AuthenticationProviderHost = Object.freeze({
     providerId: input.providerId,
@@ -238,7 +248,7 @@ export async function loadAuthenticationProvider(input: LoadAuthenticationProvid
     try { readiness = await input.storage.borrow(() => ready.initialize()); } catch { throw unavailable("initialization"); }
     if (!isRecord(readiness) || readiness.providerId !== input.providerId || readiness.schema !== "verified"
       || readiness.implementationVersion !== provider.implementationVersion) throw unavailable("readiness");
-    return new AuthenticationProviderRuntime(input, provider, ready, connection, subjects, operations, Object.freeze({ ...readiness, library: Object.freeze({ ...readiness.library }) }), owned, limits);
+    return new AuthenticationProviderRuntime(input, provider, ready, connection, subjects, operations, Object.freeze({ ...readiness, library: Object.freeze({ ...readiness.library }) }), owned, limits, issuance);
   } catch (error) {
     try { await instance?.dispose(); } catch { throw new AuthenticationProviderError("disposal_unconfirmed", "Authentication provider disposal was not confirmed.").retainResource(instance); }
     finally { connection.close(); }
@@ -246,10 +256,17 @@ export async function loadAuthenticationProvider(input: LoadAuthenticationProvid
   }
 }
 
+/** All three bounds, validated, or none. A partial policy is a mistake and refuses the load. */
+function sessionPolicy({ unreleasedSessions, sessionRows, sessionReconcileBatch }: LoadAuthenticationProviderInput): SessionRowPolicy | null {
+  if (unreleasedSessions === undefined && sessionRows === undefined && sessionReconcileBatch === undefined) return null;
+  if (!(Number.isSafeInteger(unreleasedSessions) && unreleasedSessions! > 0)) throw unavailable("unreleased session bound");
+  try { return validateSessionRowPolicy({ sessionRows, sessionReconcileBatch }); } catch { throw unavailable("session row bound"); }
+}
+
 /** Per-call state joined by anything running in that call's borrow. */
 interface ProviderOperation {
   invalidationFailed: boolean;
-  /** Set only for a browser operation. Other calls own no unreleased session. */
+  /** Set only for an operation that can mint. Other calls own no new session. */
   issued?: ((sessionId: string) => void) | undefined;
 }
 /** A browser operation's claim on its session, kept across every failure path. */
@@ -266,6 +283,8 @@ interface ReleaseState {
   capture: ProviderReleaseCapture | null;
   /** The session this result minted, if any. A result minted by nothing owns nothing. */
   session: UnreleasedSession | null;
+  /** That session's evidence deadline, which its publication marker must match. */
+  deadline: string | null;
   /** A durable effect exists whatever happens to this response. */
   committed: boolean;
   finished: boolean;
@@ -318,6 +337,7 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
   /** Dispose cannot be confirmed while one of these may still exist. Absent without an explicit bound. */
   readonly #unreleased: UnreleasedSessions | undefined;
   readonly #protection: ProviderAccountProtection & ProviderReleaseProtection;
+  readonly #sessions: SessionIssuance;
   readonly #limits: ProviderFactorLimits | undefined;
   readonly #issuance: IssuanceWindow | undefined;
   readonly #schemas: ReturnType<typeof browserFactorSchemas> | undefined;
@@ -336,12 +356,14 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     readiness: AuthenticationProviderReadiness,
     protection: ProviderAccountProtection & ProviderReleaseProtection,
     limits: ProviderFactorLimits | undefined,
+    sessions: SessionIssuance,
   ) {
     this.#protection = protection;
+    this.#sessions = sessions;
     this.#limits = limits;
     this.#issuance = limits && new IssuanceWindow(limits.issuance);
     this.#schemas = limits && browserFactorSchemas(limits.webauthn);
-    this.#unreleased = input.unreleasedSessions === undefined ? undefined : new UnreleasedSessions(input.unreleasedSessions);
+    this.#unreleased = sessions.bounded ? new UnreleasedSessions(input.unreleasedSessions!) : undefined;
     this.#input = input;
     this.#instance = instance;
     this.#connection = connection;
@@ -355,11 +377,37 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
   /** Without validated limits every factor route stays closed. */
   get factorsEnabled(): boolean { return this.#limits !== undefined; }
   get webAuthnBounds(): BrowserWebAuthnBounds | undefined { return this.#limits?.webauthn; }
-  /** Without an explicit bound no browser operation may mint a session. */
+  /** Without explicit bounds nothing here may mint a session. */
   get issuanceBounded(): boolean { return this.#unreleased !== undefined; }
 
+  /**
+   * Native responses for private proof callers. No caller can receive a session
+   * this way that the global bound did not admit: its return is a conservative
+   * publication, so the marker commits first. A failed or uncertain result
+   * carries no cookie, and its `pending` row stays counted until the next boot.
+   */
   handle(request: Request): Promise<Response> {
-    return this.#run(() => this.#instance.handle(request));
+    let minted: string | undefined;
+    return this.#run(async () => {
+      if (this.#mintingRequest(request) && !this.#input.storage.runControllerOperation(() => this.#sessions.roomBeforeMint(new Date().toISOString()))) return new Response(null, { status: 503 });
+      const response = await this.#instance.handle(request);
+      if (!minted || !response.ok) return response;
+      const issued = minted;
+      this.#input.storage.runControllerOperation(() => {
+        const deadline = this.#protection.currentEvidence(issued, Date.now())?.originalDeadline;
+        if (!deadline) throw failed("outcome_unconfirmed");
+        this.#sessions.publish(issued, deadline);
+      });
+      return response;
+    }, { issued: sessionId => { minted = sessionId; } });
+  }
+
+  /** The same closed set the browser surface marks `mints`, including its enrollment exception. */
+  #mintingRequest(request: Request): boolean {
+    const url = new URL(request.url), base = new URL(this.#input.options.baseURL).pathname.replace(/\/+$/, "");
+    const operation = (Object.keys(BROWSER_OPERATIONS) as BrowserOperation[]).find(name => browserOperationRequires(name, "mints") && `${base}${BROWSER_OPERATIONS[name].path}` === url.pathname);
+    return operation !== undefined && request.method === BROWSER_OPERATIONS[operation].method
+      && !(operation === "totp-verify" && requestCookie(request.headers, BROWSER_COOKIE.session) !== undefined);
   }
 
   /** Current provider session, committed evidence and active owner mapping, all read under one borrow. */
@@ -516,7 +564,7 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     if (browserOperationRequires(operation, "actor") || enrolling) await this.#requireCurrentSession(actor, request.headers);
     // The borrow is exclusive, so this check and the mint it permits cannot interleave with another issuer.
     if (browserOperationRequires(operation, "mints") && !enrolling) {
-      if (this.#unreleased!.full) throw failed("capacity");
+      if (!controller(() => this.#sessions.roomBeforeMint(new Date().toISOString())) || this.#unreleased!.full) throw failed("capacity");
       flight.admitted = true;
     }
     if (operation === "passkey-authenticate-options" && !controller(() => this.#protection.issuanceRoom(Date.now()))) throw failed("capacity");
@@ -644,14 +692,14 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     }
     const outcome = operation === "session" ? "session" : operation === "password" ? "password" : "session";
     return this.#release(operation, outcome, operation === "password" ? { changed: true } : { authenticated: true }, responseHeaders,
-      { actor: issued, committed: operation === "password", session: owned });
+      { actor: issued, committed: operation === "password", session: owned, deadline: resolution.evidence?.originalDeadline ?? null });
   }
 
-  #release(operation: BrowserOperation, outcome: BrowserOutcome, body: BrowserResultBody, headers: Headers, state: Partial<Pick<ReleaseState, "actor" | "capture" | "committed" | "session">> = {}): BrowserRelease {
+  #release(operation: BrowserOperation, outcome: BrowserOutcome, body: BrowserResultBody, headers: Headers, state: Partial<Pick<ReleaseState, "actor" | "capture" | "committed" | "session" | "deadline">> = {}): BrowserRelease {
     const serialized = JSON.stringify(body);
     if (Buffer.byteLength(serialized) > (this.#limits?.webauthn.responseBytes ?? PASSWORD_RESPONSE_BYTES)) throw invalidResponse();
     const release: BrowserRelease = Object.freeze({ operation, outcome });
-    const owned: ReleaseState = { body, headers, actor: state.actor ?? null, capture: state.capture ?? null, session: state.session ?? null, committed: state.committed ?? false, finished: false };
+    const owned: ReleaseState = { body, headers, actor: state.actor ?? null, capture: state.capture ?? null, session: state.session ?? null, deadline: state.deadline ?? null, committed: state.committed ?? false, finished: false };
     this.#releases.set(release, owned);
     if (owned.session) owned.session.phase = "held";
     return release;
@@ -670,6 +718,11 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
    * The final check, synchronous so it forms one admitted phase with response
    * emission. A release is finished once. Foreign objects and other runtimes'
    * releases fail; retained results are revalidated against current state.
+   *
+   * A new session's body comes back only after its `may_publish` marker committed,
+   * so a crash can never leave a possibly delivered cookie looking unpublished.
+   * Local release frees the unreleased slot, never the durable row. A failed
+   * mark returns nothing and may still have committed: `#revoke` reads what is stored.
    */
   finishBrowserRelease(release: BrowserRelease): BrowserResultBody {
     const state = this.#releases.get(release);
@@ -688,6 +741,12 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     } catch (error) {
       if (state.committed) throw failed("outcome_committed", true);
       throw error;
+    }
+    if (state.session) {
+      try { this.#sessions.publish(state.session.sessionId, state.deadline!); } catch {
+        state.session.phase = "retained";
+        throw state.committed ? failed("outcome_committed", true) : failed("outcome_unconfirmed");
+      }
     }
     this.#retire(state);
     if (state.session) this.#unreleased!.remove(state.session);
@@ -739,16 +798,23 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     return session.cleaning;
   }
 
-  /** Only the row decides: a notification can fail after deletion, and deletion can be refused. */
+  /**
+   * Only stored state decides: a notification can fail after deletion, and deletion
+   * can be refused. A `may_publish` row is never deleted here, whatever happened to
+   * its response. It is retained by design, so its local claim simply ends.
+   */
   async #revoke(session: UnreleasedSession): Promise<void> {
-    await this.#instance.revokeSession(session.sessionId).catch(noop);
-    if (this.#input.storage.runControllerOperation(() => this.#protection.sessionPresent(session.sessionId))) this.#input.log?.("error", "An unreleased session could not be cleaned up.");
-    else this.#unreleased!.remove(session);
+    const stored = () => this.#input.storage.runControllerOperation(() => this.#sessions.state(session.sessionId));
+    if (stored() === "pending") await this.#instance.revokeSession(session.sessionId).catch(noop);
+    if (this.#resolved(stored())) this.#unreleased!.remove(session);
+    else this.#input.log?.("error", "An unreleased session could not be cleaned up.");
   }
+
+  #resolved(state: SessionIssuanceState): boolean { return state === "absent" || state === "may_publish"; }
 
   async #reconcile(session: UnreleasedSession): Promise<void> {
     try {
-      if (!await this.#input.storage.sessionPresent(this.#input.providerId, session.sessionId)) this.#unreleased!.remove(session);
+      if (this.#resolved(await this.#input.storage.issuanceState(session.sessionId))) this.#unreleased!.remove(session);
     } catch { /* Unreadable is not absent, so it stays owned. */ }
   }
 
@@ -759,9 +825,9 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
   }
 
   #supportsSessionAuthority(): boolean {
-    // This projection is verified only for the fixed migration-40 adapter and pinned library.
-    return this.#input.providerId === "better-auth" && this.#input.storage.storageRevision === 2
-      && this.implementationVersion === "0.0.0-proof.4"
+    // This projection is verified only for the fixed migration-41 adapter and pinned library.
+    return this.#input.providerId === "better-auth" && this.#input.storage.storageRevision === 3
+      && this.implementationVersion === "0.0.0-proof.5"
       && this.readiness.library?.name === "better-auth" && this.readiness.library.version === "1.7.14";
   }
 

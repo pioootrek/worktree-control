@@ -9,7 +9,7 @@ import { SqliteStateStore } from "@/server/infrastructure/sqlite";
 import type { ExclusiveConnectionOptions } from "@/server/infrastructure/sqlite/exclusive-connection";
 import { loadAuthenticationProvider } from "@/server/modules/authentication";
 import { IdentityService } from "@/server/modules/identity";
-import { BASE_URL, IP_HEADER, loadProof, ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, SECRET, type ProviderEvidence } from "./fixture";
+import { BASE_URL, IP_HEADER, ISSUANCE, loadProof, ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, readyIssuance, SECRET, type ProviderEvidence } from "./fixture";
 import { EVIDENCE_TABLE, factorLibraryOptions, FACTOR_MODEL, newFactorControl, type FactorControl, type FactorMode } from "./factor-provider";
 import { ADMISSION_DDL } from "./factor-admission";
 
@@ -95,10 +95,12 @@ export async function applyFactorDdl({ storage }: FactorStore, admitted = false)
 
 export async function loadFactorProvider(base: FactorStore, control: FactorControl) {
   const evidence: ProviderEvidence = { events: [], logs: [], resets: [], failInvalidation: false };
+  await readyIssuance(base.store);
   const runtime = await loadAuthenticationProvider({
     entry: FACTOR_ENTRY,
     providerId: "better-auth",
     storage: base.storage,
+    ...ISSUANCE,
     options: { ...SETTINGS, factorControl: control } as Parameters<typeof loadAuthenticationProvider>[0]["options"],
     onInvalidation: event => {
       if (evidence.failInvalidation) throw new Error("listener failure");

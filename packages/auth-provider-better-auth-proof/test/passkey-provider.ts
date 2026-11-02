@@ -338,6 +338,6 @@ class PasskeyProvider implements AuthenticationProviderInstance {
   async dispose() { this.#auth = undefined; const db = this.#database; this.#database = undefined; await db?.destroy(); }
 }
 export const authenticationProvider: AuthenticationProviderModule = {
-  contractVersion:4,providerId:"better-auth",implementationVersion:PASSKEY_IMPLEMENTATION,storageRevision:2,
+  contractVersion:5,providerId:"better-auth",implementationVersion:PASSKEY_IMPLEMENTATION,storageRevision:3,
   create(host,options) { return new PasskeyProvider(host,options as Options); },
 };

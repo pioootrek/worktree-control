@@ -3,6 +3,7 @@ import { applyRuntimeAccessMigration } from "./runtime-access-migration";
 import { applyConfigurationRevisionMigration } from "./configuration-revision-migration";
 import { applyProviderSessionHistoryMigration } from "./provider-session-history-migration";
 import { applyAuthenticationFactorMigration } from "./authentication-factor-migration";
+import { applyAuthenticationSessionIssuanceMigration } from "./authentication-session-issuance-migration";
 import { applyAuthenticationProviderMigration } from "./authentication-provider-migration";
 import { applyDevVaultMigration } from "./dev-vault-migration";
 import { applyRemoteConnectionMigration } from "./remote-connection-migration";
@@ -369,6 +370,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyAuthenticationProviderMigration(database);
       applyProviderSessionHistoryMigration(database);
       applyAuthenticationFactorMigration(database);
+      applyAuthenticationSessionIssuanceMigration(database);
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();

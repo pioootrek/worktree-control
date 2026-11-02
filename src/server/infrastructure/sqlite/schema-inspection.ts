@@ -4,6 +4,7 @@ import { configurationRevisionMigration, configurationRevisionChecksum } from ".
 import { providerSessionHistoryMigration, providerSessionHistoryChecksum } from "./provider-session-history-migration";
 import { authenticationFactorMigration, authenticationFactorChecksum } from "./authentication-factor-migration";
 import { authenticationProviderMigration, authenticationProviderChecksum } from "./authentication-provider-migration";
+import { authenticationSessionIssuanceMigration, authenticationSessionIssuanceChecksum } from "./authentication-session-issuance-migration";
 import { devVaultMigration, devVaultChecksum } from "./dev-vault-migration";
 import { remoteConnectionMigration, remoteConnectionChecksum } from "./remote-connection-migration";
 import Database from "better-sqlite3";
@@ -25,7 +26,7 @@ const tableVersions: Record<string, number> = {
   authentication_ba_two_factor: 40, authentication_ba_passkey: 40, authentication_account_policies: 40,
   authentication_totp_steps: 40, authentication_passkey_trust: 40, authentication_passkey_staged: 40,
   authentication_factor_contexts: 40, authentication_factor_budgets: 40, authentication_factor_receipts: 40,
-  authentication_session_evidence: 40,
+  authentication_session_evidence: 40, authentication_session_issuance: 41,
   authentication_ba_user: 38, authentication_ba_session: 38, authentication_ba_account: 38,
   authentication_ba_verification: 38, authentication_provider_subjects: 38,
   runtime_delegations: 36, runtime_credential_scopes: 36,
@@ -144,6 +145,7 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : x.version === 38 ? x.name !== authenticationProviderMigration.name || x.checksum !== authenticationProviderChecksum
       : x.version === 39 ? x.name !== providerSessionHistoryMigration.name || x.checksum !== providerSessionHistoryChecksum
       : x.version === 40 ? x.name !== authenticationFactorMigration.name || x.checksum !== authenticationFactorChecksum
+      : x.version === 41 ? x.name !== authenticationSessionIssuanceMigration.name || x.checksum !== authenticationSessionIssuanceChecksum
       : true)) refuse("migration checksum or name");
   }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));

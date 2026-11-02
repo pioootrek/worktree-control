@@ -35,7 +35,7 @@ describe("configuration revision migration 37", () => {
       expect(inspectSchema(db).version).toBe(36);
       expect(db.prepare("SELECT * FROM projects").all()).toEqual(before);
       initializeSchema(db, false);
-      expect(inspectSchema(db).version).toBe(40);
+      expect(inspectSchema(db).version).toBe(41);
       expect(db.prepare("SELECT * FROM projects").all()).toEqual((before as object[]).map(row => ({ ...row, configuration_revision: 0 })));
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=37").get())
         .toEqual({ name: configurationRevisionMigration.name, checksum: configurationRevisionChecksum });
@@ -77,7 +77,7 @@ describe("configuration revision migration 37", () => {
     restoreControllerBackup(backup, path);
     const restored = new SqliteStateStore(path);
     try {
-      expect(restored.schemaVersion()).toBe(40);
+      expect(restored.schemaVersion()).toBe(41);
       expect(restored.getProjectConfigurationRevision(f.project.id)).toBe(2);
     } finally { restored.close(); }
   });

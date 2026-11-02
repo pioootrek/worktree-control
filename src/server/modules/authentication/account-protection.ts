@@ -8,6 +8,7 @@ import type {
   ProviderFactorTicket,
   ProviderSessionEvidence,
 } from "./provider-contract";
+import { SessionIssuanceError, type SessionIssuance } from "./session-issuance";
 
 /** A guarded step update changed no row. The whole success transaction must roll back. */
 export class ProviderStaleStepError extends Error {
@@ -208,8 +209,14 @@ export const totpBinding = (ciphertext: string) => createHash("sha256").update(c
 export class AccountProtection implements ProviderAccountProtection, ProviderReleaseProtection {
   readonly #limits: ProviderFactorLimits | null;
 
-  constructor(private readonly store: ProtectionStore, limits?: ProviderFactorLimits) {
+  constructor(private readonly store: ProtectionStore, limits?: ProviderFactorLimits, private readonly issuance?: SessionIssuance) {
     this.#limits = limits ? validateFactorLimits(limits) : null;
+  }
+
+  /** The one path to session evidence: all four writers meet here, in the native transaction. */
+  #issue(evidence: ProviderSessionEvidence): void {
+    if (!this.issuance) throw new SessionIssuanceError("Session issuance was refused.");
+    this.issuance.record(evidence, value => { this.store.insertEvidence(value); });
   }
 
   get enabled(): boolean { return this.#limits !== null; }
@@ -236,7 +243,7 @@ export class AccountProtection implements ProviderAccountProtection, ProviderRel
   recordPasswordSession(input: { sessionId: string; subject: string; attemptId: string; now: number }): boolean {
     const account = this.#account(input.subject, input.now), session = this.store.session(input.sessionId);
     if (!account?.consistent || account.totpSelected || account.passkeySelected || session?.subject !== input.subject) return false;
-    this.store.insertEvidence({ sessionId: input.sessionId, subject: input.subject, method: "password", authenticatedAt: session.createdAt,
+    this.#issue({ sessionId: input.sessionId, subject: input.subject, method: "password", authenticatedAt: session.createdAt,
       originalDeadline: session.expiresAt, generation: account.generation, policyRevision: account.policyRevision,
       credential: null, credentialBinding: null, attemptId: input.attemptId });
     return true;
@@ -244,7 +251,7 @@ export class AccountProtection implements ProviderAccountProtection, ProviderRel
 
   inheritSession(evidence: ProviderSessionEvidence, input: { sessionId: string; attemptId: string }): void {
     if (this.store.session(input.sessionId)?.subject !== evidence.subject) throw new ProviderSettlementRefusedError();
-    this.store.insertEvidence({ ...evidence, sessionId: input.sessionId, attemptId: input.attemptId });
+    this.#issue({ ...evidence, sessionId: input.sessionId, attemptId: input.attemptId });
     this.store.clampSession(input.sessionId, evidence.originalDeadline);
   }
 
@@ -453,7 +460,7 @@ export class AccountProtection implements ProviderAccountProtection, ProviderRel
   #login(ticket: ProviderFactorTicket, method: "password_totp" | "passkey_uv", sessionId: string, times: { authenticatedAt: string; originalDeadline: string }): void {
     const session = this.store.session(sessionId);
     if (session?.subject !== ticket.subject || !ticket.credential || !ticket.binding) throw new ProviderSettlementRefusedError();
-    this.store.insertEvidence({ sessionId, subject: ticket.subject, method, ...times, generation: ticket.generation, policyRevision: ticket.policyRevision,
+    this.#issue({ sessionId, subject: ticket.subject, method, ...times, generation: ticket.generation, policyRevision: ticket.policyRevision,
       credential: ticket.credential, credentialBinding: ticket.binding, attemptId: ticket.attemptId });
     this.store.clampSession(sessionId, times.originalDeadline);
   }

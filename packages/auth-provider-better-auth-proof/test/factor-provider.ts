@@ -627,9 +627,9 @@ class FactorProofProvider implements AuthenticationProviderInstance {
 }
 
 export const authenticationProvider: AuthenticationProviderModule = {
-  contractVersion: 4,
+  contractVersion: 5,
   providerId: "better-auth",
   implementationVersion: FACTOR_IMPLEMENTATION_VERSION,
-  storageRevision: 2,
+  storageRevision: 3,
   create(host, options) { return new FactorProofProvider(host, options as FactorOptions); },
 };

@@ -8,7 +8,7 @@ import { createControllerServer } from "@/server/http-server";
 import { AuthenticationService, type AuthenticationProviderRuntime, type ProviderFactorOptions } from "@/server/modules/authentication";
 import { composeIsolatedBrowserAuthentication } from "@/server/bootstrap/authentication";
 import type { ProofFaultInjection } from "../src/index";
-import { ORIGIN, OWNER_EMAIL, OWNER_PASSWORD } from "./fixture";
+import { ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, type SESSION_POLICY } from "./fixture";
 import { closeStrictProof, strictProof } from "./strict-fixture";
 
 let peerSequence = 1;
@@ -23,8 +23,8 @@ export function aroundBrowser(run: () => Promise<BrowserLifetimeOf>): BrowserLif
   result.catch(() => undefined);
   return { result, settled: lifetime.then(value => value.settled, () => undefined) };
 }
-export async function browserFixture(faults: ProofFaultInjection = {}, options = {}, maxInFlight = 8, factors?: ProviderFactorOptions, transport: typeof TRANSPORT_LIMITS = TRANSPORT_LIMITS, unreleasedSessions?: number) {
-  const f = await strictProof(faults, options, undefined, factors, unreleasedSessions);
+export async function browserFixture(faults: ProofFaultInjection = {}, options = {}, maxInFlight = 8, factors?: ProviderFactorOptions, transport: typeof TRANSPORT_LIMITS = TRANSPORT_LIMITS, unreleasedSessions?: number, sessionPolicy?: typeof SESSION_POLICY) {
+  const f = await strictProof(faults, options, undefined, factors, unreleasedSessions, sessionPolicy);
   const { subject } = await f.runtime.provisionLocal({ principalId: f.owner.principalId, email: OWNER_EMAIL, name: "Owner", password: OWNER_PASSWORD, actor: "test" });
   // Open is the frozen product boot mode; optional proof composition grants cookies ONLY converted Knowledge access.
   // No production selector, env switch or alternate product mode exists.

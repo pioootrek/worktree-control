@@ -9,7 +9,7 @@ import { libraryOptions } from "../src/library";
 import { issuedCookie } from "../src/factor-ceremonies";
 import type { ProofFaultInjection } from "../src/index";
 import { Authenticator, Browser } from "./factor-fixture";
-import { OWNER_EMAIL, OWNER_PASSWORD } from "./fixture";
+import { ISSUANCE, OWNER_EMAIL, OWNER_PASSWORD, readyIssuance } from "./fixture";
 import { advance, AuthenticationProviderError, BASE_URL, enrollPasskey, enrollTotp, factorOptions, fence, integrated, invalidCredential, IP_HEADER, LIMITS, loadAuthenticationProvider, loadProof, passkeyLogin, passkeyOptions, pendingLogin, protectionState, PROVIDER_ENTRY, refusedWithoutCookies, SECRET, select, sql, SqliteStateStore, stagePasskey, STEP, totpLogin, verify, type Integrated } from "./integrated-fixture";
 import { PasskeyAuthenticator } from "./passkey-authenticator";
 import { cleanupStrictRoots, closeStrictProof } from "./strict-fixture";
@@ -657,7 +657,8 @@ describe("close and reopen", () => {
     expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
     const store = new SqliteStateStore(f.path);
     store.requireAdmission();
-    const runtime = await loadAuthenticationProvider({ entry: PROVIDER_ENTRY, providerId: "better-auth", storage: store.authenticationProviderStorage(),
+    await readyIssuance(store);
+    const runtime = await loadAuthenticationProvider({ entry: PROVIDER_ENTRY, providerId: "better-auth", storage: store.authenticationProviderStorage(), ...ISSUANCE,
       options: { baseURL: BASE_URL, secret: SECRET, clientIpHeader: IP_HEADER, factors: factorOptions() } });
     try {
       const actor = await runtime.authenticate(new Headers({ cookie }));
