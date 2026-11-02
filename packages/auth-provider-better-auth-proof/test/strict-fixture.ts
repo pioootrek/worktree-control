@@ -16,7 +16,7 @@ export function gate() {
   return { open, opened };
 }
 export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-export async function strictProof(faults: ProofFaultInjection = {}, options: ExclusiveConnectionOptions = {}, identityClock?: () => string, factors?: ProviderFactorOptions) {
+export async function strictProof(faults: ProofFaultInjection = {}, options: ExclusiveConnectionOptions = {}, identityClock?: () => string, factors?: ProviderFactorOptions, unreleasedSessions?: number) {
   const root = mkdtempSync(join(tmpdir(), "auth-provider-admission-")); roots.push(root);
   const path = join(root, "state.sqlite3");
   const store = new SqliteStateStore(path, undefined, options);
@@ -25,7 +25,7 @@ export async function strictProof(faults: ProofFaultInjection = {}, options: Exc
   const ownerActor = identity.authenticateBearer(owner.token);
   store.requireAdmission();
   const run = <T>(operation: () => T | Promise<T>) => store.admission.run(operation);
-  const { runtime, evidence } = await loadProof(store, faults, undefined, factors);
+  const { runtime, evidence } = await loadProof(store, faults, undefined, factors, unreleasedSessions);
   return { root, path, store, identity, owner, ownerActor, runtime, evidence, run };
 }
 export type StrictProof = Awaited<ReturnType<typeof strictProof>>;

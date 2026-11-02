@@ -30,6 +30,8 @@ export interface ProofFaultInjection {
   afterProvisionedUser?: () => Promise<void>;
   afterDispose?: () => Promise<void>;
   beforeSessionDelete?: () => Promise<void>;
+  /** Runs after the row is gone, like a stalled listener. */
+  afterSessionDelete?: () => Promise<void>;
   beforeRecoveryCommit?: () => Promise<void>;
   /** Runs in the library's account update hook, inside its password transaction. */
   beforePasswordWrite?: () => Promise<void>;
@@ -159,7 +161,7 @@ export function libraryOptions(host: Pick<AuthenticationProviderHost, "log">, op
         delete: {
           before: async () => { await options.faultInjection?.beforeSessionDelete?.(); },
           // Better Auth queues `after` hooks until the surrounding transaction commits.
-          after: async (session: SessionEvent) => { await callbacks.sessionDeleted(session); },
+          after: async (session: SessionEvent) => { await callbacks.sessionDeleted(session); await options.faultInjection?.afterSessionDelete?.(); },
         },
       },
     },

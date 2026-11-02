@@ -23,8 +23,8 @@ export function aroundBrowser(run: () => Promise<BrowserLifetimeOf>): BrowserLif
   result.catch(() => undefined);
   return { result, settled: lifetime.then(value => value.settled, () => undefined) };
 }
-export async function browserFixture(faults: ProofFaultInjection = {}, options = {}, maxInFlight = 8, factors?: ProviderFactorOptions, transport: typeof TRANSPORT_LIMITS = TRANSPORT_LIMITS) {
-  const f = await strictProof(faults, options, undefined, factors);
+export async function browserFixture(faults: ProofFaultInjection = {}, options = {}, maxInFlight = 8, factors?: ProviderFactorOptions, transport: typeof TRANSPORT_LIMITS = TRANSPORT_LIMITS, unreleasedSessions?: number) {
+  const f = await strictProof(faults, options, undefined, factors, unreleasedSessions);
   const { subject } = await f.runtime.provisionLocal({ principalId: f.owner.principalId, email: OWNER_EMAIL, name: "Owner", password: OWNER_PASSWORD, actor: "test" });
   // Open is the frozen product boot mode; optional proof composition grants cookies ONLY converted Knowledge access.
   // No production selector, env switch or alternate product mode exists.

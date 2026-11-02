@@ -31,12 +31,15 @@ export function storeFixture() {
 
 export interface ProviderEvidence { events: ProviderInvalidation[]; logs: string[]; resets: Array<{ subject: string; token: string }>; failInvalidation: boolean }
 
-export async function loadProof(store: SqliteStateStore, faultInjection?: ProofFaultInjection, entry = PROVIDER_ENTRY, factors?: ProviderFactorOptions) {
+/** Finite test input, chosen to prove the bound. It is not a product default. */
+export const UNRELEASED_SESSIONS = 16;
+export async function loadProof(store: SqliteStateStore, faultInjection?: ProofFaultInjection, entry = PROVIDER_ENTRY, factors?: ProviderFactorOptions, unreleasedSessions = UNRELEASED_SESSIONS) {
   const evidence: ProviderEvidence = { events: [], logs: [], resets: [], failInvalidation: false };
   const runtime = await loadAuthenticationProvider({
     entry,
     providerId: "better-auth",
     storage: store.authenticationProviderStorage(),
+    unreleasedSessions,
     options: {
       baseURL: BASE_URL, secret: SECRET, clientIpHeader: IP_HEADER,
       passwordResetDelivery: async delivery => { evidence.resets.push(delivery); },
