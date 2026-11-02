@@ -13,7 +13,7 @@ function cbor(value: number | string | Uint8Array | Map<number | string, unknown
   if (value instanceof Uint8Array) return Buffer.concat([head(2, value.length), value]);
   return Buffer.concat([head(5, value.size), ...[...value].flatMap(([k, v]) => [cbor(k), cbor(v as Parameters<typeof cbor>[0])])]);
 }
-export interface CeremonyOptions { challenge: string; user?: { id: string }; rp?: { id: string }; rpId?: string }
+export interface CeremonyOptions { challenge: string; user?: { id: string }; rp?: { id: string }; rpId?: string; attestation?: string }
 export interface AuthenticatorInput { uv?: boolean; up?: boolean; origin?: string; rp?: string; challenge?: string; counter?: number; userHandle?: string; tamper?: boolean; attestationNone?: boolean }
 export class PasskeyAuthenticator {
   readonly #pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });

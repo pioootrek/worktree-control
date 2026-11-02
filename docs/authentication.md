@@ -20,9 +20,8 @@ active mode once per boot, after migration and restore recovery. Only the CLI
 selects a mode; the new selection takes effect at the next service restart.
 Token rotation, credential revocation and current grants still apply immediately.
 The permanent product modes are open access, a shared installation token, and
-individual RBAC. Full RBAC remains gated on account authentication, selected optional-method
-readiness and A5 work; the
-current controller refuses `better-auth` selection and startup. `legacy` is
+individual RBAC. Full RBAC remains gated on account authentication, readiness
+of selected optional methods and A5 work. The current controller refuses `better-auth` selection and startup. `legacy` is
 upgrade compatibility and cannot be selected anew.
 
 | Mode | Who uses it | Access |
@@ -145,7 +144,8 @@ A3-I14 adds an isolated backend passkey proof using the actual optional
 It uses a fixed fixture RP/origin, real signed registration/assertion data,
 and supported server callbacks that require verified UV before credential or
 session persistence. Its signed-registration experiment accepts packed
-attestation only; default unsigned `none` enrollment is not a completed workflow. Browser UV requests are also required. Temporary owner-made
+attestation only; default unsigned `none` enrollment is not a completed workflow.
+Browser UV requests are also required. Temporary owner-made
 schema and nonauthorizing `passkey_uv` observations do not change core schema
 39, provider storage 1, contract 2 or production provider loading. The plugin
 has no durable session-method or enrollment-UV history; integration must supply
@@ -153,8 +153,8 @@ reviewed current evidence and credential trust bindings. See the
 [proof details](../packages/auth-provider-better-auth-proof/README.md#a3-i14-passkey-proof).
 
 These are selected product capabilities and local feasibility work, with no live
-activation. TOTP replay remains unresolved and its five existing acceptance
-failures remain visible. Accepted replay handling, safe factor management and
+activation. TOTP replay remains unresolved. Four replay failures and the old
+bounded counter-loss failure remain visible. Accepted replay handling, safe factor management and
 recovery, production evidence/migrations, transport/disconnect handling and A5
 remain gates before public account activation. Password-only access proves no
 MFA, and no ASVS Level 2 conformance is claimed.
@@ -931,5 +931,6 @@ new boot's authentication service. No SQLite migration is needed; controller
 schema stays 39 and provider storage revision stays 1.
 
 This does not solve A5 provider-session resurrection after restoring older
-password/session data. External restore revocation fencing, full account authentication/optional-method
-support and complete transport coverage still gate production RBAC activation.
+password/session data. External restore revocation fencing, account authentication,
+readiness of optional methods and complete transport coverage still gate
+production RBAC activation.

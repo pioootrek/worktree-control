@@ -31,7 +31,8 @@ session/mapping/principal state inside grant-limited Knowledge operations.
 Controller migration 39 adds honest provider history attribution, preserving
 old history and migrations 1..38; provider storage revision remains 1. Account
 mode remains
-unavailable; enrollment, optional-factor implementation, invitations, roles and GUI are still open.
+unavailable; enrollment, optional-factor implementation, invitations, roles and
+GUI are still open.
 Shared core admission, exclusive provider admission and background persistence
 boundaries are implemented as partial infrastructure. Strict integration tests
 cover HTTP body-read admission errors and the installed restore completion
@@ -334,8 +335,9 @@ selected anew. Mode selection is protected CLI-only and effective only after
 service restart. The stored selection and immutable active boot mode are now
 separate; selecting a future mode leaves live access and sessions unchanged.
 Token/session revocation and current principal/grant checks remain immediate.
-Production `better-auth` selection/startup still fail closed until account authentication, selected optional-method readiness
-and A5 enforcement gates are complete. This slice proves token/open restart
+Production `better-auth` selection/startup still fail closed until account
+authentication, readiness of selected optional methods and A5 enforcement gates
+are complete. This slice proves token/open restart
 behavior and explicit third-mode refusal, not positive production RBAC support.
 
 A3-I9 adds an isolated core browser adapter and actual HTTP-cookie-to-Knowledge

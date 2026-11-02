@@ -356,8 +356,10 @@ future work. Do not add a password-proof activation flag to reach that work.
 ## A3-I12 factor compatibility experiment
 
 `test/factor-compatibility.test.ts` runs the installed Better Auth/core 1.7.14
-`twoFactor` plugin on the controller's sole temporary SQLite owner. TOTP is a
-compatibility candidate, not the owner's selected factor. Production remains
+`twoFactor` plugin on the controller's sole temporary SQLite owner. At I12,
+TOTP was an unselected compatibility candidate. The owner has since selected
+both TOTP and passkeys as optional methods; the pinned TOTP implementation still
+needs an accepted replay remedy. Production remains
 schema 39, provider storage revision 1 and contract 2. This experiment changes no
 production provider, route, actor, mode or migration. Account mode remains
 unavailable; A4, A5, roles and GUI remain separate.

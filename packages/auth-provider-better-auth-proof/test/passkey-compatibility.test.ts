@@ -64,7 +64,7 @@ describe("A3-I14 pinned real passkey proof, nonauthorizing",() => {
   test("browser registration and assertion requests both ask for required UV, with immutable fixture RP/origin",async () => owned(async f => {
     const b = new Browser(f);success(await b.signIn());
     const r = await options(b,"register") as CeremonyOptions & {authenticatorSelection:{userVerification:string}};
-    expect(r.authenticatorSelection.userVerification).toBe("required");expect((r as CeremonyOptions & {attestation:string}).attestation).toBe("direct");expect(r.rp?.id).toBe("controller.test");
+    expect(r.authenticatorSelection.userVerification).toBe("required");expect(r.attestation).toBe("direct");expect(r.rp?.id).toBe("controller.test");
     const a = await options(new Browser(f),"authenticate") as CeremonyOptions & {userVerification:string};
     expect(a.userVerification).toBe("required");expect(a.rpId).toBe("controller.test");
     denial(await b.post("/passkey/generate-register-options?rpID=evil.test",{},{method:"GET"}));
