@@ -6,7 +6,7 @@ import { createAuthenticationAdministration } from "@/server/bootstrap/authentic
 import { acquireControllerLock } from "@/server/controller-lock";
 import { listenAdminSocket } from "@/server/admin-socket";
 import { SqliteStateStore } from "@/server/infrastructure/sqlite";
-import { AuthenticationService, loadAuthenticationProvider, type AuthenticationProviderRuntime } from "@/server/modules/authentication";
+import { AuthenticationService, loadAuthenticationProvider, type AuthenticationProviderRuntime, type ProviderFactorOptions } from "@/server/modules/authentication";
 import { resolveAppPaths } from "@/server/paths";
 import type { ProofFaultInjection } from "../src/index";
 import { ISSUANCE, ORIGIN, PROVIDER_ENTRY, readyIssuance } from "./fixture";
@@ -36,6 +36,8 @@ export function cliFixture() {
 }
 
 export async function onlineCliFixture(options: { faults?: ProofFaultInjection; mode?: "open" | "token"; onInvalidation?: () => void;
+  factors?: ProviderFactorOptions;
+  beforeProviderTransaction?: () => void;
   beforeLoad?: () => Promise<void>; afterLoad?: () => Promise<void>; drainTimeoutMs?: number; storeOptions?: ConstructorParameters<typeof SqliteStateStore>[2] } = {}) {
   const f = cliFixture(); await f.configure(); const principalId = await f.create();
   const lock = acquireControllerLock(f.paths.controllerLockPath), store = new SqliteStateStore(f.paths.databasePath, undefined, options.storeOptions);
@@ -52,7 +54,17 @@ export async function onlineCliFixture(options: { faults?: ProofFaultInjection; 
     loadProvider: async input => {
       loads++; await options.beforeLoad?.();
       await readyIssuance(store);
-      runtime = await loadAuthenticationProvider({ ...input, ...ISSUANCE, options: { ...input.options, faultInjection: options.faults } as typeof input.options });
+      const storage = !options.beforeProviderTransaction ? input.storage : { ...input.storage, createProviderConnection: () => {
+        const connection = input.storage.createProviderConnection();
+        return { ...connection, prepare(sql: string) {
+          const statement = connection.prepare(sql);
+          return { ...statement, run(parameters: Parameters<typeof statement.run>[0]) {
+            if (/^begin(?: immediate)?$/i.test(sql.trim())) input.storage.runControllerOperation(() => options.beforeProviderTransaction?.());
+            return statement.run(parameters);
+          } };
+        } };
+      } };
+      runtime = await loadAuthenticationProvider({ ...input, storage, ...ISSUANCE, options: { ...input.options, faultInjection: options.faults, factors: options.factors } as typeof input.options });
       await options.afterLoad?.(); return runtime;
     } });
   const admin = await listenAdminSocket(f.paths.adminSocketPath, body => administration.execute(body));

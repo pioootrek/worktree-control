@@ -99,7 +99,9 @@ async function runProviderCommand(args: string[], paths: AppPaths, dependencies:
     lock.release();
   } catch {
     retainAuthenticationOwnership({ store, administration, lock });
-    const committed = (result !== undefined && request.action !== "status") || providerAdminFailure(effectFailure).committed;
+    const mutation = !["status", "human-list", "knowledge-access-list"].includes(request.action)
+      && !(request.action === "human-disable" && (result as { changed?: boolean } | undefined)?.changed === false);
+    const committed = (result !== undefined && mutation) || providerAdminFailure(effectFailure).committed;
     throw new ProviderAdminError("disposal_unconfirmed", committed ? true : undefined, false);
   }
   if (effectFailure) throw effectFailure;

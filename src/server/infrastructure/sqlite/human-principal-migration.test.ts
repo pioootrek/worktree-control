@@ -20,7 +20,7 @@ function baseline() {
   const db = new Database(":memory:"); db.exec(fixture41);
   db.exec(`INSERT INTO remote_principals VALUES('owner','owner','active'),('old-agent','agent','revoked');
     CREATE INDEX historical_principal_status ON remote_principals(status);
-    INSERT INTO principal_credentials VALUES('credential','owner','owner_session','Historical','prefix','verifier','revoked',NULL,'2026-11-01T00:00:00.000Z','2026-11-01T01:00:00.000Z',NULL);
+    INSERT INTO principal_credentials VALUES('credential','owner','owner_session','Historical','prefix','${"a".repeat(64)}','revoked',NULL,'2026-11-01T00:00:00.000Z','2026-11-01T01:00:00.000Z',NULL);
     INSERT INTO knowledge_projects VALUES('k','Knowledge','active',1,'2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z');
     INSERT INTO knowledge_project_grants VALUES('owner','k','["knowledge:read"]',NULL),('old-agent','k','["knowledge:write"]','2026-11-01T00:00:00.000Z');
     INSERT INTO knowledge_role_bindings VALUES('old-agent','k','operator',9,'2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z');

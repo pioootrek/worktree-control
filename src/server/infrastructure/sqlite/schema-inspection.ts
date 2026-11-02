@@ -169,6 +169,11 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
     const actualChecks = checks((database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql);
     if (table === "remote_principals" && version < 42
       && (actualChecks.some(check => check.includes("'human'")) || database.prepare("SELECT 1 FROM remote_principals WHERE kind='human' LIMIT 1").get())) refuse("human principal precedes migration 42");
+    if (table === "remote_principals") {
+      const kind = version >= 42 ? "kindin('owner','agent','worker','installation','human')" : "kindin('owner','agent','worker','installation')";
+      if (actualChecks.length !== 2 || !actualChecks.includes("statusin('active','revoked')")
+        || (!actualChecks.includes(kind) && !(version < 25 && actualChecks.includes("kindin('owner','agent','worker')")))) refuse("principal constraints");
+    }
     const historicalLease = table === "reservations" && actualChecks.includes(historicalLeaseCheck);
     // A known historical expression must not hide additional, unknown CHECKs.
     if (historicalLease && (actualChecks.length !== 2 || !actualChecks.includes("kindin('human','agent')"))) refuse("constraint in reservations: lease");

@@ -466,7 +466,7 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
 
   #issueActor(resolution: ActorResolution): ProviderSessionActor | null {
     const { session, principalId, principalKind, mappingLinkedAt, evidence } = resolution;
-    if ((principalKind !== "owner" && principalKind !== "human") || !mappingLinkedAt || session.providerId !== this.#input.providerId || !evidence || evidence.sessionId !== session.sessionId || evidence.subject !== session.subject
+    if ((principalKind !== "owner" && principalKind !== "human") || !mappingLinkedAt || !canonicalInstant(mappingLinkedAt) || session.providerId !== this.#input.providerId || !evidence || evidence.sessionId !== session.sessionId || evidence.subject !== session.subject
       || !session.sessionId || !session.subject || !principalId || !canonicalInstant(session.createdAt)
       || !canonicalInstant(session.expiresAt) || session.createdAt >= session.expiresAt) return null;
     const actor = Object.freeze({ principalId, principalKind, credentialId: null, authenticationMethod: "provider_session" }) as ProviderSessionActor;

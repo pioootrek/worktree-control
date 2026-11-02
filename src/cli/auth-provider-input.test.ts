@@ -129,3 +129,28 @@ describe("protected provider input", () => {
     expect(readFileSync(f.path)).toEqual(before);
   });
 });
+
+describe("human protected command grammar", () => {
+  it("parses bounded lists and strict typed membership input without caller authority", async () => {
+    expect(await providerCommandFromArgs(["provider", "human", "list", "--limit", "2", "--after", "p"]))
+      .toEqual({ command: "auth-provider", action: "human-list", input: { limit: 2, after: "p" } });
+    expect(await providerCommandFromArgs(["provider", "knowledge-access", "list", "--principal-id", "p"]))
+      .toEqual({ command: "auth-provider", action: "knowledge-access-list", input: { principalId: "p", limit: 20 } });
+    const input = { principalId: "p", scope: { kind: "knowledge-project", id: "k" }, role: "reader", permissions: ["knowledge:read"], expectedRevision: 0 };
+    const args = ["provider", "knowledge-access", "set", "--input-stdin"];
+    expect(await providerCommandFromArgs(args, Readable.from([JSON.stringify(input)]))).toEqual({ command: "auth-provider", action: "knowledge-access-set", input });
+    for (const change of [{ actor: "local-cli" }, { sponsor: "owner" }, { principalKind: "owner" }, { strength: 2 }, { permissions: ["knowledge:export"] },
+      { scope: { kind: "runtime-project", id: "k" } }, { role: "manager" }, { expectedRevision: -1 }]) {
+      await expect(providerCommandFromArgs(args, Readable.from([JSON.stringify({ ...input, ...change })]))).rejects.toMatchObject({ code: "invalid_input" });
+    }
+  });
+  it.each([
+    ["provider", "human", "create", "--principal-id", "p"],
+    ["provider", "human", "disable"], ["provider", "human", "list", "--limit", "21"],
+    ["provider", "human", "list", "--limit", "0"], ["provider", "human", "list", "--limit", "01"],
+    ["provider", "knowledge-access", "set", "--principal-id", "p", "--input-stdin"],
+    ["provider", "human", "disable", "--principal-id", "p", "--input-stdin"],
+  ])("refuses malformed new flags before ownership: %j", (...args) => {
+    expect(() => parseProviderArguments(args)).toThrowError(expect.objectContaining({ code: "invalid_input" }));
+  });
+});
