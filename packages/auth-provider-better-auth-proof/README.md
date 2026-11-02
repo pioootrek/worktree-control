@@ -7,7 +7,7 @@ make the `better-auth` authentication mode selectable.
 
 The proof harness loads it from an explicit local path through the server-only
 `loadAuthenticationProvider` API and borrows the controller-owned connection
-one operation at a time. Storage comes from controller migration 38; the
+one operation at a time. Storage comes from controller migrations 38 and 40; the
 provider never runs library migrations. Provider modules are trusted local
 code, not sandboxed code.
 
@@ -43,8 +43,8 @@ recovery and native password/reset/revocation handlers regardless of session
 count. Single-session deletion retains its narrower notification. Tests cover
 101 sessions and verify that rolled-back changes emit no invalidation.
 
-This password-only proof does not satisfy MFA or establish ASVS Level 2.
-Its numeric limits are experimental settings. Standard Better Auth stores
+This proof does not establish ASVS Level 2, and its numeric limits are experimental
+settings. Standard Better Auth stores
 bearer session tokens and includes native session tokens in sign-in and
 password-change JSON; production browser API design remains open. Admitted core phases now wait on the
 same gate while a provider borrows the connection. Strict proof fixtures reject
@@ -53,8 +53,9 @@ synchronous store access. Live coexistence remains unaccepted while broader
 coverage and design gates are open. Restoring backups can restore old
 sessions and passwords until A5 adds an external revocation fence. A2 credentials
 remain unchanged; A4 vault authorization still requires its separate proof.
-Factors, invitations, role administration, GUI and account activation remain
-outside this slice. Protected CLI enrollment/recovery is described below. See the
+Public factor routes, factor management, invitations, role administration, GUI and
+account activation remain outside this slice. Protected CLI enrollment/recovery is
+described below. See the
 [authentication contract](../../docs/authentication.md#optional-provider-proof-first-a3-slice).
 
 ## Protected CLI maintenance proof
@@ -297,8 +298,8 @@ its cookie and revokes all old sessions; protected runtime recovery also
 invalidates old cookies with a pending mode selection. Tests retain exact actor,
 original-expiry and privilege cases from the earlier suite.
 
-The provider implements API contract 2, implementation `0.0.0-proof.2`.
-Version-1 modules fail closed, including the retained incompatible-loader fixture.
+The provider implements API contract 3, implementation `0.0.0-proof.3`.
+Older modules fail closed, including the retained incompatible-loader fixture.
 `signOut` keeps the native handler/limiter and explicitly deletes/verifies the
 caller session, covering a real delete-hook failure that native sign-out swallows.
 The core drops native bodies and arbitrary headers; no bearer token is returned
@@ -625,8 +626,38 @@ This is a helper plus a fixture proof, not production activation. Production
 needs its own migration, storage revision and evidence port, and failed-guess
 accounting stays separate. No production actor, session-method upgrade, public
 API, ASVS Level 2, account activation or completed A3 claim follows. Parent review
-and acceptance remain separate; schema 39, storage 1, contract 2 and the default
-provider are unchanged.
+and acceptance remain separate. This fixture remains a historical proof; A3-I18 below
+is the integrated provider.
+
+## A3-I18 integrated factor authority
+
+`src/index.ts` is now the real integrated provider: pinned two-factor and passkey
+plugins, a closed route list, and ceremonies in `src/factor-ceremonies.ts` over the
+controller's `host.protection` port. It runs on recognized migration 40 storage,
+closes and reopens through `SqliteStateStore`, and issues real provider actors through
+`runtime.authenticate` into `ProviderKnowledgeApplication`.
+`test/integrated-factor-authority.test.ts` is its acceptance suite. See the
+[contract and limits](../../docs/authentication.md#integrated-factor-authority).
+
+Routes outside the list return 404, including every native route not listed in
+`FACTOR_ROUTES` or `NATIVE_ROUTES`. Sign-in strips all cookies, so a trust cookie cannot
+choose a native branch. Each native operation runs in a scoped library instance
+sharing one Kysely transaction. Notifications wait for a known COMMIT.
+
+The earlier factor and passkey fixtures remain as historical proofs on their own
+fixture tables, and they cannot issue actors. Their five `factor-compatibility` negative
+baselines still characterize native and old bounded behavior and still fail, so the
+whole proof command reports failure. Report those five separately from integrated
+acceptance. They do not describe the integrated provider, and they must not be
+inverted, skipped or moved without a transparent, separately reviewed decision.
+
+Evidence is the persisted row, not the provider's claim: `resolveSession` reads
+it and the runtime rejects a claim that disagrees. Limits must be supplied through
+`factors`. Test limits live in `test/integrated-fixture.ts` and are not product values.
+
+Not proved here: process restart under a real service, public transport and disconnect,
+versioned `secretConfig` and `base32:` secrets end to end, A4, A5, final failed-guess
+policy, factor management or recovery. No account activation or complete A3 follows.
 
 ## A3-I14 passkey proof
 

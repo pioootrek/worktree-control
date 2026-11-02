@@ -29,10 +29,12 @@ controller migration 38 and explicit subject mapping. The bounded A3 handoff
 now issues opaque runtime-owned provider actors and validates current stored
 session/mapping/principal state inside grant-limited Knowledge operations.
 Controller migration 39 adds honest provider history attribution, preserving
-old history and migrations 1..38; provider storage revision remains 1. Account
-mode remains
-unavailable; enrollment, optional-factor implementation, invitations, roles and
-GUI are still open.
+old history and migrations 1..38. Migration 40 and A3-I18 add
+[integrated factor authority](authentication.md#integrated-factor-authority):
+recognized optional TOTP and passkey storage, one application-owned protection
+policy and persisted session evidence behind the same handoff. Account mode remains
+unavailable; public factor routes, factor management and recovery, invitations, roles
+and GUI are still open.
 Shared core admission, exclusive provider admission and background persistence
 boundaries are implemented as partial infrastructure. Strict integration tests
 cover HTTP body-read admission errors and the installed restore completion
@@ -249,8 +251,9 @@ uses an instance-bound frozen actor and synchronous current-state checks, with
 original expiry, ordinary grants/role ceilings and safe `credential: null`
 metadata. It denies owner administration, runtime sponsorship/control,
 privileged approval and vault proof substitution. Schema 39 widens only
-Knowledge history audit attribution; provider storage revision stays 1 and
-migrations 1..38/checksums remain unchanged. Full/logical backup compatibility
+Knowledge history audit attribution, and schema 40 adds factor and evidence storage
+with provider storage revision 2. Earlier migrations and checksums remain unchanged.
+Full/logical backup compatibility
 has focused migration tests. Production integration still needs CLI failure/
 concurrency fixes, safe live admission acceptance and the remaining account gates.
 The current 5-second admission wait, 60-second persistence retry budget and
@@ -362,8 +365,8 @@ the actual provider borrow. No provider cookie gains installation authority on
 unconverted HTTP/MCP operations, even during an open-mode proof boot. Provider
 browser composition has no production CLI caller or enable flag. Protected CLI
 maintenance can explicitly load a configured provider without mounting it.
-Schema 39/provider storage revision 1 stay unchanged. Experimental password-only
-numbers and single-factor DTOs do not establish full RBAC, MFA or ASVS Level 2.
+Experimental numbers and strength labels do not establish full RBAC, MFA or ASVS
+Level 2.
 Protected CLI configuration, principal-only creation, enrollment and recovery
 are implemented as bounded A3-I10 maintenance. They preserve the existing boot
 authentication object and mode, issue no bearer/grant/role, and recheck active

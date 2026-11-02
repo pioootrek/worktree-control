@@ -1,6 +1,6 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-11-01"
+last_reviewed: "2026-11-02"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
@@ -495,9 +495,12 @@ maintenance uses a single lazy runtime without mounting browser login. Controlle
 migration 38 owns the empty namespaced provider tables and explicit subject-to-owner
 mapping. Controller migration 39 adds only the `provider_session` Knowledge
 history method, preserving rows, IDs, timestamps, indexes and deleted-ID
-watermarks. Migrations 1..38/checksums and provider storage revision 1 remain
-unchanged. Full backups identify schema 39; genuine 38 backups and logical
-history transfers remain supported. There is no credential or grant backfill.
+watermarks. Migration 40 adds frozen two-factor and passkey plugin storage plus
+controller-recognized account policy, monotone steps, credential trust, attempt
+state and immutable session evidence, and provider storage revision 2. Earlier
+migrations and checksums remain unchanged. Full backups identify the current schema;
+genuine 38 and 39 backups and logical history transfers remain supported. There is
+no credential, factor, evidence or grant backfill.
 An exclusive connection
 guard protects core SQL, prepared statements and backups while asynchronous
 provider work borrows the sole connection. Shared core admission and exclusive
@@ -518,8 +521,9 @@ the protected CLI/private Unix socket. See the
 [browser contract](authentication.md#bounded-browser-adapter).
 
 Provider API contract 2 requires durable `signOut`; version 1 fails compatibility
-checks. This is not a storage migration: schema 39 and provider revision 1 stay
-unchanged. Disposal tracks actual provider settlement and closes only its borrowed facade.
+checks. Contract 3 adds the application-owned `host.protection` port: the provider
+calls it synchronously inside its open transaction, and `AccountProtection` keeps
+policy, transitions and the current-authority rule in the controller. Disposal tracks actual provider settlement and closes only its borrowed facade.
 The owning shutdown helper disposes the optional provider after external
 producers/listeners/accepted responses drain and before service/SQLite close.
 A rejected disposal reports unconfirmed cleanup and retains both owner locks;

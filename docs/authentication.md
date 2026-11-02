@@ -99,14 +99,16 @@ A2 machine credentials and scoped runtime policy remain unchanged.
 Controller schema 39 adds `provider_session` only to the Knowledge history
 method constraint. It preserves historical rows, IDs, timestamps, indexes and
 the AUTOINCREMENT watermark, including empty history. Migrations 1..38 and their
-checksums remain unchanged; provider storage revision stays 1. No identity,
+checksums remain unchanged. No identity,
 credential, role or grant backfill occurs, and owner-only import batches retain
 their existing method constraint. History metadata and authorized logical
 export/import recognize the honest provider audit method.
 
-Full controller backups now record schema 39 and include provider rows. Genuine
-schema-38 snapshots can be restored and upgraded on open. Older binaries reject
-schema 39; restoring a backup is not a downgrade procedure. Restoring a snapshot can revive old sessions and
+Controller schema 40 adds the frozen two-factor and passkey plugin storage plus
+recognized account protection; see [integrated factor authority](#integrated-factor-authority).
+Full controller backups record the current schema and include provider rows.
+Genuine schema-38 and schema-39 snapshots can be restored and upgraded on open.
+Older binaries reject a newer schema; restoring a backup is not a downgrade procedure. Restoring a snapshot can revive old sessions and
 passwords; the external revocation/recovery fence remains A5 work. Better Auth
 stores bearer session tokens, and the proof's native sign-in and password-change
 JSON responses include session tokens. Those responses are not an approved
@@ -153,10 +155,9 @@ Packed signed enrollment remains supported. Browser UV requests are also require
 Staging/confirmation use bounded owner-controlled state and immutable deadlines;
 COMMIT uncertainty withholds output. These fixture limits are not product defaults.
 Temporary owner-made
-schema and nonauthorizing `passkey_uv` observations do not change core schema
-39, provider storage 1, contract 2 or production provider loading. The plugin
-has no durable session-method or enrollment-UV history; integration must supply
-reviewed current evidence and credential trust bindings. See the
+schema and nonauthorizing `passkey_uv` observations stay inside that fixture. The
+plugin has no durable session-method or enrollment-UV history;
+[integrated factor authority](#integrated-factor-authority) supplies it. See the
 [proof details](../packages/auth-provider-better-auth-proof/README.md#a3-i14-passkey-proof).
 
 A3-I17 replaces the fixture's lifetime presentation ledger with one monotone
@@ -338,8 +339,8 @@ queued borrow immediately before native work. They force
 replacement only after validation. Native sign-out can swallow deletion errors;
 contract version 2 requires a specialized `signOut` operation that verifies
 caller-session deletion using the sanctioned delete API. Old version-1 modules
-fail compatibility checks. This contract change is independent of controller
-schema 39/provider storage revision 1; neither changes here.
+fail compatibility checks. That contract change was independent of controller
+schema. Contract 3 adds the account protection port, with storage revision 2.
 
 Login sessions without a current mapping/principal receive no cookie and are
 revoked. Failed cleanup still denies. Committed notification failures return a
@@ -413,7 +414,7 @@ stored expiry extends; fresh authentication obtains a new reference.
 Committed session deletion denies the next operation even if after-commit
 notification fails. Rollback retains access. The query is authoritative;
 notifications are not an authorization cache. This validity adapter supports
-Better Auth 1.7.14, implementation `0.0.0-proof.2`, storage revision 1. Other
+Better Auth 1.7.14, implementation `0.0.0-proof.3`, storage revision 2. Other
 provider/version combinations need their own verified adapter.
 
 Each `ProviderKnowledgeApplication.execute` call is a synchronous Knowledge
@@ -435,6 +436,84 @@ substitution, expiry, disposal, drain and the privilege ceilings. The seven
 `provider-session-history-migration.test.ts` cases cover genuine 38-to-39
 preservation/rollback, malformed schema refusal, watermarks and full/logical
 backup transfer. These checks establish this bounded handoff, not full A3.
+
+### Integrated factor authority
+
+A3-I18 connects TOTP and passkeys to the real optional provider, recognized
+storage and the provider handoff above. Account mode stays unavailable, and no
+public route, browser flow, CLI selection or live activation follows from it.
+Default HTTP mounting still exposes only the four password and session operations.
+
+Migration 40 freezes the DDL that pinned Better Auth 1.7.14 compiles for its
+two-factor and passkey plugins, and a test recompiles it from a genuine schema 39.
+It adds account policy and generation, one monotone TOTP step per subject, passkey
+trust and staging, attempt contexts, budgets, receipts and immutable session evidence.
+It backfills nothing. A password account has no policy row and its old sessions
+authorize nothing until a fresh real sign-in. Subject-keyed rows restrict deletion,
+so recreating an opaque subject cannot reset a step or generation.
+
+`AccountProtection` is the one application-owned policy for both methods. It reaches
+the provider as `host.protection` on contract 3, joined to the provider's open
+transaction on the sole connection. The supported combination is contract 3,
+storage revision 2, implementation `0.0.0-proof.3` and library 1.7.14.
+
+- **Evidence.** The success transaction records the verified method (`password`,
+  `password_totp` or `passkey_uv`), original authentication time and deadline,
+  generation, policy revision, credential binding and attempt. Refresh never rewrites
+  it, and a replaced session after a password change inherits it. The actor's
+  deadline is the earlier of the original deadline and the native expiry.
+- **Selection.** Confirming a method advances generation and policy revision and
+  deletes every session of that subject in the same transaction. Enrollment mints
+  no session and upgrades none, so the next login must use a selected method.
+- **Alternatives.** With nothing selected, a password session is eligible. With a
+  method selected, a password alone is not. An account with both methods accepts
+  either one, and neither requires the other.
+- **Passkeys.** Every registration format is staged, whatever its unsigned UV bit
+  says. A dedicated native assertion with signed UV promotes it. Staged credentials
+  cannot log in.
+- **TOTP.** Native verification stays mandatory. A public `hotp` observer then
+  requires a strictly newer per-subject witness, atomic with native success and
+  evidence. This is a policy witness inside an observed clock interval, not proof
+  of the counter native matched. An unobserved clock excursion can coexist with a
+  later colliding witness.
+- **Budgets.** A committed wrapper charge precedes native evaluation and survives
+  rollback. Native rate limits and failure counters stay separate, and a wrong code
+  keeps its native count. Wrapper limits come from `AuthenticationProviderOptions.factors`.
+  They have no defaults: without them factor routes return 404 and an account with
+  selected protection cannot sign in.
+
+Every decision evaluates committed state: session, mapping, owner principal, policy,
+generation, evidence and credential binding. This runs synchronously on the guarded
+handle and never enters a provider borrow from core admission. Current state stays
+authoritative when an after-commit notification is lost, so no consumer here needs
+guaranteed delivery. A future consumer that does must add a bounded durable intent;
+hooks alone do not provide one. An uncertain COMMIT releases no cookie.
+
+An account's selected flags and native rows must agree. A flag, a verified row or
+a trust row that disagrees with the policy refuses that account rather than granting
+or removing protection. Re-encrypting a TOTP secret changes its binding, so sessions
+proved with it must sign in again; the step does not change. Trust does not depend on
+generation, so adding a method does not distrust another.
+
+Authentication strength grants nothing. A provider actor keeps ordinary grants and
+role ceilings, `credential: null`, no `owner_session` or bearer, and no owner
+administration, runtime control or vault action.
+
+**Not supported yet, each explicitly denied.** The closed route list refuses recovery
+codes, TOTP or passkey replacement and removal, additional passkeys, reauthentication,
+trusted devices, administrative factor reset and every other native plugin route.
+Recovery therefore has no factor-loss path: `recoverLocal` replaces a password and
+revokes sessions but leaves selected protection in place. A clock that ran ahead can
+hold TOTP refused until real time passes the step, and with no other method that
+account waits. These need accepted management decisions, along with public factor
+routes and DTOs, final numeric limits and consecutive-failure accounting.
+
+Backups include this storage, and a restore keeps its rows. Restoring an older snapshot
+reopens older sessions, steps, generations and factors, which remains the A5 external
+fence. Schema 40 has no downgrade: older binaries refuse it and A3-I18 adds no rollback
+path except restoring a backup. A4 vault authority and A5 transport, cutover and restore
+fencing stay separate gates. See the
+[proof details](../packages/auth-provider-better-auth-proof/README.md#a3-i18-integrated-factor-authority).
 
 ### Lifecycle and authority boundaries
 
@@ -953,8 +1032,8 @@ records fail closed. The captured token ID remains current, and existing
 credential/revocation fences and ownership locks still apply. A pending open
 selection therefore cannot authorize a restore or invalidate an admitted token
 restore. Recovery writes the captured configured policy before constructing the
-new boot's authentication service. No SQLite migration is needed; controller
-schema stays 39 and provider storage revision stays 1.
+new boot's authentication service. No SQLite migration is needed for this
+behavior.
 
 This does not solve A5 provider-session resurrection after restoring older
 password/session data. External restore revocation fencing, account authentication,
