@@ -109,6 +109,7 @@
     "test:auth-provider-cli": "vitest run --config vitest.auth-provider-proof.config.ts cli-provider-administration cli-provider-lifecycle",
     "test:integration:provider-administration": "node scripts/build-fingerprint.mjs --check && vitest run --config vitest.provider-administration.config.ts",
     "test:auth-provider-cli-artifact": "node scripts/build-fingerprint.mjs --check && node scripts/auth-provider-cli-artifact.mjs",
+    "test:auth-provider-session-restart": "node scripts/auth-provider-session-restart.mjs",
     "test:ui:dev-vault": "playwright test tests/ui/dev-vault.spec.ts",
     "test:docs": "python3 scripts/docs.py fmt && python3 scripts/docs.py check && git diff --check"
   },

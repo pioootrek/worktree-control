@@ -1,5 +1,7 @@
 import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
-import { ORIGIN } from "./fixture";
+
+/** Inline so the restart harness can emit this file alone, without the store fixtures. */
+const ORIGIN = "https://controller.test";
 
 /** Test authenticator only. Ephemeral keys never leave this object or reach disk. */
 const hash = (value: Uint8Array | string) => createHash("sha256").update(value).digest();
