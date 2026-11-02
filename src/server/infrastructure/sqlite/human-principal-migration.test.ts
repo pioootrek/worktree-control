@@ -15,13 +15,16 @@ const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const fixture41 = readFileSync(new URL("./fixtures/schema-v41.sql", import.meta.url), "utf8");
 const kept = (db: Database.Database) => Object.fromEntries(["remote_principals", "principal_credentials", "knowledge_project_grants", "knowledge_role_bindings", "knowledge_history", "authentication_provider_subjects",
-  "authentication_totp_steps", "authentication_session_evidence", "authentication_session_issuance"].map(t => [t, db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all()]));
+  "authentication_totp_steps", "authentication_session_evidence", "authentication_session_issuance", "sqlite_sequence"].map(t => [t, db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all()]));
 function baseline() {
   const db = new Database(":memory:"); db.exec(fixture41);
   db.exec(`INSERT INTO remote_principals VALUES('owner','owner','active'),('old-agent','agent','revoked');
     CREATE INDEX historical_principal_status ON remote_principals(status);
     INSERT INTO principal_credentials VALUES('credential','owner','owner_session','Historical','prefix','${"a".repeat(64)}','revoked',NULL,'2026-11-01T00:00:00.000Z','2026-11-01T01:00:00.000Z',NULL);
     INSERT INTO knowledge_projects VALUES('k','Knowledge','active',1,'2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z');
+    INSERT INTO knowledge_history VALUES(7,'k','project','k','created',NULL,'owner','owner_session',1,'2026-11-01T00:00:00.000Z');
+    INSERT INTO knowledge_history VALUES(91,'k','project','k','updated',NULL,'owner','provider_session',2,'2026-11-01T00:00:00.000Z');
+    DELETE FROM knowledge_history WHERE id=91;
     INSERT INTO knowledge_project_grants VALUES('owner','k','["knowledge:read"]',NULL),('old-agent','k','["knowledge:write"]','2026-11-01T00:00:00.000Z');
     INSERT INTO knowledge_role_bindings VALUES('old-agent','k','operator',9,'2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z');
     INSERT INTO authentication_ba_user(id,name,email,emailVerified,createdAt,updatedAt) VALUES('s','Fixture','fixture@invalid.test',0,'2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z');

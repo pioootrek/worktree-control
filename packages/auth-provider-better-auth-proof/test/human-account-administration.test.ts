@@ -93,15 +93,17 @@ describe("protected ordinary humans and real isolated Knowledge cookies", () => 
     const f = await setup();
     try {
       expect(count(f.paths.databasePath, "principal_credentials")).toBe(0);
-      expect(await content(f.a, "projects", {})).toMatchObject({ status: 200, body: { items: [], total: 0 } });
+      expect(await content(f.a, "projects", {})).toMatchObject({ status: 200, body: { items: [], nextOffset: null } });
       await set(f, membership(f.h1, f.k1, 0, "reader")); await set(f, membership(f.h2, f.k2));
       const made = await content(f.b, "create_task", task(f.k2)); expect(made).toMatchObject({ status: 200, body: { replayed: false, value: { createdBy: f.h2 } } });
       const id = (made.body.value as { id: string }).id;
-      expect(await content(f.b, "tasks", { projectId: f.k2, query: "needle" })).toMatchObject({ status: 200, body: { total: 1, items: [{ id }] } });
+      expect(await content(f.a, "tasks", { projectId: f.k1 })).toMatchObject({ status: 200, body: { total: 0, counts: { all: 0 }, items: [] } });
+      expect(await content(f.b, "search", { projectId: f.k2, query: "needle" })).toMatchObject({ status: 200, body: { items: [{ id, projectId: f.k2 }] } });
+      expect(await content(f.b, "tasks", { projectId: f.k2, query: "needle" })).toMatchObject({ status: 200, body: { total: 1, counts: { all: 1, active: 1 }, items: [{ id }] } });
       expect(await content(f.b, "history", { projectId: f.k2, recordKind: "task", recordId: id })).toMatchObject({ status: 200,
         body: { items: [expect.objectContaining({ principalId: f.h2, authenticationMethod: "provider_session" })] } });
       for (const [client, own, other] of [[f.a, f.k1, f.k2], [f.b, f.k2, f.k1]] as const) {
-        expect(await content(client, "projects", { limit: 1 })).toMatchObject({ status: 200, body: { total: 1, items: [{ id: own }] } });
+        expect(await content(client, "projects", { limit: 1 })).toMatchObject({ status: 200, body: { items: [{ id: own }], nextOffset: null } });
         for (const [operation, input] of [["tasks", { projectId: other, query: "needle" }], ["task", { projectId: other, taskId: id }],
           ["history", { projectId: other, recordKind: "task", recordId: id }], ["search", { projectId: other, query: "needle" }]] as const) {
           expect(await content(client, operation, input)).toMatchObject({ status: 403, body: { code: "knowledge_forbidden" } });
