@@ -298,15 +298,15 @@ its cookie and revokes all old sessions; protected runtime recovery also
 invalidates old cookies with a pending mode selection. Tests retain exact actor,
 original-expiry and privilege cases from the earlier suite.
 
-The provider implements API contract 4, implementation `0.0.0-proof.4`.
+The provider implements API contract 5, implementation `0.0.0-proof.5`.
 Older modules fail closed, including the retained incompatible-loader fixture.
 `signOut` keeps the native handler/limiter and explicitly deletes/verifies the
 caller session, covering a real delete-hook failure that native sign-out swallows.
 The core drops native bodies and arbitrary headers; no bearer token is returned
 in browser JSON. Library logs/router exceptions become fixed events. After-commit
 notification failures remain `committed:true`, without automatic mutation replay.
-The current composition uses schema 40 and provider storage revision 2; the
-contract-4 boundary update changes neither storage nor pinned dependencies.
+The current composition uses schema 41 and provider storage revision 3. Contract 5
+adds durable session issuance and changes no pinned dependency.
 
 Provider-cookie requests to unconverted HTTP operations and the actual separate
 MCP listener are denied before installation authority, even with open active.
@@ -815,3 +815,27 @@ production migrations/backups, complete transport/cookie/disconnect treatment,
 accepted TOTP replay handling and A5 remain public activation gates. Optional
 policy is documented and proved locally only; no live activation, mandatory MFA
 role policy or ASVS conformance is implied. Full A3 remains in progress.
+
+## Durable session restart (A3-I22)
+
+`pnpm test:auth-provider-session-restart` runs `scripts/auth-provider-session-restart.mjs`.
+It builds `test/fixtures/session-restart-worker.ts` and the provider into private temporary
+output, and neither ever reaches Community `dist`. Each boot is a fresh Node process with the
+real controller and database locks, `openControllerStore`, the shared isolated HTTP
+composition and the owning shutdown. Software TOTP and passkeys drive it over a Unix socket.
+
+The parent signals only a `ChildProcess` it spawned, after that child's nonce and PID
+handshake, and waits for actual exit before starting the next owner. A live challenger is
+refused while the owner runs. The next owner replaces the stale records through the normal
+path, and nothing unlinks a lock. Cuts hook real statements and the real final phase in the
+worker, so no fixture writes session state. It covers kills inside the mint transaction,
+after native COMMIT, inside and after the publication transaction, and after the parent
+received a cookie, with repeated crashes for all four evidence writers, capacity across
+boots, recovery batches, a private clock for expiry, and a restored snapshot.
+
+It uses U=2, B=4, Q=1, which are test inputs only. Ordinary fixtures use finite larger
+bounds through `ISSUANCE`, and `readyIssuance` runs the owner's recovery before a load.
+In-process faults that need a live runtime, such as unreadable markers and failed cleanup,
+are in `browser-session-issuance.test.ts`. Migration and tamper cases, including the frozen
+`schema-v40.sql`, are in `authentication-session-issuance-migration.test.ts`. The proof
+covers neither a browser, hardware, TLS, a proxy nor the installed service.

@@ -106,8 +106,9 @@ export/import recognize the honest provider audit method.
 
 Controller schema 40 adds the frozen two-factor and passkey plugin storage plus
 recognized account protection; see [integrated factor authority](#integrated-factor-authority).
+Schema 41 adds durable session issuance; see [closed factor HTTP API](#closed-factor-http-api).
 Full controller backups record the current schema and include provider rows.
-Genuine schema-38 and schema-39 snapshots can be restored and upgraded on open.
+Genuine schema-38, schema-39 and schema-40 snapshots can be restored and upgraded on open.
 Older binaries reject a newer schema; restoring a backup is not a downgrade procedure. Restoring a snapshot can revive old sessions and
 passwords; the external revocation/recovery fence remains A5 work. Better Auth
 stores bearer session tokens, and the proof's native sign-in and password-change
@@ -416,7 +417,7 @@ stored expiry extends; fresh authentication obtains a new reference.
 Committed session deletion denies the next operation even if after-commit
 notification fails. Rollback retains access. The query is authoritative;
 notifications are not an authorization cache. This validity adapter supports
-Better Auth 1.7.14, implementation `0.0.0-proof.4`, storage revision 2. Other
+Better Auth 1.7.14, implementation `0.0.0-proof.5`, storage revision 3. Other
 provider/version combinations need their own verified adapter.
 
 Each `ProviderKnowledgeApplication.execute` call is a synchronous Knowledge
@@ -455,14 +456,16 @@ authorize nothing until a fresh real sign-in. Subject-keyed rows restrict deleti
 so recreating an opaque subject cannot reset a step or generation.
 
 `AccountProtection` is the one application-owned policy for both methods. It reaches
-the provider as `host.protection` on contract 4, joined to the provider's open
-transaction on the sole connection. The supported combination is contract 4,
-storage revision 2, implementation `0.0.0-proof.4` and library 1.7.14.
-Contract 4 adds the explicit issuance/WebAuthn limits and named admission and
-settlement refusals. Contract-3 modules are rejected before initialization;
-there is no mixed-version compatibility allowlist. This change does not alter
-schema 40 or storage revision 2. A native passkey failure after verified proof
-is a fixed provider error, rather than a wrong-credential response.
+the provider as `host.protection` on contract 5, joined to the provider's open
+transaction on the sole connection. The supported combination is contract 5,
+storage revision 3, implementation `0.0.0-proof.5` and library 1.7.14.
+Contract 4 added the explicit issuance/WebAuthn limits and named admission and
+settlement refusals. Contract 5 adds the durable session obligations below: session
+evidence requires the native session's open transaction, and a host that lacks
+schema 41 cannot honor them. Older contract and storage combinations are rejected
+before `create`, and there is no mixed-version compatibility allowlist. A native
+passkey failure after verified proof is a fixed provider error, rather than a
+wrong-credential response.
 
 - **Evidence.** The success transaction records the verified method (`password`,
   `password_totp` or `passkey_uv`), original authentication time and deadline,
@@ -525,7 +528,7 @@ fencing stay separate gates. See the
 ### Closed factor HTTP API
 
 A3-I20 mounts login and first enrollment through the isolated composition only. It
-uses the same provider, schema 40, contract 4, `AccountProtection` and sole
+uses the same provider, schema 41, contract 5, `AccountProtection` and sole
 connection as [integrated factor authority](#integrated-factor-authority). Production
 main still has no caller or flag, account mode stays refused, and recovery, removal,
 replacement, additional passkeys and trusted devices stay refused.
@@ -626,9 +629,70 @@ The password, selection, step, receipt and revocations stay. A proved rollback l
 nothing to clean. An unknown outcome keeps its public answer whatever cleanup later learns.
 Disposal retries every record and reads the rows again after the drain. It rejects with
 `disposal_unconfirmed` while a row may remain, and the owner keeps both locks.
-These records are in memory: a process that ends without confirmed disposal
-leaves a session row with no cookie holder and no later sweep. It stops authorizing at
-expiry, but its row stays.
+These records are in memory. What survives a process is the durable issuance record
+described next.
+
+**Durable issuance.** Schema 41 adds `authentication_session_issuance`, one row per new
+session, holding its session ID, a state and a copy of its immutable original deadline.
+All four evidence writers meet in one controller operation that writes evidence and a
+`pending` row inside the native session's own transaction, so a session never commits
+without its marker, and a marker failure rolls back the whole native success. Separately
+committed admission charges keep their semantics. The row has no bearer material, and it
+grants no authority: current evidence and policy still decide every request.
+
+Immediately before a cookie can leave, the synchronous final phase rechecks current
+authority and commits a `pending` to `may_publish` compare-and-set in its own short
+transaction. Nothing awaits between that check, the marker's COMMIT and the response write.
+SQLite and the network have no shared transaction, so `may_publish` means only that the
+client may have received the session. It is never proof of receipt, and no acknowledgment
+protocol exists. A marked row stays until its original deadline or an authorized
+revocation, including after a successful response, a failed write or a clean shutdown,
+and a valid `may_publish` row does not make disposal fail. If the mark throws, no cookie
+leaves. The error does not say whether the COMMIT happened, so cleanup reads the stored
+state: `pending` is deleted, `may_publish` is kept, and an unreadable row stays uncertain.
+
+Three required inputs bound this, with no defaults: `unreleasedSessions` (U),
+`sessionRows` (B) and `sessionReconcileBatch` (Q). B counts every native session row across
+all boots, including released, possibly published, revoked but present, expired but
+unpruned and unmarked rows. Counting only pending rows could not close the bound, because a
+crash after the marker and before the write would escape it on every boot. A saturating
+query reads the count in the actual borrow, before native work, and the same transaction
+that writes the marker enforces it again. For a fixed B, native rows stay at or below
+`max(N0, B)`, where N0 is the row count inherited at the upgrade, and evidence and issuance
+rows follow them. That is a logical row bound. It does not bound database bytes, WAL size,
+legacy string sizes or other tables.
+
+The cap costs availability, which was accepted for this local proof. At B a new login or a
+password replacement is refused before verification or any password write, even when the
+replacement would have been net zero. An oversized inherited table is preserved and
+refuses new sessions until revocation or expiry brings it below B. No deployment value
+for U, B or Q is approved.
+
+Pre-41 rows have no marker. They are unclassified, not orphans: they stay byte-for-byte
+unchanged, keep their current evidence-based authority, count toward B, and are never
+pruned, even when expired. Nothing is backfilled.
+
+**Ordinary restart.** Before any issuer can load, the new owner runs one recovery for its
+lifetime through `SqliteStateStore.recoverIssuedSessions`. Loading a runtime with bounds
+is refused until that has finished, and a later load, lazy administration or status call
+never sweeps anything. Each batch is a short transaction of at most Q rows on a fresh
+admission. Recovery deletes every `pending` session, then prunes `may_publish` rows at or
+past their original deadline. A live issuer prunes at most Q expired marked rows and retries
+only its own retained flights, never other `pending` rows. Deletion is by exact native row,
+so evidence and issuance go through the foreign keys. Password, revocations, selection,
+TOTP step, passkey counter, receipts and unrelated sessions do not change. A row recovery
+cannot resolve fails readiness rather than being skipped, and a killed pass resumes from
+current rows. A maintenance-only load without bounds can administer and cannot mint.
+
+**Restored databases.** A `pending` row in a snapshot may have been published after that
+snapshot was taken, so ordinary recovery must not read it as unpublished. The owner reports
+provenance from the existing restore journal. A recognized restore, or a journal it cannot
+read, refuses the sweep and isolated browser readiness and changes no row. There is no
+caller flag, and this path does not clear or reclassify the journal, so a restored
+installation stays refused for browser proof issuance. Community open and token modes and
+maintenance administration are unaffected. A backup holding more than B rows stays
+structurally valid. A manual file rollback leaves no provenance and is outside this
+guarantee, and A5's external restore fence remains unsolved.
 
 **Outcomes.** Refusals use fixed bodies:
 
@@ -637,7 +701,7 @@ expiry, but its row stays.
 | 400, 408, 413 | `invalid_request`, `request_timeout`, `request_too_large` | Boundary refusal before the provider |
 | 401 | `authentication_failed` | Missing, wrong, replayed, expired, revoked, cross-account or selected-policy failure, all alike |
 | 429 | `rate_limited` | Real limiter or budget exhaustion |
-| 503 | `database_busy`, `database_unavailable` | Bounded capacity, including the unreleased-session bound, or an unavailable owner or provider |
+| 503 | `database_busy`, `database_unavailable` | Bounded capacity, including the unreleased-session and session-row bounds, or an unavailable owner or provider |
 | 502 | `provider_failed` | Invalid provider output |
 | 503 | `completion_unconfirmed` with `committed:true` | A durable receipt proves the effect, but its response failed |
 | 503 | `completion_unconfirmed` | The outcome is unknown, with no boolean and no cookie |
@@ -657,10 +721,12 @@ only with the expired context that owns it. Every number in the isolated composi
 a test input, not an approved product value.
 
 **Not proved.** The software authenticator proves real signature verification through the
-actual handler. It proves neither hardware provenance nor a browser ceremony. A real
-service-process restart, TLS and proxy deployment, a stable operator-owned origin and RP
-ID, `secretConfig`/`base32:` end to end, final numeric and failure policy, recovery and
-management, A4 and A5 all remain open.
+actual handler. It proves neither hardware provenance nor a browser ceremony.
+`pnpm test:auth-provider-session-restart` builds a private worker and kills real owner
+processes at real boundaries over one installation, but it is a temporary Unix-socket
+fixture, not the installed service. TLS and proxy deployment, a stable operator-owned origin
+and RP ID, `secretConfig`/`base32:` end to end, final numeric and failure policy, recovery
+and management, A4 and A5 all remain open.
 
 ### Lifecycle and authority boundaries
 

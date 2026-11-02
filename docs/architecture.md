@@ -524,7 +524,7 @@ The isolated adapter also serves
 [closed factor routes](authentication.md#closed-factor-http-api). The runtime dispatches
 a closed operation table and returns an opaque release plus a separate settlement
 promise, so a response slot outlives a timed-out borrow until its callback really ends.
-A final read-only check against schema 40 rows and header emission form one synchronous
+A final check against current rows, the durable publication marker and header emission form one synchronous
 admitted phase. Accepted cleanup uses reserved queue room on the same gate, with no new
 lock, counter or connection.
 
@@ -534,7 +534,11 @@ calls it synchronously inside its open transaction, and `AccountProtection` keep
 policy, transitions and the current-authority rule in the controller. Disposal tracks actual provider settlement and closes only its borrowed facade.
 The runtime also owns cleanup of sessions it minted but never released, as bounded
 in-memory ID records tied to the exclusive borrow. Issuers are refused before minting
-at the bound. See [unreleased sessions](authentication.md#closed-factor-http-api).
+at the bound. Schema 41 keeps session issuance durable: each new session commits with a
+`pending` marker, `may_publish` commits before any cookie leaves, and the owner's one
+ordinary-restart recovery removes `pending` rows before an issuer can load. Installation-wide
+row and batch bounds are required inputs. A recognized restore refuses that recovery. See
+[durable issuance](authentication.md#closed-factor-http-api).
 The owning shutdown helper disposes the optional provider after external
 producers/listeners/accepted responses drain and before service/SQLite close.
 A rejected disposal reports unconfirmed cleanup and retains both owner locks;
