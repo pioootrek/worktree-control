@@ -19,8 +19,14 @@ export const WITHOUT_AUTHENTICATION_PROVIDER_STORAGE = `DROP TABLE authenticatio
 /** Only for synthetic old-schema fixtures: an empty current schema, rewound to 39. */
 export function rewindAuthenticationFactors(database: Database.Database): void {
   if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=42").get()) {
-    rebuildTable(database, "remote_principals", "CHECK(kind IN ('owner', 'agent', 'worker', 'installation', 'human'))", "CHECK(kind IN ('owner', 'agent', 'worker', 'installation'))");
-    database.exec("DELETE FROM schema_migrations WHERE version=42");
+    const foreignKeys = database.pragma("foreign_keys", { simple: true });
+    database.pragma("foreign_keys=OFF");
+    try {
+      database.transaction(() => {
+        rebuildTable(database, "remote_principals", "CHECK(kind IN ('owner', 'agent', 'worker', 'installation', 'human'))", "CHECK(kind IN ('owner', 'agent', 'worker', 'installation'))");
+        database.exec("DELETE FROM schema_migrations WHERE version=42");
+      }).immediate();
+    } finally { database.pragma(`foreign_keys=${foreignKeys ? "ON" : "OFF"}`); }
   }
   if (database.prepare("SELECT 1 FROM schema_migrations WHERE version = 41").get()) database.exec("DROP TABLE authentication_session_issuance; DELETE FROM schema_migrations WHERE version = 41;");
   if (!database.prepare("SELECT 1 FROM schema_migrations WHERE version = 40").get()) return;

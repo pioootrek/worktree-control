@@ -218,7 +218,7 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
     expect(readFileSync(f.path)).toEqual(bytes);
     const ahead = directory();
     new SqliteStateStore(ahead.path).close();
-    raw(ahead.path, db => db.exec("INSERT INTO schema_migrations(version, applied_at, name, checksum) VALUES (42, '2026-11-02T00:00:00.000Z', 'future', 'future')"));
+    raw(ahead.path, db => db.exec("INSERT INTO schema_migrations(version, applied_at, name, checksum) VALUES (43, '2026-11-02T00:00:00.000Z', 'future', 'future')"));
     const unchanged = readFileSync(ahead.path);
     expect(() => new SqliteStateStore(ahead.path)).toThrow(/unrecognized database schema/);
     expect(readFileSync(ahead.path)).toEqual(unchanged);

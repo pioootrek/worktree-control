@@ -176,7 +176,9 @@ describe("durable SQLite initialization and migration", () => {
     const original = Database.prototype.exec;
     const spy = vi.spyOn(Database.prototype, "exec").mockImplementation(function(this: Database.Database, sql) {
       const result = original.call(this, sql);
-      if (sql.includes("ADD COLUMN checksum")) {
+      // Inject after the final parent rebuild so integrity_check, rather than
+      // the table-copy CHECK, remains the boundary under test.
+      if (sql.includes("ALTER TABLE remote_principals_rebuild RENAME TO remote_principals")) {
         if (kind === "foreign-key") original.call(this, "INSERT INTO principal_credentials(id,principal_id,kind,label,token_prefix,verifier_hash,status,created_at) VALUES('bad','missing','agent_token','x','x',printf('%064d',0),'active','now')");
         else original.call(this, "PRAGMA ignore_check_constraints=ON; UPDATE remote_principals SET status='broken'; PRAGMA ignore_check_constraints=OFF");
       }

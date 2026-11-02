@@ -187,6 +187,9 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       if (table === "knowledge_history" && version < 20) check = check.replace(",'memory'", "").replace(",'approved','superseded'", "");
       const field = check.match(/^([a-z_]+?)(?:in\(|between|is|[<>=])/)?.[1];
       if (field && version < (columnVersions[`${table}.${field}`] ?? introduced)) continue;
+      // The exact allowed principal CHECKs were validated above, including the
+      // installation-aware bootstrap shape of pre-25 synthetic/legacy snapshots.
+      if (table === "remote_principals" && field === "kind") continue;
       // Migration 4 added lease columns without rebuilding the expiry-only CHECK.
       // Recognize that exact historical shape (and the lineage without a CHECK);
       // validate active lease metadata through the application invariant below.
