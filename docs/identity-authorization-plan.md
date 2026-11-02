@@ -1,6 +1,6 @@
 ---
 audience: "owner, implementers and reviewers of human, agent and ENV access"
-last_reviewed: "2026-11-01"
+last_reviewed: "2026-11-02"
 source_of_truth: "planned identity, role and environment authorization contracts and acceptance gates"
 status: "active"
 ---
@@ -31,7 +31,7 @@ session/mapping/principal state inside grant-limited Knowledge operations.
 Controller migration 39 adds honest provider history attribution, preserving
 old history and migrations 1..38; provider storage revision remains 1. Account
 mode remains
-unavailable; enrollment, factors, invitations, roles and GUI are still open.
+unavailable; enrollment, optional-factor implementation, invitations, roles and GUI are still open.
 Shared core admission, exclusive provider admission and background persistence
 boundaries are implemented as partial infrastructure. Strict integration tests
 cover HTTP body-read admission errors and the installed restore completion
@@ -49,7 +49,7 @@ Knowledge project `k7a-worktree-switcher` holds design task
 `e3e2e52e-7b95-4088-8234-0e6d35c39f86` and direction memory
 `fb8aab07-3d97-4e38-ac84-617a0d1a0aa4`. The memory records the owner's words;
 its installation-token authorship is not independent human approval.
-Exact ENV role bundles, authentication factors, time limits and migration
+Exact ENV role bundles, factor implementation policy, time limits and migration
 mechanics below are engineering proposals, subject to their implementation gates.
 There is no authorization here to provision keys, import secrets, migrate the
 live installation, change host isolation or publish/deploy a release.
@@ -260,10 +260,27 @@ password, factor and session handling rather than new cryptographic protocols.
 Provision the first owner through protected local recovery/bootstrap; subsequent
 humans use administrator-created enrollment or bounded single-use invitations.
 Public signup stays disabled. Resolve username/email provisioning against the
-pinned provider. Proposed account-mode security profile requires MFA for humans;
-choose and test passkeys with user verification or password plus another factor
-before enabling it. Method/strength must come from verified provider evidence.
-Password-only prototypes cannot be described as meeting ASVS Level 2.
+pinned provider. On 2026-11-02 the owner selected both authenticator-app TOTP
+and passkeys as optional methods ("Kody i passkey", then "Opcjonalne"). This
+supersedes the engineering proposal requiring MFA for all humans. Do not deny
+full-RBAC password accounts globally solely for lacking enrollment or choose
+new roles that require MFA without an owner decision. Supporting both methods
+means alternatives, not two mandatory sequential checks. Optional enrollment
+cannot bypass a protection the account has chosen or enrolled. Method and
+strength need verified session evidence; enabled flags grant no role or privilege.
+Existing current-identity hard guards remain until separately implemented policy.
+See [the owner decision and current proof](authentication.md#owner-selected-optional-methods).
+
+A3-I14 proves passkey feasibility only in the private temporary fixture. It
+requires signed UV with fixed RP/origin and exact subject/handle binding before
+persistence, using supported callbacks in `@better-auth/passkey` 1.7.14. Its
+`passkey_uv` session observation is nonauthorizing; the library supplies no
+durable session-method/generation or enrollment-UV trust history. Production
+contracts, schema and activation stay unchanged. TOTP replay, management/recovery,
+current-generation evidence and A5 remain unresolved public integration gates.
+Readiness of these selected optional features is distinct from mandatory
+multi-factor enrollment for every user. Password-only prototypes prove no MFA,
+and neither this proof nor the account plan claims ASVS Level 2 conformance.
 
 Use backend-validated browser sessions, rotated at login/re-authentication;
 HttpOnly, Secure and appropriate SameSite cookies; explicit Origin/Host and CSRF
@@ -317,7 +334,7 @@ selected anew. Mode selection is protected CLI-only and effective only after
 service restart. The stored selection and immutable active boot mode are now
 separate; selecting a future mode leaves live access and sessions unchanged.
 Token/session revocation and current principal/grant checks remain immediate.
-Production `better-auth` selection/startup still fail closed until account/MFA
+Production `better-auth` selection/startup still fail closed until account authentication, selected optional-method readiness
 and A5 enforcement gates are complete. This slice proves token/open restart
 behavior and explicit third-mode refusal, not positive production RBAC support.
 
@@ -338,7 +355,7 @@ authentication object and mode, issue no bearer/grant/role, and recheck active
 principal/mapping history inside provider admission. Configuration/status do not
 load code; changed loaded material requires a new owner boot. Private signing
 configuration needs its own protected backup. Production account activation
-still waits for factors, roles and complete A5. See the
+still waits for optional-method readiness, roles and complete A5. See the
 [operator workflow](authentication.md#protected-provider-maintenance).
 
 Keep existing active compatibility authority until the explicit restart.

@@ -1,6 +1,6 @@
 ---
 audience: "people running Worktree Control and choosing how callers authenticate"
-last_reviewed: "2026-11-01"
+last_reviewed: "2026-11-02"
 source_of_truth: "authentication modes, owner CLI and scoped runtime agent workflow"
 status: "active"
 ---
@@ -20,7 +20,8 @@ active mode once per boot, after migration and restore recovery. Only the CLI
 selects a mode; the new selection takes effect at the next service restart.
 Token rotation, credential revocation and current grants still apply immediately.
 The permanent product modes are open access, a shared installation token, and
-individual RBAC. Full RBAC remains gated on the account/MFA and A5 work; the
+individual RBAC. Full RBAC remains gated on account authentication, selected optional-method
+readiness and A5 work; the
 current controller refuses `better-auth` selection and startup. `legacy` is
 upgrade compatibility and cannot be selected anew.
 
@@ -114,11 +115,48 @@ browser API design. Password-only evidence is neither MFA nor an ASVS Level 2
 claim. Numeric session, reset, password and rate limits are proof settings,
 not approved product defaults. A4 vault proof remains separate.
 
-Factors, invitations, roles, GUI and the A5 activation gates
+Optional-factor implementation, invitations, roles, GUI and the A5 activation gates
 remain open in Knowledge task `ec4c7258770328ca33fb1801be6831f6`. The optional
 package retains its dependency notices and stays outside Community runtime
 dependencies and published assets. See its
 [README](../packages/auth-provider-better-auth-proof/README.md) for verification.
+
+### Owner-selected optional methods
+
+The owner chose "Kody i passkey", then "Opcjonalne" on 2026-11-02, recorded
+in Knowledge discussion `d1062d3b2a802346592d701d29028b51`, reply
+`a6b59c9b-45aa-4c4d-9a0c-387fdf723d93`. Authenticator-app TOTP and passkeys
+are both selected as available optional methods. This replaces the engineering
+proposal requiring MFA for every human. Supporting both means alternative
+methods can satisfy the chosen protection, without requiring both in sequence.
+A full-RBAC password account must not be denied globally just because it has
+not enrolled an optional method. Enrollment and authentication strength confer
+no implicit role, grant or privilege.
+
+Optional enrollment must preserve an account's chosen protection. Once an
+account selects or enrolls protection, an ordinary password, unverified passkey,
+client UV flag or trusted-device cookie must not bypass it. Account policy,
+method evidence and authorization remain separate. Existing current-identity
+hard guards still apply until a separately implemented policy replaces them;
+this decision does not unlock owner administration or vault access.
+
+A3-I14 adds an isolated backend passkey proof using the actual optional
+`@better-auth/passkey` 1.7.14 plugin and locked SimpleWebAuthn server 13.3.3.
+It uses a fixed fixture RP/origin, real signed registration/assertion data,
+and supported server callbacks that require verified UV before credential or
+session persistence. Browser UV requests are also required. Temporary owner-made
+schema and nonauthorizing `passkey_uv` observations do not change core schema
+39, provider storage 1, contract 2 or production provider loading. The plugin
+has no durable session-method or enrollment-UV history; integration must supply
+reviewed current evidence and credential trust bindings. See the
+[proof details](../packages/auth-provider-better-auth-proof/README.md#a3-i14-passkey-proof).
+
+These are selected product capabilities and local feasibility work, with no live
+activation. TOTP replay remains unresolved and its five existing acceptance
+failures remain visible. Accepted replay handling, safe factor management and
+recovery, production evidence/migrations, transport/disconnect handling and A5
+remain gates before public account activation. Password-only access proves no
+MFA, and no ASVS Level 2 conformance is claimed.
 
 ### Protected provider maintenance
 

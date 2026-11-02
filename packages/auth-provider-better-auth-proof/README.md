@@ -523,3 +523,88 @@ policy exists. Password/challenge-creation admission, global fairness, final
 numeric policy, external restore fencing, public transport and disconnected
 response cleanup remain integration work. Password sessions still require the
 existing production evidence/authority gates. Full A3 remains in progress.
+
+## A3-I14 passkey proof
+
+The owner selected both authenticator-app TOTP and passkeys as optional methods
+on 2026-11-02 ("Kody i passkey", then "Opcjonalne"). That supersedes the earlier
+engineering proposal requiring MFA for every human. An account without optional
+enrollment can use a password; enrolled/selected protection cannot be bypassed
+through an unprotected password path. Methods are alternatives, not mandatory
+sequential TOTP plus passkey checks. Enabled flags grant no roles or privileges.
+Current production identity hard guards remain. See the
+[policy record](../../docs/authentication.md#owner-selected-optional-methods).
+
+The new `test/passkey-*` files are a separate, nonauthorizing backend experiment.
+The default provider is unchanged. Only this private package adds exact
+`@better-auth/passkey` 1.7.14; its locked runtime uses SimpleWebAuthn server
+13.3.3 and browser 13.3.0. Better Auth/core remain 1.7.14, Kysely remains 0.28.17,
+and the existing root SQLite driver remains 13.0.3. Additional locked runtime
+notices are in `THIRD_PARTY_NOTICES.md`. Community has no provider/passkey runtime
+import, and packaging checks scan fresh CLI/dashboard assets for implementation.
+
+The temporary SQLite owner generates candidate passkey DDL with pinned
+`getMigrations`, applies it inside its existing exclusive borrow and awaits real
+`checkSchema`. Production schema 39, storage 1 and contract 2 are unchanged.
+No extended fixture database is reopened through the production inspector.
+Each operation uses that same owner and lifecycle gate. The fixture origin is
+`https://controller.test` and RP ID is `controller.test`; neither is client input
+or live host configuration. A production integration needs a stable, operator-owned
+HTTPS origin/RP decision before credentials can be enrolled.
+
+An independent test authenticator uses Node crypto with ephemeral P-256 keys,
+packed ES256 self-attestation and signed assertions. It does not mock verification,
+implement a production verifier or claim authenticator hardware provenance.
+Both native verifiers set `requireUserVerification:false` in this pinned plugin.
+Supported `registration.afterVerification` and `authentication.afterVerification`
+callbacks require actual verified `userVerified:true` before credential storage,
+counter update or session creation. Registration requests require UV through the
+plugin option. Native assertion options hard-code `preferred`; the bounded
+response sets `required`, independently of the server callback check. Signed UP
+alone, forged client UV metadata and tampered signatures never substitute for UV.
+
+Native registration issues a random user handle without storing it on the
+credential. Native assertion does not bind that handle. The fixture stores the
+issued handle with its exact mapped subject, verified enrollment UV, native
+credential fingerprint and security generation, then checks it in the supported
+authentication callback. Only current trusted credentials qualify. The library's
+passkey model has no enrollment UV history, session method or security generation.
+Those missing durable bindings are an integration gate, not invented upstream
+metadata. The fixture's method is explicitly `passkey_uv`, never password plus
+an imaginary second factor. Its evidence is nonauthorizing and its implementation
+version cannot mint a controller actor.
+
+A committed admission transaction reserves one ceremony capability and charges a
+bounded subject budget before native entry. A separate transaction-scoped native
+auth instance joins credential/counter/session writes, UV trust, evidence and
+completion receipt. No independent connection, lock or copied library adapter is
+introduced. Failure rolls back success writes while retaining the charge and
+spending the wrapper capability. A lost output or blind retry cannot re-enter
+that ceremony. Real COMMIT acknowledgment failure is reconciled only after the
+transaction has ended; an open or unreadable outcome withholds authority. The
+owner gate handles an abandoned transaction. Observations and SQL-only traces
+are bounded; parameters, native JSON bearers and private keys stay out of DTOs,
+logs and handoffs. Session cookies remain private response credentials.
+
+Fixture-only conservative restrictions refuse passkey replacement/removal,
+password fallback after passkey protection, public signup, trusted-device use,
+recovery and unreviewed management endpoints. Existing sessions do not acquire
+stronger evidence at enrollment. A real TOTP interop case uses the existing
+isolated factor provider for setup, then checks that password login remains
+pending and verified-UV passkey is an alternative. It does not accept TOTP replay
+or promote that experimental provider into production. The inherited four replay
+failures and old bounded counter-loss failure remain ordinary failing tests.
+
+The exact next integration needs a controller-owned policy port for binding
+current subject/purpose/session/credential generations and immutable deadlines,
+committing admission before verification, settling actual session evidence in
+the success transaction, and reading receipts without re-evaluation. Passkey
+bindings must retain the native-issued handle and UV enrollment trust; current
+session projection must distinguish `password` from `passkey_uv` using durable
+session-specific evidence. Contract 2 cannot express this. Proposed fixture
+methods in `passkey-admission.ts` are executable evidence, not approved
+production tables or final product defaults. Safe management/freshness/recovery,
+production migrations/backups, complete transport/cookie/disconnect treatment,
+accepted TOTP replay handling and A5 remain public activation gates. Optional
+policy is documented and proved locally only; no live activation, mandatory MFA
+role policy or ASVS conformance is implied. Full A3 remains in progress.
