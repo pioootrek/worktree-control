@@ -228,4 +228,12 @@ describe("A3-I15 staged fmt:none enrollment, real native signed UV confirmation"
     expect(charged(after)).toBe(charged(before)+(phase==="admission"&&when==="before"?0:1));
   }));
 
+  test("native freshness cannot create an already expired staged candidate from older password evidence",async()=>owned(async f=>{
+    const b=new Browser(f);ok(await b.signIn());
+    await fixtureSql(f,"UPDATE passkey_fixture_evidence SET authenticatedAt=?",[Date.now()-11*60_000]);
+    const o=await options(b,"register"),before=await passkeyState(f);
+    refused(await b.post("/passkey/verify-registration",{response:new PasskeyAuthenticator().register(o,{attestationNone:true})}));
+    const after=await pristine(f,before);expect(after.staged.length).toBe(0);expect(charged(after)).toBe(charged(before)+1);
+  }));
+
 });

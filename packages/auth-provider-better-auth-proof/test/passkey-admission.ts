@@ -57,8 +57,10 @@ export class PasskeyAdmission {
     if (!context.subject || !context.sessionId || !context.handle || context.generation === null) throw new Error("Enrollment context missing.");
     const origin = this.origin(context.sessionId,context.subject,Date.now());
     if (!origin) throw new Error("Enrollment origin missing.");
+    const deadline = Math.min(context.deadline,origin.authenticatedAt+10*60_000);
+    if (deadline <= Date.now() || origin.originalDeadline !== context.originalDeadline) throw new Error("Enrollment origin expired.");
     this.prune(Date.now()); this.capacity("passkey_fixture_staged");
-    this.run("INSERT INTO passkey_fixture_staged VALUES (?,?,?,?,?,?,?,?,?,'enrollment-confirmation')", [row.credentialID,context.capability,context.subject,context.handle,this.fingerprint(row),context.generation,context.sessionId,context.originalDeadline,Math.min(context.deadline,origin.authenticatedAt+10*60_000)]);
+    this.run("INSERT INTO passkey_fixture_staged VALUES (?,?,?,?,?,?,?,?,?,'enrollment-confirmation')", [row.credentialID,context.capability,context.subject,context.handle,this.fingerprint(row),context.generation,context.sessionId,context.originalDeadline,deadline]);
   }
   stageUsable(stage: StagedPasskey, now: number) {
     const row = this.credential(stage.credential), origin = this.origin(stage.sessionId,stage.subject,now);
@@ -112,7 +114,10 @@ export class PasskeyAdmission {
       const stage = this.boundStage(context,now);
       return !!stage && stage.credential === ticket.credential && stage.fingerprint === ticket.fingerprint;
     }
-    if (!ticket.credential) return !!context.sessionId && !!this.origin(context.sessionId,ticket.subject,now) && !this.protected(ticket.subject);
+    if (!ticket.credential) {
+      const origin = context.sessionId && this.origin(context.sessionId,ticket.subject,now);
+      return !!origin && origin.originalDeadline === context.originalDeadline && !this.protected(ticket.subject);
+    }
     const row = this.credential(ticket.credential), trust = this.trust(ticket.credential);
     return !!row && !!trust && trust.subject === ticket.subject && trust.verifiedUv === 1 && row.userId === ticket.subject && trust.generation === generation && this.fingerprint(row) === ticket.fingerprint && trust.fingerprint === ticket.fingerprint;
   }

@@ -228,7 +228,7 @@ class PasskeyProvider implements AuthenticationProviderInstance {
         return this.#operation.run(operation, async () => {
           if (request.signal.aborted || (ticket && !policy.usable(ticket,Date.now()))) throw new Refused(409);
           let current: { user: { id: string }; session: { id: string } } | null = null;
-          let staged: ReturnType<PasskeyAdmission["staged"]> = undefined;
+          let staged: ReturnType<PasskeyAdmission["staged"]> | undefined;
           if (kind === "register-options") {
             current = await auth.api.getSession({ headers,query:{ disableCookieCache:true,disableRefresh:true } });
             if (!current || !policy.origin(current.session.id,current.user.id,Date.now()) || policy.protected(current.user.id)) throw new Refused();
