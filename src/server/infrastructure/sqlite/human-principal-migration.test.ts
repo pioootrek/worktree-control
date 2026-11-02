@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
+import { openControllerStore } from "@/server/controller-storage";
 import { HumanAccountService } from "@/server/modules/identity";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
@@ -56,6 +57,30 @@ describe("ordinary human principal migration 42", () => {
       validateDatabase(db, 42);
     } finally { db.close(); }
   });
+  it("opens a populated genuine schema-41 file only after making a verified schema-41 backup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "human-upgrade41-")); roots.push(root);
+    const data = join(root, "data"); mkdirSync(data, { mode: 0o700 });
+    const path = join(data, "state.sqlite3"), old = baseline();
+    const before = kept(old), registry = old.prepare("SELECT * FROM schema_migrations ORDER BY version").all();
+    try { await old.backup(path); } finally { old.close(); }
+    chmodSync(path, 0o600);
+    const backups = join(root, "backups");
+    const store = await openControllerStore(path, { backupBeforeMigration: true, backupDirectory: backups,
+      applicationVersion: "human-upgrade-test", attachmentDirectory: join(root, "attachments") });
+    try { expect(store.schemaVersion()).toBe(42); expect(store.getPrincipal("owner")).toEqual({ id: "owner", kind: "owner", status: "active" }); }
+    finally { await store.closeAfterDrain(); }
+    const names = readdirSync(backups); expect(names).toHaveLength(1); expect(names[0]).toMatch(/^pre-migration-v41-/);
+    const backup = join(backups, names[0]);
+    expect(JSON.parse(readFileSync(join(backup, "manifest.json"), "utf8")).database.schemaVersion).toBe(41);
+    for (const [file, version] of [[path, 42], [join(backup, "state.sqlite3"), 41]] as const) {
+      const db = new Database(file, { readonly: true, fileMustExist: true });
+      try {
+        expect(inspectSchema(db).version).toBe(version); expect(kept(db)).toEqual(before);
+        expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=41 ORDER BY version").all()).toEqual(registry);
+      } finally { db.close(); }
+    }
+  });
+
   it("rolls back on final FK validation and restores enforcement", () => {
     const db = baseline();
     try {

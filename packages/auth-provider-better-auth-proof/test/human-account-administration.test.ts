@@ -263,12 +263,14 @@ describe("protected ordinary humans and real isolated Knowledge cookies", () => 
       expect(count(first.paths.databasePath, "authentication_ba_user")).toBe(0);
     } finally { wait.open(); await first.close(); }
     let disable: (() => void) | undefined, calls = 0;
-    const late = await onlineCliFixture({ beforeProviderTransaction: () => { if (disable) { const op = disable; disable = undefined; calls++; op(); } } });
+    const provisioned = vi.fn(async () => undefined);
+    const late = await onlineCliFixture({ faults: { afterProvisionedUser: provisioned }, beforeProviderTransaction: () => { if (disable) { const op = disable; disable = undefined; calls++; op(); } } });
     try {
       const id = await create(late);
       disable = () => new HumanAccountService(late.store.humanAccounts(), "local-admin").disable(id);
       await expect(late.run(["enroll", "--principal-id", id, ...late.input(enroll(1))])).rejects.toMatchObject({ code: "principal_unavailable" });
-      expect(calls).toBe(1); expect(await late.runCore(() => late.store.getPrincipal(id))).toMatchObject({ status: "revoked" });
+      expect(calls).toBe(1); expect(provisioned).toHaveBeenCalledOnce();
+      expect(await late.runCore(() => late.store.getPrincipal(id))).toMatchObject({ status: "revoked" });
       for (const table of ["authentication_ba_user", "authentication_ba_account", "authentication_provider_subjects"]) expect(count(late.paths.databasePath, table)).toBe(0);
     } finally { await late.close(); }
   });

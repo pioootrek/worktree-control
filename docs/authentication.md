@@ -835,8 +835,8 @@ TOTP/passkey protection retain their existing rules.
 and two Knowledge projects through the isolated HTTP application. It covers
 filtering, ceilings, current authority before queued effects/replay, enrollment
 races and optional methods. Schema 42 tests use a fresh schema-41 SQL dump produced
-by unchanged baseline `7f022fb21069728cf4c9844eec660f367b5680c1`; synthetic rewinds in
-older tests are still synthetic. Neither fixture is an old executable binary test.
+by unchanged baseline `7f022fb21069728cf4c9844eec660f367b5680c1`; its populated file upgrade verifies a pre-migration schema-41 backup. Synthetic
+rewinds in older tests are still synthetic. Neither fixture is an old executable binary test.
 Production `better-auth` selection and unconverted cookie HTTP/MCP remain denied,
 including open boot. Full A3, general delegated roles, GUI and A4/A5 stay open.
 
