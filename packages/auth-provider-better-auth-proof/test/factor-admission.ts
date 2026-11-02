@@ -1,22 +1,20 @@
-import { createHash, createHmac, randomUUID } from "node:crypto";
-import { symmetricDecrypt } from "better-auth/crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { ProviderSqliteConnection } from "../../../src/server/modules/authentication/provider-contract";
 
 /** Temporary fixture policy, deliberately unrelated to approved product defaults. */
 export const FIXTURE_ADMISSION_POLICY = {
-  attempts: 4, windowMs: 60_000, ticketMs: 15_000, capacity: 64, pruneBatch: 8, replayCapacity: 256,
+  attempts: 4, windowMs: 60_000, ticketMs: 15_000, capacity: 64, pruneBatch: 8,
 } as const;
 export type AdmissionPolicy = { -readonly [K in keyof typeof FIXTURE_ADMISSION_POLICY]: number };
 export const ADMISSION = {
   subjects: "factor_admission_subjects", contexts: "factor_admission_contexts",
   budgets: "factor_admission_budgets", receipts: "factor_admission_receipts", evidence: "factor_admission_evidence",
-  replay: "factor_consumed_presentations", replayKey: "factor_replay_key",
+  steps: "factor_totp_steps",
 } as const;
 
 /** Applied only by the temporary store owner, never by provider initialization. */
 export const ADMISSION_DDL = [
-  `CREATE TABLE ${ADMISSION.replayKey} (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), commitment TEXT NOT NULL)`,
-  `CREATE TABLE ${ADMISSION.replay} (marker TEXT PRIMARY KEY, attemptId TEXT NOT NULL UNIQUE)`,
+  `CREATE TABLE ${ADMISSION.steps} (subject TEXT PRIMARY KEY REFERENCES authentication_ba_user(id) ON DELETE CASCADE, last_step INTEGER NOT NULL CHECK(last_step >= 0))`,
   `CREATE TABLE ${ADMISSION.subjects} (subject TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 1)`,
   `CREATE TABLE ${ADMISSION.contexts} (capability TEXT PRIMARY KEY, subject TEXT NOT NULL, purpose TEXT NOT NULL, credential TEXT NOT NULL, principalId TEXT NOT NULL, factorId TEXT NOT NULL, originSessionId TEXT, generation INTEGER NOT NULL, deadline INTEGER NOT NULL, authenticatedAt TEXT NOT NULL, originalDeadline TEXT NOT NULL, nativeId TEXT, used INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE ${ADMISSION.budgets} (subject TEXT NOT NULL, epoch INTEGER NOT NULL, charged INTEGER NOT NULL, PRIMARY KEY(subject, epoch))`,
@@ -27,13 +25,11 @@ export const ADMISSION_DDL = [
 /** A hash of a high-entropy issued capability, never a hash of a short OTP. */
 export const capabilityId = (opaque: string) => createHash("sha256").update(opaque).digest("hex");
 export const serverAttemptId = () => randomUUID();
-/** Standard HMAC, domain-separated JSON arrays of strings; no short-code hashes. */
-export const replayHmac = (key: Uint8Array, domain: string, ...fields: string[]) =>
-  createHmac("sha256", key).update(JSON.stringify(["wtc-factor-replay-v1", domain, ...fields])).digest("hex");
-export const replayKeyCommitment = (key: Uint8Array) => replayHmac(key, "key-check");
-export const validTotpSyntax = (code: string) => code.length === 6 && !/[^0-9]/.test(code);
+/** Staleness only: a new secret or a re-encryption changes it. Replay state never depends on it. */
+export const factorBinding = (ciphertext: string) => createHash("sha256").update(ciphertext).digest("hex");
 const persistedTime = (value: unknown): number => typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
-export interface ReplayBinding { key: Uint8Array; encryptionSecret: string }
+/** A guarded consumption changed no row. The step is not newer than this subject's last one. */
+export class StaleTotpStep extends Error { constructor() { super("Presentation refused."); } }
 export type Purpose = "login" | "enrollment" | "reauthentication";
 export interface BoundContext {
   capability: string; subject: string; purpose: Purpose; credential: string;
@@ -48,9 +44,9 @@ export interface SessionEvidence {
   observation: "password" | "enrollment" | "password_totp" | "recovery_code" | "reauthentication";
 }
 export interface AdmissionPort {
-  bindContext(opaque: string, purpose: Purpose, now: number): Promise<BoundContext | null>;
-  admit(context: BoundContext, attemptId: string, now: number): Promise<Ticket | null>;
-  settleSuccess(ticket: Ticket, session: SessionEvidence, now: number, marker?: string): Promise<void>;
+  bindContext(opaque: string, purpose: Purpose, now: number): BoundContext | null;
+  admit(context: BoundContext, attemptId: string, now: number): Ticket | null;
+  settleSuccess(ticket: Ticket, session: SessionEvidence, now: number, step?: number): void;
   readReceipt(attemptId: string): Ticket | null;
 }
 
@@ -60,7 +56,7 @@ export interface AdmissionPort {
  * settleSuccess() joins the caller's separate Kysely success transaction.
  */
 export class FixtureAdmission implements AdmissionPort {
-  constructor(readonly connection: ProviderSqliteConnection, readonly policy: AdmissionPolicy, readonly replay?: ReplayBinding) {
+  constructor(readonly connection: ProviderSqliteConnection, readonly policy: AdmissionPolicy) {
     for (const value of Object.values(policy)) if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Invalid fixture policy.");
   }
   #rows<T>(sql: string, args: readonly unknown[] = []): T[] { return this.connection.prepare(sql).all(args) as T[]; }
@@ -77,28 +73,18 @@ export class FixtureAdmission implements AdmissionPort {
   factor(subject: string) {
     return this.#rows<{ id: string; secret: string; verified: number }>('SELECT id, secret, verified FROM authentication_ba_two_factor WHERE "userId" = ?', [subject])[0];
   }
-  assertReplayKey(): void {
-    const stored = this.#rows<{ commitment: string }>(`SELECT commitment FROM ${ADMISSION.replayKey} WHERE singleton = 1`)[0];
-    if (!this.replay || this.replay.key.byteLength !== 32 || stored?.commitment !== replayKeyCommitment(this.replay.key)) throw new Error("Fixture replay key unavailable.");
-  }
-  /** Supported library decryption only, never OTP enumeration/verification. No cache or plaintext persistence. */
-  async credential(subject: string): Promise<string | null> {
-    this.assertReplayKey();
+  credential(subject: string): string | null {
     const factor = this.factor(subject);
-    if (!factor) return null;
-    const secret = await symmetricDecrypt({ key: this.replay!.encryptionSecret, data: factor.secret });
-    // This candidate admits native-generated secrets only, not alternate imported encodings.
-    if (!secret.length || /[^A-Za-z0-9_-]/.test(secret)) throw new Error("Fixture factor binding unavailable.");
-    return replayHmac(this.replay!.key, "incarnation", "better-auth", subject, secret);
+    return factor ? factorBinding(factor.secret) : null;
   }
-  async presentation(ticket: Ticket, code: string): Promise<string> {
-    this.assertReplayKey();
-    if (!validTotpSyntax(code) || await this.credential(ticket.subject) !== ticket.credential) throw new Error("Presentation refused.");
-    return replayHmac(this.replay!.key, "presentation", "better-auth", ticket.subject, ticket.credential, code);
-  }
-  replayAvailable(marker: string): boolean {
-    this.assertReplayKey();
-    return this.#count(ADMISSION.replay) < this.policy.replayCapacity && !this.#rows(`SELECT 1 FROM ${ADMISSION.replay} WHERE marker = ?`, [marker]).length;
+  /**
+   * The only write to a subject's step, and it can only move forward. Exactly
+   * one changed row is the success condition. Native or secret state never reaches it.
+   */
+  consumeStep(subject: string, step: number): void {
+    if (!Number.isSafeInteger(step) || step < 0) throw new StaleTotpStep();
+    const { changes } = this.#run(`INSERT INTO ${ADMISSION.steps} (subject, last_step) VALUES (?, ?) ON CONFLICT(subject) DO UPDATE SET last_step = excluded.last_step WHERE excluded.last_step > ${ADMISSION.steps}.last_step`, [subject, step]);
+    if (Number(changes) !== 1) throw new StaleTotpStep();
   }
   #principal(subject: string): string | null {
     return this.#rows<{ principal_id: string }>("SELECT principal_id FROM authentication_provider_subjects WHERE provider_id = 'better-auth' AND subject = ?", [subject])[0]?.principal_id ?? null;
@@ -120,9 +106,9 @@ export class FixtureAdmission implements AdmissionPort {
   }
 
   /** Only called with a capability from a completed, successful native outcome. */
-  async issue(opaque: string, subject: string, purpose: Purpose, deadline: number, nativeId: string | null, now: number, origin: Pick<SessionEvidence, "authenticatedAt" | "originalDeadline">, originSessionId: string | null = null): Promise<void> {
+  issue(opaque: string, subject: string, purpose: Purpose, deadline: number, nativeId: string | null, now: number, origin: Pick<SessionEvidence, "authenticatedAt" | "originalDeadline">, originSessionId: string | null = null): void {
     this.prune(now);
-    const credential = await this.credential(subject);
+    const credential = this.credential(subject);
     if (purpose === "reauthentication" && originSessionId) {
       // Issuance runs in a transaction: replace this session's unused context,
       // without removing a context that belongs to an unresolved operation.
@@ -134,15 +120,15 @@ export class FixtureAdmission implements AdmissionPort {
       [capabilityId(opaque), subject, purpose, credential, this.#principal(subject), this.factor(subject)!.id, originSessionId, this.generation(subject), deadline, origin.authenticatedAt, origin.originalDeadline, nativeId]);
   }
 
-  async bindContext(opaque: string, purpose: Purpose, now: number): Promise<BoundContext | null> {
+  bindContext(opaque: string, purpose: Purpose, now: number): BoundContext | null {
     const row = this.#rows<BoundContext>(`SELECT * FROM ${ADMISSION.contexts} WHERE capability = ?`, [capabilityId(opaque)])[0];
-    return row && row.purpose === purpose && await this.valid(row, now) ? row : null;
+    return row && row.purpose === purpose && this.valid(row, now) ? row : null;
   }
-  async valid(row: BoundContext, now: number): Promise<boolean> {
+  valid(row: BoundContext, now: number): boolean {
     if (row.used || row.deadline <= now || !this.#current(row.subject)) return false;
     const generation = this.#rows<{ generation: number }>(`SELECT generation FROM ${ADMISSION.subjects} WHERE subject = ?`, [row.subject])[0]?.generation;
     const factor = this.factor(row.subject);
-    if (generation !== row.generation || !factor || await this.credential(row.subject) !== row.credential || factor.id !== row.factorId || this.#principal(row.subject) !== row.principalId) return false;
+    if (generation !== row.generation || !factor || this.credential(row.subject) !== row.credential || factor.id !== row.factorId || this.#principal(row.subject) !== row.principalId) return false;
     if (row.purpose !== "enrollment" && (factor.verified !== 1 || !this.#enabled(row.subject))) return false;
     if (row.purpose === "enrollment" && factor.verified !== 0) return false;
     if (!this.#sessionCurrent(row, now)) return false;
@@ -154,9 +140,9 @@ export class FixtureAdmission implements AdmissionPort {
   }
 
   /** Must run inside the short admission transaction. No refund/reset exists. */
-  async admit(context: BoundContext, attemptId: string, now: number): Promise<Ticket | null> {
+  admit(context: BoundContext, attemptId: string, now: number): Ticket | null {
     this.prune(now);
-    if (this.readReceipt(attemptId) || !await this.valid(context, now) || this.#count(ADMISSION.receipts) >= this.policy.capacity) return null;
+    if (this.readReceipt(attemptId) || !this.valid(context, now) || this.#count(ADMISSION.receipts) >= this.policy.capacity) return null;
     const epoch = Math.floor(now / this.policy.windowMs);
     const old = this.#rows<{ charged: number }>(`SELECT charged FROM ${ADMISSION.budgets} WHERE subject = ? AND epoch = ?`, [context.subject, epoch])[0];
     if ((old?.charged ?? 0) >= this.policy.attempts || (!old && this.#count(ADMISSION.budgets) >= this.policy.capacity)) return null;
@@ -179,13 +165,13 @@ export class FixtureAdmission implements AdmissionPort {
     const origin = this.enrollmentOrigin(context.originSessionId, context.subject, now);
     return !!origin && origin.authenticatedAt === context.authenticatedAt && origin.originalDeadline === context.originalDeadline;
   }
-  async usable(ticket: Ticket, now: number, settlement = false): Promise<boolean> {
+  usable(ticket: Ticket, now: number, settlement = false): boolean {
     const current = this.readReceipt(ticket.attemptId);
     const context = this.#rows<BoundContext>(`SELECT * FROM ${ADMISSION.contexts} WHERE capability = ?`, [ticket.capability])[0];
     const generation = this.#rows<{ generation: number }>(`SELECT generation FROM ${ADMISSION.subjects} WHERE subject = ?`, [ticket.subject])[0]?.generation;
     if (current?.state !== "charged" || !context || context.deadline <= now || ticket.deadline <= now || ticket.epoch !== Math.floor(now / this.policy.windowMs)
       || generation !== ticket.generation || !this.#current(ticket.subject) || this.#principal(ticket.subject) !== ticket.principalId
-      || await this.credential(ticket.subject) !== ticket.credential || this.factor(ticket.subject)?.id !== ticket.factorId) return false;
+      || this.credential(ticket.subject) !== ticket.credential || this.factor(ticket.subject)?.id !== ticket.factorId) return false;
     for (const field of ["subject", "purpose", "credential", "principalId", "factorId", "originSessionId", "generation", "authenticatedAt", "originalDeadline"] as const) {
       if (current[field] !== ticket[field] || context[field] !== ticket[field]) return false;
     }
@@ -197,13 +183,10 @@ export class FixtureAdmission implements AdmissionPort {
     }
     return this.valid({ ...context, used: 0 }, now);
   }
-  async settleSuccess(ticket: Ticket, session: SessionEvidence, now: number, marker?: string): Promise<void> {
-    if (!await this.usable(ticket, now, true) || session.subject !== ticket.subject) throw new Error("Stale settlement.");
-    if (marker) {
-      if (!this.replayAvailable(marker)) throw new Error("Presentation refused.");
-      // Unique marker and success writes share the caller's actual success transaction.
-      this.#run(`INSERT INTO ${ADMISSION.replay} (marker, attemptId) VALUES (?, ?)`, [marker, ticket.attemptId]);
-    }
+  settleSuccess(ticket: Ticket, session: SessionEvidence, now: number, step?: number): void {
+    if (!this.usable(ticket, now, true) || session.subject !== ticket.subject) throw new Error("Stale settlement.");
+    // Joins the caller's actual success transaction. Recovery codes pass no step.
+    if (step !== undefined) this.consumeStep(ticket.subject, step);
     if (ticket.purpose === "reauthentication") {
       if (session.sessionId !== ticket.originSessionId) throw new Error("Session changed.");
       // The new receipt records reauthentication; original session evidence and
