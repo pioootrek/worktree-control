@@ -12,7 +12,7 @@ import { HumanAccountService, type ProviderSessionActor } from "@/server/modules
 import { KnowledgeService } from "@/server/modules/knowledge";
 import { knowledgePermissions } from "@/shared/contracts/authorization";
 import { runtimeActions } from "@/shared/contracts/runtime-access";
-import { BrowserClient, TRANSPORT_LIMITS } from "./browser-authentication-fixture";
+import { aroundBrowser, BrowserClient, TRANSPORT_LIMITS } from "./browser-authentication-fixture";
 import { cliFixture, onlineCliFixture } from "./cli-provider-fixture";
 import { count, ORIGIN, OWNER_PASSWORD, readCommitted } from "./fixture";
 import { enrollTotp, enrollPasskey, passkeyLogin } from "./browser-factor-helpers";
@@ -164,7 +164,7 @@ describe("protected ordinary humans and real isolated Knowledge cookies", () => 
       const code = action === "disable" ? "invalid_credential" : "knowledge_forbidden";
       expect(await replay).toMatchObject({ code }); expect(await effect).toMatchObject({ code });
       expect(count(f.paths.databasePath, "knowledge_tasks")).toBe(1);
-      expect(count(f.paths.databasePath, "authentication_ba_session")).toBe(2); // disabling never evades installation row bound B
+      expect(count(f.paths.databasePath, "authentication_ba_session")).toBe(action === "disable" ? 1 : 2); // First reclamation joins disable; other human remains.
       expect(await content(f.b, "create_task", task(f.k1))).toMatchObject({ status: 403 });
     } finally { release.open(); await held; await f.close(); }
   });
@@ -185,6 +185,22 @@ describe("protected ordinary humans and real isolated Knowledge cookies", () => 
       expect((await f.a.login(OWNER_PASSWORD, email(1))).status).toBeGreaterThanOrEqual(400);
       expect(count(f.paths.databasePath, "authentication_ba_session")).toBe(2);
       expect(await f.run(["human", "disable", "--principal-id", f.h1])).toMatchObject({ changed: false });
+    } finally { await f.close(); }
+  });
+
+  it("denies a successful human login retained until disable committed, with no late capacity leak", async () => {
+    const f = await setup();
+    try {
+      const original = f.runtime().browser.bind(f.runtime());
+      vi.spyOn(f.runtime(), "browser").mockImplementation((...args) => args[0] !== "sign-in" ? original(...args) : aroundBrowser(async () => {
+        const lifetime = original(...args); await lifetime.result;
+        await f.run(["human", "disable", "--principal-id", f.h1]); return lifetime;
+      }));
+      const result = await f.a.login(OWNER_PASSWORD, email(1));
+      expect(result.status).toBeGreaterThanOrEqual(400);
+      expect(count(f.paths.databasePath, "authentication_ba_session")).toBe(1);
+      expect((await f.b.session()).body).toMatchObject({ authenticated: true });
+      expect((await f.a.session()).body).toEqual({ authenticated: false });
     } finally { await f.close(); }
   });
 

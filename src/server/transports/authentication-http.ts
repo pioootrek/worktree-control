@@ -189,7 +189,8 @@ export class AuthenticationHttp {
       unreleased = result;
       const lines = this.cookies(browser, result, cookies);
       // Last current-authority check, durable publication marker and response release form one
-      // synchronous admitted phase. Nothing awaits between them, and a marked session stays marked
+      // synchronous admitted completion phase, using reserved queue room for accepted work.
+      // Nothing awaits between them, and a marked session stays marked
       // whatever happens to this response. No client acknowledgment exists or is implied.
       await this.deps.admission.run(() => {
         if (this.deps.maintenance?.()) fail(503, "database_unavailable");
@@ -197,7 +198,7 @@ export class AuthenticationHttp {
         const safe = this.deps.runtime.finishBrowserRelease(result);
         authenticationJson(response, 200, safe, lines);
         unreleased = null;
-      }, { signal: lifetime.signal });
+      }, { signal: lifetime.signal, reserved: true });
     } catch (error) {
       await this.failed(error, unreleased, knowledge, response, lifetime, started);
     } finally {

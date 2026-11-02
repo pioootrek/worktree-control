@@ -28,8 +28,23 @@ export class HumanAccountQueries implements HumanAccountStore {
       const principal = this.human(id);
       const changed = this.database.prepare("UPDATE remote_principals SET status='revoked' WHERE id=? AND kind='human' AND status='active'").run(id).changes === 1;
       if (changed) this.audit("identity.human_disabled", actor, { principalId: id });
+      this.removeSession(id);
       return { principal: { ...principal, status: "revoked" as const }, changed };
     }).immediate();
+  }
+  /** One native row per transaction; repeated calls resume after interruption. */
+  removeDisabledHumanSession(id: string): boolean {
+    return this.database.transaction(() => {
+      if (this.human(id).status !== "revoked") throw new HumanAccountError("principal_unavailable");
+      return this.removeSession(id);
+    }).immediate();
+  }
+  private removeSession(id: string): boolean {
+    // Include revoked mapping history, never a different principal's sessions.
+    // Native FK cascades remove that exact session's evidence and issuance too.
+    return this.database.prepare(`DELETE FROM authentication_ba_session WHERE id IN
+      (SELECT s.id FROM authentication_provider_subjects m JOIN authentication_ba_session s ON s.userId=m.subject
+        WHERE m.provider_id='better-auth' AND m.principal_id=? LIMIT 1)`).run(id).changes === 1;
   }
   listHumanMemberships(page: HumanMembershipPage) {
     const principal = this.human(page.principalId);

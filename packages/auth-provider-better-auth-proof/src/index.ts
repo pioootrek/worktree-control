@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { runWithTransaction, queueAfterTransactionHook } from "@better-auth/core/context";
+import { getCurrentAdapter, runWithTransaction, queueAfterTransactionHook } from "@better-auth/core/context";
 import { betterAuth } from "better-auth";
 import { Kysely, SqliteDialect } from "kysely";
 import type {
@@ -130,6 +130,7 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
     context.internalAdapter.deleteUserSessions = async subject => runWithTransaction(context.adapter, async () => {
       await queueAfterTransactionHook(async () => { this.#host.invalidated({ kind: "subject", providerId: PROVIDER_ID, subject }); });
       await deleteUserSessions(subject);
+      await this.#invalidatePasswordProofs(context.adapter, subject);
     });
     return { providerId: PROVIDER_ID, implementationVersion: IMPLEMENTATION_VERSION, library: { name: "better-auth", version: BETTER_AUTH_VERSION }, schema: "verified" };
   }
@@ -147,8 +148,21 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
     context.internalAdapter.deleteUserSessions = async subject => {
       this.#notifications.getStore()?.push({ kind: "subject", providerId: PROVIDER_ID, subject });
       await deleteUserSessions(subject);
+      await this.#invalidatePasswordProofs(context.adapter, subject);
     };
     return scoped;
+  }
+
+  /**
+   * In this pinned library a TOTP login's verification value is the exact user
+   * ID. Reset tokens use the same value. Revoke both in the password/revoke-all
+   * transaction. Factor contexts require their native row at admission, so even
+   * a previously charged ticket fails before native verification. WebAuthn
+   * challenges store structured values and selected factors remain untouched.
+   */
+  async #invalidatePasswordProofs(adapter: Awaited<ReturnType<BetterAuthProofProvider["createLibrary"]>["$context"]>["adapter"], subject: string): Promise<void> {
+    if (!this.#transaction.open) throw new Error("Password proof invalidation requires a transaction.");
+    await (await getCurrentAdapter(adapter)).deleteMany({ model: "verification", where: [{ field: "value", value: subject }] });
   }
 
   /**

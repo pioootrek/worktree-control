@@ -9,7 +9,10 @@ if (!existsSync(cli) || !existsSync(dashboard)) {
   throw new Error("Integration artifacts are missing or stale. Run pnpm build before pnpm test:integration.");
 }
 
+// Integration fixtures may inspect source-owned locks/stores; the controller
+// and CLI under test still execute the fingerprinted dist artifacts.
 export default defineConfig({
+  resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   test: {
     include: ["tests/integration/**/*.test.ts"],
     exclude: ["tests/integration/remote-cli-recovery.test.ts"],

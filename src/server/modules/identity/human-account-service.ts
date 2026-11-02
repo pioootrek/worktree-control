@@ -15,6 +15,7 @@ export interface HumanAccountStore {
   createHumanPrincipal(principal: Principal, actor: string): void;
   listHumanPrincipals(page: HumanPage): { items: Array<Principal & { enrollment: "absent" | "active" | "revoked" }>; nextAfter: string | null };
   disableHumanPrincipal(id: string, actor: string): { principal: Principal; changed: boolean };
+  removeDisabledHumanSession(id: string): boolean;
   listHumanMemberships(page: HumanMembershipPage): { items: HumanKnowledgeMembership[]; nextAfter: string | null };
   saveHumanMembership(input: HumanKnowledgeSet | HumanKnowledgeRevoke, actor: string, now: string): HumanKnowledgeMembership;
 }
@@ -36,6 +37,8 @@ export class HumanAccountService {
     if (typeof id !== "string" || !id || id.length > 160) throw new HumanAccountError("invalid_input");
     return this.store.disableHumanPrincipal(id, this.actor);
   }
+  /** Called under fresh core admission until false, after terminal disable committed. */
+  reclaimDisabledSession(id: string): boolean { return this.store.removeDisabledHumanSession(id); }
   memberships(input: unknown) {
     const parsed = humanMembershipPageSchema.safeParse(input);
     if (!parsed.success) throw new HumanAccountError("invalid_input");

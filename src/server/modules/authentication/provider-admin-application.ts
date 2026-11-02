@@ -60,7 +60,13 @@ export class ProviderAdminApplication {
       if (request.action === "owner-create") return await phase(() => ({ principal: d.identity.createOwner(d.actor) }));
       if (request.action === "human-create") return await phase(() => ({ principal: d.humans.create() }));
       if (request.action === "human-list") return await phase(() => d.humans.list(request.input));
-      if (request.action === "human-disable") return await phase(() => d.humans.disable(request.principalId));
+      if (request.action === "human-disable") {
+        const result = await phase(() => d.humans.disable(request.principalId));
+        // Authority ends at the first commit. Yield the sole connection between
+        // one-row reclamation transactions; a repeated disable resumes safely.
+        while (await phase(() => d.humans.reclaimDisabledSession(request.principalId))) { /* Bounded phases, no provider load. */ }
+        return result;
+      }
       if (request.action === "knowledge-access-list") return await phase(() => d.humans.memberships(request.input));
       if (request.action === "knowledge-access-set") return await phase(() => d.humans.set(request.input));
       if (request.action === "knowledge-access-revoke") return await phase(() => d.humans.revoke(request.input));
