@@ -97,6 +97,100 @@ describe("password evidence", () => {
   });
 });
 
+describe("password replacement settlement", () => {
+  const replacementPassword = "fixture-owner-password-2";
+  const passwordSession = async (f: Integrated, method: "password" | "password_totp" | "passkey_uv") => {
+    if (method === "password_totp") {
+      const { authenticator } = await enrollTotp(f);
+      advance(STEP);
+      return totpLogin(f, authenticator);
+    }
+    const browser = f.browser();
+    expect((await browser.signIn()).status).toBe(200);
+    if (method === "password") return browser;
+    const authenticator = await enrollPasskey(f, browser);
+    const result = await passkeyLogin(f, authenticator, { counter: 1 });
+    expect(result.result.status).toBe(200);
+    return result.browser;
+  };
+  const evidenceRows = (f: Integrated) => select<Record<string, unknown>>(f, "SELECT * FROM authentication_session_evidence ORDER BY session_id");
+  const passwordHash = async (f: Integrated) => (await select<{ password: string }>(f, 'SELECT password FROM authentication_ba_account WHERE "userId" = ? AND "providerId" = ?', [f.subject, "credential"]))[0]!.password;
+
+  describe.each(["password", "password_totp", "passkey_uv"] as const)("%s authority", method => {
+    it.each(["cancel-native", "expire-native", "cancel-final", "expire-final"] as const)("rolls back password and session effects on %s", async failure => {
+      const faults: ProofFaultInjection = {}, f = await create(faults), browser = await passwordSession(f, method);
+      const deadline = (await protectionState(f)).evidence[0]!.original_deadline;
+      // A real refresh extends native expiry, but cannot extend the evidence.
+      advance(2 * 60 * 60_000);
+      expect((await browser.post("/get-session", {}, { method: "GET" })).status).toBe(200);
+      const [native] = await select<{ expiresAt: string }>(f, 'SELECT "expiresAt" FROM authentication_ba_session');
+      expect(Date.parse(native!.expiresAt)).toBeGreaterThan(Date.parse(deadline));
+      if (failure.startsWith("expire")) vi.setSystemTime(Date.parse(deadline) - 1);
+      const before = await protectionState(f), evidence = await evidenceRows(f), hash = await passwordHash(f);
+      const notifications = f.evidence.events.length, abort = new AbortController();
+      let reached = false;
+      const invalidate = async () => {
+        await Promise.resolve();
+        reached = true;
+        if (failure.startsWith("expire")) vi.setSystemTime(Date.parse(deadline) + 1);
+        else abort.abort();
+      };
+      if (failure.endsWith("native")) faults.beforePasswordWrite = invalidate;
+      else faults.factorPause = async stage => { if (stage === "before-commit") await invalidate(); };
+      const result = await browser.post("/change-password", { currentPassword: OWNER_PASSWORD, newPassword: replacementPassword, revokeOtherSessions: true }, { signal: abort.signal });
+      faults.beforePasswordWrite = undefined; faults.factorPause = undefined;
+      expect(reached).toBe(true);
+      expect(result.status).toBe(failure.startsWith("expire") ? 401 : 409);
+      expect(result.setCookie.length).toBe(0);
+      expect(await protectionState(f)).toEqual(before);
+      expect(await evidenceRows(f)).toEqual(evidence);
+      // Compare sensitive hashes as a boolean so failure diagnostics cannot print them.
+      expect(await passwordHash(f) === hash).toBe(true);
+      expect(f.evidence.events.length).toBe(notifications);
+      expect((await f.browser().signIn(replacementPassword)).status).toBe(401);
+      expect((await f.browser().signIn()).status).toBe(method === "passkey_uv" ? 403 : 200);
+    });
+  });
+
+  it.each(["password_totp", "passkey_uv"] as const)("successful replacement preserves every %s authority field", async method => {
+    const f = await create(), browser = await passwordSession(f, method);
+    await f.grant();
+    const actor = (await f.authenticate(browser))!, original = (await evidenceRows(f))[0]!;
+    const result = await browser.post("/change-password", { currentPassword: OWNER_PASSWORD, newPassword: replacementPassword, revokeOtherSessions: true });
+    expect(result.status).toBe(200);
+    const replaced = await evidenceRows(f);
+    expect(replaced).toHaveLength(1);
+    const { session_id: oldSession, attempt_id: oldAttempt, ...originalAuthority } = original;
+    const { session_id: newSession, attempt_id: newAttempt, ...newAuthority } = replaced[0]!;
+    expect(newSession).not.toBe(oldSession); expect(newAttempt).not.toBe(oldAttempt);
+    expect(newAuthority).toEqual(originalAuthority);
+    await invalidCredential(f.read(actor));
+    const replacement = (await f.authenticate(browser))!;
+    await expect(f.read(replacement)).resolves.toBeDefined();
+    expect((await f.run(() => f.runtime.browserSession(replacement))).authentication.method).toBe(method);
+  });
+
+  it.each(["mapping", "policy", "credential"] as const)("revalidates inherited %s inside the final transaction", async changed => {
+    const faults: ProofFaultInjection = {}, f = await create(faults), browser = await passwordSession(f, "password_totp");
+    const before = await protectionState(f), evidence = await evidenceRows(f), hash = await passwordHash(f), notifications = f.evidence.events.length;
+    let reached = false;
+    faults.factorPause = async (stage, connection) => {
+      if (stage !== "before-commit") return;
+      reached = true;
+      const mutation = changed === "mapping" ? "UPDATE authentication_provider_subjects SET status = 'revoked' WHERE subject = ?"
+        : changed === "policy" ? "UPDATE authentication_account_policies SET generation = generation + 1 WHERE subject = ?"
+          : 'UPDATE authentication_ba_two_factor SET id = id || \'-replaced\' WHERE "userId" = ?';
+      connection.prepare(mutation).run([f.subject]);
+    };
+    const result = await browser.post("/change-password", { currentPassword: OWNER_PASSWORD, newPassword: replacementPassword, revokeOtherSessions: true });
+    faults.factorPause = undefined;
+    expect(reached).toBe(true); expect(result.status).toBe(401); expect(result.setCookie.length).toBe(0);
+    expect(await protectionState(f)).toEqual(before); expect(await evidenceRows(f)).toEqual(evidence);
+    expect(await passwordHash(f) === hash).toBe(true); expect(f.evidence.events.length).toBe(notifications);
+    expect(await f.authenticate(browser)).not.toBeNull();
+  });
+});
+
 describe("TOTP selected protection", () => {
   it("selection atomically ends every old session, mints none and blocks the password path", async () => {
     const f = await create(), other = f.browser();

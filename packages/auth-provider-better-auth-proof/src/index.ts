@@ -254,13 +254,21 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
     return this.#atomic({ attemptId, work: async scoped => {
       const before = cookie ? await scoped.api.getSession({ headers: new Headers({ cookie }), query: { disableCookieCache: true, disableRefresh: true } }) : null;
       const evidence = before && this.#host.protection.currentEvidence(before.session.id, Date.now());
+      if (request.signal.aborted) throw new Rollback(denied(409, "cancelled"));
       if (before && !evidence) throw new Rollback(denied(401, "session_refused"));
       const native = await scoped.handler(forwarded);
+      if (request.signal.aborted) throw new Rollback(denied(409, "cancelled"));
       if (!native.ok || !evidence) throw new Rollback(native);
       const issued = issuedCookie(native.headers.getSetCookie(), COOKIE.session);
       const current = issued && await scoped.api.getSession({ headers: new Headers({ cookie: `${COOKIE.session}=${issued}` }), query: { disableCookieCache: true, disableRefresh: true } });
       if (!current || current.user.id !== evidence.subject) throw new Rollback(denied(500, "session_unconfirmed"));
       this.#host.protection.inheritSession(evidence, { sessionId: current.session.id, attemptId });
+      await this.#options.faultInjection?.factorPause?.("before-commit", this.#connection!);
+      if (request.signal.aborted) throw new Rollback(denied(409, "cancelled"));
+      // Native may have deleted the original session already. Validate the
+      // replacement against its inherited deadline and current account state
+      // inside this transaction, before password/revocation effects commit.
+      if (!this.#host.protection.currentEvidence(current.session.id, Date.now())) throw new Rollback(denied(401, "session_refused"));
       return native;
     } });
   }
