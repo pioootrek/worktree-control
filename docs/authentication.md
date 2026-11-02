@@ -10,8 +10,9 @@ status: "active"
 For planned human accounts, project roles, scoped agents and ENV permissions,
 see the [identity and authorization plan](identity-authorization-plan.md).
 A1 Knowledge roles and A2 scoped projects, claims, runtime control, profile
-selection and timeout configuration are implemented below. Account login and
-ENV roles remain planned.
+selection and timeout configuration are implemented below. Protected ordinary
+human accounts and isolated cookie-based Knowledge access are also implemented.
+Production account activation and ENV roles remain gated.
 
 One authentication policy applies to the dashboard, the HTTP API, live updates,
 MCP and the online CLI. The controller stores the next-start selection in its
@@ -92,7 +93,8 @@ admission helper.
 Controller migration 38 adds empty, recognized `authentication_ba_*` tables and
 `authentication_provider_subjects`. It performs no account, credential, role or
 grant backfill. An explicit opaque provider subject maps to an existing active
-owner ID. Resolution checks the current session, mapping and owner; email and
+owner ID. Schema 42 extends that mapping to a distinct active `human` principal.
+Resolution checks the current session, exact mapping and stored kind; email and
 display name grant no authority. Cookies never manufacture an `owner_session`.
 A2 machine credentials and scoped runtime policy remain unchanged.
 
@@ -107,8 +109,10 @@ export/import recognize the honest provider audit method.
 Controller schema 40 adds the frozen two-factor and passkey plugin storage plus
 recognized account protection; see [integrated factor authority](#integrated-factor-authority).
 Schema 41 adds durable session issuance; see [closed factor HTTP API](#closed-factor-http-api).
+Schema 42 widens only the core principal kind for ordinary humans; provider
+contract 5, storage revision 3 and implementation `0.0.0-proof.5` are unchanged.
 Full controller backups record the current schema and include provider rows.
-Genuine schema-38, schema-39 and schema-40 snapshots can be restored and upgraded on open.
+Genuine schema-38, schema-39, schema-40 and schema-41 snapshots can be restored and upgraded on open.
 Older binaries reject a newer schema; restoring a backup is not a downgrade procedure. Restoring a snapshot can revive old sessions and
 passwords; the external revocation/recovery fence remains A5 work. Better Auth
 stores bearer session tokens, and the proof's native sign-in and password-change
@@ -181,9 +185,9 @@ the
 
 These are selected product capabilities and local feasibility work, with no live
 activation. Four original replay failures and the old bounded counter-loss failure
-remain visible in the native/bounded baselines. Production step storage and
-activation, safe factor management and recovery, production evidence/migrations,
-transport/disconnect handling and A5
+remain visible in the native/bounded baselines. The later integrated authority
+and closed HTTP sections describe the current isolated step/evidence storage
+and response handling. Production activation, factor management/recovery and A5
 remain gates before public account activation. Password-only access proves no
 MFA, and no ASVS Level 2 conformance is claimed.
 
@@ -195,6 +199,12 @@ The protected local commands are:
 auth provider status [--principal-id ID]
 auth provider configure --input-stdin
 auth provider owner create
+auth provider human create
+auth provider human list [--limit 1..20] [--after ID]
+auth provider human disable --principal-id ID
+auth provider knowledge-access list --principal-id ID [--limit 1..20] [--after PROJECT_ID]
+auth provider knowledge-access set --input-stdin
+auth provider knowledge-access revoke --input-stdin
 auth provider enroll --principal-id ID --input-stdin
 auth provider recover --principal-id ID --input-stdin
 ```
@@ -255,7 +265,8 @@ principals/mappings are not reactivated. Session revocation is immediate despite
 a pending next-start mode selection.
 
 Online commands use the existing owner-only Unix socket and store. Configure,
-status and principal creation do not import code. The first explicit enroll or
+status, principal creation, human lists/disable and membership commands do not
+import provider code. The first explicit enroll or
 recover loads one retained runtime; concurrent commands share initialization.
 Changed loaded configuration blocks account mutations until a new owner boot.
 Status omits secrets, paths, email and provider subjects/sessions. `ready` means
@@ -275,7 +286,7 @@ failure. Its absence does not imply rollback. After a lost enrollment response,
 inspect principal enrollment status. Recovery has no durable receipt; after a
 lost response its outcome is unknown. Another intentional recovery is a new
 password/revoke-all effect, including sessions created since the first.
-Same-OS-user agents share operator authority. Host isolation, MFA, role
+Same-OS-user agents share operator authority. Host isolation, delegated account
 administration, full A3 acceptance and production RBAC remain separate gates.
 
 ### Bounded browser adapter
@@ -379,9 +390,10 @@ credential-only, and `better-auth` mode remains unavailable.
 `runtime.authenticate(headers)` resolves the actual cookie outside core
 admission and returns a frozen `ProviderSessionActor`, or null. The exact object
 is an opaque reference owned by that runtime's WeakMap. It binds the original
-session ID, subject, principal, creation time and expiry. Copies, structured
+session ID, subject, principal, exact stored kind, mapping link time, creation time
+and expiry. Copies, structured
 clones, raw `runtime.resolve` evidence and another runtime's actors do not
-authenticate. Its public fields are `principalId`, `principalKind: "owner"`,
+authenticate. Its public fields are `principalId`, `principalKind: "owner" | "human"`,
 `credentialId: null` and `authenticationMethod: "provider_session"`. No A2
 credential, bearer or `owner_session` is manufactured.
 
@@ -405,7 +417,7 @@ const metadata = await application.describeIdentity(actor);
 ```
 
 Every authenticated application check synchronously reads the stored session,
-exact active mapping and active owner principal through the guarded SQLite
+exact active mapping and active owner or human principal through the guarded SQLite
 owner. The projection selects no token, password, email or name and neither
 calls Kysely nor borrows the provider. Missing authority, foreign/disposed
 runtime, closed/timed-out provider lifetime or connection drain denies access.
@@ -421,7 +433,7 @@ Better Auth 1.7.14, implementation `0.0.0-proof.5`, storage revision 3. Other
 provider/version combinations need their own verified adapter.
 
 Each `ProviderKnowledgeApplication.execute` call is a synchronous Knowledge
-phase with ordinary project/action grants, optional role ceilings, revisions
+phase with ordinary project/action grants, role ceilings, revisions
 and idempotency checks. Mapping alone grants nothing. Call the application
 again after an idle or lifecycle-lock wait to revalidate before the next effect
 or retained result. `describeIdentity` returns safe principal/grant metadata
@@ -492,7 +504,7 @@ wrong-credential response.
   They have no defaults: without them factor routes return 404 and an account with
   selected protection cannot sign in.
 
-Every decision evaluates committed state: session, mapping, owner principal, policy,
+Every decision evaluates committed state: session, mapping, owner/human principal, policy,
 generation, evidence and credential binding. This runs synchronously on the guarded
 handle and never enters a provider borrow from core admission. Current state stays
 authoritative when an after-commit notification is lost, so no consumer here needs
@@ -528,7 +540,7 @@ fencing stay separate gates. See the
 ### Closed factor HTTP API
 
 A3-I20 mounts login and first enrollment through the isolated composition only. It
-uses the same provider, schema 41, contract 5, `AccountProtection` and sole
+uses the same provider, current core schema 42, contract 5, `AccountProtection` and sole
 connection as [integrated factor authority](#integrated-factor-authority). Production
 main still has no caller or flag, account mode stays refused, and recovery, removal,
 replacement, additional passkeys and trusted devices stay refused.
@@ -762,6 +774,72 @@ under valid authority is not rolled back on revocation. This bounded HTTP policy
 adds no provider runtime-control route; scoped lease/credential checks remain
 separate. Other installation workflows still require their own activation review.
 
+## Ordinary humans and Knowledge memberships (A3-I24)
+
+The protected operator can create an ordinary `human`, enroll it separately with
+`{email,name,password}`, and assign reader/operator access to a typed Knowledge
+project. Creation writes only a stable principal and audit. It creates no provider
+account, compatibility credential, grant or role. Historical `owner` rows retain
+their IDs, kinds, credentials and first-owner semantics. Human account lists use
+keyset pagination with a default and maximum of 20; `nextAfter` selects the next
+page. Status/list DTOs contain no email, native subject/session or credential data.
+
+Membership set input is strict JSON through the same private pipe/file handling:
+
+```json
+{"principalId":"H1","scope":{"kind":"knowledge-project","id":"K1"},"role":"reader","permissions":["knowledge:read"],"expectedRevision":0}
+```
+
+Revoke input has exactly `principalId`, `scope` and `expectedRevision`.
+Only `knowledge:read` and `knowledge:write` are accepted. A role is a ceiling:
+reader plus an explicit write grant still cannot write; operator plus a read-only
+grant cannot write either. Every human operation requires both an active grant
+and an active explicit reader/operator binding. A role alone grants nothing.
+Attachments, export/import, logs and approval remain denied for ordinary humans,
+even if broader stored grants exist. The legacy optional-binding rule remains
+for existing owners and agents.
+
+Binding revision is the membership aggregate revision. `0` means never assigned.
+Set writes the full explicit grant, binding, incremented revision and audit in one
+immediate transaction. Permission-only changes also increment it. Revoke tombstones
+both rows atomically. Restore requires a complete new set with the tombstone's
+latest revision. A stale set/revoke conflicts without an effect or success audit.
+The old identity grant/role setters and revokers refuse human targets, including
+direct calls to their storage methods. Read the current private list after an
+unknown result before deciding on a new command; no command is replayed automatically.
+
+`knowledge:write` retains A1 project archive/restore semantics. Ordinary humans
+cannot mutate runtime links. The shared service refuses before runtime lookup or
+retained replay, giving the same safe denial for known and unknown runtime IDs.
+Reading an existing linked ID is navigation metadata and grants no runtime access.
+
+Disable performs a conditional active-to-revoked transition plus audit. It is
+terminal; a repeat returns `changed:false` with the revoked state and adds no
+success event. There is no reenable, deletion or kind-change command. The current
+principal state denies the next Knowledge operation or replay independently of
+native-session deletion or invalidation notifications. Retained session rows still
+count against the installation's existing bound. Enrollment checks active kind and
+mapping history in the actual borrow and again at the final link after password
+hashing; a prior committed disable prevents native account publication.
+
+Private IPC and offline CLI call the same application and store operations.
+Human commands use the trusted local bootstrap context; request actor/kind/sponsor/
+strength fields confer no authority. Ordinary human cookies cannot administer
+accounts/members, create agents, sponsor credentials, operate runtimes/claims,
+approve Knowledge, access ENV/vault, or administer backups/remote workers.
+Owner recovery stays owner-only. New human recovery, factor reset/removal and
+invitations remain unsupported. Current-session password changes and optional
+TOTP/passkey protection retain their existing rules.
+
+`human-account-administration.test.ts` uses actual native accounts, separate cookies
+and two Knowledge projects through the isolated HTTP application. It covers
+filtering, ceilings, current authority before queued effects/replay, enrollment
+races and optional methods. Schema 42 tests use a fresh schema-41 SQL dump produced
+by unchanged baseline `7f022fb21069728cf4c9844eec660f367b5680c1`; synthetic rewinds in
+older tests are still synthetic. Neither fixture is an old executable binary test.
+Production `better-auth` selection and unconverted cookie HTTP/MCP remain denied,
+including open boot. Full A3, general delegated roles, GUI and A4/A5 stay open.
+
 ## Knowledge roles (A1)
 
 Knowledge operations use a shared application policy in HTTP, MCP and CLI.
@@ -806,7 +884,8 @@ The online CLI calls `/api/identity/admin`; the offline CLI uses the same servic
 under the controller lock. Unknown fields and role options are rejected.
 
 The compatibility installation authority in `open`/`token` mode still bypasses
-Knowledge roles. This is not account-mode RBAC. Human account login and ENV roles remain later slices. Runtime credential
+Knowledge roles. This is not account-mode RBAC. Ordinary human membership uses the protected
+workflow above; production account login and ENV roles remain gated. Runtime credential
 scopes and optional expiry are available through A2 below. The
 shared policy denies reserved ENV actions; the existing DEV vault continues to
 require its separate signed proof and exact grants, with `use` unavailable.

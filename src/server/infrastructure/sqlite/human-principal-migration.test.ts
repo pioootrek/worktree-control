@@ -55,6 +55,7 @@ describe("ordinary human principal migration 42", () => {
   it("rolls back on final FK validation and restores enforcement", () => {
     const db = baseline();
     try {
+      db.pragma("foreign_keys=OFF");
       db.exec("INSERT INTO knowledge_project_grants VALUES('missing','k','[]',NULL)");
       db.pragma("foreign_keys=ON");
       expect(() => initializeSchema(db, false)).toThrow(/foreign key/);

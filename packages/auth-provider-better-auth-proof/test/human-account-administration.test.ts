@@ -1,3 +1,4 @@
+import { requestAdminSocket } from "@/server/admin-socket";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { composeIsolatedBrowserAuthentication } from "@/server/bootstrap/authentication";
@@ -18,6 +19,7 @@ import { factorOptions, STEP } from "./integrated-fixture";
 import { gate } from "./strict-fixture";
 
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+let peer = 1;
 const email = (n: number) => `human${n}@fixture.invalid`;
 const enroll = (n: number) => ({ email: email(n), name: `Human ${n}`, password: OWNER_PASSWORD });
 const create = async (f: Awaited<ReturnType<typeof onlineCliFixture>>) => ((await f.run(["human", "create"])).principal as { id: string }).id;
@@ -31,23 +33,29 @@ const membership = (principalId: string, id: string, expectedRevision = 0, role 
 async function set(f: Awaited<ReturnType<typeof onlineCliFixture>>, input: ReturnType<typeof membership>) { return f.run(["knowledge-access", "set", ...f.input(input)]); }
 async function setup(options: Parameters<typeof onlineCliFixture>[0] = {}) {
   const f = await onlineCliFixture(options);
+  let cleanupHttp: ReturnType<typeof createControllerServer> | undefined;
+  try {
   const h1 = await create(f), h2 = await create(f), k1 = await project(f, "k1"), k2 = await project(f, "k2");
   await f.run(["enroll", "--principal-id", h1, ...f.input(enroll(1))]);
   await f.run(["enroll", "--principal-id", h2, ...f.input(enroll(2))]);
   const composed = composeIsolatedBrowserAuthentication({ store: f.store, authentication: f.authentication,
     runtime: f.runtime(), origin: ORIGIN, admission: f.store.admission, maxInFlight: 8,
-    trustedFixturePeer: "198.18.10.1", limits: TRANSPORT_LIMITS });
+    trustedFixturePeer: `198.18.10.${peer++}`, limits: TRANSPORT_LIMITS });
   const http = createControllerServer({ service: {} as ControlService, directoryBrowser: {} as DirectoryBrowser,
     identity: composed.identity, authentication: f.authentication, browserAuthentication: composed.browserAuthentication,
     admission: f.store.admission, events: new EventStream(f.store.admission), webRoot: f.root, host: "127.0.0.1", port: 0, accessToken: "fixture",
     mcpStatus: () => ({ phase: "disabled", endpoint: null, transport: "streamable-http", network: "loopback", authentication: "bearer", activeSessions: 0 }) });
+  cleanupHttp = http;
   const path = join(f.root, "human-browser.sock");
   await new Promise<void>((resolve, reject) => { http.server.once("error", reject); http.server.listen(path, resolve); });
   const a = new BrowserClient(path), b = new BrowserClient(path);
-  expect(await a.login(OWNER_PASSWORD, email(1))).toMatchObject({ status: 200, body: { principal: { id: h1, kind: "human" } } });
-  expect(await b.login(OWNER_PASSWORD, email(2))).toMatchObject({ status: 200, body: { principal: { id: h2, kind: "human" } } });
+  expect(await a.login(OWNER_PASSWORD, email(1))).toMatchObject({ status: 200, body: { authenticated: true } });
+  expect(await b.login(OWNER_PASSWORD, email(2))).toMatchObject({ status: 200, body: { authenticated: true } });
+  expect(await a.session()).toMatchObject({ status: 200, body: { principal: { id: h1, kind: "human" } } });
+  expect(await b.session()).toMatchObject({ status: 200, body: { principal: { id: h2, kind: "human" } } });
   const actor = async (client: BrowserClient) => { const value = await f.runtime().authenticate(new Headers({ cookie: client.cookie })); expect(value).not.toBeNull(); return value!; };
   return { ...f, h1, h2, k1, k2, a, b, ...composed, actor, close: async () => { await http.close(); await f.close(); } };
+  } catch (error) { await cleanupHttp?.close(); await f.close(); throw error; }
 }
 const content = (client: BrowserClient, operation: string, input: unknown) => client.call("/api/knowledge", { body: { operation, input } });
 const task = (projectId: string, key = "write") => ({ projectId, title: "visible needle", description: "human content", idempotencyKey: key });
@@ -247,6 +255,23 @@ describe("protected ordinary humans and real isolated Knowledge cookies", () => 
       expect(calls).toBe(1); expect(await late.runCore(() => late.store.getPrincipal(id))).toMatchObject({ status: "revoked" });
       for (const table of ["authentication_ba_user", "authentication_ba_account", "authentication_provider_subjects"]) expect(count(late.paths.databasePath, table)).toBe(0);
     } finally { await late.close(); }
+  });
+
+  it("settles an accepted human creation after IPC response timeout without automatic replay", async () => {
+    const f = await onlineCliFixture(), entered = gate(), release = gate();
+    let holding: Promise<unknown> | undefined;
+    try {
+      const storage = f.store.authenticationProviderStorage();
+      holding = storage.borrow(async () => { entered.open(); await release.opened; });
+      await entered.opened;
+      const result = await requestAdminSocket(f.paths.adminSocketPath, { command: "auth-provider", action: "human-create" }, 15, 16 * 1024).catch(error => error);
+      expect(result).toMatchObject({ code: "admin_timeout" }); expect(result).not.toHaveProperty("committed");
+      release.open(); await holding;
+      await vi.waitFor(() => expect(count(f.paths.databasePath, "remote_principals")).toBe(3)); // installation, legacy owner, one human
+      expect(readCommitted(f.paths.databasePath, db => db.prepare("SELECT count(*) n FROM controller_audit_events WHERE event_type='identity.human_created'").get())).toEqual({ n: 1 });
+      expect(await f.run(["human", "list"])).toMatchObject({ items: [{ kind: "human" }], nextAfter: null });
+      expect(f.loads()).toBe(0);
+    } finally { release.open(); await holding; await f.close(); }
   });
 
   it("keeps committed denial after a failed native invalidation notification", async () => {

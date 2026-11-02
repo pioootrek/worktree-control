@@ -528,6 +528,8 @@ A final check against current rows, the durable publication marker and header em
 admitted phase. Accepted cleanup uses reserved queue room on the same gate, with no new
 lock, counter or connection.
 
+Current isolated provider API is contract 5, storage revision 3, implementation
+`0.0.0-proof.5` and core schema 42. Earlier versions evolved as follows.
 Provider API contract 2 requires durable `signOut`; version 1 fails compatibility
 checks. Contract 3 adds the application-owned `host.protection` port: the provider
 calls it synchronously inside its open transaction, and `AccountProtection` keeps
@@ -560,6 +562,23 @@ The private durable configuration needs separate backup; its operational event
 does not claim atomic filesystem/SQLite audit. Principal-only creation and
 enrollment intentionally commit separately without issuing a credential/grant.
 See [protected maintenance](authentication.md#protected-provider-maintenance).
+
+Schema 42 adds ordinary `human` principals by rebuilding only the referenced
+principal table on the owner's existing connection and ordered migration
+transaction. Final integrity/FK validation commits or rolls back the rebuild.
+Historical owners, migration SQL/checksums 1..41, credentials, factors, issuance
+markers and content IDs remain unchanged. Provider mappings/session projections
+allow only active owner/human kinds; opaque actors freeze and compare exact kind
+and mapping link time. Provider contract/storage/native tables are unchanged.
+
+Protected human lifecycle and Knowledge membership operations share
+`ProviderAdminApplication` and `HumanAccountService` across private IPC/offline
+CLI. They do not import the provider. A human membership uses the A1 binding's
+revision as aggregate CAS for grant, binding and audit in one immediate
+transaction. Legacy grant/role mutators refuse these targets. Ordinary humans
+need both active rows and explicit read/write grants; roles only restrict them.
+No installation/runtime role table or cookie administration authority is added.
+See [ordinary human accounts](authentication.md#ordinary-humans-and-knowledge-memberships-a3-i24).
 
 ## Database admission
 
@@ -644,8 +663,8 @@ ordinary grants/role ceilings and replay. Safe identity metadata has no A2
 credential. No provider reentry or notification-only cache authorizes work.
 Owner/runtime/vault privileges remain denied. See the
 [implemented API](authentication.md#provider-authorization-handoff).
-Production loading, account mode, browser API design and broader callback
-coverage remain separate acceptance gates. The [proof coverage table](../packages/auth-provider-better-auth-proof/README.md#live-admission-coverage)
+Production browser loading/account mode and broader callback coverage remain
+separate acceptance gates. The bounded isolated browser API already exists. The [proof coverage table](../packages/auth-provider-better-auth-proof/README.md#live-admission-coverage)
 records what the strict integration tests exercise and what remains open.
 
 ## CLI and package

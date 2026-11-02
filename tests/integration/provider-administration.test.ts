@@ -129,6 +129,32 @@ describe("actual built CLI provider administration (isolated controller, zero ma
     await assertOwners(f, false); expect(existsSync(join(f.paths.state, "admin.sock"))).toBe(false);
   });
 
+  it("administers ordinary humans and CAS memberships through actual built CLI IPC, with no provider load for local metadata", async () => {
+    const f = fixture = await startControllerFixture(0);
+    const { principal } = await provider(f, ["human", "create"]);
+    expect(principal).toMatchObject({ kind: "human", status: "active" });
+    expect(await provider(f, ["human", "list", "--limit", "1"])).toMatchObject({ items: [{ id: principal.id, enrollment: "absent" }], nextAfter: null });
+    expect(await provider(f, ["status"])).toMatchObject({ configuration: "missing", maintenance: "not_loaded", owner: { state: "none" } });
+    // Create the content project through the existing installation-authorized CLI, independent of account enrollment.
+    const created = body(await f.cliResult(["identity", "create-knowledge-project", "--name", "Human integration"]));
+    const projectId = created.project.id as string;
+    expect(typeof projectId).toBe("string");
+    const input = { principalId: principal.id, scope: { kind: "knowledge-project", id: projectId }, role: "operator", permissions: ["knowledge:read", "knowledge:write"], expectedRevision: 0 };
+    expect(await provider(f, ["knowledge-access", "set", "--input-stdin"], input)).toMatchObject({ revision: 1 });
+    expect(await provider(f, ["knowledge-access", "set", "--input-stdin"], input, 1)).toMatchObject({ code: "membership_revision_conflict" });
+    expect(await provider(f, ["knowledge-access", "list", "--principal-id", principal.id])).toMatchObject({ items: [{ revision: 1, role: "operator" }] });
+    expect(await provider(f, ["status"])).toMatchObject({ maintenance: "not_loaded" });
+    expect(await provider(f, ["configure", "--input-stdin"], { module: entry, origin: "https://controller.test", signingSecret: { kind: "generate" } })).toMatchObject({ configured: true });
+    expect(await provider(f, ["enroll", "--principal-id", principal.id, "--input-stdin"], { email: "human@fixture.invalid", name: "Human", password })).toMatchObject({ enrolled: true });
+    expect(await provider(f, ["recover", "--principal-id", principal.id, "--input-stdin"], { newPassword: replacement }, 1)).toMatchObject({ code: "principal_unavailable" });
+    expect(await provider(f, ["knowledge-access", "revoke", "--input-stdin"], { principalId: principal.id, scope: input.scope, expectedRevision: 1 })).toMatchObject({ revision: 2, grant: { revokedAt: expect.any(String) } });
+    expect(await provider(f, ["human", "disable", "--principal-id", principal.id])).toMatchObject({ changed: true });
+    expect(await provider(f, ["human", "disable", "--principal-id", principal.id])).toMatchObject({ changed: false });
+    expect(inspect(f, db => db.prepare("SELECT count(*) n FROM principal_credentials").get())).toEqual({ n: 0 });
+    await assertNoSecrets(f); await assertOwners(f, true);
+    await f.stop(); await assertOwners(f, false);
+  });
+
   it("cleans both actual owners and HTTP listeners after a real admin listener start refusal", async () => {
     const f = fixture = await startControllerFixture(0);
     await f.stop();

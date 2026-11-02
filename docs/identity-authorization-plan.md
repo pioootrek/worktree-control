@@ -21,7 +21,8 @@ The initial slice delivered this document and Knowledge planning. The subsequent
 A1 slice adds shared Knowledge policy and optional role restrictions. The A2
 implementation adds owner-sponsored runtime credentials, filtered MCP discovery,
 credential/session-bound leases and separately authorized configuration tools.
-Accounts and ENV delivery remain deferred.
+Protected ordinary-human accounts and reader/operator Knowledge memberships
+are implemented in A3-I24. Production account activation and ENV delivery remain deferred.
 
 The first A3 slice now provides an optional executable provider/SQLite proof.
 It verifies real Better Auth operations through the sole guarded connection,
@@ -33,8 +34,9 @@ old history and migrations 1..38. Migration 40 and A3-I18 add
 [integrated factor authority](authentication.md#integrated-factor-authority):
 recognized optional TOTP and passkey storage, one application-owned protection
 policy and persisted session evidence behind the same handoff. Account mode remains
-unavailable; public factor routes, factor management and recovery, invitations, roles
-and GUI are still open.
+unavailable. Closed factor HTTP routes and ordinary-human memberships now work
+inside the isolated composition. Production mounting, factor management/recovery,
+invitations, general delegated roles and GUI remain open.
 Shared core admission, exclusive provider admission and background persistence
 boundaries are implemented as partial infrastructure. Strict integration tests
 cover HTTP body-read admission errors and the installed restore completion
@@ -45,7 +47,8 @@ prevents queued effects and successful replies to the old caller.
 Safe live coexistence is not accepted. The A5 external restore fence is also
 unfinished;
 restores can revive old sessions and passwords. Native proof responses expose
-session tokens and require a separate browser API design before activation.
+session tokens; the existing bounded browser adapter strips them and releases
+cookies only after current authority checks. Production integration remains gated.
 See [the implemented proof boundary](authentication.md#optional-provider-proof-first-a3-slice).
 
 Knowledge project `k7a-worktree-switcher` holds design task
@@ -73,7 +76,7 @@ the CLI, transport verification and operational docs extend that contract.
 | Area | Implemented baseline | Remaining work |
 | --- | --- | --- |
 | Installation authentication | `token`, `open`, `legacy`; rotation and policy invalidation; optional server-free Better Auth/SQLite proof | `better-auth` still rejects activation; no browser account integration |
-| Identity | Owner, agent, worker and installation principals; revocable credentials | Account-backed humans and general role administration |
+| Identity | Owner, ordinary human, agent, worker and installation principals; revocable legacy credentials and isolated human sessions | General delegated role administration |
 | Knowledge | Shared policy, explicit grants and optional Knowledge role ceilings; installation compatibility bypass | Explicit human approval in account mode |
 | MCP | Agent sessions add filtered discovery, explicit-start claims, claimed control, literal profile selection and preset timeout overrides; Knowledge/vault/remote grants stay independent | Scoped finite-job admission/own-run access, runtime resources, compact status and wait API are separate followups |
 | Remote verification | Separate submitter/project and worker/project/preset grants | Integrate without replacing both checks with a broad project role |
@@ -92,7 +95,8 @@ The following concepts belong to Worktree Control, independent of Better Auth:
 
 - **Principal:** stable ID, kind `human`, `agent` or `worker`, active/revoked state.
   Preserve historical installation principals as compatibility/audit identities.
-  Migrate existing `owner` principals to humans without changing their IDs.
+  Keep existing `owner` rows unchanged as compatibility identities. New ordinary
+  humans have the distinct stored `human` kind.
 - **Provider identity:** unique provider/subject mapping to a human principal.
   Never infer ownership by matching a display name or unverified email.
 - **Credential/session:** principal, verifier/provider reference, method,
@@ -129,6 +133,11 @@ empty modules. Keep policy evaluation and domain effects inside the existing
 application boundary. Recheck after lifecycle-lock/queue admission and make the
 final authorization check, relevant revision check and mutation atomic where
 they share SQLite state. External effects need an explicit execution boundary.
+
+A3-I24 implements only protected local human lifecycle and atomic Knowledge
+reader/operator memberships. Both current grant and binding are mandatory for
+new humans; explicit permissions are limited to read/write. General role bundles
+below remain proposals. See [the current human workflow](authentication.md#ordinary-humans-and-knowledge-memberships-a3-i24).
 
 ## General roles and permissions
 
@@ -252,10 +261,13 @@ original expiry, ordinary grants/role ceilings and safe `credential: null`
 metadata. It denies owner administration, runtime sponsorship/control,
 privileged approval and vault proof substitution. Schema 39 widens only
 Knowledge history audit attribution, and schema 40 adds factor and evidence storage
-with provider storage revision 2. Earlier migrations and checksums remain unchanged.
+with historical provider storage revision 2. Issuance schema 41 uses revision 3;
+current core schema 42 adds ordinary humans without changing provider contract 5,
+storage 3 or proof implementation 5. Earlier migration SQL/checksums remain unchanged.
 Full/logical backup compatibility
-has focused migration tests. Production integration still needs CLI failure/
-concurrency fixes, safe live admission acceptance and the remaining account gates.
+has focused migration tests. Protected CLI failure/concurrency handling and
+isolated closed HTTP/factor routes are implemented. Safe production integration
+and the remaining account gates still need acceptance.
 The current 5-second admission wait, 60-second persistence retry budget and
 10-second database drain are implementation limits, not approved account
 security defaults. Keep the static dashboard and use library-supported
@@ -292,9 +304,9 @@ Native success stays necessary. A reusable optional-package helper uses the publ
 `hotp` primitive over at most four counters and may only refuse further; it claims
 no hidden native matched step. Consumption and receipt are atomic, admission
 charges remain durable, state stays one integer per subject, and later decimal
-collisions at newer counters are accepted. No reset exists. Production step
-storage, management/recovery, current-generation evidence and A5 remain unresolved
-public integration gates. The five native/bounded negative baselines remain unskipped.
+collisions at newer counters are accepted. No reset exists. Later A3-I18/I20 supply recognized step storage, current-generation evidence
+and closed HTTP response handling in the isolated composition. Production
+activation, management/recovery and A5 remain unresolved integration gates. The five native/bounded negative baselines remain unskipped.
 Readiness of these selected optional features is distinct from mandatory
 multi-factor enrollment for every user. Password-only prototypes prove no MFA,
 and neither this proof nor the account plan claims ASVS Level 2 conformance.

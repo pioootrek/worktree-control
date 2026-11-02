@@ -1,3 +1,4 @@
+import Database from "better-sqlite3";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -60,6 +61,27 @@ try {
   assert(!existsSync(join(installation, "state/admin.sock")));
   assert(!existsSync(join(installation, "state/controller.lock")));
   assert(!existsSync(join(installation, "data/state.sqlite3.owner.lock")));
+  // Real emitted ordinary-human grammar and atomic membership persistence, offline under both owners.
+  const human = (await cli(installation, ["human", "create"])).principal;
+  assert.equal(human.kind, "human"); assert.notEqual(human.id, principalId);
+  const db = new Database(join(installation, "data/state.sqlite3"));
+  try {
+    db.prepare("INSERT INTO knowledge_projects VALUES('human-k','Human knowledge','active',1,?,?)").run(new Date().toISOString(), new Date().toISOString());
+  } finally { db.close(); }
+  const access = { principalId: human.id, scope: { kind: "knowledge-project", id: "human-k" }, role: "reader", permissions: ["knowledge:read"], expectedRevision: 0 };
+  assert.equal((await cli(installation, ["knowledge-access", "set", "--input-stdin"], access)).revision, 1);
+  assert.equal((await cli(installation, ["knowledge-access", "set", "--input-stdin"], access, 1)).code, "membership_revision_conflict");
+  assert.equal((await cli(installation, ["knowledge-access", "list", "--principal-id", human.id])).items[0].revision, 1);
+  assert.equal((await cli(installation, ["human", "list", "--limit", "1"])).items[0].id, human.id);
+  await cli(installation, ["enroll", "--principal-id", human.id, "--input-stdin"], { ...enroll, email: "human@fixture.invalid" });
+  assert.equal((await cli(installation, ["recover", "--principal-id", human.id, "--input-stdin"], { newPassword: sentinel }, 1)).code, "principal_unavailable");
+  assert.equal((await cli(installation, ["knowledge-access", "revoke", "--input-stdin"], { principalId: human.id, scope: access.scope, expectedRevision: 1 })).revision, 2);
+  assert.equal((await cli(installation, ["human", "disable", "--principal-id", human.id])).changed, true);
+  assert.equal((await cli(installation, ["human", "disable", "--principal-id", human.id])).changed, false);
+  const safeHumanStatus = await cli(installation, ["status", "--principal-id", human.id]);
+  assert.equal(safeHumanStatus.principal.status, "revoked");
+  assert.equal(safeHumanStatus.maintenance, "not_loaded");
+  assert(!JSON.stringify(safeHumanStatus).includes("human@fixture.invalid"));
   // Exercise raw main dispatch before global stripping. No input read or data publication on duplicate paths.
   const invalid = await cli(installation, ["status", "--data-dir", join(temporary, "must-not-create")], undefined, 1);
   assert.equal(invalid.code, "invalid_input"); assert(!existsSync(join(temporary, "must-not-create")));
@@ -98,7 +120,7 @@ export const authenticationProvider = { ...provider, async create(host, options)
   assert.equal((await cli(fatal, ["status"], undefined, 1)).code, "admin_outcome_unknown");
   retained.child.kill("SIGKILL"); await retained.done; // Only our finite fixture process. Production never forces this exit.
   console.log(JSON.stringify({ result: "passed", emittedModuleSha256: createHash("sha256").update(readFileSync(entry)).digest("hex"),
-    verified: ["fresh-built-cli-local-js-import", "offline-configure-owner-enroll-recover", "strict-global-path-flags", "stable-material", "real-fatal-owner-process-retention"] }));
+    verified: ["fresh-built-cli-local-js-import", "offline-configure-owner-enroll-recover", "ordinary-human-membership-CAS-disable", "strict-global-path-flags", "stable-material", "real-fatal-owner-process-retention"] }));
 } finally {
   for (const child of children) child.kill("SIGKILL");
   rmSync(emitted, { recursive: true, force: true }); rmSync(temporary, { recursive: true, force: true });
