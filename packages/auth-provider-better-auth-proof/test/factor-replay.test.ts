@@ -110,16 +110,70 @@ describe("A3-I16 conservative TOTP presentation consumption, actual native verif
 
   it("reauthentication is explicitly one-use even after wrong input, with immutable original session evidence", async () => {
     const f = await create(); const { browser, app } = await setup(f);
-    const old = await rows(f, `SELECT sessionId,authenticatedAt,originalDeadline,method,authorizingMfa FROM ${ADMISSION.evidence}`);
+    const old = await rows(f, `SELECT * FROM ${ADMISSION.evidence}`);
     const context = await reauthContext(browser);
     expect((await reauth(browser, context, app.wrong())).status).toBe(401);
     expect((await reauth(browser, context, app.code())).status).toBe(401);
     const result = await reauth(browser, await reauthContext(browser), app.code());
     expect(result.status).toBe(200); expect(result.setCookie.length).toBe(0);
-    expect(await rows(f, `SELECT sessionId,authenticatedAt,originalDeadline,method,authorizingMfa FROM ${ADMISSION.evidence}`)).toEqual(old);
+    expect(await rows(f, `SELECT * FROM ${ADMISSION.evidence}`)).toEqual(old);
     expect(await charges(f)).toBe(3); expect(await replayRows(f)).toHaveLength(2);
     // The enrollment endpoint cannot be used as a second, less constrained reauth path.
     expect((await verify(browser, app.code(1))).status).toBe(401);
+  });
+
+  it("replaces unused reauthentication contexts without exhausting another subject's login capacity", async () => {
+    const email = "second-owner@fixture.invalid";
+    const f = await factorFixture("admitted", { admission: "strict" }, [email]); fixtures.push(f);
+    const { browser, app } = await setup(f);
+    const first = await reauthContext(browser); let newest = first;
+    for (let i = 0; i < f.control.admission.policy.capacity + 1; i++) newest = await reauthContext(browser);
+    expect(await rows(f, `SELECT capability FROM ${ADMISSION.contexts} WHERE purpose='reauthentication' AND used=0`)).toHaveLength(1);
+    expect((await reauth(browser, first, app.code())).status).toBe(401);
+    const other = new Browser(f);
+    expect((await other.post("/sign-in/email", { email, password: OWNER_PASSWORD })).status).toBe(200);
+    const enabled = await other.post("/two-factor/enable", { password: OWNER_PASSWORD });
+    expect(enabled.status).toBe(200);
+    const secondApp = new Authenticator(enabled.json!.totpURI as string);
+    expect((await verify(other, secondApp.code())).status).toBe(200);
+    const login = new Browser(f);
+    expect((await login.post("/sign-in/email", { email, password: OWNER_PASSWORD })).status).toBe(200);
+    expect(login.cookies.has(COOKIE.challenge)).toBe(true);
+    expect((await reauth(browser, newest, app.code())).status).toBe(200);
+  });
+
+  it.each([null, [], 1, "x"])("rejects non-object reauthentication issuance body %# before allocating state", async body => {
+    const f = await create(); const { browser } = await setup(f);
+    const before = await rows(f, `SELECT count(*) n FROM ${ADMISSION.contexts}`);
+    expect((await browser.post("/two-factor/reauthentication-context", body)).status).toBe(400);
+    expect(await rows(f, `SELECT count(*) n FROM ${ADMISSION.contexts}`)).toEqual(before);
+  });
+
+  it("successfully reauthenticates after native refresh while preserving all original evidence", async () => {
+    const f = await create(); const { browser, app } = await setup(f);
+    const before = await rows(f, `SELECT * FROM ${ADMISSION.evidence}`);
+    vi.setSystemTime(Date.now() + 60 * 60_000 + 1);
+    const context = await reauthContext(browser);
+    const result = await reauth(browser, context, app.code());
+    expect(result.status).toBe(200); expect(result.setCookie.length).toBe(0);
+    expect(await rows(f, `SELECT * FROM ${ADMISSION.evidence}`)).toEqual(before);
+    expect((await receipt(f))?.state).toBe("succeeded");
+  });
+
+  it.each(["2020-01-01T00:00:00.000Z", "invalid-date"])("rejects expired or invalid ISO session rows independently of original evidence (%#)", async expiresAt => {
+    const f = await create(); await setup(f);
+    const evidence = (await rows<{ sessionId: string }>(f, `SELECT sessionId FROM ${ADMISSION.evidence}`))[0]!;
+    expect(await policy(f, p => p.enrollmentOrigin(evidence.sessionId, f.subject, Date.now()))).not.toBeNull();
+    await fixtureSql(f, 'UPDATE authentication_ba_session SET "expiresAt"=? WHERE id=?', [expiresAt, evidence.sessionId]);
+    expect(await policy(f, p => p.enrollmentOrigin(evidence.sessionId, f.subject, Date.now()))).toBeNull();
+  });
+
+  it.each(["2020-01-01T00:00:00.000Z", "invalid-date"])("rejects expired or invalid ISO challenge rows before native verification (%#)", async expiresAt => {
+    const f = await create(); await setup(f); const browser = await pending(f);
+    const challenge = browser.cookies.get(COOKIE.challenge)!;
+    expect(await policy(f, p => p.bindContext(challenge, "login", Date.now()))).not.toBeNull();
+    await fixtureSql(f, 'UPDATE authentication_ba_verification SET "expiresAt"=?', [expiresAt]);
+    expect(await policy(f, p => p.bindContext(challenge, "login", Date.now()))).toBeNull();
   });
 
   it.each(["", "12345", "1234567", " 123456", "123456\n", "１２３４５６", "١٢٣٤٥٦", "12e345", "12\u0000345"])("refuses non-exact ASCII input case %# before native evaluation", async code => {

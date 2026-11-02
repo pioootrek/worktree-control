@@ -32,6 +32,7 @@ export const replayHmac = (key: Uint8Array, domain: string, ...fields: string[])
   createHmac("sha256", key).update(JSON.stringify(["wtc-factor-replay-v1", domain, ...fields])).digest("hex");
 export const replayKeyCommitment = (key: Uint8Array) => replayHmac(key, "key-check");
 export const validTotpSyntax = (code: string) => code.length === 6 && !/[^0-9]/.test(code);
+const persistedTime = (value: unknown): number => typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
 export interface ReplayBinding { key: Uint8Array; encryptionSecret: string }
 export type Purpose = "login" | "enrollment" | "reauthentication";
 export interface BoundContext {
@@ -105,22 +106,29 @@ export class FixtureAdmission implements AdmissionPort {
 
   /** Native session refresh cannot redefine the original password lifetime. */
   enrollmentOrigin(sessionId: string, subject: string, now: number): Pick<SessionEvidence, "authenticatedAt" | "originalDeadline"> | null {
-    const row = this.#rows<{ authenticatedAt: string; originalDeadline: string }>(
-      `SELECT e.authenticatedAt, e.originalDeadline FROM ${ADMISSION.evidence} e
+    const row = this.#rows<{ authenticatedAt: string; originalDeadline: string; expiresAt: string | number }>(
+      `SELECT e.authenticatedAt, e.originalDeadline, s."expiresAt" AS expiresAt FROM ${ADMISSION.evidence} e
        JOIN authentication_ba_session s ON s.id = e.sessionId AND s."userId" = e.subject
        JOIN ${ADMISSION.subjects} g ON g.subject = e.subject AND g.generation = e.generation
-       WHERE e.sessionId = ? AND e.subject = ? AND e.method = 'password' AND e.authorizingMfa = 0 AND s."expiresAt" > ?`,
-      [sessionId, subject, now],
+       WHERE e.sessionId = ? AND e.subject = ? AND e.method = 'password' AND e.authorizingMfa = 0`,
+      [sessionId, subject],
     )[0];
-    if (!row || !this.#current(subject)) return null;
+    if (!row || !this.#current(subject) || !(persistedTime(row.expiresAt) > now)) return null;
     const start = Date.parse(row.authenticatedAt), deadline = Date.parse(row.originalDeadline);
-    return Number.isFinite(start) && Number.isFinite(deadline) && start <= now && deadline > now && start < deadline ? row : null;
+    return Number.isFinite(start) && Number.isFinite(deadline) && start <= now && deadline > now && start < deadline
+      ? { authenticatedAt: row.authenticatedAt, originalDeadline: row.originalDeadline } : null;
   }
 
   /** Only called with a capability from a completed, successful native outcome. */
   async issue(opaque: string, subject: string, purpose: Purpose, deadline: number, nativeId: string | null, now: number, origin: Pick<SessionEvidence, "authenticatedAt" | "originalDeadline">, originSessionId: string | null = null): Promise<void> {
     this.prune(now);
     const credential = await this.credential(subject);
+    if (purpose === "reauthentication" && originSessionId) {
+      // Issuance runs in a transaction: replace this session's unused context,
+      // without removing a context that belongs to an unresolved operation.
+      this.#run(`DELETE FROM ${ADMISSION.contexts} WHERE purpose = 'reauthentication' AND subject = ? AND originSessionId = ? AND used = 0
+        AND NOT EXISTS (SELECT 1 FROM ${ADMISSION.receipts} r WHERE r.capability = ${ADMISSION.contexts}.capability AND r.state = 'charged')`, [subject, originSessionId]);
+    }
     if (!credential || !this.#current(subject) || deadline <= now || this.#count(ADMISSION.contexts) >= this.policy.capacity) throw new Error("Context unavailable.");
     this.#run(`INSERT INTO ${ADMISSION.contexts} (capability, subject, purpose, credential, principalId, factorId, originSessionId, generation, deadline, authenticatedAt, originalDeadline, nativeId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [capabilityId(opaque), subject, purpose, credential, this.#principal(subject), this.factor(subject)!.id, originSessionId, this.generation(subject), deadline, origin.authenticatedAt, origin.originalDeadline, nativeId]);
@@ -139,8 +147,8 @@ export class FixtureAdmission implements AdmissionPort {
     if (row.purpose === "enrollment" && factor.verified !== 0) return false;
     if (!this.#sessionCurrent(row, now)) return false;
     if (row.nativeId) {
-      const pending = this.#rows<{ value: string; expiresAt: number }>('SELECT value, "expiresAt" FROM authentication_ba_verification WHERE id = ?', [row.nativeId])[0];
-      if (!pending || pending.value !== row.subject || Number(pending.expiresAt) <= now) return false;
+      const pending = this.#rows<{ value: string; expiresAt: string | number }>('SELECT value, "expiresAt" FROM authentication_ba_verification WHERE id = ?', [row.nativeId])[0];
+      if (!pending || pending.value !== row.subject || !(persistedTime(pending.expiresAt) > now)) return false;
     }
     return true;
   }
@@ -198,7 +206,8 @@ export class FixtureAdmission implements AdmissionPort {
     }
     if (ticket.purpose === "reauthentication") {
       if (session.sessionId !== ticket.originSessionId) throw new Error("Session changed.");
-      this.#run(`UPDATE ${ADMISSION.evidence} SET observation = 'reauthentication', credential = ?, attemptId = ? WHERE sessionId = ? AND subject = ? AND generation = ?`, [ticket.credential, ticket.attemptId, session.sessionId, ticket.subject, ticket.generation]);
+      // The new receipt records reauthentication; original session evidence and
+      // its original attempt attribution remain immutable.
     } else {
       this.#run('UPDATE authentication_ba_session SET "expiresAt" = ? WHERE id = ?', [Math.min(Date.parse(session.originalDeadline), Date.parse(ticket.originalDeadline)), session.sessionId]);
       this.passwordEvidence(ticket.attemptId, { ...session, authenticatedAt: ticket.authenticatedAt, originalDeadline: ticket.originalDeadline }, ticket.generation, ticket.credential);

@@ -306,7 +306,8 @@ class FactorProofProvider implements AuthenticationProviderInstance {
     if (this.#control.mode === "admitted" && request.headers.get("origin") !== base.origin) return denied(403, "origin_refused");
     let body: unknown;
     try { body = JSON.parse(await request.text()); } catch { return denied(400, "invalid_body"); }
-    const input = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
+    if (typeof body !== "object" || body === null || Array.isArray(body)) return denied(400, "invalid_body");
+    const input = body as Record<string, unknown>;
     const keys = Object.keys(input).sort();
     if (keys.join() !== [...route.fields].sort().join() || keys.some(key => typeof input[key] !== "string")) return denied(400, "invalid_fields");
     if (this.#control.mode === "admitted" && (route.kind === "totp" || route.kind === "reauth-totp") && !validTotpSyntax(input.code as string)) return denied(400, "invalid_code_format");
