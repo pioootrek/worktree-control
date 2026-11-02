@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { cleanupRestartFixture, trackFixtureChild } from "./auth-provider-restart-cleanup.mjs";
 
 // Finite private proof. Real owner processes over one retained installation: built
 // from shared composition, killed only through their own ChildProcess handle after
@@ -23,7 +24,7 @@ const LIMIT_OUTPUT = 65_536, BOOT_MS = 30_000, STEP_MS = 31_000, HOUR_MS = 3_600
 const SECRET = randomBytes(32).toString("hex"), PASSWORD = `restart-password-${randomBytes(12).toString("hex")}`, EMAIL = "owner@fixture.invalid";
 const ORIGIN = "https://controller.test";
 const SESSION_COOKIE = "__Secure-wtc.session_token";
-const children = new Set();
+const children = new Map();
 const output = [], cookiesSeen = new Set();
 const counts = { boots: 0, killed: 0, graceful: 0 };
 const cases = [];
@@ -31,7 +32,7 @@ const record = (id, evidence) => { cases.push({ id, ...evidence }); };
 
 function run(args, label) {
   const child = spawn(process.execPath, args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
-  children.add(child);
+  trackFixtureChild(children, child);
   let text = "";
   const collect = bytes => { if (text.length < LIMIT_OUTPUT) text += bytes; };
   child.stdout.on("data", collect); child.stderr.on("data", collect);
@@ -64,7 +65,7 @@ class Process {
     this.boot = { ...boot, nonce: this.nonce };
     this.child = spawn(process.execPath, [workerPath, JSON.stringify(this.boot)], { cwd: temporary, stdio: ["ignore", "pipe", "pipe", "ipc"] });
     assert(!this.child.spawnargs.some(value => value.includes(PASSWORD) || value.includes(SECRET)), "secrets never reach argv");
-    children.add(this.child);
+    this.exited = trackFixtureChild(children, this.child);
     this.messages = []; this.waiting = [];
     this.pid = this.child.pid;
     for (const stream of [this.child.stdout, this.child.stderr]) stream.on("data", bytes => {
@@ -78,7 +79,6 @@ class Process {
       this.messages.push(message);
       for (const waiter of [...this.waiting]) if (waiter.match(message)) { this.waiting.splice(this.waiting.indexOf(waiter), 1); waiter.accept(message); }
     });
-    this.exited = new Promise(accept => { this.child.once("close", (code, signal) => { children.delete(this.child); accept({ code, signal }); }); });
     this.child.once("error", () => undefined);
   }
   waitFor(...types) {
@@ -355,8 +355,25 @@ async function writers(emitted) {
   // R4: the parent really holds this cookie when the owner dies, before its handler finished.
   const received = jar();
   const before = await worker.snapshot();
-  const { held, response } = await crashAt(emitted, inst, worker, CUT.afterWrite, () => received.login(password), { contested: true });
-  assert.equal(response.status, 200); assert(received.cookies.has(SESSION_COOKIE), "the parent received the cookie first");
+  await worker.arm(CUT.afterWrite);
+  const pendingResponse = dropped(received.login(password));
+  const message = await worker.waitFor("cut");
+  assert.equal(message.point, CUT.afterWrite.point);
+  const held = message.snapshot;
+  let receiptTimer;
+  try {
+    const response = await Promise.race([
+      pendingResponse,
+      new Promise((_, reject) => { receiptTimer = setTimeout(() => reject(new Error("Client did not receive the response before the crash.")), BOOT_MS); }),
+    ]);
+    assert.equal(response.status, 200);
+    assert(received.cookies.has(SESSION_COOKIE), "the parent received the cookie first");
+    assert.equal(worker.child.exitCode, null);
+    assert.equal(worker.child.signalCode, null);
+    await challenge(emitted, inst);
+    await worker.kill();
+    staleLocks(inst, worker.pid);
+  } finally { clearTimeout(receiptTimer); }
   const [receivedId] = added(held.sessions, before.sessions);
   const receivedDeadline = held.issuance.find(row => row.id === receivedId).deadline;
   assert.equal(held.issuance.find(row => row.id === receivedId).state, "may_publish");
@@ -548,6 +565,7 @@ async function restored(emitted) {
   record("restored-snapshot-refused", { pending: atBackup.pending.length, publishedAfterSnapshot: true, unmarkedKept: true, refusedBoots: 2, rowsChanged: 0 });
 }
 
+let primaryFailure;
 try {
   const emitted = await emit();
   await writers(emitted);
@@ -558,7 +576,14 @@ try {
   const everything = `${output.join("")}${report.join("")}`;
   for (const secret of [PASSWORD, SECRET, ...cookiesSeen]) assert(!everything.includes(secret), "no credential reaches a report or a process stream");
   console.log(report.join("\n"));
+} catch (error) {
+  primaryFailure = error;
+  throw error;
 } finally {
-  for (const child of children) child.kill("SIGKILL");
-  rmSync(temporary, { recursive: true, force: true });
+  try {
+    await cleanupRestartFixture(children, () => rmSync(temporary, { recursive: true, force: true }));
+  } catch (cleanupFailure) {
+    if (primaryFailure) throw new AggregateError([primaryFailure, cleanupFailure], "Fixture failed and cleanup was not successful.");
+    throw cleanupFailure;
+  }
 }
