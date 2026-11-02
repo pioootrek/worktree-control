@@ -75,7 +75,7 @@ export class PasskeyAdmission {
     if (this.receipt(ticket.attemptId)?.state !== "charged" || !this.current(ticket.subject) || generation !== ticket.generation || ticket.deadline <= now) return false;
     if (!ticket.credential) return true;
     const row = this.credential(ticket.credential), trust = this.trust(ticket.credential);
-    return !!row && !!trust && row.userId === ticket.subject && trust.generation === generation && this.fingerprint(row) === ticket.fingerprint && trust.fingerprint === ticket.fingerprint;
+    return !!row && !!trust && trust.subject === ticket.subject && trust.verifiedUv === 1 && row.userId === ticket.subject && trust.generation === generation && this.fingerprint(row) === ticket.fingerprint && trust.fingerprint === ticket.fingerprint;
   }
   evidence(sessionId: string, subject: string, method: "password" | "passkey_uv", authenticatedAt: number, deadline: number, credential: string | null) {
     this.capacity("passkey_fixture_evidence");
@@ -86,10 +86,24 @@ export class PasskeyAdmission {
     if (!this.usable(ticket, now)) throw new Error("Settlement refused.");
     this.run("UPDATE passkey_fixture_receipt SET state='succeeded',sessionId=? WHERE attemptId=? AND state='charged'", [sessionId,ticket.attemptId]);
   }
+  operationReceipt(attempt: string, subject: string | null, deadline: number, sessionId: string | null = null) {
+    this.capacity("passkey_fixture_receipt");
+    this.run("INSERT INTO passkey_fixture_receipt(attemptId,capability,subject,generation,deadline,state,sessionId) VALUES (?,?,?,?,?,'succeeded',?)", [attempt,`operation:${attempt}`,subject ?? "",subject ? this.generation(subject) : 0,deadline,sessionId]);
+  }
+  session(sessionId: string, subject: string, now: number) {
+    if (!this.current(subject)) return null;
+    const row = this.rows<{ method: "password" | "passkey_uv"; originalDeadline: number; credential: string | null; generation: number }>(`SELECT e.method,e.originalDeadline,e.credential,e.generation FROM passkey_fixture_evidence e JOIN authentication_ba_session s ON s.id=e.sessionId AND s."userId"=e.subject JOIN passkey_fixture_generation g ON g.subject=e.subject AND g.generation=e.generation WHERE e.sessionId=? AND e.subject=? AND s."expiresAt">? AND e.originalDeadline>?`,[sessionId,subject,now,now])[0];
+    if (!row) return null;
+    if (row.method === "passkey_uv") {
+      const credential=row.credential && this.credential(row.credential),trust=row.credential && this.trust(row.credential);
+      if (!credential || !trust || credential.userId!==subject || trust.subject!==subject || trust.generation!==row.generation || trust.fingerprint!==this.fingerprint(credential)) return null;
+    }
+    return {method:row.method,originalDeadline:row.originalDeadline,authorizing:false};
+  }
   fail(attempt: string) { this.run("UPDATE passkey_fixture_receipt SET state='failed' WHERE attemptId=? AND state='charged'", [attempt]); }
   prune(now: number) {
     this.run("DELETE FROM passkey_fixture_context WHERE capability IN (SELECT capability FROM passkey_fixture_context c WHERE deadline<=? AND NOT EXISTS(SELECT 1 FROM passkey_fixture_receipt r WHERE r.capability=c.capability AND r.state='charged') LIMIT ?)", [now,PASSKEY_BOUNDS.pruneBatch]);
     this.run("DELETE FROM passkey_fixture_receipt WHERE attemptId IN (SELECT attemptId FROM passkey_fixture_receipt WHERE deadline<=? AND state!='charged' LIMIT ?)", [now,PASSKEY_BOUNDS.pruneBatch]);
-    this.run("DELETE FROM passkey_fixture_budget WHERE rowid IN (SELECT rowid FROM passkey_fixture_budget WHERE epoch<? LIMIT ?)", [Math.floor(now/PASSKEY_BOUNDS.windowMs),PASSKEY_BOUNDS.pruneBatch]);
+    this.run("DELETE FROM passkey_fixture_budget WHERE rowid IN (SELECT rowid FROM passkey_fixture_budget b WHERE epoch<? AND NOT EXISTS(SELECT 1 FROM passkey_fixture_receipt r WHERE r.subject=b.subject AND r.state='charged') LIMIT ?)", [Math.floor(now/PASSKEY_BOUNDS.windowMs),PASSKEY_BOUNDS.pruneBatch]);
   }
 }

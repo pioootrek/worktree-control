@@ -26,7 +26,7 @@ export interface PasskeyControl {
 }
 export const newPasskeyControl = (): PasskeyControl => ({ trace: [], observations: [], entries: [], failCookie: false, failEvidence: false, vetoSession: false });
 type Options = AuthenticationProviderOptions & { passkeyControl: PasskeyControl };
-interface Operation { kind: string; context?: PasskeyContext; ticket?: PasskeyTicket; verified: boolean; request: Request }
+interface Operation { kind: string; context?: PasskeyContext; ticket?: PasskeyTicket; verified: boolean; nativeSubject?: string; request: Request }
 const refuse = () => { throw new APIError("FORBIDDEN", { message: "Fixture verification refused." }); };
 
 /** Supported callbacks only. No verifier replacement, native adapter mutation or library patches. */
@@ -124,7 +124,10 @@ class PasskeyProvider implements AuthenticationProviderInstance {
     },transaction);
     return betterAuth({ ...opts,
       databaseHooks: { session: {
-        create: { before: async () => this.control.vetoSession ? false : undefined },
+        create: { before: async (session: {userId:string}) => {
+          const op=this.#operation.getStore();if(op) op.nativeSubject=session.userId;
+          return this.control.vetoSession ? false : undefined;
+        } },
         delete: { after: async (session: { id: string; userId: string }) => {
           const event: ProviderInvalidation = { kind: "session", providerId: "better-auth", sessionId: session.id, subject: session.userId };
           this.#notifications.getStore()?.push(event);
@@ -174,9 +177,9 @@ class PasskeyProvider implements AuthenticationProviderInstance {
     let context: PasskeyContext | undefined;
     let ticket: PasskeyTicket | undefined;
     const attemptId = this.control.attemptId ?? randomUUID(); this.control.lastAttemptId = attemptId;
+    const old = policy.receipt(attemptId);
+    if (old) return safe(409,"receipt",{ state:old.state,committed:old.state === "succeeded" });
     if (complete) {
-      const old = policy.receipt(attemptId);
-      if (old) return safe(409,"receipt",{ state:old.state,committed:old.state === "succeeded" });
       const opaque = jar.get(PASSKEY_COOKIE);
       context = opaque ? policy.context(opaque) : undefined;
       if (!context || context.purpose !== kind || !policy.valid(context,Date.now())) throw new Refused();
@@ -197,8 +200,10 @@ class PasskeyProvider implements AuthenticationProviderInstance {
         if (this.#transaction.open || policy.receipt(attemptId)?.state !== "charged") throw new Error("Admission unconfirmed.");
       } catch {
         if (this.#transaction.open) return safe(503,"outcome_unconfirmed");
-        const receipt = policy.receipt(attemptId);
-        return safe(503,"admission_refused",{ charged:!!receipt,committed:!!receipt });
+        try {
+          const receipt = policy.receipt(attemptId);
+          return safe(503,"admission_refused",{ charged:!!receipt,committed:!!receipt });
+        } catch { return safe(503,"outcome_unconfirmed"); }
       }
       await this.control.pause?.("after-admission",this.#connection!);
     }
@@ -238,6 +243,7 @@ class PasskeyProvider implements AuthenticationProviderInstance {
             // Native authentication hard-codes preferred. Browser instructions are
             // tightened here; the callback independently requires verified UV.
             if (kind === "authenticate-options") parsed.userVerification = "required";
+            policy.operationReceipt(attemptId,current?.user.id ?? null,new Date(pending.expiresAt).getTime());
             return safe(200,"options",{ options:parsed },lines.filter(line => line.startsWith(`${PASSKEY_COOKIE}=`)));
           }
           if (kind === "registration") {
@@ -250,7 +256,13 @@ class PasskeyProvider implements AuthenticationProviderInstance {
             policy.settle(ticket,null,Date.now());
             return safe(200,"enrolled",{ authorizing:false });
           }
-          if (kind === "password" && parsed.twoFactorRedirect === true) return safe(200,"challenge",{},lines.filter(line => line.startsWith(`${COOKIE.challenge}=`) || /max-age=0/i.test(line)));
+          if (kind === "password" && parsed.twoFactorRedirect === true) {
+            const pendingCookie=opaqueCookie(lines,COOKIE.challenge);
+            const pending=pendingCookie && await (await auth.$context).internalAdapter.findVerificationValue(unsigned(pendingCookie));
+            if (!pending || !operation.nativeSubject || pending.value!==operation.nativeSubject || !policy.current(operation.nativeSubject)) throw new Refused();
+            policy.operationReceipt(attemptId,operation.nativeSubject,new Date(pending.expiresAt).getTime());
+            return safe(200,"challenge",{},lines.filter(line => line.startsWith(`${COOKIE.challenge}=`) || /max-age=0/i.test(line)));
+          }
           const opaque = opaqueCookie(lines,COOKIE.session);
           const session = opaque && await auth.api.getSession({headers:new Headers({cookie:`${COOKIE.session}=${opaque}`}),query:{disableCookieCache:true,disableRefresh:true}});
           if (!session || !policy.current(session.user.id) || (ticket && (session.user.id !== ticket.subject || !operation.verified))) throw new Refused(500);
@@ -261,19 +273,22 @@ class PasskeyProvider implements AuthenticationProviderInstance {
           const method = kind === "password" ? "password" : "passkey_uv";
           policy.evidence(session.session.id,session.user.id,method,new Date(session.session.createdAt).getTime(),new Date(session.session.expiresAt).getTime(),ticket?.credential ?? null);
           if (ticket) policy.settle(ticket,session.session.id,Date.now());
+          else policy.operationReceipt(attemptId,session.user.id,new Date(session.session.expiresAt).getTime(),session.session.id);
           return safe(200,"observation",{ method,authorizing:false },lines.filter(line => line.startsWith(`${COOKIE.session}=`)));
         });
       }));
     } catch (error) {
       // R13 rule: never read an uncommitted receipt or publish its effects.
       if (this.#transaction.open) return safe(503,"outcome_unconfirmed");
+      let committed=false;
       try {
-        if (ticket && policy.receipt(attemptId)?.state === "succeeded") {
-          for (const event of notifications) this.host.invalidated(event);
-          return safe(503,"completion_receipt",{committed:true});
-        }
-        if (ticket) policy.fail(attemptId);
+        committed=policy.receipt(attemptId)?.state === "succeeded";
+        if (!committed && ticket) policy.fail(attemptId);
       } catch { return safe(503,"outcome_unconfirmed"); }
+      if (committed) {
+        for (const event of notifications) this.host.invalidated(event);
+        return safe(503,"completion_receipt",{committed:true});
+      }
       return safe(error instanceof Refused ? error.status : 503,"refused",{committed:false});
     }
     for (const event of notifications) this.host.invalidated(event);

@@ -6,7 +6,7 @@ import { newFactorControl, COOKIE } from "./factor-provider";
 import { OWNER_PASSWORD, SECRET } from "./fixture";
 import { gate } from "./strict-fixture";
 import { PasskeyAuthenticator, type CeremonyOptions, type AuthenticatorInput } from "./passkey-authenticator";
-import { closePasskey, loadPasskey, passkeyFixture, passkeyState, type PasskeyFixture } from "./passkey-fixture";
+import { closePasskey, loadPasskey, observePasskeySession, passkeyFixture, passkeyState, type PasskeyFixture } from "./passkey-fixture";
 import { PASSKEY_COOKIE, PASSKEY_IMPLEMENTATION } from "./passkey-provider";
 
 
@@ -75,7 +75,7 @@ describe("A3-I14 pinned real passkey proof, nonauthorizing",() => {
       const a = new PasskeyAuthenticator();
       denial(await b.post("/passkey/verify-registration",{response:a.register(o,input)}));
       const state = await passkeyState(f);expect(state.credentials.length).toBe(0);expect(state.trusted.length).toBe(0);expect(state.sessions.length).toBe(1);
-      expect(state.receipts[0]?.state).toBe("failed");expect(state.budgets[0]?.charged).toBe(1);
+      expect(state.receipts.at(-1)?.state).toBe("failed");expect(state.budgets[0]?.charged).toBe(1);
     }));
   }
   test("client extension claims cannot replace signed registration UV",async () => owned(async f => {
@@ -142,7 +142,7 @@ describe("A3-I14 pinned real passkey proof, nonauthorizing",() => {
   }));
   for(const mutation of ["mapping","principal","credential","trust","generation","replacement"] as const) test(`current ${mutation} revocation/replacement denies native assertion entry`,async()=>owned(async f=>{
     const {authenticator}=await enroll(f),a=await assertion(f,authenticator),entries=f.control.entries.length;
-    const changes={mapping:"UPDATE authentication_provider_subjects SET status='revoked'",principal:"UPDATE remote_principals SET status='revoked'",credential:"DELETE FROM authentication_ba_passkey",trust:"DELETE FROM passkey_fixture_trust",generation:"UPDATE passkey_fixture_generation SET generation=generation+1",replacement:'UPDATE authentication_ba_passkey SET "publicKey"=\'untrusted replacement\''};
+    const changes={mapping:"UPDATE authentication_provider_subjects SET status='revoked',revoked_at='2026-11-02T00:00:00Z'",principal:"UPDATE remote_principals SET status='revoked'",credential:"DELETE FROM authentication_ba_passkey",trust:"DELETE FROM passkey_fixture_trust",generation:"UPDATE passkey_fixture_generation SET generation=generation+1",replacement:'UPDATE authentication_ba_passkey SET "publicKey"=\'untrusted replacement\''};
     await fixtureSql(f,changes[mutation]);denial(await complete(a.browser,a.response));expect(f.control.entries.length).toBe(entries);
     expect((await passkeyState(f)).sessions.length).toBe(1);
   }));
@@ -244,24 +244,30 @@ describe("A3-I14 pinned real passkey proof, nonauthorizing",() => {
     } finally {resume.open();await closePasskey(f);}
   });
   test("actual borrow timeout retains sole owner until late execution drains and forbids late effects",async()=>{
-    const f=await passkeyFixture({admission:"strict",borrowTimeoutMs:150});const entered=gate(),resume=gate();
+    const f=await passkeyFixture({admission:"strict",borrowTimeoutMs:1000});const entered=gate(),resume=gate();
     try {
       const {authenticator}=await enroll(f),a=await assertion(f,authenticator);
       f.control.pause=async stage=>{if(stage==="after-native"){entered.open();await resume.opened;}};
       const pending=complete(a.browser,a.response).then(()=>"returned",(error:unknown)=>(error as {code?:string}).code);
-      await entered.opened;expect(await pending).toBe("provider_closed");
+      await entered.opened;expect(await pending).toBe("expired");
       expect(f.store.admissionSnapshot().providerExecutions).toBe(1);expect(existsSync(`${f.path}.owner.lock`)).toBe(true);
       resume.open();await f.runtime.dispose();
       const after=await f.store.admission.run(()=>({sessions:(f.store as unknown as {database:Database.Database}).database.prepare('SELECT id FROM authentication_ba_session').all().length,receipt:(f.store as unknown as {database:Database.Database}).database.prepare('SELECT state FROM passkey_fixture_receipt ORDER BY rowid DESC LIMIT 1').get() as {state:string}}));
       expect(after.sessions).toBe(1);expect(after.receipt.state).toBe("charged");expect(f.evidence.events.length).toBe(0);
     } finally {resume.open();await closePasskey(f);}
   });
-  test("original password deadline remains immutable after native refresh; expired/missing origin cannot enroll",async()=>owned(async f=>{
+  test("native freshness rejects delayed enrollment instead of refreshing an old password proof",async()=>owned(async f=>{
     const b=new Browser(f);success(await b.signIn());const before=(await passkeyState(f)).evidence[0]!;
     vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(Date.now()+61*60_000);
-    const o=await options(b,"register");expect(o.user?.id.length!>0).toBe(true);
-    const context=(await passkeyState(f)).contexts[0]!;expect(context.deadline).toBeLessThanOrEqual(before.originalDeadline);
-    await fixtureSql(f,"UPDATE passkey_fixture_evidence SET originalDeadline=0");
+    denial(await b.post("/passkey/generate-register-options",{},{method:"GET"}));
+    expect((await passkeyState(f)).evidence[0]!.originalDeadline).toBe(before.originalDeadline);
+    expect((await passkeyState(f)).credentials.length).toBe(0);
+  }));
+  for(const mutation of ["expired","missing","generation"] as const) test(`enrollment refuses ${mutation} original password evidence despite live native session`,async()=>owned(async f=>{
+    const b=new Browser(f);success(await b.signIn());const o=await options(b,"register");
+    if(mutation==="expired") await fixtureSql(f,"UPDATE passkey_fixture_evidence SET originalDeadline=0");
+    if(mutation==="missing") await fixtureSql(f,"DELETE FROM passkey_fixture_evidence");
+    if(mutation==="generation") await fixtureSql(f,"UPDATE passkey_fixture_generation SET generation=generation+1");
     denial(await b.post("/passkey/verify-registration",{response:new PasskeyAuthenticator().register(o)}));
     expect((await passkeyState(f)).credentials.length).toBe(0);
   }));
@@ -272,8 +278,9 @@ describe("A3-I14 pinned real passkey proof, nonauthorizing",() => {
     const proof=before.evidence.find(e=>e.method==="passkey_uv")!;
     expect(proof.originalDeadline-proof.authenticatedAt).toBe(8*60*60_000);
     const entries=f.control.entries.length;denial(await complete(new Browser(f),a.response));expect(f.control.entries.length).toBe(entries);
+    expect(await observePasskeySession(f,a.browser.cookieHeader())).toEqual({method:"passkey_uv",originalDeadline:proof.originalDeadline,authorizing:false});
     vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(proof.originalDeadline);
-    expect(await new Browser(f).resolve()).toBeNull();
+    expect(await observePasskeySession(f,a.browser.cookieHeader())).toBeNull();
   }));
   test("bounded diagnostics contain no private cookies/tokens/passwords or client sentinels",async()=>owned(async f=>{
     const {authenticator,browser}=await enroll(f),a=await assertion(f,authenticator),opaque=a.browser.cookies.get(PASSKEY_COOKIE)!;
@@ -288,4 +295,39 @@ describe("A3-I14 pinned real passkey proof, nonauthorizing",() => {
     try {expect(result.status===200).toBe(true);}catch(error){expect(String(error).includes(sentinel)).toBe(false);}
     expect(original.includes(opaque)).toBe(false);
   }));
+  for(const mutation of ["session","mapping","principal","credential","generation"] as const) test(`already issued native session loses passkey observation after ${mutation} revocation`,async()=>owned(async f=>{
+    const {authenticator}=await enroll(f),a=await assertion(f,authenticator);success(await complete(a.browser,a.response));
+    expect((await observePasskeySession(f,a.browser.cookieHeader()))?.method).toBe("passkey_uv");
+    const changes={session:"DELETE FROM authentication_ba_session",mapping:"UPDATE authentication_provider_subjects SET status='revoked',revoked_at='2026-11-02T00:00:00Z'",principal:"UPDATE remote_principals SET status='revoked'",credential:"DELETE FROM authentication_ba_passkey",generation:"UPDATE passkey_fixture_generation SET generation=generation+1"};
+    await fixtureSql(f,changes[mutation]);expect(await observePasskeySession(f,a.browser.cookieHeader())).toBeNull();
+  }));
+  for(const operation of ["password","register-options","authenticate-options"] as const) for(const when of ["before","after"] as const) test(`${operation} ${when} actual COMMIT never falsely claims rollback`,async()=>owned(async f=>{
+    const b=new Browser(f);if(operation==="register-options") success(await b.signIn());
+    const before=await passkeyState(f);f.control.attemptId="internal-operation-attempt";
+    f.control.fault={sql:/^commit$/i,when,remaining:1};
+    const result=operation==="password"?await b.signIn():await b.post(`/passkey/generate-${operation==="register-options"?"register":"authenticate"}-options`,{},{method:"GET"});
+    denial(result);expect(result.setCookie.length).toBe(0);
+    const after=await passkeyState(f);
+    expect(after.sessions.length-before.sessions.length).toBe(operation==="password" && when==="after"?1:0);
+    expect(after.contexts.length-before.contexts.length).toBe(operation!=="password" && when==="after"?1:0);
+    expect(result.json?.committed).toBe(when==="after");
+    if(when==="after") {const count=after.sessions.length;denial(await b.signIn());expect((await passkeyState(f)).sessions.length).toBe(count);}
+  }));
+  test("zero-only authenticator counters are natively supported, while challenge replay remains denied",async()=>owned(async f=>{
+    const {authenticator}=await enroll(f);
+    for(let i=0;i<2;i++){const a=await assertion(f,authenticator,{counter:0});success(await complete(a.browser,a.response));denial(await complete(a.browser,a.response));}
+    expect((await passkeyState(f)).credentials[0]?.counter).toBe(0);
+  }));
+  test("spent subject budget survives fresh challenges and reload; another subject remains isolated",async()=>owned(async f=>{
+    const {authenticator}=await enroll(f);
+    // Enrollment already charged one slot. Seven fresh signed but wrong-handle
+    // responses spend the rest without persisting native counter/session writes.
+    for(let i=0;i<7;i++){const a=await assertion(f,authenticator,{userHandle:"d3Jvbmc"});denial(await complete(a.browser,a.response));}
+    await f.runtime.dispose();Object.assign(f,await loadPasskey(f,f.control));
+    const before=f.control.entries.length,a=await assertion(f,authenticator);denial(await complete(a.browser,a.response));expect(f.control.entries.length).toBe(before);
+    const b=new Browser(f);success(await b.post("/sign-in/email",{email:"second@fixture.invalid",password:OWNER_PASSWORD}));
+    const other=new PasskeyAuthenticator(),o=await options(b,"register");success(await b.post("/passkey/verify-registration",{response:other.register(o)}));
+    expect((await passkeyState(f)).credentials.length).toBe(2);
+  },["second@fixture.invalid"]));
+
 });

@@ -1,12 +1,13 @@
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { betterAuth } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
 import { Kysely, SqliteDialect } from "kysely";
 import { loadAuthenticationProvider } from "@/server/modules/authentication";
 import type { ExclusiveConnectionOptions } from "@/server/infrastructure/sqlite/exclusive-connection";
 import { BASE_URL, IP_HEADER, SECRET, type ProviderEvidence } from "./fixture";
 import { applyFactorDdl, factorStore, type FactorStore } from "./factor-fixture";
-import { PASSKEY_DDL } from "./passkey-admission";
+import { PASSKEY_DDL,PasskeyAdmission } from "./passkey-admission";
 import { newPasskeyControl, passkeyLibraryOptions, type PasskeyControl } from "./passkey-provider";
 
 const SETTINGS = { baseURL:BASE_URL,secret:SECRET,clientIpHeader:IP_HEADER };
@@ -67,5 +68,18 @@ export async function passkeyState(f: FactorStore) {
         schema:rows<{version:number}>('SELECT max(version) version FROM schema_migrations')[0]!.version,
       };
     } finally {db.close();}
+  });
+}
+
+/** Real native session liveness, projected through current fixture evidence. Never a controller actor. */
+export async function observePasskeySession(f:FactorStore,cookie:string) {
+  return f.storage.borrow(async()=>{
+    const db=f.storage.createProviderConnection(),database=new Kysely<never>({dialect:new SqliteDialect({database:db})});
+    try {
+      const auth=betterAuth(passkeyLibraryOptions(SETTINGS,database));
+      await (await auth.$context).checkSchema!();
+      const current=await auth.api.getSession({headers:new Headers({cookie}),query:{disableCookieCache:true,disableRefresh:true}});
+      return current ? new PasskeyAdmission(db).session(current.session.id,current.user.id,Date.now()) : null;
+    } finally {await database.destroy();}
   });
 }
