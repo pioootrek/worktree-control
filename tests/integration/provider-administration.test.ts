@@ -26,7 +26,8 @@ beforeAll(async () => {
   await symlink(join(root, "packages/auth-provider-better-auth-proof/node_modules"), join(emitted, "node_modules"), "dir");
   await exec(process.execPath, ["node_modules/tsup/dist/cli-default.js", "packages/auth-provider-better-auth-proof/src/index.ts",
     "--format", "esm", "--platform", "node", "--target", "node22", "--out-dir", emitted,
-    "--external", "better-auth", "--external", "@better-auth/core", "--external", "kysely"], { cwd: root, timeout: 20_000 });
+    "--external", "better-auth", "--external", "@better-auth/core", "--external", "kysely",
+    "--external", "@better-auth/passkey", "--external", "@better-auth/utils"], { cwd: root, timeout: 20_000 });
   entry = join(emitted, "index.js");
   observedEntry = join(emitted, "observed.mjs");
   await writeFile(observedEntry, `import { authenticationProvider as provider } from ${JSON.stringify(pathToFileURL(entry).href)};
