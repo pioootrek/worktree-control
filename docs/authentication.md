@@ -592,8 +592,43 @@ queued borrow and final admission. Before COMMIT the existing guards roll the su
 back, and the separately committed charge stays. After a known COMMIT, cancellation only
 suppresses output and removes the unreleased new session on reserved admission. It
 cannot undo a password, selection, step or revocation. The in-flight slot is held until
-the response closed and the callback really ended, including after a borrow's public
-promise timed out.
+the response closed and every callback really ended, including a cleanup callback, and
+including after a borrow's public promise timed out.
+
+**Unreleased sessions.** A session minted for a response that was never delivered has
+no client, so the runtime owns its cleanup. The identity comes only from the evidence
+write in the transaction that created the session: password evidence, inherited
+password-replacement evidence, or a TOTP or passkey login settlement. No request field,
+native response or lookup of the account's latest session can select it, and enrollment
+or staging results own nothing. The record is that session ID. A discarded or finished
+result keeps no cookie or body.
+
+The loader input `unreleasedSessions` bounds these records. It is a required positive
+integer for browser login, with no default, and the proof fixture's value is not a
+product limit. Every session-producing operation checks it inside its actual borrow,
+before native work, so queued issuers cannot pass it together. At the bound they get 503
+`database_busy` and mint nothing. Enrollment, staging and options are not refused.
+Every caller of `AuthenticationProviderRuntime.browser` must finish or discard its result;
+an abandoned one keeps its record until disposal.
+
+A cleanup that fails stays recorded, and the row alone decides completion: a deletion
+whose notification failed still counts as finished, and a thrown error does not count as
+either result. Each later session-producing request first retries the retained records,
+so recovered deletion makes room for that request. Cleanup runs on reserved admission, at
+most once per record at a time. A record never expires or gets evicted, so reaching the
+bound refuses issuers rather than forgetting a session that may exist. If provider admission
+closed, a read on reserved core admission reconciles the row, so a forced rollback or a
+deletion that finished before a timeout does not leave disposal falsely unconfirmed.
+
+A failed operation keeps its record across a lost COMMIT acknowledgment or a failed
+notification. After a known commit, cleanup removes only that session and its evidence.
+The password, selection, step, receipt and revocations stay. A proved rollback leaves
+nothing to clean. An unknown outcome keeps its public answer whatever cleanup later learns.
+Disposal retries every record and reads the rows again after the drain. It rejects with
+`disposal_unconfirmed` while a row may remain, and the owner keeps both locks.
+These records are in memory: a process that ends without confirmed disposal
+leaves a session row with no cookie holder and no later sweep. It stops authorizing at
+expiry, but its row stays.
 
 **Outcomes.** Refusals use fixed bodies:
 
@@ -602,7 +637,7 @@ promise timed out.
 | 400, 408, 413 | `invalid_request`, `request_timeout`, `request_too_large` | Boundary refusal before the provider |
 | 401 | `authentication_failed` | Missing, wrong, replayed, expired, revoked, cross-account or selected-policy failure, all alike |
 | 429 | `rate_limited` | Real limiter or budget exhaustion |
-| 503 | `database_busy`, `database_unavailable` | Bounded capacity, or an unavailable owner or provider |
+| 503 | `database_busy`, `database_unavailable` | Bounded capacity, including the unreleased-session bound, or an unavailable owner or provider |
 | 502 | `provider_failed` | Invalid provider output |
 | 503 | `completion_unconfirmed` with `committed:true` | A durable receipt proves the effect, but its response failed |
 | 503 | `completion_unconfirmed` | The outcome is unknown, with no boolean and no cookie |

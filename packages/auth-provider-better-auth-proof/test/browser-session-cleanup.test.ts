@@ -5,7 +5,7 @@ import { loadAuthenticationProvider } from "@/server/modules/authentication";
 import type { ProofFaultInjection } from "../src/index";
 import { browserFixture, TRANSPORT_LIMITS, type BrowserClient, type BrowserFixture, type HttpResult } from "./browser-authentication-fixture";
 import { betweenResultAndRelease, enableTotp, enrollPasskey, enrollTotp, live, options, passkeyLogin, post, refused, S, signIn, stage, strength, totpLogin, unauthenticated } from "./browser-factor-helpers";
-import { BASE_URL, count, IP_HEADER, ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, PROVIDER_ENTRY, SECRET, storeFixture } from "./fixture";
+import { BASE_URL, cleanupRoots, count, IP_HEADER, ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, PROVIDER_ENTRY, SECRET, storeFixture } from "./fixture";
 import { advance, factorOptions, protectionState, STEP } from "./integrated-fixture";
 import { PasskeyAuthenticator } from "./passkey-authenticator";
 import { cleanupStrictRoots, gate, sleep } from "./strict-fixture";
@@ -60,6 +60,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   for (const f of opened.splice(0)) await f.close();
   cleanupStrictRoots();
+  cleanupRoots();
 });
 
 describe("bounded ownership of unreleased sessions", () => {

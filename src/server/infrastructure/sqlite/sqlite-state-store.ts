@@ -1328,6 +1328,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       subjects: providerId => new AuthenticationProviderQueries(database, providerId),
       available: () => { const state = connection.snapshot(); return state.state === "open" && !state.draining; },
       currentSession: (providerId, sessionId) => new AuthenticationProtectionQueries(database, providerId).sessionState(sessionId),
+      sessionPresent: (providerId, sessionId) => this.admission.run(() => new AuthenticationProtectionQueries(database, providerId).session(sessionId) !== null, { reserved: true }),
       protection: (providerId, limits) => new AccountProtection(new AuthenticationProtectionQueries(database, providerId), limits),
     };
   }

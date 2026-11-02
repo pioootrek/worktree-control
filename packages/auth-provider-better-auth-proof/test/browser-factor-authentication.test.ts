@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthenticationProtectionQueries } from "@/server/infrastructure/sqlite/authentication-protection-queries";
 import type { ProviderFactorLimits } from "@/server/modules/authentication";
 import type { ProofFaultInjection } from "../src/index";
-import { browserFixture, TRANSPORT_LIMITS, write, type BrowserClient, type BrowserFixture } from "./browser-authentication-fixture";
+import { aroundBrowser, browserFixture, TRANSPORT_LIMITS, write, type BrowserClient, type BrowserFixture } from "./browser-authentication-fixture";
 import { betweenResultAndRelease, deleted, enableTotp, enrollPasskey, enrollTotp, get, live, options, P, passkeyLogin, post, refused, S, signIn, stage, strength, T, totpLogin, unauthenticated } from "./browser-factor-helpers";
 import { count, ORIGIN, OWNER_PASSWORD } from "./fixture";
 import { advance, factorOptions, LIMITS, protectionState, select, sql, STEP } from "./integrated-fixture";

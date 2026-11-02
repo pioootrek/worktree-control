@@ -125,6 +125,8 @@ export interface ProviderReleaseProtection {
   releaseCurrent(capture: ProviderReleaseCapture, now: number): boolean;
   /** False once anonymous options must stop, so no native challenge is allocated for them. */
   issuanceRoom(now: number): boolean;
+  /** Whether this exact row exists now. Cleanup asks this rather than trusting a thrown error. */
+  sessionPresent(sessionId: string): boolean;
 }
 
 export interface ProtectionContextRow {
@@ -546,6 +548,8 @@ export class AccountProtection implements ProviderAccountProtection, ProviderRel
     const stage = this.store.staged(capture.stage.credential);
     return !!stage && (Object.keys(capture.stage) as Array<keyof ProtectionStagedRow>).every(key => stage[key] === capture.stage[key]) && this.#stageUsable(stage, now);
   }
+
+  sessionPresent(sessionId: string): boolean { return this.store.session(sessionId) !== null; }
 
   fail(attemptId: string): void { this.store.finishReceipt(attemptId, "failed", null); }
 

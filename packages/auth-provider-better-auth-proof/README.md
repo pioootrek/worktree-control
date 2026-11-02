@@ -501,6 +501,11 @@ COMMIT plus failed ROLLBACK cannot publish its uncommitted receipt or notificati
 the owner performs final rollback and closes provider admission. A failed receipt
 read reports an unconfirmed outcome without retrying verification. A known committed success withholds cookies on lost
 acknowledgment, returns only receipt status and delivers buffered notifications.
+In `runtime.browser`, the controller takes the new session's identity from the evidence
+this provider writes in that transaction, and removes only that session after settlement.
+The provider contract has no separate call for it. `browser-session-cleanup.test.ts`
+proves the bound and the lost-acknowledgment, reconciliation and cleanup-timeout paths
+through the actual HTTP listener.
 Notification failure retains `committed:true`. Internal duplicate IDs return
 status without evaluating any submitted credential or minting another session.
 Clients cannot choose these IDs. Returned native errors, SQL faults, session,

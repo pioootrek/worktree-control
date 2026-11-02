@@ -5,24 +5,25 @@ import type { BrowserFactorResult, BrowserSession } from "@/shared/contracts/aut
  * is no suffix, query, native catch-all or caller-selected route.
  * `actor`: needs a current session of the same account.
  * `initiating`: starts a ceremony, so it never uses capacity kept for completions.
+ * `mints`: may create a session, so it needs room in the unreleased-session bound first.
  */
 export const BROWSER_OPERATIONS = {
-  "sign-in": { path: "/sign-in/email", method: "POST", initiating: true },
+  "sign-in": { path: "/sign-in/email", method: "POST", initiating: true, mints: true },
   session: { path: "/get-session", method: "GET" },
   "sign-out": { path: "/sign-out", method: "POST" },
-  password: { path: "/change-password", method: "POST", actor: true },
+  password: { path: "/change-password", method: "POST", actor: true, mints: true },
   "totp-enable": { path: "/two-factor/enable", method: "POST", actor: true, factor: true },
-  "totp-verify": { path: "/two-factor/verify-totp", method: "POST", factor: true },
+  "totp-verify": { path: "/two-factor/verify-totp", method: "POST", factor: true, mints: true },
   "passkey-register-options": { path: "/passkey/generate-register-options", method: "GET", actor: true, factor: true },
   "passkey-registration": { path: "/passkey/verify-registration", method: "POST", actor: true, factor: true },
   "passkey-confirm-options": { path: "/passkey/generate-confirm-options", method: "GET", actor: true, factor: true },
   "passkey-confirmation": { path: "/passkey/verify-confirmation", method: "POST", actor: true, factor: true },
   "passkey-authenticate-options": { path: "/passkey/generate-authenticate-options", method: "GET", initiating: true, factor: true },
-  "passkey-authentication": { path: "/passkey/verify-authentication", method: "POST", factor: true },
-} as const satisfies Record<string, { path: string; method: "GET" | "POST"; actor?: true; factor?: true; initiating?: true }>;
+  "passkey-authentication": { path: "/passkey/verify-authentication", method: "POST", factor: true, mints: true },
+} as const satisfies Record<string, { path: string; method: "GET" | "POST"; actor?: true; factor?: true; initiating?: true; mints?: true }>;
 export type BrowserOperation = keyof typeof BROWSER_OPERATIONS;
-export const browserOperationRequires = (operation: BrowserOperation, flag: "actor" | "factor" | "initiating"): boolean =>
-  (BROWSER_OPERATIONS[operation] as { actor?: true; factor?: true; initiating?: true })[flag] === true;
+export const browserOperationRequires = (operation: BrowserOperation, flag: "actor" | "factor" | "initiating" | "mints"): boolean =>
+  (BROWSER_OPERATIONS[operation] as { actor?: true; factor?: true; initiating?: true; mints?: true })[flag] === true;
 
 export const BROWSER_COOKIE = {
   session: "__Secure-wtc.session_token",

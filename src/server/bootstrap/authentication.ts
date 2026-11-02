@@ -23,7 +23,8 @@ export function composeIsolatedBrowserAuthentication(input: {
   /** Explicit inputs for this isolated composition. None is an approved product default. */
   limits: AuthenticationTransportLimits;
 }) {
-  if (input.runtime.disposed) throw new AuthenticationProviderError("provider_unavailable", "Authentication provider is unavailable.");
+  // Browser login needs the loader's explicit unreleased-session bound.
+  if (input.runtime.disposed || !input.runtime.issuanceBounded) throw new AuthenticationProviderError("provider_unavailable", "Authentication provider is unavailable.");
   const identity = new IdentityService(input.store, undefined, undefined, undefined, input.authentication, input.store, input.runtime);
   const knowledge = new KnowledgeService(input.store, identity);
   const providerKnowledge = new ProviderKnowledgeApplication(input.admission, identity, knowledge);

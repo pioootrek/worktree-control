@@ -49,7 +49,7 @@ function adapter() {
   const release = Object.freeze({ operation: "sign-out", outcome: "signed-out" }) as BrowserRelease;
   const browser = vi.fn<AuthenticationProviderRuntime["browser"]>().mockImplementation(() => ({ result: Promise.resolve(release), settled: Promise.resolve() }));
   const value = new AuthenticationHttp({ origin: "https://controller.test", admission: directAdmission, limits,
-    runtime: { browser, browserReleaseHeaders: () => new Headers(), browserReleaseCommitted: () => false, discardBrowserRelease: async () => undefined,
+    runtime: { browser, browserReleaseHeaders: () => new Headers(), browserReleaseCommitted: () => false, discardBrowserRelease: () => ({ result: Promise.resolve(), settled: Promise.resolve() }),
       finishBrowserRelease: () => ({ authenticated: false }) } as never, knowledge: {} as never, status: () => ({ mode: "open", loginAvailable: true }), maxInFlight: 1 });
   return { value, browser };
 }

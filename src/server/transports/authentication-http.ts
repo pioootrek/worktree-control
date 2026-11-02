@@ -197,7 +197,7 @@ export class AuthenticationHttp {
         unreleased = null;
       }, { signal: lifetime.signal });
     } catch (error) {
-      await this.failed(error, unreleased, knowledge, response, lifetime);
+      await this.failed(error, unreleased, knowledge, response, lifetime, started);
     } finally {
       lifetime.detachRequest();
       // No Promise.race: a timed-out borrow's execution keeps this slot until it really ends.
@@ -222,9 +222,14 @@ export class AuthenticationHttp {
     return [...lines, ...stale.filter(name => !named(name)).map(deletionCookie)];
   }
 
-  private async failed(error: unknown, unreleased: BrowserRelease | null, knowledge: boolean, response: ServerResponse, lifetime: RequestLifetime): Promise<void> {
+  private async failed(error: unknown, unreleased: BrowserRelease | null, knowledge: boolean, response: ServerResponse, lifetime: RequestLifetime, started: Array<Promise<void>>): Promise<void> {
     const committed = unreleased !== null && this.deps.runtime.browserReleaseCommitted(unreleased);
-    if (unreleased) await this.deps.runtime.discardBrowserRelease(unreleased);
+    if (unreleased) {
+      // The answer waits for the public result. The slot waits for the cleanup callback itself.
+      const cleanup = this.deps.runtime.discardBrowserRelease(unreleased);
+      started.push(cleanup.settled);
+      await cleanup.result;
+    }
     // A closed response gets nothing, including an error.
     if (!lifetime.open) return;
     const known = committed ? new AuthenticationProviderError("outcome_committed", "The change committed.", true) : error;

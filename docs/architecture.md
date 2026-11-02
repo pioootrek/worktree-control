@@ -532,6 +532,9 @@ Provider API contract 2 requires durable `signOut`; version 1 fails compatibilit
 checks. Contract 3 adds the application-owned `host.protection` port: the provider
 calls it synchronously inside its open transaction, and `AccountProtection` keeps
 policy, transitions and the current-authority rule in the controller. Disposal tracks actual provider settlement and closes only its borrowed facade.
+The runtime also owns cleanup of sessions it minted but never released, as bounded
+in-memory ID records tied to the exclusive borrow. Issuers are refused before minting
+at the bound. See [unreleased sessions](authentication.md#closed-factor-http-api).
 The owning shutdown helper disposes the optional provider after external
 producers/listeners/accepted responses drain and before service/SQLite close.
 A rejected disposal reports unconfirmed cleanup and retains both owner locks;
