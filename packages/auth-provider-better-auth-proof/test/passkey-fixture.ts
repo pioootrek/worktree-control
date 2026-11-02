@@ -65,6 +65,7 @@ export async function passkeyState(f: FactorStore) {
         contexts:rows<{purpose:string;used:number;deadline:number}>('SELECT purpose,used,deadline FROM passkey_fixture_context ORDER BY rowid'),
         budgets:rows<{charged:number}>('SELECT charged FROM passkey_fixture_budget'),
         trusted:rows<{verifiedUv:number}>('SELECT verifiedUv FROM passkey_fixture_trust'),
+        staged:rows<{deadline:number;originalDeadline:number;generation:number;purpose:string}>('SELECT deadline,originalDeadline,generation,purpose FROM passkey_fixture_staged ORDER BY rowid'),
         schema:rows<{version:number}>('SELECT max(version) version FROM schema_migrations')[0]!.version,
       };
     } finally {db.close();}

@@ -142,10 +142,17 @@ this decision does not unlock owner administration or vault access.
 A3-I14 adds an isolated backend passkey proof using the actual optional
 `@better-auth/passkey` 1.7.14 plugin and locked SimpleWebAuthn server 13.3.3.
 It uses a fixed fixture RP/origin, real signed registration/assertion data,
-and supported server callbacks that require verified UV before credential or
-session persistence. Its signed-registration experiment accepts packed
-attestation only; default unsigned `none` enrollment is not a completed workflow.
-Browser UV requests are also required. Temporary owner-made
+and supported server callbacks. A3-I15 extends the same proof to ordinary
+privacy-preserving `fmt:none` registration as untrusted staged state. A separate
+fresh native signed UP/UV assertion must confirm the exact credential, issued
+handle and original authorized password-session context before promotion.
+Confirmation deletes its native-created session atomically, emits no cookie and
+leaves the original session and password evidence unchanged. Normal login refuses
+staged keys; later passkey login returns the existing nonauthorizing observation.
+Packed signed enrollment remains supported. Browser UV requests are also required.
+Staging/confirmation use bounded owner-controlled state and immutable deadlines;
+COMMIT uncertainty withholds output. These fixture limits are not product defaults.
+Temporary owner-made
 schema and nonauthorizing `passkey_uv` observations do not change core schema
 39, provider storage 1, contract 2 or production provider loading. The plugin
 has no durable session-method or enrollment-UV history; integration must supply

@@ -557,17 +557,50 @@ HTTPS origin/RP decision before credentials can be enrolled.
 An independent test authenticator uses Node crypto with ephemeral P-256 keys,
 packed ES256 self-attestation and signed assertions. It does not mock verification,
 implement a production verifier or claim authenticator hardware provenance.
-This signed-registration experiment requests direct attestation and accepts only
-verified packed registration. Native `fmt:none` reports verification success
-without checking an attestation signature, so that default is explicitly refused
-here. This fixture restriction is not a product-wide attestation requirement.
-Privacy-preserving `none` registration needs a separately reviewed enrollment
-proof, such as a standard signed UV assertion before trusting the credential;
-that workflow is not implemented by this experiment.
+A3-I15 extends this same provider to privacy-preserving `fmt:none` enrollment.
+Registration options now request `none`; verified packed self-attestation remains
+supported with its prior signed-UV behavior. Native `fmt:none` checks structure
+without an attestation signature. The fixture ignores its unsigned UV bit and
+stages the native credential without trust, selected protection, session evidence
+or a new session/cookie. Staging binds the exact native row/key fingerprint,
+subject, issued handle, original password session, generation, immutable password
+deadline and enrollment purpose. It expires at the earliest of the original
+registration challenge deadline, password deadline and original ten-minute
+password freshness boundary.
+
+`GET /passkey/generate-confirm-options` requires the original session and an
+existing staged context capability. It issues a fresh native authentication
+challenge restricted to that exact candidate. `POST /passkey/verify-confirmation`
+accepts only `{response}` and uses actual native signature verification plus
+verified signed UP/UV and stored-handle matching. Current bindings are checked
+before admission, at native entry, in the verification callback and at settlement.
+Normal login refuses staged keys. Existing passkey or TOTP protection refuses
+this password-session enrollment path; management needs its own reviewed proof.
+
+Confirmation commits its one-use charge before verification. Its separate success
+transaction joins the native counter update, trust promotion and completion
+receipt. The native endpoint always creates a session; the wrapper deletes that
+exact new session through the library's internal adapter before committing and
+suppresses all native cookies and body tokens. It stores no evidence for the
+deleted session and keeps the original password session and evidence unchanged.
+Its deletion notification names only the ephemeral session. Later normal passkey
+login can create the existing nonauthorizing `passkey_uv` observation. Promotion
+does not authorize old sessions or activate production policy.
+
+Staged entries use the existing fixture capacity of 64 and cleanup batch of 8.
+Cleanup removes an expired native row only while it still matches the staged
+subject/fingerprint and has no trust. It preserves trusted or replaced rows and
+candidates with unresolved charged receipts. These are fixture limits, not
+approved product defaults. The focused staged-enrollment tests cover real signed
+confirmation, unsigned/forged UV, binding and revocation at every phase, zero
+counters, replay/concurrency, rollback-restored challenges, COMMIT uncertainty,
+failed rollback, lost output, provider reload on the same owner, immutable
+deadlines, capacity and cleanup.
 Both native verifiers set `requireUserVerification:false` in this pinned plugin.
 Supported `registration.afterVerification` and `authentication.afterVerification`
-callbacks require actual verified `userVerified:true` before credential storage,
-counter update or session creation. Registration requests require UV through the
+callbacks require actual verified `userVerified:true` before trusted packed
+enrollment, confirmation promotion or normal login. Untrusted `none` staging is
+the sole structural-registration exception. Registration requests require UV through the
 plugin option. Native assertion options hard-code `preferred`; the bounded
 response sets `required`, independently of the server callback check. Signed UP
 alone, forged client UV metadata and tampered signatures never substitute for UV.
@@ -578,7 +611,8 @@ zero-only authenticator counters remain natively supported and cannot supply
 clone detection. Challenge replay is still denied. The fixture stores the
 issued handle with its exact mapped subject, verified enrollment UV, native
 credential fingerprint and security generation, then checks it in the supported
-authentication callback. Only current trusted credentials qualify. The library's
+authentication callback. Only current trusted credentials qualify for login;
+the dedicated confirmation operation alone can verify a bound staged key. The library's
 passkey model has no enrollment UV history, session method or security generation.
 Those missing durable bindings are an integration gate, not invented upstream
 metadata. The fixture's method is explicitly `passkey_uv`, never password plus

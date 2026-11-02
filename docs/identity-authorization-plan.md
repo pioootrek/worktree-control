@@ -272,10 +272,15 @@ strength need verified session evidence; enabled flags grant no role or privileg
 Existing current-identity hard guards remain until separately implemented policy.
 See [the owner decision and current proof](authentication.md#owner-selected-optional-methods).
 
-A3-I14 proves passkey feasibility only in the private temporary fixture. It
-requires signed UV with fixed RP/origin and exact subject/handle binding before
-persistence, using supported callbacks in `@better-auth/passkey` 1.7.14. Its
-`passkey_uv` session observation is nonauthorizing; the library supplies no
+A3-I14 proves passkey feasibility only in the private temporary fixture, using
+supported callbacks in `@better-auth/passkey` 1.7.14. A3-I15 adds untrusted
+privacy-preserving `fmt:none` staging followed by a separate native signed UP/UV
+confirmation bound to the exact credential, subject, issued handle, original
+password session, generation and deadline with fixed RP/origin. Confirmation
+promotes trust atomically and deletes its native-created session, with no cookie
+or upgrade of the original password evidence. Normal login refuses staged keys;
+packed signed enrollment remains supported. Its later `passkey_uv` login
+observation is nonauthorizing; the library supplies no
 durable session-method/generation or enrollment-UV trust history. Production
 contracts, schema and activation stay unchanged. TOTP replay, management/recovery,
 current-generation evidence and A5 remain unresolved public integration gates.

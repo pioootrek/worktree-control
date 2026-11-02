@@ -64,12 +64,12 @@ describe("A3-I14 pinned real passkey proof, nonauthorizing",() => {
   test("browser registration and assertion requests both ask for required UV, with immutable fixture RP/origin",async () => owned(async f => {
     const b = new Browser(f);success(await b.signIn());
     const r = await options(b,"register") as CeremonyOptions & {authenticatorSelection:{userVerification:string}};
-    expect(r.authenticatorSelection.userVerification).toBe("required");expect(r.attestation).toBe("direct");expect(r.rp?.id).toBe("controller.test");
+    expect(r.authenticatorSelection.userVerification).toBe("required");expect(r.attestation).toBe("none");expect(r.rp?.id).toBe("controller.test");
     const a = await options(new Browser(f),"authenticate") as CeremonyOptions & {userVerification:string};
     expect(a.userVerification).toBe("required");expect(a.rpId).toBe("controller.test");
     denial(await b.post("/passkey/generate-register-options?rpID=evil.test",{},{method:"GET"}));
   }));
-  for (const [name,input] of Object.entries({"presence only":{uv:false},"no presence":{up:false},"unsigned attestation":{attestationNone:true},"bad self-attestation":{tamper:true},"wrong origin":{origin:"https://evil.test"},"wrong RP":{rp:"evil.test"},"wrong challenge":{challenge:"wrong"}}) as Array<[string,AuthenticatorInput]>) {
+  for (const [name,input] of Object.entries({"presence only":{uv:false},"no presence":{up:false},"bad self-attestation":{tamper:true},"wrong origin":{origin:"https://evil.test"},"wrong RP":{rp:"evil.test"},"wrong challenge":{challenge:"wrong"}}) as Array<[string,AuthenticatorInput]>) {
     test(`registration rejects ${name} before credential/session persistence`,async () => owned(async f => {
       const b = new Browser(f);success(await b.signIn());const o = await options(b,"register");
       const a = new PasskeyAuthenticator();
@@ -78,6 +78,17 @@ describe("A3-I14 pinned real passkey proof, nonauthorizing",() => {
       expect(state.receipts.at(-1)?.state).toBe("failed");expect(state.budgets[0]?.charged).toBe(1);
     }));
   }
+  test("unsigned fmt:none UV cannot confer trust without a separate signed confirmation",async()=>owned(async f=>{
+    const b=new Browser(f);success(await b.signIn());const o=await options(b,"register"),a=new PasskeyAuthenticator();
+    const staged=await b.post("/passkey/verify-registration",{response:a.register(o,{attestationNone:true})});
+    success(staged);expect(staged.json).toEqual({outcome:"staged",authorizing:false});expect(staged.setCookie.length).toBe(0);
+    const state=await passkeyState(f);expect(state.credentials.length).toBe(1);expect(state.staged.length).toBe(1);expect(state.trusted.length).toBe(0);expect(state.sessions.length).toBe(1);
+    expect(f.control.observations.at(-1)?.userVerified).toBe(false);
+    const normal=await assertion(f,a);denial(await complete(normal.browser,normal.response));
+    const c=await b.post("/passkey/generate-confirm-options",{},{method:"GET"});success(c);
+    const confirmed=await b.post("/passkey/verify-confirmation",{response:a.assert(c.json!.options as unknown as CeremonyOptions)});success(confirmed);expect(confirmed.setCookie.length).toBe(0);
+    const after=await passkeyState(f);expect(after.trusted).toEqual([{verifiedUv:1}]);expect(after.staged.length).toBe(0);expect(after.sessions).toEqual(state.sessions);expect(after.evidence).toEqual(state.evidence);
+  }));
   test("client extension claims cannot replace signed registration UV",async () => owned(async f => {
     const b = new Browser(f);success(await b.signIn());const o = await options(b,"register");
     const response = {...new PasskeyAuthenticator().register(o,{uv:false}),clientExtensionResults:{uv:true,userVerified:true}};

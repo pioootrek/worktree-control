@@ -26,7 +26,7 @@ export interface PasskeyControl {
 }
 export const newPasskeyControl = (): PasskeyControl => ({ trace: [], observations: [], entries: [], failCookie: false, failEvidence: false, vetoSession: false });
 type Options = AuthenticationProviderOptions & { passkeyControl: PasskeyControl };
-interface Operation { kind: string; context?: PasskeyContext; ticket?: PasskeyTicket; verified: boolean; nativeSubject?: string; request: Request }
+interface Operation { kind: string; context?: PasskeyContext; ticket?: PasskeyTicket; verified: boolean; registrationFormat?: "packed" | "none"; nativeSubject?: string; request: Request }
 const refuse = () => { throw new APIError("FORBIDDEN", { message: "Fixture verification refused." }); };
 
 /** Supported callbacks only. No verifier replacement, native adapter mutation or library patches. */
@@ -107,20 +107,22 @@ class PasskeyProvider implements AuthenticationProviderInstance {
     const opts = passkeyLibraryOptions(this.options,database,{
       registration: async ({ verification,user }) => {
         const op = this.#operation.getStore();
-        const uv = verification.verified && verification.registrationInfo?.userVerified === true;
+        const fmt = verification.registrationInfo?.fmt;
+        const uv = verification.verified && fmt === "packed" && verification.registrationInfo?.userVerified === true;
         record("registration", uv);
-        // This signed-registration experiment accepts packed attestation only.
-        // Native fmt:none marks verified=true without checking any signature.
-        if (!uv || verification.registrationInfo?.fmt !== "packed" || !op?.ticket || op.ticket.subject !== user.id || !this.policy().usable(op.ticket,Date.now())) refuse();
-        op!.verified = true;
+        // Native fmt:none proves structure only. Its unsigned UV bit is ignored.
+        if (!verification.verified || (fmt !== "none" && !uv) || !op?.ticket || op.ticket.subject !== user.id || !this.policy().usable(op.ticket,Date.now())) refuse();
+        op!.registrationFormat = fmt as "packed" | "none";
+        op!.verified = uv;
       },
       authentication: async ({ verification,clientData }) => {
-        const op = this.#operation.getStore(), trust = this.policy().trust(clientData.id);
+        const op = this.#operation.getStore(), policy = this.policy();
+        const trust = op?.kind === "confirmation" && op.context ? policy.boundStage(op.context,Date.now()) : policy.trust(clientData.id);
         const uv = verification.verified && verification.authenticationInfo.userVerified === true;
         record("authentication",uv);
         // Native verification validates the signature. The callback binds its
         // user handle to the exact random handle issued at UV enrollment.
-        if (!uv || !op?.ticket || !trust || trust.subject !== op.ticket.subject || clientData.response.userHandle !== trust.handle || !this.policy().usable(op.ticket,Date.now())) refuse();
+        if (!uv || !op?.ticket || clientData.id !== op.ticket.credential || !trust || trust.subject !== op.ticket.subject || clientData.response.userHandle !== trust.handle || !policy.usable(op.ticket,Date.now())) refuse();
         op!.verified = true;
       },
     },transaction);
@@ -159,10 +161,13 @@ class PasskeyProvider implements AuthenticationProviderInstance {
     const kind = path === "/sign-in/email" ? "password"
       : path === "/passkey/generate-register-options" ? "register-options"
       : path === "/passkey/generate-authenticate-options" ? "authenticate-options"
+      : path === "/passkey/generate-confirm-options" ? "confirm-options"
       : path === "/passkey/verify-registration" ? "registration"
-      : path === "/passkey/verify-authentication" ? "authentication" : "";
+      : path === "/passkey/verify-authentication" ? "authentication"
+      : path === "/passkey/verify-confirmation" ? "confirmation" : "";
     if (!kind || url.pathname !== new URL(BASE_URL).pathname + path || request.method !== (kind.endsWith("options") ? "GET" : "POST")) throw new Refused(404);
-    const complete = kind === "registration" || kind === "authentication";
+    const confirming = kind === "confirm-options" || kind === "confirmation";
+    const complete = kind === "registration" || kind === "authentication" || kind === "confirmation";
     const text = request.method === "GET" ? "" : await request.text();
     if (text.length > 32_768) throw new Refused(413);
     const body = text ? JSON.parse(text) as Record<string,unknown> : {};
@@ -171,10 +176,13 @@ class PasskeyProvider implements AuthenticationProviderInstance {
     const jar = cookies(request.headers.get("cookie"));
     const headers = new Headers({ origin: ORIGIN, "content-type": "application/json" });
     const peer = request.headers.get(IP_HEADER); if (peer) headers.set(IP_HEADER,peer);
-    const allowed = kind === "register-options" || kind === "registration" ? [COOKIE.session,PASSKEY_COOKIE] : kind === "authentication" ? [PASSKEY_COOKIE] : [];
+    const allowed = kind === "register-options" || kind === "registration" || confirming ? [COOKIE.session,PASSKEY_COOKIE] : kind === "authentication" ? [PASSKEY_COOKIE] : [];
     const selected = [...jar].filter(([name]) => allowed.includes(name));
     if (selected.length) headers.set("cookie", selected.map(([n,v]) => `${n}=${v}`).join("; "));
-    const sanitized = new Request(request.url,{ method:request.method,headers,signal:request.signal,...(text ? { body:JSON.stringify(body) } : {}) });
+    const nativeHeaders = new Headers(headers);
+    if (confirming) nativeHeaders.set("cookie",selected.filter(([name])=>name===PASSKEY_COOKIE).map(([n,v])=>`${n}=${v}`).join("; "));
+    const nativePath = kind === "confirm-options" ? "/passkey/generate-authenticate-options" : kind === "confirmation" ? "/passkey/verify-authentication" : path;
+    const sanitized = new Request(BASE_URL+nativePath,{ method:request.method,headers:nativeHeaders,signal:request.signal,...(text ? { body:JSON.stringify(body) } : {}) });
     const policy = this.policy();
     let context: PasskeyContext | undefined;
     let ticket: PasskeyTicket | undefined;
@@ -184,15 +192,16 @@ class PasskeyProvider implements AuthenticationProviderInstance {
     if (complete) {
       const opaque = jar.get(PASSKEY_COOKIE);
       context = opaque ? policy.context(opaque) : undefined;
-      if (!context || context.purpose !== kind || !policy.valid(context,Date.now())) throw new Refused();
+      if (!context || context.purpose !== (kind === "confirmation" ? "enrollment-confirmation" : kind) || !policy.valid(context,Date.now())) throw new Refused();
       let subject = context.subject;
       let credential: string | null = null;
-      if (kind === "authentication") {
+      if (kind === "authentication" || kind === "confirmation") {
         const response = body.response as { id?: unknown };
         if (typeof response.id !== "string") throw new Refused(400);
         credential = response.id;
         subject = policy.credential(credential)?.userId ?? null;
-      } else {
+      }
+      if (kind !== "authentication") {
         const current = await this.#auth!.api.getSession({ headers,query:{ disableCookieCache:true,disableRefresh:true } });
         if (!current || current.user.id !== subject || current.session.id !== context.sessionId) throw new Refused();
       }
@@ -219,9 +228,16 @@ class PasskeyProvider implements AuthenticationProviderInstance {
         return this.#operation.run(operation, async () => {
           if (request.signal.aborted || (ticket && !policy.usable(ticket,Date.now()))) throw new Refused(409);
           let current: { user: { id: string }; session: { id: string } } | null = null;
+          let staged: ReturnType<PasskeyAdmission["staged"]> = undefined;
           if (kind === "register-options") {
             current = await auth.api.getSession({ headers,query:{ disableCookieCache:true,disableRefresh:true } });
-            if (!current || !policy.origin(current.session.id,current.user.id,Date.now()) || policy.enrolled(current.user.id)) throw new Refused();
+            if (!current || !policy.origin(current.session.id,current.user.id,Date.now()) || policy.protected(current.user.id)) throw new Refused();
+          }
+          if (kind === "confirm-options") {
+            const opaque = jar.get(PASSKEY_COOKIE), source = opaque && policy.context(opaque);
+            staged = source ? policy.candidate(source) : undefined;
+            current = await auth.api.getSession({headers,query:{disableCookieCache:true,disableRefresh:true}});
+            if (!staged || !current || current.session.id !== staged.sessionId || current.user.id !== staged.subject || !policy.stageUsable(staged,Date.now())) throw new Refused();
           }
           const native = await auth.handler(sanitized);
           await this.control.pause?.("after-native",this.#connection!);
@@ -236,27 +252,34 @@ class PasskeyProvider implements AuthenticationProviderInstance {
             if (!opaque || !pending) throw new Refused(500);
             const issued = JSON.parse(pending.value) as { type:string; expectedChallenge:string; userData:{id:string} };
             const expectedKind = kind === "register-options" ? "registration" : "authentication";
-            if (issued.type !== expectedKind || issued.expectedChallenge !== parsed.challenge || (current && issued.userData.id !== current.user.id)) throw new Refused(500);
+            if (issued.type !== expectedKind || issued.expectedChallenge !== parsed.challenge || (current && !staged && issued.userData.id !== current.user.id)) throw new Refused(500);
             const origin = current && policy.origin(current.session.id,current.user.id,Date.now());
             if (current && !origin) throw new Refused();
-            policy.issue(opaque,{ purpose:expectedKind,subject:current?.user.id ?? null,sessionId:current?.session.id ?? null,
-              handle:current ? (parsed.user as {id:string}).id : null,nativeId:pending.id,
-              deadline:Math.min(new Date(pending.expiresAt).getTime(),origin?.originalDeadline ?? Infinity),originalDeadline:origin?.originalDeadline ?? new Date(pending.expiresAt).getTime(),generation:current ? policy.generation(current.user.id) : null });
+            if (staged && !policy.stageUsable(staged,Date.now())) throw new Refused();
+            policy.issue(opaque,{ purpose:staged ? "enrollment-confirmation" : expectedKind,subject:current?.user.id ?? null,sessionId:current?.session.id ?? null,
+              handle:staged?.handle ?? (current ? (parsed.user as {id:string}).id : null),nativeId:pending.id,credential:staged?.credential,
+              deadline:Math.min(new Date(pending.expiresAt).getTime(),origin?.originalDeadline ?? Infinity,staged?.deadline ?? Infinity),originalDeadline:staged?.originalDeadline ?? origin?.originalDeadline ?? new Date(pending.expiresAt).getTime(),generation:current ? policy.generation(current.user.id) : null });
             // Native authentication hard-codes preferred. Browser instructions are
             // tightened here; the callback independently requires verified UV.
-            if (kind === "authenticate-options") parsed.userVerification = "required";
-            else parsed.attestation = "direct"; // Fixture requests a signed enrollment response.
+            if (kind === "authenticate-options" || staged) parsed.userVerification = "required";
+            else parsed.attestation = "none"; // Privacy-preserving default; packed remains supported.
+            if (staged) parsed.allowCredentials = [{id:staged.credential,type:"public-key"}];
             policy.operationReceipt(attemptId,current?.user.id ?? null,new Date(pending.expiresAt).getTime());
             return safe(200,"options",{ options:parsed },lines.filter(line => line.startsWith(`${PASSKEY_COOKIE}=`)));
           }
           if (kind === "registration") {
-            if (!ticket || !operation.verified || parsed.userId !== ticket.subject || typeof parsed.credentialID !== "string") throw new Refused(500);
+            if (!ticket || !operation.registrationFormat || parsed.userId !== ticket.subject || typeof parsed.credentialID !== "string") throw new Refused(500);
             const row = policy.credential(parsed.credentialID);
             if (!row || row.userId !== ticket.subject || !context?.handle) throw new Refused(500);
             if (this.control.failEvidence) throw new Refused(500);
+            policy.settle(ticket,null,Date.now());
+            if (operation.registrationFormat === "none") {
+              policy.stage(row,context);
+              return safe(200,"staged",{authorizing:false});
+            }
+            if (!operation.verified) throw new Refused(500);
             policy.capacity("passkey_fixture_trust");
             policy.run("INSERT INTO passkey_fixture_trust VALUES (?,?,?,?,?,1)",[row.credentialID,row.userId,context.handle,policy.fingerprint(row),ticket.generation]);
-            policy.settle(ticket,null,Date.now());
             return safe(200,"enrolled",{ authorizing:false });
           }
           if (kind === "password" && parsed.twoFactorRedirect === true) {
@@ -273,6 +296,15 @@ class PasskeyProvider implements AuthenticationProviderInstance {
           // a bypass. TOTP's native pending path above remains an alternative.
           if (kind === "password" && policy.enrolled(session.user.id)) throw new Refused();
           if (this.control.failEvidence) throw new Refused(500);
+          if (kind === "confirmation") {
+            if (!ticket || session.session.id === context?.sessionId || session.user.id !== ticket.subject) throw new Refused(500);
+            // Native always creates a session. Delete only that exact new token
+            // through its public internal adapter, in this same transaction.
+            await (await auth.$context).internalAdapter.deleteSession(session.session.token);
+            if (policy.rows('SELECT 1 FROM authentication_ba_session WHERE id=?',[session.session.id]).length) throw new Refused(500);
+            policy.promote(ticket,Date.now());
+            return safe(200,"enrolled",{authorizing:false});
+          }
           const method = kind === "password" ? "password" : "passkey_uv";
           policy.evidence(session.session.id,session.user.id,method,new Date(session.session.createdAt).getTime(),new Date(session.session.expiresAt).getTime(),ticket?.credential ?? null);
           if (ticket) policy.settle(ticket,session.session.id,Date.now());
