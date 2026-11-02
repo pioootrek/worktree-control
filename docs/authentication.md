@@ -144,7 +144,8 @@ A3-I14 adds an isolated backend passkey proof using the actual optional
 `@better-auth/passkey` 1.7.14 plugin and locked SimpleWebAuthn server 13.3.3.
 It uses a fixed fixture RP/origin, real signed registration/assertion data,
 and supported server callbacks that require verified UV before credential or
-session persistence. Browser UV requests are also required. Temporary owner-made
+session persistence. Its signed-registration experiment accepts packed
+attestation only; default unsigned `none` enrollment is not a completed workflow. Browser UV requests are also required. Temporary owner-made
 schema and nonauthorizing `passkey_uv` observations do not change core schema
 39, provider storage 1, contract 2 or production provider loading. The plugin
 has no durable session-method or enrollment-UV history; integration must supply
@@ -930,5 +931,5 @@ new boot's authentication service. No SQLite migration is needed; controller
 schema stays 39 and provider storage revision stays 1.
 
 This does not solve A5 provider-session resurrection after restoring older
-password/session data. External restore revocation fencing, full account/MFA
+password/session data. External restore revocation fencing, full account authentication/optional-method
 support and complete transport coverage still gate production RBAC activation.

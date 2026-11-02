@@ -14,7 +14,7 @@ function cbor(value: number | string | Uint8Array | Map<number | string, unknown
   return Buffer.concat([head(5, value.size), ...[...value].flatMap(([k, v]) => [cbor(k), cbor(v as Parameters<typeof cbor>[0])])]);
 }
 export interface CeremonyOptions { challenge: string; user?: { id: string }; rp?: { id: string }; rpId?: string }
-export interface AuthenticatorInput { uv?: boolean; up?: boolean; origin?: string; rp?: string; challenge?: string; counter?: number; userHandle?: string; tamper?: boolean }
+export interface AuthenticatorInput { uv?: boolean; up?: boolean; origin?: string; rp?: string; challenge?: string; counter?: number; userHandle?: string; tamper?: boolean; attestationNone?: boolean }
 export class PasskeyAuthenticator {
   readonly #pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   readonly id = b64(randomBytes(32));
@@ -36,7 +36,7 @@ export class PasskeyAuthenticator {
     const client = this.#data(options, "webauthn.create", input);
     const signature = sign("sha256", Buffer.concat([authData, hash(client)]), this.#pair.privateKey);
     if (input.tamper) signature[0] ^= 1;
-    const attestation = cbor(new Map<string, unknown>([["fmt", "packed"], ["authData", authData], ["attStmt", new Map<string, unknown>([["alg", -7], ["sig", signature]])]]));
+    const attestation = cbor(new Map<string, unknown>([["fmt", input.attestationNone ? "none" : "packed"], ["authData", authData], ["attStmt", input.attestationNone ? new Map() : new Map<string, unknown>([["alg", -7], ["sig", signature]])]]));
     return { id: this.id, rawId: this.id, type: "public-key", response: { clientDataJSON: b64(client), attestationObject: b64(attestation), transports: ["internal"] }, clientExtensionResults: {} };
   }
   assert(options: CeremonyOptions, input: AuthenticatorInput = {}) {

@@ -109,7 +109,9 @@ class PasskeyProvider implements AuthenticationProviderInstance {
         const op = this.#operation.getStore();
         const uv = verification.verified && verification.registrationInfo?.userVerified === true;
         record("registration", uv);
-        if (!uv || !op?.ticket || op.ticket.subject !== user.id || !this.policy().usable(op.ticket,Date.now())) refuse();
+        // This signed-registration experiment accepts packed attestation only.
+        // Native fmt:none marks verified=true without checking any signature.
+        if (!uv || verification.registrationInfo?.fmt !== "packed" || !op?.ticket || op.ticket.subject !== user.id || !this.policy().usable(op.ticket,Date.now())) refuse();
         op!.verified = true;
       },
       authentication: async ({ verification,clientData }) => {
@@ -133,9 +135,9 @@ class PasskeyProvider implements AuthenticationProviderInstance {
           this.#notifications.getStore()?.push(event);
         } },
       } },
-      hooks: { before: createAuthMiddleware(async () => {
+      hooks: { before: createAuthMiddleware(async ctx => {
         const op = this.#operation.getStore();
-        if (!op?.ticket) return;
+        if (!op?.ticket || !["/passkey/verify-registration","/passkey/verify-authentication"].includes(ctx.path)) return;
         if (this.control.entries.length >= 256) throw new Error("Fixture trace capacity.");
         this.control.entries.push({ charged: this.policy().receipt(op.ticket.attemptId)?.state === "charged", inTransaction: this.#transaction.open });
         await this.control.pause?.("native-entry",this.#connection!);
@@ -243,6 +245,7 @@ class PasskeyProvider implements AuthenticationProviderInstance {
             // Native authentication hard-codes preferred. Browser instructions are
             // tightened here; the callback independently requires verified UV.
             if (kind === "authenticate-options") parsed.userVerification = "required";
+            else parsed.attestation = "direct"; // Fixture requests a signed enrollment response.
             policy.operationReceipt(attemptId,current?.user.id ?? null,new Date(pending.expiresAt).getTime());
             return safe(200,"options",{ options:parsed },lines.filter(line => line.startsWith(`${PASSKEY_COOKIE}=`)));
           }

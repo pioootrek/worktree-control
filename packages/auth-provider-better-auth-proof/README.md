@@ -270,7 +270,7 @@ execution authority versus pending configuration, format-1 compatibility and
 malformed new-record refusal. Startup applies configured policy before the new
 snapshot. Controller schema 39, provider storage revision 1 and migration
 checksums do not change. External A5 session/password restore fencing remains
-open. Positive production third-mode tests belong after account/MFA and complete
+open. Positive production third-mode tests belong after account authentication, optional-method readiness and complete
 A5 transport enforcement; this suite does not make `better-auth` selectable.
 
 ## Isolated bounded browser integration
@@ -555,6 +555,13 @@ HTTPS origin/RP decision before credentials can be enrolled.
 An independent test authenticator uses Node crypto with ephemeral P-256 keys,
 packed ES256 self-attestation and signed assertions. It does not mock verification,
 implement a production verifier or claim authenticator hardware provenance.
+This signed-registration experiment requests direct attestation and accepts only
+verified packed registration. Native `fmt:none` reports verification success
+without checking an attestation signature, so that default is explicitly refused
+here. This fixture restriction is not a product-wide attestation requirement.
+Privacy-preserving `none` registration needs a separately reviewed enrollment
+proof, such as a standard signed UV assertion before trusting the credential;
+that workflow is not implemented by this experiment.
 Both native verifiers set `requireUserVerification:false` in this pinned plugin.
 Supported `registration.afterVerification` and `authentication.afterVerification`
 callbacks require actual verified `userVerified:true` before credential storage,
@@ -564,7 +571,9 @@ response sets `required`, independently of the server callback check. Signed UP
 alone, forged client UV metadata and tampered signatures never substitute for UV.
 
 Native registration issues a random user handle without storing it on the
-credential. Native assertion does not bind that handle. The fixture stores the
+credential. Native assertion does not bind that handle. Nonzero counters must increase;
+zero-only authenticator counters remain natively supported and cannot supply
+clone detection. Challenge replay is still denied. The fixture stores the
 issued handle with its exact mapped subject, verified enrollment UV, native
 credential fingerprint and security generation, then checks it in the supported
 authentication callback. Only current trusted credentials qualify. The library's
