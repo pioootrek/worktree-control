@@ -28,7 +28,12 @@ export class Rollback extends Error {
 
 export const isDeletion = (line: string) => /max-age=0/i.test(line) || /^[^=]+=;/.test(line);
 const expiredSession = `${COOKIE.session}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict`;
-export const issuedCookie = (lines: readonly string[], name: string) => lines.find(line => line.startsWith(`${name}=`) && !isDeletion(line))?.split(";")[0]?.slice(name.length + 1);
+export const issuedCookie = (lines: readonly string[], name: string) => {
+  // Native may refresh the old cookie before replacing its session. Match the
+  // browser's final value, including a final deletion, not the earlier refresh.
+  const line = lines.findLast(value => value.startsWith(`${name}=`));
+  return line && !isDeletion(line) ? line.split(";")[0]?.slice(name.length + 1) : undefined;
+};
 /** Signed cookie values are `value.signature`; only the library verifies the signature. */
 export const signedValue = (raw: string) => decodeURIComponent(raw).split(".")[0]!;
 /** Duplicates are refused rather than resolved: a second value is never a choice to make here. */

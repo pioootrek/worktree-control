@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import { DevVaultService } from "@/server/modules/dev-vault";
 import { authenticationFactorMigration } from "@/server/infrastructure/sqlite/authentication-factor-migration";
 import { libraryOptions } from "../src/library";
+import { issuedCookie } from "../src/factor-ceremonies";
 import type { ProofFaultInjection } from "../src/index";
 import { Authenticator, Browser } from "./factor-fixture";
 import { OWNER_EMAIL, OWNER_PASSWORD } from "./fixture";
@@ -83,6 +84,8 @@ describe("password evidence", () => {
     expect(Date.parse(row!.expiresAt)).toBeGreaterThan(Date.parse(deadline));
     const actor = (await f.authenticate(browser))!;
     expect((await f.run(() => f.runtime.browserSession(actor))).expiresAt).toBe(deadline);
+    // Let the next native middleware refresh be due during replacement itself.
+    advance(2 * 60 * 60_000);
     expect((await browser.post("/change-password", { currentPassword: OWNER_PASSWORD, newPassword: "fixture-owner-password-2", revokeOtherSessions: true })).status).toBe(200);
     const replaced = (await protectionState(f)).evidence;
     expect(replaced).toHaveLength(1);
@@ -115,6 +118,12 @@ describe("password replacement settlement", () => {
   };
   const evidenceRows = (f: Integrated) => select<Record<string, unknown>>(f, "SELECT * FROM authentication_session_evidence ORDER BY session_id");
   const passwordHash = async (f: Integrated) => (await select<{ password: string }>(f, 'SELECT password FROM authentication_ba_account WHERE "userId" = ? AND "providerId" = ?', [f.subject, "credential"]))[0]!.password;
+
+  it("uses the final native response cookie, including deletion after a refresh", () => {
+    const refreshed = `${SESSION}=fixture-refreshed; Path=/; Secure`, replacement = `${SESSION}=fixture-replaced; Path=/; Secure`;
+    expect(issuedCookie([refreshed, "unrelated=fixture", replacement], SESSION) === "fixture-replaced").toBe(true);
+    expect(issuedCookie([refreshed, `${SESSION}=; Max-Age=0; Path=/; Secure`], SESSION)).toBeUndefined();
+  });
 
   describe.each(["password", "password_totp", "passkey_uv"] as const)("%s authority", method => {
     it.each(["cancel-native", "expire-native", "cancel-final", "expire-final"] as const)("rolls back password and session effects on %s", async failure => {
@@ -156,6 +165,8 @@ describe("password replacement settlement", () => {
     const f = await create(), browser = await passwordSession(f, method);
     await f.grant();
     const actor = (await f.authenticate(browser))!, original = (await evidenceRows(f))[0]!;
+    // Native emits both an old-session refresh and its replacement cookie.
+    advance(2 * 60 * 60_000);
     const result = await browser.post("/change-password", { currentPassword: OWNER_PASSWORD, newPassword: replacementPassword, revokeOtherSessions: true });
     expect(result.status).toBe(200);
     const replaced = await evidenceRows(f);
@@ -177,7 +188,7 @@ describe("password replacement settlement", () => {
     faults.factorPause = async (stage, connection) => {
       if (stage !== "before-commit") return;
       reached = true;
-      const mutation = changed === "mapping" ? "UPDATE authentication_provider_subjects SET status = 'revoked' WHERE subject = ?"
+      const mutation = changed === "mapping" ? "UPDATE authentication_provider_subjects SET status = 'revoked', revoked_at = '2026-11-02T12:00:00.000Z' WHERE subject = ?"
         : changed === "policy" ? "UPDATE authentication_account_policies SET generation = generation + 1 WHERE subject = ?"
           : 'UPDATE authentication_ba_two_factor SET id = id || \'-replaced\' WHERE "userId" = ?';
       connection.prepare(mutation).run([f.subject]);
