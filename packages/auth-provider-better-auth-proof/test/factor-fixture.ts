@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ import { loadAuthenticationProvider } from "@/server/modules/authentication";
 import { IdentityService } from "@/server/modules/identity";
 import { BASE_URL, IP_HEADER, loadProof, ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, SECRET, type ProviderEvidence } from "./fixture";
 import { EVIDENCE_TABLE, factorLibraryOptions, FACTOR_MODEL, newFactorControl, type FactorControl, type FactorMode } from "./factor-provider";
-import { ADMISSION_DDL } from "./factor-admission";
+import { ADMISSION, ADMISSION_DDL, replayKeyCommitment } from "./factor-admission";
 
 const FACTOR_ENTRY = fileURLToPath(new URL("./factor-provider.ts", import.meta.url));
 const SETTINGS = { baseURL: BASE_URL, secret: SECRET, clientIpHeader: IP_HEADER };
@@ -45,7 +45,7 @@ export async function factorStore(connectionOptions: ExclusiveConnectionOptions 
         });
         subjects.push((await password.runtime.provisionLocal({ principalId, email, name: "Additional fixture subject", password: OWNER_PASSWORD, actor: "local-bootstrap" })).subject);
       }
-      return { root, path, store, owner, subject, subjects, storage: store.authenticationProviderStorage() };
+      return { root, path, store, owner, subject, subjects, replayKey: randomBytes(32) as Uint8Array | undefined, storage: store.authenticationProviderStorage() };
     } finally { await password.runtime.dispose(); }
   } catch (error) { await store.closeAfterDrain(); throw error; }
 }
@@ -64,7 +64,7 @@ export function fixtureSql({ storage }: FactorStore, sql: string, parameters: re
  * inside one exclusive borrow. Nothing here changes migrations or the inspector,
  * and this database must not be reopened as a recognized store.
  */
-export async function applyFactorDdl({ storage }: FactorStore, admitted = false) {
+export async function applyFactorDdl({ storage, replayKey }: FactorStore, admitted = false) {
   return storage.borrow(async () => {
     const connection = storage.createProviderConnection();
     const database = new Kysely<never>({ dialect: new SqliteDialect({ database: connection }) });
@@ -79,7 +79,11 @@ export async function applyFactorDdl({ storage }: FactorStore, admitted = false)
         for (const statement of statements) connection.prepare(statement).run([]);
         // Fixture stand-in for controller-owned evidence; no such table is proposed here.
         connection.prepare(`CREATE TABLE "${EVIDENCE_TABLE}" ("sessionId" text not null primary key references "authentication_ba_session" ("id") on delete cascade, "method" text not null, "restricted" integer not null, "verifiedAt" text not null)`).run([]);
-        if (admitted) for (const statement of ADMISSION_DDL) connection.prepare(statement).run([]);
+        if (admitted) {
+          for (const statement of ADMISSION_DDL) connection.prepare(statement).run([]);
+          if (!replayKey) throw new Error("Fixture replay key unavailable.");
+          connection.prepare(`INSERT INTO ${ADMISSION.replayKey} VALUES (1, ?)`).run([replayKeyCommitment(replayKey)]);
+        }
         transaction("COMMIT");
       } catch (error) { transaction("ROLLBACK"); throw error; }
       const after = await getMigrations(options);
@@ -99,7 +103,7 @@ export async function loadFactorProvider(base: FactorStore, control: FactorContr
     entry: FACTOR_ENTRY,
     providerId: "better-auth",
     storage: base.storage,
-    options: { ...SETTINGS, factorControl: control } as Parameters<typeof loadAuthenticationProvider>[0]["options"],
+    options: { ...SETTINGS, factorControl: control, factorReplayKey: base.replayKey } as Parameters<typeof loadAuthenticationProvider>[0]["options"],
     onInvalidation: event => {
       if (evidence.failInvalidation) throw new Error("listener failure");
       evidence.events.push(event);
@@ -179,9 +183,11 @@ export class Authenticator {
     this.#period = Number(url.searchParams.get("period") ?? 30);
   }
   /** The code for the step `offset` periods away from now. */
-  code(offset = 0): string {
+  code(offset = 0): string { return this.codeAt(Date.now() + offset * this.#period * 1000); }
+  /** Client-side generation at a known time; never used by the provider to verify. */
+  codeAt(milliseconds: number): string {
     const counter = Buffer.alloc(8);
-    counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 1000 / this.#period) + offset));
+    counter.writeBigUInt64BE(BigInt(Math.floor(milliseconds / 1000 / this.#period)));
     const hash = createHmac("sha1", this.#key).update(counter).digest();
     const start = hash[hash.length - 1]! & 15;
     return String((hash.readUInt32BE(start) & 0x7fffffff) % 10 ** this.#digits).padStart(this.#digits, "0");

@@ -4,7 +4,7 @@ import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { createAuthMiddleware } from "better-auth/api";
 import { twoFactor } from "better-auth/plugins/two-factor";
 import { Kysely, SqliteDialect } from "kysely";
-import { FixtureAdmission, FIXTURE_ADMISSION_POLICY, serverAttemptId, type AdmissionPolicy, type Ticket, type SessionEvidence } from "./factor-admission";
+import { FixtureAdmission, FIXTURE_ADMISSION_POLICY, serverAttemptId, validTotpSyntax, type AdmissionPolicy, type Ticket, type SessionEvidence, type ReplayBinding } from "./factor-admission";
 import type {
   AuthenticationProviderHost,
   AuthenticationProviderInstance,
@@ -22,7 +22,7 @@ import type {
  * is only reachable from `factor-fixture.ts`, runs on a temporary extended
  * schema, and its implementation version is deliberately outside the runtime's
  * session-authority allowlist, so it can never mint a controller actor.
- * Numeric limits are observed library defaults, not product policy.
+ * Numeric limits are library observations or fixture bounds, not product policy.
  */
 export const FACTOR_IMPLEMENTATION_VERSION = "0.0.0-proof.factor";
 export const FACTOR_MODEL = "authentication_ba_two_factor";
@@ -82,7 +82,7 @@ export const newFactorControl = (mode: FactorMode): FactorControl => ({
   mode, policy: "classified", forwardTrustRegression: false, vetoSessionCreate: false, trace: [], afterHookInTransaction: [], burned: 0, outcomes: [], failCookie: false, failEvidence: false, probeAdapters: false, adapterScopes: [],
 });
 
-type FactorOptions = AuthenticationProviderOptions & { factorControl: FactorControl };
+type FactorOptions = AuthenticationProviderOptions & { factorControl: FactorControl; factorReplayKey?: Uint8Array };
 type LibraryConnection = Pick<AuthenticationProviderOptions, "baseURL" | "secret" | "clientIpHeader">;
 
 /** The same settings as the password proof plus the candidate plugin. */
@@ -149,11 +149,13 @@ function tracedConnection(connection: ProviderSqliteConnection, control: FactorC
   };
 }
 
-interface Route { fields: readonly string[]; kind: "sign-in" | "enable" | "totp" | "recovery" }
+interface Route { fields: readonly string[]; kind: "sign-in" | "enable" | "totp" | "recovery" | "reauth-context" | "reauth-totp" }
 /** The closed bounded surface. Everything else, including every other native route, is 404. */
 const ROUTES = new Map<string, Route>([
   ["/sign-in/email", { fields: ["email", "password"], kind: "sign-in" }],
   ["/two-factor/enable", { fields: ["password"], kind: "enable" }],
+  ["/two-factor/reauthentication-context", { fields: [], kind: "reauth-context" }],
+  ["/two-factor/reauthenticate-totp", { fields: ["code", "context"], kind: "reauth-totp" }],
   ["/two-factor/verify-totp", { fields: ["code"], kind: "totp" }],
   ["/two-factor/verify-backup-code", { fields: ["code"], kind: "recovery" }],
 ]);
@@ -196,6 +198,7 @@ class FactorProofProvider implements AuthenticationProviderInstance {
   readonly #control: FactorControl;
   readonly #transaction = { open: false };
   readonly #notifications = new AsyncLocalStorage<ProviderInvalidation[]>();
+  #replay: ReplayBinding | undefined;
   #expectedAdapter: unknown;
   #connection: ProviderSqliteConnection | undefined;
   #database: Kysely<never> | undefined;
@@ -212,6 +215,10 @@ class FactorProofProvider implements AuthenticationProviderInstance {
   async initialize(): Promise<AuthenticationProviderReadiness> {
     this.#connection = tracedConnection(this.#host.connection, this.#control, this.#transaction);
     this.#database = new Kysely<never>({ dialect: new SqliteDialect({ database: this.#connection }) });
+    if (this.#control.mode === "admitted") {
+      this.#replay = this.#options.factorReplayKey && { key: Uint8Array.from(this.#options.factorReplayKey), encryptionSecret: this.#options.secret };
+      this.admission().assertReplayKey();
+    }
     const auth = this.createLibrary(this.#database);
     this.#auth = auth;
     const context = await auth.$context;
@@ -219,6 +226,8 @@ class FactorProofProvider implements AuthenticationProviderInstance {
     await context.checkSchema();
     return { providerId: "better-auth", implementationVersion: FACTOR_IMPLEMENTATION_VERSION, library: { name: "better-auth", version: "1.7.14" }, schema: "verified" };
   }
+
+  private admission() { return new FixtureAdmission(this.#connection!, this.#control.admission.policy, this.#replay); }
 
   createLibrary(database: Kysely<never>, transaction = true) {
     const options = factorLibraryOptions(this.#options, database, {
@@ -242,13 +251,13 @@ class FactorProofProvider implements AuthenticationProviderInstance {
     return betterAuth({ ...options, hooks: { before: createAuthMiddleware(async ctx => {
       const operation = this.#operation.getStore();
       if (this.#control.mode === "admitted" && operation?.ticket && ctx.path.startsWith("/two-factor/verify-")) {
-        const policy = new FixtureAdmission(this.#connection!, this.#control.admission.policy);
+        const policy = this.admission();
         const charged = policy.readReceipt(operation.ticket.attemptId)?.state === "charged";
         const entries = this.#control.admission.entries;
         if (entries.length >= 256) throw new Error("Fixture trace capacity.");
         entries.push({ attemptId: operation.ticket.attemptId, charged, inTransaction: this.#transaction.open });
         await this.#control.admission.pause?.("native-entry", this.#connection!);
-        if (operation.request.signal.aborted || !policy.usable(operation.ticket, Date.now())) throw new Error("Expired operation.");
+        if (operation.request.signal.aborted || !await policy.usable(operation.ticket, Date.now())) throw new Error("Expired operation.");
       }
       if (!this.#control.probeAdapters) return;
       this.#control.adapterScopes.push({
@@ -293,13 +302,14 @@ class FactorProofProvider implements AuthenticationProviderInstance {
     const url = new URL(request.url);
     const path = url.pathname.startsWith(`${base.pathname}/`) ? url.pathname.slice(base.pathname.length) : "";
     const route = ROUTES.get(path);
-    if (!route || request.method !== "POST" || url.search) return denied(404, "not_found");
+    if ((route?.kind.startsWith("reauth-") && this.#control.mode !== "admitted") || !route || request.method !== "POST" || url.search) return denied(404, "not_found");
     if (this.#control.mode === "admitted" && request.headers.get("origin") !== base.origin) return denied(403, "origin_refused");
     let body: unknown;
     try { body = JSON.parse(await request.text()); } catch { return denied(400, "invalid_body"); }
     const input = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
     const keys = Object.keys(input).sort();
     if (keys.join() !== [...route.fields].sort().join() || keys.some(key => typeof input[key] !== "string")) return denied(400, "invalid_fields");
+    if (this.#control.mode === "admitted" && (route.kind === "totp" || route.kind === "reauth-totp") && !validTotpSyntax(input.code as string)) return denied(400, "invalid_code_format");
     const cookies = parseCookies(request.headers.get("cookie"));
     if (!cookies) return denied(400, "ambiguous_cookies");
     const session = route.kind === "sign-in" ? undefined : cookies.get(COOKIE.session);
@@ -307,6 +317,7 @@ class FactorProofProvider implements AuthenticationProviderInstance {
     if (session && challenge) return denied(400, "ambiguous_cookies");
     if (route.kind !== "sign-in" && !session && !challenge) return denied(401, "unauthenticated");
 
+    if (route.kind.startsWith("reauth-") && (!session || cookies.has(COOKIE.challenge))) return denied(401, "context_unavailable");
     const headers = new Headers({ "content-type": "application/json" });
     for (const name of ["origin", this.#options.clientIpHeader]) {
       const value = request.headers.get(name);
@@ -316,35 +327,52 @@ class FactorProofProvider implements AuthenticationProviderInstance {
     // dont-remember and unrelated session cookies cannot select another branch.
     if (session) headers.set("cookie", `${COOKIE.session}=${session}`);
     if (challenge) headers.set("cookie", `${COOKIE.challenge}=${challenge}`);
-    const forwarded = route.kind === "enable" ? { ...input, method: "totp" }
+    const forwarded = route.kind === "reauth-totp" ? { code: input.code, trustDevice: false } : route.kind === "enable" ? { ...input, method: "totp" }
       : route.kind === "sign-in" ? input
         : { ...input, trustDevice: this.#control.forwardTrustRegression };
-    const sanitized = new Request(request.url, { method: "POST", headers, body: JSON.stringify(forwarded), signal: request.signal });
-    return this.#control.mode === "admitted" ? this.#admittedAtomic(route, sanitized, session, challenge) : this.#atomic(route, sanitized, challenge);
+    const sanitized = new Request(route.kind === "reauth-totp" ? `${this.#options.baseURL}/two-factor/verify-totp` : request.url, { method: "POST", headers, body: JSON.stringify(forwarded), signal: request.signal });
+    return this.#control.mode === "admitted" ? this.#admittedAtomic(route, sanitized, session, challenge, input) : this.#atomic(route, sanitized, challenge);
   }
 
-  /** I13 only. Two transactions, one borrow and one underlying SQLite owner. */
-  async #admittedAtomic(route: Route, request: Request, session: string | undefined, challenge: string | undefined): Promise<Response> {
-    const policy = new FixtureAdmission(this.#connection!, this.#control.admission.policy);
+  /** I13 admission and I16 consumption. Two transactions on the same owner borrow. */
+  async #admittedAtomic(route: Route, request: Request, session: string | undefined, challenge: string | undefined, input: Record<string, unknown>): Promise<Response> {
+    const policy = this.admission();
     const attemptId = this.#control.admission.internalAttemptId ?? serverAttemptId();
     this.#control.admission.lastAttemptId = attemptId;
     let ticket: Ticket | undefined;
-    const factorRoute = route.kind === "totp" || route.kind === "recovery";
+    const factorRoute = route.kind === "totp" || route.kind === "recovery" || route.kind === "reauth-totp";
+    let marker: string | undefined;
     if (request.signal.aborted) return denied(409, "cancelled_before_admission");
     try {
       // Never a client-selected replay key. Even an internal duplicate only reads status.
       const duplicate = policy.readReceipt(attemptId);
       if (duplicate) return fixed(409, { outcome: "receipt", state: duplicate.state, committed: duplicate.state === "succeeded" });
+      if (route.kind === "reauth-context") {
+        // Explicit session-only capability issuance. No native verification or new session.
+        // Use the root native adapter before opening the issuance transaction.
+        const current = await this.#ready().api.getSession({ headers: request.headers, query: { disableCookieCache: true } });
+        if (!current || !session) throw new Error("Session unavailable.");
+        return await this.#database!.transaction().execute(async () => {
+          const origin = policy.enrollmentOrigin(current.session.id, current.user.id, Date.now());
+          if (!origin || policy.factor(current.user.id)?.verified !== 1) throw new Error("Reauthentication unavailable.");
+          const opaque = serverAttemptId();
+          await policy.issue(opaque, current.user.id, "reauthentication", Math.min(Date.now() + this.#control.admission.policy.ticketMs, Date.parse(origin.originalDeadline)), null, Date.now(), origin, current.session.id);
+          if (!await policy.bindContext(opaque, "reauthentication", Date.now())) throw new Error("Context unavailable.");
+          return fixed(200, { outcome: "reauthentication_context", context: opaque });
+        });
+      }
       if (factorRoute) {
         if (!challenge && route.kind === "recovery") return denied(403, "recovery_cannot_upgrade_session");
+        let currentSessionId: string | undefined;
         if (session) {
           const current = await this.#ready().api.getSession({ headers: request.headers, query: { disableCookieCache: true } });
           if (!current) return denied(401, "context_unavailable");
+          currentSessionId = current.session.id;
         }
-        const context = policy.bindContext(challenge ?? session!, challenge ? "login" : "enrollment", Date.now());
-        if (!context) return denied(401, "context_unavailable");
+        const context = await policy.bindContext(route.kind === "reauth-totp" ? input.context as string : challenge ?? session!, route.kind === "reauth-totp" ? "reauthentication" : challenge ? "login" : "enrollment", Date.now());
+        if (!context || (currentSessionId && context.originSessionId !== currentSessionId)) return denied(401, "context_unavailable");
         try {
-          ticket = await this.#database!.transaction().execute(async () => policy.admit(context, attemptId, Date.now()) ?? undefined);
+          ticket = await this.#database!.transaction().execute(async () => await policy.admit(context, attemptId, Date.now()) ?? undefined);
         } catch {
           // Includes an error AFTER real COMMIT. Reconcile, but never evaluate on this call.
           // Reads on an unresolved transaction can see its own uncommitted writes.
@@ -357,7 +385,11 @@ class FactorProofProvider implements AuthenticationProviderInstance {
         // The synchronous confirmation is outside both transactions.
         if (policy.readReceipt(attemptId)?.state !== "charged") return denied(503, "charge_unconfirmed");
         await this.#control.admission.pause?.("after-admission", this.#connection!);
-        if (request.signal.aborted || !policy.usable(ticket, Date.now())) throw new Rollback(denied(409, "cancelled_or_expired"));
+        if (request.signal.aborted || !await policy.usable(ticket, Date.now())) throw new Rollback(denied(409, "cancelled_or_expired"));
+        if (route.kind !== "recovery") {
+          marker = await policy.presentation(ticket, input.code as string);
+          if (!policy.replayAvailable(marker)) throw new Rollback(denied(409, "presentation_refused"));
+        }
       }
       const notifications: ProviderInvalidation[] = [];
       const operation = { request, ticket, subject: undefined as string | undefined, origin: undefined as Pick<SessionEvidence, "authenticatedAt" | "originalDeadline"> | undefined };
@@ -381,8 +413,8 @@ class FactorProofProvider implements AuthenticationProviderInstance {
               // never from a presented client cookie. The complete opaque cookie is bound.
               const pending = opaque && await (await scoped.$context).internalAdapter.findVerificationValue(signedValue(opaque));
               if (!opaque || !pending || !operation.subject || !operation.origin || pending.value !== operation.subject) throw new Error("Issued context unconfirmed.");
-              policy.issue(opaque, operation.subject, "login", new Date(pending.expiresAt).getTime(), pending.id, Date.now(), operation.origin);
-              const bound = policy.bindContext(opaque, "login", Date.now());
+              await policy.issue(opaque, operation.subject, "login", new Date(pending.expiresAt).getTime(), pending.id, Date.now(), operation.origin);
+              const bound = await policy.bindContext(opaque, "login", Date.now());
               if (!bound) throw new Error("Issued binding unconfirmed.");
               policy.operationReceipt(attemptId, bound, Date.now());
             } else if (route.kind === "enable") {
@@ -390,19 +422,20 @@ class FactorProofProvider implements AuthenticationProviderInstance {
               if (!current || !session) throw new Error("Enrollment context unconfirmed.");
               const origin = policy.enrollmentOrigin(current.session.id, current.user.id, Date.now());
               if (!origin) throw new Error("Enrollment origin unavailable.");
-              policy.issue(session, current.user.id, "enrollment", Math.min(new Date(current.session.expiresAt).getTime(), Date.parse(origin.originalDeadline)), null, Date.now(), origin);
-              const bound = policy.bindContext(session, "enrollment", Date.now());
+              await policy.issue(session, current.user.id, "enrollment", Math.min(new Date(current.session.expiresAt).getTime(), Date.parse(origin.originalDeadline)), null, Date.now(), origin, current.session.id);
+              const bound = await policy.bindContext(session, "enrollment", Date.now());
               if (!bound) throw new Error("Enrollment binding unconfirmed.");
               policy.operationReceipt(attemptId, bound, Date.now());
             } else {
-              const current = await scoped.api.getSession({ headers: new Headers({ cookie: decision.commit.headers.getSetCookie().map(line => line.split(";")[0]).join("; ") }), query: { disableCookieCache: true } });
+              const current = await scoped.api.getSession({ headers: route.kind === "reauth-totp" ? request.headers : new Headers({ cookie: decision.commit.headers.getSetCookie().map(line => line.split(";")[0]).join("; ") }), query: { disableCookieCache: true } });
               if (!current || (ticket && current.user.id !== ticket.subject)) throw new Error("Session subject unconfirmed.");
               const evidence: SessionEvidence = {
                 sessionId: current.session.id, subject: current.user.id,
                 authenticatedAt: new Date(current.session.createdAt).toISOString(), originalDeadline: new Date(current.session.expiresAt).toISOString(),
-                observation: route.kind === "sign-in" ? "password" : route.kind === "recovery" ? "recovery_code" : challenge ? "password_totp" : "enrollment",
+                observation: route.kind === "reauth-totp" ? "reauthentication" : route.kind === "sign-in" ? "password" : route.kind === "recovery" ? "recovery_code" : challenge ? "password_totp" : "enrollment",
               };
-              if (ticket) policy.settleSuccess(ticket, evidence, Date.now());
+              if (!ticket && policy.factor(current.user.id)?.verified === 1) throw new Error("Selected protection requires verification.");
+              if (ticket) await policy.settleSuccess(ticket, evidence, Date.now(), marker);
               else policy.passwordEvidence(attemptId, evidence, policy.generation(current.user.id));
             }
             if (factorRoute) return fixed(200, { outcome: "observation", authorizingMfa: false }, decision.commit.headers.getSetCookie());
@@ -510,6 +543,10 @@ class FactorProofProvider implements AuthenticationProviderInstance {
       if (policy === "commit-every-response") return { commit: response };
       const accounted = (route.kind === "totp" || route.kind === "recovery") && ACCOUNTED_FAILURES.has(code);
       return policy === "rollback-every-failure" || !accounted ? { rollback: denied(native.status, code) } : { commit: response };
+    }
+    if (route.kind === "reauth-totp") {
+      if (lines.length || this.#control.failEvidence) return { rollback: denied(500, "reauthentication_refused") };
+      return { commit: fixed(200, { outcome: "reauthentication", authorizingMfa: false }) };
     }
     if (route.kind === "enable") return { commit: fixed(200, { outcome: "enrollment", totpURI: parsed?.totpURI, backupCodes: parsed?.backupCodes }) };
     if (route.kind === "sign-in" && parsed?.twoFactorRedirect === true) return { commit: fixed(200, { outcome: "challenge" }, cookies) };

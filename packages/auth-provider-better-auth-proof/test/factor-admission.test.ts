@@ -29,7 +29,14 @@ const setup = async (f: FactorFixture, email = OWNER_EMAIL, confirm = true) => {
   expect(result.status).toBe(200);
   const authenticator = new Authenticator(result.json!.totpURI as string);
   const codes = result.json!.backupCodes as string[];
-  if (confirm) expect((await verify(browser, authenticator.code())).status).toBe(200);
+  // Enrollment now consumes its presentation across ceremonies. Use a different
+  // valid window code here so the inherited positive login/fault tests still
+  // reach the behavior they exercise, without disabling replay protection.
+  const enrollmentCode = [-1, 1].map(offset => authenticator.code(offset)).find(code => code !== authenticator.code());
+  if (confirm) {
+    expect(enrollmentCode !== undefined).toBe(true);
+    expect((await verify(browser, enrollmentCode!)).status).toBe(200);
+  }
   return { browser, authenticator, codes };
 };
 const pending = async (f: FactorFixture, email = OWNER_EMAIL, ip?: string) => {
@@ -58,7 +65,7 @@ afterEach(async () => {
   cleanupFactorRoots();
 });
 
-describe("A3-I13 durable admission, real library, one owner (no accepted replay remedy)", () => {
+describe("A3-I13 durable admission, real library, one owner (I16 replay candidate)", () => {
   it("1: observes native entry only after a committed charge, with a separate success transaction", async () => {
     const f = await create(); const { authenticator } = await setup(f); const b = await pending(f);
     f.control.trace.length = 0; f.control.admission.entries.length = 0;

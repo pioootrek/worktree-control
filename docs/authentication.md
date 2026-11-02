@@ -159,10 +159,26 @@ has no durable session-method or enrollment-UV history; integration must supply
 reviewed current evidence and credential trust bindings. See the
 [proof details](../packages/auth-provider-better-auth-proof/README.md#a3-i14-passkey-proof).
 
+A3-I16 extends the existing admitted TOTP fixture with a keyed consumed-presentation
+ledger shared across enrollment, login and explicit current-session
+reauthentication. Native verification still decides validity. Stable secret
+binding survives verification toggles, ciphertext re-encryption, security-generation
+changes and same-key reload. Markers commit atomically with native success,
+evidence and receipt after a separately committed attempt charge. Reauthentication
+returns only a nonauthorizing observation, with no new session or cookie.
+
+Finite retention remains unaccepted. The fixture retains consumed presentations
+for at least the factor lifetime, never deletes them and refuses at its bounded
+capacity. It intentionally rejects later valid decimal collisions. No matched
+counter, safe TTL or production retention policy is claimed. Missing or rotated
+fixture HMAC material refuses reload. See the
+[mechanism and API limits](../packages/auth-provider-better-auth-proof/README.md#a3-i16-conservative-totp-replay-candidate).
+
 These are selected product capabilities and local feasibility work, with no live
-activation. TOTP replay remains unresolved. Four replay failures and the old
-bounded counter-loss failure remain visible. Accepted replay handling, safe factor management and
-recovery, production evidence/migrations, transport/disconnect handling and A5
+activation. Four original replay failures and the old bounded counter-loss failure
+remain visible in the native/bounded baselines. Accepted production replay
+retention, safe factor management and recovery, production evidence/migrations,
+transport/disconnect handling and A5
 remain gates before public account activation. Password-only access proves no
 MFA, and no ASVS Level 2 conformance is claimed.
 

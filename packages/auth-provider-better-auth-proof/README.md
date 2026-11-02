@@ -454,13 +454,14 @@ Installed pinned source and the runnable cases determine these findings.
 The separately selected `admitted` fixture candidate adds
 `test/factor-admission.ts` and `test/factor-admission.test.ts`. Native and bounded
 I12 candidates keep their original assertions, including all five negative
-acceptance baselines. This candidate supplies no TOTP replay remedy and cannot
-issue a controller actor. Production schema 39, storage 1, contract 2 and the
-password provider are unchanged.
+acceptance baselines. A3-I16 extends this same admitted candidate with the
+conservative presentation ledger described below. It cannot issue a controller
+actor. Production schema 39, storage 1, contract 2 and the password provider are
+unchanged.
 
-The temporary owner creates five additional `factor_admission_*` tables for
-subjects, contexts, budgets, receipts and evidence. `FixtureAdmission` exposes
-`bindContext`, `admit`, `settleSuccess` and `readReceipt` over its borrowed
+The temporary owner creates five `factor_admission_*` tables for subjects,
+contexts, budgets, receipts and evidence. I16 adds two fixture replay tables.
+`FixtureAdmission` exposes `bindContext`, `admit`, `settleSuccess` and `readReceipt` over its borrowed
 connection. It owns no connection, scheduler or lock. The fixture policy is four
 charged attempts per subject per fixed 60-second window, a 15-second ticket,
 64 rows per bounded table and pruning batches of eight. Tests vary these inputs;
@@ -489,7 +490,7 @@ success receipt join that second transaction. Evidence retains the original
 password authentication time/deadline; factor sessions are capped to the original
 deadline. TOTP, enrollment and recovery observations explicitly have
 `authorizingMfa:0` and retain method `password`. They cannot supply stronger
-authority from this known replaying backend.
+authority from this experimental backend.
 
 SQL fault seams distinguish errors before COMMIT from errors after the driver
 actually commits. Admission errors always stop evaluation, even when a durable
@@ -525,6 +526,82 @@ policy exists. Password/challenge-creation admission, global fairness, final
 numeric policy, external restore fencing, public transport and disconnected
 response cleanup remain integration work. Password sessions still require the
 existing production evidence/authority gates. Full A3 remains in progress.
+
+## A3-I16 conservative TOTP replay candidate
+
+`test/factor-replay.test.ts` extends the existing `admitted` candidate, with the
+same owner, exclusive borrow, Kysely boundary, committed attempt charge and
+receipt protocol. The pinned native Better Auth/core 1.7.14 verifier remains the
+only OTP verifier. Installed `@better-auth/utils` 0.5.1 checks counters -1, current
+and +1, returning a boolean. It exposes no matched counter or verifier clock
+sample. This candidate therefore rejects repeated **presentations**, without
+claiming exact accepted-counter semantics. No dependency or native code changes.
+
+Replay markers use Node's standard HMAC-SHA256 over a versioned JSON array of
+provider ID, opaque subject, stable factor incarnation and the exact six ASCII
+digits, including leading zeros. Domain separation distinguishes key commitment,
+incarnation and presentation. No purpose, session, challenge, attempt or security
+generation partitions the presentation identity. Only a true native success can
+insert a unique marker, in the same success transaction as native enrollment or
+login writes, evidence and completion receipt. A precheck after the durable
+charge can refuse existing markers and capacity. Wrong codes store no marker.
+Confirmed rollback restores marker and success writes together, retaining the
+charge; failed COMMIT/ROLLBACK, unreadable receipts and lost acknowledgments keep
+the existing no-output/no-cookie/no-automatic-verifier-retry rules.
+
+The temporary owner supplies a private random 32-byte fixture HMAC key and
+persists only its domain-separated commitment at DDL creation. Provider reload
+copies and checks that same key. A missing, rotated or mismatching key refuses
+initialization; no provider initializes a new ledger namespace. This is an
+in-memory fixture key handoff on one surviving owner, not production key storage,
+process restart or A4 vault integration. Supported `better-auth/crypto`
+decryption computes a keyed fingerprint of the native-generated secret without
+persisting or logging plaintext. Re-encryption and verified-flag changes keep the
+incarnation; native-generated replacement secrets change it. This candidate does
+not expose imported-secret or factor-management APIs. Native factor-row ID,
+exact principal mapping, session, generation and immutable purpose are checked
+separately for context freshness. Changing them cannot erase consumed markers.
+
+Only the private fixture handler exposes these additional POST operations:
+
+| Path | Exact body | Result |
+| --- | --- | --- |
+| `/two-factor/reauthentication-context` | `{}` with the existing signed session cookie | A short-lived opaque context for that exact current session, factor, principal mapping, generation and original password lifetime; no cookie |
+| `/two-factor/reauthenticate-totp` | `{context,code}` with that same session | The native authenticated verifier, admitted once per context; nonauthorizing `{outcome:"observation",authorizingMfa:false}` with no cookie or new session |
+
+The reauthentication capability is spent in the committed admission transaction,
+even for a wrong code. A fresh context can be issued independently, while
+consumption still spans enrollment, login and reauthentication. Neither the
+native JSON token nor enrollment authority is used to pretend that an existing
+session became a new login. Original password authentication/deadline, method
+`password`, factor count 1 and `authorizingMfa:0` remain unchanged. Current
+revocation, mapping, factor, session and generation checks run before admission,
+before native continuation and at settlement. Recovery codes retain native
+single-use behavior and the shared charged budget; they use no TOTP marker.
+
+**Finite retention remains a blocker.** This slice never deletes or expires a
+consumed marker, including after factor replacement. It retains at least the
+factor's lifetime history, caps the entire table at 256 rows and refuses at
+capacity. There is no guessed 90-second TTL, pruning or clock-based identity.
+This can refuse a later legitimate decimal collision and eventually prevents
+further TOTP success. The fixed independent client vector at counters 59788416
+and 59788440 yields the same digits; separate real native verifications accept
+both counters, while the consumed candidate refuses the second presentation.
+That is intentional conservative false refusal, not evidence of equal counters.
+A production retention policy needs an accepted verifier/clock contract or
+supported matching metadata. This is not an approved production policy.
+
+The focused suite covers cross-ceremony replay, independent concurrent
+challenges, ASCII and leading zeros, past/future windows and a boundary, clock
+jumps/reversal/reload, decimal collision, capacity refusal, key loss/rotation,
+current-state mutations, native replacement and re-encryption, cancellation,
+SQL/COMMIT/ROLLBACK/read faults and lost-response recovery. Existing I13 positive
+fixtures use a distinct valid enrollment window code so their later login/fault
+checks still reach the intended phase. Assertions are not relaxed. All five
+ordinary native/bounded acceptance failures remain untouched and unskipped.
+No production actor, session-method upgrade, public API, ASVS Level 2, account
+activation or completed A3 claim follows. Parent review and acceptance remain
+separate; schema 39, storage 1, contract 2 and the default provider are unchanged.
 
 ## A3-I14 passkey proof
 
