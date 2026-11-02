@@ -525,7 +525,14 @@ administration, runtime control or vault action.
 codes, TOTP or passkey replacement and removal, additional passkeys, reauthentication,
 trusted devices, administrative factor reset and every other native plugin route.
 Recovery therefore has no factor-loss path: `recoverLocal` replaces a password and
-revokes sessions but leaves selected protection in place. A clock that ran ahead can
+revokes sessions and outstanding password-backed TOTP challenges but leaves selected
+protection in place. Native password change/reset and explicit revoke-all share that
+transactional invalidation. The pinned library stores the subject ID as the verification
+value for TOTP login and reset tokens; both are deleted on revoke-all. Factor contexts
+then fail their required native-row check, including a previously charged attempt before
+native entry. WebAuthn challenges use structured values and remain independent. No account
+generation changes, so a completed password replacement keeps its inherited evidence.
+Rollback preserves the prior password, sessions and challenges. A clock that ran ahead can
 hold TOTP refused until real time passes the step, and with no other method that
 account waits. These need accepted management decisions, along with final numeric
 limits and consecutive-failure accounting.
@@ -599,7 +606,10 @@ an old `S` so the next request is unambiguous, and completion deletes stale `T` 
 nonauthorizing result carries an immutable capture of the exact context, staged row or
 receipt taken inside its borrow, read back from schema 40 rows with no new table or
 connection. Header emission and that final check form one synchronous admitted phase.
-A retained result is never adopted after state changed.
+Accepted completion uses reserved queue room and the existing bounded admission retry
+budget, including the request's cancellation signal. Only refusals before callback entry
+are retried; the provider effect and publication callback are never replayed. Current
+authority is checked after the wait. A retained result is never adopted after state changed.
 
 **Cancellation and lifetime.** One `AbortController` per request follows a closed
 connection, never a normal completed close, through the body read, native `Request`,
@@ -817,8 +827,13 @@ Disable performs a conditional active-to-revoked transition plus audit. It is
 terminal; a repeat returns `changed:false` with the revoked state and adds no
 success event. There is no reenable, deletion or kind-change command. The current
 principal state denies the next Knowledge operation or replay independently of
-native-session deletion or invalidation notifications. Retained session rows still
-count against the installation's existing bound. Enrollment checks active kind and
+invalidation notifications. The disable transaction also deletes at most one native
+session for that human, cascading its evidence and issuance marker. The shared protected
+application drains the remaining sessions one row per freshly admitted transaction,
+including revoked mapping history, without loading the provider. This recovers existing
+global capacity without adding a per-account cap. An interruption leaves revocation
+committed and reports `committed:true`; repeat disable to resume cleanup. Retained rows
+still count until deleted. Other principals' sessions remain untouched. Enrollment checks active kind and
 mapping history in the actual borrow and again at the final link after password
 hashing; a prior committed disable prevents native account publication.
 

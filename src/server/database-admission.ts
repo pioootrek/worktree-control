@@ -54,17 +54,22 @@ export const directAdmission: DatabaseAdmission = Object.freeze({
 export async function admitWithRetry<T>(
   admission: DatabaseAdmission,
   operation: () => T,
-  options: { deadlineMs?: number; reserved?: boolean } = {},
+  options: { deadlineMs?: number; reserved?: boolean; signal?: AbortSignal } = {},
 ): Promise<T> {
   const deadline = Date.now() + (options.deadlineMs ?? 60_000);
   for (let delay = 25; ; delay = Math.min(delay * 2, 1_000)) {
     let ran = false;
     try {
-      return await admission.detached(() => { ran = true; return operation(); }, { reserved: options.reserved });
+      return await admission.detached(() => { ran = true; return operation(); }, { reserved: options.reserved, signal: options.signal });
     } catch (error) {
-      if (ran || !databaseAdmissionFailure(error)?.retryable || Date.now() + delay > deadline) throw error;
+      if (ran || options.signal?.aborted || !databaseAdmissionFailure(error)?.retryable || Date.now() + delay > deadline) throw error;
     }
-    await new Promise(resolve => setTimeout(resolve, delay).unref?.());
+    await new Promise<void>(resolve => {
+      const signal = options.signal;
+      const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", done); resolve(); };
+      const timer = setTimeout(done, delay); timer.unref?.();
+      if (signal?.aborted) done(); else signal?.addEventListener("abort", done, { once: true });
+    });
   }
 }
 

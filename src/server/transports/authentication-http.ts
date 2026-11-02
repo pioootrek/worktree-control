@@ -3,7 +3,7 @@ import { isIP } from "node:net";
 import { containsProviderCookie, browserChangePasswordSchema, browserFactorSchemas, browserSignInSchema, browserSignOutSchema, browserTotpEnableSchema, browserTotpVerifySchema, type BrowserAuthenticationStatus } from "@/shared/contracts/authentication";
 import { IdentityError, type ProviderSessionActor } from "@/server/modules/identity";
 import { knowledgeFailure } from "@/server/modules/knowledge";
-import { databaseAdmissionFailure, type DatabaseAdmission } from "@/server/database-admission";
+import { admitWithRetry, databaseAdmissionFailure, type DatabaseAdmission } from "@/server/database-admission";
 import { AuthenticationProviderError, BROWSER_OPERATIONS, browserOperationRequires, type AuthenticationProviderRuntime, type BrowserOperation, type BrowserRelease, type ProviderKnowledgeApplication } from "@/server/modules/authentication";
 import {
   approvedAuthenticationCookies, BoundaryError, CHALLENGE_COOKIE, COOKIE_POLICY, deletionCookie, fail, parseStrictJson, PASSKEY_COOKIE, readBoundedBody, requestCookies, SESSION_COOKIE,
@@ -192,7 +192,7 @@ export class AuthenticationHttp {
       // synchronous admitted completion phase, using reserved queue room for accepted work.
       // Nothing awaits between them, and a marked session stays marked
       // whatever happens to this response. No client acknowledgment exists or is implied.
-      await this.deps.admission.run(() => {
+      await admitWithRetry(this.deps.admission, () => {
         if (this.deps.maintenance?.()) fail(503, "database_unavailable");
         if (!lifetime.open) fail(499, "client_closed");
         const safe = this.deps.runtime.finishBrowserRelease(result);

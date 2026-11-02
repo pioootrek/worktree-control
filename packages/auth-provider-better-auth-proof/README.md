@@ -41,7 +41,11 @@ The proof wraps its shared `deleteUserSessions` operation in a transaction and
 queues a subject-wide invalidation after commit, covering local revocation,
 recovery and native password/reset/revocation handlers regardless of session
 count. Single-session deletion retains its narrower notification. Tests cover
-101 sessions and verify that rolled-back changes emit no invalidation.
+101 sessions and verify that rolled-back changes emit no invalidation. The same
+transaction removes subject-valued native verifications, including password-backed
+TOTP login challenges and reset tokens. Their controller contexts then fail the native-row
+check. Selected factors and independent WebAuthn challenges remain intact; a password
+replacement keeps its inherited session evidence.
 
 This proof does not establish ASVS Level 2, and its numeric limits are experimental
 settings. Standard Better Auth stores
@@ -67,10 +71,13 @@ separate native enrollment, and atomic typed Knowledge reader/operator membershi
 `human-account-administration.test.ts` exercises the same protected operations as
 CLI/private IPC and actual isolated cookie HTTP for two humans/projects. It checks
 mandatory grant/binding intersection, read/write ceilings, supplementary denial,
-queued revocation/narrowing/disable, replay, exact actor kind/mapping, native
+queued revocation/narrowing/disable, replay, bounded session-capacity reclamation,
+interrupted cleanup/retry, exact actor kind/mapping, native
 notification failure, enrollment races and selected optional protection.
 `node:test:auth-provider-humans` runs this file alone; `node:test:human-accounts`
-runs focused core migration/membership/parser tests. Use the managed queue.
+runs focused core migration/membership/parser tests. `node:test:pr117-followup` combines
+the human suite with saturated/timeout browser completion, cancellation, old password
+challenge invalidation, rollback and recovery serialization regressions. Use the managed queue.
 
 Core schema 42 does not change provider API 5, storage 3, native tables or proof.5.
 No owner rows are reinterpreted or backfilled. Schema-41 upgrade coverage uses a
