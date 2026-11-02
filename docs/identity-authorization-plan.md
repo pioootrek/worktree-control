@@ -282,15 +282,16 @@ or upgrade of the original password evidence. Normal login refuses staged keys;
 packed signed enrollment remains supported. Its later `passkey_uv` login
 observation is nonauthorizing; the library supplies no
 durable session-method/generation or enrollment-UV trust history. Production
-contracts, schema and activation stay unchanged. A3-I16 extends the existing
-admitted TOTP fixture with a stable keyed presentation ledger across enrollment,
-login and explicit nonauthorizing current-session reauthentication. Success
-consumption and receipt are atomic; admission charges remain durable. The native
-verifier exposes no matched step. This bounded fixture retains all consumed
-presentations without expiry and refuses at capacity, including conservative
-false refusal of later legitimate decimal collisions. Production finite retention,
-management/recovery, current-generation evidence and A5 remain unresolved public
-integration gates. The five native/bounded negative baselines remain unskipped.
+contracts, schema and activation stay unchanged. A3-I17 replaces the admitted TOTP
+fixture's presentation ledger with one monotone step per opaque subject across
+enrollment, login and explicit nonauthorizing current-session reauthentication.
+Native success stays necessary. A reusable optional-package helper uses the public
+`hotp` primitive over at most four counters and may only refuse further; it claims
+no hidden native matched step. Consumption and receipt are atomic, admission
+charges remain durable, state stays one integer per subject, and later decimal
+collisions at newer counters are accepted. No reset exists. Production step
+storage, management/recovery, current-generation evidence and A5 remain unresolved
+public integration gates. The five native/bounded negative baselines remain unskipped.
 Readiness of these selected optional features is distinct from mandatory
 multi-factor enrollment for every user. Password-only prototypes prove no MFA,
 and neither this proof nor the account plan claims ASVS Level 2 conformance.

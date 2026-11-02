@@ -454,13 +454,12 @@ Installed pinned source and the runnable cases determine these findings.
 The separately selected `admitted` fixture candidate adds
 `test/factor-admission.ts` and `test/factor-admission.test.ts`. Native and bounded
 I12 candidates keep their original assertions, including all five negative
-acceptance baselines. A3-I16 extends this same admitted candidate with the
-conservative presentation ledger described below. It cannot issue a controller
-actor. Production schema 39, storage 1, contract 2 and the password provider are
+acceptance baselines. A3-I17 extends this same admitted candidate with the
+monotone TOTP step described below. It cannot issue a controller actor. Production schema 39, storage 1, contract 2 and the password provider are
 unchanged.
 
 The temporary owner creates five `factor_admission_*` tables for subjects,
-contexts, budgets, receipts and evidence. I16 adds two fixture replay tables.
+contexts, budgets, receipts and evidence. I17 adds one fixture step table.
 `FixtureAdmission` exposes `bindContext`, `admit`, `settleSuccess` and `readReceipt` over its borrowed
 connection. It owns no connection, scheduler or lock. The fixture policy is four
 charged attempts per subject per fixed 60-second window, a 15-second ticket,
@@ -527,40 +526,69 @@ numeric policy, external restore fencing, public transport and disconnected
 response cleanup remain integration work. Password sessions still require the
 existing production evidence/authority gates. Full A3 remains in progress.
 
-## A3-I16 conservative TOTP replay candidate
+## A3-I17 TOTP step candidate
 
 `test/factor-replay.test.ts` extends the existing `admitted` candidate, with the
 same owner, exclusive borrow, Kysely boundary, committed attempt charge and
-receipt protocol. The pinned native Better Auth/core 1.7.14 verifier remains the
-only OTP verifier. Installed `@better-auth/utils` 0.5.1 checks counters -1, current
-and +1, returning a boolean. It exposes no matched counter or verifier clock
-sample. This candidate therefore rejects repeated **presentations**, without
-claiming exact accepted-counter semantics. No dependency or native code changes.
+receipt protocol. It replaces the A3-I16 lifetime presentation ledger. The HMAC
+key and commitment, marker table, 256-row capacity and their tests are removed.
 
-Replay markers use Node's standard HMAC-SHA256 over a versioned JSON array of
-provider ID, opaque subject, stable factor incarnation and the exact six ASCII
-digits, including leading zeros. Domain separation distinguishes key commitment,
-incarnation and presentation. No purpose, session, challenge, attempt or security
-generation partitions the presentation identity. Only a true native success can
-insert a unique marker, in the same success transaction as native enrollment or
-login writes, evidence and completion receipt. A precheck after the durable
-charge can refuse existing markers and capacity. Wrong codes store no marker.
-Confirmed rollback restores marker and success writes together, retaining the
-charge; failed COMMIT/ROLLBACK, unreadable receipts and lost acknowledgments keep
-the existing no-output/no-cookie/no-automatic-verifier-retry rules.
+Native Better Auth/core 1.7.14 remains the OTP verifier, and its success remains
+necessary. Installed `@better-auth/utils` 0.5.1 checks counters -1, current and
++1, then returns a boolean. It exposes no matched counter or clock sample.
+`src/totp-step.ts` is a reusable post-native observer built on the public
+`createOTP(...).hotp(counter)`, pinned exactly in this private package. There is
+no handwritten OTP verification, fork or patch. The default provider does not
+import it. The observer can only refuse more; it never supplies a success native
+did not grant.
 
-The temporary owner supplies a private random 32-byte fixture HMAC key and
-persists only its domain-separated commitment at DDL creation. Provider reload
-copies and checks that same key. A missing, rotated or mismatching key refuses
-initialization; no provider initializes a new ledger namespace. This is an
-in-memory fixture key handoff on one surviving owner, not production key storage,
-process restart or A4 vault integration. Supported `better-auth/crypto`
-decryption computes a keyed fingerprint of the native-generated secret without
-persisting or logging plaintext. Re-encryption and verified-flag changes keep the
-incarnation; native-generated replacement secrets change it. This candidate does
-not expose imported-secret or factor-management APIs. Native factor-row ID,
-exact principal mapping, session, generation and immutable purpose are checked
-separately for context freshness. Changing them cannot erase consumed markers.
+The rule runs only after a real native success:
+
+1. Native receives the shared `TOTP_SETTINGS`: 30-second period, six digits.
+2. `t0` is sampled immediately before the native verification entry and `t1`
+   after native returns, inside the same success transaction.
+3. The bracket is `floor(t0/P)-1` to `floor(t1/P)+1`. Nonfinite, unsafe,
+   fractional or negative times, negative counters, `t1 < t0` even within one
+   period, and a span above three are refused. At most four counters are ever
+   evaluated, so no loop depends on elapsed time.
+4. Every counter in the bracket is evaluated with a fixed-length digit comparison
+   and no early exit. The set must be nonempty. The candidate is its maximum, so
+   a digit string matching two counters consumes both.
+5. `factor_totp_steps` holds one `last_step` per opaque subject. A guarded
+   `INSERT ... ON CONFLICT DO UPDATE ... WHERE excluded.last_step > last_step`
+   must change exactly one row, in the same transaction as enrollment or session
+   writes, evidence and receipt.
+
+Any refusal rolls the whole native success back: no cookie, session, evidence or
+step. A match is a policy witness inside an observed interval. It is not native's
+exact matched counter, and clock movement nothing observed is not covered. It
+can only produce an empty set or a refused update. Wrong codes write no step, and
+the earlier committed charge stays. Failed COMMIT plus ROLLBACK, unreadable
+receipts and lost acknowledgments keep the existing no-output, no-cookie and
+no-automatic-retry rules.
+
+The counter is independent of factor row, secret, generation, purpose, session
+and ciphertext. Replacement, verified toggles, re-encryption, reload and clock
+changes never reset it, and no reset API exists. A future audited reset can
+reopen consumed steps, so it needs its own management decision. Row ID plus a
+ciphertext hash is only a staleness check on live contexts: a re-encryption
+during an attempt fails closed, and the counter still refuses a replay on a
+later context. The fixture stores no raw code, code hash, presentation history
+or secret plaintext.
+
+The observer decrypts with the library's `secretConfig`, so versioned secrets
+keep working. It accepts native-generated text only. Imported `base32:` secrets
+decode to different bytes natively, so `readNativeTotpSecret` refuses them.
+
+User consequences are strict and deliberate. A second ceremony in one step needs
+a newer code. After a future-window code the wait can exceed 30 seconds, because
+the device must first show a code beyond that future step. A success while the
+clock runs ahead keeps the counter ahead after correction, so TOTP refuses until
+real time passes it; recovery or a passkey remain the alternatives. A later
+identical decimal string at a newer counter is accepted, proved with `393421` at
+counters 59788416 and 59788440. `768734` matches counters 61331809 and 61331811
+inside one native window, and the higher step is consumed once. Restoring an
+older database can reopen steps; A5 owns that fence.
 
 Only the private fixture handler exposes these additional POST operations:
 
@@ -570,38 +598,32 @@ Only the private fixture handler exposes these additional POST operations:
 | `/two-factor/reauthenticate-totp` | `{context,code}` with that same session | The native authenticated verifier, admitted once per context; nonauthorizing `{outcome:"observation",authorizingMfa:false}` with no cookie or new session |
 
 The reauthentication capability is spent in the committed admission transaction,
-even for a wrong code. A fresh context can be issued independently, while
-consumption still spans enrollment, login and reauthentication. Neither the
-native JSON token nor enrollment authority is used to pretend that an existing
-session became a new login. Original password authentication/deadline, method
-`password`, factor count 1 and `authorizingMfa:0` remain unchanged. Current
-revocation, mapping, factor, session and generation checks run before admission,
-before native continuation and at settlement. Recovery codes retain native
-single-use behavior and the shared charged budget; they use no TOTP marker.
+even for a wrong code. A fresh context can be issued independently, while the
+step spans enrollment, login and reauthentication. Neither the native JSON token
+nor enrollment authority is used to pretend that an existing session became a new
+login. Original password authentication/deadline, method `password`, factor count
+1 and `authorizingMfa:0` remain unchanged. Current revocation, mapping, factor,
+session and generation checks run before admission, before native continuation
+and at settlement. Recovery codes retain native single-use behavior and the shared
+charged budget; they consume no step.
 
-**Finite retention remains a blocker.** This slice never deletes or expires a
-consumed marker, including after factor replacement. It retains at least the
-factor's lifetime history, caps the entire table at 256 rows and refuses at
-capacity. There is no guessed 90-second TTL, pruning or clock-based identity.
-This can refuse a later legitimate decimal collision and eventually prevents
-further TOTP success. The fixed independent client vector at counters 59788416
-and 59788440 yields the same digits; separate real native verifications accept
-both counters, while the consumed candidate refuses the second presentation.
-That is intentional conservative false refusal, not evidence of equal counters.
-A production retention policy needs an accepted verifier/clock contract or
-supported matching metadata. This is not an approved production policy.
+The focused suites use real native verification and an independent client. They
+cover all ceremony directions, the next step after each, concurrent challenges,
+exact ASCII and leading zeros, the 29.999 boundary, a period crossed during the
+call, reversal inside and across a period, oversized and invalid observations,
+later decimal collisions and a two-match window, many successes with one row,
+independent subjects, native replacement, re-encryption, current-state mutations,
+zero-row updates, cancellation, SQL/COMMIT/ROLLBACK/read faults and lost responses.
+Inherited I13 fixtures enroll on the previous window step so the current step
+stays available. All five ordinary native/bounded acceptance failures remain
+untouched and unskipped.
 
-The focused suite covers cross-ceremony replay, independent concurrent
-challenges, ASCII and leading zeros, past/future windows and a boundary, clock
-jumps/reversal/reload, decimal collision, capacity refusal, key loss/rotation,
-current-state mutations, native replacement and re-encryption, cancellation,
-SQL/COMMIT/ROLLBACK/read faults and lost-response recovery. Existing I13 positive
-fixtures use a distinct valid enrollment window code so their later login/fault
-checks still reach the intended phase. Assertions are not relaxed. All five
-ordinary native/bounded acceptance failures remain untouched and unskipped.
-No production actor, session-method upgrade, public API, ASVS Level 2, account
-activation or completed A3 claim follows. Parent review and acceptance remain
-separate; schema 39, storage 1, contract 2 and the default provider are unchanged.
+This is a helper plus a fixture proof, not production activation. Production
+needs its own migration, storage revision and evidence port, and failed-guess
+accounting stays separate. No production actor, session-method upgrade, public
+API, ASVS Level 2, account activation or completed A3 claim follows. Parent review
+and acceptance remain separate; schema 39, storage 1, contract 2 and the default
+provider are unchanged.
 
 ## A3-I14 passkey proof
 
