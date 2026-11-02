@@ -121,8 +121,8 @@ browser API design. Password-only evidence is neither MFA nor an ASVS Level 2
 claim. Numeric session, reset, password and rate limits are proof settings,
 not approved product defaults. A4 vault proof remains separate.
 
-Optional-factor implementation, invitations, roles, GUI and the A5 activation gates
-remain open in Knowledge task `ec4c7258770328ca33fb1801be6831f6`. The optional
+Optional-factor production integration, invitations, general delegated roles,
+GUI and the A5 activation gates remain open in Knowledge task `ec4c7258770328ca33fb1801be6831f6`. The optional
 package retains its dependency notices and stays outside Community runtime
 dependencies and published assets. See its
 [README](../packages/auth-provider-better-auth-proof/README.md) for verification.

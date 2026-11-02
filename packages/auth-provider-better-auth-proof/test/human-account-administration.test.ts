@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { composeIsolatedBrowserAuthentication } from "@/server/bootstrap/authentication";
 import { createControllerServer } from "@/server/http-server";
+import { createMcpControllerServer } from "@/server/mcp-http-server";
 import { EventStream } from "@/server/events";
 import type { ControlService } from "@/server/control-service";
 import type { DirectoryBrowser } from "@/server/directory-browser";
@@ -213,6 +214,19 @@ describe("protected ordinary humans and real isolated Knowledge cookies", () => 
       expect(await f.a.call("/api/auth/change-password", { body: { currentPassword: OWNER_PASSWORD, newPassword: password } })).toMatchObject({ status: 200 });
       expect(await new BrowserClient(f.a.socketPath).login(password, email(1))).toMatchObject({ status: 200 });
     } finally { await f.close(); }
+  });
+
+  it("denies a human cookie at the actual separate MCP listener even in open boot", async () => {
+    const f = await setup();
+    const mcp = createMcpControllerServer({ service: { admission: f.store.admission } as unknown as ControlService,
+      identity: f.identity, authentication: f.authentication, accessToken: "fixture", port: 0 });
+    try {
+      const socket = join(f.root, "human-mcp.sock");
+      await new Promise<void>(resolve => mcp.server.listen(socket, resolve));
+      const client = new BrowserClient(socket); client.cookie = f.a.cookie;
+      expect((await client.call("/mcp", { omitOrigin: true, body: { jsonrpc: "2.0", id: 1, method: "initialize", params: {} } })).status).toBe(401);
+      expect((await mcp.diagnosticsSnapshot()).sessions).toEqual([]);
+    } finally { await mcp.close(); await f.close(); }
   });
 
   it.each(["totp", "passkey"] as const)("preserves selected optional %s protection without adding authority", async method => {

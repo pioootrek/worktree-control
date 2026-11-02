@@ -1,3 +1,4 @@
+import { effectiveKnowledgePermissions } from "@/server/modules/authorization";
 import type Database from "better-sqlite3";
 import { HumanAccountError, type HumanAccountStore, type Principal } from "@/server/modules/identity";
 import type { HumanKnowledgeMembership, HumanKnowledgeSet, HumanKnowledgeRevoke, HumanMembershipPage, HumanPage } from "@/shared/contracts/human-accounts";
@@ -70,12 +71,12 @@ export class HumanAccountQueries implements HumanAccountStore {
     const binding = this.identity.getKnowledgeRoleBinding(principal.id, projectId);
     if (!binding) throw new HumanAccountError("invalid_input");
     const grant = this.identity.getKnowledgeProjectGrant(principal.id, projectId);
-    const active = principal.status === "active" && binding.revokedAt === null && grant?.revokedAt === null;
+    const permissions = effectiveKnowledgePermissions({ id: principal.id, kind: "human", humanSession: false }, projectId,
+      { ordinaryHuman: true, grant: principal.status === "active" ? grant : null, binding });
     return { principalId: principal.id, scope: { kind: "knowledge-project", id: projectId }, role: binding.role,
       revision: binding.revision, updatedAt: binding.updatedAt, revokedAt: binding.revokedAt,
       grant: grant && { permissions: grant.permissions, revokedAt: grant.revokedAt },
-      effectivePermissions: active ? (["knowledge:read", "knowledge:write"] as const).filter(p => grant?.permissions.includes(p)
-        && (p !== "knowledge:write" || binding.role === "operator")) : [] };
+      effectivePermissions: permissions.filter((p): p is "knowledge:read" | "knowledge:write" => p === "knowledge:read" || p === "knowledge:write") };
   }
   private audit(event: string, actor: string, details: unknown) {
     this.database.prepare("INSERT INTO controller_audit_events(event_type,actor,details_json,created_at) VALUES(?,?,?,?)")

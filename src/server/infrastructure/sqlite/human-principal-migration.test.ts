@@ -40,6 +40,7 @@ describe("ordinary human principal migration 42", () => {
     const db = baseline();
     try {
       expect(inspectSchema(db)).toEqual({ version: 41, fresh: false });
+      expect(() => db.exec("INSERT INTO remote_principals VALUES('forbidden-human','human','active')")).toThrow(/CHECK/);
       const before = kept(db), registry = db.prepare("SELECT * FROM schema_migrations ORDER BY version").all();
       const keys = db.prepare("PRAGMA foreign_key_list(knowledge_project_grants)").all();
       expect(() => initializeSchema(db, false, () => { throw Error("after rebuild"); })).toThrow("after rebuild");

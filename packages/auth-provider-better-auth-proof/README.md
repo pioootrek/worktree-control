@@ -356,7 +356,11 @@ proxy all remote clients share its peer until explicit trusted-proxy design.
 No production security defaults, MFA/ASVS Level 2, full transport cutover,
 external restore fence, GUI, OS restart or completed A3 claim follows.
 
-## Next protected CLI integration contract
+## Historical protected CLI integration contract
+
+The following contract preceded A3-I10. Protected configuration, private IPC,
+principal creation/enrollment and ordinary-human membership are now implemented
+as described above. It remains a record of the intended trust boundaries.
 
 Keep mode selection separate from provider material and keep the same live boot
 snapshot. Add strict operator commands through the private OS-owned Unix socket
@@ -379,9 +383,8 @@ Offline provider use starts no service and disposes/drains before SQLite close.
 Running use stays with the sole controller owner. Pass the optional resource to
 `createControllerShutdown`; rejected load/disposal must retain ownership until
 cleanup is confirmed. Same-OS-user agents share this administrative trust boundary.
-Protected configuration/secret persistence, fresh-principal enrollment, CLI input
-and IPC schema, multi-human roles, factors/MFA and complete A5 enforcement are
-future work. Do not add a password-proof activation flag to reach that work.
+Production activation, delegated general roles and complete A5 enforcement
+remain future work. Do not add a password-proof activation flag to reach that work.
 
 ## A3-I12 factor compatibility experiment
 
@@ -389,10 +392,11 @@ future work. Do not add a password-proof activation flag to reach that work.
 `twoFactor` plugin on the controller's sole temporary SQLite owner. At I12,
 TOTP was an unselected compatibility candidate. The owner has since selected
 both TOTP and passkeys as optional methods; the pinned TOTP implementation still
-needs an accepted replay remedy. Production remains
-schema 39, provider storage revision 1 and contract 2. This experiment changes no
+needed an accepted replay remedy at that stage. That historical baseline was
+schema 39, provider storage revision 1 and contract 2. Later integrated authority
+uses current core schema 42, storage 3 and contract 5. This experiment changes no
 production provider, route, actor, mode or migration. Account mode remains
-unavailable; A4, A5, roles and GUI remain separate.
+unavailable; A4, A5, general delegated roles and GUI remain separate.
 
 The fixture first provisions an ordinary password account. Its temporary owner
 then compiles pinned `getMigrations` SQL, applies that SQL in an exclusive borrow,
