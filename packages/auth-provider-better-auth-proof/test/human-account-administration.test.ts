@@ -7,6 +7,7 @@ import { createMcpControllerServer } from "@/server/mcp-http-server";
 import { EventStream } from "@/server/events";
 import type { ControlService } from "@/server/control-service";
 import type { DirectoryBrowser } from "@/server/directory-browser";
+import { HumanAccountQueries } from "@/server/infrastructure/sqlite/human-account-queries";
 import { SqliteStateStore } from "@/server/infrastructure/sqlite";
 import { HumanAccountService, type ProviderSessionActor } from "@/server/modules/identity";
 import { KnowledgeService } from "@/server/modules/knowledge";
@@ -185,6 +186,21 @@ describe("protected ordinary humans and real isolated Knowledge cookies", () => 
       expect((await f.a.login(OWNER_PASSWORD, email(1))).status).toBeGreaterThanOrEqual(400);
       expect(count(f.paths.databasePath, "authentication_ba_session")).toBe(2);
       expect(await f.run(["human", "disable", "--principal-id", f.h1])).toMatchObject({ changed: false });
+    } finally { await f.close(); }
+  });
+
+  it("reports committed revocation on interrupted reclamation and resumes on a repeated disable", async () => {
+    const f = await setup();
+    try {
+      expect((await f.a.login(OWNER_PASSWORD, email(1))).status).toBe(200);
+      const interrupted = vi.spyOn(HumanAccountQueries.prototype, "removeDisabledHumanSession").mockImplementationOnce(() => { throw Error("fixture interrupted reclamation"); });
+      await expect(f.run(["human", "disable", "--principal-id", f.h1])).rejects.toMatchObject({ code: "provider_failed", committed: true });
+      interrupted.mockRestore();
+      expect((await f.a.session()).body).toEqual({ authenticated: false });
+      expect(count(f.paths.databasePath, "authentication_ba_session")).toBe(2);
+      expect(await f.run(["human", "disable", "--principal-id", f.h1])).toMatchObject({ changed: false });
+      expect(count(f.paths.databasePath, "authentication_ba_session")).toBe(1);
+      expect(readCommitted(f.paths.databasePath, db => db.prepare("SELECT count(*) n FROM controller_audit_events WHERE event_type='identity.human_disabled'").get())).toEqual({ n: 1 });
     } finally { await f.close(); }
   });
 

@@ -64,7 +64,9 @@ export class ProviderAdminApplication {
         const result = await phase(() => d.humans.disable(request.principalId));
         // Authority ends at the first commit. Yield the sole connection between
         // one-row reclamation transactions; a repeated disable resumes safely.
-        while (await phase(() => d.humans.reclaimDisabledSession(request.principalId))) { /* Bounded phases, no provider load. */ }
+        try {
+          while (await phase(() => d.humans.reclaimDisabledSession(request.principalId))) { /* Bounded phases, no provider load. */ }
+        } catch (error) { throw new ProviderAdminError(providerAdminFailure(error).code, true); }
         return result;
       }
       if (request.action === "knowledge-access-list") return await phase(() => d.humans.memberships(request.input));

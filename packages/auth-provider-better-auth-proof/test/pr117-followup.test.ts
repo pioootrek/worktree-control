@@ -9,8 +9,8 @@ import { cleanupStrictRoots, gate, sleep } from "./strict-fixture";
 
 const NEW_PASSWORD = "fixture-pr117-replacement-password";
 const opened: BrowserFixture[] = [];
-async function create(faults: ProofFaultInjection = {}) {
-  const f = await browserFixture(faults, { maxQueued: 1, reservedQueued: 16 }, 8, factorOptions());
+async function create(faults: ProofFaultInjection = {}, admission = {}) {
+  const f = await browserFixture(faults, { maxQueued: 1, reservedQueued: 16, ...admission }, 8, factorOptions());
   opened.push(f); return f;
 }
 beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-11-02T12:00:05Z")); });
@@ -31,7 +31,7 @@ function saturate(f: BrowserFixture, operation: BrowserOperation, revoke = false
       entered.open(); await release.opened;
     });
     await entered.opened;
-    queued = f.store.admission.detached(() => undefined);
+    queued = f.store.admission.detached(() => undefined).catch(error => error);
     await vi.waitFor(() => expect(f.store.admissionSnapshot().queuedCore).toBe(1));
     ready.open();
   });
@@ -59,6 +59,17 @@ describe("PR117 accepted browser completion", () => {
       const pending = perform(); await fence.ready; await sleep(10); await fence.release();
       expect(await pending).toMatchObject({ status: 200 });
       await strength(client, method);
+      expect(await select(f, "SELECT state FROM authentication_session_issuance")).toEqual([{ state: "may_publish" }]);
+    } finally { await fence.release(); }
+  });
+
+  it("retries an admission timeout for accepted completion without replaying the effect", async () => {
+    const f = await create({}, { admissionTimeoutMs: 25 }), client = f.client(), fence = saturate(f, "sign-in");
+    try {
+      const pending = client.login(); await fence.ready; await sleep(110); await fence.release();
+      expect(await pending).toMatchObject({ status: 200 });
+      await strength(client, "password");
+      expect(await select(f, 'SELECT "id" FROM "authentication_ba_session"')).toHaveLength(1);
       expect(await select(f, "SELECT state FROM authentication_session_issuance")).toEqual([{ state: "may_publish" }]);
     } finally { await fence.release(); }
   });
@@ -129,4 +140,31 @@ describe("PR117 old password challenges", () => {
     expect((await post(pending, "two-factor/verify-totp", { code: authenticator.code() })).status).toBe(200);
     await strength(pending, "password_totp");
   });
+  it("preserves an independent pending passkey login and selected protection through password recovery", async () => {
+    const f = await create(), client = await f.client().authenticated(), authenticator = await enrollPasskey(client);
+    const response = authenticator.assert(await options(client, "authenticate"));
+    const before = await select(f, "SELECT generation, policy_revision, passkey_selected FROM authentication_account_policies");
+    await f.runtime.recoverLocal({ principalId: f.owner.principalId, newPassword: NEW_PASSWORD, actor: "fixture" });
+    expect((await post(client, "passkey/verify-authentication", { response })).status).toBe(200);
+    await strength(client, "passkey_uv");
+    expect(await select(f, "SELECT generation, policy_revision, passkey_selected FROM authentication_account_policies")).toEqual(before);
+    expect(await select(f, "SELECT credential_id FROM authentication_passkey_trust")).toHaveLength(1);
+  });
+
+  it("serializes recovery after a charged TOTP verification and revokes its completed session", async () => {
+    const faults: ProofFaultInjection = {}, f = await create(faults), owner = await f.client().authenticated(), authenticator = await enrollTotp(owner);
+    const client = f.client(); await client.login(); advance(STEP * 2);
+    const entered = gate(), release = gate();
+    faults.factorPause = async stage => { if (stage === "after-admission") { entered.open(); await release.opened; } };
+    let verification: Promise<unknown> | undefined, recovery: Promise<unknown> | undefined;
+    try {
+      verification = post(client, "two-factor/verify-totp", { code: authenticator.code() }); await entered.opened;
+      recovery = f.runtime.recoverLocal({ principalId: f.owner.principalId, newPassword: NEW_PASSWORD, actor: "fixture" });
+      await vi.waitFor(() => expect(f.store.admissionSnapshot().queuedProviders).toBe(1));
+      release.open(); await verification; await recovery; faults.factorPause = undefined;
+      expect(await select(f, 'SELECT "id" FROM "authentication_ba_session"')).toEqual([]);
+      expect((await client.session()).body).toEqual({ authenticated: false });
+    } finally { release.open(); await verification; await recovery; }
+  });
+
 });
