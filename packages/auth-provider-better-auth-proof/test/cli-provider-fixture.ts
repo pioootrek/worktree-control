@@ -9,7 +9,7 @@ import { SqliteStateStore } from "@/server/infrastructure/sqlite";
 import { AuthenticationService, loadAuthenticationProvider, type AuthenticationProviderRuntime, type ProviderFactorOptions } from "@/server/modules/authentication";
 import { resolveAppPaths } from "@/server/paths";
 import type { ProofFaultInjection } from "../src/index";
-import { ISSUANCE, ORIGIN, PROVIDER_ENTRY, readyIssuance } from "./fixture";
+import { ISSUANCE, ORIGIN, PROVIDER_ENTRY, readyIssuance, type SESSION_POLICY } from "./fixture";
 
 export function cliFixture() {
   const root = mkdtempSync(join(tmpdir(), "provider-cli-")), paths = resolveAppPaths(join(root, "data"), join(root, "state"));
@@ -36,7 +36,7 @@ export function cliFixture() {
 }
 
 export async function onlineCliFixture(options: { faults?: ProofFaultInjection; mode?: "open" | "token"; onInvalidation?: () => void;
-  factors?: ProviderFactorOptions;
+  factors?: ProviderFactorOptions; sessionPolicy?: typeof SESSION_POLICY;
   beforeProviderTransaction?: () => void;
   beforeLoad?: () => Promise<void>; afterLoad?: () => Promise<void>; drainTimeoutMs?: number; storeOptions?: ConstructorParameters<typeof SqliteStateStore>[2] } = {}) {
   const f = cliFixture(); await f.configure(); const principalId = await f.create();
@@ -53,7 +53,7 @@ export async function onlineCliFixture(options: { faults?: ProofFaultInjection; 
     holdLifetime: () => { const timer = setInterval(() => {}, 60_000); lifetimes.push(timer); return () => clearInterval(timer); },
     loadProvider: async input => {
       loads++; await options.beforeLoad?.();
-      await readyIssuance(store);
+      await readyIssuance(store, options.sessionPolicy);
       const storage = !options.beforeProviderTransaction ? input.storage : { ...input.storage, createProviderConnection: () => {
         const connection = input.storage.createProviderConnection();
         return { ...connection, prepare(sql: string) {
@@ -64,7 +64,7 @@ export async function onlineCliFixture(options: { faults?: ProofFaultInjection; 
           } };
         } };
       } };
-      runtime = await loadAuthenticationProvider({ ...input, storage, ...ISSUANCE, options: { ...input.options, faultInjection: options.faults, factors: options.factors } as typeof input.options });
+      runtime = await loadAuthenticationProvider({ ...input, storage, ...ISSUANCE, ...options.sessionPolicy, options: { ...input.options, faultInjection: options.faults, factors: options.factors } as typeof input.options });
       await options.afterLoad?.(); return runtime;
     } });
   const admin = await listenAdminSocket(f.paths.adminSocketPath, body => administration.execute(body));

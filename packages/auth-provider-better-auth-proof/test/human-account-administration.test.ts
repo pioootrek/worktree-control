@@ -169,6 +169,25 @@ describe("protected ordinary humans and real isolated Knowledge cookies", () => 
     } finally { release.open(); await held; await f.close(); }
   });
 
+  it("recovers global session capacity after disabling a non-owner and preserves other humans", async () => {
+    const f = await setup({ sessionPolicy: { sessionRows: 3, sessionReconcileBatch: 1 } });
+    try {
+      await set(f, membership(f.h1, f.k1)); const actor = await f.actor(f.a);
+      expect((await f.a.login(OWNER_PASSWORD, email(1))).status).toBe(200);
+      expect(count(f.paths.databasePath, "authentication_ba_session")).toBe(3);
+      expect((await f.b.login(OWNER_PASSWORD, email(2))).status).toBe(503);
+      expect(await f.run(["human", "disable", "--principal-id", f.h1])).toMatchObject({ changed: true });
+      expect(count(f.paths.databasePath, "authentication_ba_session")).toBe(1);
+      await expect(f.providerKnowledge.describeIdentity(actor)).rejects.toMatchObject({ code: "invalid_credential" });
+      expect((await f.a.session()).body).toEqual({ authenticated: false });
+      expect((await f.b.session()).status).toBe(200);
+      expect((await f.b.login(OWNER_PASSWORD, email(2))).status).toBe(200);
+      expect((await f.a.login(OWNER_PASSWORD, email(1))).status).toBeGreaterThanOrEqual(400);
+      expect(count(f.paths.databasePath, "authentication_ba_session")).toBe(2);
+      expect(await f.run(["human", "disable", "--principal-id", f.h1])).toMatchObject({ changed: false });
+    } finally { await f.close(); }
+  });
+
   it("denies runtime links before lookup/replay while preserving Knowledge archive/restore", async () => {
     const f = await setup();
     try {
