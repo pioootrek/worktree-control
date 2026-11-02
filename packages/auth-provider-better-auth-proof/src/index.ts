@@ -30,7 +30,7 @@ const NATIVE_ROUTES = new Map([
 ]);
 
 /** Tracks the real transaction state, including a failed COMMIT. SQL fault seam for tests only. */
-function trackedConnection(connection: ProviderSqliteConnection, state: { open: boolean }, faults: ProofFaultInjection | undefined): ProviderSqliteConnection {
+function trackedConnection(connection: ProviderSqliteConnection, state: { open: boolean; ended?: "commit" | "rollback" }, faults: ProofFaultInjection | undefined): ProviderSqliteConnection {
   const execute = <T>(sql: string, work: () => T): T => {
     const fault = faults?.sqlFault;
     if (fault?.afterSql?.test(sql)) fault.armed = true;
@@ -39,8 +39,8 @@ function trackedConnection(connection: ProviderSqliteConnection, state: { open: 
     if (matches && fault.when === "before") fail();
     const result = work();
     const verb = sql.trim().toLowerCase();
-    if (verb === "begin") state.open = true;
-    if (verb === "commit" || verb === "rollback") state.open = false;
+    if (verb === "begin") { state.open = true; state.ended = undefined; }
+    if (verb === "commit" || verb === "rollback") { state.open = false; state.ended = verb; }
     if (matches && fault.when === "after") fail();
     return result;
   };
@@ -66,7 +66,7 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
   readonly #operation = new AsyncLocalStorage<CeremonyOperation>();
   readonly #notifications = new AsyncLocalStorage<ProviderInvalidation[]>();
   readonly #active = new AsyncLocalStorage<ReturnType<BetterAuthProofProvider["createLibrary"]>>();
-  readonly #transaction = { open: false };
+  readonly #transaction: { open: boolean; ended?: "commit" | "rollback" } = { open: false };
   readonly #ceremonies: FactorCeremonies;
   #connection: ProviderSqliteConnection | undefined;
   #database: Kysely<never> | undefined;
@@ -160,11 +160,13 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
   async #atomic(input: { attemptId: string; ticket?: unknown; work: (scoped: ScopedLibrary) => Promise<Response> }): Promise<Response> {
     const notifications: ProviderInvalidation[] = [];
     const publish = () => { for (const event of notifications) this.#host.invalidated(event); };
-    let response: Response;
+    let response: Response, finished = false;
     try {
       response = await this.#notifications.run(notifications, () => this.#database!.transaction().execute(async trx => {
         const scoped = await this.#scoped(trx as unknown as Kysely<never>);
-        return this.#active.run(scoped, () => input.work(scoped as unknown as ScopedLibrary));
+        const result = await this.#active.run(scoped, () => input.work(scoped as unknown as ScopedLibrary));
+        finished = true;
+        return result;
       }));
     } catch (error) {
       if (this.#transaction.open) return fixed(503, { outcome: "outcome_unconfirmed" });
@@ -179,6 +181,8 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
       }
       if (error instanceof Rollback) return error.response;
       this.#host.log("error", "Authentication provider transaction failed.");
+      // Work finished, so only COMMIT failed. Without a receipt its effect cannot be proved either way.
+      if (finished && this.#transaction.ended !== "rollback") return fixed(503, { outcome: "outcome_unconfirmed" });
       return fixed(500, { outcome: "rolled_back", committed: false });
     }
     publish();

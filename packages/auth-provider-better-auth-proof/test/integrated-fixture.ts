@@ -15,6 +15,10 @@ export const STEP = 30_000;
 export const LIMITS: ProviderFactorLimits = {
   totp: { attempts: 32, windowMs: 60_000 }, passkey: { attempts: 32, windowMs: 60_000 },
   ticketMs: 15_000, stagingMs: 600_000, capacity: 256, pruneBatch: 16,
+  // Finite values chosen to prove bounds, including the fixture peer map and reservations.
+  issuance: { perPeer: { attempts: 64, windowMs: 60_000 }, global: { attempts: 128, windowMs: 60_000 }, peers: 32, nativeChallenges: 256, reservedContexts: 8 },
+  webauthn: { credentialIdBytes: 2048, clientDataBytes: 2048, attestationBytes: 16_384, authenticatorDataBytes: 8192, publicKeyBytes: 2048, signatureBytes: 2048,
+    userHandleBytes: 64, challengeBytes: 64, transports: 8, credentials: 16, responseBytes: 65_536 },
 };
 export const factorOptions = (limits: ProviderFactorLimits = LIMITS): ProviderFactorOptions => ({ rpId: "controller.test", rpName: "Worktree Control proof", limits });
 export const advance = (milliseconds: number) => { vi.setSystemTime(Date.now() + milliseconds); };

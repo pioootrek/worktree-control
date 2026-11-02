@@ -5,7 +5,7 @@ import type { ControlService } from "@/server/control-service";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSessionActor } from "@/server/modules/identity";
 import { ORIGIN, OWNER_PASSWORD, OWNER_EMAIL, count, readCommitted } from "./fixture";
-import { BrowserClient, browserFixture, write, type BrowserFixture } from "./browser-authentication-fixture";
+import { aroundBrowser, BrowserClient, browserFixture, write, type BrowserFixture } from "./browser-authentication-fixture";
 import { cleanupStrictRoots, gate } from "./strict-fixture";
 import type { ProofFaultInjection } from "../src/index";
 
@@ -275,12 +275,12 @@ describe("actual controller browser adapter with pinned Better Auth", () => {
     const entered = gate(), release = gate();
     const original = f.runtime.browser.bind(f.runtime);
     let hold: Promise<unknown> | undefined, revoke: Promise<void> | undefined;
-    vi.spyOn(f.runtime, "browser").mockImplementation(async (...args) => {
+    vi.spyOn(f.runtime, "browser").mockImplementation((...args) => aroundBrowser(async () => {
       hold = f.run(async () => { entered.open(); await release.opened; });
       await entered.opened;
       revoke = f.runtime.revokePrincipalSessions(f.owner.principalId);
       return original(...args);
-    });
+    }));
     try {
       const mutation = client.call("/api/auth/change-password", { body: { currentPassword: OWNER_PASSWORD, newPassword: "fixture-new-password-2" } });
       await entered.opened;
@@ -296,13 +296,14 @@ describe("actual controller browser adapter with pinned Better Auth", () => {
     let revoke: Promise<void> | undefined;
     const entered = gate(), release = gate();
     let hold: Promise<unknown> | undefined;
-    vi.spyOn(f.runtime, "browser").mockImplementation(async (...args) => {
-      const result = await original(...args);
+    vi.spyOn(f.runtime, "browser").mockImplementation((...args) => aroundBrowser(async () => {
+      const lifetime = original(...args);
+      await lifetime.result;
       hold = f.run(async () => { entered.open(); await release.opened; });
       await entered.opened;
       revoke = f.runtime.revokePrincipalSessions(f.owner.principalId);
-      return result;
-    });
+      return lifetime;
+    }));
     try {
       const pending = client.login();
       await entered.opened;

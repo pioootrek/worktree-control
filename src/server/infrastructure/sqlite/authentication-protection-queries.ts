@@ -7,7 +7,7 @@ import {
 
 const TABLES: Record<BoundedProtectionTable, string> = {
   contexts: "authentication_factor_contexts", receipts: "authentication_factor_receipts",
-  budgets: "authentication_factor_budgets", staged: "authentication_passkey_staged",
+  budgets: "authentication_factor_budgets", staged: "authentication_passkey_staged", verifications: "authentication_ba_verification",
 };
 const flag = (value: unknown) => value === 1;
 const instant = (value: string | number) => new Date(value).toISOString();
@@ -185,6 +185,11 @@ export class AuthenticationProtectionQueries implements ProtectionStore {
     return { ...row, handle: context?.handle ?? null };
   }
 
+  succeededReceipt(capability: string): ProtectionReceiptRow | null {
+    const row = this.database.prepare(`SELECT attempt_id AS attemptId FROM authentication_factor_receipts WHERE capability = ? AND state = 'succeeded' LIMIT 1`).get(capability) as { attemptId: string } | undefined;
+    return row ? this.receipt(row.attemptId) : null;
+  }
+
   insertReceipt(row: ProtectionReceiptRow): void {
     this.database.prepare(`INSERT INTO authentication_factor_receipts(attempt_id, provider_id, capability, purpose, subject, principal_id, credential, binding, generation, policy_revision, epoch, deadline, state, session_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(row.attemptId, this.providerId, row.capability, row.purpose, row.subject, row.principalId, row.credential, row.binding,
@@ -202,7 +207,8 @@ export class AuthenticationProtectionQueries implements ProtectionStore {
   /**
    * Bounded per call. Admission holds the exclusive borrow, so an expired charged
    * attempt cannot still be running: it lost its process and is settled as failed.
-   * Its charge remains. A promoted credential is never pruned.
+   * Its charge remains. A promoted credential is never pruned. A native row goes
+   * only with the expired context that owns it, so a reset row or session is untouched.
    */
   prune(now: number, pruneBatch: number, epochs: { totp: number; passkey: number }): void {
     this.database.prepare(`UPDATE authentication_factor_receipts SET state = 'failed' WHERE attempt_id IN
@@ -214,8 +220,12 @@ export class AuthenticationProtectionQueries implements ProtectionStore {
       if (!this.trust(stage.credential)) this.database.prepare('DELETE FROM "authentication_ba_passkey" WHERE "id" = ? AND "credentialID" = ?').run(stage.nativeId, stage.credential);
     }
     this.database.prepare(`DELETE FROM authentication_factor_receipts WHERE attempt_id IN (SELECT attempt_id FROM authentication_factor_receipts WHERE state != 'charged' AND deadline <= ? LIMIT ?)`).run(now, pruneBatch);
-    this.database.prepare(`DELETE FROM authentication_factor_contexts WHERE capability IN (SELECT c.capability FROM authentication_factor_contexts c WHERE c.deadline <= ?
-      AND NOT EXISTS (SELECT 1 FROM authentication_factor_receipts r WHERE r.capability = c.capability AND r.state = 'charged') LIMIT ?)`).run(now, pruneBatch);
+    const expired = this.database.prepare(`SELECT c.capability, c.native_id AS nativeId FROM authentication_factor_contexts c WHERE c.deadline <= ?
+      AND NOT EXISTS (SELECT 1 FROM authentication_factor_receipts r WHERE r.capability = c.capability AND r.state = 'charged') LIMIT ?`).all(now, pruneBatch) as Array<{ capability: string; nativeId: string | null }>;
+    for (const { capability, nativeId } of expired) {
+      if (nativeId) this.database.prepare('DELETE FROM "authentication_ba_verification" WHERE "id" = ?').run(nativeId);
+      this.database.prepare("DELETE FROM authentication_factor_contexts WHERE capability = ?").run(capability);
+    }
     for (const scope of ["totp", "passkey"] as const) {
       this.database.prepare(`DELETE FROM authentication_factor_budgets WHERE rowid IN (SELECT b.rowid FROM authentication_factor_budgets b WHERE b.scope = ? AND b.epoch < ?
         AND NOT EXISTS (SELECT 1 FROM authentication_factor_receipts r WHERE r.subject = b.subject AND r.epoch = b.epoch AND r.state = 'charged') LIMIT ?)`).run(scope, epochs[scope], pruneBatch);

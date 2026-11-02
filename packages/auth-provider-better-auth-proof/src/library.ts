@@ -55,6 +55,7 @@ export interface LibraryCallbacks {
   registered(input: { verified: boolean; subject: string }): void;
   authenticated(input: { verified: boolean; userVerified: boolean; credential: string; userHandle: string | null | undefined }): void;
 }
+export const TOTP_ISSUER = "Worktree Control";
 export const refusal = () => new APIError("FORBIDDEN", { message: "Verification refused." });
 
 /** Without callbacks every WebAuthn completion refuses. Migration tests compile from this. */
@@ -163,7 +164,7 @@ export function libraryOptions(host: Pick<AuthenticationProviderHost, "log">, op
       },
     },
     plugins: [
-      twoFactor({ issuer: "Worktree Control", twoFactorTable: MODELS.twoFactor, skipVerificationOnEnable: false, allowPasswordless: false, totpOptions: TOTP_SETTINGS }),
+      twoFactor({ issuer: TOTP_ISSUER, twoFactorTable: MODELS.twoFactor, skipVerificationOnEnable: false, allowPasswordless: false, totpOptions: TOTP_SETTINGS }),
       passkey({
         rpID: options.factors?.rpId ?? base.hostname,
         rpName: options.factors?.rpName ?? "Worktree Control",

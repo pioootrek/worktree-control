@@ -281,7 +281,7 @@ describe("TOTP selected protection", () => {
   });
 
   it("settles and prunes an attempt whose process vanished, so it cannot hold the bound forever", async () => {
-    const f = await create({}, { ...LIMITS, capacity: 8, pruneBatch: 8 }), { authenticator } = await enrollTotp(f);
+    const f = await create({}, { ...LIMITS, capacity: 8, pruneBatch: 8, issuance: { ...LIMITS.issuance, reservedContexts: 2 } }), { authenticator } = await enrollTotp(f);
     await sql(f, "INSERT INTO authentication_factor_receipts SELECT 'stranded', provider_id, capability, purpose, subject, principal_id, credential, binding, generation, policy_revision, epoch, 1, 'charged', NULL FROM authentication_factor_receipts LIMIT 1");
     const { charged } = await protectionState(f);
     advance(STEP);
@@ -603,12 +603,16 @@ describe("closed surface and configuration", () => {
     expect((await browser.post(path, {})).status).toBe(404);
   });
 
-  it("the mounted browser sign-in releases nothing for a selected account", async () => {
+  it("the mounted browser sign-in yields only a pending challenge for a selected account", async () => {
     const f = await create();
     await enrollTotp(f);
     const request = new Request(`${BASE_URL}/sign-in/email`, { method: "POST", headers: { origin: new URL(BASE_URL).origin, "content-type": "application/json", [IP_HEADER]: "203.0.113.77" },
       body: JSON.stringify({ email: OWNER_EMAIL, password: OWNER_PASSWORD }) });
-    await expect(f.runtime.browser("sign-in", request)).rejects.toMatchObject({ code: "provider_failed" });
+    const { result, settled } = f.runtime.browser("sign-in", request);
+    const release = await result;
+    await settled;
+    expect(release).toEqual({ operation: "sign-in", outcome: "challenge" });
+    expect(f.runtime.browserReleaseCommitted(release)).toBe(false);
     expect((await protectionState(f)).sessions).toEqual([]);
   });
 

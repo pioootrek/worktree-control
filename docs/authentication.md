@@ -293,14 +293,16 @@ existence, provider path, diagnostics or grants. The isolated adapter supports:
 
 | Exact request | Strict input | Sanitized success |
 | --- | --- | --- |
-| `POST /api/auth/sign-in/email` | `{email,password}` | `{authenticated:true}` and validated cookie |
-| `GET /api/auth/get-session` | No query or body | `{authenticated:false}` or `{authenticated:true,principal:{id,kind},expiresAt,authentication:{method:"password",factors:1}}` |
+| `POST /api/auth/sign-in/email` | `{email,password}` | `{authenticated:true}` and validated cookie, or `{authenticated:false,outcome:"challenge",method:"totp"}` with no session |
+| `GET /api/auth/get-session` | No query or body | `{authenticated:false}` or `{authenticated:true,principal:{id,kind},expiresAt,authentication:{method,factors}}` |
 | `POST /api/auth/sign-out` | `{}` | `{authenticated:false}` after durable deletion |
 | `POST /api/auth/change-password` | `{currentPassword,newPassword}` | `{changed:true}` and replacement cookie |
 
-All other native routes, methods, extra fields and path aliases are denied
-before provider invocation. There is no native catch-all, signup, reset,
-redirect, social/linking, factor, user-update or administration endpoint.
+When the composition supplies factor limits, the
+[closed factor routes](#closed-factor-http-api) are added. Without them those
+paths get the generic denial. All other native routes, methods, extra fields and
+path aliases are denied before provider invocation. There is no native catch-all,
+signup, reset, redirect, social/linking, user-update or administration endpoint.
 Original Host must exactly match the canonical HTTPS origin's authority. Raw
 paths cannot contain queries, percent escapes, dot segments, repeated slashes,
 trailing aliases, userinfo or absolute-form targets. Browser mutations require
@@ -505,8 +507,8 @@ trusted devices, administrative factor reset and every other native plugin route
 Recovery therefore has no factor-loss path: `recoverLocal` replaces a password and
 revokes sessions but leaves selected protection in place. A clock that ran ahead can
 hold TOTP refused until real time passes the step, and with no other method that
-account waits. These need accepted management decisions, along with public factor
-routes and DTOs, final numeric limits and consecutive-failure accounting.
+account waits. These need accepted management decisions, along with final numeric
+limits and consecutive-failure accounting.
 
 Backups include this storage, and a restore keeps its rows. Restoring an older snapshot
 reopens older sessions, steps, generations and factors, which remains the A5 external
@@ -514,6 +516,111 @@ fence. Schema 40 has no downgrade: older binaries refuse it and A3-I18 adds no r
 path except restoring a backup. A4 vault authority and A5 transport, cutover and restore
 fencing stay separate gates. See the
 [proof details](../packages/auth-provider-better-auth-proof/README.md#a3-i18-integrated-factor-authority).
+
+### Closed factor HTTP API
+
+A3-I20 mounts login and first enrollment through the isolated composition only. It
+uses the same provider, schema 40, contract 3, `AccountProtection` and sole
+connection as [integrated factor authority](#integrated-factor-authority). Production
+main still has no caller or flag, account mode stays refused, and recovery, removal,
+replacement, additional passkeys and trusted devices stay refused.
+
+| Exact request | Strict body | Safe 200 response |
+| --- | --- | --- |
+| `POST /api/auth/two-factor/enable` | `{password}` | `{outcome:"enrollment",totpURI,authorizing:false}` |
+| `POST /api/auth/two-factor/verify-totp` | `{code}` | Login: `{authenticated:true}`. Enrollment: `{outcome:"enrolled",authorizing:false}` |
+| `GET /api/auth/passkey/generate-register-options` | None | `{outcome:"options",options}` |
+| `POST /api/auth/passkey/verify-registration` | `{response}` | `{outcome:"staged",authorizing:false}` |
+| `GET /api/auth/passkey/generate-confirm-options` | None | `{outcome:"options",options}`, restricted to the staged credential |
+| `POST /api/auth/passkey/verify-confirmation` | `{response}` | `{outcome:"enrolled",authorizing:false}` |
+| `GET /api/auth/passkey/generate-authenticate-options` | None | `{outcome:"options",options}` |
+| `POST /api/auth/passkey/verify-authentication` | `{response}` | `{authenticated:true}` |
+
+An enrollment result never carries a login. Selection ends every session of that
+account, including the one that enrolled, and returns only deletions. Adding the other
+method needs a current session, which on a selected account is always a strong one,
+and it ends every session too. The setup URI is the one deliberate secret: it goes only to
+the enrolling account, under a fixed label with no email, and is never logged.
+Generated options contain only named fields, a fixed account label and the random
+WebAuthn handle.
+
+**Request boundary.** Every factor route needs the exact Origin, including option GETs,
+because they allocate state. Bodies are counted as streamed bytes, decoded as strict
+UTF-8 and read with no admission held. Compressed bodies, repeated JSON keys and repeated
+Host, Origin, Fetch Metadata or body headers refuse. WebAuthn fields are canonical
+unpadded base64url; every layer is closed; `id` and `rawId` must be the same bytes; a
+missing user handle refuses. Only `credProps` may appear among extension results, and
+it grants nothing. The caller supplies all bounds through `ProviderFactorLimits.webauthn`
+and `AuthenticationTransportLimits`. They have no defaults.
+
+**Cookies.** Only three request cookies matter: session `S`, two-factor `T` and passkey
+challenge `P`. Duplicates, unsigned names and case-changed names refuse; a trust-device
+cookie is dropped unread. Each operation forwards a fixed subset, and `verify-totp` with
+both `S` and `T` refuses as ambiguous.
+
+| Operation | Forwarded | Live response cookie |
+| --- | --- | --- |
+| Password sign-in | None | `S` or `T`, never both |
+| Session, change password | `S` | `S` |
+| Sign-out | `S` | None |
+| TOTP enable | `S` | None |
+| TOTP verify | `S` for enrollment, `T` for login | `S` for login only |
+| Passkey register options | `S` | `P` |
+| Passkey registration | `S`, `P` | None; the client keeps `P` for confirmation |
+| Passkey confirm options | `S`, `P` | Replacement `P` |
+| Passkey confirmation | `S`, `P` | None |
+| Passkey authenticate options | None | `P` |
+| Passkey authentication | `P` | `S` |
+
+The whole response set is validated before any cookie is released. A challenge deletes
+an old `S` so the next request is unambiguous, and completion deletes stale `T` and `P`.
+
+**Release.** A provider result stays behind an opaque, runtime-owned object. A
+nonauthorizing result carries an immutable capture of the exact context, staged row or
+receipt taken inside its borrow, read back from schema 40 rows with no new table or
+connection. Header emission and that final check form one synchronous admitted phase.
+A retained result is never adopted after state changed.
+
+**Cancellation and lifetime.** One `AbortController` per request follows a closed
+connection, never a normal completed close, through the body read, native `Request`,
+queued borrow and final admission. Before COMMIT the existing guards roll the success
+back, and the separately committed charge stays. After a known COMMIT, cancellation only
+suppresses output and removes the unreleased new session on reserved admission. It
+cannot undo a password, selection, step or revocation. The in-flight slot is held until
+the response closed and the callback really ended, including after a borrow's public
+promise timed out.
+
+**Outcomes.** Refusals use fixed bodies:
+
+| Status | Code | Meaning |
+| --- | --- | --- |
+| 400, 408, 413 | `invalid_request`, `request_timeout`, `request_too_large` | Boundary refusal before the provider |
+| 401 | `authentication_failed` | Missing, wrong, replayed, expired, revoked, cross-account or selected-policy failure, all alike |
+| 429 | `rate_limited` | Real limiter or budget exhaustion |
+| 503 | `database_busy`, `database_unavailable` | Bounded capacity, or an unavailable owner or provider |
+| 502 | `provider_failed` | Invalid provider output |
+| 503 | `completion_unconfirmed` with `committed:true` | A durable receipt proves the effect, but its response failed |
+| 503 | `completion_unconfirmed` | The outcome is unknown, with no boolean and no cookie |
+| 500 | `committed_notification_failed` with `committed:true` | The change committed and its notification failed |
+
+`committed:false` is never sent, and no retained result causes a second verifier call.
+This normalization makes no uniform-timing claim.
+
+**Anonymous capacity.** Authenticate options allocate before any account is known. The
+runtime applies a per-peer and global window and a bounded peer map before queueing. It
+then checks row capacity in the borrow, before a native challenge exists.
+`issuance.nativeChallenges` bounds native rows, `issuance.reservedContexts` keeps rows
+that anonymous options can never use, and `reservedCompletionSlots` keeps in-flight room
+that sign-in and anonymous options can never use. Windows live in process memory, so a
+restart forgets them; the durable bound is the row capacity. Pruning deletes a native row
+only with the expired context that owns it. Every number in the isolated composition is
+a test input, not an approved product value.
+
+**Not proved.** The software authenticator proves real signature verification through the
+actual handler. It proves neither hardware provenance nor a browser ceremony. A real
+service-process restart, TLS and proxy deployment, a stable operator-owned origin and RP
+ID, `secretConfig`/`base32:` end to end, final numeric and failure policy, recovery and
+management, A4 and A5 all remain open.
 
 ### Lifecycle and authority boundaries
 

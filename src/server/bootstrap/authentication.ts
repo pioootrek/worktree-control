@@ -2,7 +2,7 @@ import type { DatabaseAdmission } from "@/server/database-admission";
 import { AuthenticationProviderError, ProviderKnowledgeApplication, type AuthenticationProviderRuntime, type AuthenticationService } from "@/server/modules/authentication";
 import { IdentityService, type IdentityStore, type RuntimeAccessStore } from "@/server/modules/identity";
 import { KnowledgeService, type KnowledgeStore } from "@/server/modules/knowledge";
-import { AuthenticationHttp } from "@/server/transports/authentication-http";
+import { AuthenticationHttp, type AuthenticationTransportLimits } from "@/server/transports/authentication-http";
 
 /**
  * Explicit composition for the isolated optional-provider proof. Production main
@@ -20,6 +20,8 @@ export function composeIsolatedBrowserAuthentication(input: {
   maintenance?(): boolean;
   trustedFixturePeer?: string;
   maxInFlight?: number;
+  /** Explicit inputs for this isolated composition. None is an approved product default. */
+  limits: AuthenticationTransportLimits;
 }) {
   if (input.runtime.disposed) throw new AuthenticationProviderError("provider_unavailable", "Authentication provider is unavailable.");
   const identity = new IdentityService(input.store, undefined, undefined, undefined, input.authentication, input.store, input.runtime);

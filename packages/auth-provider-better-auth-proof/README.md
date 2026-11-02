@@ -655,9 +655,32 @@ Evidence is the persisted row, not the provider's claim: `resolveSession` reads
 it and the runtime rejects a claim that disagrees. Limits must be supplied through
 `factors`. Test limits live in `test/integrated-fixture.ts` and are not product values.
 
-Not proved here: process restart under a real service, public transport and disconnect,
-versioned `secretConfig` and `base32:` secrets end to end, A4, A5, final failed-guess
-policy, factor management or recovery. No account activation or complete A3 follows.
+Not proved here: process restart under a real service, versioned `secretConfig` and
+`base32:` secrets end to end, A4, A5, final failed-guess policy, factor management or
+recovery. No account activation or complete A3 follows.
+
+## A3-I20 closed factor HTTP matrix
+
+`browser-factor-authentication.test.ts` enters through the actual
+`createControllerServer` and `AuthenticationHttp`, then the closed runtime operations,
+the pinned provider, schema 40, a runtime actor and current Knowledge policy. Cookies move
+only through a real jar. It reuses the independent OTP generator and the software P-256
+authenticator, with no success stub, fake verifier or inserted evidence.
+
+The file covers no selection, TOTP only, passkey only with `none` and `packed`
+attestation, both methods in both addition orders, and WebAuthn refusals for UV, UP, RP,
+origin, challenge, handle, signature, replay, counters and swapped accounts. It also
+covers current-state release, authority ceilings, exact body and cookie limits, raw
+duplicate headers, real socket aborts, slot retention, anonymous flooding, COMMIT and
+receipt faults, notification failure, unconfirmed cleanup and store reopen.
+
+Fixture limits are finite inputs chosen to prove bounds: `LIMITS` and `TRANSPORT_LIMITS`
+in `test/integrated-fixture.ts` and `test/browser-authentication-fixture.ts`. The peer,
+global, peer-map, native-row and reservation values are not owner-approved.
+
+The temporary Unix listener is not a managed server. These cases prove real cryptographic
+verification through the HTTP handler, not a browser engine, hardware provenance, TLS,
+proxying or a service-process restart.
 
 ## A3-I14 passkey proof
 

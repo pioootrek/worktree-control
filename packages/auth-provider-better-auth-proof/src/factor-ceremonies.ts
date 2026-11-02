@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { isTotpCode, observeTotpStep, readNativeTotpSecret } from "./totp-step";
-import { refusal, type FactorStage, type ProofFaultInjection } from "./library";
+import { isTotpCode, observeTotpStep, readNativeTotpSecret, TOTP_SETTINGS } from "./totp-step";
+import { refusal, TOTP_ISSUER, type FactorStage, type ProofFaultInjection } from "./library";
 import type {
   ProviderAccountProtection,
   ProviderFactorPurpose,
@@ -113,6 +113,23 @@ export interface CeremonyHost {
   withOperation<T>(operation: CeremonyOperation, work: () => Promise<T>): Promise<T>;
 }
 
+/**
+ * Native labels the setup URI with the account's stored email. This keeps only
+ * its secret and parameters under a fixed, non-contact label and refuses
+ * anything but the configured issuer and settings.
+ */
+const TOTP_LABEL = `${TOTP_ISSUER}:account`;
+export function safeTotpUri(native: string): string | null {
+  let uri: URL;
+  try { uri = new URL(native); } catch { return null; }
+  const secret = uri.searchParams.get("secret"), digits = uri.searchParams.get("digits"), period = uri.searchParams.get("period");
+  if (uri.protocol !== "otpauth:" || uri.host !== "totp" || uri.username || uri.password || uri.hash || !secret || !/^[A-Z2-7]{16,128}=*$/.test(secret)
+    || uri.searchParams.get("issuer") !== TOTP_ISSUER || digits !== String(TOTP_SETTINGS.digits) || period !== String(TOTP_SETTINGS.period)
+    || [...uri.searchParams.keys()].some(key => !["secret", "issuer", "digits", "period"].includes(key))) return null;
+  const label = encodeURIComponent(TOTP_LABEL), issuer = encodeURIComponent(TOTP_ISSUER);
+  return `otpauth://totp/${label}?secret=${secret}&issuer=${issuer}&digits=${digits}&period=${period}`;
+}
+
 const sessionQuery = (cookie: string): SessionQuery => ({ headers: new Headers({ cookie }), query: { disableCookieCache: true, disableRefresh: true } });
 
 /** Admission, native verification and settlement for every supported factor route. */
@@ -182,14 +199,19 @@ export class FactorCeremonies {
     let ticket: ProviderFactorTicket | null;
     try {
       ticket = await this.host.commit(() => protection.admit({ opaque, purpose, attemptId, credential, now: Date.now() }));
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.name === "ProviderAdmissionRefusedError") {
+        return (error as Error & { reason?: unknown }).reason === "budget" ? denied(429, "admission_denied") : denied(503, "capacity");
+      }
       // Includes an error after real COMMIT. Reconcile, but never evaluate on this call.
       if (this.host.transactionOpen()) return fixed(503, { outcome: "outcome_unconfirmed" });
-      const charged = protection.outcome(attemptId) !== null;
-      if (charged) protection.fail(attemptId);
-      return fixed(503, { outcome: "admission_error", charged, committed: charged });
+      try {
+        const charged = protection.outcome(attemptId) !== null;
+        if (charged) protection.fail(attemptId);
+        return fixed(503, { outcome: "admission_error", charged, committed: charged });
+      } catch { return fixed(503, { outcome: "outcome_unconfirmed" }); }
     }
-    if (!ticket) return denied(429, "admission_denied");
+    if (!ticket) return denied(401, "admission_refused");
     if (this.host.transactionOpen() || protection.outcome(attemptId) !== "charged") return denied(503, "charge_unconfirmed");
     await this.#pause("after-admission");
     if (signal.aborted || !protection.usable(ticket, Date.now())) { protection.fail(attemptId); return denied(409, "cancelled_or_expired"); }
@@ -207,10 +229,11 @@ export class FactorCeremonies {
       this.#live(request.signal);
       if (!native.ok) throw new Rollback(denied(native.status, "native_failure"));
       const parsed = await native.json() as { totpURI?: unknown };
-      if (typeof parsed.totpURI !== "string" || !protection.issueTotpEnrollment({ opaque: session, sessionId: current.session.id, subject: current.user.id, now: Date.now() })) throw new Rollback(denied(409, "enrollment_refused"));
+      const totpURI = typeof parsed.totpURI === "string" ? safeTotpUri(parsed.totpURI) : null;
+      if (!totpURI || !protection.issueTotpEnrollment({ opaque: session, sessionId: current.session.id, subject: current.user.id, now: Date.now() })) throw new Rollback(denied(409, "enrollment_refused"));
       await this.#pause("before-commit");
       this.#live(request.signal);
-      return fixed(200, { outcome: "enrollment", totpURI: parsed.totpURI, authorizing: false });
+      return fixed(200, { outcome: "enrollment", totpURI, authorizing: false });
     } });
   }
 
@@ -247,13 +270,10 @@ export class FactorCeremonies {
       const current = issued && await scoped.api.getSession(sessionQuery(`${COOKIE.session}=${issued}`));
       if (!current || current.user.id !== ticket.subject) throw new Rollback(denied(500, "session_unconfirmed"));
       const step = await this.#observe(scoped, ticket.subject, code, operation.startedAt, finishedAt, request.signal);
-      try {
+      this.#settle(() => {
         if (purpose === "totp_login") protection.settleTotpLogin(ticket, current.session.id, step, Date.now());
         else protection.settleTotpEnrollment(ticket, step, Date.now());
-      } catch (error) {
-        if (error instanceof Error && error.name === "ProviderStaleStepError") throw new Rollback(denied(409, "presentation_refused"));
-        throw error;
-      }
+      });
       if (purpose === "totp_enrollment") {
         // Selection replaces every prior session. Enrollment never upgrades one and mints none.
         await (await scoped.$context).internalAdapter.deleteUserSessions(ticket.subject);
@@ -283,6 +303,14 @@ export class FactorCeremonies {
     this.#live(signal);
     if (!observation.ok) throw refused();
     return observation.step;
+  }
+
+  /** A settlement that current state refuses is a rollback and a refusal, not a provider fault. */
+  #settle(settlement: () => void): void {
+    try { settlement(); } catch (error) {
+      if (error instanceof Error && (error.name === "ProviderStaleStepError" || error.name === "ProviderSettlementRefusedError")) throw new Rollback(denied(409, "presentation_refused"));
+      throw error;
+    }
   }
 
   /** The login evidence just written must authorize now; a concurrent change rolls everything back. */
@@ -365,7 +393,8 @@ export class FactorCeremonies {
       const native = await scoped.handler(this.#native(kind, request, nativeCookie, { response }));
       await this.#pause("after-native");
       this.#live(request.signal);
-      if (!native.ok) throw new Rollback(denied(native.status, "native_failure"));
+      // Native answers 500 for a credential it could not verify. That is a refusal, not a fault.
+      if (!native.ok) throw new Rollback(denied(native.status >= 500 ? 401 : native.status, "native_failure"));
       if (!operation.verified) throw new Rollback(denied(500, "verification_unconfirmed"));
       const raw = await native.text();
       if (raw.length > MAX_NATIVE_RESPONSE) throw new Rollback(denied(500, "invalid_native_response"));
@@ -374,7 +403,7 @@ export class FactorCeremonies {
       if (kind === "registration") {
         const parsed = JSON.parse(raw) as { userId?: unknown; credentialID?: unknown };
         if (parsed.userId !== ticket.subject || typeof parsed.credentialID !== "string") throw new Rollback(denied(500, "registration_unconfirmed"));
-        protection.stagePasskey(ticket, parsed.credentialID, Date.now());
+        this.#settle(() => { protection.stagePasskey(ticket, parsed.credentialID as string, Date.now()); });
         await this.#beforeCommit(request.signal);
         return fixed(200, { outcome: "staged", authorizing: false });
       }
@@ -383,12 +412,12 @@ export class FactorCeremonies {
       if (!current || current.user.id !== ticket.subject) throw new Rollback(denied(500, "session_unconfirmed"));
       if (kind === "confirmation") {
         // Native always creates a session here. Selection removes it with every prior one.
-        protection.promotePasskey(ticket, Date.now());
+        this.#settle(() => { protection.promotePasskey(ticket, Date.now()); });
         await (await scoped.$context).internalAdapter.deleteUserSessions(ticket.subject);
         await this.#beforeCommit(request.signal);
         return fixed(200, { outcome: "enrolled", authorizing: false }, [expiredSession]);
       }
-      protection.settlePasskeyLogin(ticket, current.session.id, Date.now());
+      this.#settle(() => { protection.settlePasskeyLogin(ticket, current.session.id, Date.now()); });
       this.#confirm(current.session.id);
       await this.#beforeCommit(request.signal);
       this.#confirm(current.session.id);

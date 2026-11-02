@@ -7,6 +7,8 @@
  * migrations, backups and principals; the provider reaches the database only
  * through the borrowed connection in its host, inside a controller borrow.
  */
+import type { BrowserWebAuthnBounds } from "@/shared/contracts/authentication";
+
 export const AUTHENTICATION_PROVIDER_CONTRACT_VERSION = 3;
 
 /** Kysely-compatible statement; valid only during the borrow that prepared it. */
@@ -101,6 +103,18 @@ export interface ProviderFactorLimits {
   /** Maximum rows per bounded admission table. Evidence follows sessions instead. */
   capacity: number;
   pruneBatch: number;
+  /** Generated options before any account is known. All values are explicit inputs. */
+  issuance: {
+    perPeer: { attempts: number; windowMs: number };
+    global: { attempts: number; windowMs: number };
+    /** Peers tracked at once. A new peer is refused once every tracked window is live. */
+    peers: number;
+    /** Maximum native verification rows, whichever ceremony wrote them. */
+    nativeChallenges: number;
+    /** Context and native rows anonymous options may never use, kept for accepted ceremonies. */
+    reservedContexts: number;
+  };
+  webauthn: BrowserWebAuthnBounds;
 }
 
 export interface ProviderFactorOptions { rpId: string; rpName: string; limits: ProviderFactorLimits }
@@ -145,13 +159,20 @@ export interface ProviderAccountProtection {
   issuePasskeyAuthentication(input: { opaque: string; nativeId: string; nativeDeadline: number; now: number }): boolean;
 
   contextSubject(opaque: string, purpose: ProviderFactorPurpose, now: number): { subject: string | null; sessionId: string | null } | null;
-  /** Run in its own short transaction, committed before any native evaluation. No refund exists. */
+  /**
+   * Run in its own short transaction, committed before any native evaluation. No refund exists.
+   * Null refuses without naming why. Throws an error named `ProviderAdmissionRefusedError`
+   * with `reason` "budget" or "capacity" only for genuine exhaustion of an otherwise valid attempt.
+   */
   admit(input: { opaque: string; purpose: ProviderFactorPurpose; attemptId: string; credential: string | null; now: number }): ProviderFactorTicket | null;
   usable(ticket: ProviderFactorTicket, now: number): boolean;
   /** A native WebAuthn result may proceed: trusted or bound staged credential, exact user handle. */
   passkeyAcceptable(ticket: ProviderFactorTicket, credential: string, userHandle: string | null | undefined, now: number): boolean;
 
-  /** Throws an error named `ProviderStaleStepError` when `step` is not newer than the subject's last one. */
+  /**
+   * Throws an error named `ProviderStaleStepError` when `step` is not newer than the subject's last one.
+   * Any settlement throws `ProviderSettlementRefusedError` when current state no longer allows it.
+   */
   settleTotpEnrollment(ticket: ProviderFactorTicket, step: number, now: number): void;
   /** Same guarded step rule as enrollment, in the transaction that records login evidence. */
   settleTotpLogin(ticket: ProviderFactorTicket, sessionId: string, step: number, now: number): void;

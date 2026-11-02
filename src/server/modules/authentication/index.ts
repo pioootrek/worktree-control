@@ -34,10 +34,12 @@ export {
   type ProviderPrincipalResolution,
   type ProviderSubjectStore,
 } from "./provider-runtime";
-export { AccountProtection, canonicalInstant, evaluateSessionAuthority, passkeyFingerprint, ProviderStaleStepError, totpBinding, validateFactorLimits } from "./account-protection";
+export { AccountProtection, canonicalInstant, evaluateSessionAuthority, passkeyFingerprint, ProviderAdmissionRefusedError, ProviderSettlementRefusedError, ProviderStaleStepError, totpBinding, validateFactorLimits } from "./account-protection";
+export { BROWSER_COOKIE, BROWSER_OPERATIONS, browserOperationRequires } from "./browser-operations";
+export type { BrowserLifetime, BrowserOperation, BrowserOutcome, BrowserRelease, BrowserResultBody } from "./browser-operations";
 export type {
   BoundedProtectionTable, NativeProtectionState, ProtectionContextRow, ProtectionReceiptRow, ProtectionStagedRow, ProtectionStore, ProtectionTrustRow,
-  ProviderAccountState, ProviderSessionAuthority, ProviderSessionState,
+  ProviderAccountState, ProviderReleaseCapture, ProviderReleaseProtection, ProviderSessionAuthority, ProviderSessionState,
 } from "./account-protection";
 export { AUTHENTICATION_PROVIDER_CONTRACT_VERSION } from "./provider-contract";
 export { ProviderKnowledgeApplication } from "./provider-knowledge-application";

@@ -1,22 +1,43 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
-import { containsProviderCookie, browserChangePasswordSchema, browserSignInSchema, browserSignOutSchema, type BrowserAuthenticationStatus } from "@/shared/contracts/authentication";
-import { IdentityError } from "@/server/modules/identity";
+import { containsProviderCookie, browserChangePasswordSchema, browserFactorSchemas, browserSignInSchema, browserSignOutSchema, browserTotpEnableSchema, browserTotpVerifySchema, type BrowserAuthenticationStatus } from "@/shared/contracts/authentication";
+import { IdentityError, type ProviderSessionActor } from "@/server/modules/identity";
 import { knowledgeFailure } from "@/server/modules/knowledge";
 import { databaseAdmissionFailure, type DatabaseAdmission } from "@/server/database-admission";
-import { AuthenticationProviderError, type AuthenticationProviderRuntime, type ProviderKnowledgeApplication } from "@/server/modules/authentication";
+import { AuthenticationProviderError, BROWSER_OPERATIONS, browserOperationRequires, type AuthenticationProviderRuntime, type BrowserOperation, type BrowserRelease, type ProviderKnowledgeApplication } from "@/server/modules/authentication";
+import {
+  approvedAuthenticationCookies, BoundaryError, CHALLENGE_COOKIE, COOKIE_POLICY, deletionCookie, fail, parseStrictJson, PASSKEY_COOKIE, readBoundedBody, requestCookies, SESSION_COOKIE,
+  validateTransportLimits, type AuthenticationTransportLimits,
+} from "./authentication-http-boundary";
 
-const SESSION_COOKIE = "__Secure-wtc.session_token";
-// Native sign-out also deletes disabled cache cookies. Only deletions are allowed for those names.
-const DELETION_COOKIES = new Set(["__Secure-wtc.session_data", "__Secure-wtc.account_data", "__Secure-wtc.dont_remember"]);
-const ROUTES = new Map([
-  ["/api/auth/sign-in/email", ["POST", "sign-in"]], ["/api/auth/get-session", ["GET", "session"]],
-  ["/api/auth/sign-out", ["POST", "sign-out"]], ["/api/auth/change-password", ["POST", "password"]],
-] as const);
-class BoundaryError extends Error {
-  constructor(readonly status: number, readonly code: string) { super(code); }
+export { approvedAuthenticationCookies, type AuthenticationTransportLimits } from "./authentication-http-boundary";
+
+const ROUTES = new Map(Object.entries(BROWSER_OPERATIONS).map(([operation, definition]) => [`/api/auth${definition.path}`, operation as BrowserOperation]));
+/** The headers whose repetition could otherwise change what a single value means. */
+const SINGLE_HEADERS = ["host", "origin", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "content-type", "content-length", "content-encoding", "transfer-encoding"] as const;
+/** Parsed after the body, inside no admission. Each returns the exact native body. */
+type BodyParsers = Record<BrowserOperation, (input: unknown) => unknown>;
+/** A closed response is cancellation. A request closing after its whole body is not. */
+class RequestLifetime {
+  readonly #controller = new AbortController();
+  #finished = false;
+  constructor(private readonly request: IncomingMessage, private readonly response: ServerResponse, private readonly finished: () => void) {
+    request.once("aborted", this.#cancel); request.once("error", this.#cancel);
+    response.once("finish", this.#done); response.once("close", this.#closed);
+  }
+  get signal(): AbortSignal { return this.#controller.signal; }
+  get open(): boolean { return !this.#controller.signal.aborted && !this.response.destroyed && !this.response.writableEnded; }
+  #cancel = () => { this.#controller.abort(); };
+  #closed = () => { if (!this.response.writableFinished) this.#cancel(); this.#done(); };
+  #done = () => {
+    if (this.#finished) return;
+    this.#finished = true;
+    this.response.off("finish", this.#done); this.response.off("close", this.#closed);
+    this.finished();
+  };
+  /** The request is finished with. Response listeners stay until the response closes. */
+  detachRequest(): void { this.request.off("aborted", this.#cancel); this.request.off("error", this.#cancel); }
 }
-function fail(status: number, code: string): never { throw new BoundaryError(status, code); }
 
 export function hasProviderCookie(request: IncomingMessage): boolean {
   return containsProviderCookie(request.headers.cookie);
@@ -30,41 +51,13 @@ export function authenticationJson(response: ServerResponse, status: number, bod
   response.writeHead(status).end(JSON.stringify(body));
 }
 
-/** Validate the complete cookie set before releasing ANY cookie. Never comma-split Set-Cookie. */
-export function approvedAuthenticationCookies(headers: Headers): string[] {
-  const lines = headers.getSetCookie();
-  if (lines.length > 8 || lines.reduce((sum, line) => sum + line.length, 0) > 16 * 1024) fail(502, "provider_failed");
-  const seen = new Set<string>();
-  for (const line of lines) {
-    const [pair, ...attributes] = line.split(";").map(part => part.trim());
-    if (!pair || /[\r\n]/.test(line)) fail(502, "provider_failed");
-    const equals = pair.indexOf("="), name = pair.slice(0, equals), value = pair.slice(equals + 1);
-    if (equals < 1 || seen.has(name) || !/^[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]*$/.test(value)) fail(502, "provider_failed");
-    seen.add(name);
-    const attrs = new Map<string, string>();
-    for (const attr of attributes) {
-      const index = attr.indexOf("="), key = (index < 0 ? attr : attr.slice(0, index)).toLowerCase();
-      if (attrs.has(key)) fail(502, "provider_failed");
-      attrs.set(key, index < 0 ? "" : attr.slice(index + 1));
-    }
-    if (attrs.get("path") !== "/" || attrs.get("secure") !== "" || attrs.get("httponly") !== ""
-      || attrs.get("samesite")?.toLowerCase() !== "strict"
-      || [...attrs.keys()].some(key => !["path", "secure", "httponly", "samesite", "max-age", "expires"].includes(key))) fail(502, "provider_failed");
-    if (attrs.has("max-age") && !/^(?:0|[1-9][0-9]{0,8})$/.test(attrs.get("max-age")!)) fail(502, "provider_failed");
-    if (attrs.has("expires")) {
-      const expiry = new Date(attrs.get("expires")!);
-      if (!Number.isFinite(expiry.getTime()) || expiry.toUTCString() !== attrs.get("expires")) fail(502, "provider_failed");
-    }
-    const deletion = !value && attrs.get("max-age") === "0";
-    if (name !== SESSION_COOKIE && !(DELETION_COOKIES.has(name) && deletion)) fail(502, "provider_failed");
-  }
-  return lines;
-}
-
 /** Explicit HTTPS boundary. Mounting this adapter does not select or enable a product mode. */
 export class AuthenticationHttp {
   readonly #origin: string;
   readonly #authority: string;
+  readonly #limits: AuthenticationTransportLimits;
+  readonly #maxInFlight: number;
+  readonly #parsers: BodyParsers;
   #active = 0;
   constructor(private readonly deps: {
     origin: string;
@@ -76,12 +69,35 @@ export class AuthenticationHttp {
     /** Finite proof fixtures only; production derives peer exclusively from socket.remoteAddress. */
     trustedFixturePeer?: string;
     maxInFlight?: number;
+    limits: AuthenticationTransportLimits;
   }) {
     const origin = new URL(deps.origin);
     if (origin.protocol !== "https:" || origin.origin !== deps.origin || origin.username || origin.password) throw new Error("Authentication requires a canonical HTTPS origin.");
-    if (!Number.isInteger(deps.maxInFlight ?? 8) || (deps.maxInFlight ?? 8) < 1 || (deps.maxInFlight ?? 8) > 64) throw new Error("Invalid authentication capacity.");
+    this.#maxInFlight = deps.maxInFlight ?? 8;
+    if (!Number.isInteger(this.#maxInFlight) || this.#maxInFlight < 1 || this.#maxInFlight > 64) throw new Error("Invalid authentication capacity.");
     if (deps.trustedFixturePeer && !isIP(deps.trustedFixturePeer)) throw new Error("Invalid fixture peer.");
+    this.#limits = validateTransportLimits(deps.limits, this.#maxInFlight);
     this.#origin = origin.origin; this.#authority = origin.host;
+    this.#parsers = this.parsers();
+  }
+
+  private parsers(): BodyParsers {
+    const bounds = this.deps.runtime.webAuthnBounds, schemas = bounds && browserFactorSchemas(bounds);
+    const strict = (schema: { safeParse(input: unknown): { success: boolean; data?: unknown } } | undefined) => (input: unknown) => {
+      const parsed = schema?.safeParse(input);
+      if (!parsed?.success) fail(400, "invalid_request");
+      return parsed.data;
+    };
+    const none = () => undefined;
+    return {
+      "sign-in": strict(browserSignInSchema), session: none,
+      "sign-out": input => { strict(browserSignOutSchema)(input); return {}; },
+      password: input => ({ ...strict(browserChangePasswordSchema)(input) as object, revokeOtherSessions: true }),
+      "totp-enable": strict(browserTotpEnableSchema), "totp-verify": strict(browserTotpVerifySchema),
+      "passkey-register-options": none, "passkey-registration": strict(schemas?.registration),
+      "passkey-confirm-options": none, "passkey-confirmation": strict(schemas?.assertion),
+      "passkey-authenticate-options": none, "passkey-authentication": strict(schemas?.assertion),
+    };
   }
 
   /** Runs before blanket core admission. All body reads and provider work remain outside it. */
@@ -89,38 +105,53 @@ export class AuthenticationHttp {
     const path = request.url ?? "";
     const cookie = hasProviderCookie(request);
     if (!path.includes("auth") && !cookie) return false;
+    // The slot is held until the response closed AND real provider work ended.
     let counted = false, operationFinished = false, responseFinished = response.writableFinished || response.destroyed;
     const release = () => {
       if (counted && operationFinished && responseFinished) { counted = false; this.#active--; }
     };
-    const finished = () => { responseFinished = true; release(); };
-    let discard: Awaited<ReturnType<AuthenticationProviderRuntime["authenticate"]>> = null;
+    const lifetime = new RequestLifetime(request, response, () => { responseFinished = true; release(); });
+    const started: Array<Promise<void>> = [];
+    let unreleased: BrowserRelease | null = null, knowledge = false;
     try {
       this.boundary(request);
       if (this.deps.maintenance?.()) fail(503, "database_unavailable");
       if (path === "/api/auth/status" && request.method === "GET") {
         authenticationJson(response, 200, this.deps.status()); return true;
       }
-      const knowledge = path === "/api/knowledge" && cookie;
-      const route = ROUTES.get(path as Parameters<typeof ROUTES.get>[0]);
-      if (!route && !knowledge) fail(401, "invalid_credential");
-      if (request.method !== (knowledge ? "POST" : route![0])) fail(405, "method_not_allowed");
-      if (this.#active >= (this.deps.maxInFlight ?? 8)) fail(503, "database_busy");
+      knowledge = path === "/api/knowledge" && cookie;
+      const routed = ROUTES.get(path);
+      // A closed factor route is the same generic denial as an unknown one.
+      const operation = routed && (!browserOperationRequires(routed, "factor") || this.deps.runtime.factorsEnabled) ? routed : undefined;
+      if (!operation && !knowledge) fail(401, "invalid_credential");
+      if (request.method !== (knowledge ? "POST" : BROWSER_OPERATIONS[operation!].method)) fail(405, "method_not_allowed");
+      const reserved = operation && browserOperationRequires(operation, "initiating") ? this.#limits.reservedCompletionSlots : 0;
+      if (this.#active >= this.#maxInFlight - reserved) fail(503, "database_busy");
       this.#active++; counted = true;
-      response.once("finish", finished); response.once("close", finished);
+      const cookies = requestCookies(request.headers.cookie);
+      if (request.method === "POST" || (operation && browserOperationRequires(operation, "factor"))) {
+        if (request.headers.origin !== this.#origin) fail(403, "origin_forbidden");
+      }
       const nativeHeaders = this.headers(request);
       let input: unknown;
       if (request.method === "POST") {
-        if (request.headers.origin !== this.#origin) fail(403, "origin_forbidden");
         if (request.headers["content-type"] !== "application/json") fail(400, "invalid_request");
-        input = await readBody(request, knowledge ? 64 * 1024 : 4096);
+        const limit = knowledge ? this.#limits.knowledgeBodyBytes : operation!.startsWith("passkey-") ? this.#limits.webAuthnBodyBytes : this.#limits.passwordBodyBytes;
+        const text = await readBoundedBody(request, { limit, timeoutMs: this.#limits.bodyTimeoutMs, signal: lifetime.signal });
+        input = parseStrictJson(text, knowledge ? this.#limits.knowledgeJson : this.#limits.json);
       }
+      lifetime.detachRequest();
       if (this.deps.maintenance?.()) fail(503, "database_unavailable");
       if (knowledge) {
-        const actor = await this.deps.runtime.authenticate(nativeHeaders);
+        const cookieHeader = cookies.get(SESSION_COOKIE);
+        if (cookieHeader !== undefined) nativeHeaders.set("cookie", `${SESSION_COOKIE}=${cookieHeader}`);
+        const authenticated = this.deps.runtime.authenticateRequest(nativeHeaders, { signal: lifetime.signal });
+        started.push(authenticated.settled);
+        const actor = await authenticated.result;
         if (!actor) fail(401, "invalid_credential");
         await this.deps.admission.run(() => {
           if (this.deps.maintenance?.()) fail(503, "database_unavailable");
+          if (!lifetime.open) return;
           let result: unknown;
           try { result = this.deps.knowledge.executeAdmitted(input, actor); }
           catch (error) {
@@ -130,56 +161,77 @@ export class AuthenticationHttp {
             return;
           }
           authenticationJson(response, 200, result);
-        }); return true;
+        }, { signal: lifetime.signal }); return true;
       }
-      const operation = route![1];
-      if (operation === "sign-in") {
-        const parsed = browserSignInSchema.safeParse(input);
-        if (!parsed.success) fail(400, "invalid_request");
-        input = parsed.data; nativeHeaders.delete("cookie");
-      } else if (operation === "sign-out") {
-        if (!browserSignOutSchema.safeParse(input).success) fail(400, "invalid_request");
-        input = {};
-      } else if (operation === "password") {
-        const parsed = browserChangePasswordSchema.safeParse(input);
-        if (!parsed.success) fail(400, "invalid_request");
-        input = { ...parsed.data, revokeOtherSessions: true };
-      } else if (request.headers["content-length"] && request.headers["content-length"] !== "0") fail(400, "invalid_request");
-      const actor = operation === "password" ? await this.deps.runtime.authenticate(nativeHeaders) : null;
-      if (operation === "password" && !actor) fail(401, "invalid_credential");
-      const native = new Request(`${this.#origin}${path}`, { method: request.method, headers: nativeHeaders,
-        ...(request.method === "POST" ? { body: JSON.stringify(input) } : {}) });
-      const result = await this.deps.runtime.browser(operation, native, actor);
-      if (operation === "sign-in" || operation === "password") discard = result.actor;
-      if (result.response.status === 429) fail(429, "rate_limited");
-      if (!result.response.ok) fail(result.response.status >= 500 ? 502 : 401, "authentication_failed");
-      const cookies = approvedAuthenticationCookies(result.response.headers);
-      if (operation === "sign-out") authenticationJson(response, 200, { authenticated: false }, cookies);
-      else if (!result.actor) {
-        if (operation !== "session") fail(401, "authentication_failed");
-        authenticationJson(response, 200, { authenticated: false });
-      } else {
-        // Last current-authority check and response release form one synchronous admitted phase.
-        await this.deps.admission.run(() => {
-          if (this.deps.maintenance?.()) fail(503, "database_unavailable");
-          const session = this.deps.runtime.browserSession(result.actor!);
-          authenticationJson(response, 200, operation === "session" ? session : operation === "password" ? { changed: true } : { authenticated: true }, cookies);
-          discard = null;
-        });
+      const browser = operation!;
+      const policy = COOKIE_POLICY[browser];
+      if (policy.require.some(name => !cookies.has(name))) fail(401, "authentication_failed");
+      if (browser === "totp-verify") {
+        if (cookies.has(SESSION_COOKIE) && cookies.has(CHALLENGE_COOKIE)) fail(400, "invalid_request");
+        if (!cookies.has(SESSION_COOKIE) && !cookies.has(CHALLENGE_COOKIE)) fail(401, "authentication_failed");
       }
+      const body = this.#parsers[browser](input);
+      nativeHeaders.delete("cookie");
+      const forwarded = policy.forward.flatMap(name => (cookies.has(name) ? [`${name}=${cookies.get(name)!}`] : []));
+      if (forwarded.length) nativeHeaders.set("cookie", forwarded.join("; "));
+      let actor: ProviderSessionActor | null = null;
+      if (browserOperationRequires(browser, "actor") || (browser === "totp-verify" && cookies.has(SESSION_COOKIE))) {
+        const authenticated = this.deps.runtime.authenticateRequest(nativeHeaders, { signal: lifetime.signal });
+        started.push(authenticated.settled);
+        actor = await authenticated.result;
+        if (!actor) fail(401, "authentication_failed");
+      }
+      const native = new Request(`${this.#origin}${path}`, { method: request.method, headers: nativeHeaders, signal: lifetime.signal,
+        ...(request.method === "POST" ? { body: JSON.stringify(body) } : {}) });
+      const execution = this.deps.runtime.browser(browser, native, { actor, signal: lifetime.signal });
+      started.push(execution.settled);
+      const result = await execution.result;
+      unreleased = result;
+      const lines = this.cookies(browser, result, cookies);
+      // Last current-authority check and response release form one synchronous admitted phase.
+      await this.deps.admission.run(() => {
+        if (this.deps.maintenance?.()) fail(503, "database_unavailable");
+        if (!lifetime.open) fail(499, "client_closed");
+        const safe = this.deps.runtime.finishBrowserRelease(result);
+        authenticationJson(response, 200, safe, lines);
+        unreleased = null;
+      }, { signal: lifetime.signal });
     } catch (error) {
-      if (discard) { try { await this.deps.runtime.discardBrowserSession(discard); } catch { /* Still deny; never release its cookie. */ } }
-      const admission = databaseAdmissionFailure(error);
-      const code = error instanceof BoundaryError ? error.code : admission?.code
-        ?? (error instanceof AuthenticationProviderError && error.committed ? "committed_notification_failed"
-          : (error instanceof AuthenticationProviderError && error.code === "invalid_session") || (error instanceof IdentityError && error.code === "invalid_credential") ? "invalid_credential"
-            : (error as { code?: string })?.code === "knowledge_forbidden" ? "knowledge_forbidden" : "authentication_failed");
-      const status = error instanceof BoundaryError ? error.status : admission?.status ?? (code === "knowledge_forbidden" ? 403 : code === "invalid_credential" ? 401 : 500);
-      if (status === 429 || status === 503) response.setHeader("Retry-After", status === 429 ? "60" : "1");
-      response.setHeader("Connection", "close");
-      authenticationJson(response, status, { code, ...(error instanceof AuthenticationProviderError && error.committed ? { committed: true } : {}) });
-    } finally { operationFinished = true; release(); }
+      await this.failed(error, unreleased, knowledge, response, lifetime);
+    } finally {
+      lifetime.detachRequest();
+      // No Promise.race: a timed-out borrow's execution keeps this slot until it really ends.
+      await Promise.all(started);
+      operationFinished = true; release();
+    }
     return true;
+  }
+
+  /** Validates the whole set first, then adds the explicit deletions of stale state. */
+  private cookies(operation: BrowserOperation, result: BrowserRelease, cookies: Map<string, string>): string[] {
+    const lines = approvedAuthenticationCookies(this.deps.runtime.browserReleaseHeaders(result), COOKIE_POLICY[operation].live);
+    const named = (name: string) => lines.some(line => line.startsWith(`${name}=`));
+    const set = (name: string) => lines.some(line => line.startsWith(`${name}=`) && !line.startsWith(`${name}=;`));
+    // A login either finished or is pending, never both.
+    if (set(SESSION_COOKIE) && set(CHALLENGE_COOKIE)) fail(502, "provider_failed");
+    const stale: string[] = [];
+    // An old session must not sit beside a challenge: verify-totp would see both.
+    if (result.outcome === "challenge" && cookies.has(SESSION_COOKIE)) stale.push(SESSION_COOKIE);
+    if (operation === "totp-verify" && result.outcome === "session") stale.push(CHALLENGE_COOKIE);
+    if (operation === "passkey-confirmation" || operation === "passkey-authentication") stale.push(PASSKEY_COOKIE);
+    return [...lines, ...stale.filter(name => !named(name)).map(deletionCookie)];
+  }
+
+  private async failed(error: unknown, unreleased: BrowserRelease | null, knowledge: boolean, response: ServerResponse, lifetime: RequestLifetime): Promise<void> {
+    const committed = unreleased !== null && this.deps.runtime.browserReleaseCommitted(unreleased);
+    if (unreleased) await this.deps.runtime.discardBrowserRelease(unreleased);
+    // A closed response gets nothing, including an error.
+    if (!lifetime.open) return;
+    const known = committed ? new AuthenticationProviderError("outcome_committed", "The change committed.", true) : error;
+    const { status, code, committed: proven } = failure(known, knowledge);
+    if (status === 429 || status === 503) response.setHeader("Retry-After", status === 429 ? "60" : "1");
+    response.setHeader("Connection", "close");
+    authenticationJson(response, status, { code, ...(proven ? { committed: true } : {}) });
   }
 
   private boundary(request: IncomingMessage): void {
@@ -188,8 +240,11 @@ export class AuthenticationHttp {
     if (request.headers.host !== this.#authority || countHeader(request, "host") > 1) fail(421, "invalid_authority");
     if (countHeader(request, "origin") > 1 || (request.headers.origin !== undefined && request.headers.origin !== this.#origin)
       || (request.headers["sec-fetch-site"] !== undefined && request.headers["sec-fetch-site"] !== "same-origin")) fail(403, "origin_forbidden");
+    for (const name of SINGLE_HEADERS) if (countHeader(request, name) > 1) fail(name.startsWith("sec-fetch") ? 403 : 400, name.startsWith("sec-fetch") ? "origin_forbidden" : "invalid_request");
+    const mode = request.headers["sec-fetch-mode"], destination = request.headers["sec-fetch-dest"];
+    if ((mode !== undefined && mode !== "cors" && mode !== "same-origin") || (destination !== undefined && destination !== "empty")) fail(403, "origin_forbidden");
     if (request.method === "GET" && (request.headers["transfer-encoding"] || (request.headers["content-length"] && request.headers["content-length"] !== "0"))) fail(400, "invalid_request");
-    if ((request.headers.cookie?.length ?? 0) > 8192) fail(400, "invalid_request");
+    if (Buffer.byteLength(request.headers.cookie ?? "") > this.#limits.cookieBytes) fail(400, "invalid_request");
   }
   private headers(request: IncomingMessage): Headers {
     const peer = this.deps.trustedFixturePeer ?? request.socket.remoteAddress;
@@ -200,36 +255,36 @@ export class AuthenticationHttp {
     for (const name of ["origin", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest"] as const) {
       const value = request.headers[name]; if (typeof value === "string") headers.set(name, value);
     }
-    const matches = (request.headers.cookie ?? "").split(";").map(part => part.trim()).filter(part => part.startsWith(`${SESSION_COOKIE}=`));
-    if (matches.length > 1) fail(400, "invalid_request");
-    if (matches[0]) headers.set("cookie", matches[0]);
     return headers;
   }
 }
+
+/** One fixed public failure. No branch distinguishes account, mapping, generation or SQL detail. */
+function failure(error: unknown, knowledge: boolean): { status: number; code: string; committed?: boolean } {
+  if (error instanceof BoundaryError) return { status: error.status, code: error.code };
+  const admission = databaseAdmissionFailure(error);
+  if (admission) return { status: admission.status, code: admission.code };
+  if (error instanceof AuthenticationProviderError) {
+    if (error.code === "outcome_committed") return { status: 503, code: "completion_unconfirmed", committed: true };
+    if (error.committed) return { status: 500, code: "committed_notification_failed", committed: true };
+    switch (error.code) {
+      case "outcome_unconfirmed": return { status: 503, code: "completion_unconfirmed" };
+      case "invalid_session": return { status: 401, code: knowledge ? "invalid_credential" : "authentication_failed" };
+      case "authentication_failed": return { status: 401, code: "authentication_failed" };
+      case "rate_limited": return { status: 429, code: "rate_limited" };
+      case "capacity": return { status: 503, code: "database_busy" };
+      case "provider_failed": return { status: 502, code: "provider_failed" };
+      case "provider_unavailable": case "provider_disposed": case "cancelled": return { status: 503, code: "database_unavailable" };
+      default: return { status: 500, code: "authentication_failed" };
+    }
+  }
+  if (error instanceof IdentityError && error.code === "invalid_credential") return { status: 401, code: "invalid_credential" };
+  if ((error as { code?: string })?.code === "knowledge_forbidden") return { status: 403, code: "knowledge_forbidden" };
+  return { status: 500, code: "authentication_failed" };
+}
+
 function countHeader(request: IncomingMessage, name: string): number {
   let count = 0;
   for (let index = 0; index < (request.rawHeaders?.length ?? 0); index += 2) if (request.rawHeaders[index].toLowerCase() === name) count++;
   return count;
-}
-async function readBody(request: IncomingMessage, limit: number): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    let bytes = 0; const chunks: Buffer[] = [];
-    const cleanup = () => {
-      clearTimeout(timer); request.off("data", data); request.off("end", end); request.off("error", error); request.off("aborted", aborted);
-    };
-    const error = () => { cleanup(); reject(new BoundaryError(400, "invalid_request")); };
-    const aborted = () => error();
-    const data = (chunk: Buffer) => {
-      bytes += chunk.length;
-      if (bytes > limit) { cleanup(); request.pause(); reject(new BoundaryError(413, "request_too_large")); }
-      else chunks.push(chunk);
-    };
-    const end = () => {
-      cleanup();
-      try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch { reject(new BoundaryError(400, "invalid_request")); }
-    };
-    const timer = setTimeout(() => { cleanup(); request.pause(); reject(new BoundaryError(408, "request_timeout")); }, 10_000);
-    timer.unref();
-    request.on("data", data); request.once("end", end); request.once("error", error); request.once("aborted", aborted);
-  });
 }

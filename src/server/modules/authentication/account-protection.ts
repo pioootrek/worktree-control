@@ -14,6 +14,16 @@ export class ProviderStaleStepError extends Error {
   constructor() { super("Presentation refused."); this.name = "ProviderStaleStepError"; }
 }
 
+/** Current state no longer allows this settlement. It rolls back like any other stale result. */
+export class ProviderSettlementRefusedError extends Error {
+  constructor() { super("Settlement refused."); this.name = "ProviderSettlementRefusedError"; }
+}
+
+/** A valid attempt met exhausted limits. Anything else that refuses stays an unexplained null. */
+export class ProviderAdmissionRefusedError extends Error {
+  constructor(readonly reason: "budget" | "capacity") { super("Admission refused."); this.name = "ProviderAdmissionRefusedError"; }
+}
+
 /** Committed account policy. `consistent` is false when native flags and selection disagree. */
 export interface ProviderAccountState {
   generation: number;
@@ -83,10 +93,38 @@ export function validateFactorLimits(limits: unknown): ProviderFactorLimits {
   const positive = (value: unknown) => Number.isSafeInteger(value) && (value as number) > 0;
   const input = limits as ProviderFactorLimits | undefined;
   const pair = (value: { attempts?: unknown; windowMs?: unknown } | undefined) => positive(value?.attempts) && positive(value?.windowMs);
+  const issuance = input?.issuance, webauthn = input?.webauthn;
   if (!input || !pair(input.totp) || !pair(input.passkey) || !positive(input.ticketMs) || !positive(input.stagingMs)
     || !positive(input.capacity) || !positive(input.pruneBatch)) throw new Error("Invalid factor limits.");
+  if (!issuance || !pair(issuance.perPeer) || !pair(issuance.global) || !positive(issuance.peers) || !positive(issuance.nativeChallenges)
+    || !positive(issuance.reservedContexts) || issuance.reservedContexts >= input.capacity || issuance.reservedContexts >= issuance.nativeChallenges) throw new Error("Invalid factor limits.");
+  if (!webauthn || WEBAUTHN_BOUNDS.some(name => !positive(webauthn[name]))) throw new Error("Invalid factor limits.");
   return Object.freeze({ totp: Object.freeze({ ...input.totp }), passkey: Object.freeze({ ...input.passkey }),
-    ticketMs: input.ticketMs, stagingMs: input.stagingMs, capacity: input.capacity, pruneBatch: input.pruneBatch });
+    ticketMs: input.ticketMs, stagingMs: input.stagingMs, capacity: input.capacity, pruneBatch: input.pruneBatch,
+    issuance: Object.freeze({ ...issuance, perPeer: Object.freeze({ ...issuance.perPeer }), global: Object.freeze({ ...issuance.global }) }),
+    webauthn: Object.freeze(Object.fromEntries(WEBAUTHN_BOUNDS.map(name => [name, webauthn[name]])) as unknown as ProviderFactorLimits["webauthn"]) });
+}
+const WEBAUTHN_BOUNDS = ["credentialIdBytes", "clientDataBytes", "attestationBytes", "authenticatorDataBytes", "publicKeyBytes", "signatureBytes",
+  "userHandleBytes", "challengeBytes", "transports", "credentials", "responseBytes"] as const satisfies ReadonlyArray<keyof ProviderFactorLimits["webauthn"]>;
+
+/**
+ * An immutable description of what a provider result proved, captured in its own
+ * borrow. Core-only: the provider never sees these, and the runtime keeps them
+ * behind its private release objects.
+ */
+export type ProviderReleaseCapture =
+  | Readonly<{ kind: "pending"; context: Readonly<ProtectionContextRow> }>
+  | Readonly<{ kind: "staged"; stage: Readonly<ProtectionStagedRow> }>
+  | Readonly<{ kind: "enrolled"; attemptId: string; purpose: "totp_enrollment" | "passkey_confirmation"; subject: string; principalId: string;
+      credential: string; binding: string; generation: number; policyRevision: number }>;
+/** Read-only checks on the core handle, plus anonymous issuance room. Not in the provider host. */
+export interface ProviderReleaseProtection {
+  capturePending(opaque: string, purpose: ProviderFactorPurpose, now: number): ProviderReleaseCapture | null;
+  captureStaged(source: string, now: number): ProviderReleaseCapture | null;
+  captureEnrolled(opaque: string, purpose: "totp_enrollment" | "passkey_confirmation"): ProviderReleaseCapture | null;
+  releaseCurrent(capture: ProviderReleaseCapture, now: number): boolean;
+  /** False once anonymous options must stop, so no native challenge is allocated for them. */
+  issuanceRoom(now: number): boolean;
 }
 
 export interface ProtectionContextRow {
@@ -108,7 +146,7 @@ export interface NativeProtectionState {
   totp: { id: string; verified: boolean; binding: string } | null;
   trusted: number;
 }
-export type BoundedProtectionTable = "contexts" | "receipts" | "budgets" | "staged";
+export type BoundedProtectionTable = "contexts" | "receipts" | "budgets" | "staged" | "verifications";
 
 /** Row-level persistence. Joins the caller's transaction; owns no connection or policy. */
 export interface ProtectionStore {
@@ -143,6 +181,8 @@ export interface ProtectionStore {
   budget(scope: "totp" | "passkey", subject: string, epoch: number): number;
   charge(scope: "totp" | "passkey", subject: string, epoch: number, charged: number): void;
   receipt(attemptId: string): ProtectionReceiptRow | null;
+  /** The one success of a capability: a success marks its context used. */
+  succeededReceipt(capability: string): ProtectionReceiptRow | null;
   insertReceipt(row: ProtectionReceiptRow): void;
   finishReceipt(attemptId: string, state: "succeeded" | "failed", sessionId: string | null): void;
   count(table: BoundedProtectionTable): number;
@@ -163,7 +203,7 @@ export const totpBinding = (ciphertext: string) => createHash("sha256").update(c
  * account's generation, which atomically outdates all prior evidence; no route
  * here removes a selection, resets a step or upgrades existing evidence.
  */
-export class AccountProtection implements ProviderAccountProtection {
+export class AccountProtection implements ProviderAccountProtection, ProviderReleaseProtection {
   readonly #limits: ProviderFactorLimits | null;
 
   constructor(private readonly store: ProtectionStore, limits?: ProviderFactorLimits) {
@@ -201,7 +241,7 @@ export class AccountProtection implements ProviderAccountProtection {
   }
 
   inheritSession(evidence: ProviderSessionEvidence, input: { sessionId: string; attemptId: string }): void {
-    if (this.store.session(input.sessionId)?.subject !== evidence.subject) throw new Error("Session refused.");
+    if (this.store.session(input.sessionId)?.subject !== evidence.subject) throw new ProviderSettlementRefusedError();
     this.store.insertEvidence({ ...evidence, sessionId: input.sessionId, attemptId: input.attemptId });
     this.store.clampSession(input.sessionId, evidence.originalDeadline);
   }
@@ -219,11 +259,21 @@ export class AccountProtection implements ProviderAccountProtection {
     const limits = this.#limits!;
     this.store.prune(now, limits.pruneBatch, { totp: Math.floor(now / limits.totp.windowMs), passkey: Math.floor(now / limits.passkey.windowMs) });
   }
-  #insertContext(row: Omit<ProtectionContextRow, "used">, now: number): boolean {
+  /** `reserve` keeps rows for accepted ceremonies. `incoming` is a native row not yet written. */
+  #issuable(reserve: number, incoming = 0): boolean {
+    const limits = this.#limits!;
+    return this.store.count("contexts") + reserve < limits.capacity && this.store.count("verifications") + incoming + reserve <= limits.issuance.nativeChallenges;
+  }
+  #insertContext(row: Omit<ProtectionContextRow, "used">, now: number, reserve = 0): boolean {
     this.#prune(now);
-    if (row.deadline <= now || !this.#room("contexts")) return false;
+    if (row.deadline <= now || !this.#issuable(reserve)) return false;
     this.store.insertContext({ ...row, used: 0 });
     return true;
+  }
+  issuanceRoom(now: number): boolean {
+    if (!this.#limits) return false;
+    this.#prune(now);
+    return this.#issuable(this.#limits.issuance.reservedContexts, 1);
   }
 
   issueTotpEnrollment({ opaque, sessionId, subject, now }: { opaque: string; sessionId: string; subject: string; now: number }): boolean {
@@ -272,7 +322,7 @@ export class AccountProtection implements ProviderAccountProtection {
     if (!this.#limits) return false;
     return this.#insertContext({ capability: capabilityId("passkey_authentication", input.opaque), purpose: "passkey_authentication", subject: null, principalId: null,
       sessionId: null, nativeId: input.nativeId, handle: null, credential: null, binding: null, generation: null, policyRevision: null,
-      authenticatedAt: null, originalDeadline: null, deadline: input.nativeDeadline }, input.now);
+      authenticatedAt: null, originalDeadline: null, deadline: input.nativeDeadline }, input.now, this.#limits.issuance.reservedContexts);
   }
 
   #stageUsable(stage: ProtectionStagedRow, now: number): boolean {
@@ -342,7 +392,8 @@ export class AccountProtection implements ProviderAccountProtection {
     if (context.purpose === "passkey_confirmation" && credential !== context.credential) return null;
     const scope = scopeOf(purpose), budget = this.#limits[scope], epoch = Math.floor(now / budget.windowMs);
     const charged = this.store.budget(scope, subject, epoch);
-    if (charged >= budget.attempts || !this.#room("receipts") || (!charged && !this.#room("budgets"))) return null;
+    if (charged >= budget.attempts) throw new ProviderAdmissionRefusedError("budget");
+    if (!this.#room("receipts") || (!charged && !this.#room("budgets"))) throw new ProviderAdmissionRefusedError("capacity");
     this.store.charge(scope, subject, epoch, charged + 1);
     // A passkey ceremony is single use. A TOTP context survives a wrong code until its budget ends.
     if (scope === "passkey") this.store.markContextUsed(context.capability);
@@ -387,7 +438,7 @@ export class AccountProtection implements ProviderAccountProtection {
   }
   #settled(ticket: ProviderFactorTicket, now: number): ProtectionContextRow {
     const context = this.#usable(ticket, now, true);
-    if (!context) throw new Error("Stale settlement.");
+    if (!context) throw new ProviderSettlementRefusedError();
     return context;
   }
   #finish(ticket: ProviderFactorTicket, sessionId: string | null): void {
@@ -395,18 +446,18 @@ export class AccountProtection implements ProviderAccountProtection {
     this.store.markContextUsed(ticket.capability);
   }
   #select(ticket: ProviderFactorTicket, method: "totp" | "passkey", now: number): void {
-    if (!this.store.advanceAccount(ticket.subject, method, { generation: ticket.generation, policyRevision: ticket.policyRevision }, iso(now))) throw new Error("Stale selection.");
+    if (!this.store.advanceAccount(ticket.subject, method, { generation: ticket.generation, policyRevision: ticket.policyRevision }, iso(now))) throw new ProviderSettlementRefusedError();
   }
   #login(ticket: ProviderFactorTicket, method: "password_totp" | "passkey_uv", sessionId: string, times: { authenticatedAt: string; originalDeadline: string }): void {
     const session = this.store.session(sessionId);
-    if (session?.subject !== ticket.subject || !ticket.credential || !ticket.binding) throw new Error("Session refused.");
+    if (session?.subject !== ticket.subject || !ticket.credential || !ticket.binding) throw new ProviderSettlementRefusedError();
     this.store.insertEvidence({ sessionId, subject: ticket.subject, method, ...times, generation: ticket.generation, policyRevision: ticket.policyRevision,
       credential: ticket.credential, credentialBinding: ticket.binding, attemptId: ticket.attemptId });
     this.store.clampSession(sessionId, times.originalDeadline);
   }
 
   settleTotpEnrollment(ticket: ProviderFactorTicket, step: number, now: number): void {
-    if (ticket.purpose !== "totp_enrollment") throw new Error("Stale settlement.");
+    if (ticket.purpose !== "totp_enrollment") throw new ProviderSettlementRefusedError();
     this.#settled(ticket, now);
     this.#consume(ticket.subject, step);
     this.#select(ticket, "totp", now);
@@ -414,7 +465,7 @@ export class AccountProtection implements ProviderAccountProtection {
   }
 
   settleTotpLogin(ticket: ProviderFactorTicket, sessionId: string, step: number, now: number): void {
-    if (ticket.purpose !== "totp_login") throw new Error("Stale settlement.");
+    if (ticket.purpose !== "totp_login") throw new ProviderSettlementRefusedError();
     const context = this.#settled(ticket, now);
     this.#consume(ticket.subject, step);
     this.#login(ticket, "password_totp", sessionId, { authenticatedAt: context.authenticatedAt!, originalDeadline: context.originalDeadline! });
@@ -424,7 +475,7 @@ export class AccountProtection implements ProviderAccountProtection {
   stagePasskey(ticket: ProviderFactorTicket, credential: string, now: number): void {
     const context = ticket.purpose === "passkey_registration" ? this.#settled(ticket, now) : null;
     const row = this.store.passkey(credential);
-    if (!context || row?.subject !== ticket.subject || !context.handle || !context.sessionId || !context.originalDeadline || !context.authenticatedAt || !this.#room("staged")) throw new Error("Staging refused.");
+    if (!context || row?.subject !== ticket.subject || !context.handle || !context.sessionId || !context.originalDeadline || !context.authenticatedAt || !this.#room("staged")) throw new ProviderSettlementRefusedError();
     this.store.insertStaged({ credential, nativeId: row.nativeId, capability: context.capability, subject: ticket.subject, handle: context.handle,
       fingerprint: passkeyFingerprint(row.nativeId, row.publicKey), generation: ticket.generation, policyRevision: ticket.policyRevision, sessionId: context.sessionId,
       originalDeadline: context.originalDeadline, deadline: Math.min(context.deadline, this.#stagingDeadline({ authenticatedAt: context.authenticatedAt, originalDeadline: context.originalDeadline })) });
@@ -432,10 +483,10 @@ export class AccountProtection implements ProviderAccountProtection {
   }
 
   promotePasskey(ticket: ProviderFactorTicket, now: number): void {
-    if (ticket.purpose !== "passkey_confirmation") throw new Error("Promotion refused.");
+    if (ticket.purpose !== "passkey_confirmation") throw new ProviderSettlementRefusedError();
     this.#settled(ticket, now);
     const stage = this.store.staged(ticket.credential ?? "");
-    if (!stage) throw new Error("Promotion refused.");
+    if (!stage) throw new ProviderSettlementRefusedError();
     this.store.insertTrust({ credential: stage.credential, nativeId: stage.nativeId, subject: stage.subject, handle: stage.handle, fingerprint: stage.fingerprint }, iso(now));
     this.store.removeStaged(stage.credential);
     this.#select(ticket, "passkey", now);
@@ -443,12 +494,57 @@ export class AccountProtection implements ProviderAccountProtection {
   }
 
   settlePasskeyLogin(ticket: ProviderFactorTicket, sessionId: string, now: number): void {
-    if (ticket.purpose !== "passkey_authentication") throw new Error("Stale settlement.");
+    if (ticket.purpose !== "passkey_authentication") throw new ProviderSettlementRefusedError();
     this.#settled(ticket, now);
     const session = this.store.session(sessionId);
-    if (!session) throw new Error("Session refused.");
+    if (!session) throw new ProviderSettlementRefusedError();
     this.#login(ticket, "passkey_uv", sessionId, { authenticatedAt: session.createdAt, originalDeadline: session.expiresAt });
     this.#finish(ticket, sessionId);
+  }
+
+  /** Native flags and selection agree, read without creating a policy row. */
+  #consistent(subject: string): ProviderAccountState | null {
+    const row = this.store.account(subject), native = this.store.native(subject);
+    return row && { ...row, consistent: row.totpSelected === (native.twoFactorEnabled && native.totp?.verified === true) && row.passkeySelected === (native.trusted > 0) };
+  }
+  #pendingCurrent(expected: ProtectionContextRow, now: number): boolean {
+    const context = this.store.context(expected.capability);
+    if (!context || (Object.keys(expected) as Array<keyof ProtectionContextRow>).some(key => context[key] !== expected[key])) return false;
+    if (!this.#contextValid(context, now) || (context.originalDeadline && Date.parse(context.originalDeadline) <= now)) return false;
+    // Generic login options have no account until a credential is presented.
+    if (!context.subject) return context.purpose === "passkey_authentication";
+    return !!this.#consistent(context.subject)?.consistent && this.#purposeCurrent(context, context.subject, context.credential, now, false);
+  }
+  #enrolledCurrent(capture: Extract<ProviderReleaseCapture, { kind: "enrolled" }>): boolean {
+    const { subject, credential, binding } = capture, receipt = this.store.receipt(capture.attemptId), account = this.#consistent(subject);
+    if (receipt?.state !== "succeeded" || !account?.consistent || this.store.activePrincipal(subject) !== capture.principalId) return false;
+    if (account.generation !== capture.generation || account.policyRevision !== capture.policyRevision) return false;
+    if (capture.purpose === "passkey_confirmation") return account.passkeySelected && this.#trusted(credential, subject)?.fingerprint === binding;
+    const { totp } = this.store.native(subject);
+    return account.totpSelected && totp?.verified === true && totp.id === credential && totp.binding === binding;
+  }
+  capturePending(opaque: string, purpose: ProviderFactorPurpose, now: number): ProviderReleaseCapture | null {
+    const context = this.store.context(capabilityId(purpose, opaque));
+    return context && this.#pendingCurrent(context, now) ? Object.freeze({ kind: "pending" as const, context: Object.freeze(context) }) : null;
+  }
+  captureStaged(source: string, now: number): ProviderReleaseCapture | null {
+    const stage = this.store.stagedForCapability(capabilityId("passkey_registration", source));
+    return stage && this.#stageUsable(stage, now) ? Object.freeze({ kind: "staged" as const, stage: Object.freeze(stage) }) : null;
+  }
+  /** The expectation is taken in the settling borrow, so a later change is never adopted as this result. */
+  captureEnrolled(opaque: string, purpose: "totp_enrollment" | "passkey_confirmation"): ProviderReleaseCapture | null {
+    const receipt = this.store.succeededReceipt(capabilityId(purpose, opaque)), account = receipt && this.store.account(receipt.subject);
+    if (!receipt || !account || !receipt.credential || !receipt.binding) return null;
+    if (account.generation !== receipt.generation + 1 || account.policyRevision !== receipt.policyRevision + 1) return null;
+    const capture = Object.freeze({ kind: "enrolled" as const, attemptId: receipt.attemptId, purpose, subject: receipt.subject, principalId: receipt.principalId,
+      credential: receipt.credential, binding: receipt.binding, generation: account.generation, policyRevision: account.policyRevision });
+    return this.#enrolledCurrent(capture) ? capture : null;
+  }
+  releaseCurrent(capture: ProviderReleaseCapture, now: number): boolean {
+    if (capture.kind === "pending") return this.#pendingCurrent(capture.context, now);
+    if (capture.kind === "enrolled") return this.#enrolledCurrent(capture);
+    const stage = this.store.staged(capture.stage.credential);
+    return !!stage && (Object.keys(capture.stage) as Array<keyof ProtectionStagedRow>).every(key => stage[key] === capture.stage[key]) && this.#stageUsable(stage, now);
   }
 
   fail(attemptId: string): void { this.store.finishReceipt(attemptId, "failed", null); }

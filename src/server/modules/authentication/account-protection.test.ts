@@ -46,13 +46,20 @@ describe("evaluateSessionAuthority", () => {
 });
 
 describe("validateFactorLimits", () => {
-  const limits = { totp: { attempts: 1, windowMs: 1 }, passkey: { attempts: 1, windowMs: 1 }, ticketMs: 1, stagingMs: 1, capacity: 1, pruneBatch: 1 };
+  const limits = { totp: { attempts: 1, windowMs: 1 }, passkey: { attempts: 1, windowMs: 1 }, ticketMs: 1, stagingMs: 1, capacity: 2, pruneBatch: 1,
+    issuance: { perPeer: { attempts: 1, windowMs: 1 }, global: { attempts: 1, windowMs: 1 }, peers: 1, nativeChallenges: 2, reservedContexts: 1 },
+    webauthn: { credentialIdBytes: 1, clientDataBytes: 1, attestationBytes: 1, authenticatorDataBytes: 1, publicKeyBytes: 1, signatureBytes: 1, userHandleBytes: 1, challengeBytes: 1, transports: 1, credentials: 1, responseBytes: 1 } };
   it("freezes valid limits without changing them", () => {
     const valid = validateFactorLimits(limits);
     expect(valid).toEqual(limits);
     expect(Object.isFrozen(valid.totp)).toBe(true);
   });
-  it.each([undefined, {}, { ...limits, capacity: 0 }, { ...limits, ticketMs: 1.5 }, { ...limits, stagingMs: -1 }, { ...limits, totp: { attempts: 1 } }])("has no defaults for %j", value => {
+  it.each([undefined, {}, { ...limits, capacity: 0 }, { ...limits, ticketMs: 1.5 }, { ...limits, stagingMs: -1 }, { ...limits, totp: { attempts: 1 } },
+    { ...limits, issuance: undefined }, { ...limits, webauthn: undefined }, { ...limits, webauthn: { ...limits.webauthn, responseBytes: 0 } },
+    { ...limits, issuance: { ...limits.issuance, peers: 0 } }, { ...limits, issuance: { ...limits.issuance, global: { attempts: 1 } } },
+    // Reservation must leave capacity to reserve from, or anonymous options could never run.
+    { ...limits, issuance: { ...limits.issuance, reservedContexts: 2 } },
+    { ...limits, issuance: { ...limits.issuance, reservedContexts: 0 } }])("has no defaults for %j", value => {
     expect(() => validateFactorLimits(value)).toThrow("Invalid factor limits.");
   });
 });

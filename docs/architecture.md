@@ -520,6 +520,14 @@ has no browser-composition caller. Provider maintenance is reached only through
 the protected CLI/private Unix socket. See the
 [browser contract](authentication.md#bounded-browser-adapter).
 
+The isolated adapter also serves
+[closed factor routes](authentication.md#closed-factor-http-api). The runtime dispatches
+a closed operation table and returns an opaque release plus a separate settlement
+promise, so a response slot outlives a timed-out borrow until its callback really ends.
+A final read-only check against schema 40 rows and header emission form one synchronous
+admitted phase. Accepted cleanup uses reserved queue room on the same gate, with no new
+lock, counter or connection.
+
 Provider API contract 2 requires durable `signOut`; version 1 fails compatibility
 checks. Contract 3 adds the application-owned `host.protection` port: the provider
 calls it synchronously inside its open transaction, and `AccountProtection` keeps
