@@ -118,7 +118,13 @@ export class SystemRemoteWorkerExecution implements RemoteWorkerExecution {
             if (!releaseCache) throw new Error("source_cache_busy");
             try {
               // Fetch/checkout is long and SQL-free: wait for it without holding database admission.
-              workspace = await this.idle(() => this.preparer.prepare({ requestId: assignment.attemptId, repositoryPath: cache, sourceRemote: mapping.sourceRemote, commitSha: assignment.commitSha, preparation: context!, environment: environment.environment }));
+              workspace = await this.idle(async () => {
+                const prepared = await this.preparer.prepare({ requestId: assignment.attemptId, repositoryPath: cache, sourceRemote: mapping.sourceRemote, commitSha: assignment.commitSha, preparation: context!, environment: environment.environment });
+                // idle() may fail while re-admitting us after checkout succeeded.
+                // Retain cleanup ownership before that boundary can lose the result.
+                workspace = prepared;
+                return prepared;
+              });
               this.mapping(assignment);
             } catch (error) {
               unsafeCleanup = error instanceof PreparationError && error.cleanupUnconfirmed;

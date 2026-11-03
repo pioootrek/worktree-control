@@ -263,7 +263,6 @@ export class RuntimeService {
         actor,
       );
       await this.processes.stop(projectId);
-      actor.revalidate?.();
       this.logs.controller("project.stopped", { projectId });
       return;
     }
@@ -276,7 +275,11 @@ export class RuntimeService {
     verify();
     this.lifecycle.acquireCapacity(project);
     try {
-      if (operation === "restart" || operation === "switch") await this.processes.stop(projectId);
+      if (operation === "restart" || operation === "switch") {
+        await this.processes.stop(projectId);
+        // Record the completed stop even if authority is lost before the new start.
+        this.logs.controller("project.stopped", { projectId });
+      }
       verify();
       if (operation === "switch") this.store.setSelectedWorktree(projectId, selected.path);
       const launch = this.commands.resolve(selected.path, project.port, project.launchPreset, {
@@ -297,7 +300,7 @@ export class RuntimeService {
       }
       if (actor.revalidate) await this.processes.start(this.lifecycle.requireProject(projectId), selected.path, verify);
       else await this.processes.start(this.lifecycle.requireProject(projectId), selected.path);
-      actor.revalidate?.();
+      // The spawn was authorized. Finish its evidence before the transport checks response authority.
       this.recordLaunch(projectId, selected.path, actor.owner);
     } finally {
       this.lifecycle.releaseCapacity(projectId);

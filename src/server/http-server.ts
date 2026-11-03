@@ -819,9 +819,14 @@ export function createControllerServer(options: {
         if (request.method === "POST" && operationMatch) {
           const input = parseOperation(await readJson(request));
           const projectId = decodeURIComponent(operationMatch[1]);
-          await options.service.operate(projectId, input.operation, input.worktreePath, { owner: "local-user", revalidate: revalidateRuntime });
+          try {
+            await options.service.operate(projectId, input.operation, input.worktreePath, { owner: "local-user", revalidate: revalidateRuntime });
+          } finally {
+            // Refresh subscribers after partial effects too (for example, a stopped restart).
+            // This invalidation carries no result; response authority is checked separately.
+            options.events.publish({ kinds: ["runtime", "reservation"], projectIds: [projectId] });
+          }
           revalidateRuntime();
-          options.events.publish({ kinds: ["runtime", "reservation"], projectIds: [projectId] });
           json(response, 200, { ok: true });
           return;
         }
@@ -940,8 +945,8 @@ export function createControllerServer(options: {
           } else {
             await options.service.release(projectId, input.action === "force-release", revalidateRuntime);
           }
-          revalidateRuntime();
           options.events.publish({ kinds: ["reservation", "runtime"], projectIds: [projectId] });
+          revalidateRuntime();
           json(response, 200, { ok: true });
           return;
         }
