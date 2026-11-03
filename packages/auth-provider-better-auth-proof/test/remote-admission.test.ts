@@ -14,7 +14,7 @@ import { ProcessManager } from "@/server/process-manager";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nullLogWriter } from "@/server/log-writer";
 import { RemoteVerificationController, RemoteVerificationWorker, WorkerRecoveryService } from "@/server/modules/remote-verification";
-import type { EnqueueTestInput } from "@/server/modules/verification";
+import { PreparationError, type EnqueueTestInput } from "@/server/modules/verification";
 import { TestJobManager } from "@/server/test-job-manager";
 import { createRemoteVerificationServer } from "@/server/transports/remote-verification-http";
 import type { RemoteAssignment, RemoteWorkerReport } from "@/shared/contracts/remote-verification";
@@ -272,7 +272,7 @@ describe("strict remote protocol and worker persistence", () => {
     } finally { hold.resume(); await hold.pending; await worker.close(); await closeStrictProof(reopened); }
   });
 
-  it.each(["mapping", "queue_full", "admission_timeout"] as const)("retains workspace cleanup ownership after %s at preparation resumption", async failure => {
+  it.each([["mapping", false], ["queue_full", false], ["admission_timeout", false], ["queue_full", true], ["admission_timeout", true]] as const)("retains workspace cleanup ownership after %s at preparation resumption (unsafe: %s)", async (failure, unsafe) => {
     const faults: ProofFaultInjection = {}, f = await strictProof(faults, { maxQueued: failure === "mapping" ? 32 : 1, admissionTimeoutMs: failure === "admission_timeout" ? 200 : 10_000 });
     const human = join(f.root, "human"), cache = join(f.root, "cache"), workspaces = join(f.root, "attempts");
     mkdirSync(join(human, ".git"), { recursive: true }); mkdirSync(join(cache, ".git"), { recursive: true });
@@ -294,6 +294,7 @@ describe("strict remote protocol and worker persistence", () => {
       expect(committed.recovery).toBeTruthy(); // Real provenance commits before the mocked Git effect.
       mkdirSync(join(workspaces, "attempt"));
       entered.open(); await resume.opened;
+      if (unsafe) throw new PreparationError("workspace_cleanup_failed", true);
       return { requestId: assignment.attemptId, path: join(workspaces, "attempt"), repositoryPath: cache, sourceRemote: "origin", requestedCommitSha: assignment.commitSha, executedCommitSha: assignment.commitSha };
     }), cleanup: vi.fn(async (workspace: { path: string }) => { rmSync(workspace.path, { recursive: true }); }) };
     const lifecycle = new ProjectLifecycle(f.store, new ProcessManager());
@@ -317,13 +318,20 @@ describe("strict remote protocol and worker persistence", () => {
       expect(resolveCommand).not.toHaveBeenCalled(); expect(preparer.prepare).toHaveBeenCalledOnce();
       expect(existsSync(join(workspaces, "attempt"))).toBe(true);
       expect(lifecycle.acquireMaintenance(local.id, join(workspaces, "attempt"))).toBeNull();
-      await input.preparation!.dispose();
-      expect(preparer.cleanup).toHaveBeenCalledOnce();
-      expect(existsSync(join(workspaces, "attempt"))).toBe(false);
-      for (const path of [join(workspaces, "attempt"), cache]) {
-        const release = lifecycle.acquireMaintenance(local.id, path); expect(release).not.toBeNull(); release?.();
+      if (unsafe) {
+        await expect(input.preparation!.dispose()).rejects.toMatchObject({ code: "preparation_cleanup_unconfirmed", cleanupUnconfirmed: true });
+        expect(preparer.cleanup).not.toHaveBeenCalled();
+        for (const path of [join(workspaces, "attempt"), join(workspaces, ".home-attempt"), join(workspaces, ".tmp-attempt")]) expect(existsSync(path)).toBe(true);
+        for (const path of [join(workspaces, "attempt"), cache]) expect(lifecycle.acquireMaintenance(local.id, path)).toBeNull();
+      } else {
+        await input.preparation!.dispose();
+        expect(preparer.cleanup).toHaveBeenCalledOnce();
+        expect(existsSync(join(workspaces, "attempt"))).toBe(false);
+        for (const path of [join(workspaces, "attempt"), cache]) {
+          const release = lifecycle.acquireMaintenance(local.id, path); expect(release).not.toBeNull(); release?.();
+        }
       }
-    } finally { resume.open(); hold.resume(); await hold.pending; await denied; if (existsSync(join(workspaces, "attempt"))) await input.preparation!.dispose(); await closeStrictProof(f); }
+    } finally { resume.open(); hold.resume(); await hold.pending; await denied; if (!unsafe && existsSync(join(workspaces, "attempt"))) await input.preparation!.dispose(); await closeStrictProof(f); }
   });
 
 });
