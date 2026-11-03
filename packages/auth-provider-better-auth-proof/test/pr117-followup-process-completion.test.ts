@@ -19,7 +19,7 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); cleanupStrictRoot
 describe("PR117 real process completion under admission contention", () => {
   for (const contention of ["ordinary-full", "reserve-full", "timeout"] as const) {
     it.each(["start", "stop", "restart", "switch"] as const)(`completes %s once after ${contention}`, async operation => {
-      const f = await strictProof({}, { maxQueued: 32, reservedQueued: 2, admissionTimeoutMs: 5_000 });
+      const f = await strictProof({}, { maxQueued: 32, reservedQueued: 2, admissionTimeoutMs: 1_000 });
       const entered = gate(), finishEffect = gate(), borrowed = gate(), releaseBorrow = gate();
       let armed = false;
       const waitEffect = async () => { if (armed) { armed = false; entered.open(); await finishEffect.opened; } };
