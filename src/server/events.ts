@@ -94,7 +94,8 @@ export class EventStream {
         this.knowledgeTimer.unref();
       }
     };
-    // Current credential, revocation and grant checks for every subscriber, in one admitted phase.
+    // Filter and write synchronously in the same admitted phase. A queued
+    // revocation must not commit between the access check and event delivery.
     admitNowOrLater(this.admission, () => {
       const deliveries: Array<[ServerResponse, string[]]> = [];
       for (const [client, authorize] of this.knowledgeReaders) {
@@ -106,8 +107,6 @@ export class EventStream {
           }
         })]);
       }
-      return deliveries;
-    }, deliveries => {
       for (const [client, projectIds] of deliveries) {
         if (!this.knowledgeReaders.has(client)) continue;
         if (projectIds.length && !client.write(`event: knowledge-changed\ndata: ${JSON.stringify({ projectIds })}\n\n`)) {
@@ -116,8 +115,7 @@ export class EventStream {
           client.end();
         }
       }
-      settled();
-    }, () => {
+    }, settled, () => {
       // Contention or shutdown: keep the batch (bounded) for the next attempt instead of dropping it.
       for (const id of batch) if (this.knowledgePending.size < MAX_PENDING_PROJECT_IDS) this.knowledgePending.add(id);
       settled();
