@@ -34,7 +34,7 @@ afterEach(() => {
 describe("auth administration CLI", () => {
   it("reports status, emits the token once and rotates it without persisting the secret", async () => {
     const appPaths = paths();
-    expect(await run(["status"], appPaths)).toEqual({ mode: "token", token: null, generation: 0 });
+    expect(await run(["status"], appPaths)).toEqual({ mode: "token", activeMode: null, configuredMode: "token", restartRequired: false, token: null, generation: 0 });
 
     const generated = await run(["token", "generate"], appPaths) as { token: string; status: { generation: number } };
     expect(generated.token).toMatch(/^wsi_[0-9a-f-]{36}_[0-9a-f]{64}$/);

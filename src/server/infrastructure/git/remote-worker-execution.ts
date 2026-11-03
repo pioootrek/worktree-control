@@ -6,6 +6,7 @@ import { testProfileFor } from "@/server/modules/environments";
 import type { ResolvedTestEnvironment } from "@/server/modules/environments";
 import { fingerprint, type RemoteControllerStore, type RemoteVerificationWorkspace, type RemoteVerificationWorkspacePreparer, type RemoteWorkerExecution, type WorkerRecoveryService, type WorkerReceipt, remoteDependencySetupSchema, remotePreparationTimeoutSchema, type RemoteDependencySetupPolicy } from "@/server/modules/remote-verification";
 import type { StateStore } from "@/server/state-store";
+import { admissionOf } from "@/server/database-admission";
 import type { ProjectTestCommandResolver, TestCommand } from "@/server/test-command";
 import type { RemoteAssignment, RemoteWorkerReport } from "@/shared/contracts/remote-verification";
 import { PreparationError, PreparationSession, type VerificationPreparationContext, projectTestPreset, type EnqueueTestInput } from "@/server/modules/verification";
@@ -68,10 +69,16 @@ export class SystemRemoteWorkerExecution implements RemoteWorkerExecution {
     let releaseWorkspace: (() => void) | null = null;
     let command: TestCommand | null = null;
     let presetFingerprint: string | null = null;
-    const observeSource = async () => {
-      try { return await this.observe(path, context!, environment.environment); }
-      catch (error) { if (error instanceof PreparationError && error.cleanupUnconfirmed) unsafeCleanup = true; throw error; }
-    };
+    // Capture safety evidence while still in the SQL-free phase. idle() can
+    // replace its error if re-admission fails; that must never clear ownership.
+    const idleOwned = <T>(operation: () => Promise<T>): Promise<T> => this.idle(async () => {
+      try { return await operation(); }
+      catch (error) {
+        if (error instanceof PreparationError && error.cleanupUnconfirmed) unsafeCleanup = true;
+        throw error;
+      }
+    });
+    const observeSource = () => idleOwned(() => this.observe(path, context!, environment.environment));
     const preset = { id: assignment.presetId, name: assignment.presetId.split(":").slice(1).join(":"), adapter: assignment.presetId.split(":")[0] as "node", timeoutMs: 15 * 60_000 };
     return {
       projectId: mapping.localProjectId, worktree,
@@ -116,9 +123,17 @@ export class SystemRemoteWorkerExecution implements RemoteWorkerExecution {
             releaseCache = this.lifecycle.acquireMaintenance(project.id, cache);
             if (!releaseCache) throw new Error("source_cache_busy");
             try {
-              workspace = await this.preparer.prepare({ requestId: assignment.attemptId, repositoryPath: cache, sourceRemote: mapping.sourceRemote, commitSha: assignment.commitSha, preparation: context!, environment: environment.environment });
+              // Fetch/checkout is long and SQL-free: wait for it without holding database admission.
+              workspace = await idleOwned(async () => {
+                const prepared = await this.preparer.prepare({ requestId: assignment.attemptId, repositoryPath: cache, sourceRemote: mapping.sourceRemote, commitSha: assignment.commitSha, preparation: context!, environment: environment.environment });
+                // idle() may fail while re-admitting us after checkout succeeded.
+                // Retain cleanup ownership before that boundary can lose the result.
+                workspace = prepared;
+                return prepared;
+              });
+              this.mapping(assignment);
             } catch (error) {
-              unsafeCleanup = error instanceof PreparationError && error.cleanupUnconfirmed;
+              unsafeCleanup ||= error instanceof PreparationError && error.cleanupUnconfirmed;
               throw error;
             } finally { if (!unsafeCleanup) { releaseCache?.(); releaseCache = null; } }
             if (workspace.path !== path || workspace.executedCommitSha !== assignment.commitSha) throw new Error("source_mismatch");
@@ -134,10 +149,12 @@ export class SystemRemoteWorkerExecution implements RemoteWorkerExecution {
             definitionCommand = command;
             if (mapping.dependencySetup) {
               try {
-                const prepared = await preparePnpmDependencies({ path, policy: mapping.dependencySetup, context: context!, environment: environment.environment, toolDirectory: join(home, "bin") });
+                // Dependency installation never holds admission; the grant is rechecked once it finishes.
+                const prepared = await idleOwned(() => preparePnpmDependencies({ path, policy: mapping.dependencySetup!, context: context!, environment: environment.environment, toolDirectory: join(home, "bin") }));
+                this.mapping(assignment);
                 dependencyFingerprint = prepared.fingerprint;
                 command = { ...command, executable: prepared.executable, args: [...prepared.args, command.preset.name] };
-              } catch (error) { unsafeCleanup = error instanceof PreparationError && error.cleanupUnconfirmed; throw error; }
+              } catch (error) { unsafeCleanup ||= error instanceof PreparationError && error.cleanupUnconfirmed; throw error; }
             }
             presetFingerprint = await this.definitionFingerprint(path, definitionCommand);
             environment.variableNames = Object.keys(environment.environment).sort();
@@ -184,6 +201,8 @@ export class SystemRemoteWorkerExecution implements RemoteWorkerExecution {
       },
     };
   }
+  private idle<T>(operation: () => Promise<T>): Promise<T> { return admissionOf(this.store).idle(operation); }
+
   private async serializedPreparation<T>(context: VerificationPreparationContext, projectId: string, operation: () => Promise<T>): Promise<T> {
     let started = false;
     let entered!: () => void;

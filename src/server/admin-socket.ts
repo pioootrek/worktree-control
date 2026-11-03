@@ -2,12 +2,18 @@ import { chmodSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { dirname } from "node:path";
 import { createHttpServerCloser } from "./http-server-lifecycle";
+import { ProviderAdminError, providerAdminErrorBody } from "./modules/authentication";
 
 const BODY_LIMIT = 16 * 1024;
 
 export interface AdminSocketServer {
   server: Server;
   close(): Promise<void>;
+}
+
+/** A failed listener cleanup still has an owner; callers must join it before releasing storage. */
+export class AdminSocketStartupError extends Error {
+  constructor(readonly owner: AdminSocketServer) { super("Admin listener cleanup is unconfirmed."); }
 }
 
 /**
@@ -21,41 +27,69 @@ export async function listenAdminSocket(
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   chmodSync(dirname(path), 0o700);
   removeStaleSocket(path);
+  const accepted = new Set<Promise<void>>();
+  let closing: Promise<void> | undefined;
   const server = createServer((request, response) => {
-    void (async () => {
+    const pending = (async () => {
       const reply = (status: number, body: unknown) => {
+        if (response.destroyed || response.writableEnded) return;
         response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
         response.end(JSON.stringify(body));
       };
       if (request.url !== "/auth" || request.method !== "POST") return reply(404, { error: "Unknown admin operation." });
+      if (closing || accepted.size >= 32) return reply(503, { error: "Admin operation unavailable." });
+      let provider = false;
+      const deadline = setTimeout(() => { request.destroy(); }, 10_000);
       try {
         const chunks: Buffer[] = [];
         let size = 0;
         for await (const chunk of request) {
           size += (chunk as Buffer).length;
-          if (size > BODY_LIMIT) throw new Error("Admin request is too large.");
+          if (size > BODY_LIMIT) throw new ProviderAdminError("invalid_input");
           chunks.push(chunk as Buffer);
         }
-        reply(200, { result: await execute(JSON.parse(Buffer.concat(chunks).toString("utf8"))) });
+        clearTimeout(deadline);
+        let body: unknown;
+        try { body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))); }
+        catch { throw new ProviderAdminError("invalid_input"); }
+        provider = typeof body === "object" && body !== null && "command" in body && body.command === "auth-provider";
+        const result = await execute(body);
+        if (provider && Buffer.byteLength(JSON.stringify(result)) > BODY_LIMIT) throw new ProviderAdminError("provider_failed");
+        reply(200, { result });
       } catch (error) {
+        if (provider || error instanceof ProviderAdminError) return reply(400, providerAdminErrorBody(error));
         const code = typeof (error as { code?: unknown }).code === "string" ? (error as { code: string }).code : undefined;
         reply(400, { ...(code ? { code } : {}), error: error instanceof Error ? error.message : String(error) });
-      }
+      } finally { clearTimeout(deadline); }
     })();
+    accepted.add(pending);
+    const forget = () => { accepted.delete(pending); };
+    pending.then(forget, forget);
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(path, () => { server.off("error", reject); resolve(); });
-  });
-  chmodSync(path, 0o600);
   const closeServer = createHttpServerCloser(server);
-  return {
+  const owner: AdminSocketServer = {
     server,
-    async close() {
-      await closeServer();
-      removeStaleSocket(path);
+    close() {
+      closing ??= Promise.resolve().then(async () => {
+        await closeServer();
+        // A disconnected response does NOT cancel its accepted command or initialization.
+        await Promise.allSettled([...accepted]);
+        removeStaleSocket(path);
+      });
+      return closing;
     },
   };
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(path, () => { server.off("error", reject); resolve(); });
+    });
+    chmodSync(path, 0o600);
+    return owner;
+  } catch (error) {
+    try { await owner.close(); } catch { throw new AdminSocketStartupError(owner); }
+    throw error;
+  }
 }
 
 /** Only the lock holder calls this, so a leftover socket belongs to a dead controller. */
@@ -69,7 +103,7 @@ function removeStaleSocket(path: string): void {
 }
 
 export class AdminRequestError extends Error {
-  constructor(readonly code: string | undefined, message: string) {
+  constructor(readonly code: string | undefined, message: string, readonly committed?: true, readonly cleanupConfirmed?: false) {
     super(message);
     this.name = "AdminRequestError";
   }
@@ -100,9 +134,10 @@ export function requestAdminSocket(path: string, body: unknown, timeoutMs = 15_0
       });
       response.on("end", () => {
         try {
-          const value = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { result?: unknown; code?: string; error?: string };
+          const value = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { result?: unknown; code?: string; error?: string; committed?: unknown; cleanupConfirmed?: unknown };
           if (response.statusCode === 200) resolve(value.result);
-          else reject(new AdminRequestError(value.code, value.error ?? `Admin request failed with HTTP ${response.statusCode}.`));
+          else reject(new AdminRequestError(value.code, value.error ?? `Admin request failed with HTTP ${response.statusCode}.`,
+            value.committed === true ? true : undefined, value.cleanupConfirmed === false ? false : undefined));
         } catch (error) {
           reject(error);
         }

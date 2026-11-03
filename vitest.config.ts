@@ -4,5 +4,9 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
-  test: { include: ["src/**/*.test.ts"] },
+  test: {
+    include: ["src/**/*.test.ts"],
+    // Files create durable SQLite databases and fork fixture processes; bound their combined resource use.
+    maxWorkers: 2,
+  },
 });

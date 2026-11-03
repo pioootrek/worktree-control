@@ -1,3 +1,4 @@
+import { containsProviderCookie } from "@/shared/contracts/authentication";
 import type { DevVaultOperations } from "./modules/dev-vault";
 import type { McpDiagnosticsSnapshot } from "@/shared/contracts/mcp-diagnostics";
 import { McpDiagnostics, type McpCloseReason } from "./mcp-diagnostics";
@@ -6,6 +7,7 @@ import { createHttpServerCloser } from "./http-server-lifecycle";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import type { ControlService } from "./control-service";
+import { admissionOf, databaseAdmissionFailure } from "./database-admission";
 import { resolveControllerAuthentication, type ControllerAuthenticationDependencies } from "./modules/authentication";
 import type { ControllerAuthentication, IdentityService } from "./modules/identity";
 import { knowledgeRequestLimit } from "@/shared/contracts/knowledge";
@@ -117,11 +119,23 @@ export function createMcpControllerServer(options: {
     return runtimePromise;
   };
 
+  // Authentication is admitted on its own; each tool call or resource read is admitted by the runtime.
+  // SSE streams and body reads hold no admission.
+  const admission = admissionOf(options.service);
   const server = createServer((request, response) => {
     response.setHeader("Cache-Control", "no-store");
     void (async () => {
       if (request.url !== "/mcp") return jsonError(response, 404, "MCP endpoint not found.");
-      const authentication = authenticate(request, options.accessToken, options);
+      // This transport is not converted to provider sessions. Never promote a cookie in open mode.
+      if (containsProviderCookie(request.headers.cookie)) return jsonError(response, 401, "Provider sessions are unavailable on this transport.");
+      let authentication;
+      try { authentication = await admission.run(() => authenticate(request, options.accessToken, options)); }
+      catch (error) {
+        const failure = databaseAdmissionFailure(error);
+        if (!failure) return jsonError(response, 500, "MCP request failed.");
+        if (failure.retryable) response.setHeader("Retry-After", "1");
+        return jsonError(response, failure.status, "The controller database is unavailable; retry the request.");
+      }
       if (!authentication) return jsonError(response, 401, "A valid MCP bearer token is required.");
       if (!validOrigin(request, options.port)) return jsonError(response, 403, "The request origin was rejected.");
       if (request.method !== "POST" && request.method !== "GET" && request.method !== "DELETE") {
@@ -131,14 +145,18 @@ export function createMcpControllerServer(options: {
       try {
         const body = request.method === "POST" ? await readJson(request) : undefined;
         const currentRuntime = await runtime();
-        const currentAuthentication = authenticate(request, options.accessToken, options);
+        const currentAuthentication = await admission.run(() => authenticate(request, options.accessToken, options));
         if (!currentAuthentication) return jsonError(response, 401, "A valid MCP bearer token is required.");
         await currentRuntime.handle(request, response, currentAuthentication, body);
       } catch (error) {
         options.onDiagnostic?.("mcp.request_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
-        if (!response.headersSent) jsonError(response, 500, "MCP request failed.");
+        const failure = databaseAdmissionFailure(error);
+        if (!response.headersSent) {
+          if (failure?.retryable) response.setHeader("Retry-After", "1");
+          jsonError(response, failure?.status ?? 500, failure ? "The controller database is unavailable; retry the request." : "MCP request failed.");
+        }
       }
     })();
   });

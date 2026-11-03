@@ -1,18 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import type { AuthenticatedPrincipal } from "@/server/modules/identity";
+import type { CredentialAuthenticatedPrincipal } from "@/server/modules/identity";
 import type { AuthenticationMode } from "./contracts";
 import { resolveControllerAuthentication } from "./controller-authentication";
 
 const INSTALLATION = `wsi_11111111-1111-4111-8111-111111111111_${"a".repeat(64)}`;
 const SCOPED = `wts_22222222-2222-4222-8222-222222222222_${"b".repeat(64)}`;
-const installationActor: AuthenticatedPrincipal = {
+const installationActor: CredentialAuthenticatedPrincipal = {
   principalId: "installation", principalKind: "installation", credentialId: "11111111-1111-4111-8111-111111111111", authenticationMethod: "installation_token",
 };
-const anonymousActor: AuthenticatedPrincipal = {
+const anonymousActor: CredentialAuthenticatedPrincipal = {
   principalId: "installation", principalKind: "installation", credentialId: "open", authenticationMethod: "none",
 };
-const agentActor: AuthenticatedPrincipal = {
+const agentActor: CredentialAuthenticatedPrincipal = {
   principalId: "agent-1", principalKind: "agent", credentialId: "22222222-2222-4222-8222-222222222222", authenticationMethod: "agent_token",
 };
 

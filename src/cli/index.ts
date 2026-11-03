@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createControllerRestoreFailure, createControllerShutdown } from "../server/bootstrap/controller-shutdown";
 import { createDevVault } from "../server/bootstrap/dev-vault";
 import { runDevVaultCommand } from "./dev-vault";
 import { loadRemoteVerificationConfig, runRemoteVerificationCommand } from "./remote-verification";
@@ -34,6 +35,9 @@ import {
 import { writeCliLine } from "./output";
 import { cliInformation } from "./help";
 import { runAuthCommand } from "./auth-management";
+import { isProviderCommandArgs, parseProviderArguments } from "./auth-provider-input";
+import { createAuthenticationAdministration, retainAuthenticationOwnership } from "../server/bootstrap/authentication-administration";
+import { ProviderAdminError, providerAdminErrorBody } from "../server/modules/authentication";
 import { bootstrapInstallationToken, bootstrapServiceInstallationToken } from "./first-run-token";
 import { runIdentityCommand } from "./identity-management";
 import { runBackupCommand } from "./backup-management";
@@ -43,7 +47,7 @@ import { openProjectGateway, runDoctorCommand, runProjectCommand } from "./proje
 import { controllerAccessToken, localDashboardEndpoint, publicDashboardEndpoint, readServiceAccess, removeServiceAccess, writeServiceAccess } from "./service-access";
 import { mcpConfigToken } from "./mcp-config";
 import { mcpDiagnosticsAdminHandler } from "../server/mcp-diagnostics-admin";
-import { requestAdminSocket, listenAdminSocket, type AdminSocketServer } from "../server/admin-socket";
+import { AdminRequestError, AdminSocketStartupError, requestAdminSocket, listenAdminSocket, type AdminSocketServer } from "../server/admin-socket";
 import { buildServiceStartArguments } from "./service-install";
 import { resolveServiceInstallArguments, serviceSettingChanges, validateServiceCommand } from "./service-options";
 import { legacyServiceWarning, renderLaunchAgent, renderSystemdUnit, UserServiceManager, type ServiceInstallOptions } from "./service-manager";
@@ -89,6 +93,13 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   }
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
+  if (command === "auth" && isProviderCommandArgs(process.argv.slice(3))) {
+    const raw = process.argv.slice(3), parsed = parseProviderArguments(raw);
+    const providerPaths = resolveAppPaths(parsed.dataDir, parsed.stateDir);
+    assertBackupHandoffCompleted(providerPaths.databasePath);
+    await runAuthCommand(raw, providerPaths, { write: writeCliLine });
+    return;
+  }
   if (command === "service") {
     const args = process.argv.slice(3);
     validateServiceCommand(args);
@@ -197,17 +208,19 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const controllerLock = retainedLock ?? acquireControllerLock(paths.controllerLockPath);
   let maintenance = false;
 
-  const events = new EventStream();
   let store;
   try {
     const handoff = recoverBackupHandoff(paths.databasePath, paths.knowledgeAttachmentDirectory, backupPolicy);
     store = await openControllerStore(paths.databasePath, { ...migrationBackup, applicationVersion: packageJson.version, attachmentDirectory: paths.knowledgeAttachmentDirectory });
     if (handoff) finishBackupHandoff(paths.databasePath, handoff, store);
   } catch (error) { store?.close(); controllerLock.release(); throw error; }
-  const authentication = new AuthenticationService(store);
+  // Every producer below shares this store's single connection gate for database admission.
+  const events = new EventStream(store.admission);
+  let authentication: AuthenticationService;
   const serviceMode = process.argv.includes("--service-mode");
   let logs: FileLogWriter;
   try {
+    authentication = new AuthenticationService(store);
     // Only a first start may issue the token; a restore handoff keeps the restored policy as is.
     if (!retainedLock) bootstrapInstallationToken(authentication, { terminal: process.stdout, locale, serviceMode });
     authentication.assertStartupPolicy();
@@ -225,10 +238,12 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       source: store, estimateBytes: () => store.backupEstimateBytes(),
       authorize: actor => authentication.isCurrentInstallationActor(actor), maintenance: () => maintenance,
       remoteTransport: remoteBackup.loaded ? new ResticBackupTransport(remoteBackup.loaded) : undefined,
+      admission: store.admission,
     });
   } catch (error) { await logs.close(); store.close(); controllerLock.release(); throw error; }
   const processes = new ProcessManager((projectId) => events.publish({ kinds: ["runtime"], projectIds: [projectId] }), logs, {
     memoryWarningThresholdBytes: memoryWarningMiB === null ? null : Math.round(memoryWarningMiB * 1024 * 1024),
+    admission: store.admission,
   });
   const lifecycle = new ProjectLifecycle(store, processes);
   const storage = new WorktreeStorageManager(store, lifecycle, undefined, (projectId) => events.publish({ kinds: ["storage"], projectIds: [projectId] }));
@@ -250,6 +265,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       restoreGeneration: () => restoreBoundary.generation,
       authorize: (actor, projectId) => {
         identity.describeIdentity(actor);
+        if (actor.authenticationMethod === "provider_session") throw new Error("Schedule credential is unavailable.");
         if (restoreBoundary.createdAt && (store.getCredentialForAuthentication(actor.credentialId)?.createdAt ?? "") <= restoreBoundary.createdAt) throw new Error("Schedule credential requires post-restore renewal.");
         if (projectId) {
           identity.authorizeKnowledge(actor, projectId, "knowledge:read");
@@ -273,13 +289,18 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const service = new ControlService(store, git, processes, logs, undefined, storage, undefined, undefined, tests, lifecycle, knowledge, remoteVerification?.controller, identity);
   const restores = new RestoreOperations(backups, paths.databasePath, paths.knowledgeAttachmentDirectory, {
     authentication: () => store.getAuthenticationPolicy(),
+    executionMode: () => authentication.mode(),
     enterMaintenance: () => { maintenance = true; lifecycle.closeAdmission(); },
     restart: async execute => {
       await shutdown(true);
       execute();
       await main(controllerLock);
     },
-    failure: error => { console.error(error instanceof Error ? error.message : "Restore handoff failed."); void shutdown().finally(() => { controllerLock.release(); process.exit(1); }); },
+    failure: createControllerRestoreFailure({
+      shutdown: handoff => shutdown(handoff), controllerLock,
+      report: message => console.error(message), exit: code => process.exit(code),
+      retainOwnership: () => retainAuthenticationOwnership({ store, controllerLock, shutdown }),
+    }),
   });
   const accessToken = randomBytes(32).toString("base64url");
   const sessionId = randomBytes(8).toString("hex");
@@ -336,6 +357,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     authentication,
     publicOrigin,
     backups, restores, userSchedules, maintenance: () => maintenance,
+    admission: store.admission,
   });
   try {
     await remoteVerification?.start();
@@ -376,10 +398,14 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     authenticationMode: authentication.mode(),
   });
   let adminSocket: AdminSocketServer;
+  const providerAdministration = createAuthenticationAdministration({ store, authentication, dataDirectory: paths.dataDirectory,
+    actor: "local-admin", maintenance: () => maintenance,
+    configurationEvent: () => logs.controller("authentication.provider_configuration_written", {}) });
   try {
     const authenticationHandler = authenticationAdminHandler({
       authentication,
-      closeMcpSessions: async () => { await mcp?.closeSessions(); },
+      maintenance: () => maintenance,
+      closeMcpSessions: () => store.admission.idle(async () => { await mcp?.closeSessions(); }),
       disconnectEvents: () => events.disconnectAll(),
       onPolicyChanged: (command) => {
         if (serviceMode) recordServiceAccess();
@@ -389,20 +415,26 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     const backupHandler = backupAdminHandler(backups, restores, userSchedules);
     const mcpDiagnosticsHandler = mcpDiagnosticsAdminHandler(readMcpDiagnostics);
     adminSocket = await listenAdminSocket(paths.adminSocketPath, body => {
+      if (body && typeof body === "object" && "command" in body && body.command === "auth-provider") return providerAdministration.execute(body);
       if (body && typeof body === "object" && "command" in body && (body.command === "backup" || body.command === "backup-remote" || body.command === "backup-monitor" || body.command === "user-export-recovery")) return backupHandler(body);
       if (body && typeof body === "object" && "command" in body && body.command === "mcp-diagnostics") {
         return mcpDiagnosticsHandler(body);
       }
       if (maintenance) throw new Error("Controller is in maintenance.");
-      return authenticationHandler(body);
+      return store.admission.run(() => authenticationHandler(body));
     });
   } catch (error) {
-    userSchedules?.close(); await backups.close();
-    await mcp?.close();
-    await controller.close();
-    await remoteVerification?.close();
-    await service.shutdown();
-    controllerLock.release();
+    const cleanup = createControllerShutdown({
+      service: { closeAdmission: () => { maintenance = true; service.closeAdmission(); }, shutdown: () => service.shutdown() },
+      stopping() {}, userSchedules, backups, remoteVerification, mcp, controller, controllerLock,
+      adminSocket: error instanceof AdminSocketStartupError ? error.owner : { close() {} },
+      authenticationProvider: providerAdministration, removeServiceAccess() {},
+    });
+    try { await cleanup(); }
+    catch {
+      retainAuthenticationOwnership({ providerAdministration, store, controllerLock, cleanup });
+      throw new ProviderAdminError("disposal_unconfirmed", undefined, false);
+    }
     throw error;
   }
   writeCliLine(translate(locale, "cli.listening", { host, port }));
@@ -424,39 +456,22 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   if (!process.argv.includes("--no-open") && !serviceMode) openBrowser(interactiveAddress);
   backups.start();
   userSchedules.start();
-  let closing = false;
-  const shutdown = async (handoff = false) => {
-    if (closing) return;
-    closing = true;
-    maintenance = true;
-    // Cancel pending starts before closing listeners, which wait for their HTTP responses.
-    service.closeAdmission();
-    process.removeListener("SIGINT", handleSignal);
-    process.removeListener("SIGTERM", handleSignal);
-    writeCliLine(translate(locale, "cli.stopping"));
-    try {
-      let backupFailure: unknown = null;
-      try { userSchedules?.close(); await backups.close(); } catch (error) { backupFailure = error; }
-      const listeners = await Promise.allSettled([remoteVerification?.close(), mcp?.close(), controller.close(), adminSocket.close()]);
-      const listenerFailures = listeners.filter((result) => result.status === "rejected");
-      let serviceFailure: unknown = null;
-      try {
-        await service.shutdown();
-      } catch (error) {
-        serviceFailure = error;
-      }
-      const failures = [...(backupFailure ? [backupFailure] : []), ...listenerFailures.map((result) => result.reason), ...(serviceFailure ? [serviceFailure] : [])];
-      if (failures.length) throw new AggregateError(failures, "Controller shutdown did not complete cleanly.");
-    } finally {
-      if (serviceMode) removeServiceAccess(paths.serviceAccessPath);
-      if (!handoff) controllerLock.release();
-    }
-  };
+  const shutdown = createControllerShutdown({
+    service: { closeAdmission: () => { maintenance = true; service.closeAdmission(); }, shutdown: () => service.shutdown() },
+    userSchedules, backups, remoteVerification, mcp, controller, adminSocket, controllerLock,
+    authenticationProvider: providerAdministration,
+    stopping: () => {
+      process.removeListener("SIGINT", handleSignal);
+      process.removeListener("SIGTERM", handleSignal);
+      writeCliLine(translate(locale, "cli.stopping"));
+    },
+    removeServiceAccess: () => { if (serviceMode) removeServiceAccess(paths.serviceAccessPath); },
+  });
   const handleSignal = () => void shutdown().then(
     () => process.exit(0),
     (error) => {
       console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      retainAuthenticationOwnership({ providerAdministration, store, controllerLock });
     },
   );
   process.once("SIGINT", handleSignal);
@@ -672,6 +687,13 @@ function findLanAddress(): string | null {
 }
 
 main().catch((error) => {
+  if (process.argv[2] === "auth" && isProviderCommandArgs(process.argv.slice(3))) {
+    const body = error instanceof AdminRequestError
+      ? { code: error.code ?? "admin_outcome_unknown", error: error.message,
+        ...(error.committed ? { committed: true } : {}), ...(error.cleanupConfirmed === false ? { cleanupConfirmed: false } : {}) }
+      : providerAdminErrorBody(error instanceof ProviderAdminError ? error : new ProviderAdminError("provider_failed"));
+    console.error(JSON.stringify(body)); process.exitCode = 1; return;
+  }
   console.error(error instanceof KnowledgeError ? JSON.stringify(knowledgeFailure(error).body) : error instanceof Error ? error.message : error);
   process.exitCode = 1;
 });

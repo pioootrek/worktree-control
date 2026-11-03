@@ -1,3 +1,4 @@
+import { HumanAccountQueries } from "./human-account-queries";
 import type { KnowledgeRoleBinding, KnowledgePermission } from "@/shared/contracts/authorization";
 import { DevVaultQueries } from "./dev-vault-queries";
 import type { DevVaultStore } from "@/server/modules/dev-vault";
@@ -37,7 +38,13 @@ import type {
 } from "@/server/modules/identity";
 import type { RuntimeCredentialScope, RuntimeDelegation } from "@/shared/contracts/runtime-access";
 import { RuntimeAccessQueries } from "./runtime-access-queries";
-import type { AuthenticationPolicy, AuthenticationStore } from "@/server/modules/authentication";
+import { AccountProtection, recoverIssuedSessions, validateSessionRowPolicy, type AuthenticationPolicy, type AuthenticationProviderStorage, type AuthenticationStore, type SessionRowPolicy } from "@/server/modules/authentication";
+import { ExclusiveSqliteConnection, type AdmissionSnapshot, type ExclusiveConnectionOptions } from "./exclusive-connection";
+import type { DatabaseAdmission } from "@/server/database-admission";
+import { AuthenticationProviderQueries } from "./authentication-provider-queries";
+import { AuthenticationProtectionQueries } from "./authentication-protection-queries";
+import { AuthenticationSessionIssuanceQueries } from "./authentication-session-issuance-queries";
+import { AUTHENTICATION_PROVIDER_STORAGE_REVISION } from "./authentication-provider-migration";
 import type { HubImportBatch, HubImportExecutionStore, HubImportMapping, KnowledgeHistoryEntry, KnowledgeMutationContext, KnowledgeMutationResult, KnowledgePage, KnowledgeProjectSnapshot, KnowledgeRelation, KnowledgeReply, KnowledgeRuntimeLinkResult, KnowledgeStore, KnowledgeTask, KnowledgeThread } from "@/server/modules/knowledge";
 import { KnowledgeError, publishKnowledgeAttachment, DEFAULT_ATTACHMENT_LIMITS, assertAttachmentCapacity } from "@/server/modules/knowledge";
 import Database from "better-sqlite3";
@@ -46,7 +53,7 @@ import { dirname } from "node:path";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { configureDurability, assertDurability } from "./database-validation";
-import { OwnedSqliteDatabase } from "./owned-database";
+import { OwnedSqliteDatabase, type DatabaseProvenance } from "./owned-database";
 import { IdentityQueries } from "./identity-queries";
 import { KnowledgeQueries } from "./knowledge-queries";
 import type { KnowledgeTaskStateView, TaskCurrentState } from "@/shared/contracts/knowledge-task-state";
@@ -71,15 +78,22 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   private readonly knowledge: KnowledgeQueries;
 
   private readonly ownedDatabase: OwnedSqliteDatabase;
+  /** Every query module receives `connection.core`; the raw handle stays here. */
+  private readonly connection: ExclusiveSqliteConnection;
+  private sessionRecovery: Promise<void> | undefined;
+  private sessionsRecovered = false;
 
-  constructor(databasePath: string, inspected?: OwnedSqliteDatabase) {
+  constructor(databasePath: string, inspected?: OwnedSqliteDatabase, connectionOptions?: ExclusiveConnectionOptions) {
     this.ownedDatabase = inspected ?? new OwnedSqliteDatabase(databasePath, true);
     try {
-      this.database = this.ownedDatabase.enableWrites();
-      configureDurability(this.database);
-      initializeSchema(this.database, this.ownedDatabase.inspection.fresh, inspectSchema);
-      assertDurability(this.database);
+      const writable = this.ownedDatabase.enableWrites();
+      configureDurability(writable);
+      initializeSchema(writable, this.ownedDatabase.inspection.fresh, inspectSchema);
+      assertDurability(writable);
       this.ownedDatabase.completeInitialization();
+      // Query modules register functions while being built; strict admission starts once they exist.
+      this.connection = new ExclusiveSqliteConnection(writable, { ...connectionOptions, admission: "compatible" });
+      this.database = this.connection.core;
       this.testRuns = new TestRunQueries(this.database);
       this.storage = new StorageQueries(this.database);
       this.remoteVerification = new RemoteVerificationQueries(this.database);
@@ -89,10 +103,43 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       this.runtimeAccess = new RuntimeAccessQueries(this.database);
       this.authentication = new AuthenticationQueries(this.database);
       this.knowledge = new KnowledgeQueries(this.database);
+      if (connectionOptions?.admission === "strict") this.connection.requireAdmission();
     } catch (error) {
       this.ownedDatabase.close();
       throw error;
     }
+  }
+
+  /** Core admission on the single connection gate; see `DatabaseAdmission`. */
+  get admission(): DatabaseAdmission {
+    const connection = this.connection;
+    return {
+      run: (operation, options) => connection.runCore(operation, options),
+      detached: (operation, options) => connection.runDetached(operation, options),
+      tryRun: operation => connection.tryCore(operation),
+      outside: operation => connection.outside(operation),
+      idle: (operation, options) => connection.idle(operation, options),
+    };
+  }
+
+  /** Refuses unadmitted core SQL from now on, even while the connection is idle. */
+  requireAdmission(): void { this.connection.requireAdmission(); }
+
+  admissionSnapshot(): AdmissionSnapshot { return this.connection.snapshot(); }
+
+  /**
+   * Orderly close: provider admission ends, accepted core work, backups and
+   * provider executions (including ones whose public promise timed out) must
+   * settle within `timeoutMs`, then SQLite closes and ownership is released.
+   * When that cannot be confirmed, the connection and ownership lock stay held
+   * and the call can be retried; nothing reports a completed shutdown.
+   */
+  async closeAfterDrain(timeoutMs = 10_000): Promise<void> {
+    this.connection.beginDrain();
+    if (!await this.connection.drain(timeoutMs)) {
+      throw new Error("Database work did not settle before shutdown; ownership is retained.");
+    }
+    this.close();
   }
 
   backupEstimateBytes(): number {
@@ -164,6 +211,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   publishHubImport(batchId: string, now: string, attachmentDirectory?: string, limits: KnowledgeAttachmentLimits = DEFAULT_ATTACHMENT_LIMITS): HubImportBatch {
     try{return this.database.transaction(() => {
       const batch=this.getHubImport(batchId); if(!batch) throw new KnowledgeError("not_found","Import batch not found.");
+      if(this.identity.getPrincipal(batch.actorPrincipalId)?.kind === "human") throw new KnowledgeError("invalid_request", "Human imports are unavailable.");
       if(batch.status==="published") return batch;
       if(batch.status!=="staging"||batch.cursor!==batch.totalItems) throw new KnowledgeError("revision_conflict","Import batch is incomplete.");
       const target=this.database.prepare("SELECT name,revision FROM knowledge_projects WHERE id = ?").get(batch.targetProjectId) as {name:string;revision:number}|undefined;
@@ -792,12 +840,26 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     this.identity.savePrincipal(principal, actor);
   }
 
+  humanAccounts(): HumanAccountQueries { return new HumanAccountQueries(this.database); }
+
   getPrincipal(id: string): Principal | null {
     return this.identity.getPrincipal(id);
   }
 
   getOwnerPrincipal(): Principal | null {
     return this.identity.getOwnerPrincipal();
+  }
+
+  ownerPrincipals(): Principal[] { return this.identity.ownerPrincipals(); }
+  createFirstOwnerPrincipal(principal: Principal, actor: string): boolean {
+    return this.identity.createFirstOwnerPrincipal(principal, actor);
+  }
+
+  hasAuthenticationProviderData(): boolean {
+    return Boolean(this.database.prepare(`SELECT 1 WHERE
+      EXISTS(SELECT 1 FROM authentication_provider_subjects) OR
+      EXISTS(SELECT 1 FROM authentication_ba_user) OR EXISTS(SELECT 1 FROM authentication_ba_account) OR
+      EXISTS(SELECT 1 FROM authentication_ba_session) OR EXISTS(SELECT 1 FROM authentication_ba_verification)`).get());
   }
 
   listPrincipals(kind?: Principal["kind"]): Principal[] {
@@ -1257,8 +1319,46 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     })();
   }
 
+  /**
+   * Storage port for an optional authentication provider: exclusive borrows of
+   * this connection, never a second connection. Closing the store invalidates it.
+   */
+  authenticationProviderStorage(): AuthenticationProviderStorage {
+    const connection = this.connection, database = this.database;
+    return {
+      storageRevision: AUTHENTICATION_PROVIDER_STORAGE_REVISION,
+      borrow: (operation, options) => connection.borrow(operation, options),
+      runControllerOperation: operation => connection.runControllerOperation(operation),
+      operationActive: () => connection.providerOperationActive(),
+      drain: timeoutMs => connection.drainProviders(timeoutMs),
+      createProviderConnection: () => connection.createProviderConnection(),
+      subjects: providerId => new AuthenticationProviderQueries(database, providerId),
+      available: () => { const state = connection.snapshot(); return state.state === "open" && !state.draining; },
+      currentSession: (providerId, sessionId) => new AuthenticationProtectionQueries(database, providerId).sessionState(sessionId),
+      issuanceState: sessionId => this.admission.run(() => new AuthenticationSessionIssuanceQueries(database).state(sessionId), { reserved: true }),
+      sessionRecoveryComplete: () => this.sessionsRecovered,
+      sessionIssuance: () => new AuthenticationSessionIssuanceQueries(database),
+      protection: (providerId, limits, issuance) => new AccountProtection(new AuthenticationProtectionQueries(database, providerId), limits, issuance),
+    };
+  }
+
+  get databaseProvenance(): DatabaseProvenance { return this.ownedDatabase.provenance; }
+
+  /**
+   * The ordinary-restart recovery of this owner's lifetime, before any issuer can
+   * exist. It runs once however often it is called, so a later runtime can never
+   * read another runtime's live `pending` rows as a dead process's leftovers.
+   * Restore provenance comes from this owner, and a refusal changes no row.
+   */
+  recoverIssuedSessions(policy: SessionRowPolicy): Promise<void> {
+    const validated = validateSessionRowPolicy(policy);
+    this.sessionRecovery ??= recoverIssuedSessions({ provenance: this.ownedDatabase.provenance, policy: validated, store: new AuthenticationSessionIssuanceQueries(this.database),
+      run: operation => this.admission.run(operation), now: () => new Date().toISOString() }).then(() => { this.sessionsRecovered = true; });
+    return this.sessionRecovery;
+  }
+
   close(): void {
-    this.ownedDatabase.close();
+    try { this.connection?.close(); } finally { this.ownedDatabase.close(); }
   }
 
   private expireReservations(projectId: string): void {

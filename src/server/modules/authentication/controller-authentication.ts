@@ -1,4 +1,5 @@
-import type { AuthenticatedPrincipal, ControllerAuthentication, IdentityService } from "@/server/modules/identity";
+import type { CredentialAuthenticatedPrincipal, ControllerAuthentication, IdentityService } from "@/server/modules/identity";
+import { databaseAdmissionFailure } from "@/server/database-admission";
 import type { AuthenticationMode } from "./contracts";
 
 export interface ControllerCredentials {
@@ -11,8 +12,8 @@ export interface ControllerCredentials {
 export interface ControllerAuthenticationDependencies {
   authentication?: {
     mode(): AuthenticationMode;
-    authenticateInstallation(token: string): AuthenticatedPrincipal | null;
-    anonymousInstallation(): AuthenticatedPrincipal | null;
+    authenticateInstallation(token: string): CredentialAuthenticatedPrincipal | null;
+    anonymousInstallation(): CredentialAuthenticatedPrincipal | null;
   };
   identity?: Pick<IdentityService, "authenticateBearer">;
 }
@@ -40,7 +41,9 @@ export function resolveControllerAuthentication(
   if (!bearer || !dependencies.identity || (mode !== "legacy" && mode !== "token")) return null;
   try {
     return { kind: "principal", actor: dependencies.identity.authenticateBearer(bearer) };
-  } catch {
+  } catch (error) {
+    // Database contention is not an invalid credential; let the transport report it as such.
+    if (databaseAdmissionFailure(error)) throw error;
     return null;
   }
 }

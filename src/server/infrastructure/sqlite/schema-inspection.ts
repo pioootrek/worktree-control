@@ -1,6 +1,11 @@
+import { humanPrincipalMigration, humanPrincipalChecksum } from "./human-principal-migration";
 import { knowledgeRoleMigration, knowledgeRoleChecksum } from "./knowledge-role-migration";
 import { runtimeAccessMigration, runtimeAccessChecksum } from "./runtime-access-migration";
 import { configurationRevisionMigration, configurationRevisionChecksum } from "./configuration-revision-migration";
+import { providerSessionHistoryMigration, providerSessionHistoryChecksum } from "./provider-session-history-migration";
+import { authenticationFactorMigration, authenticationFactorChecksum } from "./authentication-factor-migration";
+import { authenticationProviderMigration, authenticationProviderChecksum } from "./authentication-provider-migration";
+import { authenticationSessionIssuanceMigration, authenticationSessionIssuanceChecksum } from "./authentication-session-issuance-migration";
 import { devVaultMigration, devVaultChecksum } from "./dev-vault-migration";
 import { remoteConnectionMigration, remoteConnectionChecksum } from "./remote-connection-migration";
 import Database from "better-sqlite3";
@@ -19,6 +24,12 @@ type ForeignKey = { table: string; from: string; to: string; on_delete: string; 
 // Historical installations may already have tables from the bootstrap DDL. Require
 // them only after their introducing migration, but validate any that are present.
 const tableVersions: Record<string, number> = {
+  authentication_ba_two_factor: 40, authentication_ba_passkey: 40, authentication_account_policies: 40,
+  authentication_totp_steps: 40, authentication_passkey_trust: 40, authentication_passkey_staged: 40,
+  authentication_factor_contexts: 40, authentication_factor_budgets: 40, authentication_factor_receipts: 40,
+  authentication_session_evidence: 40, authentication_session_issuance: 41,
+  authentication_ba_user: 38, authentication_ba_session: 38, authentication_ba_account: 38,
+  authentication_ba_verification: 38, authentication_provider_subjects: 38,
   runtime_delegations: 36, runtime_credential_scopes: 36,
   knowledge_role_bindings: 35,
   dev_environment_vaults: 34,
@@ -52,9 +63,17 @@ const columnVersions: Record<string, number> = {
   "test_runs.inherited_server_profile": 11, "test_runs.environment_variable_names_json": 11,
   "test_runs.telemetry_json": 29, "test_runs.source_json": 12, "knowledge_import_sources.target_revision": 23,
   "knowledge_import_batches.authentication_method": 26,
+  "authentication_ba_user.twoFactorEnabled": 40,
 };
 const historicalLeaseCheck = "(kind='human'andexpires_atisnull)or(kind='agent'andexpires_atisnotnull)";
-interface TableShape { columns: Column[]; foreignKeys: ForeignKey[]; checks: string[]; uniqueKeys: string[] }
+interface TableShape { columns: Column[]; foreignKeys: ForeignKey[]; checks: string[]; uniqueKeys: string[]; indexes: string[] }
+// Tables from migration 38 on are never in bootstrap DDL; their explicit indexes are part of the contract.
+const STRICT_TABLES_FROM = 38;
+const normalizedSql = (sql: string) => sql.replace(/\s+/g, "").toLowerCase();
+function explicitIndexes(database: Database.Database, table: string): string[] {
+  return (database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL").all(table) as Array<{ sql: string }>)
+    .map(({ sql }) => normalizedSql(sql)).sort();
+}
 function checks(sql: string): string[] {
   const result: string[] = [];
   const start = /CHECK\s*\(/gi;
@@ -91,6 +110,7 @@ function knownStructure(): Map<string, TableShape> {
       foreignKeys: database.prepare(`PRAGMA foreign_key_list("${table}")`).all() as ForeignKey[],
       checks: checks((database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql),
       uniqueKeys: uniqueKeys(database, table),
+      indexes: explicitIndexes(database, table),
     }]));
     return reference;
   } finally { database.close(); }
@@ -123,33 +143,53 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : x.version === 35 ? x.name !== knowledgeRoleMigration.name || x.checksum !== knowledgeRoleChecksum
       : x.version === 36 ? x.name !== runtimeAccessMigration.name || x.checksum !== runtimeAccessChecksum
       : x.version === 37 ? x.name !== configurationRevisionMigration.name || x.checksum !== configurationRevisionChecksum
+      : x.version === 38 ? x.name !== authenticationProviderMigration.name || x.checksum !== authenticationProviderChecksum
+      : x.version === 39 ? x.name !== providerSessionHistoryMigration.name || x.checksum !== providerSessionHistoryChecksum
+      : x.version === 40 ? x.name !== authenticationFactorMigration.name || x.checksum !== authenticationFactorChecksum
+      : x.version === 41 ? x.name !== authenticationSessionIssuanceMigration.name || x.checksum !== authenticationSessionIssuanceChecksum
+      : x.version === 42 ? x.name !== humanPrincipalMigration.name || x.checksum !== humanPrincipalChecksum
       : true)) refuse("migration checksum or name");
   }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));
   if (objects.some(x => x.type === "view" || x.type === "trigger") || [...tables].some(x => !(x in tableVersions))) refuse();
   for (const [table, introduced] of Object.entries(tableVersions)) {
     if (!tables.has(table)) { if (version >= introduced) refuse(); continue; }
+    if (introduced >= STRICT_TABLES_FROM && version < introduced) refuse(`${table} precedes its migration`);
     const expected = knownStructure().get(table)!;
     const columns = database.prepare(`PRAGMA table_info("${table}")`).all() as Column[];
     for (const column of columns) {
       const known = expected.columns.find(x => x.name === column.name);
       if (!known || known.type !== column.type || known.pk !== column.pk || known.notnull !== column.notnull) refuse();
+      // A strict column may not appear before the migration that introduces it.
+      if (introduced >= STRICT_TABLES_FROM && version < (columnVersions[`${table}.${column.name}`] ?? introduced)) refuse(`${table}.${column.name} precedes its migration`);
     }
     for (const column of expected.columns) {
       if (version >= (columnVersions[`${table}.${column.name}`] ?? introduced) && !columns.some(x => x.name === column.name)) refuse();
     }
     const actualChecks = checks((database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql);
+    if (table === "remote_principals" && version < 42
+      && (actualChecks.some(check => check.includes("'human'")) || database.prepare("SELECT 1 FROM remote_principals WHERE kind='human' LIMIT 1").get())) refuse("human principal precedes migration 42");
+    if (table === "remote_principals") {
+      const kind = version >= 42 ? "kindin('owner','agent','worker','installation','human')" : "kindin('owner','agent','worker','installation')";
+      if (actualChecks.length !== 2 || !actualChecks.includes("statusin('active','revoked')")
+        || (!actualChecks.includes(kind) && !(version < 25 && actualChecks.includes("kindin('owner','agent','worker')")))) refuse("principal constraints");
+    }
     const historicalLease = table === "reservations" && actualChecks.includes(historicalLeaseCheck);
     // A known historical expression must not hide additional, unknown CHECKs.
     if (historicalLease && (actualChecks.length !== 2 || !actualChecks.includes("kindin('human','agent')"))) refuse("constraint in reservations: lease");
     for (let check of expected.checks) {
       if (table === "projects" && version < 30) check = check.replace(",'none'", "");
       if (table === "test_runs" && version < 30) check = check.replace(",'godot'", "");
+      if (table === "remote_principals" && version < 42) check = check.replace(",'human'", "");
       if (table === "remote_principals" && version < 25) check = check.replace(",'installation'", "");
+      if (table === "knowledge_history" && version < 39) check = check.replace(",'provider_session'", "");
       if (table === "knowledge_history" && version < 25) check = check.replace(",'installation_token','none'", "");
       if (table === "knowledge_history" && version < 20) check = check.replace(",'memory'", "").replace(",'approved','superseded'", "");
       const field = check.match(/^([a-z_]+?)(?:in\(|between|is|[<>=])/)?.[1];
       if (field && version < (columnVersions[`${table}.${field}`] ?? introduced)) continue;
+      // The exact allowed principal CHECKs were validated above, including the
+      // installation-aware bootstrap shape of pre-25 synthetic/legacy snapshots.
+      if (table === "remote_principals" && field === "kind") continue;
       // Migration 4 added lease columns without rebuilding the expiry-only CHECK.
       // Recognize that exact historical shape (and the lineage without a CHECK);
       // validate active lease metadata through the application invariant below.
@@ -157,9 +197,14 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
         && (!actualChecks.some(x => x.startsWith("(")) || historicalLease)) continue;
       // Migration 11 added this column without a CHECK in upgraded installations.
       if (table === "test_runs" && field === "environment_mode" && !actualChecks.some(x => x.startsWith(field))) continue;
+      // Earlier bootstrap DDL also supplied the migration-25 method set before
+      // its registry entry. Preserve that recognized historical shape after 39.
+      if (table === "knowledge_history" && field === "authentication_method" && version < 25
+        && actualChecks.includes(expected.checks.find(x => x.startsWith(field))!.replace(",'provider_session'", ""))) continue;
       // Bootstrap may have supplied the latest constraint before this migration.
       if (!actualChecks.includes(check) && !actualChecks.includes(expected.checks.find(x => x.startsWith(field ?? check)) ?? check)) refuse(`constraint in ${table}: ${field ?? "lease"}`);
     }
+    if (introduced >= STRICT_TABLES_FROM && JSON.stringify(explicitIndexes(database, table)) !== JSON.stringify(expected.indexes)) refuse(`indexes of ${table}`);
     const keys = uniqueKeys(database, table);
     if (expected.uniqueKeys.some(key => !keys.includes(key))) refuse();
     const foreignKeys = database.prepare(`PRAGMA foreign_key_list("${table}")`).all() as ForeignKey[];

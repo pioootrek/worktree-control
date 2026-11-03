@@ -16,8 +16,9 @@ import { ProjectLifecycle } from "./modules/lifecycle";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-async function setup() {
+async function setup(mode: "token" | "open" = "token") {
   const f = vaultFixture(); cleanups.push(() => f.close());
+  if (mode === "open") new AuthenticationService(f.store).setMode(mode, "fixture");
   const authentication = new AuthenticationService(f.store);
   const installationToken = authentication.generateToken("fixture").token;
   const events = new EventStream(); cleanups.push(() => events.close());
@@ -128,7 +129,7 @@ describe("vault HTTP, MCP and CLI", () => {
     expect(JSON.stringify(diagnostics)).toContain("MCP request JSON is invalid.");
   });
   it("denies owner-token-only, installation/open authority and requester role claims", async () => {
-    const { f, call, authentication, installationToken } = await setup();
+    const { f, call, installationToken } = await setup();
     const cmd = f.command({ operation: "list" });
     for (const token of [f.ownerToken, installationToken, undefined]) {
       const response = await call({ command: cmd }, token); expect(response.status).toBe(403);
@@ -136,8 +137,8 @@ describe("vault HTTP, MCP and CLI", () => {
     }
     const spoof = await call({ command: { ...cmd, role: "owner" } }, f.first.token);
     expect(spoof.status).toBe(400);
-    authentication.setMode("open", "fixture");
-    expect((await call({ command: cmd, proof: f.proof(cmd) }, f.ownerToken)).status).toBe(403);
+    const open = await setup("open"), openCommand = open.f.command({ operation: "list" });
+    expect((await open.call({ command: openCommand, proof: open.f.proof(openCommand) }, open.f.ownerToken)).status).toBe(403);
   });
   it("returns a fixed retryable expiry code over HTTP without executing the import", async () => {
     const { f, call } = await setup();

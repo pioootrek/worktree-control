@@ -156,6 +156,7 @@ export class ScopedConfigurationService {
     const operationId = randomUUID();
     // Synchronous from this check through the commit: no await separates decision and write.
     this.check(actor, projectId, ACTION[operation]);
+    if (actor.authenticationMethod === "provider_session") throw new RuntimeAccessDenied();
     const result = this.store.commitScopedConfiguration({
       projectId, expectedRevision, change,
       claim: claim && { reservationId: claim.reservationId, owner: session.owner, leaseTokenHash: leaseTokenHash(claim.leaseToken), binding: bindingOf(actor), worktreePath },
@@ -237,5 +238,6 @@ function unavailableWorktree(): ScopedRuntimeError {
 }
 
 function bindingOf(actor: AuthenticatedPrincipal) {
+  if (actor.authenticationMethod === "provider_session") throw new RuntimeAccessDenied();
   return { principalId: actor.principalId, credentialId: actor.credentialId };
 }

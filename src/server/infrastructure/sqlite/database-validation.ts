@@ -13,6 +13,25 @@ export function validateDatabase(database: Database.Database, version: number): 
   if (version >= 36 && database.prepare(`SELECT 1 FROM reservations WHERE (principal_id IS NULL) <> (credential_id IS NULL)
     OR (principal_id IS NOT NULL AND kind <> 'agent') LIMIT 1`).get()) fail("lease binding");
   if (version >= 37 && database.prepare("SELECT 1 FROM projects WHERE typeof(configuration_revision) <> 'integer' OR configuration_revision < 0 LIMIT 1").get()) fail("configuration revision");
+  // Historical provider mappings remain owner-only; ordinary humans begin at schema 42.
+  if (version >= 38 && database.prepare(`SELECT 1 FROM authentication_provider_subjects s
+    JOIN remote_principals p ON p.id=s.principal_id WHERE ${version >= 42 ? "p.kind NOT IN ('owner','human')" : "p.kind<>'owner'"} LIMIT 1`).get()) fail("provider subject principal");
+  if (version >= 42 && database.prepare(`SELECT 1 FROM principal_credentials c JOIN remote_principals p ON p.id=c.principal_id
+    WHERE (c.kind='owner_session' AND p.kind<>'owner') OR (c.kind='agent_token' AND p.kind<>'agent')
+      OR (c.kind='worker_token' AND p.kind<>'worker') LIMIT 1`).get()) fail("credential principal kind");
+  // Evidence and trust describe one provider account. Selected-protection flags are
+  // checked per account at every decision, so one inconsistent row refuses only itself.
+  if (version >= 40 && database.prepare(`SELECT 1 FROM authentication_session_evidence e
+    JOIN "authentication_ba_session" s ON s."id"=e.session_id WHERE s."userId"<>e.subject LIMIT 1`).get()) fail("session evidence subject");
+  if (version >= 40 && database.prepare(`SELECT 1 FROM authentication_passkey_trust t
+    JOIN "authentication_ba_passkey" c ON c."id"=t.native_id WHERE c."userId"<>t.subject OR c."credentialID"<>t.credential_id LIMIT 1`).get()) fail("passkey trust subject");
+  // A marker never authorizes, but malformed state must not reach destructive recovery. A native
+  // row without a marker is unclassified and valid; only a marker makes a claim to check here.
+  if (version >= 41 && database.prepare(`SELECT 1 FROM authentication_session_issuance i
+    LEFT JOIN authentication_session_evidence e ON e.session_id=i.session_id
+    LEFT JOIN "authentication_ba_session" s ON s."id"=i.session_id
+    WHERE i.state NOT IN ('pending','may_publish') OR e.session_id IS NULL OR s."id" IS NULL OR e.original_deadline<>i.original_deadline
+      OR i.original_deadline IS NOT strftime('%Y-%m-%dT%H:%M:%fZ',i.original_deadline) LIMIT 1`).get()) fail("session issuance");
   if (version >= 25) {
     try { new AuthenticationQueries(database).getAuthenticationPolicy(); } catch { fail("authentication policy"); }
     if (!database.prepare("SELECT 1 FROM remote_principals WHERE id='installation' AND kind='installation' AND status='active'").get()) fail("installation principal");

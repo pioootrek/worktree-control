@@ -7,9 +7,17 @@ import {
   executeAuthenticationCommand,
 } from "../server/modules/authentication";
 import { SqliteStateStore } from "../server/sqlite-store";
+import type { Readable } from "node:stream";
+import { createAuthenticationAdministration, retainAuthenticationOwnership, type AuthenticationAdministrationOptions } from "../server/bootstrap/authentication-administration";
+import { ProviderAdminError, providerAdminFailure } from "../server/modules/authentication";
+import { AdminRequestError } from "../server/admin-socket";
+import { isProviderCommandArgs, providerCommandFromArgs } from "./auth-provider-input";
 
 export interface AuthCommandDependencies {
   write?: (line: string) => void;
+  input?: Readable;
+  /** Trusted composition seam for finite lifecycle tests; never parsed from user input. */
+  provider?: Pick<AuthenticationAdministrationOptions, "loadProvider" | "onInvalidation" | "drainTimeoutMs">;
 }
 
 /** Audit actor of offline auth administration, including the first-run token of `start`. */
@@ -24,6 +32,7 @@ export async function runAuthCommand(
   paths: AppPaths,
   dependencies: AuthCommandDependencies = {},
 ): Promise<void> {
+  if (isProviderCommandArgs(args)) return runProviderCommand(args, paths, dependencies);
   const write = dependencies.write ?? console.log;
   const request = authenticationCommandFromArgs(args);
 
@@ -47,10 +56,54 @@ export async function runAuthCommand(
   let store: SqliteStateStore | null = null;
   try {
     store = new SqliteStateStore(paths.databasePath);
-    const { result } = executeAuthenticationCommand(new AuthenticationService(store), request, AUTH_CLI_ACTOR);
+    const { result } = executeAuthenticationCommand(new AuthenticationService(store, undefined, undefined, undefined, undefined, "offline"), request, AUTH_CLI_ACTOR);
     write(JSON.stringify(result, null, 2));
   } finally {
     store?.close();
     lock.release();
   }
+}
+
+async function runProviderCommand(args: string[], paths: AppPaths, dependencies: AuthCommandDependencies): Promise<void> {
+  // All bytes are read BEFORE ownership; no read wait holds the single connection.
+  const request = await providerCommandFromArgs(args, dependencies.input);
+  const write = dependencies.write ?? console.log;
+  let lock;
+  try { lock = acquireControllerLock(paths.controllerLockPath); }
+  catch (error) {
+    if (!(error instanceof ControllerAlreadyRunningError)) throw providerAdminFailure(error);
+    try {
+      const result = await requestAdminSocket(paths.adminSocketPath, request, 15_000, 16 * 1024);
+      write(JSON.stringify(result, null, 2)); return;
+    } catch (cause) {
+      if (cause instanceof AdminRequestError) throw cause;
+      throw new ProviderAdminError("admin_outcome_unknown");
+    }
+  }
+  let store: SqliteStateStore;
+  try { store = new SqliteStateStore(paths.databasePath); }
+  catch (error) { lock.release(); throw providerAdminFailure(error); }
+  let administration: ReturnType<typeof createAuthenticationAdministration> | undefined;
+  let result: unknown, effectFailure: unknown;
+  try {
+    administration = createAuthenticationAdministration({ store, dataDirectory: paths.dataDirectory,
+      authentication: new AuthenticationService(store, undefined, undefined, undefined, undefined, "offline"),
+      actor: AUTH_CLI_ACTOR,
+      configurationEvent: () => { process.stderr.write('{"event":"authentication.provider_configuration_written"}\n'); },
+      ...dependencies.provider });
+    result = await administration.execute(request);
+  } catch (error) { effectFailure = providerAdminFailure(error); }
+  try {
+    await administration?.dispose();
+    await store.closeAfterDrain();
+    lock.release();
+  } catch {
+    retainAuthenticationOwnership({ store, administration, lock });
+    const mutation = !["status", "human-list", "knowledge-access-list"].includes(request.action)
+      && !(request.action === "human-disable" && (result as { changed?: boolean } | undefined)?.changed === false);
+    const committed = (result !== undefined && mutation) || providerAdminFailure(effectFailure).committed;
+    throw new ProviderAdminError("disposal_unconfirmed", committed ? true : undefined, false);
+  }
+  if (effectFailure) throw effectFailure;
+  write(JSON.stringify(result, null, 2));
 }

@@ -1,6 +1,6 @@
 ---
 audience: "owner, implementers and reviewers of human, agent and ENV access"
-last_reviewed: "2026-10-29"
+last_reviewed: "2026-11-02"
 source_of_truth: "planned identity, role and environment authorization contracts and acceptance gates"
 status: "active"
 ---
@@ -21,13 +21,41 @@ The initial slice delivered this document and Knowledge planning. The subsequent
 A1 slice adds shared Knowledge policy and optional role restrictions. The A2
 implementation adds owner-sponsored runtime credentials, filtered MCP discovery,
 credential/session-bound leases and separately authorized configuration tools.
-Accounts and ENV delivery remain deferred.
+Protected ordinary-human accounts and reader/operator Knowledge memberships
+are implemented in A3-I24. Production account activation and ENV delivery remain deferred.
+
+The first A3 slice now provides an optional executable provider/SQLite proof.
+It verifies real Better Auth operations through the sole guarded connection,
+controller migration 38 and explicit subject mapping. The bounded A3 handoff
+now issues opaque runtime-owned provider actors and validates current stored
+session/mapping/principal state inside grant-limited Knowledge operations.
+Controller migration 39 adds honest provider history attribution, preserving
+old history and migrations 1..38. Migration 40 and A3-I18 add
+[integrated factor authority](authentication.md#integrated-factor-authority):
+recognized optional TOTP and passkey storage, one application-owned protection
+policy and persisted session evidence behind the same handoff. Account mode remains
+unavailable. Closed factor HTTP routes and ordinary-human memberships now work
+inside the isolated composition. Production mounting, factor management/recovery,
+invitations, general delegated roles and GUI remain open.
+Shared core admission, exclusive provider admission and background persistence
+boundaries are implemented as partial infrastructure. Strict integration tests
+cover HTTP body-read admission errors and the installed restore completion
+handoff. CLI shutdown retains ownership on failed cleanup and joins concurrent
+calls to the same completion. Supported HTTP reservation changes serialize behind
+readiness and revalidate installation authority after waiting; token rotation
+prevents queued effects and successful replies to the old caller.
+Safe live coexistence is not accepted. The A5 external restore fence is also
+unfinished;
+restores can revive old sessions and passwords. Native proof responses expose
+session tokens; the existing bounded browser adapter strips them and releases
+cookies only after current authority checks. Production integration remains gated.
+See [the implemented proof boundary](authentication.md#optional-provider-proof-first-a3-slice).
 
 Knowledge project `k7a-worktree-switcher` holds design task
 `e3e2e52e-7b95-4088-8234-0e6d35c39f86` and direction memory
 `fb8aab07-3d97-4e38-ac84-617a0d1a0aa4`. The memory records the owner's words;
 its installation-token authorship is not independent human approval.
-Exact ENV role bundles, authentication factors, time limits and migration
+Exact ENV role bundles, factor implementation policy, time limits and migration
 mechanics below are engineering proposals, subject to their implementation gates.
 There is no authorization here to provision keys, import secrets, migrate the
 live installation, change host isolation or publish/deploy a release.
@@ -47,8 +75,8 @@ the CLI, transport verification and operational docs extend that contract.
 
 | Area | Implemented baseline | Remaining work |
 | --- | --- | --- |
-| Installation authentication | `token`, `open`, `legacy`; rotation and policy invalidation | `better-auth` still rejects activation |
-| Identity | Owner, agent, worker and installation principals; revocable credentials | Account-backed humans and general role administration |
+| Installation authentication | `token`, `open`, `legacy`; rotation and policy invalidation; optional server-free Better Auth/SQLite proof | `better-auth` still rejects activation; no browser account integration |
+| Identity | Owner, ordinary human, agent, worker and installation principals; revocable legacy credentials and isolated human sessions | General delegated role administration |
 | Knowledge | Shared policy, explicit grants and optional Knowledge role ceilings; installation compatibility bypass | Explicit human approval in account mode |
 | MCP | Agent sessions add filtered discovery, explicit-start claims, claimed control, literal profile selection and preset timeout overrides; Knowledge/vault/remote grants stay independent | Scoped finite-job admission/own-run access, runtime resources, compact status and wait API are separate followups |
 | Remote verification | Separate submitter/project and worker/project/preset grants | Integrate without replacing both checks with a broad project role |
@@ -67,7 +95,8 @@ The following concepts belong to Worktree Control, independent of Better Auth:
 
 - **Principal:** stable ID, kind `human`, `agent` or `worker`, active/revoked state.
   Preserve historical installation principals as compatibility/audit identities.
-  Migrate existing `owner` principals to humans without changing their IDs.
+  Keep existing `owner` rows unchanged as compatibility identities. New ordinary
+  humans have the distinct stored `human` kind.
 - **Provider identity:** unique provider/subject mapping to a human principal.
   Never infer ownership by matching a display name or unverified email.
 - **Credential/session:** principal, verifier/provider reference, method,
@@ -104,6 +133,11 @@ empty modules. Keep policy evaluation and domain effects inside the existing
 application boundary. Recheck after lifecycle-lock/queue admission and make the
 final authorization check, relevant revision check and mutation atomic where
 they share SQLite state. External effects need an explicit execution boundary.
+
+A3-I24 implements only protected local human lifecycle and atomic Knowledge
+reader/operator memberships. Both current grant and binding are mandatory for
+new humans; explicit permissions are limited to read/write. General role bundles
+below remain proposals. See [the current human workflow](authentication.md#ordinary-humans-and-knowledge-memberships-a3-i24).
 
 ## General roles and permissions
 
@@ -219,18 +253,63 @@ or revoke a credential at its external provider.
 ## Authentication, revocation and audit
 
 Better Auth remains an optional identity/session provider mapped to stable
-principals. Prove adapter transaction/disposal behavior against the sole SQLite
-connection before integrating it. Controller-owned migrations and backups must
-include provider data. Keep the static dashboard and use library-supported
+principals. The first proof exercises adapter transactions/disposal against the
+sole SQLite connection; migration 38 and controller backups include its data.
+The [implemented handoff](authentication.md#provider-authorization-handoff)
+uses an instance-bound frozen actor and synchronous current-state checks, with
+original expiry, ordinary grants/role ceilings and safe `credential: null`
+metadata. It denies owner administration, runtime sponsorship/control,
+privileged approval and vault proof substitution. Schema 39 widens only
+Knowledge history audit attribution, and schema 40 adds factor and evidence storage
+with historical provider storage revision 2. Issuance schema 41 uses revision 3;
+current core schema 42 adds ordinary humans without changing provider contract 5,
+storage 3 or proof implementation 5. Earlier migration SQL/checksums remain unchanged.
+Full/logical backup compatibility
+has focused migration tests. Protected CLI failure/concurrency handling and
+isolated closed HTTP/factor routes are implemented. Safe production integration
+and the remaining account gates still need acceptance.
+The current 5-second admission wait, 60-second persistence retry budget and
+10-second database drain are implementation limits, not approved account
+security defaults. Keep the static dashboard and use library-supported
 password, factor and session handling rather than new cryptographic protocols.
 
 Provision the first owner through protected local recovery/bootstrap; subsequent
 humans use administrator-created enrollment or bounded single-use invitations.
 Public signup stays disabled. Resolve username/email provisioning against the
-pinned provider. Proposed account-mode security profile requires MFA for humans;
-choose and test passkeys with user verification or password plus another factor
-before enabling it. Method/strength must come from verified provider evidence.
-Password-only prototypes cannot be described as meeting ASVS Level 2.
+pinned provider. On 2026-11-02 the owner selected both authenticator-app TOTP
+and passkeys as optional methods ("Kody i passkey", then "Opcjonalne"). This
+supersedes the engineering proposal requiring MFA for all humans. Do not deny
+full-RBAC password accounts globally solely for lacking enrollment or choose
+new roles that require MFA without an owner decision. Supporting both methods
+means alternatives, not two mandatory sequential checks. Optional enrollment
+cannot bypass a protection the account has chosen or enrolled. Method and
+strength need verified session evidence; enabled flags grant no role or privilege.
+Existing current-identity hard guards remain until separately implemented policy.
+See [the owner decision and current proof](authentication.md#owner-selected-optional-methods).
+
+A3-I14 proves passkey feasibility only in the private temporary fixture, using
+supported callbacks in `@better-auth/passkey` 1.7.14. A3-I15 adds untrusted
+privacy-preserving `fmt:none` staging followed by a separate native signed UP/UV
+confirmation bound to the exact credential, subject, issued handle, original
+password session, generation and deadline with fixed RP/origin. Confirmation
+promotes trust atomically and deletes its native-created session, with no cookie
+or upgrade of the original password evidence. Normal login refuses staged keys;
+packed signed enrollment remains supported. Its later `passkey_uv` login
+observation is nonauthorizing; the library supplies no
+durable session-method/generation or enrollment-UV trust history. Production
+contracts, schema and activation stay unchanged. A3-I17 replaces the admitted TOTP
+fixture's presentation ledger with one monotone step per opaque subject across
+enrollment, login and explicit nonauthorizing current-session reauthentication.
+Native success stays necessary. A reusable optional-package helper uses the public
+`hotp` primitive over at most four counters and may only refuse further; it claims
+no hidden native matched step. Consumption and receipt are atomic, admission
+charges remain durable, state stays one integer per subject, and later decimal
+collisions at newer counters are accepted. No reset exists. Later A3-I18/I20 supply recognized step storage, current-generation evidence
+and closed HTTP response handling in the isolated composition. Production
+activation, management/recovery and A5 remain unresolved integration gates. The five native/bounded negative baselines remain unskipped.
+Readiness of these selected optional features is distinct from mandatory
+multi-factor enrollment for every user. Password-only prototypes prove no MFA,
+and neither this proof nor the account plan claims ASVS Level 2 conformance.
 
 Use backend-validated browser sessions, rotated at login/re-authentication;
 HttpOnly, Secure and appropriate SameSite cookies; explicit Origin/Host and CSRF
@@ -278,8 +357,39 @@ events remain unattributed; a new role assignment does not rewrite history.
 | Identity, backup/restore and administration | Inventory every privileged route; explicit human authority/fresh proof or deny before account-mode activation |
 | Unix admin socket and offline CLI | Trusted operator boundary with OS protection and protected recovery; singleton lock alone is not authentication |
 
-Keep existing explicit `open`, `token` and `legacy` compatibility until a
-deliberate mode change. They do not provide the new account-mode isolation:
+The permanent product modes are `open`, one shared installation `token`, and
+full individual RBAC. `legacy` remains upgrade compatibility and cannot be
+selected anew. Mode selection is protected CLI-only and effective only after
+service restart. The stored selection and immutable active boot mode are now
+separate; selecting a future mode leaves live access and sessions unchanged.
+Token/session revocation and current principal/grant checks remain immediate.
+Production `better-auth` selection/startup still fail closed until account
+authentication, readiness of selected optional methods and A5 enforcement gates
+are complete. This slice proves token/open restart
+behavior and explicit third-mode refusal, not positive production RBAC support.
+
+A3-I9 adds an isolated core browser adapter and actual HTTP-cookie-to-Knowledge
+fixture with explicit grants. Its exact allowlist, secure cookies, canonical
+HTTPS/Host/Origin checks, socket-peer native limiting and current-authority
+checks are described in [authentication](authentication.md#bounded-browser-adapter).
+Contract 2 specializes durable logout; password changes recheck authority inside
+the actual provider borrow. No provider cookie gains installation authority on
+unconverted HTTP/MCP operations, even during an open-mode proof boot. Provider
+browser composition has no production CLI caller or enable flag. Protected CLI
+maintenance can explicitly load a configured provider without mounting it.
+Experimental numbers and strength labels do not establish full RBAC, MFA or ASVS
+Level 2.
+Protected CLI configuration, principal-only creation, enrollment and recovery
+are implemented as bounded A3-I10 maintenance. They preserve the existing boot
+authentication object and mode, issue no bearer/grant/role, and recheck active
+principal/mapping history inside provider admission. Configuration/status do not
+load code; changed loaded material requires a new owner boot. Private signing
+configuration needs its own protected backup. Production account activation
+still waits for optional-method readiness, roles and complete A5. See the
+[operator workflow](authentication.md#protected-provider-maintenance).
+
+Keep existing active compatibility authority until the explicit restart.
+These modes do not provide individual account isolation:
 `open` remains anonymous full access and `token` retains its documented shared
 authority. Do not relabel either as individual RBAC. Account mode rejects shared
 installation/legacy bearers, even if their stored verifier remains for recovery;
@@ -295,12 +405,14 @@ Migration procedure to implement and test on an isolated copy:
    copied into Knowledge, repository files or audit.
 3. Verify complete policy coverage, recovery and current backup/restore policy.
    Unconverted privileged operations remain denied in account mode.
-4. Atomically switch policy, invalidate incompatible sessions/subscriptions and
-   confirm old installation/legacy credentials fail across all transports.
-   Managed process lifecycle remains a separate operator action.
+4. Select the next-start policy atomically through protected CLI, then restart
+   explicitly. Confirm the new boot applies RBAC and old installation/legacy
+   credentials fail across all transports. Selection alone does not invalidate
+   current sessions or control managed process lifecycle.
 5. Exercise loss-of-provider recovery and restore. Recovery may explicitly choose
    token mode through the protected operator path, with fresh credentials and
-   recorded loss of account-mode isolation; it must not resurrect old tokens.
+   recorded loss of account-mode isolation, then restart explicitly. It must not
+   resurrect old tokens.
    Backup restore must preserve external revocation/recovery fences.
 
 An agent with the controller's OS account can access its administrative socket,

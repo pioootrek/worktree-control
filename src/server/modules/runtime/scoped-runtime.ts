@@ -263,6 +263,7 @@ function claimFailure(error: unknown): ScopedRuntimeError {
 }
 
 function bindingOf(actor: AuthenticatedPrincipal): ReservationBinding {
+  if (actor.authenticationMethod === "provider_session") throw new RuntimeAccessDenied();
   return { principalId: actor.principalId, credentialId: actor.credentialId };
 }
 

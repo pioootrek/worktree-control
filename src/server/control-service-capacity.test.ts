@@ -100,13 +100,15 @@ function fixture(count = 3, onStart: (project: Project) => Promise<void> = async
 }
 
 describe("ControlService server capacity", () => {
-  it("closes persistent state after managed-process cleanup fails", async () => {
+  it("retains persistent state until managed-process cleanup is confirmed", async () => {
     const { service, store, processes } = fixture(1);
     const close = vi.spyOn(store, "close");
     vi.mocked(processes.stopAll).mockRejectedValueOnce(new Error("cleanup unconfirmed"));
 
     await expect(service.shutdown()).rejects.toThrow("Nie zakończono poprawnie");
 
+    expect(close).not.toHaveBeenCalled();
+    await service.shutdown();
     expect(close).toHaveBeenCalledOnce();
   });
 

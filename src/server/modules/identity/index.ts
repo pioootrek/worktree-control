@@ -15,6 +15,9 @@ export {
 } from "./identity-service";
 export type {
   AuthenticatedPrincipal,
+  CredentialAuthenticatedPrincipal,
+  ProviderSessionActor,
+  ProviderSessionAuthority,
   AuthenticatedIdentity,
   AuthenticationMethod,
   ControllerAuthentication,
@@ -32,3 +35,5 @@ export type {
   PrincipalKind,
   RuntimeAccessStore,
 } from "./contracts";
+
+export { HumanAccountService, HumanAccountError, type HumanAccountStore } from "./human-account-service";

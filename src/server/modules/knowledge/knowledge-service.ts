@@ -52,7 +52,7 @@ function recordSummary(record: KnowledgeTask | KnowledgeThread) {
 export class KnowledgeService {
   constructor(
     private readonly store: KnowledgeStore,
-    private readonly identity: Pick<IdentityService, "authorizeKnowledge" | "describeIdentity">,
+    private readonly identity: Pick<IdentityService, "authorizeKnowledge" | "describeIdentity" | "authorizeKnowledgeRuntimeLink">,
     private readonly clock: () => string = () => new Date().toISOString(),
     private readonly id: () => string = randomUUID,
     private readonly changed: (projectId: string) => void = () => undefined,
@@ -289,6 +289,7 @@ export class KnowledgeService {
   setRuntimeLink(projectId: string, runtimeProjectId: string | null, expectedRevision: number, options: KnowledgeWriteOptions, actor: AuthenticatedPrincipal): KnowledgeMutationResult<KnowledgeRuntimeLinkResult> {
     this.identity.authorizeKnowledge(actor, projectId, "knowledge:write", { allowArchived: true });
     this.revision(expectedRevision);
+    this.identity.authorizeKnowledgeRuntimeLink(actor);
     const context = this.context("project.runtime_link", projectId, { runtimeProjectId, expectedRevision }, options, actor);
     const replay = this.store.findIdempotentResult<KnowledgeRuntimeLinkResult>("project.runtime_link", context);
     if (replay) return replay;

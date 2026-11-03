@@ -1,3 +1,4 @@
+import { databaseAdmissionFailure } from "@/server/database-admission";
 import type { AuthenticatedPrincipal } from "../identity";
 import { devVaultRequestSchema } from "@/shared/contracts/dev-vault";
 import { DevVaultError } from "./contracts";
@@ -22,6 +23,8 @@ export class DevVaultOperations {
         async () => this.service.execute(parsed.data, actor));
     } catch (error) {
       if (error instanceof DevVaultError) throw error;
+      // Contention is reported as such; no stale authorization or plaintext is released meanwhile.
+      if (databaseAdmissionFailure(error)) throw error;
       throw new DevVaultError("vault_unavailable");
     }
   }

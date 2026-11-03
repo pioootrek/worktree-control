@@ -8,6 +8,7 @@ import { SqliteStateStore } from "./sqlite-state-store";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { configurationRevisionChecksum, configurationRevisionMigration } from "./configuration-revision-migration";
+import { WITHOUT_AUTHENTICATION_PROVIDER_STORAGE, rewindProviderSessionHistory } from "./fixtures/schema-rewind";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -27,14 +28,14 @@ describe("configuration revision migration 37", () => {
     const f = fixture(); f.store.close();
     const db = new Database(f.path);
     try {
-      db.exec("ALTER TABLE projects DROP COLUMN configuration_revision; DELETE FROM schema_migrations WHERE version=37");
+      rewindProviderSessionHistory(db); db.exec(WITHOUT_AUTHENTICATION_PROVIDER_STORAGE + "ALTER TABLE projects DROP COLUMN configuration_revision; DELETE FROM schema_migrations WHERE version=37");
       expect(inspectSchema(db).version).toBe(36);
       const before = db.prepare("SELECT * FROM projects").all();
       expect(() => initializeSchema(db, false, () => { throw new Error("late failure"); })).toThrow("late failure");
       expect(inspectSchema(db).version).toBe(36);
       expect(db.prepare("SELECT * FROM projects").all()).toEqual(before);
       initializeSchema(db, false);
-      expect(inspectSchema(db).version).toBe(37);
+      expect(inspectSchema(db).version).toBe(42);
       expect(db.prepare("SELECT * FROM projects").all()).toEqual((before as object[]).map(row => ({ ...row, configuration_revision: 0 })));
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=37").get())
         .toEqual({ name: configurationRevisionMigration.name, checksum: configurationRevisionChecksum });
@@ -76,7 +77,7 @@ describe("configuration revision migration 37", () => {
     restoreControllerBackup(backup, path);
     const restored = new SqliteStateStore(path);
     try {
-      expect(restored.schemaVersion()).toBe(37);
+      expect(restored.schemaVersion()).toBe(42);
       expect(restored.getProjectConfigurationRevision(f.project.id)).toBe(2);
     } finally { restored.close(); }
   });

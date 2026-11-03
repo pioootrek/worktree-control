@@ -14,7 +14,7 @@ it("routes active CLI backup through the private admin socket using the existing
   const root = mkdtempSync(join(tmpdir(), "backup-admin-")), paths = resolveAppPaths(join(root, "data"), join(root, "state"));
   const lock = acquireControllerLock(paths.controllerLockPath), store = new SqliteStateStore(paths.databasePath);
   const operations = new BackupOperations(backupPolicySchema.parse({ directory: join(root, "copies") }), { databasePath: paths.databasePath, attachmentDirectory: paths.knowledgeAttachmentDirectory, applicationVersion: "test", source: store, estimateBytes: () => store.backupEstimateBytes(), authorize: () => false, maintenance: () => false });
-  const restores = new RestoreOperations(operations, paths.databasePath, paths.knowledgeAttachmentDirectory, { authentication: () => store.getAuthenticationPolicy(), enterMaintenance: () => {}, restart: async () => {}, failure: () => {} });
+  const restores = new RestoreOperations(operations, paths.databasePath, paths.knowledgeAttachmentDirectory, { authentication: () => store.getAuthenticationPolicy(), executionMode: () => "token", enterMaintenance: () => {}, restart: async () => {}, failure: () => {} });
   const admin = await listenAdminSocket(paths.adminSocketPath, backupAdminHandler(operations, restores));
   try {
     const output: string[] = [];

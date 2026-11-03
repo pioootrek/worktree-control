@@ -1,3 +1,4 @@
+import { admitWithRetry, directAdmission, type DatabaseAdmission } from "@/server/database-admission";
 import { protectedControllerRestoreBackupIds } from "@/server/restore-requests";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, rmSync, statfsSync } from "node:fs";
@@ -41,6 +42,8 @@ export interface BackupDependencies {
   manageSchedule?: boolean;
   clock?: () => number;
   remoteTransport?: RemoteBackupTransport;
+  /** Authorization, estimate and backup initiation are admitted; the copy itself runs under the gate's backup hold. */
+  admission?: DatabaseAdmission;
 }
 const publicOperation = ({ operationId, backupId, state, createdAt, finishedAt, error, limit }: Operation): BackupOperation => ({ operationId, backupId, state, createdAt, finishedAt, error, ...(limit ? { limit: { ...limit } } : {}) });
 const actorId = (actor: BackupActor) => typeof actor === "string" ? actor : `installation:${actor.credentialId}`;
@@ -61,7 +64,9 @@ export class BackupOperations {
   private readonly exports: Array<{ ownerId: string; execute: () => Promise<void>; interrupt: () => void; settled?: () => void }> = [];
   private exportOwner: string | null = null;
   private readonly now: () => number;
+  readonly admission: DatabaseAdmission;
   constructor(policy: BackupPolicy, private readonly deps: BackupDependencies) {
+    this.admission = deps.admission ?? directAdmission;
     this.policy = backupPolicySchema.parse(policy);
     Object.freeze(this.policy.uiActions); Object.freeze(this.policy);
     this.now = deps.clock ?? Date.now;
@@ -216,26 +221,33 @@ export class BackupOperations {
     if (!operation) {
       const task = this.exports.shift(); if (!task) return;
       this.exportOwner = task.ownerId;
-      this.active = Promise.resolve().then(task.execute).catch(() => { this.persistenceFailed = true; }).finally(() => { this.active = null; this.exportOwner = null; this.pump(); task.settled?.(); });
+      this.active = this.admission.outside(() => Promise.resolve().then(task.execute)).catch(() => { this.persistenceFailed = true; }).finally(() => { this.active = null; this.exportOwner = null; this.pump(); task.settled?.(); });
       return;
     }
     const actor = this.actors.get(operation.operationId);
-    this.active = this.execute(operation, actor).finally(() => { this.active = null; this.actors.delete(operation.operationId); this.pump(); });
+    // The executor never inherits (or suspends) the admission of whoever triggered this pump.
+    this.active = this.admission.outside(() => this.execute(operation, actor)).finally(() => { this.active = null; this.actors.delete(operation.operationId); this.pump(); });
   }
   private async execute(operation: Operation, actor: BackupActor | undefined): Promise<void> {
     try {
-      if (!actor || this.deps.maintenance()) throw new BackupError("backup_busy");
-      this.authorize(actor, "create");
+      // Current authority and the size estimate are read in one admitted phase; contention waits, never retries a backup.
+      const estimate = await admitWithRetry(this.admission, () => {
+        if (!actor || this.deps.maintenance()) throw new BackupError("backup_busy");
+        this.authorize(actor, "create");
+        return this.deps.estimateBytes();
+      }, { reserved: true });
       operation.state = "running"; this.save();
       const deadline = this.now() + this.policy.timeoutSeconds * 1000;
-      const estimate = this.deps.estimateBytes();
       const current = this.catalog.list().reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
       const parent = privateDirectory(resolve(operation.destination, ".."));
       const disk = statfsSync(parent);
       if (estimate + current > this.policy.maxBytes) throw new BackupError("backup_limit", 400, { reason: "catalog_bytes", current, required: estimate, maximum: this.policy.maxBytes });
       const available = disk.bavail * disk.bsize;
       if (available < estimate + 16 * 1024 ** 2) throw new BackupError("backup_limit", 400, { reason: "filesystem_space", current: 0, required: estimate + 16 * 1024 ** 2, maximum: available });
-      const manifest = await createControllerBackup(this.deps.source, operation.destination, { applicationVersion: this.deps.applicationVersion, attachmentDirectory: this.deps.attachmentDirectory, maxBytes: this.policy.maxBytes - current, deadline, now: this.now });
+      // Only initiation needs admission; the gate holds providers off until the driver's copy settles.
+      const source = { backup: (destination: string, options?: { progress: () => number }) => admitWithRetry(this.admission,
+        () => ({ pending: this.deps.source.backup(destination, options) }), { reserved: true }).then(({ pending }) => pending) };
+      const manifest = await createControllerBackup(source, operation.destination, { applicationVersion: this.deps.applicationVersion, attachmentDirectory: this.deps.attachmentDirectory, maxBytes: this.policy.maxBytes - current, deadline, now: this.now });
       operation.manifestHash = recordHash(manifest); operation.state = "succeeded"; operation.error = null;
     } catch (error) {
       operation.state = "failed"; operation.error = error instanceof BackupError && error.code === "backup_limit" ? "backup_limit" : "backup_failed";

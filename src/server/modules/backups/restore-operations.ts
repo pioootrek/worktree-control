@@ -1,3 +1,4 @@
+import { admitWithRetry } from "@/server/database-admission";
 import { join } from "node:path";
 import { z } from "zod";
 import type { BackupActor, BackupOperations } from "./backup-operations";
@@ -8,12 +9,31 @@ import { backupCommandSchema } from "@/shared/contracts/backups";
 import { executeControllerRestoreRequest, finishControllerRestoreRequest, getControllerRestoreRequestStatus, requestControllerRestoreAsync, type RestoreRequestPolicy } from "@/server/restore-requests";
 import { restoreActorSchema, type RestoreActor } from "@/server/infrastructure/sqlite";
 import { privateDirectory } from "@/server/private-storage";
-import type { AuthenticationPolicy, AuthenticationStore } from "@/server/modules/authentication";
+import type { AuthenticationMode, AuthenticationPolicy, AuthenticationStore } from "@/server/modules/authentication";
 import type { IdentityStore } from "@/server/modules/identity";
 import { BackupCatalog } from "./catalog";
 
 const authenticationSchema = z.object({ mode: z.enum(["legacy", "open", "token", "better-auth"]), generation: z.number().int().nonnegative(), token: z.object({ id: z.uuid(), prefix: z.string(), verifierHash: z.string().regex(/^[0-9a-f]{64}$/), createdAt: z.iso.datetime() }).strict().nullable() }).strict();
-const handoffSchema = z.object({ format: z.literal(1), actor: restoreActorSchema, operationId: z.uuid(), createdAt: z.iso.datetime(), state: z.enum(["requested", "maintenance", "executing", "verified", "interrupted", "failed"]), authentication: authenticationSchema.nullable(), local: z.boolean() }).strict();
+const handoffFields = {
+  actor: restoreActorSchema, operationId: z.uuid(), createdAt: z.iso.datetime(),
+  state: z.enum(["requested", "maintenance", "executing", "verified", "interrupted", "failed"]),
+  authentication: authenticationSchema.nullable(), local: z.boolean(),
+};
+// Format 1 predates pending selections: its policy mode was also execution authority.
+const handoffSchema = z.union([
+  z.object({ format: z.literal(1), ...handoffFields }).strict(),
+  z.object({ format: z.literal(2), ...handoffFields,
+    executionMode: z.enum(["legacy", "open", "token", "better-auth"]),
+  }).strict().superRefine((record, context) => {
+    if (record.local !== (record.actor.actorId === "local-admin")
+      || (record.authentication?.token && record.authentication.token.prefix !== `wsi_${record.authentication.token.id}`)
+      || (["maintenance", "executing", "verified"].includes(record.state) && !record.authentication)
+      || (!record.local && (record.executionMode !== "token"
+        || (record.authentication !== null && record.actor.actorId !== `installation:${record.authentication?.token?.id}`)))) {
+      context.addIssue({ code: "custom", message: "Invalid restore execution authority." });
+    }
+  }),
+]);
 export type RestoreHandoff = z.infer<typeof handoffSchema>;
 const handoffPath = (database: string) => join(privateDirectory(`${database}.backup-operations`), "handoff.json");
 const publicStatus = (record: RestoreHandoff): RestoreOperation => ({ operationId: record.operationId, backupId: record.actor.backupId, createdAt: record.createdAt, state: record.state });
@@ -39,7 +59,7 @@ export function assertNoUnfinishedBackupHandoff(database: string): RestoreHandof
 function executionPolicy(record: RestoreHandoff, policy: BackupPolicy, catalog: BackupCatalog): RestoreRequestPolicy {
   return {
     authorize(actorId, backupId) {
-      if (record.actor.actorId !== actorId || record.actor.backupId !== backupId || (!record.local && (!policy.uiActions.includes("restore") || record.authentication?.mode !== "token" || record.actor.actorId !== `installation:${record.authentication.token?.id}`))) throw new BackupError("backup_forbidden", 403);
+      if (record.actor.actorId !== actorId || record.actor.backupId !== backupId || (!record.local && (!policy.uiActions.includes("restore") || (record.format === 1 ? record.authentication?.mode : record.executionMode) !== "token" || record.actor.actorId !== `installation:${record.authentication?.token?.id}`))) throw new BackupError("backup_forbidden", 403);
     },
     resolveBackup: id => catalog.path(id),
   };
@@ -73,6 +93,8 @@ export class RestoreOperations {
   private pending: { actorId: string; backupId: string; key: string; promise: Promise<RestoreOperation> } | null = null;
   constructor(private readonly backups: BackupOperations, private readonly database: string, private readonly attachments: string, private readonly deps: {
     authentication: () => AuthenticationPolicy;
+    /** Immutable active boot mode; configured policy is captured separately at launch. */
+    executionMode: () => AuthenticationMode;
     enterMaintenance: () => void;
     restart: (execute: () => void) => Promise<void>;
     failure: (error: unknown) => void;
@@ -83,7 +105,8 @@ export class RestoreOperations {
     if (this.busy || this.previewing || this.pending) throw new BackupError("backup_busy", 503);
     this.previewing = true;
     try {
-      const manifest = await this.backups.catalog.verifyAsync(id);
+      // Verification hashes the copy; it holds no database admission. Authority is reread afterwards.
+      const manifest = await this.backups.admission.idle(() => this.backups.catalog.verifyAsync(id));
       this.backups.authorize(actor, "restore");
       this.backups.assertAdmission();
       if (recordHash(manifest) !== recordHash(this.backups.catalog.manifest(id))) throw new BackupError("backup_invalid");
@@ -104,7 +127,8 @@ export class RestoreOperations {
     if (this.pending) {
       if (this.pending.actorId !== sameActor(actor) || this.pending.key !== input.idempotencyKey) throw new BackupError("backup_busy", 503);
       if (this.pending.backupId !== input.backupId) throw new BackupError("backup_invalid");
-      const result = await this.pending.promise;
+      const pending = this.pending.promise;
+      const result = await this.backups.admission.idle(() => pending);
       this.backups.authorize(actor, "restore");
       return result;
     }
@@ -117,17 +141,24 @@ export class RestoreOperations {
     const previous = readRecord(handoffPath(this.database), handoffSchema);
     if (previous?.state === "failed" || previous?.state === "interrupted") finishControllerRestoreRequest(this.database, previous.actor, previous.operationId, previous.state);
     const policy = this.requestPolicy(actor);
-    const status = await requestControllerRestoreAsync(this.database, sameActor(actor), { backupId: input.backupId, idempotencyKey: input.idempotencyKey, confirmation: input.confirmation }, policy, () => this.backups.catalog.verifyAsync(input.backupId));
+    const status = await requestControllerRestoreAsync(this.database, sameActor(actor), { backupId: input.backupId, idempotencyKey: input.idempotencyKey, confirmation: input.confirmation }, policy, () => this.backups.admission.idle(() => this.backups.catalog.verifyAsync(input.backupId)));
     this.backups.authorize(actor, "restore");
     this.backups.assertAdmission();
     if (status.state === "verified") return { ...status, state: "verified" };
-    const record: RestoreHandoff = { format: 1, actor: { actorId: sameActor(actor), backupId: input.backupId, idempotencyKey: input.idempotencyKey }, operationId: status.operationId, createdAt: status.createdAt, state: "requested", authentication: null, local: actor === "local-admin" };
+    const record: RestoreHandoff = { format: 2, executionMode: this.deps.executionMode(), actor: { actorId: sameActor(actor), backupId: input.backupId, idempotencyKey: input.idempotencyKey }, operationId: status.operationId, createdAt: status.createdAt, state: "requested", authentication: null, local: actor === "local-admin" };
     writeRecord(handoffPath(this.database), record);
     this.busy = true; this.deps.enterMaintenance();
     return publicStatus(record);
   }
-  /** Schedule only after HTTP/admin response completion (or disconnect). Admission is durable. */
+  /**
+   * Schedule only after HTTP/admin response completion (or disconnect). Admission is durable.
+   * Response callbacks are detached, so the fence is read under its own admission.
+   */
   launch(actor: BackupActor, input: { backupId: string; idempotencyKey: string }): void {
+    if (!this.busy) return;
+    void admitWithRetry(this.backups.admission, () => this.launchAdmitted(actor, input), { reserved: true }).catch(error => this.deps.failure(error));
+  }
+  private launchAdmitted(actor: BackupActor, input: { backupId: string; idempotencyKey: string }): void {
     if (!this.busy) return;
     const record = readRecord(handoffPath(this.database), handoffSchema);
     if (!record || record.state !== "requested") return;

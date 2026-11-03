@@ -33,6 +33,9 @@ async function setup(mode: "token" | "open" = "token") {
   const databasePath = join(directory, "state.sqlite3");
   const store = new SqliteStateStore(databasePath);
   cleanups.push(() => store.close());
+  const configuration = new AuthenticationService(store);
+  const installationToken = configuration.generateToken("test").token;
+  configuration.setMode(mode, "test");
   const authentication = new AuthenticationService(store);
   const identity = new IdentityService(store, undefined, undefined, undefined, authentication);
   // A scoped agent created while the installation still ran in legacy mode keeps working in token mode.
@@ -41,8 +44,6 @@ async function setup(mode: "token" | "open" = "token") {
   const agent = identity.createAgent(owner);
   identity.setKnowledgeGrant({ principalId: agent.id, projectId: project.id, permissions: ["knowledge:read"] }, owner);
   const { token: agentToken, credential: agentCredential } = identity.issueAgentToken({ principalId: agent.id, label: "reader" }, owner);
-  const installationToken = authentication.generateToken("test").token;
-  authentication.setMode(mode, "test");
 
   const events = new EventStream();
   cleanups.push(() => events.close());
@@ -81,7 +82,7 @@ async function setup(mode: "token" | "open" = "token") {
     await run(args, cliPaths, { environment, write: (line) => output.push(line) });
     return JSON.parse(output[0]!) as Record<string, unknown>;
   };
-  return { databasePath, authentication, identity, project, agent, agentToken, agentCredential, installationToken, base, endpoint, knowledgeCall, mcpClient, mcp, events, cli };
+  return { store, service, web, databasePath, authentication, identity, project, agent, agentToken, agentCredential, installationToken, base, endpoint, knowledgeCall, mcpClient, mcp, events, cli };
 }
 
 describe("installation token mode across transports", () => {
@@ -192,8 +193,20 @@ describe("installation token mode across transports", () => {
 
     const anonymous = f.authentication.anonymousInstallation()!;
     f.authentication.setMode("token", "test");
-    expect((await fetch(`${f.base}/api/metrics`)).status).toBe(401);
-    expect(() => f.identity.authorizeKnowledge(anonymous, f.project.id, "knowledge:read")).toThrow("Nieprawidłowe lub nieaktywne poświadczenie.");
+    expect((await fetch(`${f.base}/api/metrics`)).status).toBe(200);
+    await f.mcp.close(); await f.web.close(); await f.service.shutdown();
+    const nextStore = new SqliteStateStore(f.databasePath);
+    cleanups.push(() => nextStore.close());
+    const nextAuth = new AuthenticationService(nextStore);
+    const nextIdentity = new IdentityService(nextStore, undefined, undefined, undefined, nextAuth);
+    expect(nextAuth.anonymousInstallation()).toBeNull();
+    expect(() => nextIdentity.authorizeKnowledge(anonymous, f.project.id, "knowledge:read")).toThrow("Nieprawidłowe lub nieaktywne poświadczenie.");
+    const nextWeb = createControllerServer({ service: f.service, authentication: nextAuth, identity: nextIdentity,
+      events: f.events, directoryBrowser: {} as DirectoryBrowser, webRoot: ".", host: "127.0.0.1", port: 0, accessToken: "pairing",
+      mcpStatus: () => ({ phase: "disabled", endpoint: null, transport: "streamable-http", network: "loopback", authentication: "bearer", activeSessions: 0 }) });
+    await new Promise<void>(resolve => nextWeb.server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => nextWeb.close());
+    expect((await fetch(`http://127.0.0.1:${(nextWeb.server.address() as AddressInfo).port}/api/metrics`)).status).toBe(401);
   });
 
   it("runs knowledge and identity CLI commands against an open-mode controller without token variables", async () => {

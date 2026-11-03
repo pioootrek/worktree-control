@@ -11,6 +11,8 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import type {
   AuthenticatedIdentity,
   AuthenticatedPrincipal,
+  CredentialAuthenticatedPrincipal,
+  ProviderSessionAuthority,
   CredentialAuthenticationRecord,
   IdentityStore,
   InstallationAuthority,
@@ -138,6 +140,7 @@ export class IdentityService {
     private readonly secret: () => string = () => randomBytes(32).toString("hex"),
     private readonly installationAuthority?: InstallationAuthority,
     private readonly runtimeAccess?: RuntimeAccessStore,
+    private readonly providerSessions?: ProviderSessionAuthority,
   ) {}
 
   bootstrapOwnerSession(input: BootstrapOwnerInput = {}): BootstrappedOwner {
@@ -148,6 +151,21 @@ export class IdentityService {
       throw new IdentityError("owner_already_initialized", "Właściciel został już zainicjalizowany.");
     }
     return { principalId: principal.id, credential: publicCredential(issued.record), token: issued.token };
+  }
+
+  /** Protected operator operation. Deliberately issues no credential, role or grant. */
+  createFirstOwnerPrincipal(actor: "local-cli" | "local-admin"): Principal {
+    const principal: Principal = { id: this.id(), kind: "owner", status: "active" };
+    if (!this.store.createFirstOwnerPrincipal(principal, actor)) {
+      throw new IdentityError("owner_already_initialized", "An owner principal already exists.");
+    }
+    return principal;
+  }
+
+  ownerPrincipalStatus(): { state: "none" | "single" | "ambiguous"; principal?: Principal } {
+    const owners = this.store.ownerPrincipals();
+    return owners.length === 0 ? { state: "none" } : owners.length === 1
+      ? { state: "single", principal: owners[0] } : { state: "ambiguous" };
   }
 
   recoverOwnerSession(input: BootstrapOwnerInput = {}): BootstrappedOwner {
@@ -172,7 +190,7 @@ export class IdentityService {
     return { principalId: actor.principalId, credential: publicCredential(issued.record), token: issued.token };
   }
 
-  authenticateBearer(token: string): AuthenticatedPrincipal {
+  authenticateBearer(token: string): CredentialAuthenticatedPrincipal {
     const parsed = parseToken(token);
     const record = parsed ? this.store.getCredentialForAuthentication(parsed.id) : null;
     const expected = record && /^[0-9a-f]{64}$/.test(record.verifierHash)
@@ -191,6 +209,7 @@ export class IdentityService {
       || (record.expiresAt !== null && record.expiresAt <= now)
       || !principal
       || principal.status !== "active"
+      || principal.kind === "human"
       || !credentialMatchesPrincipal(record, principal.kind)
     ) {
       throw new IdentityError("invalid_credential", "Nieprawidłowe lub nieaktywne poświadczenie.");
@@ -211,15 +230,15 @@ export class IdentityService {
     if (principal.kind === "installation") {
       return { principal, credential: null, knowledgeGrants: [], installationAuthority: true };
     }
-    const credential = this.store.getCredentialForAuthentication(actor.credentialId)!;
+    const credential = actor.authenticationMethod === "provider_session" ? null : this.store.getCredentialForAuthentication(actor.credentialId)!;
     return {
       principal,
-      credential: publicCredential(credential),
-      ...(principal.kind === "agent" && this.runtimeAccess ? { runtimeAccess: this.currentRuntimeAccess(actor, credential) } : {}),
+      credential: credential ? publicCredential(credential) : null,
+      ...(principal.kind === "agent" && this.runtimeAccess && credential ? { runtimeAccess: this.currentRuntimeAccess(actor, credential) } : {}),
       knowledgeGrants: this.store.listKnowledgeProjectGrants(actor.principalId)
         .filter((grant) => grant.revokedAt === null)
         .map(grant => ({ projectId: grant.projectId, permissions: effectiveKnowledgePermissions(this.subject(actor), grant.projectId, {
-          grant, binding: this.store.getKnowledgeRoleBinding(actor.principalId, grant.projectId),
+          ordinaryHuman: principal.kind === "human", grant, binding: this.store.getKnowledgeRoleBinding(actor.principalId, grant.projectId),
         }) }))
         .filter(grant => grant.permissions.length > 0),
     };
@@ -321,7 +340,7 @@ export class IdentityService {
     const principal = this.store.getPrincipal(input.principalId);
     const project = this.store.getKnowledgeProject(input.projectId);
     const permissions = [...new Set(input.permissions)].sort();
-    if (!principal || principal.status !== "active" || principal.kind === "worker" || principal.kind === "installation") {
+    if (!principal || principal.status !== "active" || !["owner", "agent"].includes(principal.kind)) {
       throw new IdentityError("invalid_request", "Grant można nadać wyłącznie aktywnemu właścicielowi lub agentowi.");
     }
     if (!project || project.status !== "active") {
@@ -349,6 +368,7 @@ export class IdentityService {
 
   revokeKnowledgeGrant(principalId: string, projectId: string, actor: AuthenticatedPrincipal): KnowledgeProjectGrant {
     this.requireOwnerSession(actor);
+    if (this.store.getPrincipal(principalId)?.kind === "human") throw new IdentityError("invalid_request", "Use protected human membership operations.");
     const grant = this.store.getKnowledgeProjectGrant(principalId, projectId);
     if (!grant || grant.revokedAt !== null) throw new IdentityError("invalid_request", "Nie znaleziono aktywnego grantu.");
     const revoked = { ...grant, revokedAt: this.clock() };
@@ -386,8 +406,14 @@ export class IdentityService {
       project: knowledge ? this.store.getKnowledgeProject(resource.id) : null,
       grant: knowledge ? this.store.getKnowledgeProjectGrant(actor.principalId, resource.id) : null,
       binding: knowledge ? this.store.getKnowledgeRoleBinding(actor.principalId, resource.id) : null,
+      ordinaryHuman: this.store.getPrincipal(actor.principalId)?.kind === "human",
       allowArchived: context.allowArchived,
     })) throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
+  }
+
+  authorizeKnowledgeRuntimeLink(actor: AuthenticatedPrincipal): void {
+    this.requireCurrentAuthentication(actor);
+    if (this.store.getPrincipal(actor.principalId)?.kind === "human") throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
   }
 
   private subject(actor: AuthenticatedPrincipal): AuthorizationSubject {
@@ -559,7 +585,7 @@ export class IdentityService {
 
   private currentRuntimeAccess(actor: AuthenticatedPrincipal, credential: CredentialAuthenticationRecord): RuntimeAccessEntry[] {
     const store = this.runtimeAccess;
-    if (!store) return [];
+    if (!store || actor.authenticationMethod === "provider_session") return [];
     return store.listRuntimeCredentialScopes(actor.credentialId).flatMap((scope) => {
       const authority = this.runtimeAuthority(actor, scope.projectId);
       const actions = authority ? effectiveRuntimeActions(this.subject(actor), scope.projectId, authority) : [];
@@ -601,6 +627,7 @@ export class IdentityService {
     const parsed = revokeKnowledgeRoleSchema.safeParse(value);
     if (!parsed.success) throw new IdentityError("invalid_request", "Nieprawidłowe przypisanie roli.");
     const input = parsed.data;
+    if (this.store.getPrincipal(input.principalId)?.kind === "human") throw new IdentityError("invalid_request", "Use protected human membership operations.");
     const current = this.store.getKnowledgeRoleBinding(input.principalId, input.projectId);
     if (!current || current.revokedAt !== null || current.revision !== input.expectedRevision) {
       throw new IdentityError("role_revision_conflict", "Nieaktualna rewizja przypisania roli.");
@@ -622,6 +649,12 @@ export class IdentityService {
   }
 
   private requireCurrentAuthentication(actor: AuthenticatedPrincipal): void {
+    if (actor.authenticationMethod === "provider_session") {
+      if (!this.providerSessions?.isCurrentProviderSession(actor, this.clock())) {
+        throw new IdentityError("invalid_credential", "Nieprawidłowe lub nieaktywne poświadczenie.");
+      }
+      return;
+    }
     const principal = this.store.getPrincipal(actor.principalId);
     if (actor.principalKind === "installation") {
       if (

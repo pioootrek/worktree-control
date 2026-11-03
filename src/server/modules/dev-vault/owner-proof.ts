@@ -5,7 +5,8 @@ import type { DevVaultOwnerProofStatus, DevVaultOwnerVerifier } from "./contract
 import { devOwnerSigningText } from "@/shared/contracts/dev-vault-signing";
 
 export function devOwnerSigningMessage(command: DevVaultCommand, actor: Pick<AuthenticatedPrincipal, "principalId" | "credentialId">, issuedAt: string): Buffer {
-  return Buffer.from(devOwnerSigningText(command, actor, issuedAt), "utf8");
+  if (actor.credentialId === null) throw new Error("An owner credential is required for vault signing.");
+  return Buffer.from(devOwnerSigningText(command, { principalId: actor.principalId, credentialId: actor.credentialId }, issuedAt), "utf8");
 }
 /** External public key, never a DB setting writable by installation authority. */
 export class Ed25519DevVaultOwnerVerifier implements DevVaultOwnerVerifier {

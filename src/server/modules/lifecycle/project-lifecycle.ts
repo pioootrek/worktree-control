@@ -1,3 +1,4 @@
+import { admissionOf, type DatabaseAdmission } from "@/server/database-admission";
 import type { ProcessManager } from "@/server/process-manager";
 import { ReservationError, type ReservationBinding, type StateStore } from "@/server/state-store";
 import type { Project, ProjectSnapshot, ServerCapacityStatus, Worktree } from "@/shared/contracts";
@@ -6,6 +7,8 @@ import { basename } from "node:path";
 
 export interface OperationActor {
   owner: string;
+  /** Current transport authority, checked in admitted phases after asynchronous waits. */
+  revalidate?: () => void;
   leaseToken?: string;
   /** Scoped agent leases also bind the authenticated principal and credential. */
   binding?: ReservationBinding;
@@ -22,11 +25,14 @@ export class ProjectLifecycle {
   private readonly maintenance = new Set<string>();
   private readonly scans = new Set<string>();
   private closing = false;
+  private readonly admission: DatabaseAdmission;
 
   constructor(
     private readonly store: Pick<StateStore, "getProject" | "listProjects" | "authorizeReservation" | "getServerCapacitySettings">,
     private readonly processes: Pick<ProcessManager, "snapshot"> & Partial<Pick<ProcessManager, "statusSummary">>,
-  ) {}
+  ) {
+    this.admission = admissionOf(store);
+  }
 
   resolveWorktree(project: Project, worktrees: Worktree[], requested?: string): Worktree {
     const path = requested ?? project.selectedWorktreePath ?? worktrees[0]?.path;
@@ -127,13 +133,20 @@ export class ProjectLifecycle {
       available: settings.enabled ? Math.max(0, settings.limit - holders.length) : null, holders };
   }
 
+  /**
+   * Project serialization with database admission. A caller never holds
+   * admission while it waits for the project: its admission is released for
+   * the wait (`idle`) and the operation then runs admitted under the lock.
+   * Holders therefore never wait on someone queued for admission. Long,
+   * SQL-free phases inside the operation release admission again with `idle`.
+   */
   async serialized<T>(projectId: string, operation: () => Promise<T>): Promise<T> {
     if (this.closing) throw new Error("Kontroler jest zamykany i nie przyjmuje nowych operacji.");
     const previous = this.locks.get(projectId) ?? Promise.resolve();
-    const current = previous.catch(() => undefined).then(operation);
+    const current = previous.catch(() => undefined).then(() => this.admission.run(operation));
     this.locks.set(projectId, current);
     try {
-      return await current;
+      return await this.admission.idle(() => current);
     } finally {
       if (this.locks.get(projectId) === current) this.locks.delete(projectId);
     }

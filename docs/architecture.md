@@ -1,6 +1,6 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-10-25"
+last_reviewed: "2026-11-02"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
@@ -455,8 +455,28 @@ worktree before every start. Django therefore uses a worktree-local `.venv` or
 
 ## Installation authentication
 
-The shared authentication module enforces the stored installation mode across
-HTTP, MCP and live subscriptions. New databases default to `token` and cannot
+The shared authentication module captures the active installation mode once per
+controller boot, after migrations and restore recovery, and enforces it across
+HTTP, MCP and live subscriptions. The existing stored policy mode is the
+next-start selection. Protected CLI administration alone can select it;
+activation requires a separate service restart. Private status distinguishes
+active/configured mode and restart requirement. Offline status has no active
+mode. Public HTTP, GUI and MCP expose no selector. Selection does not change
+sessions, listeners or live client access records; rotation still invalidates
+credentials and derived sessions immediately. Every authentication reads current
+token IDs/verifiers and current principal/grant authority. Serialized admitted
+selection rereads fresh policy and atomically saves selection plus audit, with
+no schema or configuration-revision change. Maintenance is checked inside
+admission after waits.
+
+Version-2 restore handoffs persist active `executionMode` separately from the
+latest configured authentication policy. Execution uses the former and the
+current captured token ID; startup restores the latter before capturing the new
+boot mode. Old format-1 handoffs use their historical policy mode. New malformed,
+unknown or inconsistent records fail closed. Existing restore revocation fences
+and owner locks remain; A5 provider-session resurrection remains unresolved.
+
+New databases default to `token` and cannot
 start until a token has been generated. Existing databases migrate to `legacy`;
 `open` is explicit and `better-auth` is an unavailable provider. Installation
 tokens are stored as verifiers, and rotation invalidates active sessions.
@@ -467,6 +487,185 @@ they do not expose runtime claim/configuration tools.
 See [authentication modes](authentication.md) for commands and migration.
 Knowledge CLI, identity administration and logical import/export now apply
 the active policy when no token variable is present, including open mode.
+
+The first A3 slice adds a versioned server-only provider contract and explicit
+local loader, exercised by a private Better Auth workspace proof. Startup
+does not load it and account mode stays unavailable. Explicit protected CLI
+maintenance uses a single lazy runtime without mounting browser login. Controller
+migration 38 owns the empty namespaced provider tables and explicit subject-to-owner
+mapping. Controller migration 39 adds only the `provider_session` Knowledge
+history method, preserving rows, IDs, timestamps, indexes and deleted-ID
+watermarks. Migration 40 adds frozen two-factor and passkey plugin storage plus
+controller-recognized account policy, monotone steps, credential trust, attempt
+state and immutable session evidence, and provider storage revision 2. Earlier
+migrations and checksums remain unchanged. Full backups identify the current schema;
+genuine 38 and 39 backups and logical history transfers remain supported. There is
+no credential, factor, evidence or grant backfill.
+An exclusive connection
+guard protects core SQL, prepared statements and backups while asynchronous
+provider work borrows the sole connection. Shared core admission and exclusive
+provider admission now coordinate on that gate; see [database admission](#database-admission).
+The strict proof includes HTTP error-classification regressions; broader
+integration coverage and design acceptance remain open. Safe live coexistence
+is not accepted.
+The bounded browser adapter is dispatched outside blanket core admission in
+explicit isolated composition. It reads strict bounded bodies, borrows the
+provider, then checks current authority and releases safe DTOs/cookies in a
+synchronous admitted phase. Sensitive password changes recheck the exact actor
+inside the actual queued borrow. Converted Knowledge effects/results use
+`ProviderKnowledgeApplication.executeAdmitted` in that same synchronous phase.
+Unconverted HTTP and separate MCP requests carrying provider cookies are denied
+before compatible installation authority, including open mode. Production main
+has no browser-composition caller. Provider maintenance is reached only through
+the protected CLI/private Unix socket. See the
+[browser contract](authentication.md#bounded-browser-adapter).
+
+The isolated adapter also serves
+[closed factor routes](authentication.md#closed-factor-http-api). The runtime dispatches
+a closed operation table and returns an opaque release plus a separate settlement
+promise, so a response slot outlives a timed-out borrow until its callback really ends.
+A final check against current rows, the durable publication marker and header emission form one synchronous
+admitted phase. Accepted cleanup uses reserved queue room on the same gate, with no new
+lock, counter or connection.
+
+Current isolated provider API is contract 5, storage revision 3, implementation
+`0.0.0-proof.5` and core schema 42. Earlier versions evolved as follows.
+Provider API contract 2 requires durable `signOut`; version 1 fails compatibility
+checks. Contract 3 adds the application-owned `host.protection` port: the provider
+calls it synchronously inside its open transaction, and `AccountProtection` keeps
+policy, transitions and the current-authority rule in the controller. Disposal tracks actual provider settlement and closes only its borrowed facade.
+The runtime also owns cleanup of sessions it minted but never released, as bounded
+in-memory ID records tied to the exclusive borrow. Issuers are refused before minting
+at the bound. Schema 41 keeps session issuance durable: each new session commits with a
+`pending` marker, `may_publish` commits before any cookie leaves, and the owner's one
+ordinary-restart recovery removes `pending` rows before an issuer can load. Installation-wide
+row and batch bounds are required inputs. A recognized restore refuses that recovery. See
+[durable issuance](authentication.md#closed-factor-http-api).
+The owning shutdown helper disposes the optional provider after external
+producers/listeners/accepted responses drain and before service/SQLite close.
+A rejected disposal reports unconfirmed cleanup and retains both owner locks;
+concurrent calls share completion or failure. Partial-load disposal failure is
+also reported honestly. Raw library logs/router errors are replaced with fixed
+events, including errors that the native router would otherwise print directly.
+Local provider modules are trusted code, not sandboxed plugins. See the
+[proof contract and limitations](authentication.md#optional-provider-proof-first-a3-slice).
+
+Protected provider administration shares one server-only application across
+offline CLI and the private socket. Short config/status/principal phases use
+core admission; loading and account effects run outside it. A storage decorator
+rechecks maintenance and pinned configuration in the actual queued borrow,
+using the existing gate. One retained initialization promise belongs to each
+controller. Shutdown joins accepted commands even after client disconnect,
+then partial loading, provider disposal/drain, service/SQLite close and owner
+release. Unconfirmed cleanup retains ownership and a referenced process lifetime.
+The private durable configuration needs separate backup; its operational event
+does not claim atomic filesystem/SQLite audit. Principal-only creation and
+enrollment intentionally commit separately without issuing a credential/grant.
+See [protected maintenance](authentication.md#protected-provider-maintenance).
+
+Schema 42 adds ordinary `human` principals by rebuilding only the referenced
+principal table on the owner's existing connection and ordered migration
+transaction. Final integrity/FK validation commits or rolls back the rebuild.
+Historical owners, migration SQL/checksums 1..41, credentials, factors, issuance
+markers and content IDs remain unchanged. Provider mappings/session projections
+allow only active owner/human kinds; opaque actors freeze and compare exact kind
+and mapping link time. Provider contract/storage/native tables are unchanged.
+
+Protected human lifecycle and Knowledge membership operations share
+`ProviderAdminApplication` and `HumanAccountService` across private IPC/offline
+CLI. They do not import the provider. A human membership uses the A1 binding's
+revision as aggregate CAS for grant, binding and audit in one immediate
+transaction. Legacy grant/role mutators refuse these targets. Ordinary humans
+need both active rows and explicit read/write grants; roles only restrict them.
+No installation/runtime role table or cookie administration authority is added.
+See [ordinary human accounts](authentication.md#ordinary-humans-and-knowledge-memberships-a3-i24).
+
+## Database admission
+
+`SqliteStateStore.admission` uses the owner's existing connection gate. It adds
+no connection, database lock, project lock map or finite-capacity counter.
+`run` joins a live core participant; `detached` creates a separate participant.
+`tryRun` executes synchronous work only when admission needs no wait. `outside`
+starts a background flow without inheriting its caller's participant.
+Consecutive core tickets can share admission, while a queued provider prevents
+later independent core roots from bypassing it. Provider-to-core transaction
+access is restricted to the synchronous controller-operation port. Upgrades
+from core admission to provider borrowing fail immediately.
+
+`idle` releases the participant for a SQL-free wait, then waits for admission
+again before returning. It suspends the whole participant, including joined
+calls. Joined branches must therefore run sequential phases; independently
+idling branches need separate `detached` admissions. The dashboard's existing
+`Promise.all` projection does not idle during bounded Git discovery and retains
+admission until its branches settle. This avoids sibling suspension there but
+can delay provider access. It is not a general proof that all future fan-out is
+safe.
+
+The current `ProjectLifecycle.serialized` implementation releases the caller's
+admission before waiting for the project lock. The callback runs admitted under
+that lock. A holder may idle for readiness, stop, network or preparation work;
+no admitted caller may wait for that lock while retaining admission. This is a
+change from the earlier admission-before-project-lock proposal. Strict tests
+exercise two operations on one project with a provider between them, but design
+acceptance of this ordering remains separate. Scoped operations recheck current
+authority around effects and before returning retained outcomes. Local
+`RuntimeService.operateLocked` accepts a current-authority callback for installed
+HTTP runtime operations. It rechecks after asynchronous phases and immediately
+before spawn; the HTTP boundary rechecks before responding. Reservation mutations
+use the same callback under the project lock. Token rotation while waiting denies
+queued mutations and successful replies. Already performed effects are not rolled
+back. Installed reservation requests serialize behind readiness, so direct-store
+reservation injection is not a supported transport takeover. Scoped lease expiry
+and provider Knowledge authorization remain separate policies.
+
+Accepted finite jobs coalesce bounded log/resource checkpoints, preserve event
+timestamps and serialize writes per run. A terminal durability barrier precedes
+slot release. Background completion uses reserved queue capacity. Retry helpers
+retry only admission refused before callback entry, never a runtime effect,
+attachment publication, backup creation or entire network workflow that already
+ran. Scan completion saves under fresh admission. Log retention awaits current
+retention answers; a failed lookup does not authorize deletion. Remote outbox
+ACKs merge into the current receipt after networking, preserving newer state.
+
+Database admission currently waits at most 5 seconds by default. Persistence
+retry normally has a 60-second budget; log-retention lookup uses 10 seconds.
+Database drain defaults to 10 seconds. These are implementation limits subject
+to review, not approved account-session or security-policy defaults. Compatible
+mode preserves existing synchronous access when no provider is loaded; strict
+mode is enabled after fixture bootstrap to detect missed boundaries.
+
+The owner closes external lifecycle admission and timers before draining
+accepted work. The connection gate's `beginDrain` deliberately leaves core
+admission open for those completions while closing provider admission. It is
+not an external-request firewall. Store close waits for actual provider
+execution, core participants and driver backups. Timeout or failed driver close
+retains database ownership, and restore execution must wait for confirmed
+shutdown. Tests cover the owning service and actual CLI shutdown orchestration
+with temporary Unix HTTP/MCP/admin/remote listeners. The success path refuses queued HTTP dispatch during maintenance and drains
+its response plus the accepted admin write/response once. Failed producer or
+listener closure prevents SQLite close; unconfirmed service cleanup retains its
+database owner, and any shutdown failure retains controller ownership. Concurrent
+same-mode calls join one completion, including failure. A different handoff mode
+is refused. The sequence lives in `src/server/bootstrap/controller-shutdown.ts`;
+there is no automatic retry that hides a failed shutdown.
+
+Installed restore completion callbacks and deferred launch are covered under
+contention, including duplicate finish/close, disconnected responses, current
+revocation and refused shutdown. Execution waits for confirmed shutdown, retaining
+the controller lock while closing database ownership. Physical replacement and
+restart are mocked. HTTP 202 acknowledges admission, not completed restore.
+
+The implemented provider-to-core handoff authenticates outside admission and
+issues an exact runtime-owned frozen actor. `IdentityService` uses that runtime
+as a synchronous current-session authority inside each admitted Knowledge phase.
+Current session/mapping/principal state and original expiry are checked before
+ordinary grants/role ceilings and replay. Safe identity metadata has no A2
+credential. No provider reentry or notification-only cache authorizes work.
+Owner/runtime/vault privileges remain denied. See the
+[implemented API](authentication.md#provider-authorization-handoff).
+Production browser loading/account mode and broader callback coverage remain
+separate acceptance gates. The bounded isolated browser API already exists. The [proof coverage table](../packages/auth-provider-better-auth-proof/README.md#live-admission-coverage)
+records what the strict integration tests exercise and what remains open.
 
 ## CLI and package
 
