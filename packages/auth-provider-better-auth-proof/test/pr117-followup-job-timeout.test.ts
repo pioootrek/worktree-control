@@ -52,7 +52,7 @@ describe("remote job timeout while spawn evidence waits for admission", () => {
       const environment = { environment: {}, mode: "clean" as const, profile: "unit", inheritedServerProfile: null, variableNames: [] };
       const sourceObservation = { observedAt: new Date().toISOString(), head: assignment.commitSha, branch: "main", dirty: false, statusDigest: "e".repeat(64), statusEntries: 0, complete: true, errorCode: null };
       await f.run(() => jobs.enqueue({ runId: "local-run", projectId: project.id, worktree, command, environment, actor: "remote-worker:worker",
-        preparation: { prepare: async () => ({ worktree, command, environment, sourceObservation }), started, dispose } }));
+        preparation: { prepare: async () => ({ worktree, command, environment, sourceObservation }), observe: async () => sourceObservation, started, dispose } }));
       await vi.waitFor(() => expect(spawn).toHaveBeenCalledOnce());
       hold = f.store.authenticationProviderStorage().borrow(async () => { borrowed.open(); await release.opened; });
       await borrowed.opened;
