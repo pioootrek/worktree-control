@@ -35,7 +35,7 @@ describe("remote job timeout while spawn evidence waits for admission", () => {
     const assignment: RemoteAssignment = { requestId: "request", attemptId: "attempt", projectId: "remote-project", workerId: "worker", presetId: "node:test", commitSha: "a".repeat(40) };
     const started = vi.fn(() => {
       const receipt = f.store.remoteConnection.receipt(assignment.attemptId)!;
-      receipt.reports.push({ attemptId: assignment.attemptId, localRunId: "local-run", sequence: 2, phase: "running" });
+      receipt.reports.push({ attemptId: assignment.attemptId, localRunId: "local-run", sequence: 2, phase: "running", logs: [] });
       f.store.remoteConnection.saveReceipt(receipt);
       order.push("started");
     });
@@ -44,14 +44,15 @@ describe("remote job timeout while spawn evidence waits for admission", () => {
       const project = await f.run(() => {
         jobs.setLimit(1);
         f.store.remoteConnection.accept({ assignment, localRunId: "local-run", cancellationRequested: false,
-          reports: [{ attemptId: assignment.attemptId, localRunId: "local-run", sequence: 1, phase: "preparing" }], acknowledgedSequence: 0 });
+          reports: [{ attemptId: assignment.attemptId, localRunId: "local-run", sequence: 1, phase: "preparing", logs: [] }], acknowledgedSequence: 0 });
         return f.store.addProject({ name: "remote timeout", repositoryPath: f.root, port: 3899, executable: "", args: [], launchPreset: "none" });
       });
       const worktree = { path: f.root, head: assignment.commitSha, shortHead: "aaaaaaa", branch: "main", detached: false, locked: false, prunable: false, dirty: false };
       const command = { preset: { id: "node:test", name: "test", adapter: "node" as const, timeoutMs }, executable: process.execPath, args: [], cwd: f.root };
       const environment = { environment: {}, mode: "clean" as const, profile: "unit", inheritedServerProfile: null, variableNames: [] };
+      const sourceObservation = { observedAt: new Date().toISOString(), head: assignment.commitSha, branch: "main", dirty: false, statusDigest: "e".repeat(64), statusEntries: 0, complete: true, errorCode: null };
       await f.run(() => jobs.enqueue({ runId: "local-run", projectId: project.id, worktree, command, environment, actor: "remote-worker:worker",
-        preparation: { prepare: async () => ({ worktree, command, environment }), started, dispose } }));
+        preparation: { prepare: async () => ({ worktree, command, environment, sourceObservation }), started, dispose } }));
       await vi.waitFor(() => expect(spawn).toHaveBeenCalledOnce());
       hold = f.store.authenticationProviderStorage().borrow(async () => { borrowed.open(); await release.opened; });
       await borrowed.opened;
