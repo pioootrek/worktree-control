@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserOperation } from "@/server/modules/authentication";
 import type { ProofFaultInjection } from "../src/index";
 import { browserFixture, type BrowserFixture } from "./browser-authentication-fixture";
-import { betweenResultAndRelease, enrollPasskey, enrollTotp, live, options, post, strength } from "./browser-factor-helpers";
-import { Client, cleanupRoots, OWNER_EMAIL, OWNER_PASSWORD } from "./fixture";
+import { betweenResultAndRelease, enrollPasskey, enrollTotp, live, options, passkeyLogin, post, strength } from "./browser-factor-helpers";
+import { Client, cleanupRoots, ORIGIN, OWNER_EMAIL, OWNER_PASSWORD } from "./fixture";
 import { advance, factorOptions, select, STEP } from "./integrated-fixture";
 import { cleanupStrictRoots, gate, sleep } from "./strict-fixture";
 
@@ -39,6 +39,32 @@ function saturate(f: BrowserFixture, operation: BrowserOperation, revoke = false
 }
 
 describe("PR117 accepted browser completion", () => {
+  it("enrolls, confirms and logs in with browser-accurate option GET headers", async () => {
+    const f = await create(), client = await f.client().authenticated();
+    const authenticator = await enrollPasskey(client);
+    expect((await passkeyLogin(client, authenticator)).status).toBe(200);
+    await strength(client, "passkey_uv");
+  });
+
+  it("denies unproven and foreign option GETs and keeps POST Origin mandatory in both layers", async () => {
+    const f = await create(), browser = f.client(), direct = new Client(f.runtime);
+    const path = "/passkey/generate-authenticate-options";
+    for (const site of [undefined, "cross-site", "same-site", "none", "same-origin, same-origin"]) {
+      const headers: Record<string, string> = site ? { "sec-fetch-site": site } : {};
+      expect((await browser.call(`/api/auth${path}`, { method: "GET", omitOrigin: true, headers })).status).toBe(403);
+      expect((await direct.call(path, { method: "GET", origin: null, headers })).status).toBe(403);
+    }
+    for (const origin of ["null", "https://foreign.test"]) {
+      expect((await browser.call(`/api/auth${path}`, { method: "GET", headers: { origin, "sec-fetch-site": "same-origin" } })).status).toBe(403);
+      expect((await direct.call(path, { method: "GET", origin, headers: { "sec-fetch-site": "same-origin" } })).status).toBe(403);
+    }
+    expect((await direct.call(path, { method: "GET", origin: ORIGIN, headers: { "sec-fetch-site": "cross-site" } })).status).toBe(403);
+    const headers = { "sec-fetch-site": "same-origin" };
+    expect((await direct.call(path, { method: "GET", origin: null, headers })).status).toBe(200);
+    expect((await browser.call("/api/auth/two-factor/verify-totp", { omitOrigin: true, headers, body: { code: "123456" } })).status).toBe(403);
+    expect((await direct.call("/two-factor/verify-totp", { origin: null, headers, body: { code: "123456" } })).status).toBe(403);
+  });
+
   it.each(["sign-in", "totp-verify", "passkey-authentication", "password"] as const)("publishes %s with ordinary admission saturated", async operation => {
     const f = await create(), client = f.client();
     let perform: () => ReturnType<typeof client.login>, method = "password";

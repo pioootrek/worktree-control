@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FileProviderConfiguration } from "./authentication-provider-configuration";
 import { readPrivateBoundedFile } from "./private-storage";
@@ -16,6 +17,42 @@ function fixture() {
   return { root, entry, path, config, input };
 }
 describe("configuration publication and descriptor uncertainty", () => {
+  it("replaces a missing provider module while preserving the exact signing material", () => {
+    const f = fixture(); f.config.configure(f.input, false);
+    const original = f.config.read()!;
+    fs.unlinkSync(f.entry);
+    expect(() => f.config.read()).toThrowError(expect.objectContaining({ code: "configuration_invalid" }));
+    const replacement = join(f.root, "replacement.mjs"); fs.writeFileSync(replacement, "export {};", { mode: 0o600 });
+    f.config.configure({ ...f.input, module: replacement, signingSecret: { kind: "preserve" } }, true);
+    expect(f.config.read()).toEqual({ ...original, entry: pathToFileURL(replacement).href });
+  });
+
+  it("still validates replacement safety and forbids secret rotation when the old module is missing", () => {
+    const f = fixture(); f.config.configure(f.input, false);
+    const before = fs.readFileSync(f.path);
+    fs.unlinkSync(f.entry);
+    const replacement = join(f.root, "replacement.mjs"); fs.writeFileSync(replacement, "export {};", { mode: 0o666 });
+    fs.chmodSync(replacement, 0o666);
+    expect(() => f.config.configure({ ...f.input, module: replacement, signingSecret: { kind: "preserve" } }, true))
+      .toThrowError(expect.objectContaining({ code: "configuration_invalid" }));
+    fs.chmodSync(replacement, 0o600);
+    expect(() => f.config.configure({ ...f.input, module: replacement }, true))
+      .toThrowError(expect.objectContaining({ code: "configuration_secret_preservation_required" }));
+    expect(() => f.config.configure({ ...f.input, module: replacement, signingSecret: { kind: "supplied", value: Buffer.alloc(32, 7).toString("base64url") } }, true))
+      .toThrowError(expect.objectContaining({ code: "configuration_secret_preservation_required" }));
+    expect(fs.readFileSync(f.path).equals(before)).toBe(true);
+  });
+
+  it.each([{ entry: "relative.mjs" }, { entry: "file://foreign/module.mjs" }, { baseURL: "https://controller.test/wrong" }, { secret: "invalid" }])
+    ("does not overwrite invalid persisted configuration during replacement: %j", invalid => {
+      const f = fixture(); f.config.configure(f.input, false);
+      fs.writeFileSync(f.path, JSON.stringify({ ...f.config.read(), ...invalid }));
+      const before = fs.readFileSync(f.path);
+      expect(() => f.config.configure({ ...f.input, signingSecret: { kind: "preserve" } }, true))
+        .toThrowError(expect.objectContaining({ code: "configuration_invalid" }));
+      expect(fs.readFileSync(f.path).equals(before)).toBe(true);
+    });
+
   it.each(["before-rename", "after-rename"] as const)("reports actual %s publication failure without claiming rollback or regenerating", stage => {
     const f = fixture();
     if (stage === "before-rename") vi.spyOn(fs, "renameSync").mockImplementation(() => { throw new Error("sentinel-disk-failure"); });

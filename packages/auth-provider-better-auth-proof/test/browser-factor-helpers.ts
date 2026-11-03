@@ -10,7 +10,9 @@ export const signIn = (client: BrowserClient) => client.login();
 export const get = (client: BrowserClient, path: string) => client.call(`/api/auth/${path}`, { method: "GET" });
 export const post = (client: BrowserClient, path: string, body: unknown) => client.call(`/api/auth/${path}`, { body });
 export const options = async (client: BrowserClient, kind: "register" | "confirm" | "authenticate") => {
-  const result = await get(client, `passkey/generate-${kind}-options`);
+  // Same-origin browser GETs carry Fetch Metadata, but do not carry Origin.
+  const result = await client.call(`/api/auth/passkey/generate-${kind}-options`, { method: "GET", omitOrigin: true,
+    headers: { "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" } });
   expect(result).toMatchObject({ status: 200, body: { outcome: "options" } });
   expect(Object.keys(result.body).sort()).toEqual(["options", "outcome"]);
   return result.body.options as unknown as CeremonyOptions;
