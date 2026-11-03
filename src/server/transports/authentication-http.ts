@@ -130,7 +130,11 @@ export class AuthenticationHttp {
       this.#active++; counted = true;
       const cookies = requestCookies(request.headers.cookie);
       if (request.method === "POST" || (operation && browserOperationRequires(operation, "factor"))) {
-        if (request.headers.origin !== this.#origin) fail(403, "origin_forbidden");
+        // Same-origin browser GETs omit Origin. Only browser Fetch Metadata may
+        // substitute for it; boundary() still rejects conflicting/duplicate headers.
+        const sameOriginGet = request.method === "GET" && request.headers.origin === undefined
+          && request.headers["sec-fetch-site"] === "same-origin";
+        if (request.headers.origin !== this.#origin && !sameOriginGet) fail(403, "origin_forbidden");
       }
       const nativeHeaders = this.headers(request);
       let input: unknown;

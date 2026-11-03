@@ -138,7 +138,13 @@ export class FactorCeremonies {
 
   async handle(route: Route, request: Request): Promise<Response> {
     const base = new URL(this.host.baseURL);
-    if (request.headers.get("origin") !== base.origin) return denied(403, "origin_refused");
+    const origin = request.headers.get("origin"), site = request.headers.get("sec-fetch-site");
+    const mode = request.headers.get("sec-fetch-mode"), destination = request.headers.get("sec-fetch-dest");
+    const sameOriginGet = request.method === "GET" && origin === null && site === "same-origin";
+    if ((origin !== base.origin && !sameOriginGet) || (site !== null && site !== "same-origin")
+      || (mode !== null && mode !== "cors" && mode !== "same-origin") || (destination !== null && destination !== "empty")) {
+      return denied(403, "origin_refused");
+    }
     if (!this.host.protection.enabled) return denied(404, "not_found");
     const text = request.method === "GET" ? "" : await request.text();
     if (text.length > MAX_BODY) return denied(413, "invalid_body");

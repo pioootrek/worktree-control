@@ -236,7 +236,10 @@ entropy; the operator must supply randomness. Later configuration requires
 `{"kind":"preserve"}` or exactly the existing supplied value. There is no
 rotation/delete command. Existing provider data with missing configuration
 requires restoring the original material, never generation. Invalid existing
-configuration refuses maintenance.
+configuration refuses maintenance. If only the old provider module has moved or
+disappeared, protected configuration can select a validated replacement while
+preserving the exact signing material. Reading/loading still validates the
+selected module; replacement never bypasses private-file, document or secret checks.
 
 Private `authentication-provider.json` in the data directory is the durable
 authority. File fsync, rename and directory fsync publish it. Uncertainty before
@@ -571,8 +574,11 @@ the enrolling account, under a fixed label with no email, and is never logged.
 Generated options contain only named fields, a fixed account label and the random
 WebAuthn handle.
 
-**Request boundary.** Every factor route needs the exact Origin, including option GETs,
-because they allocate state. Bodies are counted as streamed bytes, decoded as strict
+**Request boundary.** Factor POSTs need the exact Origin. Option GETs allocate state,
+so they need either that exact Origin or, when Origin is absent, the browser's
+`Sec-Fetch-Site: same-origin`. Both transport and provider enforce this rule;
+foreign/opaque Origins and conflicting Fetch Metadata refuse. This permits ordinary
+same-origin browser GETs, which omit Origin. Bodies are counted as streamed bytes, decoded as strict
 UTF-8 and read with no admission held. Compressed bodies, repeated JSON keys and repeated
 Host, Origin, Fetch Metadata or body headers refuse. WebAuthn fields are canonical
 unpadded base64url; every layer is closed; `id` and `rawId` must be the same bytes; a

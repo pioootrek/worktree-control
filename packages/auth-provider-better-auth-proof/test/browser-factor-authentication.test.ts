@@ -425,7 +425,7 @@ describe("request boundary", () => {
     expect((await client.call("/api/auth/passkey/generate-register-options", { method: "POST", body: {} })).status).toBe(405);
     expect(browser).not.toHaveBeenCalled();
   });
-  it("requires Origin on allocating GETs and refuses bodies, duplicate headers and foreign fetch metadata", async () => {
+  it("requires same-origin proof on allocating GETs and refuses bodies, duplicate headers and foreign fetch metadata", async () => {
     const f = await create(), client = await f.client().authenticated(), browser = vi.spyOn(f.runtime, "browser");
     const path = "/api/auth/passkey/generate-authenticate-options";
     expect((await client.call(path, { method: "GET", omitOrigin: true })).status).toBe(403);
@@ -440,7 +440,7 @@ describe("request boundary", () => {
     expect(response).toMatch(/^HTTP\/1\.1 4(00|21) /);
     expect((await client.call(path, { method: "GET", raw: "{}", headers: { "content-length": "2" } })).status).toBe(400);
     expect(browser).not.toHaveBeenCalled();
-    expect((await client.call(path, { method: "GET", headers: { "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" } })).status).toBe(200);
+    expect((await client.call(path, { method: "GET", omitOrigin: true, headers: { "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" } })).status).toBe(200);
   });
   it("refuses duplicate, aliased and oversized cookies, and forwards only the operation's allowlist", async () => {
     const f = await create(), client = await f.client().authenticated(), browser = vi.spyOn(f.runtime, "browser");
