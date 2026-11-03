@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -272,8 +272,8 @@ describe("strict remote protocol and worker persistence", () => {
     } finally { hold.resume(); await hold.pending; await worker.close(); await closeStrictProof(reopened); }
   });
 
-  it("the real workspace preparation releases admission and rechecks its mapping after provider wait", async () => {
-    const faults: ProofFaultInjection = {}, f = await strictProof(faults);
+  it.each(["mapping", "queue_full", "admission_timeout"] as const)("retains workspace cleanup ownership after %s at preparation resumption", async failure => {
+    const faults: ProofFaultInjection = {}, f = await strictProof(faults, { maxQueued: failure === "mapping" ? 32 : 1, admissionTimeoutMs: failure === "admission_timeout" ? 200 : 10_000 });
     const human = join(f.root, "human"), cache = join(f.root, "cache"), workspaces = join(f.root, "attempts");
     mkdirSync(join(human, ".git"), { recursive: true }); mkdirSync(join(cache, ".git"), { recursive: true });
     const local = await f.run(() => {
@@ -292,24 +292,38 @@ describe("strict remote protocol and worker persistence", () => {
       expect(f.store.admissionSnapshot().coreActive).toBe(0);
       const committed = readCommitted(f.path, db => JSON.parse((db.prepare("SELECT payload_json FROM remote_worker_receipts WHERE attempt_id='attempt'").get() as { payload_json: string }).payload_json));
       expect(committed.recovery).toBeTruthy(); // Real provenance commits before the mocked Git effect.
+      mkdirSync(join(workspaces, "attempt"));
       entered.open(); await resume.opened;
       return { requestId: assignment.attemptId, path: join(workspaces, "attempt"), repositoryPath: cache, sourceRemote: "origin", requestedCommitSha: assignment.commitSha, executedCommitSha: assignment.commitSha };
-    }), cleanup: vi.fn(async () => undefined) };
+    }), cleanup: vi.fn(async (workspace: { path: string }) => { rmSync(workspace.path, { recursive: true }); }) };
+    const lifecycle = new ProjectLifecycle(f.store, new ProcessManager());
     const execution = new SystemRemoteWorkerExecution("worker", [{ projectId: "project", localProjectId: local.id, sourceCachePath: cache, sourceRemote: "origin", presetIds: ["node:test"] }], f.store,
-      new ProjectLifecycle(f.store, new ProcessManager()), { observe: vi.fn() } as never, { resolve: resolveCommand } as never, preparer, workspaces,
+      lifecycle, { observe: vi.fn() } as never, { resolve: resolveCommand } as never, preparer, workspaces,
       new WorkerRecoveryService(f.store.remoteConnection, new LinuxWorkerRecoveryHost(f.path)));
     const input = await f.run(() => execution.resolve(assignment, receipt, vi.fn()));
     const preparing = input.preparation!.prepare();
-    const denied = expect(preparing).rejects.toThrow("local_mapping_forbidden");
+    const denied = failure === "mapping" ? expect(preparing).rejects.toThrow("local_mapping_forbidden")
+      : expect(preparing).rejects.toMatchObject({ code: failure });
     await entered.opened;
     const hold = pauseProvisioning(f, faults, "rollback");
     try {
       await hold.paused;
-      const revoke = f.run(() => f.store.saveRemoteWorkerProjectGrant({ workerId: "worker", projectId: "project", localProjectId: local.id, presetIds: ["node:test"], revokedAt: new Date().toISOString() }, "test"));
-      resume.open(); await sleep(20); expect(resolveCommand).not.toHaveBeenCalled();
-      hold.resume(); await hold.pending; await revoke; await denied;
+      const queued = failure === "mapping" ? f.run(() => f.store.saveRemoteWorkerProjectGrant({ workerId: "worker", projectId: "project", localProjectId: local.id, presetIds: ["node:test"], revokedAt: new Date().toISOString() }, "test"))
+        : failure === "queue_full" ? f.run(() => undefined) : Promise.resolve();
+      if (failure !== "admission_timeout") await vi.waitFor(() => expect(f.store.admissionSnapshot().queuedCore).toBe(1));
+      resume.open();
+      if (failure !== "mapping") await denied;
+      hold.resume(); await hold.pending; await queued; await denied;
       expect(resolveCommand).not.toHaveBeenCalled(); expect(preparer.prepare).toHaveBeenCalledOnce();
-    } finally { resume.open(); hold.resume(); await hold.pending; await denied; await input.preparation!.dispose(); await closeStrictProof(f); }
+      expect(existsSync(join(workspaces, "attempt"))).toBe(true);
+      expect(lifecycle.acquireMaintenance(local.id, join(workspaces, "attempt"))).toBeNull();
+      await input.preparation!.dispose();
+      expect(preparer.cleanup).toHaveBeenCalledOnce();
+      expect(existsSync(join(workspaces, "attempt"))).toBe(false);
+      for (const path of [join(workspaces, "attempt"), cache]) {
+        const release = lifecycle.acquireMaintenance(local.id, path); expect(release).not.toBeNull(); release?.();
+      }
+    } finally { resume.open(); hold.resume(); await hold.pending; await denied; if (existsSync(join(workspaces, "attempt"))) await input.preparation!.dispose(); await closeStrictProof(f); }
   });
 
 });
