@@ -27,15 +27,16 @@ describe("PR117 real process completion under admission contention", () => {
       vi.stubGlobal("fetch", fetchMock);
       const stopGroup = vi.spyOn(OwnedProcessGroup.prototype, "stop").mockImplementation(async () => { if (operation !== "start") await waitEffect(); });
       const logs = { ...nullLogWriter, controller: vi.fn() };
-      const processes = new ProcessManager(undefined, logs, { admission: f.store.admission });
+      const admission = f.store.admission;
+      const processes = new ProcessManager(undefined, logs, { admission });
       const project = await f.run(() => f.store.addProject({ name: "completion", repositoryPath: f.root, port: 3999, executable: "node", args: [], launchPreset: "node" }));
       const worktree = { path: f.root, head: "a".repeat(40), shortHead: "aaaaaaa", branch: "main", detached: false, locked: false, prunable: false, dirty: false };
       const service = new ControlService(f.store, { list: async () => [worktree] } as never, processes, logs,
         { resolve: () => ({ preset: "node", executable: "node", args: [], portMethod: "environment", tls: { mode: "off", keyPath: null, certPath: null, caPath: null } }) });
       if (operation !== "start") await service.operate(project.id, "start", f.root);
       vi.mocked(spawn).mockClear(); fetchMock.mockClear(); stopGroup.mockClear(); logs.controller.mockClear();
-      const errors: string[] = [], idle = f.store.admission.idle.bind(f.store.admission);
-      vi.spyOn(f.store.admission, "idle").mockImplementation(async (callback, options) => {
+      const errors: string[] = [], idle = admission.idle.bind(admission);
+      vi.spyOn(admission, "idle").mockImplementation(async (callback, options) => {
         try { return await idle(callback, options); }
         catch (error) { errors.push((error as { code: string }).code); throw error; }
       });
