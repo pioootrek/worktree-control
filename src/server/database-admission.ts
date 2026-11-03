@@ -74,6 +74,43 @@ export async function admitWithRetry<T>(
 }
 
 /**
+ * Completes an accepted SQL-free effect under reserved admission. Only the
+ * re-admission is retried; the effect (including a failed effect) runs once.
+ * The completion budget starts when the effect settles, not when it starts.
+ */
+export async function idleWithCompletion<T>(
+  admission: Pick<DatabaseAdmission, "idle">,
+  operation: () => Promise<T>,
+  options: { deadlineMs?: number } = {},
+): Promise<T> {
+  const budget = options.deadlineMs ?? 60_000;
+  if (!Number.isFinite(budget) || budget <= 0) throw new RangeError("Invalid completion admission budget.");
+  const state: { outcome?: { ok: true; value: T } | { ok: false; error: unknown }; deadline: number } = { deadline: 0 };
+  const once = async () => {
+    if (state.outcome) return;
+    try { state.outcome = { ok: true, value: await operation() }; }
+    catch (error) { state.outcome = { ok: false, error }; }
+    state.deadline = Date.now() + budget;
+  };
+  for (let delay = 25; ; delay = Math.min(delay * 2, 1_000)) {
+    try {
+      await admission.idle(once, {
+        reserved: true,
+        admissionTimeoutMs: Math.max(1, Math.min(1_000, state.outcome ? state.deadline - Date.now() : budget)),
+      });
+      break;
+    } catch (error) {
+      if (!state.outcome || !databaseAdmissionFailure(error)?.retryable || Date.now() + delay >= state.deadline) throw error;
+      await new Promise<void>(resolve => { const timer = setTimeout(resolve, delay); timer.unref?.(); });
+    }
+  }
+  const outcome = state.outcome;
+  if (!outcome) throw new Error("Completion admission did not run the operation.");
+  if (!outcome.ok) throw outcome.error;
+  return outcome.value;
+}
+
+/**
  * Runs a synchronous operation now when admission is free (keeping callbacks
  * synchronous in the common case), otherwise under a fresh admission later.
  */

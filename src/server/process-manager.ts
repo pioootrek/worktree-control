@@ -1,4 +1,4 @@
-import { directAdmission, type DatabaseAdmission } from "./database-admission";
+import { directAdmission, idleWithCompletion, type DatabaseAdmission } from "./database-admission";
 import { NO_SERVER_MESSAGE } from "./launch-command";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
@@ -215,7 +215,7 @@ export class ProcessManager {
     this.onChange(project.id);
 
     // `beforeSpawn` and spawn ran admitted; readiness polling is long and SQL-free.
-    await this.admission.idle(() => this.awaitReady(project, runtime));
+    await idleWithCompletion(this.admission, () => this.awaitReady(project, runtime));
   }
 
   private async awaitReady(project: Project, runtime: RuntimeEntry): Promise<void> {
@@ -243,7 +243,7 @@ export class ProcessManager {
   async stop(projectId: string): Promise<void> {
     const runtime = this.runtimes.get(projectId);
     if (!runtime) return;
-    await this.admission.idle(() => this.cleanupRuntime(runtime));
+    await idleWithCompletion(this.admission, () => this.cleanupRuntime(runtime));
   }
 
   private cleanupRuntime(runtime: RuntimeEntry): Promise<void> {
