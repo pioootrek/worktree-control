@@ -550,10 +550,10 @@ export class TestJobManager {
     if (active.completion) return active.completion;
     active.completion = this.admission.outside(() => (async () => {
       const { run } = active;
-      await active.started;
       // Finalization has already prepared an immutable result. A failed durable
       // write may retry that snapshot, never rerun source/log qualification.
       if (run.telemetry?.finalizedAt) {
+        await active.started;
         try { await this.finish(run); }
         finally { active.completion = null; }
         return;
@@ -566,6 +566,9 @@ export class TestJobManager {
         active.resources?.stop();
         this.telemetry.mark(run, "cleanupFinishedAt");
         run.telemetry!.cleanup = "confirmed";
+        // Database contention must not delay stopping an owned process. Keep
+        // spawn evidence ordered before finalization and releasing the slot.
+        await active.started;
         this.telemetry.mark(run, "finalizationStartedAt");
         await this.waitForOutputClose(active);
       } catch (error) {
