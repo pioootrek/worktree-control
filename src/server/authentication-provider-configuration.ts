@@ -57,11 +57,21 @@ export class FileProviderConfiguration implements ProviderConfigurationPort {
     private readonly event?: () => void) {}
 
   read(): ProviderConfiguration | null {
+    const value = this.readPersisted();
+    if (value && validateProviderEntry(value.entry) !== value.entry) throw new ProviderAdminError("configuration_invalid");
+    return value;
+  }
+
+  /** Reconfiguration needs intact signing material, not an executable old module. */
+  private readPersisted(): ProviderConfiguration | null {
     try {
       validateSensitivePath(this.path, this.excludedRoots(), true);
       try { lstatSync(this.path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
       const value = persisted.parse(decodeProviderJson(readPrivateBoundedFile(this.path, PROVIDER_INPUT_LIMIT, this.excludedRoots())));
-      if (validateProviderEntry(value.entry) !== value.entry || originBaseURL(new URL(value.baseURL).origin) !== value.baseURL) throw new Error();
+      const entry = new URL(value.entry);
+      if (entry.protocol !== "file:" || entry.host || entry.search || entry.hash
+        || pathToFileURL(fileURLToPath(entry)).href !== value.entry
+        || originBaseURL(new URL(value.baseURL).origin) !== value.baseURL) throw new Error();
       signingMaterial(value.secret);
       return value;
     } catch { throw new ProviderAdminError("configuration_invalid"); }
@@ -71,7 +81,7 @@ export class FileProviderConfiguration implements ProviderConfigurationPort {
     const parsed = providerConfigurationInputSchema.safeParse(input);
     if (!parsed.success) throw new ProviderAdminError("invalid_input");
     const entry = validateProviderEntry(input.module), baseURL = originBaseURL(input.origin);
-    const existing = this.read();
+    const existing = this.readPersisted();
     if (!existing && hasProviderData) throw new ProviderAdminError("configuration_restore_required");
     let secret: string;
     if (existing) {
