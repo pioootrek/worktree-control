@@ -550,7 +550,7 @@ fencing stay separate gates. See the
 ### Closed factor HTTP API
 
 A3-I20 mounts login and first enrollment through the isolated composition only. It
-uses the same provider, current core schema 42, contract 5, `AccountProtection` and sole
+uses the same provider, current core schema 43, contract 5, `AccountProtection` and sole
 connection as [integrated factor authority](#integrated-factor-authority). Production
 main still has no caller or flag, account mode stays refused, and recovery, removal,
 replacement, additional passkeys and trusted devices stay refused.

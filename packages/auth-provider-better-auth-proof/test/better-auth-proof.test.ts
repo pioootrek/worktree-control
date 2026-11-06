@@ -546,7 +546,7 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
     restoreControllerBackup(backup, restoredPath, join(f.root, "restored-attachments"));
     const restored = new SqliteStateStore(restoredPath);
     try {
-      expect(restored.schemaVersion()).toBe(42);
+      expect(restored.schemaVersion()).toBe(43);
       expect(count(restoredPath, "authentication_provider_subjects")).toBe(1);
       expect(restored.listProjects().map(project => project.name)).toEqual(["after-disposal"]);
       // Its marked rows may be older than what was published, so this owner never gets issuance bounds.
