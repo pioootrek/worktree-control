@@ -116,6 +116,40 @@ describe("Godot Web static server", () => {
     await vi.waitFor(() => expect(server.eventClients).toBe(0), { timeout: 2_000 });
   });
 
+  it("tells each event stream connection whether the page's own generation belongs to this worktree", async () => {
+    const fixture = store();
+    fixture.publish("m1abcdef-0a0b0c0a", { "index.html": "a" }, "ffffffffffffffff");
+    fixture.publish("m1abcdef-0a0b0c0b", { "index.html": "b" });
+    const { base } = await serve(fixture.root);
+    const firstEvents = async (query: string) => {
+      const controller = new AbortController();
+      const response = await fetch(`${base}/__wtc/events${query}`, { signal: controller.signal });
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let text = "";
+      while (!/event: state\ndata: .*\n\n/.test(text)) { const chunk = await reader.read(); if (chunk.done) break; text += decoder.decode(chunk.value); }
+      controller.abort();
+      return text;
+    };
+    // The verdict precedes the first state, so the page decides before applying it.
+    expect(await firstEvents("?generation=m1abcdef-0a0b0c0b")).toMatch(/^retry: 3000\nevent: page\ndata: \{"status":"served"\}\n\nevent: state\ndata: \{"generation":"m1abcdef-0a0b0c0b"/);
+    const foreign = await firstEvents("?generation=m1abcdef-0a0b0c0a");
+    expect(foreign).toContain('event: page\ndata: {"status":"foreign"}');
+    expect(foreign).not.toContain("ffffffffffffffff");
+    expect(foreign).not.toContain(KEY);
+    expect(await firstEvents("?generation=m1abcdef-0a0b0c0c")).toContain('event: page\ndata: {"status":"missing"}');
+    for (const query of ["", "?generation=..%2Fstate", "?generation="]) expect(await firstEvents(query)).not.toContain("event: page");
+  });
+
+  it("redirects only to a generation whose own worktree key matches, so the entry cannot send a page to a foreign build", async () => {
+    const fixture = store();
+    fixture.publish("m1abcdef-0a0b0c0d", { "index.html": "x" });
+    writeFileSync(join(fixture.root, "generations", "m1abcdef-0a0b0c0d", ".worktree-key"), "ffffffffffffffff");
+    const { base, server } = await serve(fixture.root);
+    expect(server.currentState.generation).toBeNull();
+    expect((await raw(base, "/")).status).toBe(200);
+  });
+
   it("omits live reload and isolation when disabled", async () => {
     const fixture = store();
     fixture.publish("m1abcdef-0a0b0c0d", { "index.html": "<html><head></head></html>" });

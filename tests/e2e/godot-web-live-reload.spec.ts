@@ -54,11 +54,15 @@ async function git(cwd: string, ...args: string[]): Promise<void> {
   await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", ...args], { cwd });
 }
 
-/** A Git game repository whose exporter copies a template export and stamps the source version into it. */
-async function createGame(base: string): Promise<{ repository: string; template: string }> {
+/**
+ * A Git game repository whose exporter copies a template export and stamps the source version into it.
+ * A version starting with `hold` waits for a `release` file in the worktree root; one containing `fail` exits non-zero.
+ */
+async function createGame(base: string, options: { synthetic?: boolean } = {}): Promise<{ repository: string; template: string }> {
   const repository = join(base, "game-repository");
-  const template = usesRealEngine ? realExport : join(base, "synthetic-export");
-  if (!usesRealEngine) {
+  const synthetic = options.synthetic || !usesRealEngine;
+  const template = synthetic ? join(base, "synthetic-export") : realExport;
+  if (synthetic) {
     await mkdir(template, { recursive: true });
     await writeFile(join(template, "index.html"), '<!doctype html><html><head><meta charset="utf-8"><title>Synthetic export</title></head><body><canvas id="canvas"></canvas><script src="index.js"></script></body></html>');
     await writeFile(join(template, "index.js"), "window.syntheticEngineStarted = true;\n");
@@ -68,11 +72,12 @@ async function createGame(base: string): Promise<{ repository: string; template:
   await mkdir(join(repository, "game"), { recursive: true });
   await git(base, "init", "--quiet", "-b", "main", repository);
   await writeFile(join(repository, "project.godot"), "config_version=5\n");
-  await writeFile(join(repository, ".gitignore"), "/exports/\n/.godot/\n");
+  await writeFile(join(repository, ".gitignore"), "/exports/\n/.godot/\n/release\n");
   await writeFile(join(repository, "game/version.txt"), "v1\n");
-  await writeFile(join(repository, "export.mjs"), `import { cpSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+  await writeFile(join(repository, "export.mjs"), `import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 const version = readFileSync("game/version.txt", "utf8").trim();
-if (version.startsWith("fail")) { console.error("fixture exporter failed for " + version); process.exit(3); }
+while (version.startsWith("hold") && !existsSync("release")) await new Promise((resolve) => setTimeout(resolve, 100));
+if (version.includes("fail")) { console.error("fixture exporter failed for " + version); process.exit(3); }
 rmSync("exports/web", { recursive: true, force: true });
 cpSync(${JSON.stringify(template)}, "exports/web", { recursive: true });
 const html = readFileSync("exports/web/index.html", "utf8");
@@ -314,6 +319,111 @@ test("the standard preset exporter runs a real Godot export through the queue an
     await settled((current) => current.state === "stopped", "The preview did not stop.");
   } finally {
     await testInfo.attach("browser-console.txt", { body: prints.slice(0, 400).join("\n"), contentType: "text/plain" }).catch(() => undefined);
+    await page.close();
+    await fixture?.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test("an open tab leaves the previous worktree's build on a runtime switch while same-worktree restarts keep gameplay", async ({ page }) => {
+  test.setTimeout(120_000);
+  const base = await mkdtemp(join(tmpdir(), "wtc-godot-web-switch-"));
+  let fixture: ControllerFixture | undefined;
+  const navigations: string[] = [];
+  page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) navigations.push(frame.url()); });
+  try {
+    fixture = await startControllerFixture(0);
+    // Switch coverage needs no engine; the synthetic export keeps it fast and portable.
+    const { repository } = await createGame(base, { synthetic: true });
+    await writeFile(join(repository, "game/version.txt"), "a1\n");
+    const alternate = join(base, "game-feature");
+    await git(repository, "worktree", "add", "--quiet", "-b", "feature", alternate);
+    // The feature worktree's first export is held until released, then fails.
+    await writeFile(join(alternate, "game/version.txt"), "hold-fail\n");
+    const port = await freePort();
+    const preview = `http://localhost:${port}`;
+    const config = { exporter: { kind: "command", command: ["node", "export.mjs"], outputDirectory: "exports/web" }, watch: { paths: ["game"], debounceMs: 200 } };
+    const { project } = await fixture.request<{ project: { id: string } }>("/api/projects", { method: "POST", body: JSON.stringify({ name: "Switched game", repositoryPath: repository, port, launchPreset: "godot-web", godotWeb: config }) });
+    await fixture.request(`/api/projects/${project.id}/environment`, { method: "POST", body: JSON.stringify({ environment: { HOST: "127.0.0.1" } }) });
+    const status = async () => (await fixture!.request<{ webExport: WebExport }>(`/api/projects/${project.id}/godot-web`)).webExport;
+    const settled = (predicate: (value: WebExport) => boolean, message: string) => waitFor(async () => {
+      const value = await status();
+      return predicate(value) && !value.activeRunId && !value.pendingRebuild ? value : null;
+    }, 60_000, () => `${message}\n${fixture!.diagnostics()}`);
+    const operation = (body: Record<string, string>) => fixture!.request(`/api/projects/${project.id}/operation`, { method: "POST", body: JSON.stringify(body) });
+    const served = (generation: string) => waitFor(async () => (await fetch(`http://127.0.0.1:${port}/`, { redirect: "manual" }).catch(() => null))?.headers.get("location") === `/g/${generation}/` ? true : null, 15_000, () => `The static server did not serve ${generation}.`);
+    const marker = () => page.evaluate(() => (window as unknown as { pageMarker?: string }).pageMarker);
+    const mark = (value: string) => page.evaluate((text) => { (window as unknown as { pageMarker?: string }).pageMarker = text; }, value);
+    const overlay = page.getByRole("region", { name: "Godot Web preview status" });
+    const autoReload = overlay.getByRole("checkbox", { name: "Auto-reload" });
+
+    await operation({ operation: "start", worktreePath: repository });
+    const a1 = await settled((value) => value.state === "ready" && value.current !== null, "The main worktree's first export was not published.");
+    await served(a1.current!.id);
+    await page.goto(`${preview}/`);
+    await page.waitForURL(`${preview}/g/${a1.current!.id}/`);
+    await expect.poll(() => version(page)).toBe("a1");
+    await expect(overlay.getByRole("status")).toHaveText("Live preview");
+    await autoReload.uncheck();
+    await mark("playing-a1");
+
+    // A restart of the same worktree reconnects the stream; the page keeps playing and
+    // only offers the new build. No restart-only reload.
+    await operation({ operation: "restart" });
+    const a2 = await settled((value) => value.state === "ready" && value.current !== null && value.current.id !== a1.current!.id, "The restarted preview did not publish.");
+    await expect(overlay.getByRole("status")).toHaveText("A new build is ready", { timeout: 15_000 });
+    expect(page.url()).toBe(`${preview}/g/${a1.current!.id}/`);
+    expect(await marker()).toBe("playing-a1");
+
+    // Switch while the feature worktree's first export is still running: the old tab leaves
+    // the main worktree's game at once, although auto-reload is off and nothing new is published.
+    const beforeSwitch = navigations.length;
+    await operation({ operation: "switch", worktreePath: alternate });
+    await page.waitForURL(`${preview}/`, { timeout: 20_000 });
+    const held = await waitFor(async () => { const value = await status(); return value.activeRunId ? value : null; }, 15_000, () => "The feature export did not start.");
+    expect(held.current).toBeNull();
+    expect(navigations.slice(beforeSwitch)).toEqual([`${preview}/`]);
+    expect(await marker()).toBeUndefined();
+    await expect(overlay.getByRole("status")).toHaveText("Web export in progress…", { timeout: 10_000 });
+    await expect(autoReload).not.toBeChecked();
+    expect((await page.request.get(`${preview}/g/${a2.current!.id}/index.js`)).status()).toBe(410);
+
+    // The first export of the new worktree fails: the placeholder says so and does not reload.
+    await writeFile(join(alternate, "release"), "");
+    await settled((value) => value.state === "failed", "The held feature export did not fail.");
+    await expect(overlay.getByRole("status")).toHaveText("Export failed — waiting for a successful export", { timeout: 10_000 });
+    const afterFailure = navigations.length;
+    await page.waitForTimeout(4_000);
+    expect(navigations.length).toBe(afterFailure);
+    expect(page.url()).toBe(`${preview}/`);
+
+    // A fixed export loads the new worktree's first build from the placeholder.
+    await writeFile(join(alternate, "game/version.txt"), "b1\n");
+    const b1 = await settled((value) => value.state === "ready" && value.current !== null, "The feature worktree did not publish.");
+    await page.waitForURL(`${preview}/g/${b1.current!.id}/`, { timeout: 20_000 });
+    await expect.poll(() => version(page)).toBe("b1");
+    await expect(overlay.getByRole("status")).toHaveText("Live preview");
+    await mark("playing-b1");
+
+    // Switch back while the tab cannot reach the stream, so its first reconnect already sees
+    // the main worktree's newly published generation. With auto-reload off it must still leave
+    // the feature build rather than offer the other worktree's build as an update to it.
+    await page.route("**/__wtc/events*", (route) => route.abort());
+    await operation({ operation: "switch", worktreePath: repository });
+    const a3 = await settled((value) => value.state === "ready" && value.current !== null && value.current.id !== b1.current!.id, "The main worktree did not publish after switching back.");
+    await served(a3.current!.id);
+    await expect(overlay.getByRole("status")).toHaveText("Preview server unreachable", { timeout: 10_000 });
+    expect(page.url()).toBe(`${preview}/g/${b1.current!.id}/`);
+    await page.unroute("**/__wtc/events*");
+    await page.waitForURL(`${preview}/g/${a3.current!.id}/`, { timeout: 20_000 });
+    await expect.poll(() => version(page)).toBe("a1");
+    expect(await marker()).toBeUndefined();
+    await expect(autoReload).not.toBeChecked();
+    await expect(overlay.getByRole("status")).toHaveText("Live preview");
+
+    await operation({ operation: "stop" });
+    await settled((value) => value.state === "stopped", "The preview did not stop.");
+  } finally {
     await page.close();
     await fixture?.close();
     await rm(base, { recursive: true, force: true });

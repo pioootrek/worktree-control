@@ -26,6 +26,14 @@ export interface ServedState {
   failureCode: string | null;
 }
 
+/**
+ * Whether this server serves a page's generation. Sent once per event stream
+ * connection to a page that names its generation; never reveals the worktree key.
+ * `foreign`: built for another worktree, so the page must leave it.
+ * `missing`: pruned or never published here; its worktree can no longer be proven.
+ */
+export type PageGenerationStatus = "served" | "foreign" | "missing";
+
 const MAX_URL_LENGTH = 2048;
 const MAX_SEGMENTS = 9;
 const IMMUTABLE = "public, max-age=31536000, immutable";
@@ -102,7 +110,9 @@ export class GodotWebStaticServer {
         const raw = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
         const generation = typeof raw.generation === "string" && GENERATION_ID.test(raw.generation)
           && raw.worktreeKey === this.options.worktreeKey ? raw.generation : null;
-        const exists = generation ? Boolean(await stat(join(this.options.root, "generations", generation)).catch(() => null)) : false;
+        // The entry redirect must only point at a generation the file route serves; a page
+        // would otherwise be told it is foreign right after "/" sent it there.
+        const exists = generation ? (await this.ownership(generation)).status === "served" : false;
         const build = raw.build === "queued" || raw.build === "building" || raw.build === "failed" ? raw.build : "idle";
         next = {
           generation: exists ? generation : null,
@@ -116,6 +126,14 @@ export class GodotWebStaticServer {
       this.broadcast();
     })().finally(() => { this.refreshing = null; });
     return this.refreshing;
+  }
+
+  /** Resolves a generation directory and its private worktree key; shared by every route. */
+  private async ownership(generation: string): Promise<{ status: PageGenerationStatus; root: string | null }> {
+    const root = await realpath(join(this.options.root, "generations", generation)).catch(() => null);
+    if (!root) return { status: "missing", root: null };
+    const key = await readFile(join(root, ".worktree-key"), "utf8").catch(() => null);
+    return key === this.options.worktreeKey ? { status: "served", root } : { status: "foreign", root: null };
   }
 
   private broadcast(): void {
@@ -153,7 +171,7 @@ export class GodotWebStaticServer {
       if (path === "/" || path === "/index.html") return this.entry(request, response, url);
       if (path === "/__wtc/state") return this.body(response, 200, this.headers("no-store", "application/json; charset=utf-8"), Buffer.from(JSON.stringify(this.state)));
       if (path === "/__wtc/live-reload.js") return this.body(response, 200, this.headers("no-cache", "text/javascript; charset=utf-8"), Buffer.from(LIVE_RELOAD_SCRIPT));
-      if (path === "/__wtc/events") return this.events(request, response);
+      if (path === "/__wtc/events") return await this.events(request, response, url);
       if (path.startsWith("/g/")) return await this.generationFile(request, response, path);
       return this.plain(response, 404, "Not found");
     } catch {
@@ -172,12 +190,17 @@ export class GodotWebStaticServer {
     this.body(response, 200, this.headers("no-store", "text/html; charset=utf-8"), Buffer.from(placeholderPage(this.options.liveReload)));
   }
 
-  private events(request: IncomingMessage, response: ServerResponse): void {
+  private async events(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     if (!this.options.liveReload) return this.plain(response, 404, "Not found");
     if (request.method === "HEAD") return this.body(response, 200, this.headers("no-store", "text/event-stream"), Buffer.alloc(0));
+    // A page reconnecting after a runtime switch learns whether its own generation is still
+    // this worktree's build, even when the new worktree has nothing (or something newer) published.
+    const named = url.searchParams.get("generation");
+    const page = named !== null && GENERATION_ID.test(named) ? (await this.ownership(named)).status : null;
+    if (request.destroyed || response.destroyed) return;
     if (this.clients.size >= (this.options.maxEventClients ?? 32)) return this.plain(response, 503, "Too many live-reload clients", { "Retry-After": "10" });
     response.writeHead(200, { ...this.headers("no-store", "text/event-stream; charset=utf-8"), Connection: "keep-alive" });
-    response.write(`retry: 3000\nevent: state\ndata: ${JSON.stringify(this.state)}\n\n`);
+    response.write(`retry: 3000\n${page ? `event: page\ndata: ${JSON.stringify({ status: page })}\n\n` : ""}event: state\ndata: ${JSON.stringify(this.state)}\n\n`);
     this.clients.add(response);
     const release = () => this.clients.delete(response);
     request.once("close", release);
@@ -200,12 +223,9 @@ export class GodotWebStaticServer {
     if (!rest.every((segment) => SERVED_SEGMENT.test(segment))) return this.plain(response, 404, "Not found");
     const extension = extname(rest.at(-1)!).toLowerCase();
     if (!SERVED_EXTENSIONS.has(extension)) return this.plain(response, 404, "Not found");
-    const directory = join(this.options.root, "generations", generation);
-    const root = await realpath(directory).catch(() => null);
     // Pruned or foreign generation: the page should reload from "/".
+    const { root } = await this.ownership(generation);
     if (!root) return this.plain(response, 410, "Generation no longer available");
-    const key = await readFile(join(root, ".worktree-key"), "utf8").catch(() => null);
-    if (key !== this.options.worktreeKey) return this.plain(response, 410, "Generation no longer available");
     const file = join(root, ...rest);
     const resolved = await realpath(file).catch(() => null);
     if (!resolved || !inside(root, resolved) || resolved !== file) return this.plain(response, 404, "Not found");

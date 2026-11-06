@@ -45,6 +45,14 @@ cleanup of the previous one before reusing export storage; a cleanup timeout
 fails initialization instead of allowing overlapping exporters. A generation is bound to the worktree that
 produced it: after a switch, the previous worktree's build is not served.
 
+A page that is already open when the runtime switches leaves the previous
+worktree's build as soon as its event stream reconnects to the new runtime,
+even with auto-reload off and whether or not the new worktree has published
+anything yet. It then shows the new worktree's build, or the placeholder
+until that worktree's first export succeeds. A restart of the same worktree
+does not reload the page. If the page's build has since been pruned, the
+overlay says it is no longer served and offers **Reload**.
+
 ## Configure an exporter
 
 Choose one exporter. Both run without a shell, from the worktree root.
@@ -152,6 +160,8 @@ paths. A scoped agent with runtime delegation can still claim and start a
 - The current generation and its most recent predecessor are retained. A generation is
   limited to 4,096 files, 1 GiB and nesting depth 8.
 - Served pages receive only an opaque generation ID and coarse build state.
+  A page names its own generation when it opens the event stream and learns
+  only whether this runtime still serves it; the worktree key stays private.
   No controller token, path, log line or control endpoint is exposed on the
   game's port. Build logs remain in the dashboard's test run view.
 - The root `build.json` is treated as private export provenance and is never
@@ -215,7 +225,12 @@ ignored inputs and edits restored between observations are outside that guarante
   `WTC_GODOT_WEB_EXPORT` to its directory; the test then also expects engine
   startup on `localhost`, a restart after each reload and the secure-context
   refusal on the non-loopback origin.
-- A second browser test runs the standard `preset` exporter through the queue
+- A switch test, always with the synthetic export, keeps an open tab with
+  auto-reload off through a same-worktree restart, then switches to a second
+  worktree whose first export is held and then fails, and back while the tab's
+  event stream is blocked until the first worktree has published again. The
+  tab must leave the other worktree's build each time without reload loops.
+- Another browser test runs the standard `preset` exporter through the queue
   against a tiny Godot project, then edits its script and checks that the
   reloaded engine runs the new version. Link a Godot executable at
   `.godot-web-acceptance/godot` or set `WTC_GODOT_EXECUTABLE`, with matching Web

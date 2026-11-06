@@ -2,6 +2,13 @@
  * Browser client injected into exported pages. It only reads the same-origin
  * `/__wtc/events` stream and reloads the whole page after a new complete
  * generation; it is not state-preserving hot reload and carries no credentials.
+ *
+ * The stream URL names the page's generation (already public in its path). On
+ * every connection the server answers whether it still serves that generation:
+ * a build from another worktree is left immediately, even with auto-reload off,
+ * because after a runtime switch it no longer represents the running worktree.
+ * A restart of the same worktree keeps the page. Without auto-reload, a newer
+ * build of the same worktree only offers Reload.
  */
 export const LIVE_RELOAD_SCRIPT = String.raw`(() => {
   "use strict";
@@ -12,18 +19,22 @@ export const LIVE_RELOAD_SCRIPT = String.raw`(() => {
   const pl = (navigator.language || "").toLowerCase().startsWith("pl");
   const text = pl ? {
     live: "Podgląd na żywo", waiting: "Czekam na pierwszy eksport Web…", building: "Trwa eksport Web…",
-    failed: "Eksport nie powiódł się — działa poprzednia wersja", ready: "Nowa wersja jest gotowa", reload: "Odśwież",
+    failed: "Eksport nie powiódł się — działa poprzednia wersja", failedFirst: "Eksport nie powiódł się — czekam na poprawny eksport",
+    gone: "Ta wersja nie jest już serwowana", ready: "Nowa wersja jest gotowa", reload: "Odśwież",
     auto: "Auto-odświeżanie", hide: "Ukryj", show: "Podgląd", offline: "Brak połączenia z serwerem podglądu",
     region: "Stan podglądu Godot Web"
   } : {
     live: "Live preview", waiting: "Waiting for the first Web export…", building: "Web export in progress…",
-    failed: "Export failed — previous build kept", ready: "A new build is ready", reload: "Reload",
+    failed: "Export failed — previous build kept", failedFirst: "Export failed — waiting for a successful export",
+    gone: "This build is no longer served", ready: "A new build is ready", reload: "Reload",
     auto: "Auto-reload", hide: "Hide", show: "Preview", offline: "Preview server unreachable",
     region: "Godot Web preview status"
   };
   const storage = (key, value) => { try { if (value === undefined) return localStorage.getItem(key); localStorage.setItem(key, value); } catch { return null; } return null; };
   let auto = storage("wtc-live-reload-auto") !== "off";
   let latest = null;
+  let missing = false;
+  let leaving = false;
   const hidden = new URLSearchParams(location.search).get("wtc_overlay") === "0";
   const root = document.createElement("div");
   root.setAttribute("role", "region");
@@ -48,7 +59,7 @@ export const LIVE_RELOAD_SCRIPT = String.raw`(() => {
   collapse.setAttribute("aria-expanded", "true");
   for (const button of [reload, collapse]) button.style.cssText = "font:inherit;color:inherit;background:#3f3f46;border:1px solid #71717a;border-radius:4px;padding:1px 6px;cursor:pointer";
   root.append(status, reload, label, collapse);
-  const go = () => location.replace("/" + location.search);
+  const go = () => { leaving = true; location.replace("/" + location.search); };
   reload.addEventListener("click", go);
   toggle.addEventListener("change", () => { auto = toggle.checked; storage("wtc-live-reload-auto", auto ? "on" : "off"); if (auto) apply(latest); });
   collapse.addEventListener("click", () => {
@@ -58,18 +69,25 @@ export const LIVE_RELOAD_SCRIPT = String.raw`(() => {
     for (const element of [label, reload]) element.style.display = expanded ? "none" : "";
   });
   function apply(state) {
-    if (!state) return;
+    if (!state || leaving) return;
     latest = state;
     const fresh = state.generation && state.generation !== current;
-    if (fresh && (!current || auto)) { go(); return; }
-    reload.hidden = !fresh;
-    status.textContent = fresh ? text.ready : state.build === "building" || state.build === "queued" ? text.building
-      : state.build === "failed" ? text.failed : current ? text.live : text.waiting;
+    if ((fresh || missing) && (!current || auto)) { go(); return; }
+    reload.hidden = !(fresh || missing);
+    status.textContent = fresh ? text.ready : missing ? text.gone
+      : state.build === "building" || state.build === "queued" ? text.building
+      : state.build === "failed" ? (current ? text.failed : text.failedFirst) : current ? text.live : text.waiting;
   }
   const mount = () => { if (!hidden) document.body.append(root); };
   if (document.body) mount(); else document.addEventListener("DOMContentLoaded", mount, { once: true });
   status.textContent = current ? text.live : text.waiting;
-  const events = new EventSource("/__wtc/events");
+  const events = new EventSource("/__wtc/events" + (current ? "?generation=" + current : ""));
+  events.addEventListener("page", (event) => {
+    let page = null;
+    try { page = JSON.parse(event.data).status; } catch { return; }
+    if (page === "foreign") { events.close(); go(); return; }
+    missing = page === "missing";
+  });
   events.addEventListener("state", (event) => { try { apply(JSON.parse(event.data)); } catch { /* ignore malformed state */ } });
   events.addEventListener("error", () => { if (events.readyState !== EventSource.OPEN) status.textContent = text.offline; });
 })();
