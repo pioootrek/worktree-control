@@ -72,7 +72,7 @@ export class SourceWatcher {
         if (relativePath !== "." && this.isIgnored(relativePath)) continue;
         await this.attachConfiguredPath(relativePath, rescan);
       }
-      if (!this.disposed && !this.cancellation.signal.aborted && this.currentState !== "limit_exceeded") this.setState("watching");
+      if (!this.disposed && !this.cancellation.signal.aborted && this.state !== "limit_exceeded") this.setState("watching");
     } catch (error) {
       if (error instanceof WatchLimitError) return;
       this.closeWatchers();
