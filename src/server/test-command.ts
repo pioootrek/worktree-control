@@ -98,6 +98,14 @@ function worktreeFile(worktreePath: string, filename: string): boolean {
 const GODOT_PRESETS = ["check", "export-macos"];
 const GODOT_MANIFEST = "scripts/worktree-control-presets.json";
 const GODOT_MANIFEST_MAX_BYTES = 16 * 1024;
+type GodotManifestReason = "io_error" | "outside_worktree" | "not_regular_file" | "too_large" | "invalid_utf8" | "invalid_json" | "invalid_schema";
+
+class GodotManifestError extends Error {
+  constructor(reason: GodotManifestReason) {
+    super(`Nie można wczytać ${GODOT_MANIFEST} (${reason}).`);
+  }
+}
+
 const godotManifestSchema = z.object({
   version: z.literal(1),
   godot: z.object({
@@ -115,20 +123,21 @@ function additionalGodotPresets(worktreePath: string): string[] {
     lstatSync(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw new Error(`Nie udało się odczytać ${GODOT_MANIFEST}.`);
+    throw new GodotManifestError("io_error");
   }
   let descriptor: number | undefined;
   try {
     const root = realpathSync(worktreePath);
     const file = realpathSync(path);
     const localPath = relative(root, file);
-    if (localPath === ".." || localPath.startsWith("../") || isAbsolute(localPath)) throw new Error();
-    if (!statSync(file).isFile()) throw new Error();
+    if (localPath === ".." || localPath.startsWith("../") || isAbsolute(localPath)) throw new GodotManifestError("outside_worktree");
+    if (!statSync(file).isFile()) throw new GodotManifestError("not_regular_file");
     // NONBLOCK avoids hanging if the file is replaced by a FIFO before open;
     // NOFOLLOW prevents following a replacement of the resolved final entry.
     descriptor = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
     const stat = fstatSync(descriptor);
-    if (!stat.isFile() || stat.size > GODOT_MANIFEST_MAX_BYTES) throw new Error();
+    if (!stat.isFile()) throw new GodotManifestError("not_regular_file");
+    if (stat.size > GODOT_MANIFEST_MAX_BYTES) throw new GodotManifestError("too_large");
     // Bound the read even when the file grows after fstat.
     const buffer = Buffer.alloc(GODOT_MANIFEST_MAX_BYTES + 1);
     let length = 0;
@@ -137,11 +146,19 @@ function additionalGodotPresets(worktreePath: string): string[] {
       if (count === 0) break;
       length += count;
     }
-    if (length > GODOT_MANIFEST_MAX_BYTES) throw new Error();
-    const document: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, length)));
-    return godotManifestSchema.parse(document).godot.presets;
-  } catch {
-    throw new Error(`Nieprawidłowy ${GODOT_MANIFEST}: wymagany plik JSON v1 wewnątrz worktree, do 16 KiB i 16 unikalnych nazw presetów Godota.`);
+    if (length > GODOT_MANIFEST_MAX_BYTES) throw new GodotManifestError("too_large");
+    let text: string;
+    try { text = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, length)); }
+    catch { throw new GodotManifestError("invalid_utf8"); }
+    let document: unknown;
+    try { document = JSON.parse(text); }
+    catch { throw new GodotManifestError("invalid_json"); }
+    const parsed = godotManifestSchema.safeParse(document);
+    if (!parsed.success) throw new GodotManifestError("invalid_schema");
+    return parsed.data.godot.presets;
+  } catch (error) {
+    if (error instanceof GodotManifestError) throw error;
+    throw new GodotManifestError("io_error");
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
   }

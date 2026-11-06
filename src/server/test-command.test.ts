@@ -1,15 +1,18 @@
 import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectTestCommandResolver } from "./test-command";
 
 const directories: string[] = [];
+vi.mock("node:fs", async importOriginal => ({ ...await importOriginal<typeof import("node:fs")>() }));
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -128,6 +131,8 @@ describe("Godot project preset manifest", () => {
 
   it.each([
     "", "{", "null", "[]", "{}",
+    JSON.stringify({ version: 1 }),
+    JSON.stringify({ version: 1, godot: {} }),
     JSON.stringify({ version: 2, godot: { presets: [] } }),
     JSON.stringify({ version: "1", godot: { presets: [] } }),
     JSON.stringify({ version: 1, godot: [] }),
@@ -202,5 +207,59 @@ describe("Godot project preset manifest", () => {
     writeFileSync(join(directory, "package.json"), JSON.stringify({ scripts: { check: "tsc" } }));
     writeFileSync(join(directory, "manage.py"), "# django");
     expect(resolver.discover(directory).map(({ id }) => id)).toEqual(["node:check", "django:test"]);
+  });
+
+  it("does not expose Godot presets without the public script, even with a malformed manifest", () => {
+    const directory = project();
+    rmSync(join(directory, "scripts/project.sh"));
+    manifest(directory, ["suite"]);
+    expect(resolver.discover(directory)).toEqual([]);
+    writeFileSync(join(directory, manifestPath), "malformed");
+    expect(resolver.discover(directory)).toEqual([]);
+  });
+
+  it("bounds reads when a manifest grows after its size was checked", () => {
+    const directory = project();
+    manifest(directory, []);
+    const stat = fs.fstatSync;
+    vi.spyOn(fs, "fstatSync").mockImplementationOnce((fd) => {
+      const before = stat(fd);
+      writeFileSync(join(directory, manifestPath), " ".repeat(32 * 1024));
+      return before;
+    });
+    const read = vi.spyOn(fs, "readSync");
+    const close = vi.spyOn(fs, "closeSync");
+    expect(() => resolver.discover(directory)).toThrow("(too_large)");
+    expect(read.mock.results.reduce((bytes, result) => bytes + (result.value as number), 0)).toBe(16 * 1024 + 1);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a file replaced by a FIFO immediately before open", () => {
+    const directory = project();
+    manifest(directory, []);
+    const open = fs.openSync;
+    vi.spyOn(fs, "openSync").mockImplementationOnce((path, flags, mode) => {
+      // Check the flag before opening: a regression must fail, not hang the test.
+      expect(typeof flags).toBe("number");
+      expect((flags as number) & fs.constants.O_NONBLOCK).not.toBe(0);
+      rmSync(join(directory, manifestPath));
+      execFileSync("mkfifo", [join(directory, manifestPath)]);
+      return open(path, flags, mode);
+    });
+    expect(() => resolver.discover(directory)).toThrow("(not_regular_file)");
+  });
+
+  it("distinguishes I/O errors from invalid documents without leaking contents or paths", () => {
+    const directory = project();
+    manifest(directory, []);
+    const failure = Object.assign(new Error("private/path and file contents"), { code: "EMFILE" });
+    vi.spyOn(fs, "openSync").mockImplementationOnce(() => { throw failure; });
+    expect(() => resolver.discover(directory)).toThrow("Nie można wczytać scripts/worktree-control-presets.json (io_error).");
+    vi.spyOn(fs, "lstatSync").mockImplementationOnce(() => { throw failure; });
+    expect(() => resolver.discover(directory)).toThrow("Nie można wczytać scripts/worktree-control-presets.json (io_error).");
+    writeFileSync(join(directory, manifestPath), "{private");
+    expect(() => resolver.discover(directory)).toThrow("(invalid_json)");
+    manifest(directory, ["private-invalid-name;id"]);
+    expect(() => resolver.discover(directory)).toThrow("(invalid_schema)");
   });
 });

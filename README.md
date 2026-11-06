@@ -321,8 +321,11 @@ discovery and resolution rather than silently falling back to the defaults.
 The manifest is read again when resolving a command. Commit it with the public
 script for reproducible verification; discovery does not check Git tracking.
 It cannot configure commands, arguments, environment or timeouts. New presets
-keep the default 15-minute timeout and use the default test profile until an
-operator assigns another profile through the existing configuration controls.
+keep the default 15-minute timeout and the Godot default `tooling` test profile.
+Existing per-preset timeout and profile controls apply as they do to built-ins.
+Errors identify a bounded reason: `io_error`, `outside_worktree`,
+`not_regular_file`, `too_large`, `invalid_utf8`, `invalid_json` or `invalid_schema`.
+They do not include the file contents or resolved filesystem paths.
 
 Each worktree needs its own installed dependencies and runtime setup. Server
 profiles provide named environment overrides. Tests have separate environment

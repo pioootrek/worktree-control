@@ -3,6 +3,17 @@ import { describe, expect, it } from "vitest";
 import { localizeServerMessage } from "./server-errors";
 
 describe("server error localization", () => {
+  it.each(["io_error", "outside_worktree", "not_regular_file", "too_large", "invalid_utf8", "invalid_json", "invalid_schema"])("translates a bounded Godot manifest reason: %s", (reason) => {
+    const message = `Nie można wczytać scripts/worktree-control-presets.json (${reason}).`;
+    expect(localizeServerMessage(message, "en")).toBe(`Cannot load scripts/worktree-control-presets.json (${reason}).`);
+    expect(localizeServerMessage(message, "pl")).toBe(message);
+  });
+
+  it("translates a removed Godot preset", () => {
+    expect(localizeServerMessage("Wybrany preset testowy Godot nie istnieje już w tym worktree.", "en"))
+      .toBe("The selected Godot test preset no longer exists in this worktree.");
+  });
+
   it("keeps Polish errors unchanged", () => {
     expect(localizeServerMessage("Nie znaleziono projektu.", "pl")).toBe("Nie znaleziono projektu.");
   });
