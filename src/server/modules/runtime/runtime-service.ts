@@ -1,5 +1,5 @@
 import type { GitWorktreeReader } from "@/server/git-worktrees";
-import { NO_SERVER_MESSAGE, type LaunchCommandResolver, type NextTlsConfiguration } from "@/server/launch-command";
+import { GODOT_WEB_TLS_MESSAGE, NO_SERVER_MESSAGE, type LaunchCommandResolver, type NextTlsConfiguration } from "@/server/launch-command";
 import { type LogWriter } from "@/server/log-writer";
 import type { ProcessManager } from "@/server/process-manager";
 import type { StateStore } from "@/server/state-store";
@@ -77,7 +77,7 @@ export class RuntimeService {
             }
             const launch = this.commands.resolve(selected.path, project.port, project.launchPreset, {
               mode: project.tlsMode, keyPath: project.tlsKeyPath, certPath: project.tlsCertPath, caPath: project.tlsCaPath,
-            });
+            }, { projectId, godotWeb: project.godotWeb });
             if (project.executable !== launch.executable || JSON.stringify(project.args) !== JSON.stringify(launch.args)) {
               this.store.updateProjectLaunch(projectId, {
                 tlsMode: launch.tls.mode, tlsKeyPath: launch.tls.keyPath, tlsCertPath: launch.tls.certPath,
@@ -208,7 +208,7 @@ export class RuntimeService {
         keyPath: project.tlsKeyPath,
         certPath: project.tlsCertPath,
         caPath: project.tlsCaPath,
-      });
+      }, { projectId, godotWeb: project.godotWeb });
       if (project.executable !== launch.executable || JSON.stringify(project.args) !== JSON.stringify(launch.args)) {
         this.store.updateProjectLaunch(projectId, {
           tlsMode: launch.tls.mode,
@@ -231,6 +231,7 @@ export class RuntimeService {
     await this.lifecycle.serialized(projectId, async () => {
       const project = this.lifecycle.requireProject(projectId);
       if (project.launchPreset === "none") throw new Error(NO_SERVER_MESSAGE);
+      if (project.launchPreset === "godot-web") throw new Error(GODOT_WEB_TLS_MESSAGE);
       const phase = this.processes.snapshot(projectId).phase;
       if (phase === "running" || phase === "starting" || phase === "stopping") {
         throw new Error("Zatrzymaj serwer przed zmianą ustawień HTTPS.");

@@ -6,6 +6,9 @@ const constraints = [
   ["test_runs", "CHECK(adapter IN ('node', 'django'))", "CHECK(adapter IN ('node', 'django', 'godot'))"],
 ] as const;
 
+/** Frozen copy of migration 35's constraint; bootstrap DDL of a newer binary may already contain it. */
+const LATER_PROJECT_PRESETS = "CHECK(launch_preset IN ('auto', 'node', 'django', 'none', 'godot-web'))";
+
 export const verificationProjectMigration = {
   version: 30,
   name: "verification-only-projects-and-godot",
@@ -19,16 +22,17 @@ export function applyVerificationProjectMigration(database: Database.Database): 
   if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=30").get()) return;
   // initializeSchema owns the sole connection, enclosing transaction and FK validation.
   if (!database.inTransaction || database.pragma("foreign_keys", { simple: true })) throw new Error("Migration 30 requires the ordered schema transaction with FK enforcement disabled.");
-  for (const [table, from, to] of constraints) rebuildTable(database, table, from, to);
+  // A later superset (migration 35's launch presets) already satisfies this replacement.
+  for (const [table, from, to] of constraints) rebuildTable(database, table, from, to, table === "projects" ? [LATER_PROJECT_PRESETS] : []);
   database.prepare("INSERT INTO schema_migrations(version,applied_at,name,checksum) VALUES(30,?,?,?)")
     .run(new Date().toISOString(), verificationProjectMigration.name, verificationProjectChecksum);
 }
 
 /** Replaces one table constraint; skips tables already carrying it so repaired migration records can rerun safely. */
-export function rebuildTable(database: Database.Database, table: string, from: string, to: string): void {
+export function rebuildTable(database: Database.Database, table: string, from: string, to: string, satisfiedBy: readonly string[] = []): void {
   const current = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql: string } | undefined;
   if (!current) throw new Error(`Missing table ${table}.`);
-  if (current.sql.includes(to)) return;
+  if (current.sql.includes(to) || satisfiedBy.some((constraint) => current.sql.includes(constraint))) return;
   if (!current.sql.includes(from)) throw new Error(`Unexpected ${table} definition; refusing to rebuild it.`);
   const next = current.sql.replace(from, to);
   const indexes = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL")

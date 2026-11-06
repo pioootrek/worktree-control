@@ -8,6 +8,8 @@ import { RuntimeService } from "./modules/runtime";
 import { StatusService, type CompactProjectStatus, type CompactTestStatus, type CompactEnvelope } from "./modules/status";
 import { VerificationService, VerificationHistoryService } from "./modules/verification";
 import type { RemoteVerificationController } from "./modules/remote-verification";
+import type { GodotWebService } from "./modules/godot-web";
+import { DEFAULT_GODOT_WEB_CONFIG, parseGodotWebConfig, type WebExportStatus } from "@/shared/contracts/godot-web";
 
 import type {
   CacheDeletionResult,
@@ -80,6 +82,7 @@ export class ControlService {
     lifecycle?: ProjectLifecycle,
     private readonly knowledge?: KnowledgeService,
     private readonly remoteVerification?: RemoteVerificationController,
+    private readonly godotWeb?: GodotWebService,
   ) {
     this.lifecycle = lifecycle ?? new ProjectLifecycle(store, processes);
     this.storage?.assertLifecycle(this.lifecycle);
@@ -95,6 +98,7 @@ export class ControlService {
       discoverPresets: (project, worktreePath) => this.verification.discoverPresets(project, worktreePath),
       capacity: (projects) => this.lifecycle.capacityStatus(projects),
       testQueue: () => this.testQueueStatus(),
+      webExport: (projectId) => this.godotWeb?.status(projectId) ?? null,
     });
     this.statusQueries = new StatusService(store, processes,
       () => this.lifecycle.capacityStatusCompact(), () => this.testQueueStatus());
@@ -265,15 +269,24 @@ export class ControlService {
     }
     const { repositoryPath, selectedWorktree: selected } = await discoverProjectRegistrationTarget(this.git, input.repositoryPath);
     const launchPreset = input.launchPreset ?? "auto";
-    const command = this.commands.resolve(selected.path, input.port, launchPreset);
+    // Godot Web is explicit opt-in; auto detection never selects it.
+    const godotWeb = launchPreset === "godot-web" ? parseGodotWebConfig(input.godotWeb ?? DEFAULT_GODOT_WEB_CONFIG) : null;
+    if (input.godotWeb && launchPreset !== "godot-web") throw new Error("Godot Web configuration requires the godot-web preset.");
+    if (godotWeb) this.requireGodotWeb().validate(godotWeb, selected.path);
+    const command = this.commands.resolve(selected.path, input.port, launchPreset, undefined, { godotWeb });
     const project = this.store.addProject({
       ...input,
       name: input.name.trim(),
       repositoryPath,
       launchPreset: command.preset,
+      godotWeb,
       executable: command.executable,
       args: command.args,
     });
+    if (godotWeb) {
+      const launch = this.commands.resolve(selected.path, input.port, "godot-web", undefined, { projectId: project.id, godotWeb });
+      this.store.updateProjectLaunch(project.id, { tlsMode: "off", tlsKeyPath: null, tlsCertPath: null, tlsCaPath: null, executable: launch.executable, args: launch.args });
+    }
     this.store.setSelectedWorktree(project.id, selected.path);
     this.logs.controller("project.added", {
       projectId: project.id,
@@ -289,6 +302,13 @@ export class ControlService {
   async removeProject(projectId: string, actor: OperationActor = { owner: "local-user" }): Promise<ProjectView> {
     return this.lifecycle.serialized(projectId, async () => {
       const project = this.lifecycle.requireProject(projectId);
+      if (project.launchPreset === "godot-web" && this.godotWeb) {
+        // Automatic exports belong to the runtime: stop it, cancel its export, then apply the normal test check.
+        this.lifecycle.assertReservationAllows(projectId, this.processes.snapshot(projectId).worktreePath ?? project.selectedWorktreePath, actor);
+        this.store.assertProjectRemovalAllowed(projectId);
+        await this.processes.stop(projectId);
+        await this.godotWeb.drain(projectId);
+      }
       if (this.store.countTestRuns(["queued", "running"], projectId) > 0) {
         throw new Error("Anuluj testy projektu przed jego usunięciem.");
       }
@@ -300,6 +320,9 @@ export class ControlService {
       this.store.assertProjectRemovalAllowed(projectId);
       await this.processes.stop(projectId);
       this.store.removeProject(projectId, actor.owner);
+      if (project.launchPreset === "godot-web") await this.godotWeb?.forget(projectId).catch((error: unknown) => {
+        this.logs.controller("godot_web.store_cleanup_failed", { projectId, error: String(error) });
+      });
       await this.tests?.pruneLogs();
       this.logs.controller("project.removed", {
         projectId: project.id,
@@ -326,6 +349,26 @@ export class ControlService {
     signal?: AbortSignal, sessionClosed?: () => boolean,
   ): Promise<ClaimedRuntimeReceipt> {
     return this.runtime.operateClaimed(projectId, reservationId, action, actor, signal, sessionClosed);
+  }
+
+  async configureGodotWeb(projectId: string, input: unknown, actor: OperationActor = { owner: "local-user" }): Promise<ProjectView> {
+    const project = await this.requireGodotWeb().configure(projectId, input, actor);
+    this.invalidateDashboardMetadata(projectId);
+    return project;
+  }
+
+  rebuildWebExport(projectId: string, actor: OperationActor = { owner: "local-user" }): Promise<WebExportStatus> {
+    return this.requireGodotWeb().rebuild(projectId, actor);
+  }
+
+  webExportStatus(projectId: string): WebExportStatus | null {
+    this.lifecycle.requireProject(projectId);
+    return this.godotWeb?.status(projectId) ?? null;
+  }
+
+  private requireGodotWeb(): GodotWebService {
+    if (!this.godotWeb) throw new Error("The Godot Web runtime is unavailable in this controller mode.");
+    return this.godotWeb;
   }
 
   async setProjectTls(projectId: string, input: NextTlsConfiguration): Promise<void> {
@@ -451,6 +494,11 @@ export class ControlService {
             operationStage = "runtime";
             if (runtime.phase !== "stopped") await this.processes.stop(input.projectId);
             if (project.selectedWorktreePath !== selected.path) this.store.setSelectedWorktree(input.projectId, selected.path);
+            if (project.launchPreset === "godot-web") {
+              // The static server is bound to its worktree; resolve its command for the claimed one.
+              const launch = this.commands.resolve(selected.path, project.port, "godot-web", undefined, { projectId: project.id, godotWeb: project.godotWeb });
+              this.store.updateProjectLaunch(project.id, { tlsMode: "off", tlsKeyPath: null, tlsCertPath: null, tlsCaPath: null, executable: launch.executable, args: launch.args });
+            }
             await this.processes.start(this.lifecycle.requireProject(input.projectId), selected.path);
           } finally {
             this.lifecycle.releaseCapacity(input.projectId);
@@ -583,7 +631,9 @@ export class ControlService {
   async shutdown(): Promise<void> {
     this.closeAdmission();
     const failures: unknown[] = [];
-    const cleanup = await Promise.allSettled([this.lifecycle.closeAndDrain(), this.tests?.shutdown(), this.processes.stopAll()]);
+    // Ending preview sessions first suppresses late publication; the queue then cancels their exports.
+    const previews = this.godotWeb?.close();
+    const cleanup = await Promise.allSettled([this.lifecycle.closeAndDrain(), this.tests?.shutdown(), this.processes.stopAll(), previews]);
     failures.push(...cleanup.filter((result) => result.status === "rejected").map((result) => result.reason));
     try {
       await this.storage?.close();

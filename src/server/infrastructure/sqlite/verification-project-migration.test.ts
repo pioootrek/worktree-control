@@ -27,10 +27,10 @@ function fixture() {
   // revert only the new constraints/record. The two populated table shapes remain real v29.
   initializeSchema(db);
   db.pragma("foreign_keys=OFF");
-  for (const [table, extra] of [["projects", ", 'none'"], ["test_runs", ", 'godot'"]]) {
-    const sql = (db.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as { sql: string }).sql;
+  for (const [table, ...extras] of [["projects", ", 'none'", ", 'godot-web'"], ["test_runs", ", 'godot'"]]) {
+    const sql = extras.reduce((current, extra) => current.replace(extra, ""), (db.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as { sql: string }).sql);
     const indexes = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL").all(table) as Array<{ sql: string }>;
-    db.exec(sql.replace(extra, "").replace(/^CREATE TABLE "?\w+"?/, `CREATE TABLE ${table}_old`));
+    db.exec(sql.replace(/^CREATE TABLE "?\w+"?/, `CREATE TABLE ${table}_old`));
     db.exec(`INSERT INTO ${table}_old SELECT * FROM ${table}; DROP TABLE ${table}; ALTER TABLE ${table}_old RENAME TO ${table};`);
     for (const index of indexes) db.exec(index.sql);
   }

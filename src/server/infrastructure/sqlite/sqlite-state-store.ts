@@ -8,7 +8,7 @@ import type { KnowledgeTaskPage, KnowledgeReplyPage, KnowledgeRelationDestinatio
 import type { KnowledgeMemory, KnowledgeSearchHit, KnowledgeSearchOptions } from "@/shared/contracts/knowledge-memory";
 import type { KnowledgeAttachmentLimits, KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
 import type { KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
-import type { PendingTestRun, ProjectRegistration, ReservationRequest, StateStore, TestRunStatusRecord, WorktreeStorageSample } from "@/server/state-store";
+import type { PendingTestRun, ProjectGodotWebUpdate, ProjectRegistration, ReservationRequest, StateStore, TestRunStatusRecord, WorktreeStorageSample } from "@/server/state-store";
 import type { Project, Reservation, ServerCapacitySettings, TestEnvironmentProfile, TestQueueSettings, TestRun, TestRunPhase, WorktreeStorageSnapshot } from "@/shared/contracts";
 import type {
   RemotePrincipal,
@@ -383,18 +383,34 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       this.database.prepare(`
         INSERT INTO projects (
           id, name, repository_path, port, launch_preset, executable, args_json,
-          healthcheck_path, startup_timeout_ms, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, '/', 45000, ?, ?)
-      `).run(id, input.name, input.repositoryPath, input.port, input.launchPreset ?? "auto", input.executable, JSON.stringify(input.args), now, now);
+          healthcheck_path, startup_timeout_ms, created_at, updated_at, godot_web_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, '/', 45000, ?, ?, ?)
+      `).run(id, input.name, input.repositoryPath, input.port, input.launchPreset ?? "auto", input.executable, JSON.stringify(input.args), now, now,
+        input.godotWeb ? JSON.stringify(input.godotWeb) : null);
       this.audit(id, "project.created", "local-user", {
         repositoryPath: input.repositoryPath,
         port: input.port,
         launchPreset: input.launchPreset ?? "auto",
         executable: input.executable,
         args: input.args,
+        ...(input.godotWeb ? { godotWeb: input.godotWeb } : {}),
       });
     })();
     return this.getProject(id)!;
+  }
+
+  setProjectGodotWeb(projectId: string, input: ProjectGodotWebUpdate, actor: string): void {
+    if ((input.launchPreset === "godot-web") !== Boolean(input.godotWeb)) throw new Error("Godot Web configuration requires the godot-web preset.");
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      const result = this.database.prepare(`
+        UPDATE projects SET launch_preset = ?, godot_web_json = ?, executable = ?, args_json = ?, tls_mode = 'off',
+          tls_key_path = NULL, tls_cert_path = NULL, tls_ca_path = NULL, updated_at = ?
+        WHERE id = ?
+      `).run(input.launchPreset, input.godotWeb ? JSON.stringify(input.godotWeb) : null, input.executable, JSON.stringify(input.args), now, projectId);
+      if (result.changes === 0) throw new Error("Nie znaleziono projektu.");
+      this.audit(projectId, "project.godot_web_configured", actor, { launchPreset: input.launchPreset, godotWeb: input.godotWeb });
+    })();
   }
 
   assertProjectRemovalAllowed(projectId: string): void {

@@ -1,6 +1,7 @@
 import type { DevVaultOperations } from "./modules/dev-vault";
 import { devVaultFailure, executeDevVault } from "./transports/dev-vault";
 import { testPresetTimeoutSchema } from "./modules/verification";
+import { parseGodotWebConfig } from "@/shared/contracts/godot-web";
 import type { McpDiagnosticsResponse } from "@/shared/contracts/mcp-diagnostics";
 import { handleUserBackupHttp } from "./transports/user-backup-http";
 import { handleBackupHttp } from "./transports/backup-http";
@@ -59,16 +60,18 @@ function optionalString(record: JsonRecord, key: string, max: number): string | 
 }
 
 function parseAddProject(value: unknown) {
-  const record = strictRecord(value, ["name", "repositoryPath", "port", "launchPreset"]);
+  const record = strictRecord(value, ["name", "repositoryPath", "port", "launchPreset", "godotWeb"]);
   const port = record.port;
   if (typeof port !== "number" || !Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Nieprawidłowe pole port.");
   const launchPreset = record.launchPreset ?? "auto";
-  if (launchPreset !== "auto" && launchPreset !== "node" && launchPreset !== "django" && launchPreset !== "none") throw new Error("Nieprawidłowy preset uruchomienia.");
+  if (launchPreset !== "auto" && launchPreset !== "node" && launchPreset !== "django" && launchPreset !== "none" && launchPreset !== "godot-web") throw new Error("Nieprawidłowy preset uruchomienia.");
+  if (record.godotWeb !== undefined && launchPreset !== "godot-web") throw new Error("Godot Web configuration requires the godot-web preset.");
   return {
     name: requiredString(record, "name", 80),
     repositoryPath: requiredString(record, "repositoryPath", 4096),
     port,
     launchPreset: launchPreset as LaunchPreset,
+    ...(record.godotWeb !== undefined ? { godotWeb: parseGodotWebConfig(record.godotWeb) } : {}),
   };
 }
 
@@ -750,6 +753,29 @@ export function createControllerServer(options: {
           options.events.publish({ kinds: ["runtime", "reservation"], projectIds: [projectId] });
           json(response, 200, { ok: true });
           return;
+        }
+        const godotWebMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/godot-web(\/rebuild)?$/);
+        if (godotWebMatch) {
+          const projectId = decodeURIComponent(godotWebMatch[1]);
+          if (request.method === "GET" && !godotWebMatch[2]) {
+            json(response, 200, { webExport: options.service.webExportStatus(projectId) });
+            return;
+          }
+          if (request.method === "POST" && godotWebMatch[2]) {
+            strictRecord(await readJson(request), []);
+            const webExport = await options.service.rebuildWebExport(projectId);
+            options.events.publish({ kinds: ["runtime", "tests"], projectIds: [projectId] });
+            json(response, 202, { webExport });
+            return;
+          }
+          if (request.method === "POST") {
+            const record = strictRecord(await readJson(request), ["config"]);
+            if (!("config" in record)) throw new Error("Nieprawidłowe pole config.");
+            const project = await options.service.configureGodotWeb(projectId, record.config);
+            options.events.publish({ kinds: ["topology", "metadata"], projectIds: [projectId] });
+            json(response, 200, { project });
+            return;
+          }
         }
         const tlsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/tls$/);
         if (request.method === "POST" && tlsMatch) {

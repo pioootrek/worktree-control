@@ -723,6 +723,29 @@ export class McpRuntime {
       return jsonContent(await english(() => this.service.testEnvironmentProfiles(projectId)));
     });
 
+    server.registerTool("configure_godot_web", {
+      description: "Opt a stopped Godot project into the godot-web preset (or pass config null to return to verification-only). Exports use a standard Web preset or a project-owned command and run in the shared test queue.",
+      inputSchema: {
+        projectId: z.string().uuid(),
+        config: z.record(z.string(), z.unknown()).nullable(),
+      },
+      annotations: { destructiveHint: true, idempotentHint: true },
+    }, async ({ projectId, config }) => jsonContent({
+      project: await english(() => this.service.configureGodotWeb(projectId, config, actorFor(projectId))),
+    }));
+
+    server.registerTool("get_web_export_status", {
+      description: "Read the Godot Web export state: served generation, build/queue state, watcher and last failure.",
+      inputSchema: { projectId: z.string().uuid() },
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    }, async ({ projectId }) => jsonContent({ webExport: await english(() => this.service.webExportStatus(projectId)) }));
+
+    server.registerTool("rebuild_web_export", {
+      description: "Queue a fresh Godot Web export for the running preview (coalesced with any export in flight). Publication happens only after a complete successful export.",
+      inputSchema: { projectId: z.string().uuid() },
+      annotations: { idempotentHint: true },
+    }, async ({ projectId }) => jsonContent({ webExport: await english(() => this.service.rebuildWebExport(projectId, actorFor(projectId))) }));
+
     server.registerTool("claim_project", {
       description: "Acquire an expiring agent claim and atomically move/start the project server on a discovered worktree. The claim remains held if startup fails.",
       inputSchema: {

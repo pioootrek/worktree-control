@@ -62,6 +62,8 @@ import { GitCommandAdmission, SystemGitWorktreeReader } from "../server/git-work
 import { createControllerServer } from "../server/http-server";
 import { resolveAppPaths } from "../server/paths";
 import { ProcessManager } from "../server/process-manager";
+import type { GodotWebService } from "../server/modules/godot-web";
+import { createGodotWebRuntime } from "./godot-web-runtime";
 import { loadOrCreateSecret } from "../server/secret-file";
 import { openControllerStore } from "../server/controller-storage";
 import { parseMigrationBackupOptions } from "./migration-backup-options";
@@ -227,7 +229,11 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       remoteTransport: remoteBackup.loaded ? new ResticBackupTransport(remoteBackup.loaded) : undefined,
     });
   } catch (error) { await logs.close(); store.close(); controllerLock.release(); throw error; }
-  const processes = new ProcessManager((projectId) => events.publish({ kinds: ["runtime"], projectIds: [projectId] }), logs, {
+  let godotWeb: GodotWebService | undefined;
+  const processes = new ProcessManager((projectId) => {
+    events.publish({ kinds: ["runtime"], projectIds: [projectId] });
+    godotWeb?.runtimeChanged(projectId);
+  }, logs, {
     memoryWarningThresholdBytes: memoryWarningMiB === null ? null : Math.round(memoryWarningMiB * 1024 * 1024),
   });
   const lifecycle = new ProjectLifecycle(store, processes);
@@ -270,7 +276,13 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   } catch (error) {
     userSchedules?.close(); await backups.close(); await tests.shutdown(); git.close(); await logs.close(); store.close(); controllerLock.release(); throw error;
   }
-  const service = new ControlService(store, git, processes, logs, undefined, storage, undefined, undefined, tests, lifecycle, knowledge, remoteVerification?.controller);
+  const godotWebRuntime = createGodotWebRuntime(paths.stateDirectory, {
+    store, git, processes, jobs: tests, lifecycle, logs,
+    notify: (projectId) => events.publish({ kinds: ["runtime"], projectIds: [projectId] }),
+  });
+  const commands = godotWebRuntime.commands;
+  godotWeb = godotWebRuntime.godotWeb;
+  const service = new ControlService(store, git, processes, logs, commands, storage, undefined, undefined, tests, lifecycle, knowledge, remoteVerification?.controller, godotWeb);
   const restores = new RestoreOperations(backups, paths.databasePath, paths.knowledgeAttachmentDirectory, {
     authentication: () => store.getAuthenticationPolicy(),
     enterMaintenance: () => { maintenance = true; lifecycle.closeAdmission(); },

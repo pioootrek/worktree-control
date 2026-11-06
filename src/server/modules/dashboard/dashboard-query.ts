@@ -1,3 +1,4 @@
+import type { WebExportStatus } from "@/shared/contracts/godot-web";
 import type {
   DashboardLiveResponse,
   DashboardResponse,
@@ -56,6 +57,7 @@ export interface DashboardQueryDependencies {
   discoverPresets(project: Project, worktreePath: string): WorktreeTestPresets;
   capacity(projects?: ProjectSnapshot[]): DashboardResponse["capacity"];
   testQueue(): DashboardResponse["testQueue"];
+  webExport?(projectId: string): WebExportStatus | null;
 }
 
 function safeMessage(error: unknown): string {
@@ -113,6 +115,7 @@ export class DashboardQueryService {
           projectId: project.id,
           ...(include("runtime") ? { lastLaunchedAt: this.dependencies.store.listWorktreeLaunches(project.id) } : {}),
           ...(include("runtime") ? { runtime: this.dependencies.processes.snapshot(project.id) } : {}),
+          ...(include("runtime") && project.launchPreset === "godot-web" ? { webExport: this.dependencies.webExport?.(project.id) ?? null } : {}),
           ...(include("reservation") ? { reservation: this.dependencies.store.getActiveReservation(project.id) } : {}),
           ...(include("storage") ? { storage: this.dependencies.storage?.snapshots(project.id, paths) ?? [] } : {}),
           ...(include("tests") ? { testRuns: this.dependencies.store.listTestRuns(project.id, DASHBOARD_TEST_RUN_LIMIT), testHistoryComplete: true } : {}),
@@ -190,6 +193,7 @@ export class DashboardQueryService {
       testHistoryComplete: true,
       metadata: this.metadataStatus(entry),
       ...(entry.error ? { discoveryError: entry.error } : {}),
+      ...(project.launchPreset === "godot-web" ? { webExport: this.dependencies.webExport?.(project.id) ?? null } : {}),
     };
   }
 

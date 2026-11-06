@@ -1,4 +1,5 @@
 import { devVaultMigration, devVaultChecksum } from "./dev-vault-migration";
+import { godotWebMigration, godotWebChecksum } from "./godot-web-migration";
 import { remoteConnectionMigration, remoteConnectionChecksum } from "./remote-connection-migration";
 import Database from "better-sqlite3";
 import { verificationProjectChecksum, verificationProjectMigration } from "./verification-project-migration";
@@ -38,6 +39,7 @@ const columnVersions: Record<string, number> = {
   "projects.launch_preset": 15, "projects.environment_json": 8,
   "projects.environment_profiles_json": 9, "projects.selected_environment_profile": 9,
   "projects.test_preset_timeouts_json": 31,
+  "projects.godot_web_json": 35,
   "knowledge_tasks.current_state_json": 33,
   "projects.test_environment_profiles_json": 11, "projects.test_preset_profiles_json": 11,
   "test_runs.environment_mode": 11, "test_runs.environment_profile": 11,
@@ -111,7 +113,8 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : x.version === 31 ? x.name !== testPresetTimeoutMigration.name || x.checksum !== testPresetTimeoutChecksum
       : x.version === 32 ? x.name !== remoteConnectionMigration.name || x.checksum !== remoteConnectionChecksum
       : x.version === 33 ? x.name !== taskCurrentStateMigration.name || x.checksum !== taskCurrentStateChecksum
-      : x.name !== devVaultMigration.name || x.checksum !== devVaultChecksum)) refuse("migration checksum or name");
+      : x.version === 34 ? x.name !== devVaultMigration.name || x.checksum !== devVaultChecksum
+      : x.name !== godotWebMigration.name || x.checksum !== godotWebChecksum)) refuse("migration checksum or name");
   }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));
   if (objects.some(x => x.type === "view" || x.type === "trigger") || [...tables].some(x => !(x in tableVersions))) refuse();
@@ -131,6 +134,7 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
     // A known historical expression must not hide additional, unknown CHECKs.
     if (historicalLease && (actualChecks.length !== 2 || !actualChecks.includes("kindin('human','agent')"))) refuse("constraint in reservations: lease");
     for (let check of expected.checks) {
+      if (table === "projects" && version < 35) check = check.replace(",'godot-web'", "");
       if (table === "projects" && version < 30) check = check.replace(",'none'", "");
       if (table === "test_runs" && version < 30) check = check.replace(",'godot'", "");
       if (table === "remote_principals" && version < 25) check = check.replace(",'installation'", "");

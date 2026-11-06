@@ -1,6 +1,8 @@
 export type RuntimePhase = "stopped" | "starting" | "running" | "stopping" | "failed";
 export type DevServerTlsMode = "off" | "generated" | "custom";
-export type LaunchPreset = "auto" | "node" | "django" | "none";
+import type { GodotWebConfig, WebExportStatus } from "./contracts/godot-web";
+
+export type LaunchPreset = "auto" | "node" | "django" | "none" | "godot-web";
 export type TestAdapterKind = "node" | "django" | "godot";
 export type TestRunPhase = "queued" | "running" | "passed" | "failed" | "cancelled" | "timed_out" | "interrupted";
 export type TestSourceComparison = "match" | "changed" | "unknown";
@@ -210,6 +212,8 @@ export interface Project {
   testEnvironmentProfiles: TestEnvironmentProfile[];
   testPresetProfiles: Record<string, string>;
   testPresetTimeouts: Record<string, number>;
+  /** Present only for explicit `godot-web` opt-in; other presets keep null. */
+  godotWeb: GodotWebConfig | null;
   healthcheckPath: string;
   startupTimeoutMs: number;
   selectedWorktreePath: string | null;
@@ -333,6 +337,8 @@ export interface ProjectSnapshot {
   testRuns: TestRun[];
   metadata?: WorktreeMetadataStatus;
   discoveryError?: string;
+  /** Managed Godot Web export state; absent for other presets. */
+  webExport?: WebExportStatus | null;
 }
 
 export type DashboardSection = "runtime" | "reservation" | "tests" | "storage" | "controller";
@@ -355,6 +361,7 @@ export interface ProjectLiveSnapshot {
   reservation?: Reservation | null;
   testRuns?: TestRun[];
   storage?: WorktreeStorageSnapshot[];
+  webExport?: WebExportStatus | null;
 }
 
 export interface DashboardLiveResponse {

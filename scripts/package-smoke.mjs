@@ -182,6 +182,7 @@ async function main() {
     for (const required of [
       "package/dist/cli/index.js",
       "package/dist/cli/backup-verifier.js",
+      "package/dist/cli/godot-web-server.js",
       "package/out/index.html",
       "package/skills/worktree-control/SKILL.md",
       "package/docs/authentication.md",

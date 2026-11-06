@@ -1,9 +1,11 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:net";
+import { readFileSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import type { DashboardResponse, LaunchPreset, ProjectView } from "../shared/contracts";
+import type { WebExportStatus } from "../shared/contracts/godot-web";
 import { localizeServerMessage } from "../i18n/server-errors";
 import { type Locale, translate } from "../i18n/messages";
 import { ControlService } from "../server/control-service";
@@ -13,6 +15,8 @@ import { detectLaunchPreset } from "../server/launch-command";
 import { nullLogWriter } from "../server/log-writer";
 import type { AppPaths } from "../server/paths";
 import { ProcessManager } from "../server/process-manager";
+import { ProjectLifecycle } from "../server/modules/lifecycle";
+import { createGodotWebRuntime } from "./godot-web-runtime";
 import { discoverProjectRegistrationTarget } from "../server/project-registration";
 import { SqliteStateStore } from "../server/sqlite-store";
 import { controllerAccessToken, localDashboardEndpoint, readServiceAccess } from "./service-access";
@@ -22,9 +26,20 @@ const execFileAsync = promisify(execFile);
 export interface ProjectGateway {
   readonly mode: "controller" | "offline";
   dashboard(): Promise<DashboardResponse>;
-  addProject(input: { name: string; repositoryPath: string; port: number; launchPreset: LaunchPreset }): Promise<ProjectView>;
+  addProject(input: ProjectAddInput): Promise<ProjectView>;
   removeProject(projectId: string): Promise<ProjectView>;
+  configureGodotWeb(projectId: string, config: unknown): Promise<ProjectView>;
+  rebuildWebExport(projectId: string): Promise<WebExportStatus>;
   close(): Promise<void>;
+}
+
+export interface ProjectAddInput { name: string; repositoryPath: string; port: number; launchPreset: LaunchPreset; godotWeb?: unknown }
+
+/** Reads a bounded JSON configuration file named on the command line. */
+function readConfigFile(path: string): unknown {
+  const absolute = resolve(path);
+  if (statSync(absolute).size > 64 * 1024) throw new Error("The Godot Web configuration file is larger than 64 KiB.");
+  return JSON.parse(readFileSync(absolute, "utf8"));
 }
 
 export interface ProjectCommandDependencies {
@@ -55,7 +70,17 @@ export async function openProjectGateway(paths: AppPaths, locale: Locale): Promi
   try {
     const store = new SqliteStateStore(paths.databasePath);
     const processes = new ProcessManager(() => undefined, nullLogWriter);
-    const service = new ControlService(store, new SystemGitWorktreeReader(), processes);
+    const git = new SystemGitWorktreeReader();
+    const lifecycle = new ProjectLifecycle(store, processes);
+    // Offline access configures projects only; no runtime runs, so no export can be queued.
+    const offlineJobs = {
+      enqueue: () => { throw new Error("Exports run only in a running controller."); },
+      cancel: () => Promise.reject(new Error("Exports run only in a running controller.")),
+    };
+    const { commands, godotWeb } = createGodotWebRuntime(paths.stateDirectory, {
+      store, git, processes, jobs: offlineJobs, lifecycle, logs: nullLogWriter, notify: () => undefined,
+    });
+    const service = new ControlService(store, git, processes, nullLogWriter, commands, undefined, undefined, undefined, undefined, lifecycle, undefined, undefined, godotWeb);
     return new OfflineProjectGateway(service, lock);
   } catch (error) {
     lock.release();
@@ -99,10 +124,10 @@ export async function runProjectCommand(
   }
 
   if (action === "add") {
-    const repositoryPath = positionalArgument(args, 1, ["--name", "--port", "--preset"]);
+    const repositoryPath = positionalArgument(args, 1, ["--name", "--port", "--preset", "--godot-web-config"]);
     if (!repositoryPath) throw new Error(translate(locale, "cli.project.addUsage"));
     const preset = optionValue(args, "--preset", locale) ?? "auto";
-    if (preset !== "auto" && preset !== "node" && preset !== "django" && preset !== "none") {
+    if (preset !== "auto" && preset !== "node" && preset !== "django" && preset !== "none" && preset !== "godot-web") {
       throw new Error(translate(locale, "cli.project.invalidPreset"));
     }
     const dashboard = await gateway.dashboard();
@@ -134,13 +159,34 @@ export async function runProjectCommand(
         throw new Error(translate(locale, "cli.project.noAvailablePort"));
       }
     }
+    const configPath = optionValue(args, "--godot-web-config", locale);
+    if (configPath && preset !== "godot-web") throw new Error(translate(locale, "cli.project.godotWebConfigRequiresPreset"));
     const project = await gateway.addProject({
       name: optionValue(args, "--name", locale) ?? basename(resolvedPath),
       repositoryPath: resolvedPath,
       port,
       launchPreset: preset,
+      ...(configPath ? { godotWeb: readConfigFile(configPath) } : {}),
     });
     write(translate(locale, "cli.project.added", { name: project.name, id: project.id, port: project.port }));
+    return;
+  }
+
+  if (action === "godot-web") {
+    const projectId = positionalArgument(args, 1, ["--config"]);
+    const configPath = optionValue(args, "--config", locale);
+    const disable = args.includes("--disable");
+    if (!projectId || Boolean(configPath) === disable) throw new Error(translate(locale, "cli.project.godotWebUsage"));
+    const project = await gateway.configureGodotWeb(projectId, disable ? null : readConfigFile(configPath!));
+    write(translate(locale, "cli.project.godotWebConfigured", { name: project.name, preset: project.launchPreset }));
+    return;
+  }
+
+  if (action === "rebuild-web") {
+    const projectId = positionalArgument(args, 1, []);
+    if (!projectId) throw new Error(translate(locale, "cli.project.rebuildWebUsage"));
+    const status = await gateway.rebuildWebExport(projectId);
+    write(translate(locale, "cli.project.rebuildWebRequested", { state: status.state }));
     return;
   }
 
@@ -216,8 +262,16 @@ class OfflineProjectGateway implements ProjectGateway {
     return this.service.dashboard();
   }
 
-  addProject(input: { name: string; repositoryPath: string; port: number; launchPreset: LaunchPreset }): Promise<ProjectView> {
-    return this.service.addProject(input);
+  addProject(input: ProjectAddInput): Promise<ProjectView> {
+    return this.service.addProject(input as Parameters<ControlService["addProject"]>[0]);
+  }
+
+  configureGodotWeb(projectId: string, config: unknown): Promise<ProjectView> {
+    return this.service.configureGodotWeb(projectId, config);
+  }
+
+  rebuildWebExport(projectId: string): Promise<WebExportStatus> {
+    return this.service.rebuildWebExport(projectId);
   }
 
   removeProject(projectId: string): Promise<ProjectView> {
@@ -251,9 +305,19 @@ class ControllerProjectGateway implements ProjectGateway {
     return this.request<DashboardResponse>("/api/dashboard");
   }
 
-  async addProject(input: { name: string; repositoryPath: string; port: number; launchPreset: LaunchPreset }): Promise<ProjectView> {
+  async addProject(input: ProjectAddInput): Promise<ProjectView> {
     const result = await this.request<{ project: ProjectView }>("/api/projects", { method: "POST", body: JSON.stringify(input) });
     return result.project;
+  }
+
+  async configureGodotWeb(projectId: string, config: unknown): Promise<ProjectView> {
+    const result = await this.request<{ project: ProjectView }>(`/api/projects/${encodeURIComponent(projectId)}/godot-web`, { method: "POST", body: JSON.stringify({ config }) });
+    return result.project;
+  }
+
+  async rebuildWebExport(projectId: string): Promise<WebExportStatus> {
+    const result = await this.request<{ webExport: WebExportStatus }>(`/api/projects/${encodeURIComponent(projectId)}/godot-web/rebuild`, { method: "POST", body: "{}" });
+    return result.webExport;
   }
 
   async removeProject(projectId: string): Promise<ProjectView> {

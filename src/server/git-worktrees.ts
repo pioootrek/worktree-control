@@ -99,6 +99,8 @@ export interface GitWorktreeReader {
   canonicalRepositoryPath(path: string): Promise<string>;
   list(repositoryPath: string, options?: { priority?: GitCommandPriority; includeInsights?: boolean }): Promise<Worktree[]>;
   observe(worktreePath: string, options?: GitObservationOptions): Promise<TestSourceObservation>;
+  /** Bounded worktree-relative paths Git ignores (directories end with "/"), for watcher exclusions. */
+  ignoredPaths?(worktreePath: string, limit?: number): Promise<string[]>;
   close?(): void;
 }
 export interface GitObservationOptions {
@@ -227,6 +229,14 @@ export class SystemGitWorktreeReader implements GitWorktreeReader {
       const code = (error as NodeJS.ErrnoException).code;
       return { observedAt, head: null, branch: null, dirty: null, statusDigest: null, statusEntries: null, complete: false, errorCode: code === "ENOENT" ? "missing_worktree" : code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? "status_limit_exceeded" : "source_observation_failed" };
     }
+  }
+
+  async ignoredPaths(worktreePath: string, limit = 512): Promise<string[]> {
+    const { stdout } = await this.admission.run("operational", (signal) => execute(
+      "git", ["-C", worktreePath, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--no-empty-directory", "-z"],
+      { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024, signal },
+    ));
+    return stdout.split("\0").filter(Boolean).slice(0, limit);
   }
 
   close(): void {

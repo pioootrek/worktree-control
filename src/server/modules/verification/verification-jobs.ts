@@ -15,6 +15,14 @@ export interface EnqueueTestInput {
   actor: string;
   idempotencyKey?: string;
   sourceObservation?: TestSourceObservation;
+  /** Trusted in-process adapters only: replaces the configured source observer for this run. */
+  observe?: TestSourceObserver;
+  /**
+   * Trusted in-process adapters only: runs once after owned-process cleanup and source
+   * qualification, before the log is finalized and the worktree slot is released.
+   * It cannot change the run outcome; failures are logged and ignored.
+   */
+  settle?(run: TestRun, log: (line: string) => void): Promise<void>;
 }
 export interface VerificationPreparation {
   /** Overall admitted preparation budget, independent of the execution preset. */
