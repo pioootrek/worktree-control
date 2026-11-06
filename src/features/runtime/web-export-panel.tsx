@@ -74,9 +74,9 @@ export function WebExportPanel({ snapshot, mutate, setError }: { snapshot: Proje
       <AlertTriangle aria-hidden />
       <AlertTitle>{t(`webExport.failure.${status.lastFailure.code}`)}</AlertTitle>
       <AlertDescription className="space-y-1">
-        <p className="break-words">{status.lastFailure.message}</p>
         {status.current ? <p>{t("webExport.keptPrevious")}</p> : null}
-        {status.lastFailure.runId ? <p className="font-mono text-xs">{t("webExport.run", { id: status.lastFailure.runId })}</p> : null}
+        {/* Server detail stays untranslated, so it is shown as a technical line next to the run. */}
+        <p className="break-words font-mono text-xs">{status.lastFailure.runId ? `${t("webExport.run", { id: status.lastFailure.runId })} · ` : ""}{status.lastFailure.message}</p>
       </AlertDescription>
     </Alert> : null}
   </section>;
