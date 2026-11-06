@@ -82,11 +82,49 @@ describe("Godot Web source watcher", () => {
     const watcher = new SourceWatcher({ root, paths: ["game"], ignore: [], debounceMs: 50, onChange });
     await watcher.start();
     mkdirSync(join(root, "game/new"));
-    await vi.waitFor(() => expect(watcher.watchedDirectories).toBe(3), { timeout: 2_000 });
+    await vi.waitFor(() => expect(watcher.watchedDirectories).toBe(4), { timeout: 2_000 });
     await vi.waitFor(() => expect(onChange).toHaveBeenCalled(), { timeout: 2_000 });
     onChange.mockClear();
     writeFileSync(join(root, "game/new/scene.tscn"), "x");
     await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1), { timeout: 2_000 });
     watcher.dispose();
+  });
+
+  it.each(["scenes", "future/scenes"])("attaches missing configured path %s when created, and after recreation", async (path) => {
+    const root = tree(), onChange = vi.fn();
+    const watcher = new SourceWatcher({ root, paths: [path, "project.godot"], ignore: [], debounceMs: 30, onChange });
+    try {
+      await watcher.start();
+      expect(watcher.watchedDirectories).toBe(1);
+      writeFileSync(join(root, "unrelated.txt"), "ignored");
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(onChange).not.toHaveBeenCalled();
+      const expectedDirectories = path.split("/").length + 1;
+      for (let cycle = 0; cycle < 2; cycle += 1) {
+        mkdirSync(join(root, path), { recursive: true });
+        await vi.waitFor(() => expect(watcher.watchedDirectories).toBe(expectedDirectories), { timeout: 2_000 });
+        await vi.waitFor(() => expect(onChange).toHaveBeenCalled(), { timeout: 2_000 });
+        onChange.mockClear();
+        writeFileSync(join(root, path, "scene.tscn"), `scene ${cycle}`);
+        await vi.waitFor(() => expect(onChange).toHaveBeenCalled(), { timeout: 2_000 });
+        rmSync(join(root, path.split("/")[0]), { recursive: true });
+        await vi.waitFor(() => expect(watcher.watchedDirectories).toBe(1), { timeout: 2_000 });
+        await vi.waitFor(() => expect(onChange.mock.calls.length).toBeGreaterThan(1), { timeout: 2_000 });
+        onChange.mockClear();
+      }
+    } finally { watcher.dispose(); }
+  });
+
+  it("does not follow symlink ancestors of configured paths and keeps the limit on late creation", async () => {
+    const root = tree(), fake = fakeWatch();
+    const watcher = new SourceWatcher({ root, paths: ["linked/deep", "future/scenes"], ignore: [], debounceMs: 30, maxDirectories: 2, onChange: () => undefined, watch: fake.factory });
+    try {
+      await watcher.start();
+      expect([...fake.listeners.keys()]).toEqual([root]);
+      mkdirSync(join(root, "future/scenes"), { recursive: true });
+      fake.listeners.get(root)!("rename", "future");
+      await vi.waitFor(() => expect(watcher.state).toBe("limit_exceeded"));
+      expect(watcher.watchedDirectories).toBe(0);
+    } finally { watcher.dispose(); }
   });
 });

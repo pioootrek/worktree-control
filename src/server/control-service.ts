@@ -359,6 +359,12 @@ export class ControlService {
     return this.lifecycle.serialized(projectId, async () => {
       const project = this.lifecycle.requireProject(projectId);
       if (project.launchPreset === "godot-web" && this.godotWeb) {
+        // Only the runtime's own export may be cancelled by removal. Refuse
+        // unrelated queued/running verification before changing the runtime.
+        const exportRunId = this.godotWeb.status(projectId)?.activeRunId;
+        if (this.store.listPendingTestRuns().some((run) => run.projectId === projectId && run.id !== exportRunId)) {
+          throw new Error("Anuluj testy projektu przed jego usunięciem.");
+        }
         // Automatic exports belong to the runtime: stop it, cancel its export, then apply the normal test check.
         this.lifecycle.assertReservationAllows(projectId, this.processes.snapshot(projectId).worktreePath ?? project.selectedWorktreePath, actor);
         this.store.assertProjectRemovalAllowed(projectId);
@@ -376,7 +382,8 @@ export class ControlService {
       this.store.assertProjectRemovalAllowed(projectId);
       await this.processes.stop(projectId);
       this.store.removeProject(projectId, actor.owner);
-      if (project.launchPreset === "godot-web") await this.godotWeb?.forget(projectId).catch((error: unknown) => {
+      // A disabled preview can still have cached generations and staging files.
+      await this.godotWeb?.forget(projectId).catch((error: unknown) => {
         this.logs.controller("godot_web.store_cleanup_failed", { projectId, error: String(error) });
       });
       await this.tests?.pruneLogs();

@@ -1,6 +1,6 @@
 import { watch as nodeWatch, type FSWatcher } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 
 export type WatcherState = "watching" | "limit_exceeded" | "unavailable" | "stopped";
 export type WatchFactory = (path: string, listener: (event: string, filename: string | Buffer | null) => void) => Pick<FSWatcher, "close" | "on">;
@@ -63,10 +63,7 @@ export class SourceWatcher {
         if (this.disposed) return;
         const relativePath = path === "." ? "." : path.replace(/\/+$/, "");
         if (relativePath !== "." && this.isIgnored(relativePath)) continue;
-        const info = await lstat(join(this.options.root, relativePath)).catch(() => null);
-        if (!info || info.isSymbolicLink()) continue;
-        if (info.isDirectory()) await this.walk(relativePath);
-        else if (info.isFile()) this.add(dirname(relativePath) || ".", false, basename(relativePath));
+        await this.attachConfiguredPath(relativePath);
       }
       if (!this.disposed && this.currentState !== "limit_exceeded") this.setState("watching");
     } catch (error) {
@@ -96,8 +93,29 @@ export class SourceWatcher {
     this.directories.clear();
   }
 
+  /** Keep filtered ancestor subscriptions even while a selected path is absent. */
+  private async attachConfiguredPath(relativePath: string): Promise<void> {
+    if (this.disposed || this.currentState === "limit_exceeded") return;
+    if (relativePath === ".") { await this.walk("."); return; }
+    const parts = relativePath.split("/");
+    let parent = ".";
+    for (let index = 0; index < parts.length; index += 1) {
+      if (this.disposed || this.currentState === "limit_exceeded") return;
+      const name = parts[index];
+      const child = parent === "." ? name : `${parent}/${name}`;
+      if (this.isIgnored(child)) return;
+      this.add(parent, false, name);
+      const info = await lstat(join(this.options.root, child)).catch(() => null);
+      if (!info || info.isSymbolicLink()) return;
+      if (index === parts.length - 1) {
+        if (info.isDirectory()) await this.walk(child);
+      } else if (!info.isDirectory()) return;
+      parent = child;
+    }
+  }
+
   private async walk(relativePath: string): Promise<void> {
-    if (this.disposed || this.directories.get(relativePath)?.recursive) return;
+    if (this.disposed || this.currentState === "limit_exceeded" || this.directories.get(relativePath)?.recursive) return;
     this.add(relativePath, true, null);
     const entries = await readdir(join(this.options.root, relativePath), { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
@@ -143,7 +161,13 @@ export class SourceWatcher {
     if (this.isIgnored(child)) return;
     this.options.onInvalidate?.();
     this.schedule();
-    if (event !== "rename" || name === null || !entry.recursive) return;
+    if (event !== "rename" || name === null) return;
+    // Inode-bound subscriptions must be replaced after removal/recreation.
+    this.forget(child);
+    if (!entry.recursive) {
+      void this.start();
+      return;
+    }
     // A created directory gains watchers; a removed one releases them.
     void lstat(join(this.options.root, child)).then((info) => {
       if (this.disposed) return;

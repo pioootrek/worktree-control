@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -77,7 +77,7 @@ writeFileSync("exports/web/index.pck", "pck");
     const response = await fetch(`${base}${path}`, { method, headers: { "Content-Type": "application/json", "X-Worktree-Control-Token": "fixture-token" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     return { status: response.status, body: await response.json() as Record<string, unknown> };
   };
-  return { root, repository, store, service, processes, call, gitReader, commands, lifecycle, port: await freePort() };
+  return { root, repository, store, service, processes, tests, call, gitReader, commands, lifecycle, port: await freePort() };
 }
 
 describe("godot-web application workflow", () => {
@@ -125,7 +125,41 @@ describe("godot-web application workflow", () => {
     await expect(fetch(`${preview}/`)).rejects.toThrow();
     const disabled = await f.call(`/api/projects/${projectId}/godot-web`, { config: null });
     expect(disabled.body.project).toMatchObject({ launchPreset: "none", godotWeb: null });
+    const exportStore = join(f.root, "state/godot-web", projectId);
+    expect(existsSync(exportStore)).toBe(true);
     await f.service.removeProject(projectId);
+    expect(existsSync(exportStore)).toBe(false);
+  }, 60_000);
+
+  it("refuses removal with unrelated verification without stopping the preview or cancelling its export", async () => {
+    const f = await fixture();
+    const config = { exporter: { kind: "command", command: ["node", "export.mjs"], outputDirectory: "exports/web" }, watch: { paths: ["game"], debounceMs: 100 } };
+    const project = await f.service.addProject({ name: "Game", repositoryPath: f.repository, port: f.port, launchPreset: "godot-web", godotWeb: config as never });
+    await f.service.operate(project.id, "start", f.repository);
+    await vi.waitFor(() => expect(f.service.webExportStatus(project.id)?.state).toBe("ready"), { timeout: 20_000 });
+    await vi.waitFor(() => expect(f.store.countTestRuns(["queued", "running"], project.id)).toBe(0));
+    const before = f.processes.snapshot(project.id);
+    f.tests.setLimit(1);
+    const worktree = (await f.gitReader.list(f.repository))[0];
+    const userRun = f.tests.enqueue({ projectId: project.id, worktree,
+      command: { preset: { id: "node:test", name: "test", adapter: "node", timeoutMs: 20_000 }, executable: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"], cwd: f.repository },
+      environment: { environment: {}, mode: "clean", profile: "unit", inheritedServerProfile: null, variableNames: [] }, actor: "local-user" });
+    await vi.waitFor(() => expect(f.store.getTestRun(userRun.id)?.phase).toBe("running"));
+    await f.service.rebuildWebExport(project.id);
+    await vi.waitFor(() => expect(f.service.webExportStatus(project.id)?.activeRunId).toBeTruthy());
+    const exportRunId = f.service.webExportStatus(project.id)!.activeRunId!;
+    expect(f.store.getTestRun(exportRunId)?.phase).toBe("queued");
+    await expect(f.service.removeProject(project.id)).rejects.toThrow("Anuluj testy projektu");
+    expect(f.processes.snapshot(project.id)).toMatchObject({ phase: "running", pid: before.pid });
+    expect(f.store.getTestRun(exportRunId)?.phase).toBe("queued");
+    expect(f.service.webExportStatus(project.id)?.watcher).toBe("watching");
+    expect((await fetch(`http://127.0.0.1:${f.port}/`)).status).toBe(200);
+    await f.service.cancelTest(userRun.id);
+    await vi.waitFor(() => expect(f.store.getTestRun(userRun.id)?.phase).toBe("cancelled"));
+    // Once only the owned export remains, removal may stop and drain it.
+    await f.service.removeProject(project.id);
+    expect(f.store.getProject(project.id)).toBeNull();
+    expect(existsSync(join(f.root, "state/godot-web", project.id))).toBe(false);
   }, 60_000);
 
   it("binds a claimed switch to the claimed worktree and never serves the previous worktree's build", async () => {
