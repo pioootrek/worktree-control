@@ -41,15 +41,17 @@ describe("Godot Web source watcher", () => {
 
   it("coalesces bursts into one debounced change and ignores generated or temporary files", async () => {
     vi.useFakeTimers();
-    const root = tree(), fake = fakeWatch(), onChange = vi.fn();
-    const watcher = new SourceWatcher({ root, paths: ["."], ignore: ["exports/web"], debounceMs: 200, maxWaitMs: 1_000, onChange, watch: fake.factory });
+    const root = tree(), fake = fakeWatch(), onChange = vi.fn(), onInvalidate = vi.fn();
+    const watcher = new SourceWatcher({ root, paths: ["."], ignore: ["exports/web"], debounceMs: 200, maxWaitMs: 1_000, onChange, onInvalidate, watch: fake.factory });
     await watcher.start();
     const emit = (directory: string, name: string) => fake.listeners.get(join(root, directory))!("change", name);
     emit("exports", "web"); emit("game", ".unit.gd.swp"); emit("game", "unit.gd~");
     await vi.advanceTimersByTimeAsync(500);
     expect(onChange).not.toHaveBeenCalled();
+    expect(onInvalidate).not.toHaveBeenCalled();
     for (let index = 0; index < 5; index += 1) { emit("game", "unit.gd"); await vi.advanceTimersByTimeAsync(100); }
     expect(onChange).not.toHaveBeenCalled();
+    expect(onInvalidate).toHaveBeenCalledTimes(5);
     await vi.advanceTimersByTimeAsync(200);
     expect(onChange).toHaveBeenCalledTimes(1);
     // A continuous stream still yields a change once maxWait elapses.

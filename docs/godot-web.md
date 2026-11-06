@@ -40,7 +40,9 @@ tools and is unrelated to Web export.
 
 Stopping or switching the runtime ends the watcher and event stream, cancels
 that preview's export through the queue, and suppresses publication of any
-export that completes afterwards. A generation is bound to the worktree that
+export that completes afterwards. The next export session waits for confirmed
+cleanup of the previous one before reusing export storage; a cleanup timeout
+fails initialization instead of allowing overlapping exporters. A generation is bound to the worktree that
 produced it: after a switch, the previous worktree's build is not served.
 
 ## Configure an exporter
@@ -137,13 +139,19 @@ respect existing reservations.
   `O_NOFOLLOW` and skips everything else.
 - `/` redirects to `/g/<generation>/`. All relative resources of one page load
   come from that immutable generation, so a reload during publication cannot
-  mix two builds. Generation assets are cached as immutable; HTML and state
+  mix two builds. Each generation also carries a private worktree key; direct
+  generation URLs from a different worktree return 410 after a switch. Generation assets are cached as immutable; HTML and state
   are `no-cache`/`no-store`.
 - The current generation and its most recent predecessor are retained. A generation is
   limited to 4,096 files, 1 GiB and nesting depth 8.
 - Served pages receive only an opaque generation ID and coarse build state.
   No controller token, path, log line or control endpoint is exposed on the
   game's port. Build logs remain in the dashboard's test run view.
+- The root `build.json` is treated as private export provenance and is never
+  published (for example, a project wrapper may put local report paths there).
+  Other allowlisted export files are served verbatim; exporters must keep secrets
+  and machine-local reports outside their public output. Export commands are
+  trusted local code, not a sandbox against other processes of the same OS user.
 - The preview binds `0.0.0.0` unless `HOST` is set in the project environment.
 
 ## Threads and secure contexts
@@ -162,9 +170,12 @@ options in the Web preset; a service worker can serve stale builds.
 A preview may intentionally serve a dirty development worktree. Process success
 is not clean-source verification: exports of uncommitted changes are recorded
 as test runs whose process passed but whose source attribution is `uncertain`,
-and the dashboard labels such a build. Edits made after an export starts
-supersede its output; the controller discards it and exports again instead of
-publishing a build that may mix old and new files.
+and the dashboard labels such a build. Source edits detected after an export starts
+supersede its output. Watch events invalidate immediately, before the debounced
+rebuild request; Git changes observed between process start and finish also
+suppress publication. The copy checks freshness before publishing and reruns
+when invalidated. This is bounded observation, not an atomic snapshot of sources;
+ignored inputs and edits restored between observations are outside that guarantee.
 
 ## Limits and acceptance status
 

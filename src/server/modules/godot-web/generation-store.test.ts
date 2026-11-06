@@ -24,11 +24,12 @@ describe("Godot Web generation store", () => {
     const secret = join(root, "secret.txt"); writeFileSync(secret, "outside");
     symlinkSync(secret, join(output, "linked.txt"));
     const { generation, skipped } = await store.publish(output, root, meta, "0123456789abcdef");
-    expect(skipped).toBe(3); // dotfile, .gd source and symlink
+    expect(skipped).toBe(4); // dotfile, .gd source, symlink and private build provenance
     const served = join(store.publicDirectory, "generations", generation.id);
-    expect(readdirSync(served).sort()).toEqual(["build.json", "index.html", "index.js", "index.pck", "index.wasm", "sub"]);
+    expect(readdirSync(served).sort()).toEqual([".worktree-key", "index.html", "index.js", "index.pck", "index.wasm", "sub"]);
+    expect(readFileSync(join(served, ".worktree-key"), "utf8")).toBe("0123456789abcdef");
     expect(existsSync(join(served, ".env")) || existsSync(join(served, "linked.txt"))).toBe(false);
-    expect(generation).toMatchObject({ runId: "run", head: "abc", dirty: true, files: 6, bytes: 27 });
+    expect(generation).toMatchObject({ runId: "run", head: "abc", dirty: true, files: 5, bytes: 25 });
     const state = JSON.parse(readFileSync(join(store.publicDirectory, "state.json"), "utf8"));
     expect(state).toMatchObject({ version: 1, generation: generation.id, worktreeKey: "0123456789abcdef", build: "idle" });
     expect(JSON.stringify(state)).not.toContain("/worktree");

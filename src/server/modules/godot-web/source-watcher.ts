@@ -16,6 +16,8 @@ export interface SourceWatcherOptions {
   maxWaitMs?: number;
   maxDirectories?: number;
   onChange(): void;
+  /** Immediate freshness invalidation, separate from the debounced rebuild request. */
+  onInvalidate?(): void;
   onState?(state: WatcherState): void;
   watch?: WatchFactory;
 }
@@ -139,6 +141,7 @@ export class SourceWatcher {
     if (name !== null && (EDITOR_TEMPORARY.test(name) || (entry.only && !entry.only.has(name)))) return;
     const child = name === null ? directory : directory === "." ? name : `${directory}/${name}`;
     if (this.isIgnored(child)) return;
+    this.options.onInvalidate?.();
     this.schedule();
     if (event !== "rename" || name === null || !entry.recursive) return;
     // A created directory gains watchers; a removed one releases them.

@@ -17,6 +17,7 @@ function store() {
   const publish = (generation: string, files: Record<string, string>, worktreeKey = KEY, build = "idle") => {
     const directory = join(root, "generations", generation);
     mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, ".worktree-key"), worktreeKey);
     for (const [name, content] of Object.entries(files)) { mkdirSync(join(directory, name, ".."), { recursive: true }); writeFileSync(join(directory, name), content); }
     writeFileSync(join(root, "state.json"), JSON.stringify({ version: 1, generation, worktreeKey, publishedAt: "2026-11-06T00:00:00.000Z", build, failureCode: null, updatedAt: "x" }));
   };
@@ -54,6 +55,7 @@ describe("Godot Web static server", () => {
     expect(placeholder.body).toContain("Waiting for the first complete Web export");
     expect(placeholder.headers["cache-control"]).toBe("no-store");
     expect(server.currentState.generation).toBeNull();
+    expect((await raw(base, "/g/m1abcdef-0a0b0c0d/index.html")).status).toBe(410);
     fixture.publish("m1abcdef-0a0b0c0e", { "index.html": "<html><head></head><body>game</body></html>", "index.wasm": "\0asm", "index.pck": "pck" });
     await vi.waitFor(() => expect(server.currentState.generation).toBe("m1abcdef-0a0b0c0e"), { timeout: 2_000 });
     const entry = await raw(base, "/?debug=1");
@@ -66,6 +68,8 @@ describe("Godot Web static server", () => {
     expect(wasm.headers).toMatchObject({ "content-type": "application/wasm", "cache-control": "public, max-age=31536000, immutable", "content-length": "4" });
     expect((await raw(base, "/g/m1abcdef-0a0b0c0e/index.pck", "HEAD")).headers["content-type"]).toBe("application/octet-stream");
     expect((await raw(base, "/g/m1abcdef-0a0b0c0e/index.pck", "HEAD")).body).toBe("");
+    expect((await raw(base, "/g/m1abcdef-0a0b0c0d/")).status).toBe(410);
+    expect((await raw(base, "/g/m1abcdef-0a0b0c0e/.worktree-key")).status).toBe(404);
   });
 
   it("rejects traversal, malformed escapes, dotfiles, unknown types, symlinks and other methods", async () => {

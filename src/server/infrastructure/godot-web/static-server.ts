@@ -204,6 +204,8 @@ export class GodotWebStaticServer {
     const root = await realpath(directory).catch(() => null);
     // Pruned or foreign generation: the page should reload from "/".
     if (!root) return this.plain(response, 410, "Generation no longer available");
+    const key = await readFile(join(root, ".worktree-key"), "utf8").catch(() => null);
+    if (key !== this.options.worktreeKey) return this.plain(response, 410, "Generation no longer available");
     const file = join(root, ...rest);
     const resolved = await realpath(file).catch(() => null);
     if (!resolved || !inside(root, resolved) || resolved !== file) return this.plain(response, 404, "Not found");

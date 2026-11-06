@@ -20,6 +20,7 @@ export class WebExportSession {
   current: WebExportGeneration | null = null;
   activeRunId: string | null = null;
   enqueueing = false;
+  initializing = false;
   /** Set when a request arrives while an export is queued, running or being enqueued. */
   pending = false;
   manualPending = false;
@@ -32,12 +33,17 @@ export class WebExportSession {
 
   constructor(readonly projectId: string, readonly worktreePath: string, private readonly now: () => number = Date.now) {}
 
-  get busy(): boolean { return this.enqueueing || this.activeRunId !== null; }
+  get busy(): boolean { return this.initializing || this.enqueueing || this.activeRunId !== null; }
+
+  /** Invalidate immediately; scheduling a replacement remains debounced. */
+  sourceChanged(): void {
+    if (!this.disposed) this.lastChangeAt = this.now();
+  }
 
   /** Returns true when the caller should enqueue a new export now. */
   request(reason: "start" | "change" | "manual"): boolean {
     if (this.disposed) return false;
-    if (reason === "change") this.lastChangeAt = this.now();
+    if (reason === "change") this.sourceChanged();
     if (reason === "manual") { this.autoPaused = false; this.consecutiveSuperseded = 0; }
     if (reason === "change" && this.autoPaused) return false;
     if (this.busy) {
@@ -65,7 +71,7 @@ export class WebExportSession {
       return { kind: "failed", code: "export_failed", message: run.exitCode === null ? "The export command could not run; inspect its run log." : `The export command exited with code ${run.exitCode}.` };
     }
     // Process success is not clean-source verification; edits during the export invalidate its output.
-    return changedDuring ? { kind: "superseded" } : { kind: "publish" };
+    return changedDuring || run.source.executionComparison === "changed" ? { kind: "superseded" } : { kind: "publish" };
   }
 
   /** Clears the in-flight run and reports whether one coalesced follow-up export should start. */
@@ -112,7 +118,7 @@ export class WebExportSession {
   }
 
   status(runPhase: TestRun["phase"] | null): WebExportStatus {
-    const active = this.activeRunId !== null || this.enqueueing;
+    const active = this.busy;
     const failedLatest = this.lastFailure !== null && (!this.current || this.lastFailure.at >= this.current.publishedAt);
     const state: WebExportStatus["state"] = active ? (runPhase === "running" ? "building" : "queued")
       : failedLatest ? "failed" : this.current ? "ready" : "idle";

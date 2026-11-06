@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -55,7 +55,8 @@ function fixture(options: { delayMs?: number; queueLimit?: number } = {}) {
   };
   const worktree: Worktree = { path: worktreePath, head: "abc", shortHead: "abc", branch: "main", detached: false, locked: false, prunable: false, dirty: true };
   const observation = (): TestSourceObservation => ({ observedAt: new Date().toISOString(), head: "abc", branch: "main", dirty: true, statusDigest: "same", statusEntries: 1, complete: true, errorCode: null });
-  const git = { list: async () => [worktree], observe: async () => observation(), ignoredPaths: async () => [] };
+  const worktrees = [worktree];
+  const git = { list: async () => worktrees, observe: async () => observation(), ignoredPaths: async () => [] };
   const jobs = new TestJobManager(store, nullLogWriter);
   cleanup.push(() => jobs.shutdown());
   const lifecycle = new ProjectLifecycle(store, processes);
@@ -65,17 +66,74 @@ function fixture(options: { delayMs?: number; queueLimit?: number } = {}) {
   const service = new GodotWebService({ storeRoot: join(root, "store"), store, git, processes, jobs, lifecycle, commands, logs: nullLogWriter, notify });
   holder.service = service;
   cleanup.push(() => service.close());
-  const setRuntime = (phase: RuntimeStatusSummary["phase"]) => {
-    runtime = { phase, worktreePath: phase === "stopped" ? null : worktreePath, startedAt: phase === "stopped" ? null : "2026-11-06T00:00:00.000Z", failureCode: null, ownsProcess: phase !== "stopped" };
+  const setRuntime = (phase: RuntimeStatusSummary["phase"], path = worktreePath) => {
+    runtime = { phase, worktreePath: phase === "stopped" ? null : path, startedAt: phase === "stopped" ? null : "2026-11-06T00:00:00.000Z", failureCode: null, ownsProcess: phase !== "stopped" };
     service.runtimeChanged(project.id);
   };
   const state = () => JSON.parse(readFileSync(join(root, "store", project.id, "public", "state.json"), "utf8"));
   const served = (generation: string) => readFileSync(join(root, "store", project.id, "public", "generations", generation, "index.html"), "utf8");
   const runs = () => store.listTestRuns(project.id).filter((run) => run.presetId === "godot:web-export");
-  return { root, worktreePath, store, project, service, jobs, control, setRuntime, state, served, runs, notify };
+  return { root, worktreePath, store, project, service, jobs, control, setRuntime, state, served, runs, notify, worktrees };
 }
 
 describe("GodotWebService", () => {
+  it.each([false, true])("drains the old exporter before restarting or switching (switch=%s)", async (switchWorktree) => {
+    const f = fixture({ queueLimit: 2 });
+    const other = join(f.root, "other");
+    cpSync(f.worktreePath, other, { recursive: true });
+    f.worktrees.push({ ...f.worktrees[0], path: other });
+    for (const path of [f.worktreePath, other]) writeFileSync(join(path, "export_presets.cfg"), '[preset.0]\nname="Web"\nplatform="Web"\n');
+    const started = join(f.root, "export-started"), ended = join(f.root, "export-ended");
+    const executable = join(f.root, "fake-godot");
+    writeFileSync(executable, `#!${process.execPath}
+const {writeFileSync, existsSync} = require("node:fs");
+const {dirname, join} = require("node:path");
+const output = dirname(process.argv.at(-1));
+if (!existsSync(${JSON.stringify(started)})) {
+  process.on("SIGTERM", () => {});
+  const timer = setInterval(() => writeFileSync(join(output, "index.pck"), "old-partial"), 20);
+  writeFileSync(${JSON.stringify(started)}, "1");
+  setTimeout(() => { clearInterval(timer); writeFileSync(${JSON.stringify(ended)}, "1"); process.exit(0); }, 900);
+} else {
+  if (!existsSync(${JSON.stringify(ended)})) process.exit(7);
+  writeFileSync(join(output, "index.html"), "new");
+  writeFileSync(join(output, "index.pck"), "new-pack");
+}
+`);
+    chmodSync(executable, 0o755);
+    await f.service.configure(f.project.id, { exporter: { kind: "preset", preset: "Web", godotExecutable: executable }, watch: { paths: ["src"] } });
+    f.setRuntime("running");
+    await vi.waitFor(() => expect(existsSync(started)).toBe(true), { timeout: 10_000 });
+    f.setRuntime("stopping");
+    f.setRuntime("running", switchWorktree ? other : f.worktreePath);
+    // Even a manual request while replacement initialization waits must not bypass the drain.
+    await f.service.rebuild(f.project.id);
+    await vi.waitFor(() => expect(f.service.status(f.project.id)?.state).toBe("ready"), { timeout: 15_000 });
+    const runs = f.runs();
+    expect(runs).toHaveLength(2);
+    expect(runs.find((run) => run.phase === "cancelled")?.telemetry?.cleanup).toBe("confirmed");
+    const published = f.service.status(f.project.id)!.current!;
+    expect(readFileSync(join(f.service.publicDirectory(f.project.id), "generations", published.id, "index.pck"), "utf8")).toBe("new-pack");
+  });
+
+  it("returns to verification-only even with a Node manifest or missing Godot manifest", async () => {
+    const f = fixture();
+    writeFileSync(join(f.worktreePath, "package.json"), JSON.stringify({ scripts: { dev: "node server.js" } }));
+    rmSync(join(f.worktreePath, "project.godot"));
+    expect(await f.service.configure(f.project.id, null)).toMatchObject({ launchPreset: "none", godotWeb: null });
+  });
+
+  it("reports initialization failure and can retry after storage recovers", async () => {
+    const f = fixture();
+    const storePath = join(f.root, "store");
+    writeFileSync(storePath, "not a directory");
+    f.setRuntime("running");
+    await vi.waitFor(() => expect(f.service.status(f.project.id)).toMatchObject({ state: "failed", watcher: "stopped", lastFailure: { code: "configuration_invalid" } }));
+    rmSync(storePath);
+    f.service.runtimeChanged(f.project.id);
+    await vi.waitFor(() => expect(f.service.status(f.project.id)?.state).toBe("ready"), { timeout: 10_000 });
+  });
+
   it("exports through the shared queue and publishes one complete generation bound to the worktree", async () => {
     const f = fixture();
     f.setRuntime("running");

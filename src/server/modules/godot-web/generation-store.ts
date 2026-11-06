@@ -118,6 +118,8 @@ export class GenerationStore {
       const copy = async (from: string, to: string, depth: number): Promise<void> => {
         if (depth > this.limits.maxDepth) throw new GenerationOutputError("output_limit", "The export output is nested too deeply.");
         for (const item of await readdir(from, { withFileTypes: true })) {
+          // Export provenance is private; Godot's runtime does not require this manifest.
+          if (depth === 0 && item.name === "build.json") { skipped += 1; continue; }
           if (!SERVED_SEGMENT.test(item.name)) { skipped += 1; continue; }
           const sourcePath = join(from, item.name), targetPath = join(to, item.name);
           if (item.isDirectory()) { await mkdir(targetPath, { mode: 0o700 }); await copy(sourcePath, targetPath, depth + 1); continue; }
@@ -135,6 +137,7 @@ export class GenerationStore {
         }
       };
       await copy(root, target, 0);
+      await writeFile(join(target, ".worktree-key"), worktreeKey, { mode: 0o600 });
       const generation: GenerationMeta = { ...meta, id, publishedAt: new Date().toISOString(), files, bytes };
       // A runtime stopped or switched during the copy must not repoint the served build.
       if (!current()) throw new GenerationSupersededError();
@@ -153,7 +156,7 @@ export class GenerationStore {
   /** Keeps the current generation plus the most recent retained predecessors. */
   async prune(current: string | null): Promise<void> {
     const ids = (await readdir(this.generations).catch(() => [] as string[])).filter((id) => GENERATION_ID.test(id)).sort().reverse();
-    const keep = new Set([...(current ? [current] : []), ...ids.slice(0, this.limits.retain)]);
+    const keep = new Set([...(current ? [current] : []), ...ids.filter((id) => id !== current).slice(0, Math.max(0, this.limits.retain - (current ? 1 : 0)))]);
     for (const id of ids) {
       if (keep.has(id)) continue;
       await rm(join(this.generations, id), { recursive: true, force: true });

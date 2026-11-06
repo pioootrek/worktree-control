@@ -1,7 +1,7 @@
 import { join } from "node:path";
 
 import type { GitWorktreeReader } from "@/server/git-worktrees";
-import { detectLaunchPreset, webWorktreeKey, type LaunchCommandResolver } from "@/server/launch-command";
+import { webWorktreeKey, type LaunchCommandResolver } from "@/server/launch-command";
 import type { LogWriter } from "@/server/log-writer";
 import type { ProcessManager } from "@/server/process-manager";
 import type { StateStore } from "@/server/state-store";
@@ -10,7 +10,7 @@ import { GODOT_WEB_EXPORT_PRESET_ID, parseGodotWebConfig, type GodotWebConfig, t
 import { redactProject, resolveTestEnvironment, testProfileFor } from "../environments";
 import type { LifecycleAccess, OperationActor } from "../lifecycle";
 import { projectTestPreset, type VerificationJobs } from "../verification";
-import { assertGodotProject, GodotWebConfigurationError, resolveWebExport, type ResolvedWebExport } from "./export-command";
+import { GodotWebConfigurationError, resolveWebExport, type ResolvedWebExport } from "./export-command";
 import { GenerationOutputError, GenerationStore, GenerationSupersededError, type GenerationLimits } from "./generation-store";
 import { SourceWatcher, type WatchFactory } from "./source-watcher";
 import { WebExportSession } from "./web-export-session";
@@ -99,8 +99,7 @@ export class GodotWebService {
       const worktrees = await this.options.git.list(project.repositoryPath);
       const worktree = this.options.lifecycle.resolveWorktree(project, worktrees);
       this.options.lifecycle.assertReservationAllows(projectId, worktree.path, actor);
-      assertGodotProject(worktree.path);
-      const launchPreset = config ? "godot-web" as const : detectLaunchPreset(worktree.path);
+      const launchPreset = config ? "godot-web" as const : "none" as const;
       if (config) resolveWebExport(config, worktree.path, this.generationStore(projectId).stagingDirectory);
       const launch = this.options.commands.resolve(worktree.path, project.port, launchPreset, undefined, { projectId, godotWeb: config });
       this.options.store.setProjectGodotWeb(projectId, { launchPreset, godotWeb: config, executable: launch.executable, args: launch.args }, actor.owner);
@@ -128,6 +127,11 @@ export class GodotWebService {
   /** Ends the session and waits (bounded) until its export no longer runs. */
   async drain(projectId: string): Promise<void> {
     this.endSession(projectId, "drain");
+    await this.drainEnding(projectId);
+  }
+
+  /** A replacement runtime must not touch shared export storage until cleanup is confirmed. */
+  private async drainEnding(projectId: string): Promise<void> {
     const ended = this.ending.get(projectId);
     if (!ended) return;
     const { session, runId } = ended;
@@ -138,6 +142,11 @@ export class GodotWebService {
       const phase = this.options.store.getTestRun(runId)?.phase;
       if (phase !== "queued" && phase !== "running") break;
       await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const run = this.options.store.getTestRun(runId);
+    if (session.activeRunId || run?.phase === "queued" || run?.phase === "running"
+      || (run && run.telemetry?.cleanup !== "confirmed" && run.telemetry?.cleanup !== "not_required")) {
+      throw new Error("The previous Web export has not confirmed process cleanup; retry after it finishes.");
     }
     if (this.ending.get(projectId)?.session === session) this.ending.delete(projectId);
   }
@@ -157,8 +166,30 @@ export class GodotWebService {
 
   private async beginSession(projectId: string, worktreePath: string, config: GodotWebConfig): Promise<void> {
     const session = new WebExportSession(projectId, worktreePath);
+    session.initializing = true;
     this.sessions.set(projectId, { session, watcher: null });
     this.stopped.delete(projectId);
+    try {
+      await this.drainEnding(projectId);
+      if (session.disposed) return;
+      await this.initializeSession(session, config);
+    } catch (error) {
+      if (this.sessions.get(projectId)?.session === session) {
+        this.sessions.get(projectId)?.watcher?.dispose();
+        session.dispose();
+        session.initializing = false;
+        session.watcher = "stopped";
+        session.fail("configuration_invalid", "The preview could not initialize. Check storage and previous export cleanup, then restart the preview.", null);
+        this.sessions.delete(projectId);
+        this.stopped.set(projectId, session.status(null));
+        this.options.notify(projectId);
+      }
+      throw error;
+    }
+  }
+
+  private async initializeSession(session: WebExportSession, config: GodotWebConfig): Promise<void> {
+    const { projectId, worktreePath } = session;
     const store = this.generationStore(projectId);
     await store.initialize();
     const state = await store.readState();
@@ -178,6 +209,7 @@ export class GodotWebService {
     const watcher = new SourceWatcher({
       root: worktreePath, paths: config.watch.paths, ignore, debounceMs: config.watch.debounceMs,
       watch: this.options.watch,
+      onInvalidate: () => session.sourceChanged(),
       onChange: () => this.request(session, "change"),
       onState: (state) => { session.watcher = state; this.options.notify(projectId); },
     });
@@ -185,6 +217,8 @@ export class GodotWebService {
     await watcher.start();
     if (session.disposed) { watcher.dispose(); return; }
     session.watcher = watcher.state;
+    session.initializing = false;
+    session.pending = session.manualPending = false;
     this.request(session, "start");
   }
 
@@ -285,14 +319,17 @@ export class GodotWebService {
           if (session.disposed) throw new GenerationSupersededError();
           const { generation, skipped } = await store.publish(resolved.outputDirectory, containment, {
             runId: run.id, head: run.source.finish?.head ?? run.worktreeHead, dirty: run.source.finish?.dirty ?? run.worktreeDirty, worktreePath,
-          }, webWorktreeKey(session.worktreePath), () => !session.disposed);
+          }, webWorktreeKey(session.worktreePath), () => session.decide(run).kind === "publish");
           const { worktreePath: _omitted, ...current } = generation;
           void _omitted;
           session.current = current;
           log(`web_export.published generation=${generation.id} files=${generation.files} bytes=${generation.bytes} skipped=${skipped}`);
           this.options.store.recordProjectEvent(session.projectId, "godot_web.published", GODOT_WEB_ACTOR, { generation: generation.id, runId: run.id, files: generation.files, bytes: generation.bytes });
         } catch (error) {
-          if (error instanceof GenerationSupersededError) { log("web_export.publication=suppressed reason=session_ended"); decision = { kind: "ignored" }; }
+          if (error instanceof GenerationSupersededError) {
+            decision = session.disposed ? { kind: "ignored" } : { kind: "superseded" };
+            if (session.disposed) log("web_export.publication=suppressed reason=session_ended");
+          }
           else {
             const code = error instanceof GenerationOutputError ? "output_invalid" : "publication_failed";
             decision = { kind: "failed", code, message: safeMessage(error, "The completed export could not be published.") };

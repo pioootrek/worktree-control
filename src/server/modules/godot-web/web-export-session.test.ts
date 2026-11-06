@@ -48,6 +48,25 @@ describe("Godot Web export session", () => {
     expect(session.decide(run({ id: "other" }))).toEqual({ kind: "ignored" });
   });
 
+  it("rejects Git-observed edits before the debounce callback fires", () => {
+    const session = new WebExportSession("p", "/w");
+    session.activeRunId = "run-1";
+    const changed = run();
+    changed.source.executionComparison = "changed";
+    expect(session.lastChangeAt).toBeNull();
+    expect(session.decide(changed)).toEqual({ kind: "superseded" });
+  });
+
+  it("invalidates a publishing run immediately without starting a new export", () => {
+    const session = new WebExportSession("p", "/w", () => 2_000);
+    session.activeRunId = "run-1";
+    expect(session.decide(run())).toEqual({ kind: "publish" });
+    session.sourceChanged();
+    expect(session.pending).toBe(false);
+    expect(session.decide(run())).toEqual({ kind: "superseded" });
+    expect(session.finish({ kind: "superseded" })).toBe(true);
+  });
+
   it("pauses automatic rebuilds after repeated supersession until a manual rebuild", () => {
     let now = 0;
     const session = new WebExportSession("p", "/w", () => now);
