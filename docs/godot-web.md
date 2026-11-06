@@ -161,7 +161,7 @@ With `crossOriginIsolation` on, pages are sent with
 `Cross-Origin-Embedder-Policy: require-corp`, which thread-enabled exports
 need for `SharedArrayBuffer`.
 
-The Godot 4 Web shell refuses to start outside a secure context, even for a
+The Godot 4.7 Web shell refuses to start outside a secure context, even for a
 single-threaded export: it shows "Secure Context - Check web server
 configuration (use HTTPS)". `http://localhost` and `http://127.0.0.1` qualify.
 Plain HTTP from a LAN address or a local hostname does not, and managed HTTPS
@@ -208,9 +208,12 @@ ignored inputs and edits restored between observations are outside that guarante
   `WTC_GODOT_WEB_EXPORT` to its directory; the test then also expects engine
   startup on `localhost`, a restart after each reload and the secure-context
   refusal on the non-loopback origin.
-- The standard `preset` exporter is covered by command-construction tests; a
-  run against a real Godot binary and its templates is not part of the
-  automated suites.
+- A second browser test runs the standard `preset` exporter through the queue
+  against a tiny Godot project, then edits its script and checks that the
+  reloaded engine runs the new version. Link a Godot executable at
+  `.godot-web-acceptance/godot` or set `WTC_GODOT_EXECUTABLE`, with matching Web
+  export templates installed. Without that executable the test is skipped.
+  It uses the current user's Godot configuration and template directories.
 
 See the [Godot 4.7 Web export guide](https://docs.godotengine.org/en/4.7/tutorials/export/exporting_for_web.html)
 for preset options and browser requirements.
