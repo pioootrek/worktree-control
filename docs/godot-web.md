@@ -158,12 +158,21 @@ respect existing reservations.
 
 With `crossOriginIsolation` on, pages are sent with
 `Cross-Origin-Opener-Policy: same-origin` and
-`Cross-Origin-Embedder-Policy: require-corp`. A thread-enabled Web export also
-needs a secure context: `http://localhost` or `http://127.0.0.1` qualifies, but
-plain HTTP from a LAN address or local hostname does not, and managed HTTPS is
-not available for this preset. Use a single-threaded export (the Godot 4.3+
-default) when testing from another device. Disable progressive web app
-options in the Web preset; a service worker can serve stale builds.
+`Cross-Origin-Embedder-Policy: require-corp`, which thread-enabled exports
+need for `SharedArrayBuffer`.
+
+The Godot 4 Web shell refuses to start outside a secure context, even for a
+single-threaded export: it shows "Secure Context - Check web server
+configuration (use HTTPS)". `http://localhost` and `http://127.0.0.1` qualify.
+Plain HTTP from a LAN address or a local hostname does not, and managed HTTPS
+is not available for this preset. The static server and live-reload stream
+still answer on such an origin, but the engine does not boot. To test from
+another device, forward the port so that the device opens a loopback address
+(for example `ssh -L 8080:127.0.0.1:<port> <host>`, then
+`http://localhost:8080`), or put your own HTTPS reverse proxy in front of the
+port. Single-threaded exports (the Godot 4.3+ default) avoid the extra
+isolation requirement. Disable progressive web app options in the Web preset;
+a service worker can serve stale builds.
 
 ## Source evidence
 
@@ -184,10 +193,24 @@ ignored inputs and edits restored between observations are outside that guarante
   running, uses one non-recursive watcher per directory, skips symlinks and
   ignored paths, and falls back to manual export above 4,096 directories.
 - Exports run the full Godot export each time; there is no incremental pack.
-- Automated tests cover configuration, migration, queue hooks, the watcher,
-  publication, the static server and the controller workflow with a fake
-  exporter. Exporting a real Godot project and checking live reload in a
-  browser still need manual acceptance on a host with matching templates.
+- Unit and integration tests cover configuration, migration, queue hooks, the
+  watcher, publication, the static server and the controller workflow with a
+  fake exporter.
+- `pnpm test:e2e:godot-web` (after `pnpm build`) runs a built controller in a
+  temporary directory, registers a `godot-web` project whose command exporter
+  runs through the test queue, and drives Chromium against the bundled static
+  server. It checks a whole-page reload after a source edit, that disabling
+  auto-reload survives a reload and leaves a **Reload** button, that a failed
+  export keeps the previous generation, the isolation headers on `localhost`,
+  and that a non-loopback plain-HTTP origin is not isolated. It publishes a
+  synthetic export by default. To start a real engine, place a flat Godot Web
+  export in `.godot-web-acceptance/export/` (Git-ignored) or set
+  `WTC_GODOT_WEB_EXPORT` to its directory; the test then also expects engine
+  startup on `localhost`, a restart after each reload and the secure-context
+  refusal on the non-loopback origin.
+- The standard `preset` exporter is covered by command-construction tests; a
+  run against a real Godot binary and its templates is not part of the
+  automated suites.
 
 See the [Godot 4.7 Web export guide](https://docs.godotengine.org/en/4.7/tutorials/export/exporting_for_web.html)
 for preset options and browser requirements.

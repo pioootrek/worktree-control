@@ -77,6 +77,7 @@
     "test:integration:remote-recovery": "node scripts/build-fingerprint.mjs --check && vitest run --config vitest.remote-recovery.config.ts",
     "test:https": "node scripts/build-fingerprint.mjs --check && vitest run --config vitest.https.config.ts",
     "test:e2e": "node scripts/build-fingerprint.mjs --check && playwright test --config playwright.e2e.config.ts",
+    "test:e2e:godot-web": "node scripts/build-fingerprint.mjs --check && playwright test --config playwright.e2e.config.ts tests/e2e/godot-web-live-reload.spec.ts",
     "bench:resources": "node scripts/resource-benchmark.mjs",
     "test:resources": "node --test scripts/*.test.mjs",
     "test:sqlite-cost": "tsx scripts/sqlite-write-cost.ts",
