@@ -345,3 +345,46 @@ describe("verification-only CLI registration", () => {
     } finally { await gateway.close(); }
   });
 });
+
+describe("Godot Web project CLI", () => {
+  it("registers explicit godot-web with a config file, disables and re-enables it offline", async () => {
+    const repository = temporaryDirectory("wtc-cli-godot-web-");
+    execFileSync("git", ["init", "--quiet", repository]);
+    writeFileSync(join(repository, "project.godot"), "config_version=5\n");
+    const config = join(temporaryDirectory("wtc-cli-godot-config-"), "godot-web.json");
+    writeFileSync(config, JSON.stringify({ exporter: { kind: "command", command: ["bash", "scripts/project.sh", "export-web"], outputDirectory: "exports/web" }, liveReload: false }));
+    const paths = resolveAppPaths(temporaryDirectory("wtc-cli-data-"), temporaryDirectory("wtc-cli-state-"));
+    const gateway = await openProjectGateway(paths, "en"); const output: string[] = [];
+    try {
+      await expect(runProjectCommand(["add", repository, "--preset", "none", "--godot-web-config", config, "--port", "3211"], gateway, "en", { write: () => undefined }))
+        .rejects.toThrow("--godot-web-config requires --preset godot-web.");
+      await runProjectCommand(["add", repository, "--preset", "godot-web", "--godot-web-config", config, "--port", "3211"], gateway, "en", { write: line => output.push(line) });
+      const [snapshot] = (await gateway.dashboard()).projects;
+      expect(snapshot.project).toMatchObject({ launchPreset: "godot-web", godotWeb: { exporter: { kind: "command", outputDirectory: "exports/web" }, liveReload: false } });
+      expect(snapshot.project.args).toEqual(expect.arrayContaining(["--root", "--worktree-key", "--live-reload", "0"]));
+      expect(snapshot.project.args.join(" ")).toContain(join(paths.stateDirectory, "godot-web", snapshot.project.id, "public"));
+      expect(snapshot.webExport).toBeNull();
+      await runProjectCommand(["godot-web", snapshot.project.id, "--disable"], gateway, "en", { write: line => output.push(line) });
+      expect((await gateway.dashboard()).projects[0].project).toMatchObject({ launchPreset: "none", godotWeb: null, executable: "", args: [] });
+      await runProjectCommand(["godot-web", snapshot.project.id, "--config", config], gateway, "en", { write: line => output.push(line) });
+      expect((await gateway.dashboard()).projects[0].project.launchPreset).toBe("godot-web");
+      await expect(runProjectCommand(["godot-web", snapshot.project.id], gateway, "en", { write: () => undefined })).rejects.toThrow(/Usage: worktree-control project godot-web/);
+      await expect(runProjectCommand(["rebuild-web", snapshot.project.id], gateway, "en", { write: () => undefined })).rejects.toThrow(/Start the Godot Web server/);
+      expect(output.filter(line => line.includes("preset: "))).toEqual([
+        "Saved the Godot Web configuration of " + snapshot.project.name + "; preset: none.",
+        "Saved the Godot Web configuration of " + snapshot.project.name + "; preset: godot-web.",
+      ]);
+    } finally { await gateway.close(); }
+  });
+
+  it("refuses godot-web when the worktree has no project.godot", async () => {
+    const repository = createNodeRepository();
+    const paths = resolveAppPaths(temporaryDirectory("wtc-cli-data-"), temporaryDirectory("wtc-cli-state-"));
+    const gateway = await openProjectGateway(paths, "en");
+    try {
+      await expect(runProjectCommand(["add", repository, "--preset", "godot-web", "--port", "3212"], gateway, "en", { write: () => undefined }))
+        .rejects.toThrow(/project.godot/);
+      expect((await gateway.dashboard()).projects).toEqual([]);
+    } finally { await gateway.close(); }
+  });
+});

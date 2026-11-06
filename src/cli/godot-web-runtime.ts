@@ -1,5 +1,6 @@
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { ProjectLaunchCommandResolver } from "../server/launch-command";
 import { GodotWebService, type GodotWebServiceOptions } from "../server/modules/godot-web";
@@ -14,7 +15,8 @@ export function createGodotWebRuntime(stateDirectory: string, options: Omit<Godo
   let godotWeb: GodotWebService | undefined;
   const commands = new ProjectLaunchCommandResolver({
     executable: process.execPath,
-    args: [...(sourceMode ? ["--import", import.meta.resolve("tsx")] : []), entry],
+    // A runtime cwd is the game worktree, so the tsx loader is passed by absolute URL.
+    args: [...(sourceMode ? ["--import", pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href] : []), entry],
     publicDirectory: (projectId) => godotWeb!.publicDirectory(projectId),
   });
   godotWeb = new GodotWebService({ ...options, storeRoot: join(stateDirectory, "godot-web"), commands });
