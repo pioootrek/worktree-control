@@ -3,6 +3,15 @@
 All notable changes to `worktree-control` are recorded here. The project is
 pre-1.0: the CLI, configuration and data model may change between minor versions.
 
+## Unreleased
+
+### Added
+
+- Godot projects can declare additional finite verification presets in
+  `scripts/worktree-control-presets.json`. Names run through the existing public
+  project script, with strict bounded validation and unchanged timeout/profile
+  policy.
+
 ## 0.1.1 - 2026-10-08
 
 First-run fixes for new installations, bounded MCP sessions and a safer service

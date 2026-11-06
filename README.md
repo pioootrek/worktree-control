@@ -303,6 +303,27 @@ public script's setup and resource guards. Without that script there are no
 Godot presets. Worktree Control does not locate Godot or start an editor.
 Use a test environment profile for script inputs such as `GODOT_BIN`.
 
+Godot projects can commit an optional `scripts/worktree-control-presets.json`
+to expose additional finite operations through the same public script:
+
+```json
+{"version":1,"godot":{"presets":["suite-game","suite-ai"]}}
+```
+
+This adds `godot:suite-game` and `godot:suite-ai`, executed as `bash` with
+arguments `scripts/project.sh` and the chosen name. The built-in presets remain.
+The manifest accepts only the fields shown, at most 16 unique names, each
+1–63 lowercase ASCII letters, digits or hyphens, beginning with a letter.
+Names cannot duplicate `check` or `export-macos`. An empty list is valid.
+The JSON file must be at most 16 KiB and resolve to a regular file inside the
+worktree; dangling links and links outside it are refused. Invalid files fail
+discovery and resolution rather than silently falling back to the defaults.
+The manifest is read again when resolving a command. Commit it with the public
+script for reproducible verification; discovery does not check Git tracking.
+It cannot configure commands, arguments, environment or timeouts. New presets
+keep the default 15-minute timeout and use the default test profile until an
+operator assigns another profile through the existing configuration controls.
+
 Each worktree needs its own installed dependencies and runtime setup. Server
 profiles provide named environment overrides. Tests have separate environment
 policies and queue limits.
