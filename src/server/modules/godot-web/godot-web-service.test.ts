@@ -59,10 +59,11 @@ function fixture(options: { delayMs?: number; queueLimit?: number } = {}) {
   const jobs = new TestJobManager(store, nullLogWriter);
   cleanup.push(() => jobs.shutdown());
   const lifecycle = new ProjectLifecycle(store, processes);
-  let service!: GodotWebService;
-  const commands = new ProjectLaunchCommandResolver({ executable: "node", args: ["server.js"], publicDirectory: (id) => service.publicDirectory(id) });
+  const holder: { service?: GodotWebService } = {};
+  const commands = new ProjectLaunchCommandResolver({ executable: "node", args: ["server.js"], publicDirectory: (id) => holder.service!.publicDirectory(id) });
   const notify = vi.fn();
-  service = new GodotWebService({ storeRoot: join(root, "store"), store, git, processes, jobs, lifecycle, commands, logs: nullLogWriter, notify });
+  const service = new GodotWebService({ storeRoot: join(root, "store"), store, git, processes, jobs, lifecycle, commands, logs: nullLogWriter, notify });
+  holder.service = service;
   cleanup.push(() => service.close());
   const setRuntime = (phase: RuntimeStatusSummary["phase"]) => {
     runtime = { phase, worktreePath: phase === "stopped" ? null : worktreePath, startedAt: phase === "stopped" ? null : "2026-11-06T00:00:00.000Z", failureCode: null, ownsProcess: phase !== "stopped" };

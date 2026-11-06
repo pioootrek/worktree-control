@@ -12,13 +12,15 @@ import { GodotWebService, type GodotWebServiceOptions } from "../server/modules/
 export function createGodotWebRuntime(stateDirectory: string, options: Omit<GodotWebServiceOptions, "storeRoot" | "commands">) {
   const sourceMode = import.meta.url.endsWith(".ts");
   const entry = fileURLToPath(new URL(sourceMode ? "./godot-web-server.ts" : "./godot-web-server.js", import.meta.url));
-  let godotWeb: GodotWebService | undefined;
+  // The resolver needs the service's store layout; the service needs the resolver.
+  const holder: { service?: GodotWebService } = {};
   const commands = new ProjectLaunchCommandResolver({
     executable: process.execPath,
     // A runtime cwd is the game worktree, so the tsx loader is passed by absolute URL.
     args: [...(sourceMode ? ["--import", pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href] : []), entry],
-    publicDirectory: (projectId) => godotWeb!.publicDirectory(projectId),
+    publicDirectory: (projectId) => holder.service!.publicDirectory(projectId),
   });
-  godotWeb = new GodotWebService({ ...options, storeRoot: join(stateDirectory, "godot-web"), commands });
+  const godotWeb = new GodotWebService({ ...options, storeRoot: join(stateDirectory, "godot-web"), commands });
+  holder.service = godotWeb;
   return { commands, godotWeb };
 }

@@ -229,10 +229,11 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       remoteTransport: remoteBackup.loaded ? new ResticBackupTransport(remoteBackup.loaded) : undefined,
     });
   } catch (error) { await logs.close(); store.close(); controllerLock.release(); throw error; }
-  let godotWeb: GodotWebService | undefined;
+  // Runtime changes reach the Godot Web service once it exists below.
+  const preview: { service?: GodotWebService } = {};
   const processes = new ProcessManager((projectId) => {
     events.publish({ kinds: ["runtime"], projectIds: [projectId] });
-    godotWeb?.runtimeChanged(projectId);
+    preview.service?.runtimeChanged(projectId);
   }, logs, {
     memoryWarningThresholdBytes: memoryWarningMiB === null ? null : Math.round(memoryWarningMiB * 1024 * 1024),
   });
@@ -281,7 +282,8 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     notify: (projectId) => events.publish({ kinds: ["runtime"], projectIds: [projectId] }),
   });
   const commands = godotWebRuntime.commands;
-  godotWeb = godotWebRuntime.godotWeb;
+  const godotWeb = godotWebRuntime.godotWeb;
+  preview.service = godotWeb;
   const service = new ControlService(store, git, processes, logs, commands, storage, undefined, undefined, tests, lifecycle, knowledge, remoteVerification?.controller, godotWeb);
   const restores = new RestoreOperations(backups, paths.databasePath, paths.knowledgeAttachmentDirectory, {
     authentication: () => store.getAuthenticationPolicy(),
