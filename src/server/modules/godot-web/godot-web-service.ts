@@ -24,7 +24,7 @@ export interface GodotWebServiceOptions {
   /** Controller-owned root; each project gets `<root>/<projectId>`. */
   storeRoot: string;
   store: Pick<StateStore, "getProject" | "getTestRun" | "setProjectGodotWeb" | "recordProjectEvent">;
-  git: Pick<GitWorktreeReader, "list" | "observe"> & Partial<Pick<GitWorktreeReader, "ignoredPaths">>;
+  git: Pick<GitWorktreeReader, "list" | "observe"> & Partial<Pick<GitWorktreeReader, "checkIgnoredPaths">>;
   processes: Pick<ProcessManager, "statusSummary">;
   jobs: Pick<VerificationJobs, "enqueue" | "cancel">;
   lifecycle: LifecycleAccess & { isProjectActive(projectId: string): boolean };
@@ -231,12 +231,11 @@ export class GodotWebService {
     }
     const ignore = [...config.watch.ignore];
     if (config.exporter.kind === "command") ignore.push(config.exporter.outputDirectory);
-    try {
-      for (const path of await this.options.git.ignoredPaths?.(worktreePath) ?? []) ignore.push(path.replace(/\/+$/, ""));
-    } catch { /* Watch without Git exclusions; configured ignores still apply. */ }
     if (session.disposed) return;
     const watcher = new SourceWatcher({
       root: worktreePath, paths: config.watch.paths, ignore, debounceMs: config.watch.debounceMs,
+      checkIgnoredPaths: this.options.git.checkIgnoredPaths
+        ? (paths, signal) => this.options.git.checkIgnoredPaths!(worktreePath, paths, signal) : undefined,
       watch: this.options.watch,
       onInvalidate: () => session.sourceChanged(),
       onChange: () => this.request(session, "change"),
@@ -341,6 +340,8 @@ export class GodotWebService {
   /** Runs inside the queue slot after owned-process cleanup. */
   private async settle(session: WebExportSession, resolved: ResolvedWebExport, worktreePath: string, run: TestRun, log: (line: string) => void): Promise<void> {
     const store = this.generationStore(session.projectId);
+    const watcher = this.sessions.get(session.projectId)?.session === session ? this.sessions.get(session.projectId)?.watcher : null;
+    await watcher?.flush();
     let decision = session.decide(run);
     if (decision.kind === "ignored") {
       log("web_export.publication=suppressed reason=session_ended");
@@ -354,7 +355,10 @@ export class GodotWebService {
           if (session.disposed) throw new GenerationSupersededError();
           const { generation, skipped } = await store.publish(resolved.outputDirectory, containment, {
             runId: run.id, head: run.source.finish?.head ?? run.worktreeHead, dirty: run.source.finish?.dirty ?? run.worktreeDirty, worktreePath,
-          }, webWorktreeKey(session.worktreePath), () => session.decide(run).kind === "publish");
+          }, webWorktreeKey(session.worktreePath), async () => {
+            await watcher?.flush();
+            return session.decide(run).kind === "publish";
+          });
           const { worktreePath: _omitted, ...current } = generation;
           void _omitted;
           session.current = current;

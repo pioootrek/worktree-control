@@ -56,7 +56,7 @@ function fixture(options: { delayMs?: number; queueLimit?: number } = {}) {
   const worktree: Worktree = { path: worktreePath, head: "abc", shortHead: "abc", branch: "main", detached: false, locked: false, prunable: false, dirty: true };
   const observation = (): TestSourceObservation => ({ observedAt: new Date().toISOString(), head: "abc", branch: "main", dirty: true, statusDigest: "same", statusEntries: 1, complete: true, errorCode: null });
   const worktrees = [worktree];
-  const git = { list: async () => worktrees, observe: async () => observation(), ignoredPaths: async () => [] };
+  const git = { list: async () => worktrees, observe: async () => observation() };
   const jobs = new TestJobManager(store, nullLogWriter);
   cleanup.push(() => jobs.shutdown());
   const lifecycle = new ProjectLifecycle(store, processes);

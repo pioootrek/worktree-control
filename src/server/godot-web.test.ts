@@ -35,17 +35,18 @@ function git(repository: string, ...args: string[]) {
 }
 
 /** `strict` wires database admission as the controller does and refuses any unadmitted store call. */
-async function fixture(options: { strict?: boolean } = {}) {
+async function fixture(options: { strict?: boolean; reports?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "wtc-godot-web-app-"));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const repository = join(root, "repo");
   mkdirSync(join(repository, "game"), { recursive: true });
   execFileSync("git", ["init", "--quiet", repository]);
   writeFileSync(join(repository, "project.godot"), "config_version=5\n");
-  writeFileSync(join(repository, ".gitignore"), "/exports/\n/.godot/\n");
+  writeFileSync(join(repository, ".gitignore"), "/exports/\n/.godot/\n" + (options.reports ? "/reports/\n*.log\n" : ""));
   writeFileSync(join(repository, "game/main.gd"), "v1");
   // Project-owned exporter: writes a flat Web export into a Git-ignored directory.
   writeFileSync(join(repository, "export.mjs"), `import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+${options.reports ? 'mkdirSync("reports", { recursive: true }); writeFileSync("reports/export.log", "report"); writeFileSync("export.log", "log");' : ""}
 mkdirSync("exports/web", { recursive: true });
 writeFileSync("exports/web/index.html", "<html><head></head><body>" + readFileSync("game/main.gd", "utf8") + "</body></html>");
 writeFileSync("exports/web/index.wasm", "wasm");
@@ -129,6 +130,26 @@ describe("godot-web application workflow", () => {
     expect(existsSync(exportStore)).toBe(true);
     await f.service.removeProject(projectId);
     expect(existsSync(exportStore)).toBe(false);
+  }, 60_000);
+
+  it("publishes exports that create ignored report paths after the watcher starts", async () => {
+    const f = await fixture({ reports: true });
+    const config = { exporter: { kind: "command", command: ["node", "export.mjs"], outputDirectory: "exports/web" }, watch: { paths: ["."], debounceMs: 100 } };
+    const project = await f.service.addProject({ name: "Ignored reports", repositoryPath: f.repository, port: f.port, launchPreset: "godot-web", godotWeb: config as never });
+    expect(existsSync(join(f.repository, "reports"))).toBe(false);
+    await f.service.operate(project.id, "start", f.repository);
+    for (let iteration = 1; iteration <= 4; iteration += 1) {
+      if (iteration > 1) await f.call(`/api/projects/${project.id}/godot-web/rebuild`, {});
+      await vi.waitFor(() => {
+        expect(f.service.webExportStatus(project.id)).toMatchObject({ state: "ready", watcher: "watching", pendingRebuild: false });
+        expect(f.store.listTestRuns(project.id)).toHaveLength(iteration);
+        expect(f.store.listTestRuns(project.id)[0]).toMatchObject({ phase: "passed", source: { attribution: "observed_match" } });
+      }, { timeout: 20_000 });
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(f.store.listTestRuns(project.id)).toHaveLength(iteration);
+    }
+    expect(f.service.webExportStatus(project.id)?.lastFailure).toBeNull();
+    await f.service.operate(project.id, "stop");
   }, 60_000);
 
   it("refuses removal with unrelated verification without stopping the preview or cancelling its export", async () => {

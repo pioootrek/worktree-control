@@ -11,6 +11,8 @@ export interface SourceWatcherOptions {
   paths: string[];
   /** Worktree-relative prefixes never watched or reported. */
   ignore: string[];
+  /** Resolve live Git rules without scanning the worktree. At most 128 paths per call. */
+  checkIgnoredPaths?(paths: string[], signal: AbortSignal): Promise<string[]>;
   debounceMs: number;
   /** A continuous stream of edits still produces a change after this long. */
   maxWaitMs?: number;
@@ -41,6 +43,9 @@ export class SourceWatcher {
   private timer: NodeJS.Timeout | null = null;
   private firstPendingAt: number | null = null;
   private disposed = false;
+  private readonly cancellation = new AbortController();
+  private readonly pendingEvents = new Map<string, { directory: string; event: string; name: string }>();
+  private checking: Promise<void> | null = null;
   private currentState: WatcherState = "stopped";
 
   constructor(private readonly options: SourceWatcherOptions) {
@@ -60,12 +65,12 @@ export class SourceWatcher {
   async start(): Promise<void> {
     try {
       for (const path of this.options.paths) {
-        if (this.disposed) return;
+        if (this.disposed || this.cancellation.signal.aborted) return;
         const relativePath = path === "." ? "." : path.replace(/\/+$/, "");
         if (relativePath !== "." && this.isIgnored(relativePath)) continue;
         await this.attachConfiguredPath(relativePath);
       }
-      if (!this.disposed && this.currentState !== "limit_exceeded") this.setState("watching");
+      if (!this.disposed && !this.cancellation.signal.aborted && this.currentState !== "limit_exceeded") this.setState("watching");
     } catch (error) {
       if (error instanceof WatchLimitError) return;
       this.closeWatchers();
@@ -75,6 +80,8 @@ export class SourceWatcher {
 
   dispose(): void {
     this.disposed = true;
+    this.cancellation.abort();
+    this.pendingEvents.clear();
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     this.firstPendingAt = null;
@@ -103,7 +110,7 @@ export class SourceWatcher {
       if (this.disposed || this.state === "limit_exceeded") return;
       const name = parts[index];
       const child = parent === "." ? name : `${parent}/${name}`;
-      if (this.isIgnored(child)) return;
+      if (this.isIgnored(child) || (await this.gitIgnored([child])).has(child)) return;
       this.add(parent, false, name);
       const info = await lstat(join(this.options.root, child)).catch(() => null);
       if (!info || info.isSymbolicLink()) return;
@@ -116,10 +123,12 @@ export class SourceWatcher {
 
   private async walk(relativePath: string): Promise<void> {
     if (this.disposed || this.currentState === "limit_exceeded" || this.directories.get(relativePath)?.recursive) return;
+    if (relativePath !== "." && (await this.gitIgnored([relativePath])).has(relativePath)) return;
+    if (this.disposed || this.state === "unavailable") return;
     this.add(relativePath, true, null);
     const entries = await readdir(join(this.options.root, relativePath), { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
-      if (this.disposed) return;
+      if (this.disposed || this.cancellation.signal.aborted) return;
       if (!entry.isDirectory()) continue; // Symlinks report isSymbolicLink, never isDirectory.
       const child = relativePath === "." ? entry.name : `${relativePath}/${entry.name}`;
       if (!this.isIgnored(child)) await this.walk(child);
@@ -127,6 +136,7 @@ export class SourceWatcher {
   }
 
   private add(relativePath: string, recursive: boolean, only: string | null): void {
+    if (this.disposed || this.cancellation.signal.aborted) return;
     const existing = this.directories.get(relativePath);
     if (existing) {
       if (recursive) { existing.recursive = true; existing.only = null; }
@@ -152,13 +162,65 @@ export class SourceWatcher {
   }
 
   private event(directory: string, event: string, filename: string | Buffer | null): void {
-    if (this.disposed) return;
+    if (this.disposed || this.cancellation.signal.aborted) return;
     const entry = this.directories.get(directory);
     if (!entry) return;
     const name = filename === null ? null : String(filename);
     if (name !== null && (EDITOR_TEMPORARY.test(name) || (entry.only && !entry.only.has(name)))) return;
     const child = name === null ? directory : directory === "." ? name : `${directory}/${name}`;
     if (this.isIgnored(child)) return;
+    if (name !== null && this.options.checkIgnoredPaths) {
+      if (this.pendingEvents.size >= 4096 && !this.pendingEvents.has(child)) { this.unavailable(); return; }
+      const previous = this.pendingEvents.get(child);
+      this.pendingEvents.set(child, { directory, event: previous?.event === "rename" ? "rename" : event, name });
+      if (!this.checking) {
+        this.checking = Promise.resolve().then(() => this.checkEvents()).finally(() => { this.checking = null; });
+      }
+      return;
+    }
+    this.acceptEvent(directory, event, name, child);
+  }
+
+  /** Publication waits for ignore classification, never for the debounce timer. */
+  async flush(): Promise<void> { await this.checking; }
+
+  private async gitIgnored(paths: string[]): Promise<Set<string>> {
+    return new Set(await this.options.checkIgnoredPaths?.(paths, this.cancellation.signal) ?? []);
+  }
+
+  private unavailable(): void {
+    if (this.disposed) return;
+    this.cancellation.abort();
+    this.pendingEvents.clear();
+    this.closeWatchers();
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.firstPendingAt = null;
+    this.options.onInvalidate?.();
+    this.setState("unavailable");
+  }
+
+  private async checkEvents(): Promise<void> {
+    // A stuck Git query or endless event storm cannot hold an export's queue slot forever.
+    const deadline = setTimeout(() => this.unavailable(), 10_000);
+    deadline.unref();
+    try {
+      while (!this.disposed && this.pendingEvents.size > 0) {
+        const batch = [...this.pendingEvents.entries()].slice(0, 128);
+        for (const [path] of batch) this.pendingEvents.delete(path);
+        const ignored = await this.gitIgnored(batch.map(([path]) => path));
+        if (this.disposed || this.state === "unavailable") return;
+        for (const [path, value] of batch) {
+          if (!ignored.has(path)) this.acceptEvent(value.directory, value.event, value.name, path);
+        }
+      }
+    } catch { this.unavailable(); }
+    finally { clearTimeout(deadline); }
+  }
+
+  private acceptEvent(directory: string, event: string, name: string | null, child: string): void {
+    const entry = this.directories.get(directory);
+    if (this.disposed || !entry) return;
     this.options.onInvalidate?.();
     this.schedule();
     if (event !== "rename" || name === null) return;
@@ -170,9 +232,9 @@ export class SourceWatcher {
     }
     // A created directory gains watchers; a removed one releases them.
     void lstat(join(this.options.root, child)).then((info) => {
-      if (this.disposed) return;
+      if (this.disposed || this.cancellation.signal.aborted) return;
       if (info.isDirectory() && !info.isSymbolicLink()) return this.walk(child).catch((error: unknown) => {
-        if (!(error instanceof WatchLimitError)) this.forget(child);
+        if (!(error instanceof WatchLimitError)) this.unavailable();
       });
     }, () => this.forget(child));
   }

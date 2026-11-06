@@ -110,7 +110,11 @@ group and timeout.
 `.git`, `.godot`, `.import`, editor directories, `node_modules`, the output
 directory and paths that Git ignores in the worktree are never watched.
 Use a `.gitignore` entry or `watch.ignore` for any other directory an exporter
-writes into. When sources change during three exports in a row, automatic
+writes into. Git rules are checked for incoming paths, including files and
+directories first created by an export. Checks are coalesced in bounded batches;
+publication waits for pending checks. If Git cannot classify events or the
+event backlog exceeds its bounds, watching becomes unavailable until restart;
+manual export remains available. When sources change during three exports in a row, automatic
 rebuilds pause, because that usually means the exporter writes into a
 watched path. **Export again** resumes them.
 

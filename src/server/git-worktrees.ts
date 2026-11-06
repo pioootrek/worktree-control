@@ -99,8 +99,8 @@ export interface GitWorktreeReader {
   canonicalRepositoryPath(path: string): Promise<string>;
   list(repositoryPath: string, options?: { priority?: GitCommandPriority; includeInsights?: boolean }): Promise<Worktree[]>;
   observe(worktreePath: string, options?: GitObservationOptions): Promise<TestSourceObservation>;
-  /** Bounded worktree-relative paths Git ignores (directories end with "/"), for watcher exclusions. */
-  ignoredPaths?(worktreePath: string, limit?: number): Promise<string[]>;
+  /** Tests current Git rules, including paths that do not exist yet. Batches are bounded. */
+  checkIgnoredPaths?(worktreePath: string, paths: string[], signal?: AbortSignal): Promise<string[]>;
   close?(): void;
 }
 export interface GitObservationOptions {
@@ -231,12 +231,22 @@ export class SystemGitWorktreeReader implements GitWorktreeReader {
     }
   }
 
-  async ignoredPaths(worktreePath: string, limit = 512): Promise<string[]> {
-    const { stdout } = await this.admission.run("operational", (signal) => execute(
-      "git", ["-C", worktreePath, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--no-empty-directory", "-z"],
-      { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024, signal },
-    ));
-    return stdout.split("\0").filter(Boolean).slice(0, limit);
+  async checkIgnoredPaths(worktreePath: string, paths: string[], cancellation?: AbortSignal): Promise<string[]> {
+    if (paths.length === 0) return [];
+    const input = `${paths.join("\0")}\0`;
+    if (paths.length > 128 || Buffer.byteLength(input) > 512 * 1024 || paths.some((path) => path.includes("\0"))) {
+      throw new Error("Git ignore query exceeds its bounds.");
+    }
+    return this.admission.run("operational", (signal) => new Promise<string[]>((resolve, reject) => {
+      const child = execFile("git", ["-C", worktreePath, "check-ignore", "--stdin", "-z"],
+        { encoding: "utf8", timeout: 5000, maxBuffer: 512 * 1024, signal }, (error, stdout) => {
+          if (error && error.code !== 1) reject(error);
+          else resolve(String(stdout).split("\0").filter(Boolean));
+        });
+      // An early Git error can close stdin; the exit callback owns the result.
+      child.stdin?.on("error", () => undefined);
+      child.stdin?.end(input);
+    }), { signal: cancellation });
   }
 
   close(): void {

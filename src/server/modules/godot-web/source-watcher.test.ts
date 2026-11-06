@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { SystemGitWorktreeReader } from "@/server/git-worktrees";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -127,4 +129,64 @@ describe("Godot Web source watcher", () => {
       expect(watcher.watchedDirectories).toBe(0);
     } finally { watcher.dispose(); }
   });
+  it("ignores exporter side effects first created after startup using current Git rules", async () => {
+    const root = tree(), onChange = vi.fn(), onInvalidate = vi.fn();
+    execFileSync("git", ["init", "-q", root]);
+    writeFileSync(join(root, ".gitignore"), "/reports/\n*.log\n!keep.log\n");
+    const reader = new SystemGitWorktreeReader();
+    const watcher = new SourceWatcher({ root, paths: ["."], ignore: [], debounceMs: 30, onChange, onInvalidate,
+      checkIgnoredPaths: (paths, signal) => reader.checkIgnoredPaths(root, paths, signal) });
+    try {
+      await watcher.start();
+      const directories = watcher.watchedDirectories;
+      mkdirSync(join(root, "reports"));
+      for (let run = 0; run < 4; run += 1) {
+        writeFileSync(join(root, "reports/export.log"), String(run));
+        writeFileSync(join(root, "export.log"), String(run));
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        await watcher.flush();
+      }
+      expect(onInvalidate).not.toHaveBeenCalled();
+      expect(onChange).not.toHaveBeenCalled();
+      expect(watcher.watchedDirectories).toBe(directories);
+      writeFileSync(join(root, "keep.log"), "source");
+      await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+      expect(onInvalidate).toHaveBeenCalled();
+    } finally { watcher.dispose(); reader.close(); }
+  });
+
+  it("coalesces ignore queries and waits for classification before publication", async () => {
+    const root = tree(), fake = fakeWatch(), onInvalidate = vi.fn();
+    let release!: (ignored: string[]) => void;
+    const checkIgnoredPaths = vi.fn(async (_paths: string[], _signal: AbortSignal): Promise<string[]> => []);
+    const watcher = new SourceWatcher({ root, paths: ["."], ignore: [], debounceMs: 30, onChange: () => undefined, onInvalidate, watch: fake.factory, checkIgnoredPaths });
+    await watcher.start();
+    checkIgnoredPaths.mockClear();
+    checkIgnoredPaths.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    for (let index = 0; index < 100; index += 1) fake.listeners.get(root)!("change", "source.gd");
+    let flushed = false;
+    const flush = watcher.flush().then(() => { flushed = true; });
+    await vi.waitFor(() => expect(checkIgnoredPaths).toHaveBeenCalledTimes(1));
+    expect(flushed).toBe(false);
+    expect(onInvalidate).not.toHaveBeenCalled();
+    release([]);
+    await flush;
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+    watcher.dispose();
+  });
+
+  it("stops automatic watching and invalidates on ignore-query failure", async () => {
+    const root = tree(), fake = fakeWatch(), onInvalidate = vi.fn();
+    const checkIgnoredPaths = vi.fn(async (): Promise<string[]> => []);
+    const watcher = new SourceWatcher({ root, paths: ["."], ignore: [], debounceMs: 30, onChange: () => undefined, onInvalidate, watch: fake.factory, checkIgnoredPaths });
+    await watcher.start();
+    checkIgnoredPaths.mockRejectedValue(new Error("Git unavailable"));
+    fake.listeners.get(root)!("rename", "reports");
+    await watcher.flush();
+    expect(watcher.state).toBe("unavailable");
+    expect(watcher.watchedDirectories).toBe(0);
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+    watcher.dispose();
+  });
+
 });
