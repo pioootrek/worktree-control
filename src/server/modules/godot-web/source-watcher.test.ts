@@ -158,7 +158,7 @@ describe("Godot Web source watcher", () => {
   it("coalesces ignore queries and waits for classification before publication", async () => {
     const root = tree(), fake = fakeWatch(), onInvalidate = vi.fn();
     let release!: (ignored: string[]) => void;
-    const checkIgnoredPaths = vi.fn(async (_paths: string[], _signal: AbortSignal): Promise<string[]> => []);
+    const checkIgnoredPaths = vi.fn(async (): Promise<string[]> => []);
     const watcher = new SourceWatcher({ root, paths: ["."], ignore: [], debounceMs: 30, onChange: () => undefined, onInvalidate, watch: fake.factory, checkIgnoredPaths });
     await watcher.start();
     checkIgnoredPaths.mockClear();
