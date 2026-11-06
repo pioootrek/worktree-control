@@ -112,7 +112,11 @@ directory and paths that Git ignores in the worktree are never watched.
 Use a `.gitignore` entry or `watch.ignore` for any other directory an exporter
 writes into. Git rules are checked for incoming paths, including files and
 directories first created by an export. Checks are coalesced in bounded batches;
-publication waits for pending checks. If Git cannot classify events or the
+publication waits for pending checks. Editing or atomically replacing a
+`.gitignore` in a watched directory reconciles subscriptions, including
+directories that become unignored. Changes to Git global excludes or
+`.git/info/exclude` require restarting the preview to reconcile subscriptions.
+If Git cannot classify events or the
 event backlog exceeds its bounds, watching becomes unavailable until restart;
 manual export remains available. When sources change during three exports in a row, automatic
 rebuilds pause, because that usually means the exporter writes into a

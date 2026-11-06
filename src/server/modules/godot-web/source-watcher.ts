@@ -62,13 +62,15 @@ export class SourceWatcher {
     return this.ignore.some((prefix) => relativePath === prefix || relativePath.startsWith(`${prefix}/`));
   }
 
-  async start(): Promise<void> {
+  async start(rescan = false): Promise<void> {
+    if (this.disposed || this.cancellation.signal.aborted || this.currentState === "limit_exceeded") return;
     try {
+      if (this.options.checkIgnoredPaths) this.add(".", false, ".gitignore");
       for (const path of this.options.paths) {
         if (this.disposed || this.cancellation.signal.aborted) return;
         const relativePath = path === "." ? "." : path.replace(/\/+$/, "");
         if (relativePath !== "." && this.isIgnored(relativePath)) continue;
-        await this.attachConfiguredPath(relativePath);
+        await this.attachConfiguredPath(relativePath, rescan);
       }
       if (!this.disposed && !this.cancellation.signal.aborted && this.currentState !== "limit_exceeded") this.setState("watching");
     } catch (error) {
@@ -101,29 +103,30 @@ export class SourceWatcher {
   }
 
   /** Keep filtered ancestor subscriptions even while a selected path is absent. */
-  private async attachConfiguredPath(relativePath: string): Promise<void> {
+  private async attachConfiguredPath(relativePath: string, rescan = false): Promise<void> {
     if (this.disposed || this.currentState === "limit_exceeded") return;
-    if (relativePath === ".") { await this.walk("."); return; }
+    if (relativePath === ".") { await this.walk(".", rescan); return; }
     const parts = relativePath.split("/");
     let parent = ".";
     for (let index = 0; index < parts.length; index += 1) {
       if (this.disposed || this.state === "limit_exceeded") return;
       const name = parts[index];
       const child = parent === "." ? name : `${parent}/${name}`;
-      if (this.isIgnored(child) || (await this.gitIgnored([child])).has(child)) return;
+      if (this.isIgnored(child)) return;
       this.add(parent, false, name);
+      if ((await this.gitIgnored([child])).has(child)) { this.forget(child); return; }
       const info = await lstat(join(this.options.root, child)).catch(() => null);
       if (!info || info.isSymbolicLink()) return;
       if (index === parts.length - 1) {
-        if (info.isDirectory()) await this.walk(child);
+        if (info.isDirectory()) await this.walk(child, rescan);
       } else if (!info.isDirectory()) return;
       parent = child;
     }
   }
 
-  private async walk(relativePath: string): Promise<void> {
-    if (this.disposed || this.currentState === "limit_exceeded" || this.directories.get(relativePath)?.recursive) return;
-    if (relativePath !== "." && (await this.gitIgnored([relativePath])).has(relativePath)) return;
+  private async walk(relativePath: string, rescan = false): Promise<void> {
+    if (this.disposed || this.currentState === "limit_exceeded" || (!rescan && this.directories.get(relativePath)?.recursive)) return;
+    if (relativePath !== "." && (await this.gitIgnored([relativePath])).has(relativePath)) { this.forget(relativePath); return; }
     if (this.disposed || this.state === "unavailable") return;
     this.add(relativePath, true, null);
     const entries = await readdir(join(this.options.root, relativePath), { withFileTypes: true }).catch(() => []);
@@ -131,7 +134,7 @@ export class SourceWatcher {
       if (this.disposed || this.cancellation.signal.aborted) return;
       if (!entry.isDirectory()) continue; // Symlinks report isSymbolicLink, never isDirectory.
       const child = relativePath === "." ? entry.name : `${relativePath}/${entry.name}`;
-      if (!this.isIgnored(child)) await this.walk(child);
+      if (!this.isIgnored(child)) await this.walk(child, rescan);
     }
   }
 
@@ -166,7 +169,7 @@ export class SourceWatcher {
     const entry = this.directories.get(directory);
     if (!entry) return;
     const name = filename === null ? null : String(filename);
-    if (name !== null && (EDITOR_TEMPORARY.test(name) || (entry.only && !entry.only.has(name)))) return;
+    if (name !== null && (EDITOR_TEMPORARY.test(name) || (entry.only && !entry.only.has(name) && !(name === ".gitignore" && this.options.checkIgnoredPaths)))) return;
     const child = name === null ? directory : directory === "." ? name : `${directory}/${name}`;
     if (this.isIgnored(child)) return;
     if (name !== null && this.options.checkIgnoredPaths) {
@@ -211,8 +214,11 @@ export class SourceWatcher {
         const ignored = await this.gitIgnored(batch.map(([path]) => path));
         if (this.disposed || this.state === "unavailable") return;
         for (const [path, value] of batch) {
-          if (!ignored.has(path)) this.acceptEvent(value.directory, value.event, value.name, path);
+          if (value.name === ".gitignore" || !ignored.has(path)) this.acceptEvent(value.directory, value.event, value.name, path);
         }
+        // Revisit skipped subtrees on rule edits, preserving existing subscriptions. This
+        // remains inside the bounded classification task, which publication awaits.
+        if (batch.some(([, value]) => value.name === ".gitignore")) await this.start(true);
       }
     } catch { this.unavailable(); }
     finally { clearTimeout(deadline); }
@@ -223,7 +229,7 @@ export class SourceWatcher {
     if (this.disposed || !entry) return;
     this.options.onInvalidate?.();
     this.schedule();
-    if (event !== "rename" || name === null) return;
+    if (event !== "rename" || name === null || (name === ".gitignore" && this.options.checkIgnoredPaths)) return;
     // Inode-bound subscriptions must be replaced after removal/recreation.
     this.forget(child);
     if (!entry.recursive) {

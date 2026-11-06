@@ -74,8 +74,14 @@ export class WebExportSession {
     return changedDuring || run.source.executionComparison === "changed" ? { kind: "superseded" } : { kind: "publish" };
   }
 
+  /** Predict the terminal pause while the run still owns settlement and public state. */
+  willPause(decision: SettlementDecision): boolean {
+    return decision.kind === "superseded" && this.consecutiveSuperseded + 1 >= MAX_CONSECUTIVE_SUPERSEDED && !this.manualPending;
+  }
+
   /** Clears the in-flight run and reports whether one coalesced follow-up export should start. */
   finish(decision: SettlementDecision): boolean {
+    const pause = this.willPause(decision);
     this.activeRunId = null;
     const manual = this.manualPending;
     this.manualPending = false;
@@ -85,7 +91,7 @@ export class WebExportSession {
     if (decision.kind === "superseded") {
       this.consecutiveSuperseded += 1;
       rerun = true;
-      if (this.consecutiveSuperseded >= MAX_CONSECUTIVE_SUPERSEDED && !manual) {
+      if (pause) {
         this.autoPaused = true;
         rerun = false;
         this.lastFailure = {

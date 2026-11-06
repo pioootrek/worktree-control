@@ -116,6 +116,31 @@ if (!existsSync(${JSON.stringify(started)})) {
     expect(readFileSync(join(f.service.publicDirectory(f.project.id), "generations", published.id, "index.pck"), "utf8")).toBe("new-pack");
   });
 
+  it("publishes a terminal failed state after three superseded exports, then recovers on manual rebuild", async () => {
+    const f = fixture({ delayMs: 200 });
+    f.setRuntime("running");
+    await vi.waitFor(() => expect(f.service.status(f.project.id)?.state).toBe("ready"), { timeout: 10_000 });
+    const good = f.service.status(f.project.id)!.current!.id;
+    // Each exporter writes a watched source, so the completed output must be discarded.
+    writeFileSync(join(f.worktreePath, "export.mjs"), EXPORTER.replace('mkdirSync("out",', 'writeFileSync("src/generated.gd", String(runs));\nmkdirSync("out",'));
+    await f.service.rebuild(f.project.id);
+    await vi.waitFor(() => {
+      expect(f.service.status(f.project.id)).toMatchObject({ state: "failed", activeRunId: null, pendingRebuild: false, lastFailure: { code: "superseded" } });
+      expect(f.state()).toMatchObject({ generation: good, build: "failed", failureCode: "superseded" });
+      expect(f.runs()).toHaveLength(4);
+      expect(f.runs().every((run) => run.phase !== "running" && run.phase !== "queued")).toBe(true);
+    }, { timeout: 15_000 });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(f.runs()).toHaveLength(4);
+    writeFileSync(join(f.worktreePath, "export.mjs"), EXPORTER);
+    await f.service.rebuild(f.project.id);
+    await vi.waitFor(() => {
+      expect(f.service.status(f.project.id)?.state).toBe("ready");
+      expect(f.state()).toMatchObject({ build: "idle", failureCode: null });
+      expect(f.state().generation).not.toBe(good);
+    }, { timeout: 10_000 });
+  }, 30_000);
+
   it("returns to verification-only even with a Node manifest or missing Godot manifest", async () => {
     const f = fixture();
     writeFileSync(join(f.worktreePath, "package.json"), JSON.stringify({ scripts: { dev: "node server.js" } }));

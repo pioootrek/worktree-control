@@ -378,7 +378,12 @@ export class GodotWebService {
           }
         }
       }
-      if (decision.kind === "superseded") log("web_export.publication=skipped reason=source_changed_during_export");
+      if (decision.kind === "superseded") {
+        log("web_export.publication=skipped reason=source_changed_during_export");
+        // Write before finish releases the run: a manual rebuild during this write is
+        // coalesced, and its newer building state will be written afterwards.
+        if (!session.disposed && session.willPause(decision)) await store.writeState({ build: "failed", failureCode: "superseded" });
+      }
       if (decision.kind === "failed") {
         session.fail(decision.code, decision.message, run.id);
         log(`web_export.publication=skipped reason=${decision.code}`);

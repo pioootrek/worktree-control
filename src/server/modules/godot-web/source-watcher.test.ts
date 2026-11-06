@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { SystemGitWorktreeReader } from "@/server/git-worktrees";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -187,6 +187,67 @@ describe("Godot Web source watcher", () => {
     expect(watcher.watchedDirectories).toBe(0);
     expect(onInvalidate).toHaveBeenCalledTimes(1);
     watcher.dispose();
+  });
+
+  it.each([
+    { selected: ".", ruleFile: ".gitignore", assets: "assets", rule: "/assets/\n", atomic: false },
+    { selected: ".", ruleFile: ".gitignore", assets: "assets", rule: "/assets/\n", atomic: true },
+    { selected: "assets", ruleFile: ".gitignore", assets: "assets", rule: "/assets/\n", atomic: false },
+    { selected: "game/assets", ruleFile: "game/.gitignore", assets: "game/assets", rule: "assets/\n", atomic: true },
+  ])("reconciles ignored directories after rule changes ($selected, $ruleFile, atomic=$atomic)", async ({ selected, ruleFile, assets, rule, atomic }) => {
+    const root = tree(), onChange = vi.fn();
+    execFileSync("git", ["init", "-q", root]);
+    mkdirSync(join(root, assets, "deep"), { recursive: true });
+    writeFileSync(join(root, assets, "deep/scene.tscn"), "before");
+    writeFileSync(join(root, ruleFile), rule);
+    const reader = new SystemGitWorktreeReader();
+    const watcher = new SourceWatcher({ root, paths: [selected], ignore: [], debounceMs: 30, onChange,
+      checkIgnoredPaths: (paths, signal) => reader.checkIgnoredPaths(root, paths, signal) });
+    const editRules = (content: string) => {
+      if (atomic) { writeFileSync(join(root, `${ruleFile}.tmp`), content); renameSync(join(root, `${ruleFile}.tmp`), join(root, ruleFile)); }
+      else writeFileSync(join(root, ruleFile), content);
+    };
+    try {
+      await watcher.start();
+      const original = watcher.watchedDirectories;
+      for (let cycle = 0; cycle < 2; cycle += 1) {
+        editRules("");
+        await vi.waitFor(() => expect(watcher.watchedDirectories).toBe(original + 2));
+        await vi.waitFor(() => expect(onChange).toHaveBeenCalled());
+        await watcher.flush();
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        onChange.mockClear();
+        writeFileSync(join(root, assets, "deep/scene.tscn"), `source ${cycle}`);
+        await vi.waitFor(() => expect(onChange).toHaveBeenCalled());
+        onChange.mockClear();
+        editRules(rule);
+        await vi.waitFor(() => expect(watcher.watchedDirectories).toBe(original));
+        await vi.waitFor(() => expect(onChange).toHaveBeenCalled());
+        await watcher.flush();
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        onChange.mockClear();
+        writeFileSync(join(root, assets, "deep/scene.tscn"), `ignored ${cycle}`);
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        expect(onChange).not.toHaveBeenCalled();
+        expect(watcher.state).toBe("watching");
+      }
+    } finally { watcher.dispose(); reader.close(); }
+  });
+
+  it("keeps the directory bound when changed rules expose too many subdirectories", async () => {
+    const root = tree(), fake = fakeWatch();
+    let ignored = true;
+    const watcher = new SourceWatcher({ root, paths: ["."], ignore: [], debounceMs: 30, maxDirectories: 2, watch: fake.factory,
+      checkIgnoredPaths: async (paths) => ignored ? paths : [], onChange: () => undefined });
+    try {
+      await watcher.start();
+      expect(watcher.watchedDirectories).toBe(1);
+      ignored = false;
+      fake.listeners.get(root)!("change", ".gitignore");
+      await watcher.flush();
+      expect(watcher.state).toBe("limit_exceeded");
+      expect(watcher.watchedDirectories).toBe(0);
+    } finally { watcher.dispose(); }
   });
 
 });
