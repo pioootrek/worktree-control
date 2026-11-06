@@ -113,6 +113,11 @@ export class GodotWebService {
     return entry.session.status(run?.phase ?? null);
   }
 
+  /** Exact runtime-owned job, including cancellation still draining after stop. */
+  ownsExportRun(projectId: string, runId: string): boolean {
+    return this.sessions.get(projectId)?.session.activeRunId === runId || this.ending.get(projectId)?.runId === runId;
+  }
+
   async configure(projectId: string, input: unknown, actor: OperationActor = { owner: "local-user" }): Promise<ProjectView> {
     const config = input === null ? null : parseGodotWebConfig(input);
     return this.options.lifecycle.serialized(projectId, async () => {

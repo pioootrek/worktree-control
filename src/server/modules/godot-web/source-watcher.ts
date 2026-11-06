@@ -100,7 +100,7 @@ export class SourceWatcher {
     const parts = relativePath.split("/");
     let parent = ".";
     for (let index = 0; index < parts.length; index += 1) {
-      if (this.disposed || this.currentState === "limit_exceeded") return;
+      if (this.disposed || this.state === "limit_exceeded") return;
       const name = parts[index];
       const child = parent === "." ? name : `${parent}/${name}`;
       if (this.isIgnored(child)) return;

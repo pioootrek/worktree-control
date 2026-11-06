@@ -361,8 +361,7 @@ export class ControlService {
       if (project.launchPreset === "godot-web" && this.godotWeb) {
         // Only the runtime's own export may be cancelled by removal. Refuse
         // unrelated queued/running verification before changing the runtime.
-        const exportRunId = this.godotWeb.status(projectId)?.activeRunId;
-        if (this.store.listPendingTestRuns().some((run) => run.projectId === projectId && run.id !== exportRunId)) {
+        if (this.store.listPendingTestRuns().some((run) => run.projectId === projectId && !this.godotWeb!.ownsExportRun(projectId, run.id))) {
           throw new Error("Anuluj testy projektu przed jego usunięciem.");
         }
         // Automatic exports belong to the runtime: stop it, cancel its export, then apply the normal test check.
