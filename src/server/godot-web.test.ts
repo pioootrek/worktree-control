@@ -14,6 +14,7 @@ import { SystemGitWorktreeReader } from "./git-worktrees";
 import { createControllerServer } from "./http-server";
 import { nullLogWriter } from "./log-writer";
 import { ProjectLifecycle } from "./modules/lifecycle";
+import { RuntimeService } from "./modules/runtime";
 import { ProcessManager } from "./process-manager";
 import { SqliteStateStore } from "./sqlite-store";
 import { TestJobManager } from "./test-job-manager";
@@ -33,7 +34,8 @@ function git(repository: string, ...args: string[]) {
   execFileSync("git", ["-C", repository, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", ...args]);
 }
 
-async function fixture() {
+/** `strict` wires database admission as the controller does and refuses any unadmitted store call. */
+async function fixture(options: { strict?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "wtc-godot-web-app-"));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const repository = join(root, "repo");
@@ -53,17 +55,20 @@ writeFileSync("exports/web/index.pck", "pck");
   git(repository, "commit", "--quiet", "-m", "fixture");
   const state = join(root, "state");
   const store = new SqliteStateStore(join(root, "state.sqlite3")); cleanup.push(() => store.close());
-  const events = new EventStream();
+  const admission = options.strict ? store.admission : undefined;
+  const events = new EventStream(admission);
   let runtimeChanged: (projectId: string) => void = () => undefined;
-  const processes = new ProcessManager((projectId) => runtimeChanged(projectId), nullLogWriter);
+  const processes = new ProcessManager((projectId) => runtimeChanged(projectId), nullLogWriter, { admission });
   const gitReader = new SystemGitWorktreeReader();
   const lifecycle = new ProjectLifecycle(store, processes);
   const tests = new TestJobManager(store, nullLogWriter);
   const { commands, godotWeb } = createGodotWebRuntime(state, { store, git: gitReader, processes, jobs: tests, lifecycle, logs: nullLogWriter, notify: () => undefined });
   runtimeChanged = (projectId) => godotWeb.runtimeChanged(projectId);
-  const service = new ControlService(store, gitReader, processes, nullLogWriter, commands, undefined, undefined, undefined, tests, lifecycle, undefined, undefined, godotWeb);
+  const service = new ControlService(store, gitReader, processes, nullLogWriter, commands, undefined, undefined, undefined, tests, lifecycle, undefined, undefined, undefined, godotWeb);
   cleanup.push(() => service.shutdown().catch(() => undefined));
-  const http = createControllerServer({ service, directoryBrowser: new DirectoryBrowser(root), events, webRoot: root, host: "127.0.0.1", port: 0, accessToken: "fixture-token",
+  // Bootstrap construction above predates admission, as in the controller.
+  if (options.strict) store.requireAdmission();
+  const http = createControllerServer({ service, directoryBrowser: new DirectoryBrowser(root), events, webRoot: root, host: "127.0.0.1", port: 0, accessToken: "fixture-token", admission,
     mcpStatus: () => ({ phase: "running", endpoint: null, transport: "streamable-http", network: "loopback", authentication: "bearer", activeSessions: 0 }) });
   cleanup.push(() => http.close());
   await new Promise<void>((resolve) => http.server.listen(0, "127.0.0.1", resolve));
@@ -72,7 +77,7 @@ writeFileSync("exports/web/index.pck", "pck");
     const response = await fetch(`${base}${path}`, { method, headers: { "Content-Type": "application/json", "X-Worktree-Control-Token": "fixture-token" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     return { status: response.status, body: await response.json() as Record<string, unknown> };
   };
-  return { root, repository, store, service, processes, call, port: await freePort() };
+  return { root, repository, store, service, processes, call, gitReader, commands, lifecycle, port: await freePort() };
 }
 
 describe("godot-web application workflow", () => {
@@ -148,5 +153,57 @@ describe("godot-web application workflow", () => {
     expect(f.service.webExportStatus(project.id)).toMatchObject({ worktreePath: linked, state: "ready" });
     await f.service.releaseAgentClaim(project.id, claim.reservation.id, "agent:mcp:fixture", claim.leaseToken);
     await f.service.operate(project.id, "stop");
+  }, 60_000);
+
+  it("binds a scoped placement to the claimed worktree like a local claim", async () => {
+    const f = await fixture();
+    const linked = join(f.root, "linked");
+    git(f.repository, "worktree", "add", "--quiet", "-b", "feature", linked);
+    writeFileSync(join(linked, "game/main.gd"), "scoped");
+    const config = { exporter: { kind: "command", command: ["node", "export.mjs"], outputDirectory: "exports/web" }, watch: { paths: ["game"], debounceMs: 100 } };
+    const project = await f.service.addProject({ name: "Game", repositoryPath: f.repository, port: f.port, launchPreset: "godot-web", godotWeb: config as never });
+    // The scoped runtime service places claimed runtimes through this path.
+    const runtime = new RuntimeService(f.store, f.gitReader, f.processes, nullLogWriter, f.commands, f.lifecycle);
+    expect(await runtime.placeClaimed(project.id, linked, "principal:agent", () => undefined)).toBeNull();
+    const args = f.store.getProject(project.id)!.args;
+    expect(args).toContain("--root");
+    expect(args[args.indexOf("--worktree-key") + 1]).toBe(webWorktreeKey(linked));
+    const preview = `http://127.0.0.1:${f.port}`;
+    await vi.waitFor(async () => {
+      const response = await fetch(`${preview}/`, { redirect: "manual" });
+      expect(response.status).toBe(302);
+      expect(await (await fetch(new URL(response.headers.get("location")!, preview))).text()).toContain("<body>scoped</body>");
+    }, { timeout: 20_000, interval: 200 });
+    expect(f.service.webExportStatus(project.id)).toMatchObject({ worktreePath: linked, state: "ready" });
+    await f.service.operate(project.id, "stop");
+  }, 60_000);
+
+  it("runs runtime events, watcher exports, queue settlement and removal under strict database admission", async () => {
+    const f = await fixture({ strict: true });
+    const run = <T>(operation: () => T) => f.store.admission.run(operation);
+    const config = { exporter: { kind: "command", command: ["node", "export.mjs"], outputDirectory: "exports/web" }, watch: { paths: ["game"], debounceMs: 100 } };
+    const added = await f.call("/api/projects", { name: "Game", repositoryPath: f.repository, port: f.port, launchPreset: "godot-web", godotWeb: config });
+    expect(added.status).toBe(201);
+    const projectId = (added.body.project as { id: string }).id;
+    expect((await f.call(`/api/projects/${projectId}/operation`, { operation: "start", worktreePath: f.repository })).status).toBe(200);
+    const status = async () => (await f.call(`/api/projects/${projectId}/godot-web`)).body.webExport as { state: string; lastFailure: unknown; current: { runId: string } | null } | null;
+    // The session starts from a runtime event and its export settles outside any request.
+    await vi.waitFor(async () => expect(await status()).toMatchObject({ state: "ready", lastFailure: null }), { timeout: 20_000, interval: 200 });
+    const first = (await status())!.current!.runId;
+
+    // A watcher timer enqueues the follow-up; settlement records publication with its own admission.
+    writeFileSync(join(f.repository, "game/main.gd"), "v2");
+    await vi.waitFor(async () => {
+      const current = await status();
+      expect(current).toMatchObject({ state: "ready", lastFailure: null });
+      expect(current!.current!.runId).not.toBe(first);
+    }, { timeout: 20_000, interval: 200 });
+    const runs = await run(() => f.store.listTestRuns(projectId));
+    expect(runs.map((testRun) => testRun.source.processOutcome)).toEqual(["passed", "passed"]);
+
+    expect((await f.call(`/api/projects/${projectId}/operation`, { operation: "stop" })).status).toBe(200);
+    await vi.waitFor(async () => expect(await run(() => f.store.countTestRuns(["queued", "running"], projectId))).toBe(0), { timeout: 20_000 });
+    expect((await f.call(`/api/projects/${projectId}`, undefined, "DELETE")).status).toBe(200);
+    expect(await run(() => f.store.getProject(projectId))).toBeNull();
   }, 60_000);
 });

@@ -6,7 +6,7 @@ const constraints = [
   ["test_runs", "CHECK(adapter IN ('node', 'django'))", "CHECK(adapter IN ('node', 'django', 'godot'))"],
 ] as const;
 
-/** Frozen copy of migration 35's constraint; bootstrap DDL of a newer binary may already contain it. */
+/** Frozen copy of migration 43's constraint; bootstrap DDL of a newer binary may already contain it. */
 const LATER_PROJECT_PRESETS = "CHECK(launch_preset IN ('auto', 'node', 'django', 'none', 'godot-web'))";
 
 export const verificationProjectMigration = {
@@ -22,7 +22,7 @@ export function applyVerificationProjectMigration(database: Database.Database): 
   if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=30").get()) return;
   // initializeSchema owns the sole connection, enclosing transaction and FK validation.
   if (!database.inTransaction || database.pragma("foreign_keys", { simple: true })) throw new Error("Migration 30 requires the ordered schema transaction with FK enforcement disabled.");
-  // A later superset (migration 35's launch presets) already satisfies this replacement.
+  // A later superset (migration 43's launch presets) already satisfies this replacement.
   for (const [table, from, to] of constraints) rebuildTable(database, table, from, to, table === "projects" ? [LATER_PROJECT_PRESETS] : []);
   database.prepare("INSERT INTO schema_migrations(version,applied_at,name,checksum) VALUES(30,?,?,?)")
     .run(new Date().toISOString(), verificationProjectMigration.name, verificationProjectChecksum);

@@ -1,8 +1,18 @@
+import { effectiveKnowledgePermissions, effectiveRuntimeActions, isAuthorized, type AuthorizationSubject, type RuntimeAuthority } from "@/server/modules/authorization";
+import { knowledgePermissions, setKnowledgeRoleSchema, revokeKnowledgeRoleSchema, listKnowledgeRolesSchema, type AuthorizationAction, type AuthorizationResource, type KnowledgeRoleBinding, type SubjectKind } from "@/shared/contracts/authorization";
+import {
+  issueRuntimeCredentialSchema, listRuntimeAccessSchema, revokeRuntimeDelegationSchema, rotateRuntimeCredentialSchema,
+  runtimeActions, setRuntimeDelegationSchema,
+  type RuntimeAccessEntry, type RuntimeAction, type RuntimeCredentialScope, type RuntimeDelegation,
+} from "@/shared/contracts/runtime-access";
+import type { ZodType } from "zod";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 import type {
   AuthenticatedIdentity,
   AuthenticatedPrincipal,
+  CredentialAuthenticatedPrincipal,
+  ProviderSessionAuthority,
   CredentialAuthenticationRecord,
   IdentityStore,
   InstallationAuthority,
@@ -11,6 +21,8 @@ import type {
   KnowledgeProjectGrant,
   Principal,
   PrincipalCredential,
+  PrincipalKind,
+  RuntimeAccessStore,
 } from "./contracts";
 
 export type IdentityErrorCode =
@@ -19,7 +31,10 @@ export type IdentityErrorCode =
   | "owner_already_initialized"
   | "principal_forbidden"
   | "knowledge_forbidden"
-  | "invalid_request";
+  | "invalid_request"
+  | "role_revision_conflict"
+  | "runtime_forbidden"
+  | "runtime_revision_conflict";
 
 export class IdentityError extends Error {
   constructor(readonly code: IdentityErrorCode, message: string) {
@@ -38,6 +53,26 @@ export interface IssuedAgentToken {
   credential: PrincipalCredential;
   token: string;
 }
+
+export interface IssuedRuntimeCredential extends IssuedAgentToken {
+  scopes: RuntimeCredentialScope[];
+}
+
+export interface RotatedRuntimeCredential extends IssuedRuntimeCredential {
+  /** Revoked in the same transaction. Its credential-bound vault grants are not copied. */
+  replacedCredentialId: string;
+}
+
+export interface RuntimeAccessReport {
+  principal: Principal;
+  /** Every stored delegation, including revocation tombstones and expired rows. */
+  delegations: RuntimeDelegation[];
+  /** Credentials with a runtime ceiling; `effective` is evaluated against current state. */
+  credentials: Array<{ credential: PrincipalCredential; scopes: RuntimeCredentialScope[]; effective: RuntimeAccessEntry[] }>;
+}
+
+/** Identical for missing and unauthorized projects so denials do not reveal registration. */
+export const RUNTIME_ACCESS_DENIED = "The project does not exist or this credential is not authorized for the requested action.";
 
 export interface BootstrapOwnerInput {
   label?: string;
@@ -62,10 +97,7 @@ export interface SetKnowledgeGrantInput {
 
 const TOKEN_PREFIX = "wts";
 const DUMMY_HASH = Buffer.alloc(32);
-const KNOWLEDGE_PERMISSIONS = new Set<KnowledgePermission>([
-  "knowledge:read", "knowledge:write", "knowledge:approve", "knowledge:export", "knowledge:import",
-  "attachments:read", "attachments:write",
-]);
+const KNOWLEDGE_PERMISSIONS = new Set<KnowledgePermission>(knowledgePermissions);
 
 function hashToken(token: string): Buffer {
   return createHash("sha256").update(token, "utf8").digest();
@@ -107,6 +139,8 @@ export class IdentityService {
     private readonly id: () => string = randomUUID,
     private readonly secret: () => string = () => randomBytes(32).toString("hex"),
     private readonly installationAuthority?: InstallationAuthority,
+    private readonly runtimeAccess?: RuntimeAccessStore,
+    private readonly providerSessions?: ProviderSessionAuthority,
   ) {}
 
   bootstrapOwnerSession(input: BootstrapOwnerInput = {}): BootstrappedOwner {
@@ -117,6 +151,21 @@ export class IdentityService {
       throw new IdentityError("owner_already_initialized", "Właściciel został już zainicjalizowany.");
     }
     return { principalId: principal.id, credential: publicCredential(issued.record), token: issued.token };
+  }
+
+  /** Protected operator operation. Deliberately issues no credential, role or grant. */
+  createFirstOwnerPrincipal(actor: "local-cli" | "local-admin"): Principal {
+    const principal: Principal = { id: this.id(), kind: "owner", status: "active" };
+    if (!this.store.createFirstOwnerPrincipal(principal, actor)) {
+      throw new IdentityError("owner_already_initialized", "An owner principal already exists.");
+    }
+    return principal;
+  }
+
+  ownerPrincipalStatus(): { state: "none" | "single" | "ambiguous"; principal?: Principal } {
+    const owners = this.store.ownerPrincipals();
+    return owners.length === 0 ? { state: "none" } : owners.length === 1
+      ? { state: "single", principal: owners[0] } : { state: "ambiguous" };
   }
 
   recoverOwnerSession(input: BootstrapOwnerInput = {}): BootstrappedOwner {
@@ -141,7 +190,7 @@ export class IdentityService {
     return { principalId: actor.principalId, credential: publicCredential(issued.record), token: issued.token };
   }
 
-  authenticateBearer(token: string): AuthenticatedPrincipal {
+  authenticateBearer(token: string): CredentialAuthenticatedPrincipal {
     const parsed = parseToken(token);
     const record = parsed ? this.store.getCredentialForAuthentication(parsed.id) : null;
     const expected = record && /^[0-9a-f]{64}$/.test(record.verifierHash)
@@ -160,6 +209,7 @@ export class IdentityService {
       || (record.expiresAt !== null && record.expiresAt <= now)
       || !principal
       || principal.status !== "active"
+      || principal.kind === "human"
       || !credentialMatchesPrincipal(record, principal.kind)
     ) {
       throw new IdentityError("invalid_credential", "Nieprawidłowe lub nieaktywne poświadczenie.");
@@ -180,13 +230,17 @@ export class IdentityService {
     if (principal.kind === "installation") {
       return { principal, credential: null, knowledgeGrants: [], installationAuthority: true };
     }
-    const credential = this.store.getCredentialForAuthentication(actor.credentialId)!;
+    const credential = actor.authenticationMethod === "provider_session" ? null : this.store.getCredentialForAuthentication(actor.credentialId)!;
     return {
       principal,
-      credential: publicCredential(credential),
+      credential: credential ? publicCredential(credential) : null,
+      ...(principal.kind === "agent" && this.runtimeAccess && credential ? { runtimeAccess: this.currentRuntimeAccess(actor, credential) } : {}),
       knowledgeGrants: this.store.listKnowledgeProjectGrants(actor.principalId)
         .filter((grant) => grant.revokedAt === null)
-        .map(({ projectId, permissions }) => ({ projectId, permissions })),
+        .map(grant => ({ projectId: grant.projectId, permissions: effectiveKnowledgePermissions(this.subject(actor), grant.projectId, {
+          ordinaryHuman: principal.kind === "human", grant, binding: this.store.getKnowledgeRoleBinding(actor.principalId, grant.projectId),
+        }) }))
+        .filter(grant => grant.permissions.length > 0),
     };
   }
 
@@ -286,7 +340,7 @@ export class IdentityService {
     const principal = this.store.getPrincipal(input.principalId);
     const project = this.store.getKnowledgeProject(input.projectId);
     const permissions = [...new Set(input.permissions)].sort();
-    if (!principal || principal.status !== "active" || principal.kind === "worker" || principal.kind === "installation") {
+    if (!principal || principal.status !== "active" || !["owner", "agent"].includes(principal.kind)) {
       throw new IdentityError("invalid_request", "Grant można nadać wyłącznie aktywnemu właścicielowi lub agentowi.");
     }
     if (!project || project.status !== "active") {
@@ -314,6 +368,7 @@ export class IdentityService {
 
   revokeKnowledgeGrant(principalId: string, projectId: string, actor: AuthenticatedPrincipal): KnowledgeProjectGrant {
     this.requireOwnerSession(actor);
+    if (this.store.getPrincipal(principalId)?.kind === "human") throw new IdentityError("invalid_request", "Use protected human membership operations.");
     const grant = this.store.getKnowledgeProjectGrant(principalId, projectId);
     if (!grant || grant.revokedAt !== null) throw new IdentityError("invalid_request", "Nie znaleziono aktywnego grantu.");
     const revoked = { ...grant, revokedAt: this.clock() };
@@ -334,26 +389,255 @@ export class IdentityService {
     permission: KnowledgePermission,
     options: { allowArchived?: boolean } = {},
   ): void {
+    this.authorize(actor, permission, { kind: "knowledge-project", id: projectId }, options);
+  }
+
+  /** The application boundary re-reads authentication and authority on every operation. */
+  authorize(actor: AuthenticatedPrincipal, action: AuthorizationAction, resource: AuthorizationResource, context: { allowArchived?: boolean } = {}): void {
     this.requireCurrentAuthentication(actor);
-    const project = this.store.getKnowledgeProject(projectId);
-    if (actor.principalKind === "installation") {
-      // The installation authority holds every permission; only the project state still applies.
-      if (!project || (project.status !== "active" && permission !== "knowledge:read" && !options.allowArchived)) {
-        throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
-      }
+    if (resource.kind === "runtime-project") {
+      if (!isAuthorized(this.subject(actor), action, resource, {
+        project: null, grant: null, binding: null, runtime: this.runtimeAuthority(actor, resource.id),
+      })) throw new IdentityError("runtime_forbidden", RUNTIME_ACCESS_DENIED);
       return;
     }
-    const grant = this.store.getKnowledgeProjectGrant(actor.principalId, projectId);
-    if (
-      !project
-      || (project.status !== "active" && permission !== "knowledge:read" && !options.allowArchived)
-      || !grant
-      || grant.revokedAt !== null
-      || !grant.permissions.includes(permission)
-      || (permission === "knowledge:approve" && !isOwnerSession(actor))
-    ) {
-      throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
+    const knowledge = resource.kind === "knowledge-project";
+    if (!isAuthorized(this.subject(actor), action, resource, {
+      project: knowledge ? this.store.getKnowledgeProject(resource.id) : null,
+      grant: knowledge ? this.store.getKnowledgeProjectGrant(actor.principalId, resource.id) : null,
+      binding: knowledge ? this.store.getKnowledgeRoleBinding(actor.principalId, resource.id) : null,
+      ordinaryHuman: this.store.getPrincipal(actor.principalId)?.kind === "human",
+      allowArchived: context.allowArchived,
+    })) throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
+  }
+
+  authorizeKnowledgeRuntimeLink(actor: AuthenticatedPrincipal): void {
+    this.requireCurrentAuthentication(actor);
+    if (this.store.getPrincipal(actor.principalId)?.kind === "human") throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
+  }
+
+  private subject(actor: AuthenticatedPrincipal): AuthorizationSubject {
+    return { id: actor.principalId, kind: subjectKind(actor.principalKind), humanSession: isOwnerSession(actor) };
+  }
+
+  /** Re-reads credential, agent, delegation, ceiling and sponsor; throws one safe denial for every failure. */
+  authorizeRuntime(actor: AuthenticatedPrincipal, projectId: string, action: RuntimeAction): void {
+    try {
+      this.authorize(actor, action, { kind: "runtime-project", id: projectId });
+    } catch (error) {
+      if (error instanceof IdentityError) throw new IdentityError("runtime_forbidden", RUNTIME_ACCESS_DENIED);
+      throw error;
     }
+  }
+
+  /** Current effective runtime scope of the authenticated credential. */
+  runtimeAccessFor(actor: AuthenticatedPrincipal): RuntimeAccessEntry[] {
+    this.requireCurrentAuthentication(actor);
+    if (actor.principalKind !== "agent" || !this.runtimeAccess) return [];
+    return this.currentRuntimeAccess(actor, this.store.getCredentialForAuthentication(actor.credentialId)!);
+  }
+
+  setRuntimeDelegation(value: unknown, actor: AuthenticatedPrincipal): RuntimeDelegation {
+    const store = this.requireRuntimeAdministration(actor);
+    const input = parseRuntimeInput(setRuntimeDelegationSchema, value, "Invalid runtime delegation.");
+    const principal = this.store.getPrincipal(input.principalId);
+    if (principal?.kind !== "agent" || principal.status !== "active") {
+      throw new IdentityError("invalid_request", "Runtime delegation requires an active agent principal.");
+    }
+    if (!store.hasRuntimeProject(input.projectId)) throw new IdentityError("invalid_request", "Registered runtime project not found.");
+    const now = this.clock();
+    const current = store.getRuntimeDelegation(input.principalId, input.projectId);
+    if ((current?.revision ?? 0) !== input.expectedRevision) throw runtimeConflict();
+    // Omission preserves the existing ceiling; only explicit null removes it.
+    const expiresAt = input.expiresAt === undefined
+      ? current?.expiresAt ?? null
+      : futureTimestamp(input.expiresAt ?? undefined, now);
+    const delegation: RuntimeDelegation = {
+      principalId: input.principalId, projectId: input.projectId, sponsorId: actor.principalId,
+      actions: canonicalActions(input.actions), revision: input.expectedRevision + 1,
+      expiresAt, updatedAt: now, revokedAt: null,
+    };
+    if (!store.saveRuntimeDelegation(delegation, input.expectedRevision, actor.principalId)) throw runtimeConflict();
+    return delegation;
+  }
+
+  revokeRuntimeDelegation(value: unknown, actor: AuthenticatedPrincipal): RuntimeDelegation {
+    const store = this.requireRuntimeAdministration(actor);
+    const input = parseRuntimeInput(revokeRuntimeDelegationSchema, value, "Invalid runtime delegation.");
+    const current = store.getRuntimeDelegation(input.principalId, input.projectId);
+    if (!current || current.revokedAt !== null || current.revision !== input.expectedRevision) throw runtimeConflict();
+    const now = this.clock();
+    const tombstone: RuntimeDelegation = { ...current, revision: current.revision + 1, updatedAt: now, revokedAt: now };
+    if (!store.saveRuntimeDelegation(tombstone, input.expectedRevision, actor.principalId)) throw runtimeConflict();
+    return tombstone;
+  }
+
+  listRuntimeAccess(value: unknown, actor: AuthenticatedPrincipal): RuntimeAccessReport {
+    const store = this.requireRuntimeAdministration(actor);
+    const input = parseRuntimeInput(listRuntimeAccessSchema, value, "Invalid principal.");
+    const principal = this.store.getPrincipal(input.principalId);
+    if (principal?.kind !== "agent") throw new IdentityError("invalid_request", "Agent principal not found.");
+    return {
+      principal,
+      delegations: store.listRuntimeDelegations(principal.id),
+      credentials: this.store.listPrincipalCredentials(principal.id).flatMap((credential) => {
+        const scopes = store.listRuntimeCredentialScopes(credential.id);
+        if (!scopes.length) return [];
+        const record = this.store.getCredentialForAuthentication(credential.id)!;
+        const usable = principal.status === "active" && record.kind === "agent_token" && record.status === "active"
+          && record.revokedAt === null && (record.expiresAt === null || record.expiresAt > this.clock());
+        const effective = usable ? this.currentRuntimeAccess({
+          principalId: principal.id, principalKind: "agent", credentialId: credential.id, authenticationMethod: "agent_token",
+        }, record) : [];
+        return [{ credential, scopes, effective }];
+      }),
+    };
+  }
+
+  issueRuntimeCredential(value: unknown, actor: AuthenticatedPrincipal): IssuedRuntimeCredential {
+    const store = this.requireRuntimeAdministration(actor);
+    const input = parseRuntimeInput(issueRuntimeCredentialSchema, value, "Invalid runtime credential request.");
+    const principal = this.store.getPrincipal(input.principalId);
+    if (principal?.kind !== "agent" || principal.status !== "active") {
+      throw new IdentityError("principal_forbidden", "A runtime credential can be issued only to an active agent.");
+    }
+    const label = input.label.trim();
+    if (!label) throw new IdentityError("invalid_request", "Credential label must contain 1 to 120 characters.");
+    const now = this.clock();
+    const expiresAt = futureTimestamp(input.expiresAt, now);
+    const requested = uniqueScopes(input.projects);
+    for (const scope of requested) {
+      const delegation = store.getRuntimeDelegation(principal.id, scope.projectId);
+      const sponsor = delegation ? this.store.getPrincipal(delegation.sponsorId) : null;
+      if (!store.hasRuntimeProject(scope.projectId) || !delegation || delegation.revokedAt !== null
+        || (delegation.expiresAt !== null && delegation.expiresAt <= now)
+        || sponsor?.kind !== "owner" || sponsor.status !== "active"
+        || scope.actions.some(action => !delegation.actions.includes(action))) {
+        throw new IdentityError("invalid_request", `Project ${scope.projectId} has no active delegation covering the requested actions.`);
+      }
+    }
+    const issued = this.createTokenRecord(principal.id, "agent_token", label, now, expiresAt);
+    const scopes = requested.map(scope => ({ credentialId: issued.record.id, projectId: scope.projectId, actions: scope.actions, createdAt: now }));
+    store.issueScopedCredential(issued.record, scopes, actor.principalId);
+    return { credential: publicCredential(issued.record), token: issued.token, scopes };
+  }
+
+  rotateRuntimeCredential(value: unknown, actor: AuthenticatedPrincipal): RotatedRuntimeCredential {
+    const store = this.requireRuntimeAdministration(actor);
+    const input = parseRuntimeInput(rotateRuntimeCredentialSchema, value, "Invalid runtime credential rotation.");
+    const now = this.clock();
+    const replaced = this.store.getCredentialForAuthentication(input.credentialId);
+    const principal = replaced ? this.store.getPrincipal(replaced.principalId) : null;
+    const previous = replaced ? store.listRuntimeCredentialScopes(replaced.id) : [];
+    if (!replaced || replaced.kind !== "agent_token" || replaced.status !== "active" || replaced.revokedAt !== null
+      || (replaced.expiresAt !== null && replaced.expiresAt <= now)
+      || principal?.kind !== "agent" || principal.status !== "active" || !previous.length) {
+      throw new IdentityError("invalid_request", "An active scoped runtime credential of an active agent is required.");
+    }
+    const expiresAt = input.expiresAt === undefined ? replaced.expiresAt : futureTimestamp(input.expiresAt, now);
+    if (replaced.expiresAt !== null && (expiresAt === null || expiresAt > replaced.expiresAt)) {
+      throw new IdentityError("invalid_request", "Rotation cannot extend the replaced credential's expiry.");
+    }
+    const narrowed = input.projects ? uniqueScopes(input.projects) : previous.map(({ projectId, actions }) => ({ projectId, actions }));
+    for (const scope of narrowed) {
+      const prior = previous.find(entry => entry.projectId === scope.projectId);
+      if (!prior || scope.actions.some(action => !prior.actions.includes(action))) {
+        throw new IdentityError("invalid_request", "Rotation can only keep or narrow the replaced credential's scope.");
+      }
+    }
+    const label = input.label?.trim() ?? replaced.label;
+    if (!label) throw new IdentityError("invalid_request", "Credential label must contain 1 to 120 characters.");
+    const issued = this.createTokenRecord(principal.id, "agent_token", label, now, expiresAt);
+    const scopes = narrowed.map(scope => ({ credentialId: issued.record.id, projectId: scope.projectId, actions: scope.actions, createdAt: now }));
+    if (!store.rotateScopedCredential(replaced.id, now, issued.record, scopes, actor.principalId)) {
+      throw new IdentityError("invalid_request", "An active scoped runtime credential of an active agent is required.");
+    }
+    return { credential: publicCredential(issued.record), token: issued.token, scopes, replacedCredentialId: replaced.id };
+  }
+
+  /**
+   * Strictly a current owner session of the stored owner. Installation authority
+   * cannot sponsor agents, so the sponsor is always an authenticated human.
+   */
+  private requireRuntimeAdministration(actor: AuthenticatedPrincipal): RuntimeAccessStore {
+    this.requireCurrentAuthentication(actor);
+    if (!isOwnerSession(actor) || this.store.getOwnerPrincipal()?.id !== actor.principalId) {
+      throw new IdentityError("owner_authentication_required", "Runtime delegation requires an authenticated owner session; the installation token cannot sponsor agents.");
+    }
+    if (!this.runtimeAccess) throw new IdentityError("invalid_request", "Runtime access administration is unavailable.");
+    return this.runtimeAccess;
+  }
+
+  private runtimeAuthority(actor: AuthenticatedPrincipal, projectId: string): RuntimeAuthority | undefined {
+    const store = this.runtimeAccess;
+    if (!store || actor.principalKind !== "agent") return undefined;
+    const delegation = store.getRuntimeDelegation(actor.principalId, projectId);
+    const sponsor = delegation ? this.store.getPrincipal(delegation.sponsorId) : null;
+    return {
+      now: this.clock(),
+      credentialId: actor.credentialId,
+      project: store.hasRuntimeProject(projectId) ? { id: projectId } : null,
+      delegation,
+      scope: store.getRuntimeCredentialScope(actor.credentialId, projectId),
+      sponsor: sponsor ? { id: sponsor.id, kind: subjectKind(sponsor.kind), status: sponsor.status } : null,
+    };
+  }
+
+  private currentRuntimeAccess(actor: AuthenticatedPrincipal, credential: CredentialAuthenticationRecord): RuntimeAccessEntry[] {
+    const store = this.runtimeAccess;
+    if (!store || actor.authenticationMethod === "provider_session") return [];
+    return store.listRuntimeCredentialScopes(actor.credentialId).flatMap((scope) => {
+      const authority = this.runtimeAuthority(actor, scope.projectId);
+      const actions = authority ? effectiveRuntimeActions(this.subject(actor), scope.projectId, authority) : [];
+      if (!actions.length) return [];
+      return [{ projectId: scope.projectId, actions, expiresAt: earliest(credential.expiresAt, authority!.delegation!.expiresAt) }];
+    });
+  }
+
+  setKnowledgeRole(value: unknown, actor: AuthenticatedPrincipal): KnowledgeRoleBinding {
+    this.requireOwnerSession(actor);
+    const parsed = setKnowledgeRoleSchema.safeParse(value);
+    if (!parsed.success) throw new IdentityError("invalid_request", "Nieprawidłowe przypisanie roli.");
+    const input = parsed.data;
+    const principal = this.store.getPrincipal(input.principalId);
+    const project = this.store.getKnowledgeProject(input.projectId);
+    const grant = this.store.getKnowledgeProjectGrant(input.principalId, input.projectId);
+    if (!principal || principal.status !== "active" || !["owner", "agent"].includes(principal.kind)
+      || (input.role === "manager" && principal.kind !== "owner")
+      || project?.status !== "active" || !grant || grant.revokedAt !== null) {
+      throw new IdentityError("invalid_request", "Rola wymaga aktywnego grantu; manager wymaga człowieka.");
+    }
+    const binding: KnowledgeRoleBinding = { principalId: input.principalId, projectId: input.projectId,
+      role: input.role, revision: input.expectedRevision + 1, updatedAt: this.clock(), revokedAt: null };
+    if (!this.store.saveKnowledgeRoleBinding(binding, input.expectedRevision, actor.principalId)) {
+      throw new IdentityError("role_revision_conflict", "Nieaktualna rewizja przypisania roli.");
+    }
+    return binding;
+  }
+
+  listKnowledgeRoles(value: unknown, actor: AuthenticatedPrincipal): KnowledgeRoleBinding[] {
+    this.requireOwnerSession(actor);
+    const parsed = listKnowledgeRolesSchema.safeParse(value);
+    if (!parsed.success) throw new IdentityError("invalid_request", "Nieprawidłowy podmiot.");
+    return this.store.listKnowledgeRoleBindings(parsed.data.principalId);
+  }
+
+  revokeKnowledgeRole(value: unknown, actor: AuthenticatedPrincipal): KnowledgeRoleBinding {
+    this.requireOwnerSession(actor);
+    const parsed = revokeKnowledgeRoleSchema.safeParse(value);
+    if (!parsed.success) throw new IdentityError("invalid_request", "Nieprawidłowe przypisanie roli.");
+    const input = parsed.data;
+    if (this.store.getPrincipal(input.principalId)?.kind === "human") throw new IdentityError("invalid_request", "Use protected human membership operations.");
+    const current = this.store.getKnowledgeRoleBinding(input.principalId, input.projectId);
+    if (!current || current.revokedAt !== null || current.revision !== input.expectedRevision) {
+      throw new IdentityError("role_revision_conflict", "Nieaktualna rewizja przypisania roli.");
+    }
+    const now = this.clock();
+    const binding = { ...current, revision: current.revision + 1, updatedAt: now, revokedAt: now };
+    if (!this.store.saveKnowledgeRoleBinding(binding, input.expectedRevision, actor.principalId)) {
+      throw new IdentityError("role_revision_conflict", "Nieaktualna rewizja przypisania roli.");
+    }
+    return binding;
   }
 
   /** Owner-level authority: an owner session or the current installation authority. */
@@ -365,6 +649,12 @@ export class IdentityService {
   }
 
   private requireCurrentAuthentication(actor: AuthenticatedPrincipal): void {
+    if (actor.authenticationMethod === "provider_session") {
+      if (!this.providerSessions?.isCurrentProviderSession(actor, this.clock())) {
+        throw new IdentityError("invalid_credential", "Nieprawidłowe lub nieaktywne poświadczenie.");
+      }
+      return;
+    }
     const principal = this.store.getPrincipal(actor.principalId);
     if (actor.principalKind === "installation") {
       if (
@@ -440,6 +730,51 @@ export class IdentityService {
     const expiresAt = lifetime === undefined ? null : new Date(Date.parse(now) + lifetime * 1000).toISOString();
     return this.createTokenRecord(principalId, "owner_session", label, now, expiresAt);
   }
+}
+
+function subjectKind(kind: PrincipalKind): SubjectKind {
+  // Stored `owner` principals keep their IDs and kind; policy treats them as humans.
+  return kind === "owner" ? "human" : kind;
+}
+
+function canonicalActions(actions: readonly RuntimeAction[]): RuntimeAction[] {
+  return runtimeActions.filter(action => actions.includes(action));
+}
+
+function uniqueScopes(scopes: Array<{ projectId: string; actions: RuntimeAction[] }>): Array<{ projectId: string; actions: RuntimeAction[] }> {
+  if (new Set(scopes.map(scope => scope.projectId)).size !== scopes.length) {
+    throw new IdentityError("invalid_request", "Each project may appear only once in a credential scope.");
+  }
+  return scopes.map(scope => ({ projectId: scope.projectId, actions: canonicalActions(scope.actions) }));
+}
+
+function earliest(left: string | null, right: string | null): string | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return left < right ? left : right;
+}
+
+function futureTimestamp(value: string | undefined, now: string): string | null {
+  if (value === undefined) return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) throw new IdentityError("invalid_request", "Invalid expiry timestamp.");
+  const normalized = new Date(parsed).toISOString();
+  if (normalized <= now) throw new IdentityError("invalid_request", "Expiry must be in the future.");
+  return normalized;
+}
+
+function runtimeConflict(): IdentityError {
+  return new IdentityError("runtime_revision_conflict", "Stale runtime delegation revision.");
+}
+
+function parseRuntimeInput<T>(schema: ZodType<T>, value: unknown, message: string): T {
+  const parsed = schema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  // Unsupported grants are refused explicitly rather than stored for a later slice.
+  if (parsed.error.issues.some(issue => issue.path.includes("actions"))) {
+    throw new IdentityError("invalid_request", `Unsupported runtime action. Supported actions: ${runtimeActions.join(", ")}.`);
+  }
+  throw new IdentityError("invalid_request", message);
 }
 
 function isOwnerSession(actor: AuthenticatedPrincipal): boolean {

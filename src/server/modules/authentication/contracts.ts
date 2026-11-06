@@ -16,8 +16,13 @@ export interface AuthenticationPolicy {
   generation: number;
 }
 
+/** Private CLI/admin status, never an unauthenticated public DTO. */
 export interface AuthenticationStatus {
+  /** Active in a controller, configured in an offline invocation. */
   mode: AuthenticationMode;
+  activeMode: AuthenticationMode | null;
+  configuredMode: AuthenticationMode;
+  restartRequired: boolean;
   token: Pick<InstallationTokenRecord, "id" | "prefix" | "createdAt"> | null;
   generation: number;
 }

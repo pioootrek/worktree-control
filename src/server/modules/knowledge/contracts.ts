@@ -1,3 +1,4 @@
+import type { KnowledgePermission } from "@/shared/contracts/authorization";
 import type { KnowledgeTaskPage } from "@/shared/contracts/knowledge";
 import type { KnowledgeMemory, KnowledgeSearchHit, KnowledgeSearchOptions } from "@/shared/contracts/knowledge-memory";
 import type { AuthenticatedPrincipal, KnowledgeProject, KnowledgeProjectRuntimeLink } from "@/server/modules/identity";
@@ -57,7 +58,7 @@ export interface KnowledgeStore {
   listSupersededPredecessors(projectId: string, replacementId: string, limit: number): KnowledgePage<KnowledgeMemory>;
   saveMemory(memory: KnowledgeMemory, expectedRevision: number | null, operation: string, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeMemory>;
   searchKnowledge(projectId: string, limit: number, offset: number, options: KnowledgeSearchOptions): KnowledgePage<KnowledgeSearchHit>;
-  listKnowledgeProjects(principalId: string | null, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary>;
+  listKnowledgeProjects(grants: Array<{ projectId: string; permissions: KnowledgePermission[] }> | null, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary>;
   createTask(task: KnowledgeTask, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeTask>;
   getKnowledgeProject(id: string): KnowledgeProject | null;
   hasRuntimeProject(id: string): boolean;

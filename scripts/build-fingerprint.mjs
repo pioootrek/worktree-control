@@ -11,6 +11,9 @@ const inputs = [
   "next.config.ts",
   "package.json",
   "pnpm-lock.yaml",
+  // Workspace importers and overrides decide the installed Community graph.
+  // The optional provider under packages/ is not a Community build input.
+  "pnpm-workspace.yaml",
   "postcss.config.mjs",
   "tsconfig.json",
 ];

@@ -13,13 +13,15 @@ import { DirectoryBrowser } from "@/server/directory-browser";
 import { EventStream } from "@/server/events";
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-async function fixture(actions: Array<"create" | "restore"> = []) {
-  const root = mkdtempSync(join(tmpdir(), "backup-http-")), database = join(root, "state.sqlite3"), store = new SqliteStateStore(database), auth = new AuthenticationService(store);
+async function fixture(actions: Array<"create" | "restore"> = [], mode: "open" | "token" = "token") {
+  const root = mkdtempSync(join(tmpdir(), "backup-http-")), database = join(root, "state.sqlite3"), store = new SqliteStateStore(database);
+  if (mode === "open") new AuthenticationService(store).setMode(mode, "fixture");
+  const auth = new AuthenticationService(store);
   const token = auth.generateToken("fixture").token;
   const identity = new IdentityService(store, undefined, undefined, undefined, auth);
   let maintenance = false;
   const backups = new BackupOperations(backupPolicySchema.parse({ directory: join(root, "copies"), uiActions: actions }), { databasePath: database, attachmentDirectory: join(root, "attachments"), applicationVersion: "test", source: store, estimateBytes: () => store.backupEstimateBytes(), authorize: actor => auth.isCurrentInstallationActor(actor), maintenance: () => maintenance });
-  const restart = vi.fn(async () => {}), restores = new RestoreOperations(backups, database, join(root, "attachments"), { authentication: () => store.getAuthenticationPolicy(), enterMaintenance: () => { maintenance = true; }, restart, failure: vi.fn() });
+  const restart = vi.fn(async () => {}), restores = new RestoreOperations(backups, database, join(root, "attachments"), { authentication: () => store.getAuthenticationPolicy(), executionMode: () => auth.mode(), enterMaintenance: () => { maintenance = true; }, restart, failure: vi.fn() });
   const server = createControllerServer({ service: {} as ControlService, webRoot: root, directoryBrowser: {} as DirectoryBrowser, events: new EventStream(), mcpStatus: () => ({ phase: "disabled", activeSessions: 0, endpoint: null, transport: "streamable-http", network: "loopback", authentication: "none" }), host: "127.0.0.1", port: 0, accessToken: "legacy-pairing", identity, authentication: auth, backups, restores, maintenance: () => maintenance });
   await new Promise<void>(resolve => server.server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.server.address() as AddressInfo).port}`;
@@ -40,9 +42,8 @@ it("requires a current installation token and exposes no infrastructure paths, s
   expect((await f.request("GET", undefined, "legacy-pairing")).status).toBe(403);
   const owner = f.identity.bootstrapOwnerSession();
   expect((await f.request("GET", undefined, owner.token)).status).toBe(403);
-  f.auth.setMode("open", "fixture");
-  expect((await f.request()).status).toBe(403);
-  f.auth.setMode("token", "fixture");
+  const open = await fixture(["create"], "open");
+  expect((await open.request()).status).toBe(403);
   const data = await (await f.request()).text();
   expect(data).not.toContain(f.root); expect(data).not.toContain(f.token); expect(data).not.toContain("verifierHash");
   f.auth.rotateToken("fixture"); expect((await f.request()).status).toBe(403);

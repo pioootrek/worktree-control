@@ -202,9 +202,11 @@ if (!existsSync(${JSON.stringify(started)})) {
     const blocker = f.jobs.enqueue({
       projectId: f.project.id,
       worktree: { path: "/other", head: "x", shortHead: "x", branch: null, detached: true, locked: false, prunable: false, dirty: false },
-      command: { preset: { id: "node:test", name: "test", adapter: "node", timeoutMs: 10_000 }, executable: process.execPath, args: ["-e", "setTimeout(() => {}, 600)"], cwd: f.root },
+      command: { preset: { id: "node:test", name: "test", adapter: "node", timeoutMs: 10_000 }, executable: process.execPath, args: ["-e", "setTimeout(() => {}, 1500)"], cwd: f.root },
       environment: { environment: {}, mode: "clean", profile: "unit", inheritedServerProfile: null, variableNames: [] }, actor: "local-user",
     });
+    // Queue admission is asynchronous; the export is requested only once the blocker holds the slot.
+    await vi.waitFor(() => expect(f.store.getTestRun(blocker.id)?.phase).toBe("running"), { timeout: 10_000 });
     f.setRuntime("running");
     await vi.waitFor(() => expect(f.service.status(f.project.id)?.state).toBe("queued"), { timeout: 10_000 });
     expect(f.store.getTestRun(blocker.id)?.phase).toBe("running");

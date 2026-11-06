@@ -4,6 +4,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { TestQueueStatus, TestRun } from "@/shared/contracts";
 import type { LogWriter } from "./log-writer";
 import type { StateStore } from "./state-store";
+import { admissionOf, admitWithRetry, type DatabaseAdmission } from "./database-admission";
 
 import { OwnedProcessGroup } from "./owned-process-group";
 import { emptyTelemetry, emptyRunResources, resourceReason, observeRunResources, TEST_RESOURCE_INTERVAL_MS, type RunResourceObservation, type RunResourceOptions, RunTelemetryRecorder, verificationClock, PreparationSession, PreparationError, type VerificationClock, type EnqueueTestInput } from "./modules/verification";
@@ -27,12 +28,21 @@ interface ActiveRun {
   exited: boolean;
   run: TestRun;
   timeout: NodeJS.Timeout;
+  /** Settles once spawn evidence (and any preparation `started` record) is durable. */
+  started: Promise<void> | null;
   cancellationRequested: boolean;
   timedOut: boolean;
   worktreePath: string;
 }
 
 export type { EnqueueTestInput } from "./modules/verification";
+
+/**
+ * At most one outstanding durable write per run. A newer state replaces an
+ * unwritten older one (log and resource snapshots coalesce); writes for one run
+ * never reorder, and readers see the newest state before it is durable.
+ */
+interface RunWrite { latest: TestRun; dirty: boolean; chain: Promise<void> | null }
 
 export class TestJobManager {
   private readonly telemetry: RunTelemetryRecorder;
@@ -56,6 +66,8 @@ export class TestJobManager {
   private outputNotification: NodeJS.Timeout | null = null;
   private readonly outputProjects = new Set<string>();
   private readonly logPersistence = new Map<string, NodeJS.Timeout>();
+  private readonly writes = new Map<string, RunWrite>();
+  private readonly admission: DatabaseAdmission;
 
   constructor(
     private readonly store: StateStore,
@@ -65,6 +77,8 @@ export class TestJobManager {
     private readonly resourceOptions: RunResourceOptions = {},
   ) {
     this.telemetry = new RunTelemetryRecorder(clock);
+    this.admission = admissionOf(store);
+    // Bootstrap work: callers using strict admission construct the manager inside an admitted operation.
     this.store.markInterruptedTestRuns();
     this.pruneSummaries();
     this.summaryMaintenance = setInterval(() => this.pruneSummaries(), 60_000);
@@ -96,7 +110,7 @@ export class TestJobManager {
 
   status(): TestQueueStatus {
     const settings = this.store.getTestQueueSettings();
-    const queuedPreparations = [...this.preparing].filter(id => this.store.getTestRun(id)?.phase === "queued").length;
+    const queuedPreparations = [...this.preparing].filter(id => this.read(id)?.phase === "queued").length;
     return {
       ...settings,
       ...(this.admissionBlock ? { admissionBlockReason: this.admissionBlock } : {}),
@@ -173,7 +187,12 @@ export class TestJobManager {
     return this.requireRun(run.id);
   }
 
-  async cancel(runId: string, actor: string): Promise<TestRun> {
+  /** Admitted as one operation; waits for other finalization without holding admission. */
+  cancel(runId: string, actor: string): Promise<TestRun> {
+    return this.admission.run(() => this.cancelAdmitted(runId, actor));
+  }
+
+  private async cancelAdmitted(runId: string, actor: string): Promise<TestRun> {
     const persisted = this.requireRun(runId);
     const active = this.active.get(runId);
     const run = active?.run ?? persisted;
@@ -196,9 +215,9 @@ export class TestJobManager {
         this.persistNow(run);
         this.onChange(run.projectId);
       } else {
-        await this.finish(run);
+        await this.admission.idle(() => this.finish(run));
       }
-      return this.store.getTestRun(run.id) ?? run;
+      return this.read(run.id) ?? run;
     }
     if (!active || run.phase !== "running") return run;
     // A timeout that already initiated teardown remains the stop cause, even
@@ -209,7 +228,7 @@ export class TestJobManager {
       this.telemetry.mark(active.run, "stopRequestedAt");
       this.checkpoint(active.run);
     }
-    this.complete(active);
+    void this.complete(active);
     if (this.persistenceFailure) throw this.persistenceFailure;
     this.onChange(run.projectId);
     return run;
@@ -221,7 +240,9 @@ export class TestJobManager {
     if (this.outputNotification) clearTimeout(this.outputNotification);
     this.outputNotification = null;
     try {
-      const unfinished = this.store.listPendingTestRuns();
+      // Cancellation is requested synchronously when admission is free, before any exit can race it.
+      const listed = this.admission.tryRun(() => this.store.listPendingTestRuns());
+      const unfinished = listed.ran ? listed.value : await admitWithRetry(this.admission, () => this.store.listPendingTestRuns(), { reserved: true });
       const cancellations = await Promise.allSettled(unfinished.map((run) => this.cancel(run.id, "local-user")));
       await Promise.allSettled(this.preparationPromises.values());
       await Promise.all([...this.active.values()].map((active) => this.complete(active)));
@@ -244,6 +265,8 @@ export class TestJobManager {
         }
         this.checkpoint(active.run);
       }
+      // Accepted checkpoints settle before the owner may close the store.
+      await Promise.allSettled([...this.writes.values()].map(write => write.chain));
     }
   }
 
@@ -254,36 +277,53 @@ export class TestJobManager {
     if (this.pumping || this.closed || this.admissionBlock) return;
     this.pumping = true;
     queueMicrotask(() => {
-      try {
-        if (this.closed || this.admissionBlock) return;
-        const limit = this.store.getTestQueueSettings().limit;
-        const queued = this.store.listPendingTestRuns()
-          .filter(({ id, phase }) => phase === "queued" && !this.finalizations.has(id))
-          .sort((left, right) => left.queuedAt.localeCompare(right.queuedAt));
-        const occupiedWorktrees = new Set([...this.active.values()].map(({ worktreePath }) => worktreePath));
-        for (const id of this.preparing) occupiedWorktrees.add(this.requireRun(id).worktreePath);
-        while (this.active.size + this.preparing.size < limit) {
-          const next = queued.find(({ worktreePath }) => !occupiedWorktrees.has(worktreePath));
-          if (!next) break;
-          queued.splice(queued.indexOf(next), 1);
-          occupiedWorktrees.add(next.worktreePath);
-          const run = this.requireRun(next.id);
-          this.preparing.add(run.id);
-          this.telemetry.mark(run, "admittedAt");
-          this.persistNow(run);
-          const preparation = this.prepare(run);
-          this.preparationPromises.set(run.id, preparation);
-          void preparation.finally(() => this.preparationPromises.delete(run.id)).catch(error => this.recordPersistenceFailure(run, error));
-        }
-        this.updateQueuePositions();
-      } catch (error) {
+      // A fresh admission, never one inherited from whoever requested the pump.
+      void admitWithRetry(this.admission, () => this.pumpAdmitted(), { reserved: true }).catch(error => {
+        this.pumping = false;
         this.persistenceFailure ??= error;
         this.closed = true;
         this.logs.controller("test_queue.persistence_failed", { error: String(error) });
-      } finally {
-        this.pumping = false;
-      }
+      });
     });
+  }
+
+  private pumpAdmitted(): void {
+    try {
+      if (this.closed || this.admissionBlock) return;
+      const limit = this.store.getTestQueueSettings().limit;
+      const queued = this.queuedRuns();
+      const occupiedWorktrees = new Set([...this.active.values()].map(({ worktreePath }) => worktreePath));
+      for (const id of this.preparing) occupiedWorktrees.add(this.requireRun(id).worktreePath);
+      while (this.active.size + this.preparing.size < limit) {
+        const next = queued.find(({ worktreePath }) => !occupiedWorktrees.has(worktreePath));
+        if (!next) break;
+        queued.splice(queued.indexOf(next), 1);
+        occupiedWorktrees.add(next.worktreePath);
+        const run = this.requireRun(next.id);
+        this.preparing.add(run.id);
+        this.telemetry.mark(run, "admittedAt");
+        this.persistNow(run);
+        // Preparation is a background flow; it must never inherit (or suspend) this pump's admission.
+        const preparation = this.admission.outside(() => this.prepare(run));
+        this.preparationPromises.set(run.id, preparation);
+        void preparation.finally(() => this.preparationPromises.delete(run.id)).catch(error => this.recordPersistenceFailure(run, error));
+      }
+      this.updateQueuePositions();
+    } catch (error) {
+      this.persistenceFailure ??= error;
+      this.closed = true;
+      this.logs.controller("test_queue.persistence_failed", { error: String(error) });
+    } finally {
+      this.pumping = false;
+    }
+  }
+
+  /** Queued runs in queue order, as seen with not yet durable state applied. */
+  private queuedRuns() {
+    return this.store.listPendingTestRuns()
+      .map(row => { const write = this.writes.get(row.id); return write?.dirty ? write.latest : row; })
+      .filter(({ id, phase }) => phase === "queued" && !this.finalizations.has(id))
+      .sort((left, right) => left.queuedAt.localeCompare(right.queuedAt));
   }
 
   private async prepare(run: TestRun): Promise<void> {
@@ -301,11 +341,11 @@ export class TestJobManager {
     };
     session?.signal.addEventListener("abort", preparationStopped, { once: true });
     try {
-      this.pathAdmission([run.worktreePath, run.cwd]);
+      await this.admission.run(() => this.pathAdmission([run.worktreePath, run.cwd]));
       if (preparation) {
         const input = await preparation.prepare(session!);
         session!.throwIfAborted();
-        if (this.closed || this.store.getTestRun(run.id)?.phase !== "queued") return;
+        if (this.closed || (await this.current(run.id))?.phase !== "queued") return;
         run.executable = input.command.executable;
         run.args = input.command.args;
         run.cwd = input.command.cwd;
@@ -318,29 +358,40 @@ export class TestJobManager {
       const observer = preparation?.observe ?? this.observers.get(run.id) ?? this.sourceObserver;
       if (!observer || !run.source.enqueue) {
         if (!preparation) this.preparing.delete(run.id);
-        this.start(run);
+        await this.admission.run(() => this.start(run));
         return;
       }
       run.source.preflight = await observer(run, "preflight");
       session?.throwIfAborted();
       run.source.queueComparison = compareSource(run.source.enqueue, run.source.preflight);
-      if (this.closed || this.store.getTestRun(run.id)?.phase !== "queued") return;
-      this.persistNow(run);
+      const checkpoint = await this.admission.run(() => {
+        // A cancellation can be admitted immediately after this callback. Never
+        // split reading the phase from persisting the preflight checkpoint.
+        if (this.closed || this.read(run.id)?.phase !== "queued") return false;
+        if (run.source.queueComparison !== "match") {
+          run.source = qualifySource(run.source);
+          this.telemetry.mark(run, "prepareFinishedAt");
+          run.telemetry!.termination = "rejected";
+          run.telemetry!.cleanup = "not_required";
+          run.phase = "failed";
+          run.finishedAt = this.clock.wallNow();
+          run.error = run.source.queueComparison === "changed" ? "Źródło testu zmieniło się podczas oczekiwania w kolejce." : "Nie udało się potwierdzić źródła testu przed uruchomieniem.";
+        }
+        this.persistNow(run);
+        return true;
+      });
+      if (!checkpoint) return;
       if (run.source.queueComparison !== "match") {
-        run.source = qualifySource(run.source);
-        this.telemetry.mark(run, "prepareFinishedAt");
-        run.telemetry!.termination = "rejected";
-        run.telemetry!.cleanup = "not_required";
-        run.phase = "failed";
-        run.finishedAt = this.clock.wallNow();
-        run.error = run.source.queueComparison === "changed" ? "Źródło testu zmieniło się podczas oczekiwania w kolejce." : "Nie udało się potwierdzić źródła testu przed uruchomieniem.";
         if (!preparation) this.preparing.delete(run.id);
         await this.finish(run);
         return;
       }
-      if (this.closed || this.store.getTestRun(run.id)?.phase !== "queued") return;
-      if (!preparation) this.preparing.delete(run.id);
-      this.start(run);
+      // Recheck, commit `starting` provenance, persist running state and spawn in one admitted phase.
+      await this.admission.run(() => {
+        if (this.closed || this.read(run.id)?.phase !== "queued") return;
+        if (!preparation) this.preparing.delete(run.id);
+        this.start(run);
+      });
     } catch (error) {
       if (this.persistenceFailure) throw error;
       if (session?.cleanupUnconfirmed || error instanceof PreparationError && error.cleanupUnconfirmed) {
@@ -352,12 +403,13 @@ export class TestJobManager {
         run.error = "preparation_cleanup_unconfirmed";
         run.source.reasonCodes = [...new Set([...run.source.reasonCodes, "preparation_cleanup_unconfirmed"])];
         this.telemetry.mark(run, "finalizedAt");
-        this.persistNow(run);
+        await this.persist(run);
         this.blockAdmission("remote_execution_cleanup_unconfirmed");
         this.onChange(run.projectId);
         return;
       }
-      if (this.store.getTestRun(run.id)?.phase === "queued") {
+      const failed = await this.admission.run(() => {
+        if (this.read(run.id)?.phase !== "queued") return false;
         run.source.reasonCodes = [...new Set([...run.source.reasonCodes, "source_preflight_failed"])];
         run.source = qualifySource(run.source);
         this.telemetry.mark(run, "prepareFinishedAt");
@@ -370,17 +422,19 @@ export class TestJobManager {
         run.phase = code === "preparation_cancelled" ? "cancelled" : code === "preparation_timeout" ? "timed_out" : "failed";
         run.finishedAt = this.clock.wallNow();
         run.error = session ? code : `Nie udało się sprawdzić źródła testu: ${String(error)}`;
-        await this.finish(run);
-      }
+        this.persistNow(run);
+        return true;
+      });
+      if (failed) await this.finish(run);
     } finally {
       session?.close();
       session?.signal.removeEventListener("abort", preparationStopped);
-      const cancelled = this.store.getTestRun(run.id);
+      const cancelled = await this.current(run.id);
       if (cancelled?.phase === "cancelled" && !cancelled.telemetry?.finalizedAt) {
         this.telemetry.mark(cancelled, "prepareFinishedAt");
         await this.finish(cancelled);
       }
-      if (!session?.cleanupUnconfirmed && this.store.getTestRun(run.id)?.telemetry?.cleanup !== "failed") {
+      if (!session?.cleanupUnconfirmed && (await this.current(run.id))?.telemetry?.cleanup !== "failed") {
         this.preparing.delete(run.id);
         this.preparationSessions.delete(run.id);
       }
@@ -388,7 +442,9 @@ export class TestJobManager {
     }
   }
 
+  /** Must run admitted: `starting` provenance and the running state are durable before spawn. */
   private start(run: TestRun): void {
+    if (this.closed || this.read(run.id)?.phase !== "queued") return;
     this.pathAdmission([run.worktreePath, run.cwd]);
     this.preparationSessions.get(run.id)?.throwIfAborted();
     this.preparations.get(run.id)?.starting?.();
@@ -433,7 +489,7 @@ export class TestJobManager {
     }, this.timeouts.get(run.id) ?? 15 * 60_000);
     timeout.unref();
     const active: ActiveRun = {
-      child, run, timeout, resources: null, cancellationRequested: false, timedOut: false,
+      child, run, timeout, resources: null, started: null, cancellationRequested: false, timedOut: false,
       worktreePath: run.worktreePath, group: new OwnedProcessGroup(child), completion: null,
       executionError: null, exited: false,
       closed: new Promise<void>((resolve) => child.once("close", () => resolve())),
@@ -441,25 +497,7 @@ export class TestJobManager {
     this.active.set(run.id, active);
     child.once("spawn", () => {
       this.telemetry.mark(run, "spawnedAt");
-      try { this.preparations.get(run.id)?.started?.(); }
-      catch (error) {
-        this.recordPersistenceFailure(run, error);
-        active.executionError = "Execution acceptance could not be persisted.";
-        void this.complete(active);
-        return;
-      }
-      if (child.pid && !active.completion) {
-        let checkpointAt: number | null = null;
-        active.resources = observeRunResources(run.telemetry!.resources!, child.pid,
-          () => !active.exited && child.exitCode === null && child.signalCode === null,
-          () => {
-            // At most one resource-only checkpoint per ten seconds. Existing
-            // log/lifecycle checkpoints and finalization also retain the summary.
-            if (checkpointAt !== null && performance.now() - checkpointAt < 10_000) return;
-            checkpointAt = performance.now(); this.checkpoint(run);
-          }, { ...this.resourceOptions, wallNow: this.resourceOptions.wallNow ?? this.clock.wallNow });
-      }
-      this.checkpoint(run);
+      active.started = this.recordStarted(active);
     });
     child.stdout?.on("data", (chunk: Buffer) => this.appendChunk(run, chunk));
     child.stderr?.on("data", (chunk: Buffer) => this.appendChunk(run, chunk));
@@ -485,13 +523,41 @@ export class TestJobManager {
     this.onChange(run.projectId);
   }
 
+  /** Running evidence is persisted with its own admission; finalization waits for it. */
+  private async recordStarted(active: ActiveRun): Promise<void> {
+    const { run, child } = active;
+    const started = this.preparations.get(run.id)?.started;
+    if (started) {
+      try { await admitWithRetry(this.admission, () => started(), { reserved: true }); }
+      catch (error) {
+        this.recordPersistenceFailure(run, error);
+        active.executionError = "Execution acceptance could not be persisted.";
+        void this.complete(active);
+        return;
+      }
+    }
+    if (child.pid && !active.completion) {
+      let checkpointAt: number | null = null;
+      active.resources = observeRunResources(run.telemetry!.resources!, child.pid,
+        () => !active.exited && child.exitCode === null && child.signalCode === null,
+        () => {
+          // At most one resource-only checkpoint per ten seconds. Existing
+          // log/lifecycle checkpoints and finalization also retain the summary.
+          if (checkpointAt !== null && performance.now() - checkpointAt < 10_000) return;
+          checkpointAt = performance.now(); this.checkpoint(run);
+        }, { ...this.resourceOptions, wallNow: this.resourceOptions.wallNow ?? this.clock.wallNow });
+    }
+    this.checkpoint(run);
+  }
+
   private complete(active: ActiveRun): Promise<void> {
     if (active.completion) return active.completion;
-    active.completion = (async () => {
+    active.completion = this.admission.outside(() => (async () => {
       const { run } = active;
       // Finalization has already prepared an immutable result. A failed durable
       // write may retry that snapshot, never rerun source/log qualification.
       if (run.telemetry?.finalizedAt) {
+        await active.started;
         try { await this.finish(run); }
         finally { active.completion = null; }
         return;
@@ -504,6 +570,9 @@ export class TestJobManager {
         active.resources?.stop();
         this.telemetry.mark(run, "cleanupFinishedAt");
         run.telemetry!.cleanup = "confirmed";
+        // Database contention must not delay stopping an owned process. Keep
+        // spawn evidence ordered before finalization and releasing the slot.
+        await active.started;
         this.telemetry.mark(run, "finalizationStartedAt");
         await this.waitForOutputClose(active);
       } catch (error) {
@@ -511,7 +580,7 @@ export class TestJobManager {
         run.telemetry!.cleanup = "failed";
         run.error = `Nie potwierdzono sprzątania procesów: ${error instanceof Error ? error.message : String(error)}`;
         active.completion = null;
-        this.persistNow(run);
+        await this.persist(run);
         this.onChange(run.projectId);
         return;
       }
@@ -532,7 +601,7 @@ export class TestJobManager {
               run.error = "preparation_cleanup_unconfirmed";
               run.telemetry!.cleanup = "failed";
               this.telemetry.mark(run, "finalizedAt");
-              this.persistNow(run);
+              await this.persist(run);
               this.blockAdmission("remote_execution_cleanup_unconfirmed");
               return;
             }
@@ -555,7 +624,7 @@ export class TestJobManager {
       } finally {
         active.completion = null;
       }
-    })();
+    })());
     // Event handlers cannot await; shutdown still reports the latched durability failure.
     void active.completion.catch(error => this.recordPersistenceFailure(active.run, error));
     return active.completion;
@@ -597,12 +666,15 @@ export class TestJobManager {
   private pruneSummaries(): void {
     // Maintenance only deletes terminal summaries. Retry at the next bounded
     // interval; durable run writes still fail closed through persistNow.
-    try { this.store.pruneTestSummaryHistory(); }
-    catch (error) { this.logs.controller("test_summary.retention_failed", { error: String(error) }); }
+    void admitWithRetry(this.admission, () => this.store.pruneTestSummaryHistory())
+      .catch((error: unknown) => { this.logs.controller("test_summary.retention_failed", { error: String(error) }); });
   }
 
   pruneLogs(): Promise<void> {
-    const pruning = this.logs.pruneTests((id) => this.store.hasTestRun(id));
+    // Each retention answer is admitted on its own while the directory scan runs outside admission.
+    // A refused admission fails this pass instead of deleting anything.
+    const pruning = this.logs.pruneTests((id) => this.writes.get(id)?.dirty
+      || admitWithRetry(this.admission, () => this.store.hasTestRun(id), { deadlineMs: 10_000 }));
     // The writer coalesces overlapping scans; keep only one maintenance waiter.
     if (pruning !== this.pruneOperation) {
       this.pruneOperation = pruning;
@@ -624,7 +696,7 @@ export class TestJobManager {
     }
     this.cleanup(run.id);
     this.telemetry.mark(run, "finalizationStartedAt");
-    const completion = (async () => {
+    const completion = this.admission.outside(() => (async () => {
       const preparation = this.preparations.get(run.id);
       if (preparation) {
         try { await preparation.dispose(); }
@@ -635,7 +707,7 @@ export class TestJobManager {
           run.error = "workspace_cleanup_failed";
           run.telemetry!.cleanup = "failed";
           this.telemetry.mark(run, "finalizedAt");
-          this.persistNow(run);
+          await this.persist(run);
           this.blockAdmission("remote_execution_cleanup_unconfirmed");
           return;
         }
@@ -659,13 +731,14 @@ export class TestJobManager {
         }
         this.telemetry.mark(run, "finalizedAt");
       }
-      this.persistNow(run);
+      // Terminal barrier: the final state is durable before the slot is released or success reported.
+      await this.persist(run);
       this.telemetry.forget(run.id);
       this.active.delete(run.id);
       if (!this.preparationPromises.has(run.id)) this.preparing.delete(run.id);
       this.logs.controller("test_run.finished", { runId: run.id, projectId: run.projectId, phase: run.phase, exitCode: run.exitCode });
       void this.pruneLogs();
-    })().finally(() => {
+    })()).finally(() => {
       this.finalizations.delete(run.id);
       this.pump();
       this.onChange(run.projectId);
@@ -694,15 +767,12 @@ export class TestJobManager {
   }
 
   private updateQueuePositions(): void {
-    const queued = this.store.listPendingTestRuns()
-      .filter(({ id, phase }) => phase === "queued" && !this.finalizations.has(id))
-      .sort((left, right) => left.queuedAt.localeCompare(right.queuedAt));
-    queued.forEach((run, index) => {
+    this.queuedRuns().forEach((run, index) => {
       const position = index + 1;
       if (run.queuePosition === position) return;
       const persisted = this.requireRun(run.id);
       persisted.queuePosition = position;
-      this.store.saveTestRun(persisted);
+      this.persistNow(persisted);
     });
   }
 
@@ -714,8 +784,22 @@ export class TestJobManager {
     this.timeouts.delete(runId);
   }
 
+  /** Newest state of a run, including a write still waiting for admission. Caller holds admission. */
+  private read(id: string): TestRun | null {
+    const write = this.writes.get(id);
+    return write?.dirty ? write.latest : this.store.getTestRun(id);
+  }
+
+  /** `read` from any context: admitted immediately when possible, otherwise waits. */
+  private async current(id: string): Promise<TestRun | null> {
+    const write = this.writes.get(id);
+    if (write?.dirty) return write.latest;
+    const attempt = this.admission.tryRun(() => this.read(id));
+    return attempt.ran ? attempt.value : admitWithRetry(this.admission, () => this.read(id), { reserved: true });
+  }
+
   private requireRun(id: string): TestRun {
-    const run = this.store.getTestRun(id);
+    const run = this.read(id);
     if (!run) throw new Error("Nie znaleziono uruchomienia testu.");
     return run;
   }
@@ -725,22 +809,74 @@ export class TestJobManager {
     const timeout = setTimeout(() => {
       this.logPersistence.delete(run.id);
       if (run.phase !== "queued" && run.phase !== "running" && this.active.has(run.id)) return;
-      try { this.persistNow(run); } catch { /* Failure is latched and surfaced by shutdown. */ }
+      this.checkpoint(run);
     }, LOG_PERSISTENCE_INTERVAL_MS);
     timeout.unref();
     this.logPersistence.set(run.id, timeout);
   }
 
+  /** Fire-and-forget durable checkpoint; a genuine failure is latched and surfaced by shutdown. */
   private checkpoint(run: TestRun): void {
-    try { this.persistNow(run); } catch { /* Latched, logged and surfaced by shutdown; still clean up owned processes. */ }
+    this.persist(run).catch(() => undefined);
   }
 
+  /**
+   * Durable write of `run` inside an operation that already holds admission.
+   * Throws (and latches) on failure.
+   */
   private persistNow(run: TestRun): void {
+    const write = this.stage(run);
+    try { this.writeStaged(write); } catch (error) { this.recordPersistenceFailure(run, error); throw error; }
+    this.forgetClean(write);
+  }
+
+  /**
+   * Durable write of `run` from any context. Written before returning when
+   * admission is free; otherwise ordered behind the run's pending write and
+   * coalesced with it. Contention waits; only a genuine failure (or admission
+   * that stays unavailable past its deadline) latches and rejects.
+   */
+  private persist(run: TestRun): Promise<void> {
+    const write = this.stage(run);
+    let attempt: { ran: boolean };
+    try { attempt = this.admission.tryRun(() => this.writeStaged(write)); }
+    catch (error) { this.recordPersistenceFailure(run, error); return Promise.reject(error); }
+    if (attempt.ran) { this.forgetClean(write); return Promise.resolve(); }
+    if (!write.chain) {
+      write.chain = (async () => {
+        try {
+          while (write.dirty) await admitWithRetry(this.admission, () => this.writeStaged(write), { reserved: true });
+        } catch (error) {
+          this.recordPersistenceFailure(write.latest, error);
+          throw error;
+        } finally {
+          write.chain = null;
+          this.forgetClean(write);
+        }
+      })();
+      write.chain.catch(() => undefined);
+    }
+    return write.chain;
+  }
+
+  private stage(run: TestRun): RunWrite {
     const pending = this.logPersistence.get(run.id);
     if (pending) clearTimeout(pending);
     this.logPersistence.delete(run.id);
-    try { this.store.saveTestRun(run); }
-    catch (error) { this.recordPersistenceFailure(run, error); throw error; }
+    let write = this.writes.get(run.id);
+    if (!write) { write = { latest: run, dirty: true, chain: null }; this.writes.set(run.id, write); }
+    else { write.latest = run; write.dirty = true; }
+    return write;
+  }
+
+  private writeStaged(write: RunWrite): void {
+    if (!write.dirty) return;
+    write.dirty = false;
+    try { this.store.saveTestRun(write.latest); } catch (error) { write.dirty = true; throw error; }
+  }
+
+  private forgetClean(write: RunWrite): void {
+    if (!write.dirty && !write.chain && this.writes.get(write.latest.id) === write) this.writes.delete(write.latest.id);
   }
 
   private notifyOutput(projectId: string): void {

@@ -9,7 +9,7 @@ const launchPresetConstraint = [
 const configurationColumn = "ALTER TABLE projects ADD COLUMN godot_web_json TEXT";
 
 export const godotWebMigration = {
-  version: 35,
+  version: 43,
   name: "godot-web-runtime-preset",
   // Freeze the constraint replacement and added column as this migration's provenance.
   sql: JSON.stringify([launchPresetConstraint, configurationColumn]),
@@ -21,7 +21,7 @@ export const godotWebChecksum = createHash("sha256")
 export function applyGodotWebMigration(database: Database.Database): void {
   if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=?").get(godotWebMigration.version)) return;
   // initializeSchema owns the sole connection, enclosing transaction and FK validation.
-  if (!database.inTransaction || database.pragma("foreign_keys", { simple: true })) throw new Error("Migration 35 requires the ordered schema transaction with FK enforcement disabled.");
+  if (!database.inTransaction || database.pragma("foreign_keys", { simple: true })) throw new Error("Migration 43 requires the ordered schema transaction with FK enforcement disabled.");
   rebuildTable(database, "projects", launchPresetConstraint[0], launchPresetConstraint[1]);
   const columns = database.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string }>;
   if (!columns.some(({ name }) => name === "godot_web_json")) database.exec(configurationColumn);

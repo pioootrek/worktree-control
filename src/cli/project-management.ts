@@ -80,7 +80,7 @@ export async function openProjectGateway(paths: AppPaths, locale: Locale): Promi
     const { commands, godotWeb } = createGodotWebRuntime(paths.stateDirectory, {
       store, git, processes, jobs: offlineJobs, lifecycle, logs: nullLogWriter, notify: () => undefined,
     });
-    const service = new ControlService(store, git, processes, nullLogWriter, commands, undefined, undefined, undefined, undefined, lifecycle, undefined, undefined, godotWeb);
+    const service = new ControlService(store, git, processes, nullLogWriter, commands, undefined, undefined, undefined, undefined, lifecycle, undefined, undefined, undefined, godotWeb);
     return new OfflineProjectGateway(service, lock);
   } catch (error) {
     lock.release();

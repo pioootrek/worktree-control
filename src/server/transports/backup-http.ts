@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { databaseAdmissionFailure } from "@/server/database-admission";
 import { backupCommandSchema } from "@/shared/contracts/backups";
 import { BackupError, type BackupOperations, type RestoreOperations, type BackupActor } from "@/server/modules/backups";
 
@@ -27,6 +28,7 @@ export async function handleBackupHttp(request: IncomingMessage, response: Serve
       reply(202, status);
     }
   } catch (error) {
+    if (databaseAdmissionFailure(error)) throw error;
     const failure = error instanceof BackupError ? error : new BackupError("backup_failed");
     reply(failure.status, { code: failure.code, error: failure.code, ...(failure.limit ? { limit: failure.limit } : {}) });
   }

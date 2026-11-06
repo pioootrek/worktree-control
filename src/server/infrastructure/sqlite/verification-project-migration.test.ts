@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { OwnedSqliteDatabase, SqliteStateStore, inspectSchema } from "./index";
 import { initializeSchema } from "./migrations";
 import { verificationProjectChecksum, verificationProjectMigration } from "./verification-project-migration";
+import { WITHOUT_AUTHENTICATION_PROVIDER_STORAGE, rewindProviderSessionHistory } from "./fixtures/schema-rewind";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -34,7 +35,7 @@ function fixture() {
     db.exec(`INSERT INTO ${table}_old SELECT * FROM ${table}; DROP TABLE ${table}; ALTER TABLE ${table}_old RENAME TO ${table};`);
     for (const index of indexes) db.exec(index.sql);
   }
-  db.exec("DELETE FROM schema_migrations WHERE version>=30"); db.close();
+  rewindProviderSessionHistory(db); db.exec(WITHOUT_AUTHENTICATION_PROVIDER_STORAGE + "DELETE FROM schema_migrations WHERE version>=30"); db.close();
   return { path };
 }
 function contents(db: Database.Database) {
@@ -49,8 +50,10 @@ describe("verification projects migration 30", () => {
     const indexes = beforeDb.prepare("SELECT name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL ORDER BY name").all(); beforeDb.close();
     const owned = new OwnedSqliteDatabase(f.path); const store = new SqliteStateStore(f.path, owned);
     try {
-      expect(contents(owned.database)).toEqual(before);
-      expect(owned.database.prepare("SELECT name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL ORDER BY name").all()).toEqual(indexes);
+      // Migration 43 (Godot Web) later adds a NULL configuration column to every project.
+      expect(contents(owned.database)).toEqual({ ...before, projects: (before.projects as object[]).map(row => ({ ...row, godot_web_json: null })) });
+      // Later migrations (38) add their own indexes; every pre-existing index survives unchanged.
+      expect(owned.database.prepare("SELECT name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL AND tbl_name NOT LIKE 'authentication\\_%' ESCAPE '\\' ORDER BY name").all()).toEqual(indexes);
       expect(owned.database.pragma("foreign_key_check")).toEqual([]);
       expect(owned.database.pragma("foreign_keys", { simple: true })).toBe(1);
       expect(owned.database.prepare("SELECT name,checksum FROM schema_migrations WHERE version=30").get()).toEqual({ name: verificationProjectMigration.name, checksum: verificationProjectChecksum });

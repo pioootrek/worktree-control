@@ -19,7 +19,7 @@ export type ProjectRow = {
   test_environment_profiles_json: string;
   test_preset_profiles_json: string;
   test_preset_timeouts_json: string;
-  /** Absent before migration 35. */
+  /** Absent before migration 43. */
   godot_web_json?: string | null;
   healthcheck_path: string;
   startup_timeout_ms: number;

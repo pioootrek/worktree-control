@@ -17,8 +17,15 @@ export interface FixtureProject { id: string; name: string; port: number; main: 
 export interface FixtureTestEvent { event: "start" | "finish" | "cancel"; identity: string; mode: string; pid: number; at: number }
 export interface HttpResult<T> { status: number; ok: boolean; body: T & { error?: string } }
 export interface FixtureMcpClient { call<T>(name: string, args?: Record<string, unknown>): Promise<T>; close(): Promise<void> }
+export interface FixtureCliResult { code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }
 export interface ControllerFixture {
   endpoint: string; accessUrl: string; projects: FixtureProject[];
+  paths: { base: string; data: string; state: string };
+  processState(): { pid: number | undefined; code: number | null; signal: NodeJS.Signals | null };
+  signal(signal: NodeJS.Signals): void;
+  /** Explicit cleanup for a finite fixture intentionally retaining failed ownership. */
+  terminateFailedController(): Promise<void>;
+  cliResult(args: string[], input?: unknown): Promise<FixtureCliResult>;
   /** New installations run in token mode; this installation token authorizes every transport. */
   installationToken: string;
   userBackupProjectId?: string;
@@ -100,7 +107,7 @@ async function createRepository(base: string, name: string, kind: FixtureProject
   return { main, alternate };
 }
 
-export async function startControllerFixture(projectCount = 3, projectKinds: FixtureProjectKind[] = [], options: { backups?: boolean; userBackups?: boolean; startupArguments?: string[]; restoredInstallation?: { data: string; state: string; token: string }; artifact?: { cli: string; webRoot: string } } = {}): Promise<ControllerFixture> {
+export async function startControllerFixture(projectCount = 3, projectKinds: FixtureProjectKind[] = [], options: { backups?: boolean; userBackups?: boolean; startupArguments?: string[]; nodeArguments?: string[]; restoredInstallation?: { data: string; state: string; token: string }; artifact?: { cli: string; webRoot: string } } = {}): Promise<ControllerFixture> {
   const artifactCli = options.artifact?.cli ?? join(repositoryRoot, "dist/cli/index.js");
   const artifactWeb = options.artifact?.webRoot ?? join(repositoryRoot, "out");
   const runtimeEnvironment = options.artifact ? { PATH: process.env.PATH, LANG: "C.UTF-8", NODE_ENV: "production" as const, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) } : process.env;
@@ -112,6 +119,7 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
   const ports = await Promise.all(Array.from({ length: projectCount + 2 }, () => freePort()));
   const controllerPort = ports.pop()!, mcpPort = ports.pop()!;
   let child: ChildProcess | undefined, endpoint = `http://127.0.0.1:${controllerPort}`, accessUrl = "", controllerOutput = "";
+  let lastProcess: ChildProcess | undefined;
   const generated = options.restoredInstallation ? undefined : await exec(process.execPath, [artifactCli, "auth", "token", "generate"], {
     cwd: repositoryRoot, env: { ...runtimeEnvironment, WORKTREE_CONTROL_DATA_DIR: data, WORKTREE_CONTROL_STATE_DIR: state }, timeout: 30000,
   });
@@ -125,10 +133,24 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
   }
   const start = async () => {
     let output = "";
-    child = spawn(process.execPath, [artifactCli, "start", "--service-mode", "--host", "127.0.0.1", "--port", String(controllerPort), "--mcp-port", String(mcpPort), "--no-open", "--data-dir", data, "--state-dir", state, "--browse-root", base, "--web-root", artifactWeb, ...(options.backups ? ["--backup-dir", join(base, "backups"), "--backup-ui-actions", "create,restore"] : []), ...(options.userBackups ? ["--user-backup-enabled", "--user-backup-scopes", "knowledge-discussions", "--user-backup-projects", userBackupProjectId!, "--user-backup-target", `local=${join(base, "user-exports")}`, "--user-backup-min-interval-seconds", "60"] : []), ...(options.startupArguments ?? [])], { cwd: repositoryRoot, env: runtimeEnvironment, stdio: ["ignore", "pipe", "pipe"] });
+    child = spawn(process.execPath, [...(options.nodeArguments ?? []), artifactCli, "start", "--service-mode", "--host", "127.0.0.1", "--port", String(controllerPort), "--mcp-port", String(mcpPort), "--no-open", "--data-dir", data, "--state-dir", state, "--browse-root", base, "--web-root", artifactWeb, ...(options.backups ? ["--backup-dir", join(base, "backups"), "--backup-ui-actions", "create,restore"] : []), ...(options.userBackups ? ["--user-backup-enabled", "--user-backup-scopes", "knowledge-discussions", "--user-backup-projects", userBackupProjectId!, "--user-backup-target", `local=${join(base, "user-exports")}`, "--user-backup-min-interval-seconds", "60"] : []), ...(options.startupArguments ?? [])], { cwd: repositoryRoot, env: runtimeEnvironment, stdio: ["ignore", "pipe", "pipe"] });
+    const starting = child;
+    lastProcess = child;
     const capture = (chunk: Buffer) => { output += chunk.toString(); controllerOutput = (controllerOutput + chunk.toString()).slice(-8000); };
     child.stdout?.on("data", capture); child.stderr?.on("data", capture);
-    const access = await waitFor(async () => { try { return JSON.parse(await readFile(join(state, "service-access.json"), "utf8")) as { accessUrl: string }; } catch { return null; } }, WAIT_MS, () => `Controller did not publish service access.\n${output}`);
+    let access: { accessUrl: string };
+    try {
+      access = await waitFor(async () => {
+        if (starting.exitCode !== null || starting.signalCode !== null) throw new Error(`Controller startup failed.\n${output}`);
+        try { return JSON.parse(await readFile(join(state, "service-access.json"), "utf8")) as { accessUrl: string }; } catch { return null; }
+      }, WAIT_MS, () => `Controller did not publish service access.\n${output}`);
+    } catch (error) {
+      // Confirm exit even for deliberately failed listener starts before handing paths back.
+      const failed = starting;
+      if (failed.exitCode === null && failed.signalCode === null) await closeFixtureChild(failed);
+      if (child === starting) child = undefined;
+      throw error;
+    }
     // Token mode publishes no secret; the browser receives the installation token in the fragment.
     endpoint = new URL(access.accessUrl).origin; accessUrl = `${endpoint}/#token=${encodeURIComponent(token)}`;
   };
@@ -151,6 +173,38 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
       projects.push({ id: result.project.id, name, port: ports[index]!, kind: kinds[index]!, ...repositories[index]! });
     }
     const fixture: ControllerFixture = { endpoint, accessUrl, projects, request, requestResult, installationToken: token, userBackupProjectId,
+      paths: { base, data, state },
+      processState: () => ({ pid: lastProcess?.pid, code: lastProcess?.exitCode ?? null, signal: lastProcess?.signalCode ?? null }),
+      signal(signal) { if (!child?.kill(signal)) throw new Error("Fixture controller signal was not delivered."); },
+      async terminateFailedController() {
+        if (!child) return;
+        const current = child;
+        if (current.exitCode === null && current.signalCode === null) current.kill("SIGKILL");
+        await waitFor(() => current.exitCode !== null || current.signalCode !== null ? true : null, 5_000, () => "Failed fixture cleanup remained unconfirmed.");
+        child = undefined;
+      },
+      cliResult(args, input) {
+        return new Promise((accept, reject) => {
+          const command = spawn(process.execPath, [artifactCli, ...args, "--data-dir", data, "--state-dir", state], {
+            cwd: repositoryRoot, env: { ...runtimeEnvironment, WORKTREE_CONTROL_TOKEN: token }, stdio: ["pipe", "pipe", "pipe"],
+          });
+          let stdout = "", stderr = "", failed = false;
+          const deadline = setTimeout(() => { failed = true; command.kill("SIGKILL"); }, 20_000);
+          const capture = (target: "stdout" | "stderr", chunk: Buffer) => {
+            if (target === "stdout") stdout += chunk.toString(); else stderr += chunk.toString();
+            if (stdout.length + stderr.length > 65536) { failed = true; command.kill("SIGKILL"); }
+          };
+          command.stdout.on("data", chunk => capture("stdout", chunk)); command.stderr.on("data", chunk => capture("stderr", chunk));
+          command.once("error", error => { clearTimeout(deadline); reject(error); });
+          command.once("close", (code, signal) => {
+            clearTimeout(deadline);
+            if (failed) reject(new Error("Finite fixture CLI exceeded its time or output limit; child exit confirmed."));
+            else accept({ code, signal, stdout, stderr });
+          });
+          command.stdin.on("error", () => {});
+          command.stdin.end(input === undefined ? undefined : JSON.stringify(input));
+        });
+      },
       async mcp(scopedToken?: string) {
         const mcpToken = scopedToken ?? token; const client = new Client({ name: `capacity-${randomUUID()}`, version: "1" });
         await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${mcpPort}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${mcpToken}` } } }));

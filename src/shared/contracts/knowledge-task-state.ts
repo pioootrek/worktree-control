@@ -78,7 +78,7 @@ export const taskStateInputSchema = z.strictObject({
   delivery: taskDeliverySchema,
 });
 
-const authenticationMethod = z.enum(["owner_session", "agent_token", "worker_token", "installation_token", "none"]);
+const authenticationMethod = z.enum(["provider_session", "owner_session", "agent_token", "worker_token", "installation_token", "none"]);
 /** The stored form adds server-owned fields. */
 export const taskCurrentStateSchema = taskStateInputSchema.safeExtend({
   formatVersion: z.literal(1),

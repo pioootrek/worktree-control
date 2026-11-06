@@ -20,7 +20,7 @@ pre-1.0: the CLI, configuration and data model may change between minor versions
 
 ### Changed
 
-- Schema migration 35 adds the `godot-web` preset and its project
+- Schema migration 43 adds the `godot-web` preset and its project
   configuration. Existing projects keep their preset and an empty configuration.
 
 ## 0.1.1 - 2026-10-08

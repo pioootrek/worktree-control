@@ -8,8 +8,8 @@ import type { SqliteStateStore } from "../server/sqlite-store";
  * without a credential in a protected mode receives `missingCredential` instead of a generic error.
  */
 export function authenticateOfflineActor(store: SqliteStateStore, token: string | undefined, missingCredential?: string): { identity: IdentityService; actor: AuthenticatedPrincipal } {
-  const authentication = new AuthenticationService(store);
-  const identity = new IdentityService(store, undefined, undefined, undefined, authentication);
+  const authentication = new AuthenticationService(store, undefined, undefined, undefined, undefined, "offline");
+  const identity = new IdentityService(store, undefined, undefined, undefined, authentication, store);
   const result = resolveControllerAuthentication({ authentication, identity }, { bearer: token ?? null, legacySecretValid: () => false });
   if (!result || result.kind === "legacy") {
     if (!token && missingCredential) throw new Error(missingCredential);

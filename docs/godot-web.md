@@ -126,8 +126,15 @@ HTTP: `POST /api/projects/<id>/godot-web` with `{"config": {...}}` or
 `{"config": null}`, `POST /api/projects/<id>/godot-web/rebuild`, and
 `GET /api/projects/<id>/godot-web`. MCP: `configure_godot_web`,
 `rebuild_web_export` and `get_web_export_status`; `get_project_status` also
-includes `webExport`. Configuration changes require a stopped server and
-respect existing reservations.
+includes `webExport`. Configuration changes require a stopped server,
+respect existing reservations and increment the project's configuration
+revision, like other launch settings.
+
+These HTTP routes and MCP tools require the installation authority (the
+installation token or the legacy controller token). Scoped agent credentials
+do not receive them and cannot read export status, which contains worktree
+paths. A scoped agent with runtime delegation can still claim and start a
+`godot-web` project; the static server is then bound to the claimed worktree.
 
 ## Serving and security
 

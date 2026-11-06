@@ -64,6 +64,7 @@ export class DevVaultService {
     const parsed = devVaultRequestSchema.safeParse(raw);
     if (!parsed.success) throw new DevVaultError("vault_invalid_request");
     const { command, proof } = parsed.data;
+    if (actor.authenticationMethod === "provider_session") return denied();
     try { this.identity.describeIdentity(actor); } catch { return denied(); }
     if (actor.principalKind !== "owner" && actor.principalKind !== "agent") return denied();
     if (actor.principalKind === "agent" && actor.authenticationMethod !== "agent_token") return denied();

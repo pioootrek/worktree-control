@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { TestRun } from "@/shared/contracts";
 import { REMOTE_REPORT_MAX_ENVELOPE_BYTES, remoteAssignmentSchema, remoteReportSchema, type RemoteAssignment, type RemotePollResult, type RemoteWorkerReport } from "@/shared/contracts/remote-verification";
 import type { EnqueueTestInput, VerificationJobs } from "@/server/modules/verification";
+import { admitWithRetry, directAdmission, type DatabaseAdmission } from "@/server/database-admission";
 import { summarizeReceipt, type RemoteConnectionStore, type WorkerReceipt, type WorkerReceiptSummary } from "./connection-contracts";
 
 export interface RemoteWorkerTransport {
@@ -33,6 +34,8 @@ export class RemoteVerificationWorker {
     private readonly execution: RemoteWorkerExecution,
     private readonly transport: RemoteWorkerTransport,
     reconciled: (receipt: WorkerReceiptSummary) => boolean = () => false,
+    /** Database phases are admitted one by one; polling, uploads and preparation hold no admission. */
+    private readonly admission: DatabaseAdmission = directAdmission,
   ) {
     const savedReceipts = connection.receipts();
     if (hasUnconfirmedRemoteExecution(savedReceipts, run, reconciled)) jobs.blockAdmission("remote_execution_cleanup_unconfirmed");
@@ -62,20 +65,30 @@ export class RemoteVerificationWorker {
     this.pending ??= this.synchronize().finally(() => { this.pending = null; });
     return this.pending;
   }
+  /** Admitted database phase; contention waits, an operation that ran is never repeated. */
+  private admitted<T>(operation: () => T): Promise<T> {
+    return admitWithRetry(this.admission, operation, { reserved: true });
+  }
+
   private async synchronize(): Promise<void> {
     // Collect and persist before networking, including while disconnected.
-    for (const receipt of this.receipts.values()) {
-      if (receipt.lastPhase && settled.has(receipt.lastPhase)) continue;
-      const body = this.connection.receipt(receipt.assignment.attemptId);
-      if (body) this.collect(body);
-    }
+    await this.admitted(() => {
+      for (const receipt of this.receipts.values()) {
+        if (receipt.lastPhase && settled.has(receipt.lastPhase)) continue;
+        const body = this.connection.receipt(receipt.assignment.attemptId);
+        if (body) this.collect(body);
+      }
+    });
     const poll = await this.transport.poll();
     for (const attemptId of poll.cancellations) {
-      const receipt = this.receipts.has(attemptId) ? this.connection.receipt(attemptId) : null;
-      if (!receipt) continue;
-      receipt.cancellationRequested = true;
-      this.save(receipt);
-      if (this.active.has(attemptId)) await this.jobs.cancel(receipt.localRunId, this.actor());
+      const receipt = await this.admitted(() => {
+        const current = this.receipts.has(attemptId) ? this.connection.receipt(attemptId) : null;
+        if (!current) return null;
+        current.cancellationRequested = true;
+        this.save(current);
+        return current;
+      });
+      if (receipt && this.active.has(attemptId)) await this.jobs.cancel(receipt.localRunId, this.actor());
     }
     let failure: unknown;
     for (const assignment of poll.assignments) {
@@ -92,9 +105,12 @@ export class RemoteVerificationWorker {
     for (let offset = 0; offset < summaries.length && uploads < MAX_REPORT_UPLOADS_PER_TICK && !this.stopped; offset++) {
       const summary = summaries[(start + offset) % summaries.length];
       if (summary.acknowledgedSequence >= summary.reportCount) continue;
-      const receipt = this.connection.receipt(summary.assignment.attemptId);
+      const receipt = await this.admitted(() => {
+        const current = this.connection.receipt(summary.assignment.attemptId);
+        if (current) this.collect(current);
+        return current;
+      });
       if (!receipt) continue;
-      this.collect(receipt);
       for (const report of receipt.reports) {
         if (report.sequence <= receipt.acknowledgedSequence) continue;
         if (uploads >= MAX_REPORT_UPLOADS_PER_TICK || this.stopped) break;
@@ -111,10 +127,12 @@ export class RemoteVerificationWorker {
         }
         // Execution callbacks can append while a report is in flight. Merge the ACK
         // into the current outbox instead of overwriting it with this snapshot.
-        const current = this.connection.receipt(receipt.assignment.attemptId);
-        if (!current) throw new Error("worker_receipt_missing");
-        current.acknowledgedSequence = Math.max(current.acknowledgedSequence, report.sequence);
-        this.save(current);
+        await this.admitted(() => {
+          const current = this.connection.receipt(receipt.assignment.attemptId);
+          if (!current) throw new Error("worker_receipt_missing");
+          current.acknowledgedSequence = Math.max(current.acknowledgedSequence, report.sequence);
+          this.save(current);
+        });
       }
     }
     if (failure) throw failure;
@@ -123,27 +141,36 @@ export class RemoteVerificationWorker {
   private async accept(input: RemoteAssignment, cancelled: boolean): Promise<void> {
     const assignment = remoteAssignmentSchema.parse(input);
     if (assignment.workerId !== this.workerId) throw new Error("assignment_forbidden");
-    const existing = this.receipts.get(assignment.attemptId);
-    if (existing) {
-      if (fingerprint(remoteAssignmentSchema.parse(existing.assignment)) !== fingerprint(assignment)) throw new Error("assignment_conflict");
-      return;
-    }
-    const receipt = this.connection.accept({ assignment, localRunId: randomUUID(), cancellationRequested: cancelled, reports: [], acknowledgedSequence: 0 });
-    if (fingerprint(remoteAssignmentSchema.parse(receipt.assignment)) !== fingerprint(assignment)) throw new Error("assignment_conflict");
-    this.receipts.set(assignment.attemptId, summarizeReceipt(receipt));
-    this.append(receipt, { phase: "preparing" });
-    if (cancelled) { this.append(receipt, { phase: "cancelled" }); return; }
+    // Receipt and its first evidence commit before any local preparation.
+    const receipt = await this.admitted(() => {
+      const existing = this.receipts.get(assignment.attemptId);
+      if (existing) {
+        if (fingerprint(remoteAssignmentSchema.parse(existing.assignment)) !== fingerprint(assignment)) throw new Error("assignment_conflict");
+        return null;
+      }
+      const accepted = this.connection.accept({ assignment, localRunId: randomUUID(), cancellationRequested: cancelled, reports: [], acknowledgedSequence: 0 });
+      if (fingerprint(remoteAssignmentSchema.parse(accepted.assignment)) !== fingerprint(assignment)) throw new Error("assignment_conflict");
+      this.receipts.set(assignment.attemptId, summarizeReceipt(accepted));
+      this.append(accepted, { phase: "preparing" });
+      if (cancelled) { this.append(accepted, { phase: "cancelled" }); return null; }
+      return accepted;
+    });
+    if (!receipt) return;
     try {
-      const input = await this.execution.resolve(assignment, receipt, evidence => {
+      // Mapping resolution is a bounded admitted phase; preparation itself is deferred to the queue.
+      const input = await this.admission.run(() => this.execution.resolve(assignment, receipt, evidence => {
+        // Called by the queue inside its own admitted `started` phase.
         const current = this.connection.receipt(assignment.attemptId);
         if (!current) throw new Error("worker_receipt_missing");
         this.append(current, { ...evidence, phase: "running" });
+      }));
+      await this.admitted(() => {
+        if (this.stopped) { this.append(receipt, { phase: "uncertain" }); return; }
+        this.jobs.enqueue({ ...input, runId: receipt.localRunId, actor: this.actor(), idempotencyKey: assignment.attemptId });
+        this.active.add(assignment.attemptId);
       });
-      if (this.stopped) { this.append(receipt, { phase: "uncertain" }); return; }
-      this.jobs.enqueue({ ...input, runId: receipt.localRunId, actor: this.actor(), idempotencyKey: assignment.attemptId });
-      this.active.add(assignment.attemptId);
     } catch {
-      this.append(receipt, { phase: "failed", failureKind: "setup", errorCode: "admission_failed" });
+      await this.admitted(() => this.append(receipt, { phase: "failed", failureKind: "setup", errorCode: "admission_failed" }));
     }
   }
   private collect(receipt: WorkerReceipt, recovering = false): void {

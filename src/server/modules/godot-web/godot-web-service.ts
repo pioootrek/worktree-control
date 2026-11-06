@@ -1,5 +1,6 @@
 import { join } from "node:path";
 
+import { admissionOf, admitNowOrLater, admitWithRetry, type DatabaseAdmission } from "@/server/database-admission";
 import type { GitWorktreeReader } from "@/server/git-worktrees";
 import { webWorktreeKey, type LaunchCommandResolver } from "@/server/launch-command";
 import type { LogWriter } from "@/server/log-writer";
@@ -32,6 +33,8 @@ export interface GodotWebServiceOptions {
   notify(projectId: string): void;
   limits?: GenerationLimits;
   watch?: WatchFactory;
+  /** The store's connection gate; defaults to the store's own admission. */
+  admission?: DatabaseAdmission;
 }
 
 function safeMessage(error: unknown, fallback: string): string {
@@ -41,6 +44,12 @@ function safeMessage(error: unknown, fallback: string): string {
 /**
  * Managed Godot Web previews. A session exists only while the project's owned
  * static-server runtime is running; exports are finite jobs in the shared queue.
+ *
+ * Database admission: transport calls (configure, rebuild, status, drain from
+ * removal) run inside the caller's admitted operation. Runtime events, watcher
+ * timers, queue settlement and follow-up exports are background flows: they
+ * never inherit a caller's admission and take their own for each store call.
+ * Waits for export settlement release admission.
  */
 export class GodotWebService {
   private readonly sessions = new Map<string, { session: WebExportSession; watcher: SourceWatcher | null }>();
@@ -51,8 +60,11 @@ export class GodotWebService {
   /** Runtime keys already known not to be Godot Web, avoiding a store read per log line. */
   private readonly ignoredRuntimes = new Map<string, string>();
   private closed = false;
+  private readonly admission: DatabaseAdmission;
 
-  constructor(private readonly options: GodotWebServiceOptions) {}
+  constructor(private readonly options: GodotWebServiceOptions) {
+    this.admission = options.admission ?? admissionOf(options.store);
+  }
 
   publicDirectory(projectId: string): string { return this.generationStore(projectId).publicDirectory; }
 
@@ -76,10 +88,20 @@ export class GodotWebService {
     if (!wanted || this.sessions.has(projectId)) return;
     const runtimeKey = `${wanted}\0${runtime.startedAt}`;
     if (this.ignoredRuntimes.get(projectId) === runtimeKey) return;
-    const project = this.options.store.getProject(projectId);
-    if (project?.launchPreset !== "godot-web" || !project.godotWeb) { this.ignoredRuntimes.set(projectId, runtimeKey); return; }
-    this.ignoredRuntimes.delete(projectId);
-    void this.beginSession(projectId, wanted, project.godotWeb).catch((error: unknown) => {
+    // Process callbacks may fire inside or outside an admitted operation; the read is synchronous when admission is free.
+    admitNowOrLater(this.admission, () => this.options.store.getProject(projectId), (project) => {
+      if (this.closed || this.sessions.has(projectId)) return;
+      // A deferred read may observe a runtime that has since changed; a later event handles the new one.
+      const current = this.options.processes.statusSummary(projectId);
+      if (current.phase !== "running" || current.worktreePath !== wanted || `${current.worktreePath}\0${current.startedAt}` !== runtimeKey) return;
+      if (project?.launchPreset !== "godot-web" || !project.godotWeb) { this.ignoredRuntimes.set(projectId, runtimeKey); return; }
+      this.ignoredRuntimes.delete(projectId);
+      const config = project.godotWeb;
+      // A background flow: it must never join (or idle) the operation that triggered this runtime event.
+      void this.admission.outside(() => this.beginSession(projectId, wanted, config)).catch((error: unknown) => {
+        this.options.logs.controller("godot_web.session_failed", { projectId, error: String(error) });
+      });
+    }, (error: unknown) => {
       this.options.logs.controller("godot_web.session_failed", { projectId, error: String(error) });
     });
   }
@@ -135,15 +157,17 @@ export class GodotWebService {
     const ended = this.ending.get(projectId);
     if (!ended) return;
     const { session, runId } = ended;
-    await session.settled(DRAIN_TIMEOUT_MS);
+    // Never hold database admission while waiting: the queue needs it to settle this very run.
+    await this.admission.idle(() => session.settled(DRAIN_TIMEOUT_MS));
+    const read = () => this.admission.run(() => this.options.store.getTestRun(runId), { reserved: true });
     // Settlement precedes the queue's final write; wait (bounded) until the run is terminal.
     const deadline = Date.now() + DRAIN_TIMEOUT_MS;
     while (runId && Date.now() < deadline) {
-      const phase = this.options.store.getTestRun(runId)?.phase;
+      const phase = (await read())?.phase;
       if (phase !== "queued" && phase !== "running") break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await this.admission.idle(() => new Promise((resolve) => setTimeout(resolve, 50)));
     }
-    const run = this.options.store.getTestRun(runId);
+    const run = await read();
     if (session.activeRunId || run?.phase === "queued" || run?.phase === "running"
       || (run && run.telemetry?.cleanup !== "confirmed" && run.telemetry?.cleanup !== "not_required")) {
       throw new Error("The previous Web export has not confirmed process cleanup; retry after it finishes.");
@@ -236,7 +260,8 @@ export class GodotWebService {
       this.ending.set(projectId, { session, runId });
       // At most one entry per project; drain removes it once the run is terminal.
       // Cancellation follows the queue's own rules; a late settle is ignored because the session is disposed.
-      void this.options.jobs.cancel(runId, GODOT_WEB_ACTOR).catch((error: unknown) => {
+      // It takes its own admission instead of joining whichever operation ended the session.
+      void this.admission.outside(() => this.options.jobs.cancel(runId, GODOT_WEB_ACTOR)).catch((error: unknown) => {
         this.options.logs.controller("godot_web.cancel_failed", { projectId, runId, error: String(error) });
       });
     }
@@ -247,7 +272,12 @@ export class GodotWebService {
   private request(session: WebExportSession, reason: "start" | "change" | "manual"): void {
     const start = session.request(reason);
     this.options.notify(session.projectId);
-    if (start) void this.enqueue(session);
+    if (start) this.startEnqueue(session);
+  }
+
+  /** Exports are enqueued by a background flow with fresh admissions, never inside the requester's operation. */
+  private startEnqueue(session: WebExportSession): void {
+    void this.admission.outside(() => this.enqueue(session));
   }
 
   private async enqueue(session: WebExportSession): Promise<void> {
@@ -298,7 +328,7 @@ export class GodotWebService {
       if (!session.activeRunId && session.pending && !session.disposed) {
         session.pending = false;
         session.manualPending = false;
-        void this.enqueue(session);
+        this.startEnqueue(session);
       }
     }
   }
@@ -324,7 +354,10 @@ export class GodotWebService {
           void _omitted;
           session.current = current;
           log(`web_export.published generation=${generation.id} files=${generation.files} bytes=${generation.bytes} skipped=${skipped}`);
-          this.options.store.recordProjectEvent(session.projectId, "godot_web.published", GODOT_WEB_ACTOR, { generation: generation.id, runId: run.id, files: generation.files, bytes: generation.bytes });
+          // Settlement runs outside any admitted operation; completion of accepted work uses reserved admission.
+          await admitWithRetry(this.admission, () => this.options.store.recordProjectEvent(session.projectId, "godot_web.published", GODOT_WEB_ACTOR, {
+            generation: generation.id, runId: run.id, files: generation.files, bytes: generation.bytes,
+          }), { reserved: true });
         } catch (error) {
           if (error instanceof GenerationSupersededError) {
             decision = session.disposed ? { kind: "ignored" } : { kind: "superseded" };
@@ -345,7 +378,7 @@ export class GodotWebService {
     } finally {
       const rerun = session.finish(decision);
       this.options.notify(session.projectId);
-      if (rerun) void this.enqueue(session);
+      if (rerun) this.startEnqueue(session);
     }
   }
 }

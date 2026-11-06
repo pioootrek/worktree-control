@@ -1,3 +1,5 @@
+import { HumanAccountQueries } from "./human-account-queries";
+import type { KnowledgeRoleBinding, KnowledgePermission } from "@/shared/contracts/authorization";
 import { DevVaultQueries } from "./dev-vault-queries";
 import type { DevVaultStore } from "@/server/modules/dev-vault";
 import { RemoteConnectionQueries } from "./remote-connection-queries";
@@ -8,7 +10,7 @@ import type { KnowledgeTaskPage, KnowledgeReplyPage, KnowledgeRelationDestinatio
 import type { KnowledgeMemory, KnowledgeSearchHit, KnowledgeSearchOptions } from "@/shared/contracts/knowledge-memory";
 import type { KnowledgeAttachmentLimits, KnowledgeAttachment } from "@/shared/contracts/knowledge-attachments";
 import type { KnowledgeFilters, KnowledgeProjectSummary } from "@/shared/contracts/knowledge";
-import type { PendingTestRun, ProjectGodotWebUpdate, ProjectRegistration, ReservationRequest, StateStore, TestRunStatusRecord, WorktreeStorageSample } from "@/server/state-store";
+import { ReservationError, type PendingTestRun, type ProjectGodotWebUpdate, type ProjectRegistration, type ReservationBinding, type ReservationRequest, type ScopedConfigurationCommit, type ScopedConfigurationCommitResult, type StateStore, type TestRunStatusRecord, type WorktreeStorageSample } from "@/server/state-store";
 import type { Project, Reservation, ServerCapacitySettings, TestEnvironmentProfile, TestQueueSettings, TestRun, TestRunPhase, WorktreeStorageSnapshot } from "@/shared/contracts";
 import type {
   RemotePrincipal,
@@ -32,8 +34,17 @@ import type {
   KnowledgeProjectRuntimeLink,
   Principal,
   PrincipalCredential,
+  RuntimeAccessStore,
 } from "@/server/modules/identity";
-import type { AuthenticationPolicy, AuthenticationStore } from "@/server/modules/authentication";
+import type { RuntimeCredentialScope, RuntimeDelegation } from "@/shared/contracts/runtime-access";
+import { RuntimeAccessQueries } from "./runtime-access-queries";
+import { AccountProtection, recoverIssuedSessions, validateSessionRowPolicy, type AuthenticationPolicy, type AuthenticationProviderStorage, type AuthenticationStore, type SessionRowPolicy } from "@/server/modules/authentication";
+import { ExclusiveSqliteConnection, type AdmissionSnapshot, type ExclusiveConnectionOptions } from "./exclusive-connection";
+import type { DatabaseAdmission } from "@/server/database-admission";
+import { AuthenticationProviderQueries } from "./authentication-provider-queries";
+import { AuthenticationProtectionQueries } from "./authentication-protection-queries";
+import { AuthenticationSessionIssuanceQueries } from "./authentication-session-issuance-queries";
+import { AUTHENTICATION_PROVIDER_STORAGE_REVISION } from "./authentication-provider-migration";
 import type { HubImportBatch, HubImportExecutionStore, HubImportMapping, KnowledgeHistoryEntry, KnowledgeMutationContext, KnowledgeMutationResult, KnowledgePage, KnowledgeProjectSnapshot, KnowledgeRelation, KnowledgeReply, KnowledgeRuntimeLinkResult, KnowledgeStore, KnowledgeTask, KnowledgeThread } from "@/server/modules/knowledge";
 import { KnowledgeError, publishKnowledgeAttachment, DEFAULT_ATTACHMENT_LIMITS, assertAttachmentCapacity } from "@/server/modules/knowledge";
 import Database from "better-sqlite3";
@@ -42,19 +53,19 @@ import { dirname } from "node:path";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { configureDurability, assertDurability } from "./database-validation";
-import { OwnedSqliteDatabase } from "./owned-database";
+import { OwnedSqliteDatabase, type DatabaseProvenance } from "./owned-database";
 import { IdentityQueries } from "./identity-queries";
 import { KnowledgeQueries } from "./knowledge-queries";
 import type { KnowledgeTaskStateView, TaskCurrentState } from "@/shared/contracts/knowledge-task-state";
 import type { TaskStateFacts } from "@/server/modules/knowledge";
 import { mapProject, type ProjectRow } from "./project-mapping";
-import { equalHash, mapReservation, type ReservationRow } from "./reservation-mapping";
+import { equalBinding, equalHash, mapReservation, type ReservationRow } from "./reservation-mapping";
 import { AuthenticationQueries } from "./authentication-queries";
 import { RemoteVerificationQueries } from "./remote-verification-queries";
 import { StorageQueries } from "./storage-queries";
 import { TestRunQueries } from "./test-run-queries";
 
-export class SqliteStateStore implements StateStore, AuthenticationStore, IdentityStore, KnowledgeStore, HubImportExecutionStore, RemoteVerificationStore, RemoteVerificationAttemptStore, RemoteVerificationProvisioningStore {
+export class SqliteStateStore implements StateStore, AuthenticationStore, IdentityStore, RuntimeAccessStore, KnowledgeStore, HubImportExecutionStore, RemoteVerificationStore, RemoteVerificationAttemptStore, RemoteVerificationProvisioningStore {
   private readonly database: Database.Database;
   private readonly testRuns: TestRunQueries;
   private readonly storage: StorageQueries;
@@ -62,31 +73,73 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   readonly remoteConnection: RemoteConnectionStore;
   readonly devVault: DevVaultStore;
   private readonly identity: IdentityQueries;
+  private readonly runtimeAccess: RuntimeAccessQueries;
   private readonly authentication: AuthenticationQueries;
   private readonly knowledge: KnowledgeQueries;
 
   private readonly ownedDatabase: OwnedSqliteDatabase;
+  /** Every query module receives `connection.core`; the raw handle stays here. */
+  private readonly connection: ExclusiveSqliteConnection;
+  private sessionRecovery: Promise<void> | undefined;
+  private sessionsRecovered = false;
 
-  constructor(databasePath: string, inspected?: OwnedSqliteDatabase) {
+  constructor(databasePath: string, inspected?: OwnedSqliteDatabase, connectionOptions?: ExclusiveConnectionOptions) {
     this.ownedDatabase = inspected ?? new OwnedSqliteDatabase(databasePath, true);
     try {
-      this.database = this.ownedDatabase.enableWrites();
-      configureDurability(this.database);
-      initializeSchema(this.database, this.ownedDatabase.inspection.fresh, inspectSchema);
-      assertDurability(this.database);
+      const writable = this.ownedDatabase.enableWrites();
+      configureDurability(writable);
+      initializeSchema(writable, this.ownedDatabase.inspection.fresh, inspectSchema);
+      assertDurability(writable);
       this.ownedDatabase.completeInitialization();
+      // Query modules register functions while being built; strict admission starts once they exist.
+      this.connection = new ExclusiveSqliteConnection(writable, { ...connectionOptions, admission: "compatible" });
+      this.database = this.connection.core;
       this.testRuns = new TestRunQueries(this.database);
       this.storage = new StorageQueries(this.database);
       this.remoteVerification = new RemoteVerificationQueries(this.database);
       this.remoteConnection = new RemoteConnectionQueries(this.database);
       this.devVault = new DevVaultQueries(this.database);
       this.identity = new IdentityQueries(this.database);
+      this.runtimeAccess = new RuntimeAccessQueries(this.database);
       this.authentication = new AuthenticationQueries(this.database);
       this.knowledge = new KnowledgeQueries(this.database);
+      if (connectionOptions?.admission === "strict") this.connection.requireAdmission();
     } catch (error) {
       this.ownedDatabase.close();
       throw error;
     }
+  }
+
+  /** Core admission on the single connection gate; see `DatabaseAdmission`. */
+  get admission(): DatabaseAdmission {
+    const connection = this.connection;
+    return {
+      run: (operation, options) => connection.runCore(operation, options),
+      detached: (operation, options) => connection.runDetached(operation, options),
+      tryRun: operation => connection.tryCore(operation),
+      outside: operation => connection.outside(operation),
+      idle: (operation, options) => connection.idle(operation, options),
+    };
+  }
+
+  /** Refuses unadmitted core SQL from now on, even while the connection is idle. */
+  requireAdmission(): void { this.connection.requireAdmission(); }
+
+  admissionSnapshot(): AdmissionSnapshot { return this.connection.snapshot(); }
+
+  /**
+   * Orderly close: provider admission ends, accepted core work, backups and
+   * provider executions (including ones whose public promise timed out) must
+   * settle within `timeoutMs`, then SQLite closes and ownership is released.
+   * When that cannot be confirmed, the connection and ownership lock stay held
+   * and the call can be retried; nothing reports a completed shutdown.
+   */
+  async closeAfterDrain(timeoutMs = 10_000): Promise<void> {
+    this.connection.beginDrain();
+    if (!await this.connection.drain(timeoutMs)) {
+      throw new Error("Database work did not settle before shutdown; ownership is retained.");
+    }
+    this.close();
   }
 
   backupEstimateBytes(): number {
@@ -158,6 +211,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   publishHubImport(batchId: string, now: string, attachmentDirectory?: string, limits: KnowledgeAttachmentLimits = DEFAULT_ATTACHMENT_LIMITS): HubImportBatch {
     try{return this.database.transaction(() => {
       const batch=this.getHubImport(batchId); if(!batch) throw new KnowledgeError("not_found","Import batch not found.");
+      if(this.identity.getPrincipal(batch.actorPrincipalId)?.kind === "human") throw new KnowledgeError("invalid_request", "Human imports are unavailable.");
       if(batch.status==="published") return batch;
       if(batch.status!=="staging"||batch.cursor!==batch.totalItems) throw new KnowledgeError("revision_conflict","Import batch is incomplete.");
       const target=this.database.prepare("SELECT name,revision FROM knowledge_projects WHERE id = ?").get(batch.targetProjectId) as {name:string;revision:number}|undefined;
@@ -405,7 +459,8 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     this.database.transaction(() => {
       const result = this.database.prepare(`
         UPDATE projects SET launch_preset = ?, godot_web_json = ?, executable = ?, args_json = ?, tls_mode = 'off',
-          tls_key_path = NULL, tls_cert_path = NULL, tls_ca_path = NULL, updated_at = ?
+          tls_key_path = NULL, tls_cert_path = NULL, tls_ca_path = NULL, updated_at = ?,
+          configuration_revision = configuration_revision + 1
         WHERE id = ?
       `).run(input.launchPreset, input.godotWeb ? JSON.stringify(input.godotWeb) : null, input.executable, JSON.stringify(input.args), now, projectId);
       if (result.changes === 0) throw new Error("Nie znaleziono projektu.");
@@ -474,13 +529,13 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     tlsCaPath: string | null;
     executable: string;
     args: string[];
-  }): void {
+  }, actor = "local-user"): void {
     const now = new Date().toISOString();
     this.database.transaction(() => {
       const result = this.database.prepare(`
         UPDATE projects SET
           tls_mode = ?, tls_key_path = ?, tls_cert_path = ?, tls_ca_path = ?,
-          executable = ?, args_json = ?, updated_at = ?
+          executable = ?, args_json = ?, updated_at = ?, configuration_revision = configuration_revision + 1
         WHERE id = ?
       `).run(
         input.tlsMode,
@@ -493,7 +548,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
         projectId,
       );
       if (result.changes === 0) throw new Error("Nie znaleziono projektu.");
-      this.audit(projectId, "project.launch_updated", "local-user", input);
+      this.audit(projectId, "project.launch_updated", actor, input);
     })();
   }
 
@@ -560,7 +615,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     if (timeoutMs === null) delete timeouts[presetId];
     else timeouts[presetId] = timeoutMs;
     this.database.transaction(() => {
-      this.database.prepare("UPDATE projects SET test_preset_timeouts_json = ?, updated_at = ? WHERE id = ?")
+      this.database.prepare("UPDATE projects SET test_preset_timeouts_json = ?, updated_at = ?, configuration_revision = configuration_revision + 1 WHERE id = ?")
         .run(JSON.stringify(timeouts), new Date().toISOString(), projectId);
       this.audit(projectId, "project.test_preset_timeout_set", actor, { presetId, timeoutMs });
     })();
@@ -577,7 +632,8 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     const now = new Date().toISOString();
     this.database.transaction(() => {
       const result = this.database.prepare(`
-        UPDATE projects SET test_environment_profiles_json = ?, test_preset_profiles_json = ?, updated_at = ?
+        UPDATE projects SET test_environment_profiles_json = ?, test_preset_profiles_json = ?, updated_at = ?,
+          configuration_revision = configuration_revision + 1
         WHERE id = ?
       `).run(JSON.stringify(profiles), JSON.stringify(presetProfiles), now, projectId);
       if (result.changes === 0) throw new Error("Nie znaleziono projektu.");
@@ -605,21 +661,84 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     this.database.transaction(() => {
       const result = this.database.prepare(`
         UPDATE projects SET environment_profiles_json = ?, selected_environment_profile = ?,
-          environment_json = ?, updated_at = ? WHERE id = ?
+          environment_json = ?, updated_at = ?, configuration_revision = configuration_revision + 1 WHERE id = ?
       `).run(JSON.stringify(profiles), selectedProfile, JSON.stringify(environment), now, projectId);
       if (result.changes === 0) throw new Error("Nie znaleziono projektu.");
       this.audit(projectId, eventType, actor, { profileName, variableNames: variableNames.sort() });
     })();
   }
 
-  setSelectedWorktree(projectId: string, path: string): void {
+  getProjectConfigurationRevision(projectId: string): number | null {
+    const row = this.database.prepare("SELECT configuration_revision FROM projects WHERE id = ?").get(projectId) as { configuration_revision: number } | undefined;
+    return row ? row.configuration_revision : null;
+  }
+
+  /**
+   * One immediate transaction checks lease ownership and the revision, applies
+   * the change, increments the revision and writes the attributable audit event.
+   * A refusal or a no-op changes no configuration and writes no audit event;
+   * only the shared lease expiry bookkeeping may run.
+   */
+  commitScopedConfiguration(input: ScopedConfigurationCommit): ScopedConfigurationCommitResult {
+    return this.database.transaction((): ScopedConfigurationCommitResult => {
+      const project = this.getProject(input.projectId);
+      const revision = this.getProjectConfigurationRevision(input.projectId);
+      if (!project || revision === null) return { status: "project_missing" };
+      this.expireReservations(input.projectId);
+      const row = this.activeReservationRow(input.projectId);
+      if (input.claim === null) {
+        if (row) return { status: "claim_required" };
+      } else if (!row || row.id !== input.claim.reservationId || row.kind !== "agent" || row.owner !== input.claim.owner
+        || !equalHash(row.token_hash, input.claim.leaseTokenHash) || !equalBinding(row, input.claim.binding)) {
+        return { status: "claim_stale" };
+      } else if (input.claim.worktreePath !== undefined && row.worktree_path !== input.claim.worktreePath) {
+        return { status: "claim_worktree_mismatch" };
+      }
+      if (revision !== input.expectedRevision) return { status: "revision_conflict" };
+      const { change } = input;
+      let eventType: string;
+      let changed: Record<string, unknown>;
+      if (change.kind === "select_environment_profile") {
+        const profile = project.environmentProfiles.find(({ name }) => name === change.profileName);
+        if (!profile) return { status: "profile_not_found" };
+        if (project.selectedEnvironmentProfile === profile.name) return { status: "noop", revision };
+        this.database.prepare(`UPDATE projects SET selected_environment_profile = ?, environment_json = ?, updated_at = ?,
+          configuration_revision = configuration_revision + 1 WHERE id = ? AND configuration_revision = ?`)
+          .run(profile.name, JSON.stringify(profile.environment), new Date().toISOString(), input.projectId, revision);
+        eventType = "configuration.environment_profile_selected";
+        changed = { selectedProfile: profile.name };
+      } else {
+        const timeouts = { ...project.testPresetTimeouts };
+        if ((timeouts[change.presetId] ?? null) === change.timeoutMs) return { status: "noop", revision };
+        if (change.timeoutMs === null) delete timeouts[change.presetId];
+        else {
+          if (!(change.presetId in timeouts) && Object.keys(timeouts).length >= change.overrideLimit) return { status: "override_limit" };
+          timeouts[change.presetId] = change.timeoutMs;
+        }
+        this.database.prepare(`UPDATE projects SET test_preset_timeouts_json = ?, updated_at = ?,
+          configuration_revision = configuration_revision + 1 WHERE id = ? AND configuration_revision = ?`)
+          .run(JSON.stringify(timeouts), new Date().toISOString(), input.projectId, revision);
+        eventType = "configuration.test_preset_timeout_set";
+        changed = { presetId: change.presetId, timeoutMs: change.timeoutMs };
+      }
+      // Attribution only: no ENV names or values, lease secrets or session handles.
+      this.audit(input.projectId, eventType, `principal:${input.attribution.principalId}`, {
+        principalId: input.attribution.principalId, credentialId: input.attribution.credentialId,
+        operationId: input.attribution.operationId, reservationId: input.claim?.reservationId ?? null,
+        previousRevision: revision, revision: revision + 1, outcome: "completed", ...changed,
+      });
+      return { status: "completed", revision: revision + 1 };
+    }).immediate();
+  }
+
+  setSelectedWorktree(projectId: string, path: string, actor = "local-user"): void {
     const now = new Date().toISOString();
     this.database.transaction(() => {
       const result = this.database.prepare(
         "UPDATE projects SET selected_worktree_path = ?, updated_at = ? WHERE id = ?",
       ).run(path, now, projectId);
       if (result.changes === 0) throw new Error("Nie znaleziono projektu.");
-      this.audit(projectId, "worktree.selected", "local-user", { path });
+      this.audit(projectId, "worktree.selected", actor, { path });
     })();
   }
 
@@ -738,12 +857,26 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     this.identity.savePrincipal(principal, actor);
   }
 
+  humanAccounts(): HumanAccountQueries { return new HumanAccountQueries(this.database); }
+
   getPrincipal(id: string): Principal | null {
     return this.identity.getPrincipal(id);
   }
 
   getOwnerPrincipal(): Principal | null {
     return this.identity.getOwnerPrincipal();
+  }
+
+  ownerPrincipals(): Principal[] { return this.identity.ownerPrincipals(); }
+  createFirstOwnerPrincipal(principal: Principal, actor: string): boolean {
+    return this.identity.createFirstOwnerPrincipal(principal, actor);
+  }
+
+  hasAuthenticationProviderData(): boolean {
+    return Boolean(this.database.prepare(`SELECT 1 WHERE
+      EXISTS(SELECT 1 FROM authentication_provider_subjects) OR
+      EXISTS(SELECT 1 FROM authentication_ba_user) OR EXISTS(SELECT 1 FROM authentication_ba_account) OR
+      EXISTS(SELECT 1 FROM authentication_ba_session) OR EXISTS(SELECT 1 FROM authentication_ba_verification)`).get());
   }
 
   listPrincipals(kind?: Principal["kind"]): Principal[] {
@@ -798,6 +931,30 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     this.identity.saveKnowledgeProjectGrant(grant, actor);
   }
 
+  getRuntimeDelegation(principalId: string, projectId: string): RuntimeDelegation | null { return this.runtimeAccess.getRuntimeDelegation(principalId, projectId); }
+  listRuntimeDelegations(principalId: string): RuntimeDelegation[] { return this.runtimeAccess.listRuntimeDelegations(principalId); }
+  saveRuntimeDelegation(delegation: RuntimeDelegation, expectedRevision: number, actor: string): boolean {
+    return this.runtimeAccess.saveRuntimeDelegation(delegation, expectedRevision, actor);
+  }
+  getRuntimeCredentialScope(credentialId: string, projectId: string): RuntimeCredentialScope | null { return this.runtimeAccess.getRuntimeCredentialScope(credentialId, projectId); }
+  listRuntimeCredentialScopes(credentialId: string): RuntimeCredentialScope[] { return this.runtimeAccess.listRuntimeCredentialScopes(credentialId); }
+  issueScopedCredential(credential: CredentialAuthenticationRecord, scopes: RuntimeCredentialScope[], actor: string): void {
+    this.runtimeAccess.issueScopedCredential(credential, scopes, actor);
+  }
+  rotateScopedCredential(replacedId: string, revokedAt: string, credential: CredentialAuthenticationRecord, scopes: RuntimeCredentialScope[], actor: string): boolean {
+    return this.runtimeAccess.rotateScopedCredential(replacedId, revokedAt, credential, scopes, actor);
+  }
+
+  getKnowledgeRoleBinding(principalId: string, projectId: string): KnowledgeRoleBinding | null {
+    return this.identity.getKnowledgeRoleBinding(principalId, projectId);
+  }
+  listKnowledgeRoleBindings(principalId: string): KnowledgeRoleBinding[] {
+    return this.identity.listKnowledgeRoleBindings(principalId);
+  }
+  saveKnowledgeRoleBinding(binding: KnowledgeRoleBinding, expectedRevision: number, actor: string): boolean {
+    return this.identity.saveKnowledgeRoleBinding(binding, expectedRevision, actor);
+  }
+
   getKnowledgeProjectRuntimeLink(projectId: string): KnowledgeProjectRuntimeLink | null {
     return this.identity.getKnowledgeProjectRuntimeLink(projectId);
   }
@@ -841,8 +998,8 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   attachmentLargestFileForProject(projectId: string): number { return this.knowledge.attachmentLargestFileForProject(projectId); }
   attachmentTargetExists(projectId: string, kind: KnowledgeAttachment["recordKind"], id: string): boolean { return this.knowledge.attachmentTargetExists(projectId,kind,id); }
 
-  listKnowledgeProjects(principalId: string | null, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary> {
-    return this.knowledge.listKnowledgeProjects(principalId, limit, offset);
+  listKnowledgeProjects(grants: Array<{ projectId: string; permissions: KnowledgePermission[] }> | null, limit: number, offset: number): KnowledgePage<KnowledgeProjectSummary> {
+    return this.knowledge.listKnowledgeProjects(grants, limit, offset);
   }
 
   createTask(task: KnowledgeTask, context: KnowledgeMutationContext): KnowledgeMutationResult<KnowledgeTask> {
@@ -1024,7 +1181,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     this.expireReservations(projectId);
     const row = this.database.prepare(`
       SELECT id, project_id, worktree_path, kind, owner, reason, created_at, expires_at,
-             maximum_expires_at, token_hash, idempotency_key, released_at
+             maximum_expires_at, token_hash, idempotency_key, released_at, principal_id, credential_id
       FROM reservations WHERE project_id = ? AND released_at IS NULL
     `).get(projectId) as ReservationRow | undefined;
     return row ? mapReservation(row) : null;
@@ -1033,7 +1190,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   getEffectiveReservation(projectId: string, observedAt: string): Reservation | null {
     const row = this.database.prepare(`
       SELECT id, project_id, worktree_path, kind, owner, reason, created_at, expires_at,
-             maximum_expires_at, token_hash, idempotency_key, released_at
+             maximum_expires_at, token_hash, idempotency_key, released_at, principal_id, credential_id
       FROM reservations
       WHERE project_id = ? AND released_at IS NULL
         AND (expires_at IS NULL OR expires_at > ?)
@@ -1056,7 +1213,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
         }
         const repeated = this.database.prepare(`
           SELECT id, project_id, worktree_path, kind, owner, reason, created_at, expires_at,
-                 maximum_expires_at, token_hash, idempotency_key, released_at
+                 maximum_expires_at, token_hash, idempotency_key, released_at, principal_id, credential_id, request_fingerprint
           FROM reservations
           WHERE owner = ? AND idempotency_key = ? AND kind = 'agent' AND released_at IS NULL
         `).get(input.owner, input.idempotencyKey) as ReservationRow | undefined;
@@ -1065,14 +1222,16 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
             repeated.project_id !== input.projectId
             || repeated.worktree_path !== input.worktreePath
             || !equalHash(repeated.token_hash, input.leaseTokenHash)
+            || !equalBinding(repeated, input.binding)
+            || (repeated.request_fingerprint ?? null) !== (input.requestFingerprint ?? null)
           ) {
-            throw new Error("Klucz idempotencji jest już używany przez inną dzierżawę.");
+            throw new ReservationError("idempotency_conflict", "Klucz idempotencji jest już używany przez inną dzierżawę.");
           }
           return mapReservation(repeated);
         }
       }
       const active = this.getActiveReservation(input.projectId);
-      if (active) throw new Error(`Projekt jest zablokowany przez ${active.owner}.`);
+      if (active) throw new ReservationError("claim_conflict", `Projekt jest zablokowany przez ${active.owner}.`);
       const createdAt = new Date().toISOString();
       const expiresAt = input.kind === "agent"
         ? new Date(Date.now() + input.ttlSeconds! * 1000).toISOString()
@@ -1094,8 +1253,8 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       this.database.prepare(`
         INSERT INTO reservations (
           id, project_id, worktree_path, kind, owner, reason, created_at, expires_at,
-          maximum_expires_at, token_hash, idempotency_key
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          maximum_expires_at, token_hash, idempotency_key, principal_id, credential_id, request_fingerprint
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         reservation.id,
         reservation.projectId,
@@ -1108,19 +1267,22 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
         reservation.maximumExpiresAt,
         input.leaseTokenHash ?? null,
         input.idempotencyKey ?? null,
+        input.kind === "agent" ? input.binding?.principalId ?? null : null,
+        input.kind === "agent" ? input.binding?.credentialId ?? null : null,
+        input.requestFingerprint ?? null,
       );
       this.audit(input.projectId, "reservation.acquired", input.owner, reservation);
       return reservation;
     })();
   }
 
-  authorizeReservation(projectId: string, owner: string, leaseTokenHash?: string): Reservation | null {
+  authorizeReservation(projectId: string, owner: string, leaseTokenHash?: string, binding?: ReservationBinding | null): Reservation | null {
     const reservation = this.getActiveReservation(projectId);
     if (!reservation) return null;
     const row = this.activeReservationRow(projectId)!;
-    if (reservation.owner !== owner) throw new Error(`Projekt jest zablokowany przez ${reservation.owner}.`);
-    if (reservation.kind === "agent" && (!leaseTokenHash || !equalHash(row.token_hash, leaseTokenHash))) {
-      throw new Error("Nieprawidłowy token dzierżawy agenta.");
+    if (reservation.owner !== owner) throw new ReservationError("claim_stale", `Projekt jest zablokowany przez ${reservation.owner}.`);
+    if (reservation.kind === "agent" && (!leaseTokenHash || !equalHash(row.token_hash, leaseTokenHash) || !equalBinding(row, binding))) {
+      throw new ReservationError("claim_stale", "Nieprawidłowy token dzierżawy agenta.");
     }
     return reservation;
   }
@@ -1131,13 +1293,14 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     owner: string,
     leaseTokenHash: string,
     ttlSeconds: number,
+    binding?: ReservationBinding | null,
   ): Reservation {
     return this.database.transaction(() => {
       if (ttlSeconds < 30) throw new Error("Dzierżawa agenta musi trwać co najmniej 30 sekund.");
       this.expireReservations(projectId);
       const row = this.activeReservationRow(projectId);
       if (!row || row.id !== reservationId) throw new Error("Dzierżawa agenta wygasła lub nie istnieje.");
-      if (row.kind !== "agent" || row.owner !== owner || !equalHash(row.token_hash, leaseTokenHash)) {
+      if (row.kind !== "agent" || row.owner !== owner || !equalHash(row.token_hash, leaseTokenHash) || !equalBinding(row, binding)) {
         throw new Error("Nieprawidłowy token dzierżawy agenta.");
       }
       const maximum = new Date(row.maximum_expires_at!).getTime();
@@ -1149,12 +1312,12 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     })();
   }
 
-  releaseAgentReservation(projectId: string, reservationId: string, owner: string, leaseTokenHash: string): void {
+  releaseAgentReservation(projectId: string, reservationId: string, owner: string, leaseTokenHash: string, binding?: ReservationBinding | null): void {
     this.database.transaction(() => {
       this.expireReservations(projectId);
       const row = this.activeReservationRow(projectId);
       if (!row || row.id !== reservationId) return;
-      if (row.kind !== "agent" || row.owner !== owner || !equalHash(row.token_hash, leaseTokenHash)) {
+      if (row.kind !== "agent" || row.owner !== owner || !equalHash(row.token_hash, leaseTokenHash) || !equalBinding(row, binding)) {
         throw new Error("Nieprawidłowy token dzierżawy agenta.");
       }
       this.releaseRow(row, owner, false);
@@ -1173,8 +1336,46 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     })();
   }
 
+  /**
+   * Storage port for an optional authentication provider: exclusive borrows of
+   * this connection, never a second connection. Closing the store invalidates it.
+   */
+  authenticationProviderStorage(): AuthenticationProviderStorage {
+    const connection = this.connection, database = this.database;
+    return {
+      storageRevision: AUTHENTICATION_PROVIDER_STORAGE_REVISION,
+      borrow: (operation, options) => connection.borrow(operation, options),
+      runControllerOperation: operation => connection.runControllerOperation(operation),
+      operationActive: () => connection.providerOperationActive(),
+      drain: timeoutMs => connection.drainProviders(timeoutMs),
+      createProviderConnection: () => connection.createProviderConnection(),
+      subjects: providerId => new AuthenticationProviderQueries(database, providerId),
+      available: () => { const state = connection.snapshot(); return state.state === "open" && !state.draining; },
+      currentSession: (providerId, sessionId) => new AuthenticationProtectionQueries(database, providerId).sessionState(sessionId),
+      issuanceState: sessionId => this.admission.run(() => new AuthenticationSessionIssuanceQueries(database).state(sessionId), { reserved: true }),
+      sessionRecoveryComplete: () => this.sessionsRecovered,
+      sessionIssuance: () => new AuthenticationSessionIssuanceQueries(database),
+      protection: (providerId, limits, issuance) => new AccountProtection(new AuthenticationProtectionQueries(database, providerId), limits, issuance),
+    };
+  }
+
+  get databaseProvenance(): DatabaseProvenance { return this.ownedDatabase.provenance; }
+
+  /**
+   * The ordinary-restart recovery of this owner's lifetime, before any issuer can
+   * exist. It runs once however often it is called, so a later runtime can never
+   * read another runtime's live `pending` rows as a dead process's leftovers.
+   * Restore provenance comes from this owner, and a refusal changes no row.
+   */
+  recoverIssuedSessions(policy: SessionRowPolicy): Promise<void> {
+    const validated = validateSessionRowPolicy(policy);
+    this.sessionRecovery ??= recoverIssuedSessions({ provenance: this.ownedDatabase.provenance, policy: validated, store: new AuthenticationSessionIssuanceQueries(this.database),
+      run: operation => this.admission.run(operation), now: () => new Date().toISOString() }).then(() => { this.sessionsRecovered = true; });
+    return this.sessionRecovery;
+  }
+
   close(): void {
-    this.ownedDatabase.close();
+    try { this.connection?.close(); } finally { this.ownedDatabase.close(); }
   }
 
   private expireReservations(projectId: string): void {
@@ -1182,7 +1383,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       const now = new Date().toISOString();
       const expired = this.database.prepare(`
         SELECT id, project_id, worktree_path, kind, owner, reason, created_at, expires_at,
-               maximum_expires_at, token_hash, idempotency_key, released_at
+               maximum_expires_at, token_hash, idempotency_key, released_at, principal_id, credential_id
         FROM reservations
         WHERE project_id = ? AND released_at IS NULL AND expires_at IS NOT NULL AND expires_at <= ?
       `).all(projectId, now) as ReservationRow[];
@@ -1198,7 +1399,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   private activeReservationRow(projectId: string): ReservationRow | undefined {
     return this.database.prepare(`
       SELECT id, project_id, worktree_path, kind, owner, reason, created_at, expires_at,
-             maximum_expires_at, token_hash, idempotency_key, released_at
+             maximum_expires_at, token_hash, idempotency_key, released_at, principal_id, credential_id
       FROM reservations WHERE project_id = ? AND released_at IS NULL
     `).get(projectId) as ReservationRow | undefined;
   }

@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { DashboardQueryService } from "./modules/dashboard";
-import { EnvironmentService, redactProject } from "./modules/environments";
+import { EnvironmentService, redactProject, ScopedConfigurationService, type ScopedConfigurationSession } from "./modules/environments";
 import type { AuthenticatedPrincipal } from "./modules/identity";
 import { KnowledgeService, type KnowledgeHistoryEntry, type KnowledgeHistoryOptions, type KnowledgePageOptions, type KnowledgeRecordKind, type KnowledgeTaskPriority, type KnowledgeTaskStatus, type KnowledgeWriteOptions } from "./modules/knowledge";
 import { leaseTokenHash, type OperationActor, ProjectLifecycle } from "./modules/lifecycle";
-import { RuntimeService } from "./modules/runtime";
+import { AGENT_LEASE_DEFAULT_SECONDS, AGENT_LEASE_MAX_SECONDS, RuntimeService, ScopedRuntimeService, type RuntimeAuthorizer, type ScopedClaimRequest, type ScopedSession } from "./modules/runtime";
 import { StatusService, type CompactProjectStatus, type CompactTestStatus, type CompactEnvelope } from "./modules/status";
 import { VerificationService, VerificationHistoryService } from "./modules/verification";
 import type { RemoteVerificationController } from "./modules/remote-verification";
@@ -37,12 +37,11 @@ import { type LogWriter, nullLogWriter } from "./log-writer";
 import { ProcessManager } from "./process-manager";
 import { discoverProjectRegistrationTarget } from "./project-registration";
 import type { NewProject, ReservationRequest, StateStore } from "./state-store";
+import { admissionOf, type DatabaseAdmission } from "./database-admission";
 import { ProjectTestCommandResolver } from "./test-command";
 import type { TestJobManager } from "./test-job-manager";
 import { AllowlistedWorktreeCacheCleaner, type WorktreeCacheCleaner, type WorktreeStorageManager } from "./worktree-storage";
 
-const AGENT_LEASE_DEFAULT_SECONDS = 30 * 60;
-const AGENT_LEASE_MAX_SECONDS = 8 * 60 * 60;
 export interface AgentClaimRequest {
   projectId: string;
   worktreePath: string;
@@ -68,6 +67,8 @@ export class ControlService {
   private readonly verificationHistory: VerificationHistoryService;
   private readonly dashboardQueries: DashboardQueryService;
   private readonly statusQueries: StatusService;
+  private readonly scopedRuntime?: ScopedRuntimeService;
+  private readonly scopedConfiguration?: ScopedConfigurationService;
 
   constructor(
     private readonly store: StateStore,
@@ -82,6 +83,7 @@ export class ControlService {
     lifecycle?: ProjectLifecycle,
     private readonly knowledge?: KnowledgeService,
     private readonly remoteVerification?: RemoteVerificationController,
+    runtimeAuthorizer?: RuntimeAuthorizer,
     private readonly godotWeb?: GodotWebService,
   ) {
     this.lifecycle = lifecycle ?? new ProjectLifecycle(store, processes);
@@ -102,6 +104,60 @@ export class ControlService {
     });
     this.statusQueries = new StatusService(store, processes,
       () => this.lifecycle.capacityStatusCompact(), () => this.testQueueStatus());
+    if (runtimeAuthorizer) {
+      this.scopedRuntime = new ScopedRuntimeService(runtimeAuthorizer, store, git, processes, this.lifecycle, this.runtime, logs);
+      this.scopedConfiguration = new ScopedConfigurationService(runtimeAuthorizer, store, git, processes, this.lifecycle,
+        worktreePath => testCommands.discover(worktreePath), logs);
+    }
+  }
+
+  /** Core admission of the store this facade operates on; transports admit each request with it. */
+  get admission(): DatabaseAdmission { return admissionOf(this.store); }
+
+  /** Scoped agent runtime access; enforcement and safe views live in the runtime module. */
+  scopedRuntimeEnabled(): boolean { return !!this.scopedRuntime; }
+  scopedProjects(actor: AuthenticatedPrincipal, session: ScopedSession) { return this.requireScopedRuntime().listProjects(actor, session); }
+  scopedProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string) { return this.requireScopedRuntime().projectStatus(actor, session, projectId); }
+  scopedWorktrees(actor: AuthenticatedPrincipal, projectId: string) { return this.requireScopedRuntime().worktrees(actor, projectId); }
+  claimScopedProject(actor: AuthenticatedPrincipal, session: ScopedSession, input: ScopedClaimRequest, existingLeaseToken?: string) {
+    return this.requireScopedRuntime().claim(actor, session, input, existingLeaseToken);
+  }
+  renewScopedClaim(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string, reservationId: string, leaseToken: string, ttlSeconds?: number) {
+    return this.requireScopedRuntime().renew(actor, session, projectId, reservationId, leaseToken, ttlSeconds);
+  }
+  releaseScopedClaim(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string, reservationId: string, leaseToken: string) {
+    return this.requireScopedRuntime().release(actor, session, projectId, reservationId, leaseToken);
+  }
+  operateScopedRuntime(actor: AuthenticatedPrincipal, session: ScopedSession, leaseToken: string, projectId: string, reservationId: string, action: ClaimedRuntimeAction, signal?: AbortSignal, sessionClosed?: () => boolean) {
+    return this.requireScopedRuntime().operate(actor, session, leaseToken, projectId, reservationId, action, signal, sessionClosed);
+  }
+  authorizeScopedRuntimeReplay(...args: Parameters<ScopedRuntimeService["authorizeReplay"]>): void {
+    this.requireScopedRuntime().authorizeReplay(...args);
+  }
+  /** Scoped profile selection and configuration; enforcement, revision CAS and safe views live in the environments module. */
+  scopedEnvironmentProfiles(actor: AuthenticatedPrincipal, input: unknown) { return this.requireScopedConfiguration().listEnvironmentProfiles(actor, input); }
+  selectScopedEnvironmentProfile(actor: AuthenticatedPrincipal, session: ScopedConfigurationSession, input: unknown) {
+    return this.requireScopedConfiguration().selectEnvironmentProfile(actor, session, input);
+  }
+  scopedProjectConfiguration(actor: AuthenticatedPrincipal, input: unknown) { return this.requireScopedConfiguration().projectConfiguration(actor, input); }
+  async setScopedTestPresetTimeout(actor: AuthenticatedPrincipal, session: ScopedConfigurationSession, input: unknown) {
+    const receipt = await this.requireScopedConfiguration().setTestPresetTimeout(actor, session, input);
+    if (receipt.outcome === "completed") this.invalidateDashboardMetadata(receipt.projectId);
+    return receipt;
+  }
+  authorizeScopedConfiguration(...args: Parameters<ScopedConfigurationService["authorize"]>): void {
+    this.requireScopedConfiguration().authorize(...args);
+  }
+  authorizeScopedConfigurationReplay(...args: Parameters<ScopedConfigurationService["authorizeReplay"]>): void {
+    this.requireScopedConfiguration().authorizeReplay(...args);
+  }
+  private requireScopedConfiguration(): ScopedConfigurationService {
+    if (!this.scopedConfiguration) throw new Error("Scoped agent configuration is unavailable.");
+    return this.scopedConfiguration;
+  }
+  private requireScopedRuntime(): ScopedRuntimeService {
+    if (!this.scopedRuntime) throw new Error("Scoped agent runtime access is unavailable.");
+    return this.scopedRuntime;
   }
 
   executeKnowledge(input: unknown, actor: AuthenticatedPrincipal) {
@@ -436,18 +492,21 @@ export class ControlService {
     return project;
   }
 
-  async reserve(input: ReservationRequest): Promise<void> {
+  async reserve(input: ReservationRequest, revalidate?: () => void): Promise<void> {
     await this.lifecycle.serialized(input.projectId, async () => {
+      revalidate?.();
       const project = this.lifecycle.requireProject(input.projectId);
       const worktrees = await this.git.list(project.repositoryPath);
       const selected = this.lifecycle.resolveWorktree(project, worktrees, input.worktreePath);
+      revalidate?.();
       this.store.acquireReservation({ ...input, worktreePath: selected.path });
       this.logs.controller("reservation.acquired", { projectId: input.projectId, worktreePath: selected.path, owner: input.owner });
     });
   }
 
-  async release(projectId: string, force = false): Promise<void> {
+  async release(projectId: string, force = false, revalidate?: () => void): Promise<void> {
     await this.lifecycle.serialized(projectId, async () => {
+      revalidate?.();
       this.lifecycle.requireProject(projectId);
       this.store.releaseReservation(projectId, "local-user", force);
       this.logs.controller(force ? "reservation.force_released" : "reservation.released", { projectId });
@@ -492,14 +551,22 @@ export class ControlService {
           this.lifecycle.acquireCapacity(project);
           try {
             operationStage = "runtime";
-            if (runtime.phase !== "stopped") await this.processes.stop(input.projectId);
+            // The lease can expire or be force-released while stop is awaited; never spawn on a stale claim.
+            const claimed = { owner: input.owner, leaseToken };
+            if (runtime.phase !== "stopped") {
+              await this.processes.stop(input.projectId);
+              this.lifecycle.requireAgentClaim(input.projectId, reservation.id, claimed);
+            }
             if (project.selectedWorktreePath !== selected.path) this.store.setSelectedWorktree(input.projectId, selected.path);
             if (project.launchPreset === "godot-web") {
               // The static server is bound to its worktree; resolve its command for the claimed one.
               const launch = this.commands.resolve(selected.path, project.port, "godot-web", undefined, { projectId: project.id, godotWeb: project.godotWeb });
-              this.store.updateProjectLaunch(project.id, { tlsMode: "off", tlsKeyPath: null, tlsCertPath: null, tlsCaPath: null, executable: launch.executable, args: launch.args });
+              if (project.executable !== launch.executable || JSON.stringify(project.args) !== JSON.stringify(launch.args)) {
+                this.store.updateProjectLaunch(project.id, { tlsMode: "off", tlsKeyPath: null, tlsCertPath: null, tlsCaPath: null, executable: launch.executable, args: launch.args }, input.owner);
+              }
             }
-            await this.processes.start(this.lifecycle.requireProject(input.projectId), selected.path);
+            await this.processes.start(this.lifecycle.requireProject(input.projectId), selected.path,
+              () => { this.lifecycle.requireAgentClaim(input.projectId, reservation.id, claimed); });
           } finally {
             this.lifecycle.releaseCapacity(input.projectId);
           }
@@ -604,7 +671,8 @@ export class ControlService {
         if (!releaseMaintenance) {
           throw new Error("Poczekaj na zakończenie pomiaru dysku przed usunięciem katalogu .next.");
         }
-        const result = await this.cacheCleaner.remove(selected.path, cache);
+        // Deletion is SQL-free and may be long; the maintenance permit keeps the worktree reserved meanwhile.
+        const result = await this.admission.idle(() => this.cacheCleaner.remove(selected.path, cache));
         this.store.recordProjectEvent(projectId, "worktree_cache.delete_succeeded", "local-user", { ...auditDetails, removed: result.removed });
         releaseMaintenance();
         releaseMaintenance = null;
@@ -643,8 +711,12 @@ export class ControlService {
     this.statusQueries.close();
     this.dashboardQueries.close();
     this.git.close?.();
-    try {
-      this.store.close();
+    // Unconfirmed process/job/storage cleanup may still need the owned database.
+    if (!failures.length) try {
+      // Accepted database work, backups and provider executions settle first; a failed drain keeps ownership.
+      const owner = this.store as StateStore & { closeAfterDrain?: () => Promise<void> };
+      if (owner.closeAfterDrain) await owner.closeAfterDrain();
+      else this.store.close();
     } catch (error) {
       failures.push(error);
     }

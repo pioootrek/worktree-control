@@ -70,7 +70,7 @@ describe("first-run installation token", () => {
     const appPaths = paths();
     const tty = terminal(true);
     const token = withStore(appPaths.databasePath, (authentication) => {
-      expect(authentication.status()).toEqual({ mode: "token", token: null, generation: 0 });
+      expect(authentication.status()).toEqual({ mode: "token", activeMode: "token", configuredMode: "token", restartRequired: false, token: null, generation: 0 });
       expect(bootstrapInstallationToken(authentication, { terminal: tty, locale: "en" })).toBe(true);
       expect(tty.output).toHaveLength(1);
       const printed = tty.output[0]!.match(TOKEN) ?? [];
@@ -112,7 +112,7 @@ describe("first-run installation token", () => {
         const call = () => bootstrapInstallationToken(authentication, { ...options, locale: "en" });
         expect(call).toThrow(FirstRunTokenRefusedError);
         expect(call).toThrow("worktree-control auth token generate");
-        expect(authentication.status()).toEqual({ mode: "token", token: null, generation: 0 });
+        expect(authentication.status()).toEqual({ mode: "token", activeMode: "token", configuredMode: "token", restartRequired: false, token: null, generation: 0 });
       });
       if ("output" in options.terminal) expect(options.terminal.output).toEqual([]);
     }

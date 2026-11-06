@@ -9,6 +9,7 @@ import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { devVaultChecksum, devVaultMigration } from "./dev-vault-migration";
 import { taskCurrentStateChecksum, taskCurrentStateMigration } from "./task-current-state-migration";
+import { WITHOUT_AUTHENTICATION_PROVIDER_STORAGE, rewindProviderSessionHistory } from "./fixtures/schema-rewind";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -28,9 +29,10 @@ describe("Knowledge 33 and DEV vault 34 integration", () => {
     const f = fixture();
     const db = new Database(f.path);
     try {
-      db.exec(`DROP TABLE dev_environment_vaults;
+      rewindProviderSessionHistory(db); db.exec(`${WITHOUT_AUTHENTICATION_PROVIDER_STORAGE}
+        DROP TABLE dev_environment_vaults;
+        DROP TABLE knowledge_role_bindings;
         DELETE FROM schema_migrations WHERE version >= 34;
-        ALTER TABLE projects DROP COLUMN godot_web_json;
         INSERT INTO knowledge_projects VALUES('knowledge','Kept','active',1,'now','now');
         INSERT INTO knowledge_tasks(id,project_id,title,description,status,priority,revision,created_by,created_at,updated_at,current_state_json)
         VALUES('task','knowledge','Kept task','History stays','open','now',1,'installation','now','now','{"preserved":"state"}');`);
@@ -48,14 +50,14 @@ describe("Knowledge 33 and DEV vault 34 integration", () => {
 
     const upgraded = new SqliteStateStore(f.path);
     try {
-      expect(upgraded.schemaVersion()).toBe(35);
+      expect(upgraded.schemaVersion()).toBe(43);
       expect(upgraded.getProject(f.project.id)).toEqual(f.project);
       expect(upgraded.getAuthenticationPolicy()).toEqual(f.policy);
       expect(upgraded.devVault.load(f.project.id)).toBeNull();
     } finally { upgraded.close(); }
     const check = new Database(f.path, { readonly: true });
     try {
-      expect(inspectSchema(check).version).toBe(35);
+      expect(inspectSchema(check).version).toBe(43);
       expect(check.prepare("SELECT version,name,checksum FROM schema_migrations WHERE version BETWEEN 33 AND 34 ORDER BY version").all()).toEqual([
         { version: 33, name: taskCurrentStateMigration.name, checksum: taskCurrentStateChecksum },
         { version: 34, name: devVaultMigration.name, checksum: devVaultChecksum },
@@ -73,7 +75,7 @@ describe("Knowledge 33 and DEV vault 34 integration", () => {
     const db = new Database(f.path);
     const oldChecksum = createHash("sha256").update(`33\0${devVaultMigration.name}\0${devVaultMigration.sql}`).digest("hex");
     try {
-      db.exec("ALTER TABLE knowledge_tasks DROP COLUMN current_state_json; ALTER TABLE projects DROP COLUMN godot_web_json; DELETE FROM schema_migrations WHERE version>=33");
+      rewindProviderSessionHistory(db); db.exec(WITHOUT_AUTHENTICATION_PROVIDER_STORAGE + "ALTER TABLE knowledge_tasks DROP COLUMN current_state_json; DELETE FROM schema_migrations WHERE version>=33");
       db.prepare("INSERT INTO schema_migrations(version,applied_at,name,checksum) VALUES(33,'now',?,?)").run(devVaultMigration.name, oldChecksum);
       db.prepare("INSERT INTO dev_environment_vaults VALUES(?,1,?)").run(f.project.id, "FAKE_CIPHERTEXT_".repeat(4));
     } finally { db.close(); }

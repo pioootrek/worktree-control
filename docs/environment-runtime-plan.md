@@ -1,6 +1,6 @@
 ---
 audience: "owner, contributors, and coding agents"
-last_reviewed: "2026-10-27"
+last_reviewed: "2026-10-28"
 source_of_truth: "Secret Runtime proposal integration direction for Worktree Control"
 status: "active"
 ---
@@ -15,11 +15,18 @@ secret resolution, and delivery to approved processes. The first backend slice
 now provides encrypted DEV profiles, bounded dotenv import, and owner-approved
 agent read/write/use grant records. Read and write work through HTTP, MCP and
 CLI. Execution use remains unavailable because local source observations do not
-provide immutable execution isolation. There is no remote secret delivery or
-vault GUI. See the [backend contract](dev-environment-vault.md) for implemented
+provide immutable execution isolation. The dashboard now supports owner import
+and access approvals; there is no remote secret delivery. See the
+[vault contract](dev-environment-vault.md) for implemented
 operations, separate owner authentication, key provisioning and limits.
 Existing literal profiles and separate test environments remain unchanged and
 unencrypted; nothing automatically imports them into the vault.
+
+The [identity and authorization plan](identity-authorization-plan.md) proposes
+independent ENV executor, reader, change-author and custodian roles. Roles do
+not replace existing signed owner proof or exact grants and do not enable use
+delivery. Knowledge task `6645ffce-dc9e-4a88-ab94-6b2cf9ca34b6` owns that role
+integration under the existing environment-profile parent.
 
 The [source note](knowledge/AGENTS.md) (Knowledge attachment `2356069c892acf5e1160da52a3cab688`)
 preserves the supplied archive and its six milestone proposals. Original stack

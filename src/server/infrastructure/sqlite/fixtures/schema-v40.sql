@@ -1,0 +1,616 @@
+-- Frozen schema 40: frozen schema 39 plus unchanged migration 40 at a685625 (before migration 41).
+PRAGMA foreign_keys=OFF;
+CREATE TABLE audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+CREATE TABLE "authentication_ba_account" ("id" text not null primary key, "accountId" text not null, "providerId" text not null, "userId" text not null references "authentication_ba_user" ("id") on delete cascade, "accessToken" text, "refreshToken" text, "idToken" text, "accessTokenExpiresAt" date, "refreshTokenExpiresAt" date, "scope" text, "password" text, "createdAt" date not null, "updatedAt" date not null);
+CREATE TABLE "authentication_ba_session" ("id" text not null primary key, "expiresAt" date not null, "token" text not null unique, "createdAt" date not null, "updatedAt" date not null, "ipAddress" text, "userAgent" text, "userId" text not null references "authentication_ba_user" ("id") on delete cascade);
+CREATE TABLE "authentication_ba_user" ("id" text not null primary key, "name" text not null, "email" text not null unique, "emailVerified" integer not null, "image" text, "createdAt" date not null, "updatedAt" date not null);
+CREATE TABLE "authentication_ba_verification" ("id" text not null primary key, "identifier" text not null, "value" text not null, "expiresAt" date not null, "createdAt" date not null, "updatedAt" date not null);
+CREATE TABLE authentication_provider_subjects (
+  provider_id TEXT NOT NULL CHECK(provider_id IN ('better-auth')),
+  subject TEXT NOT NULL REFERENCES "authentication_ba_user"("id") ON DELETE RESTRICT,
+  principal_id TEXT NOT NULL REFERENCES remote_principals(id) ON DELETE RESTRICT,
+  status TEXT NOT NULL CHECK(status IN ('active', 'revoked')),
+  linked_at TEXT NOT NULL,
+  revoked_at TEXT,
+  CHECK((status = 'active' AND revoked_at IS NULL) OR (status = 'revoked' AND revoked_at IS NOT NULL)),
+  PRIMARY KEY(provider_id, subject)
+);
+CREATE TABLE controller_audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+CREATE TABLE controller_settings (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+INSERT INTO "controller_settings" VALUES('server_capacity','{"enabled":false,"limit":2}','2026-10-29T11:36:31.379Z');
+INSERT INTO "controller_settings" VALUES('test_queue','{"limit":1}','2026-10-29T11:36:31.380Z');
+INSERT INTO "controller_settings" VALUES('authentication','{"mode":"token","token":null,"generation":0}','2026-10-29T11:36:31.389Z');
+CREATE TABLE dev_environment_vaults (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE RESTRICT,
+    version INTEGER NOT NULL CHECK(version > 0),
+    ciphertext TEXT NOT NULL CHECK(length(ciphertext) BETWEEN 40 AND 5700000)
+  );
+CREATE TABLE knowledge_attachments (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES knowledge_projects(id),
+          record_kind TEXT NOT NULL CHECK(record_kind IN ('thread','reply','task','memory')),
+          record_id TEXT NOT NULL,
+          filename TEXT NOT NULL,
+          media_type TEXT NOT NULL,
+          size INTEGER NOT NULL CHECK(size >= 0),
+          sha256 TEXT NOT NULL CHECK(length(sha256) = 64),
+          created_by TEXT NOT NULL REFERENCES remote_principals(id),
+          created_at TEXT NOT NULL
+        );
+CREATE TABLE "knowledge_history" (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL REFERENCES knowledge_projects(id),
+    record_kind TEXT NOT NULL CHECK(record_kind IN ('project', 'thread', 'reply', 'task', 'relation', 'memory')),
+    record_id TEXT NOT NULL,
+    operation TEXT NOT NULL CHECK(operation IN ('created', 'updated', 'archived', 'linked', 'unlinked', 'approved', 'superseded')),
+    previous_json TEXT,
+    principal_id TEXT NOT NULL REFERENCES remote_principals(id),
+    authentication_method TEXT NOT NULL CHECK(authentication_method IN ('owner_session', 'agent_token', 'worker_token', 'installation_token', 'none', 'provider_session')),
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    created_at TEXT NOT NULL
+  );
+CREATE TABLE knowledge_idempotency (
+    principal_id TEXT NOT NULL REFERENCES remote_principals(id),
+    project_id TEXT NOT NULL REFERENCES knowledge_projects(id),
+    operation TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_hash TEXT NOT NULL CHECK(length(request_hash) = 64),
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(principal_id, project_id, operation, idempotency_key)
+  );
+CREATE TABLE knowledge_import_batches (
+          id TEXT PRIMARY KEY,
+          plan_id TEXT NOT NULL,
+          plan_hash TEXT NOT NULL,
+          source_id TEXT NOT NULL,
+          source_repository TEXT NOT NULL,
+          source_commit TEXT NOT NULL CHECK(length(source_commit) = 40),
+          target_project_id TEXT NOT NULL,
+          target_project_name TEXT NOT NULL,
+          expected_target_revision INTEGER CHECK(expected_target_revision > 0),
+          actor_principal_id TEXT NOT NULL REFERENCES remote_principals(id),
+          status TEXT NOT NULL CHECK(status IN ('staging','published','failed')),
+          cursor INTEGER NOT NULL DEFAULT 0 CHECK(cursor >= 0),
+          total_items INTEGER NOT NULL CHECK(total_items >= 0),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          published_at TEXT,
+          error TEXT, authentication_method TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK(authentication_method IN ('owner_session', 'agent_token', 'worker_token', 'installation_token', 'none', 'legacy_unknown')),
+          UNIQUE(source_id, source_commit, plan_hash, target_project_id)
+        );
+CREATE TABLE "knowledge_import_sources" (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES knowledge_projects(id),
+          batch_id TEXT REFERENCES knowledge_import_batches(id),
+          source_id TEXT NOT NULL,
+          source_repository TEXT NOT NULL,
+          source_commit TEXT NOT NULL,
+          source_path TEXT NOT NULL,
+          legacy_id TEXT,
+          source_sha256 TEXT NOT NULL CHECK(length(source_sha256) = 64),
+          mapping_version INTEGER NOT NULL,
+          target_kind TEXT,
+          target_id TEXT,
+          original_payload_json TEXT,
+          created_at TEXT NOT NULL,
+          target_revision INTEGER CHECK(target_revision IS NULL OR target_revision > 0),
+          UNIQUE(project_id, source_id, legacy_id, source_path)
+        );
+CREATE TABLE knowledge_import_staging (
+          batch_id TEXT NOT NULL REFERENCES knowledge_import_batches(id) ON DELETE CASCADE,
+          ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+          mapping_json TEXT NOT NULL,
+          PRIMARY KEY(batch_id, ordinal)
+        );
+CREATE TABLE knowledge_memories (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES knowledge_projects(id),
+          title TEXT NOT NULL,
+          body TEXT NOT NULL,
+          category TEXT NOT NULL CHECK(category IN ('decision', 'question', 'note')),
+          tags_json TEXT NOT NULL,
+          legacy_id TEXT,
+          sources_json TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('active', 'archived', 'superseded')),
+          superseded_by_json TEXT,
+          approval_json TEXT,
+          revision INTEGER NOT NULL CHECK(revision > 0),
+          created_by TEXT NOT NULL REFERENCES remote_principals(id),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+CREATE TABLE knowledge_project_grants (
+    principal_id TEXT NOT NULL REFERENCES remote_principals(id),
+    project_id TEXT NOT NULL REFERENCES knowledge_projects(id),
+    permissions_json TEXT NOT NULL,
+    revoked_at TEXT,
+    PRIMARY KEY(principal_id, project_id)
+  );
+CREATE TABLE knowledge_project_runtime_links (
+    knowledge_project_id TEXT PRIMARY KEY REFERENCES knowledge_projects(id),
+    runtime_project_id TEXT UNIQUE REFERENCES projects(id) ON DELETE SET NULL,
+    linked_at TEXT NOT NULL,
+    unlinked_at TEXT
+  );
+CREATE TABLE knowledge_projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('active', 'archived')),
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+CREATE TABLE knowledge_relations (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES knowledge_projects(id),
+    type TEXT NOT NULL CHECK(type IN ('derived_from', 'blocks', 'relates_to', 'supersedes')),
+    source_kind TEXT NOT NULL CHECK(source_kind IN ('thread', 'reply', 'task')),
+    source_id TEXT NOT NULL,
+    target_kind TEXT NOT NULL CHECK(target_kind IN ('thread', 'reply', 'task')),
+    target_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    created_by TEXT NOT NULL REFERENCES remote_principals(id),
+    created_at TEXT NOT NULL,
+    UNIQUE(project_id, type, source_kind, source_id, target_kind, target_id)
+  );
+CREATE TABLE knowledge_replies (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES knowledge_projects(id),
+    thread_id TEXT NOT NULL REFERENCES knowledge_threads(id),
+    body TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    created_by TEXT NOT NULL REFERENCES remote_principals(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+CREATE TABLE knowledge_role_bindings (
+    principal_id TEXT NOT NULL REFERENCES remote_principals(id) ON DELETE RESTRICT,
+    project_id TEXT NOT NULL REFERENCES knowledge_projects(id) ON DELETE RESTRICT,
+    role TEXT NOT NULL CHECK(role IN ('reader','operator','manager')),
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    updated_at TEXT NOT NULL,
+    revoked_at TEXT,
+    PRIMARY KEY(principal_id, project_id)
+  );
+CREATE TABLE knowledge_tasks (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES knowledge_projects(id),
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('open', 'in_progress', 'blocked', 'done', 'archived')),
+    priority TEXT NOT NULL CHECK(priority IN ('now', 'next', 'later')),
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    created_by TEXT NOT NULL REFERENCES remote_principals(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  , current_state_json TEXT);
+CREATE TABLE knowledge_threads (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES knowledge_projects(id),
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    created_by TEXT NOT NULL REFERENCES remote_principals(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+CREATE TABLE principal_credentials (
+    id TEXT PRIMARY KEY,
+    principal_id TEXT NOT NULL REFERENCES remote_principals(id),
+    kind TEXT NOT NULL CHECK(kind IN ('owner_session', 'agent_token', 'worker_token')),
+    label TEXT NOT NULL,
+    token_prefix TEXT NOT NULL,
+    verifier_hash TEXT NOT NULL UNIQUE CHECK(length(verifier_hash) = 64),
+    status TEXT NOT NULL CHECK(status IN ('active', 'revoked')),
+    expires_at TEXT,
+    created_at TEXT NOT NULL,
+    revoked_at TEXT,
+    last_used_at TEXT
+  );
+CREATE TABLE "projects" (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    repository_path TEXT NOT NULL UNIQUE,
+    port INTEGER NOT NULL UNIQUE CHECK(port BETWEEN 1 AND 65535),
+    launch_preset TEXT NOT NULL DEFAULT 'node' CHECK(launch_preset IN ('auto', 'node', 'django', 'none')),
+    tls_mode TEXT NOT NULL DEFAULT 'off' CHECK(tls_mode IN ('off', 'generated', 'custom')),
+    tls_key_path TEXT,
+    tls_cert_path TEXT,
+    tls_ca_path TEXT,
+    executable TEXT NOT NULL,
+    args_json TEXT NOT NULL,
+    environment_json TEXT NOT NULL DEFAULT '{}',
+    environment_profiles_json TEXT NOT NULL DEFAULT '[{"name":"default","environment":{}}]',
+    selected_environment_profile TEXT NOT NULL DEFAULT 'default',
+    test_environment_profiles_json TEXT NOT NULL DEFAULT '[{"name":"unit","policy":{"mode":"clean","serverProfile":null},"environment":{},"nodeEnv":"test","requiredVariables":[]},{"name":"tooling","policy":{"mode":"clean","serverProfile":null},"environment":{},"nodeEnv":null,"requiredVariables":[]}]',
+    test_preset_profiles_json TEXT NOT NULL DEFAULT '{}',
+    healthcheck_path TEXT NOT NULL,
+    startup_timeout_ms INTEGER NOT NULL,
+    selected_worktree_path TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  , test_preset_timeouts_json TEXT NOT NULL DEFAULT '{}', configuration_revision INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE remote_principal_project_grants (
+    principal_id TEXT NOT NULL REFERENCES remote_principals(id),
+    project_id TEXT NOT NULL REFERENCES remote_project_identities(id),
+    permissions_json TEXT NOT NULL,
+    revoked_at TEXT,
+    PRIMARY KEY(principal_id, project_id)
+  );
+CREATE TABLE "remote_principals" (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK(kind IN ('owner', 'agent', 'worker', 'installation')),
+    status TEXT NOT NULL CHECK(status IN ('active', 'revoked'))
+  );
+INSERT INTO "remote_principals" VALUES('installation','installation','active');
+CREATE TABLE remote_project_identities (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    source_remote TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('active', 'revoked'))
+  );
+CREATE TABLE remote_verification_attempts (
+    id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL REFERENCES remote_verification_requests(id),
+    worker_id TEXT NOT NULL REFERENCES remote_workers(id),
+    sequence INTEGER NOT NULL CHECK(sequence > 0),
+    phase TEXT NOT NULL CHECK(phase IN (
+      'assigned', 'preparing', 'running', 'succeeded', 'failed',
+      'cancel_requested', 'cancelled', 'uncertain'
+    )),
+    version INTEGER NOT NULL CHECK(version > 0),
+    local_run_id TEXT,
+    executed_commit_sha TEXT,
+    failure_kind TEXT CHECK(failure_kind IN ('setup', 'execution')),
+    error_code TEXT,
+    accepted_at TEXT NOT NULL,
+    last_reported_at TEXT NOT NULL,
+    finished_at TEXT,
+    UNIQUE(request_id, sequence)
+  );
+CREATE TABLE remote_verification_cancellations (
+    request_id TEXT PRIMARY KEY REFERENCES remote_verification_requests(id), requested_at TEXT NOT NULL
+  );
+CREATE TABLE remote_verification_reports (
+    attempt_id TEXT NOT NULL REFERENCES remote_verification_attempts(id), sequence INTEGER NOT NULL,
+    payload_json TEXT NOT NULL, PRIMARY KEY(attempt_id, sequence)
+  );
+CREATE TABLE remote_verification_requests (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES remote_project_identities(id),
+    worker_id TEXT NOT NULL REFERENCES remote_workers(id),
+    requested_by TEXT NOT NULL REFERENCES remote_principals(id),
+    commit_sha TEXT NOT NULL,
+    preset_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    phase TEXT NOT NULL CHECK(phase IN ('pending', 'assigned', 'completed', 'cancelled')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(requested_by, idempotency_key)
+  );
+CREATE TABLE remote_worker_project_grants (
+    worker_id TEXT NOT NULL REFERENCES remote_workers(id),
+    project_id TEXT NOT NULL REFERENCES remote_project_identities(id),
+    local_project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    preset_ids_json TEXT NOT NULL,
+    revoked_at TEXT,
+    PRIMARY KEY(worker_id, project_id)
+  );
+CREATE TABLE remote_worker_receipts (
+    attempt_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL
+  );
+CREATE TABLE remote_workers (
+    id TEXT PRIMARY KEY,
+    principal_id TEXT NOT NULL UNIQUE REFERENCES remote_principals(id),
+    name TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('active', 'revoked')),
+    last_contact_at TEXT
+  );
+CREATE TABLE reservations (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    worktree_path TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('human', 'agent')),
+    owner TEXT NOT NULL,
+    reason TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    maximum_expires_at TEXT,
+    token_hash TEXT,
+    idempotency_key TEXT,
+    released_at TEXT,
+    released_by TEXT, principal_id TEXT REFERENCES remote_principals(id), credential_id TEXT REFERENCES principal_credentials(id), request_fingerprint TEXT,
+    CHECK(
+      (kind = 'human' AND expires_at IS NULL AND maximum_expires_at IS NULL AND token_hash IS NULL)
+      OR
+      (kind = 'agent' AND expires_at IS NOT NULL AND maximum_expires_at IS NOT NULL AND token_hash IS NOT NULL AND idempotency_key IS NOT NULL)
+    )
+  );
+CREATE TABLE runtime_credential_scopes (
+    credential_id TEXT NOT NULL REFERENCES principal_credentials(id) ON DELETE RESTRICT,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    actions_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(credential_id, project_id)
+  );
+CREATE TABLE runtime_delegations (
+    principal_id TEXT NOT NULL REFERENCES remote_principals(id) ON DELETE RESTRICT,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    sponsor_id TEXT NOT NULL REFERENCES remote_principals(id) ON DELETE RESTRICT,
+    actions_json TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    expires_at TEXT,
+    updated_at TEXT NOT NULL,
+    revoked_at TEXT,
+    PRIMARY KEY(principal_id, project_id)
+  );
+CREATE TABLE schema_migrations (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL
+  , name TEXT, checksum TEXT);
+INSERT INTO "schema_migrations" VALUES(1,'2026-10-29T16:03:33.809Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(2,'2026-10-29T16:03:33.810Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(3,'2026-10-29T16:03:33.810Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(4,'2026-10-29T16:03:33.811Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(5,'2026-10-29T16:03:33.811Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(6,'2026-10-29T16:03:33.811Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(7,'2026-10-29T16:03:33.812Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(8,'2026-10-29T16:03:33.812Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(9,'2026-10-29T16:03:33.812Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(10,'2026-10-29T16:03:33.813Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(11,'2026-10-29T16:03:33.813Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(12,'2026-10-29T16:03:33.813Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(13,'2026-10-29T16:03:33.814Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(14,'2026-10-29T16:03:33.814Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(15,'2026-10-29T16:03:33.814Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(16,'2026-10-29T16:03:33.814Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(17,'2026-10-29T16:03:33.815Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(18,'2026-10-29T16:03:33.815Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(19,'2026-10-29T16:03:33.815Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(20,'2026-10-29T16:03:33.816Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(21,'2026-10-29T16:03:33.817Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(22,'2026-10-29T16:03:33.817Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(23,'2026-10-29T16:03:33.818Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(24,'2026-10-29T16:03:33.819Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(25,'2026-10-29T16:03:33.822Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(26,'2026-10-29T16:03:33.823Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(27,'2026-10-29T16:03:33.823Z',NULL,NULL);
+INSERT INTO "schema_migrations" VALUES(28,'2026-10-29T16:03:33.824Z','record-migration-provenance','e6423bbc81bfb2c6811cf5983cdcbe007bfd28e9c9890d6dcf02ce9fb0428b6d');
+INSERT INTO "schema_migrations" VALUES(29,'2026-10-29T16:03:33.825Z','test-run-phase-summary-history','ff13b035609db518d54852ba17f9d5559457de4bc3b6eb2359476cbe7d9cd144');
+INSERT INTO "schema_migrations" VALUES(30,'2026-10-29T16:03:33.828Z','verification-only-projects-and-godot','b4eb5a956dd8c7d48dfceeaf7b09f3fa969305b55859ee61dc8b0ffbc1e04f7b');
+INSERT INTO "schema_migrations" VALUES(31,'2026-10-29T16:03:33.829Z','project-test-preset-timeouts','c33f0c0ea4b1b7aabd97fb4298b611deb9f7184fbdfcee135766a3165da393eb');
+INSERT INTO "schema_migrations" VALUES(32,'2026-10-29T16:03:33.829Z','connected-remote-verification','a02cc0c27b28451f3194606acfcca78e8789a9b8b8c4a3893050604266a7c059');
+INSERT INTO "schema_migrations" VALUES(33,'2026-10-29T16:03:33.829Z','knowledge-task-current-state','5ad613c1f4be7164478a390deb1a13a822fe8016337b4f9c55518446d5212a63');
+INSERT INTO "schema_migrations" VALUES(34,'2026-10-29T16:03:33.830Z','encrypted-dev-environment-vault','f4b73ed20e6be43512d39d7ebc782f96740cead8ace484328f93f83dcc475824');
+INSERT INTO "schema_migrations" VALUES(35,'2026-10-29T16:03:33.830Z','knowledge-scoped-role-bindings','caf98cb33af770313935f183bedc9b12c973eb65a5da5d629361c27ff9c172ba');
+INSERT INTO "schema_migrations" VALUES(36,'2026-10-29T16:03:33.832Z','scoped-agent-runtime-access','7b99033b1661c490e24114ae6fd7641b722f7b71ee448035fc12a96ecd89724c');
+INSERT INTO "schema_migrations" VALUES(37,'2026-10-29T16:03:33.832Z','project-configuration-revision','4ccd035a264287429aaba6ce2d99b6a4878024b1369981763f9c59cfa2af7507');
+INSERT INTO "schema_migrations" VALUES(38,'2026-10-29T16:03:33.833Z','authentication-provider-storage','33c34c43967fb710a04a976eebc8638f6ea0ead1e320e71536fc2018d0eedae3');
+INSERT INTO "schema_migrations" VALUES(39,'2026-11-02T09:13:51.817Z','provider-session-knowledge-history','9ceb5de9d3b92456af9949bc1bf2ff46f79f490c893758de584df3ca6b254c50');
+CREATE TABLE test_run_summaries (
+  run_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  queued_at TEXT NOT NULL,
+  terminal INTEGER NOT NULL CHECK(terminal IN (0,1)),
+  bytes INTEGER NOT NULL CHECK(bytes > 0 AND bytes <= 8192),
+  summary_json TEXT NOT NULL
+);
+CREATE TABLE "test_runs" (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    worktree_path TEXT NOT NULL,
+    worktree_head TEXT NOT NULL,
+    worktree_branch TEXT,
+    worktree_dirty INTEGER NOT NULL CHECK(worktree_dirty IN (0, 1)),
+    preset_id TEXT NOT NULL,
+    preset_name TEXT NOT NULL,
+    adapter TEXT NOT NULL CHECK(adapter IN ('node', 'django', 'godot')),
+    actor TEXT NOT NULL,
+    phase TEXT NOT NULL CHECK(phase IN ('queued', 'running', 'passed', 'failed', 'cancelled', 'timed_out', 'interrupted')),
+    queue_position INTEGER,
+    executable TEXT NOT NULL,
+    args_json TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    queued_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    exit_code INTEGER,
+    signal TEXT,
+    error TEXT,
+    logs_json TEXT NOT NULL DEFAULT '[]',
+    idempotency_key TEXT,
+    environment_mode TEXT NOT NULL DEFAULT 'clean' CHECK(environment_mode IN ('clean', 'inherit-server-profile')),
+    environment_profile TEXT NOT NULL DEFAULT 'unit',
+    inherited_server_profile TEXT,
+    environment_variable_names_json TEXT NOT NULL DEFAULT '[]',
+    source_json TEXT
+  , telemetry_json TEXT);
+CREATE TABLE test_summary_coverage (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  records INTEGER NOT NULL CHECK(records >= 0),
+  bytes INTEGER NOT NULL CHECK(bytes >= 0),
+  evicted INTEGER NOT NULL DEFAULT 0 CHECK(evicted >= 0),
+  last_pruned_at TEXT
+);
+CREATE TABLE worktree_storage_samples (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          worktree_path TEXT NOT NULL,
+          total_bytes INTEGER NOT NULL,
+          next_bytes INTEGER NOT NULL,
+          next_cache_bytes INTEGER NOT NULL,
+          node_modules_bytes INTEGER NOT NULL,
+          top_directories_json TEXT NOT NULL,
+          measured_at TEXT NOT NULL
+        );
+CREATE UNIQUE INDEX active_agent_idempotency_key
+        ON reservations(owner, idempotency_key)
+        WHERE kind = 'agent' AND released_at IS NULL AND idempotency_key IS NOT NULL
+      ;
+CREATE INDEX "authentication_ba_account_userId_idx" on "authentication_ba_account" ("userId");
+CREATE INDEX "authentication_ba_session_userId_idx" on "authentication_ba_session" ("userId");
+CREATE INDEX "authentication_ba_verification_identifier_idx" on "authentication_ba_verification" ("identifier");
+CREATE UNIQUE INDEX authentication_provider_subjects_principal
+  ON authentication_provider_subjects(provider_id, principal_id) WHERE status = 'active';
+CREATE INDEX knowledge_attachments_record ON knowledge_attachments(project_id, record_kind, record_id, created_at, id);
+CREATE INDEX knowledge_import_batches_target
+          ON knowledge_import_batches(target_project_id, created_at, id);
+CREATE INDEX knowledge_import_sources_project ON knowledge_import_sources(project_id, source_path, id);
+CREATE INDEX knowledge_import_sources_target
+        ON knowledge_import_sources(project_id, target_kind, target_id);
+CREATE INDEX knowledge_memories_project ON knowledge_memories(project_id, status, updated_at DESC, id);
+CREATE INDEX knowledge_replies_thread ON knowledge_replies(project_id, thread_id, created_at, id);
+CREATE INDEX knowledge_tasks_project ON knowledge_tasks(project_id, updated_at DESC, id);
+CREATE INDEX knowledge_threads_project ON knowledge_threads(project_id, updated_at DESC, id);
+CREATE UNIQUE INDEX one_active_reservation_per_project
+    ON reservations(project_id) WHERE released_at IS NULL;
+CREATE INDEX principal_credentials_principal
+    ON principal_credentials(principal_id, created_at, id);
+CREATE INDEX remote_verification_attempts_request
+    ON remote_verification_attempts(request_id, sequence DESC);
+CREATE INDEX remote_verification_requests_queue
+    ON remote_verification_requests(phase, created_at, id);
+CREATE UNIQUE INDEX test_runs_actor_idempotency
+    ON test_runs(actor, idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE INDEX test_runs_phase_queue ON test_runs(phase, queued_at, id);
+CREATE INDEX test_runs_project_history ON test_runs(project_id, queued_at DESC);
+CREATE INDEX test_summaries_project_history ON test_run_summaries(project_id,queued_at,run_id);
+CREATE INDEX test_summaries_terminal_history ON test_run_summaries(terminal,queued_at,run_id);
+CREATE INDEX worktree_launch_history ON audit_events(project_id, id DESC) WHERE event_type = 'worktree.launched';
+CREATE INDEX worktree_storage_history
+          ON worktree_storage_samples(project_id, worktree_path, measured_at);
+CREATE INDEX knowledge_history_record ON knowledge_history(project_id, record_kind, record_id, id);
+alter table "authentication_ba_user" add column "twoFactorEnabled" integer default 0;
+create table "authentication_ba_two_factor" ("id" text not null primary key, "secret" text not null, "backupCodes" text not null, "userId" text not null references "authentication_ba_user" ("id") on delete cascade, "verified" integer, "failedVerificationCount" integer, "lockedUntil" date);
+create table "authentication_ba_passkey" ("id" text not null primary key, "name" text, "publicKey" text not null, "userId" text not null references "authentication_ba_user" ("id") on delete cascade, "credentialID" text not null, "counter" integer not null, "deviceType" text not null, "backedUp" integer not null, "transports" text, "createdAt" date, "aaguid" text);
+create index "authentication_ba_two_factor_secret_idx" on "authentication_ba_two_factor" ("secret");
+create index "authentication_ba_two_factor_userId_idx" on "authentication_ba_two_factor" ("userId");
+create index "authentication_ba_passkey_userId_idx" on "authentication_ba_passkey" ("userId");
+create index "authentication_ba_passkey_credentialID_idx" on "authentication_ba_passkey" ("credentialID");
+CREATE TABLE authentication_account_policies (
+  provider_id TEXT NOT NULL CHECK(provider_id IN ('better-auth')),
+  subject TEXT NOT NULL,
+  generation INTEGER NOT NULL CHECK(generation >= 1),
+  policy_revision INTEGER NOT NULL CHECK(policy_revision >= 1),
+  totp_selected INTEGER NOT NULL CHECK(totp_selected IN (0, 1)),
+  passkey_selected INTEGER NOT NULL CHECK(passkey_selected IN (0, 1)),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(provider_id, subject),
+  FOREIGN KEY(provider_id, subject) REFERENCES authentication_provider_subjects(provider_id, subject) ON DELETE RESTRICT
+);
+CREATE TABLE authentication_totp_steps (
+  provider_id TEXT NOT NULL CHECK(provider_id IN ('better-auth')),
+  subject TEXT NOT NULL,
+  last_step INTEGER NOT NULL CHECK(last_step >= 0),
+  PRIMARY KEY(provider_id, subject),
+  FOREIGN KEY(provider_id, subject) REFERENCES authentication_provider_subjects(provider_id, subject) ON DELETE RESTRICT
+);
+CREATE TABLE authentication_passkey_trust (
+  credential_id TEXT NOT NULL PRIMARY KEY,
+  native_id TEXT NOT NULL UNIQUE REFERENCES "authentication_ba_passkey" ("id") ON DELETE CASCADE,
+  provider_id TEXT NOT NULL CHECK(provider_id IN ('better-auth')),
+  subject TEXT NOT NULL,
+  handle TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  verified_uv INTEGER NOT NULL CHECK(verified_uv = 1),
+  trusted_at TEXT NOT NULL,
+  FOREIGN KEY(provider_id, subject) REFERENCES authentication_provider_subjects(provider_id, subject) ON DELETE RESTRICT
+);
+CREATE TABLE authentication_passkey_staged (
+  credential_id TEXT NOT NULL PRIMARY KEY,
+  native_id TEXT NOT NULL UNIQUE REFERENCES "authentication_ba_passkey" ("id") ON DELETE CASCADE,
+  capability TEXT NOT NULL UNIQUE,
+  provider_id TEXT NOT NULL CHECK(provider_id IN ('better-auth')),
+  subject TEXT NOT NULL,
+  handle TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  policy_revision INTEGER NOT NULL,
+  session_id TEXT NOT NULL,
+  original_deadline TEXT NOT NULL,
+  deadline INTEGER NOT NULL,
+  FOREIGN KEY(provider_id, subject) REFERENCES authentication_provider_subjects(provider_id, subject) ON DELETE RESTRICT
+);
+CREATE TABLE authentication_factor_contexts (
+  capability TEXT NOT NULL PRIMARY KEY,
+  provider_id TEXT NOT NULL CHECK(provider_id IN ('better-auth')),
+  purpose TEXT NOT NULL CHECK(purpose IN ('totp_enrollment', 'totp_login', 'passkey_registration', 'passkey_confirmation', 'passkey_authentication')),
+  subject TEXT,
+  principal_id TEXT,
+  session_id TEXT,
+  native_id TEXT,
+  handle TEXT,
+  credential TEXT,
+  binding TEXT,
+  generation INTEGER,
+  policy_revision INTEGER,
+  authenticated_at TEXT,
+  original_deadline TEXT,
+  deadline INTEGER NOT NULL,
+  used INTEGER NOT NULL CHECK(used IN (0, 1))
+);
+CREATE INDEX authentication_factor_contexts_deadline ON authentication_factor_contexts(deadline);
+CREATE TABLE authentication_factor_budgets (
+  provider_id TEXT NOT NULL CHECK(provider_id IN ('better-auth')),
+  scope TEXT NOT NULL CHECK(scope IN ('totp', 'passkey')),
+  subject TEXT NOT NULL,
+  epoch INTEGER NOT NULL,
+  charged INTEGER NOT NULL CHECK(charged >= 1),
+  PRIMARY KEY(provider_id, scope, subject, epoch)
+);
+CREATE TABLE authentication_factor_receipts (
+  attempt_id TEXT NOT NULL PRIMARY KEY,
+  provider_id TEXT NOT NULL CHECK(provider_id IN ('better-auth')),
+  capability TEXT NOT NULL,
+  purpose TEXT NOT NULL CHECK(purpose IN ('totp_enrollment', 'totp_login', 'passkey_registration', 'passkey_confirmation', 'passkey_authentication')),
+  subject TEXT NOT NULL,
+  principal_id TEXT NOT NULL,
+  credential TEXT,
+  binding TEXT,
+  generation INTEGER NOT NULL,
+  policy_revision INTEGER NOT NULL,
+  epoch INTEGER NOT NULL,
+  deadline INTEGER NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('charged', 'succeeded', 'failed')),
+  session_id TEXT
+);
+CREATE INDEX authentication_factor_receipts_capability ON authentication_factor_receipts(capability, state);
+CREATE TABLE authentication_session_evidence (
+  session_id TEXT NOT NULL PRIMARY KEY REFERENCES "authentication_ba_session" ("id") ON DELETE CASCADE,
+  provider_id TEXT NOT NULL CHECK(provider_id IN ('better-auth')),
+  subject TEXT NOT NULL,
+  method TEXT NOT NULL CHECK(method IN ('password', 'password_totp', 'passkey_uv')),
+  authenticated_at TEXT NOT NULL,
+  original_deadline TEXT NOT NULL,
+  generation INTEGER NOT NULL CHECK(generation >= 1),
+  policy_revision INTEGER NOT NULL CHECK(policy_revision >= 1),
+  credential TEXT,
+  credential_binding TEXT,
+  attempt_id TEXT NOT NULL UNIQUE,
+  CHECK(authenticated_at < original_deadline),
+  CHECK((method = 'password' AND credential IS NULL AND credential_binding IS NULL)
+    OR (method <> 'password' AND credential IS NOT NULL AND credential_binding IS NOT NULL)),
+  FOREIGN KEY(provider_id, subject) REFERENCES authentication_provider_subjects(provider_id, subject) ON DELETE RESTRICT
+);
+CREATE INDEX authentication_session_evidence_subject ON authentication_session_evidence(provider_id, subject);
+INSERT INTO "schema_migrations" VALUES(40,'2026-11-02T13:22:00.000Z','authentication-factor-storage','66a61a2f56965d6004df5ff7b5be981194b85029599dde39f9db07a1f6785651');
+DELETE FROM "sqlite_sequence";
+INSERT INTO "sqlite_sequence" VALUES('knowledge_history',0);

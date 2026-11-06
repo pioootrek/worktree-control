@@ -7,10 +7,17 @@ export {
   type IdentityErrorCode,
   type IssueAgentTokenInput,
   type IssuedAgentToken,
+  type IssuedRuntimeCredential,
+  type RotatedRuntimeCredential,
+  RUNTIME_ACCESS_DENIED,
+  type RuntimeAccessReport,
   type SetKnowledgeGrantInput,
 } from "./identity-service";
 export type {
   AuthenticatedPrincipal,
+  CredentialAuthenticatedPrincipal,
+  ProviderSessionActor,
+  ProviderSessionAuthority,
   AuthenticatedIdentity,
   AuthenticationMethod,
   ControllerAuthentication,
@@ -26,4 +33,7 @@ export type {
   Principal,
   PrincipalCredential,
   PrincipalKind,
+  RuntimeAccessStore,
 } from "./contracts";
+
+export { HumanAccountService, HumanAccountError, type HumanAccountStore } from "./human-account-service";

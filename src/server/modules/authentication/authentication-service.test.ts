@@ -47,7 +47,7 @@ describe("installation authentication policy", () => {
 
     expect(issued.token).toBe(`wsi_11111111-1111-4111-8111-111111111111_${"1".repeat(64)}`);
     expect(issued.status).toEqual({
-      mode: "legacy",
+      mode: "legacy", activeMode: "legacy", configuredMode: "legacy", restartRequired: false,
       token: { id: "11111111-1111-4111-8111-111111111111", prefix: "wsi_11111111-1111-4111-8111-111111111111", createdAt: NOW },
       generation: 1,
     });
@@ -114,9 +114,9 @@ describe("installation authentication policy", () => {
 
     expect(code(() => auth.setMode("token", "local-cli"))).toBe("installation_token_missing");
     auth.generateToken("local-cli");
-    expect(auth.setMode("token", "local-cli").mode).toBe("token");
-    expect(memory.events.at(-1)).toMatchObject({ event: "authentication.mode_changed", actor: "local-cli" });
-    expect(auth.setMode("token", "local-cli").mode).toBe("token");
+    expect(auth.setMode("token", "local-cli")).toMatchObject({ mode: "legacy", configuredMode: "token", restartRequired: true });
+    expect(memory.events.at(-1)).toMatchObject({ event: "authentication.mode_selected", actor: "local-cli" });
+    expect(auth.setMode("token", "local-cli")).toMatchObject({ mode: "legacy", configuredMode: "token", restartRequired: true });
     expect(memory.events).toHaveLength(2);
   });
 
@@ -132,11 +132,13 @@ describe("installation authentication policy", () => {
 
   it("authenticates the installation actor only in token mode and only with the current token", () => {
     const memory = memoryStore();
-    const auth = service(memory.store, ["legacy", "token"]);
+    let auth = service(memory.store, ["legacy", "token"]);
     const first = auth.generateToken("local-cli").token;
     expect(auth.authenticateInstallation(first)).toBeNull();
 
     auth.setMode("token", "local-cli");
+    expect(auth.authenticateInstallation(first)).toBeNull();
+    auth = service(memory.store, ["legacy", "token"]);
     const actor = auth.authenticateInstallation(first);
     expect(actor).toEqual({
       principalId: "installation",
@@ -147,24 +149,65 @@ describe("installation authentication policy", () => {
     expect(auth.isCurrentInstallationActor(actor!)).toBe(true);
     expect(auth.isCurrentInstallationActor({ ...actor!, principalKind: "owner" })).toBe(false);
 
-    auth.rotateToken("local-cli");
+    new AuthenticationService(memory.store).rotateToken("local-cli");
     expect(auth.authenticateInstallation(first)).toBeNull();
     expect(auth.isCurrentInstallationActor(actor!)).toBe(false);
   });
 
   it("selects open mode without a token and treats its anonymous actor as current only while open", () => {
     const memory = memoryStore();
-    const auth = service(memory.store, ["legacy", "token", "open"]);
+    let auth = service(memory.store, ["legacy", "token", "open"]);
     expect(auth.anonymousInstallation()).toBeNull();
 
-    expect(auth.setMode("open", "local-cli").mode).toBe("open");
+    expect(auth.setMode("open", "local-cli")).toMatchObject({ mode: "legacy", configuredMode: "open" });
+    auth = service(memory.store, ["legacy", "token", "open"]);
     const anonymous = auth.anonymousInstallation()!;
     expect(anonymous).toEqual({ principalId: "installation", principalKind: "installation", credentialId: "open", authenticationMethod: "none" });
     expect(auth.isCurrentInstallationActor(anonymous)).toBe(true);
     expect(auth.authenticateInstallation(auth.generateToken("local-cli").token)).toBeNull();
 
     auth.setMode("token", "local-cli");
+    expect(auth.isCurrentInstallationActor(anonymous)).toBe(true);
+    auth = service(memory.store, ["legacy", "token", "open"]);
     expect(auth.anonymousInstallation()).toBeNull();
     expect(auth.isCurrentInstallationActor(anonymous)).toBe(false);
+  });
+});
+
+describe("configured versus boot authority", () => {
+  it("cancels a pending selection, treats a repeated selection as a no-op and keeps generation for credentials", () => {
+    const m = memoryStore({ mode: "token", token: null, generation: 0 }), auth = new AuthenticationService(m.store);
+    auth.generateToken("fixture");
+    expect(auth.setMode("open", "fixture")).toMatchObject({ mode: "token", activeMode: "token", configuredMode: "open", restartRequired: true, generation: 1 });
+    auth.setMode("open", "fixture");
+    expect(m.events).toHaveLength(2);
+    expect(auth.setMode("token", "fixture")).toMatchObject({ mode: "token", configuredMode: "token", restartRequired: false, generation: 1 });
+    expect(m.events).toHaveLength(3);
+    const offline = new AuthenticationService(m.store, undefined, undefined, undefined, undefined, "offline");
+    expect(offline.setMode("open", "fixture")).toMatchObject({ mode: "open", activeMode: null, configuredMode: "open", restartRequired: false });
+    expect(auth.mode()).toBe("token");
+  });
+
+  it("leaves boot mode, selection and audit unchanged when persistence fails", () => {
+    const m = memoryStore({ mode: "open", token: null, generation: 0 });
+    const auth = new AuthenticationService({ ...m.store, saveAuthenticationPolicy() { throw new Error("write refused"); } });
+    expect(() => auth.setMode("better-auth", "fixture")).toThrow("Better Auth");
+    expect(() => auth.setMode("token", "fixture")).toThrow("auth token generate");
+    const config = new AuthenticationService(m.store); config.generateToken("fixture");
+    const before = m.current(), audit = [...m.events];
+    expect(() => auth.setMode("token", "fixture")).toThrow("write refused");
+    expect(m.current()).toEqual(before); expect(m.events).toEqual(audit);
+    expect(auth.status()).toMatchObject({ activeMode: "open", configuredMode: "open", restartRequired: false });
+  });
+
+  it.each(["id", "prefix", "verifierHash", "createdAt"] as const)("refuses malformed token %s before startup or selection without repairing it", field => {
+    const m = memoryStore({ mode: "token", token: null, generation: 0 });
+    const auth = new AuthenticationService(m.store); auth.generateToken("fixture");
+    const valid = m.current();
+    m.store.saveAuthenticationPolicy({ ...valid, token: { ...valid.token!, [field]: "invalid" } }, "fixture", "fixture");
+    const audit = [...m.events];
+    expect(() => new AuthenticationService(m.store)).toThrow("Stored authentication policy is invalid");
+    expect(() => auth.setMode("open", "fixture")).toThrow("Stored authentication policy is invalid");
+    expect(m.events).toEqual(audit); expect(auth.mode()).toBe("token");
   });
 });

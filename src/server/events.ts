@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import type { DashboardChangeEvent, DashboardChangeKind } from "@/shared/contracts";
+import { admitNowOrLater, databaseAdmissionFailure, directAdmission, type DatabaseAdmission } from "./database-admission";
 
 const MAX_PENDING_PROJECT_IDS = 128;
 
@@ -20,6 +21,11 @@ export class EventStream {
   private readonly pendingKinds = new Set<DashboardChangeKind>();
   private readonly pendingProjectIds = new Set<string>();
   private allProjects = false;
+  private flushing = false;
+  private closed = false;
+
+  /** Knowledge delivery authorizes each subscriber with its own admission, never inherited from a publisher. */
+  constructor(private readonly admission: DatabaseAdmission = directAdmission) {}
 
   add(response: ServerResponse, authorizeKnowledge?: (projectId: string) => void): void {
     if (authorizeKnowledge) this.knowledgeReaders.set(response, authorizeKnowledge);
@@ -64,6 +70,8 @@ export class EventStream {
   };
 
   publishKnowledge = (projectId: string): void => {
+    // While a pass waits for admission, pending IDs stay bounded.
+    if (this.knowledgePending.size >= MAX_PENDING_PROJECT_IDS * 4 && !this.knowledgePending.has(projectId)) return;
     this.knowledgePending.add(projectId);
     // Bound batches independently of runtime events. Never send unscoped IDs.
     if (this.knowledgePending.size >= MAX_PENDING_PROJECT_IDS) this.flushKnowledge();
@@ -75,17 +83,43 @@ export class EventStream {
   private flushKnowledge(): void {
     if (this.knowledgeTimer) clearTimeout(this.knowledgeTimer);
     this.knowledgeTimer = null;
-    for (const [client, authorize] of this.knowledgeReaders) {
-      const projectIds = [...this.knowledgePending].filter(id => {
-        try { authorize(id); return true; } catch { return false; }
-      });
-      if (projectIds.length && !client.write(`event: knowledge-changed\ndata: ${JSON.stringify({ projectIds })}\n\n`)) {
-        this.knowledgeReaders.delete(client);
-        this.clients.delete(client);
-        client.end();
-      }
-    }
+    if (this.flushing || this.closed || !this.knowledgePending.size) return;
+    const batch = [...this.knowledgePending];
     this.knowledgePending.clear();
+    this.flushing = true;
+    const settled = () => {
+      this.flushing = false;
+      if (this.knowledgePending.size && !this.closed && !this.knowledgeTimer) {
+        this.knowledgeTimer = setTimeout(() => this.flushKnowledge(), 250);
+        this.knowledgeTimer.unref();
+      }
+    };
+    // Filter and write synchronously in the same admitted phase. A queued
+    // revocation must not commit between the access check and event delivery.
+    admitNowOrLater(this.admission, () => {
+      const deliveries: Array<[ServerResponse, string[]]> = [];
+      for (const [client, authorize] of this.knowledgeReaders) {
+        deliveries.push([client, batch.filter(id => {
+          try { authorize(id); return true; } catch (error) {
+            // Only an authorization denial filters a project; a database fault aborts the whole pass.
+            if (databaseAdmissionFailure(error)) throw error;
+            return false;
+          }
+        })]);
+      }
+      for (const [client, projectIds] of deliveries) {
+        if (!this.knowledgeReaders.has(client)) continue;
+        if (projectIds.length && !client.write(`event: knowledge-changed\ndata: ${JSON.stringify({ projectIds })}\n\n`)) {
+          this.knowledgeReaders.delete(client);
+          this.clients.delete(client);
+          client.end();
+        }
+      }
+    }, settled, () => {
+      // Contention or shutdown: keep the batch (bounded) for the next attempt instead of dropping it.
+      for (const id of batch) if (this.knowledgePending.size < MAX_PENDING_PROJECT_IDS) this.knowledgePending.add(id);
+      settled();
+    });
   }
 
   /** Ends current subscriptions, which reconnect under the current authentication policy. */
@@ -96,6 +130,7 @@ export class EventStream {
   }
 
   close(): void {
+    this.closed = true;
     if (this.knowledgeTimer) clearTimeout(this.knowledgeTimer);
     this.knowledgeReaders.clear();
     this.knowledgePending.clear();

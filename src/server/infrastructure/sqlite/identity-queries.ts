@@ -1,3 +1,4 @@
+import type { KnowledgeRoleBinding } from "@/shared/contracts/authorization";
 import type {
   CredentialAuthenticationRecord,
   IdentityStore,
@@ -88,6 +89,19 @@ export class IdentityQueries implements IdentityStore {
       .get() as Principal | undefined) ?? null;
   }
 
+  ownerPrincipals(): Principal[] {
+    return this.database.prepare("SELECT id, kind, status FROM remote_principals WHERE kind = 'owner' ORDER BY id LIMIT 2").all() as Principal[];
+  }
+
+  createFirstOwnerPrincipal(principal: Principal, actor: string): boolean {
+    return this.database.transaction(() => {
+      if (this.database.prepare("SELECT 1 FROM remote_principals WHERE kind = 'owner' LIMIT 1").get()) return false;
+      this.database.prepare("INSERT INTO remote_principals(id, kind, status) VALUES (?, 'owner', 'active')").run(principal.id);
+      this.audit("identity.owner_principal_created", actor, { principalId: principal.id });
+      return true;
+    }).immediate();
+  }
+
   listPrincipals(kind?: Principal["kind"]): Principal[] {
     const rows = kind
       ? this.database.prepare("SELECT id, kind, status FROM remote_principals WHERE kind = ? ORDER BY id").all(kind)
@@ -100,6 +114,7 @@ export class IdentityQueries implements IdentityStore {
     if (existing && existing.kind !== principal.kind) {
       throw new Error("Nie można zmienić rodzaju istniejącej tożsamości zdalnej.");
     }
+    if (principal.kind === "human") throw new Error("Use protected human account operations.");
     this.database.transaction(() => {
       this.database.prepare(`
         INSERT INTO remote_principals(id, kind, status) VALUES (?, ?, ?)
@@ -115,6 +130,7 @@ export class IdentityQueries implements IdentityStore {
   }
 
   saveCredential(credential: CredentialAuthenticationRecord, actor: string): void {
+    if (this.getPrincipal(credential.principalId)?.kind === "human") throw new Error("Human credentials are unavailable.");
     this.database.transaction(() => {
       this.database.prepare(`
         INSERT INTO principal_credentials(
@@ -234,6 +250,7 @@ export class IdentityQueries implements IdentityStore {
   }
 
   saveKnowledgeProjectGrant(grant: KnowledgeProjectGrant, actor: string): void {
+    if (this.getPrincipal(grant.principalId)?.kind === "human") throw new Error("Use atomic human membership operations.");
     this.database.transaction(() => {
       this.database.prepare(`
         INSERT INTO knowledge_project_grants(principal_id, project_id, permissions_json, revoked_at)
@@ -248,6 +265,32 @@ export class IdentityQueries implements IdentityStore {
         revokedAt: grant.revokedAt,
       });
     })();
+  }
+
+  getKnowledgeRoleBinding(principalId: string, projectId: string): KnowledgeRoleBinding | null {
+    return (this.database.prepare(`SELECT principal_id AS principalId, project_id AS projectId, role, revision,
+      updated_at AS updatedAt, revoked_at AS revokedAt FROM knowledge_role_bindings WHERE principal_id=? AND project_id=?`)
+      .get(principalId, projectId) as KnowledgeRoleBinding | undefined) ?? null;
+  }
+
+  listKnowledgeRoleBindings(principalId: string): KnowledgeRoleBinding[] {
+    return this.database.prepare(`SELECT principal_id AS principalId, project_id AS projectId, role, revision,
+      updated_at AS updatedAt, revoked_at AS revokedAt FROM knowledge_role_bindings WHERE principal_id=? ORDER BY project_id`)
+      .all(principalId) as KnowledgeRoleBinding[];
+  }
+
+  saveKnowledgeRoleBinding(binding: KnowledgeRoleBinding, expectedRevision: number, actor: string): boolean {
+    if (this.getPrincipal(binding.principalId)?.kind === "human") throw new Error("Use atomic human membership operations.");
+    return this.database.transaction(() => {
+      const current = this.getKnowledgeRoleBinding(binding.principalId, binding.projectId);
+      if ((current?.revision ?? 0) !== expectedRevision || binding.revision !== expectedRevision + 1) return false;
+      this.database.prepare(`INSERT INTO knowledge_role_bindings(principal_id,project_id,role,revision,updated_at,revoked_at)
+        VALUES (?,?,?,?,?,?) ON CONFLICT(principal_id,project_id) DO UPDATE SET
+        role=excluded.role, revision=excluded.revision, updated_at=excluded.updated_at, revoked_at=excluded.revoked_at`)
+        .run(binding.principalId, binding.projectId, binding.role, binding.revision, binding.updatedAt, binding.revokedAt);
+      this.audit("knowledge.role_saved", actor, binding);
+      return true;
+    }).immediate();
   }
 
   getKnowledgeProjectRuntimeLink(projectId: string): KnowledgeProjectRuntimeLink | null {

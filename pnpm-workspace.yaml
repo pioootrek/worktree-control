@@ -1,3 +1,7 @@
+# The optional provider proof is a private workspace importer. The root
+# package never depends on it, so the Community artifact excludes it.
+packages:
+  - packages/auth-provider-better-auth-proof
 allowBuilds:
   better-sqlite3: true
   esbuild: true

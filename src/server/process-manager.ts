@@ -1,3 +1,4 @@
+import { directAdmission, idleWithCompletion, type DatabaseAdmission } from "./database-admission";
 import { NO_SERVER_MESSAGE } from "./launch-command";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
@@ -31,6 +32,8 @@ export type RuntimeStatusSummary = Pick<RuntimeSnapshot, "phase" | "worktreePath
 };
 
 export interface ProcessManagerOptions {
+  /** Process readiness and teardown wait without holding database admission. */
+  admission?: Pick<DatabaseAdmission, "idle">;
   resourceSampler?: ProcessResourceSampler;
   resourceSampleIntervalMs?: number;
   maxResourceHistoryPoints?: number;
@@ -102,6 +105,7 @@ export class ProcessManager {
   private readonly resourceSampleIntervalMs: number;
   private readonly maxResourceHistoryPoints: number;
   private readonly memoryWarningThresholdBytes: number | null;
+  private readonly admission: Pick<DatabaseAdmission, "idle">;
 
   constructor(onChange: (projectId: string) => void = () => undefined, logs: LogWriter = nullLogWriter, options: ProcessManagerOptions = {}) {
     this.onChange = onChange;
@@ -110,6 +114,7 @@ export class ProcessManager {
     this.resourceSampleIntervalMs = options.resourceSampleIntervalMs ?? DEFAULT_SAMPLE_INTERVAL_MS;
     this.maxResourceHistoryPoints = options.maxResourceHistoryPoints ?? DEFAULT_MAX_HISTORY_POINTS;
     this.memoryWarningThresholdBytes = options.memoryWarningThresholdBytes ?? null;
+    this.admission = options.admission ?? directAdmission;
   }
 
   snapshot(projectId: string): RuntimeSnapshot {
@@ -154,7 +159,7 @@ export class ProcessManager {
     this.assertStartAdmission();
     const current = this.runtimes.get(project.id) ?? emptyRuntime(project.id);
     if (current.group || current.cleanup) throw new Error("Serwer projektu już działa.");
-    if (await isPortOpen(project.port)) {
+    if (await this.admission.idle(() => isPortOpen(project.port))) {
       const runtime = { ...emptyRuntime(project.id), worktreePath, startedAt: new Date().toISOString() };
       this.runtimes.set(project.id, runtime);
       const failure = portInUseFailure(project);
@@ -209,6 +214,11 @@ export class ProcessManager {
     });
     this.onChange(project.id);
 
+    // `beforeSpawn` and spawn ran admitted; readiness polling is long and SQL-free.
+    await idleWithCompletion(this.admission, () => this.awaitReady(project, runtime));
+  }
+
+  private async awaitReady(project: Project, runtime: RuntimeEntry): Promise<void> {
     const deadline = Date.now() + project.startupTimeoutMs;
     while (Date.now() < deadline) {
       if (this.closing || !runtime.child || runtime.phase !== "starting") {
@@ -233,7 +243,7 @@ export class ProcessManager {
   async stop(projectId: string): Promise<void> {
     const runtime = this.runtimes.get(projectId);
     if (!runtime) return;
-    await this.cleanupRuntime(runtime);
+    await idleWithCompletion(this.admission, () => this.cleanupRuntime(runtime));
   }
 
   private cleanupRuntime(runtime: RuntimeEntry): Promise<void> {
