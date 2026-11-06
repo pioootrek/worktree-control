@@ -129,7 +129,8 @@ describe("GodotWebService", () => {
     await vi.waitFor(() => expect(f.runs()[0]?.phase).toBe("running"), { timeout: 10_000 });
     f.setRuntime("stopping");
     await f.service.drain(f.project.id);
-    await vi.waitFor(() => expect(f.runs()[0]?.phase).toBe("cancelled"), { timeout: 10_000 });
+    // Drain returns only after the queue persisted the terminal phase (removal relies on it).
+    expect(f.runs()[0]?.phase).toBe("cancelled");
     expect(f.runs()[0].logs).toContain("web_export.publication=suppressed reason=session_ended");
     expect(f.state().generation).toBeNull();
     expect(f.service.status(f.project.id)).toMatchObject({ state: "stopped", watcher: "stopped", activeRunId: null });

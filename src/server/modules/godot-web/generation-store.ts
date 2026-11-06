@@ -27,6 +27,10 @@ export interface PublicWebState {
 /** Controller-only metadata kept outside the served tree. */
 export interface GenerationMeta extends WebExportGeneration { worktreePath: string }
 
+export class GenerationSupersededError extends Error {
+  constructor() { super("session_ended"); }
+}
+
 export class GenerationOutputError extends Error {
   constructor(readonly code: "output_missing" | "output_entry_missing" | "output_limit" | "output_unsafe", message: string) { super(message); }
 }
@@ -98,7 +102,7 @@ export class GenerationStore {
    * Copies regular allowlisted files without following symlinks (O_NOFOLLOW on
    * every open), then publishes the generation. `containment` bounds the source.
    */
-  async publish(source: string, containment: string, meta: Omit<GenerationMeta, "id" | "publishedAt" | "files" | "bytes">, worktreeKey: string): Promise<{ generation: GenerationMeta; skipped: number }> {
+  async publish(source: string, containment: string, meta: Omit<GenerationMeta, "id" | "publishedAt" | "files" | "bytes">, worktreeKey: string, current: () => boolean = () => true): Promise<{ generation: GenerationMeta; skipped: number }> {
     const id = `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
     const target = join(this.incoming, id);
     let files = 0, bytes = 0, skipped = 0;
@@ -132,8 +136,11 @@ export class GenerationStore {
       };
       await copy(root, target, 0);
       const generation: GenerationMeta = { ...meta, id, publishedAt: new Date().toISOString(), files, bytes };
+      // A runtime stopped or switched during the copy must not repoint the served build.
+      if (!current()) throw new GenerationSupersededError();
       await rename(target, join(this.generations, id));
       await atomicJson(join(this.meta, `${id}.json`), generation);
+      if (!current()) { await rm(join(this.generations, id), { recursive: true, force: true }); await rm(join(this.meta, `${id}.json`), { force: true }); throw new GenerationSupersededError(); }
       await this.writeState({ generation: id, worktreeKey, publishedAt: generation.publishedAt, build: "idle", failureCode: null });
       await this.prune(id);
       return { generation, skipped };

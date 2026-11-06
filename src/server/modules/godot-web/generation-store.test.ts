@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { GenerationOutputError, GenerationStore } from "./generation-store";
+import { GenerationOutputError, GenerationStore, GenerationSupersededError } from "./generation-store";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -52,6 +52,17 @@ describe("Godot Web generation store", () => {
     await expect(store.publish(join(linkRoot, "out"), linkRoot, meta, "0123456789abcdef")).rejects.toThrow(/real directory/);
     expect((await store.readState()).generation).toBe(generation.id);
     expect(readdirSync(join(store.root, "incoming"))).toEqual([]);
+    expect(readdirSync(join(store.publicDirectory, "generations"))).toEqual([generation.id]);
+  });
+
+  it("does not repoint the served build when its session ended during the copy", async () => {
+    const store = new GenerationStore(temp("wtc-store-"));
+    await store.initialize();
+    const good = exportDirectory({ "index.html": "ok" });
+    const { generation } = await store.publish(good.output, good.root, meta, "0123456789abcdef");
+    const late = exportDirectory({ "index.html": "late" });
+    await expect(store.publish(late.output, late.root, meta, "0123456789abcdef", () => false)).rejects.toBeInstanceOf(GenerationSupersededError);
+    expect((await store.readState()).generation).toBe(generation.id);
     expect(readdirSync(join(store.publicDirectory, "generations"))).toEqual([generation.id]);
   });
 

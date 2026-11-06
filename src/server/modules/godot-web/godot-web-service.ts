@@ -11,7 +11,7 @@ import { redactProject, resolveTestEnvironment, testProfileFor } from "../enviro
 import type { LifecycleAccess, OperationActor } from "../lifecycle";
 import { projectTestPreset, type VerificationJobs } from "../verification";
 import { assertGodotProject, GodotWebConfigurationError, resolveWebExport, type ResolvedWebExport } from "./export-command";
-import { GenerationOutputError, GenerationStore, type GenerationLimits } from "./generation-store";
+import { GenerationOutputError, GenerationStore, GenerationSupersededError, type GenerationLimits } from "./generation-store";
 import { SourceWatcher, type WatchFactory } from "./source-watcher";
 import { WebExportSession } from "./web-export-session";
 
@@ -44,6 +44,8 @@ function safeMessage(error: unknown, fallback: string): string {
  */
 export class GodotWebService {
   private readonly sessions = new Map<string, { session: WebExportSession; watcher: SourceWatcher | null }>();
+  /** Ended sessions whose export may still be finishing in the queue; drained by removal and shutdown. */
+  private readonly ending = new Map<string, { session: WebExportSession; runId: string }>();
   /** Last status after a session ends, so the dashboard keeps the served generation. */
   private readonly stopped = new Map<string, WebExportStatus>();
   /** Runtime keys already known not to be Godot Web, avoiding a store read per log line. */
@@ -125,10 +127,19 @@ export class GodotWebService {
 
   /** Ends the session and waits (bounded) until its export no longer runs. */
   async drain(projectId: string): Promise<void> {
-    const entry = this.sessions.get(projectId);
-    if (!entry) return;
     this.endSession(projectId, "drain");
-    await entry.session.settled(DRAIN_TIMEOUT_MS);
+    const ended = this.ending.get(projectId);
+    if (!ended) return;
+    const { session, runId } = ended;
+    await session.settled(DRAIN_TIMEOUT_MS);
+    // Settlement precedes the queue's final write; wait (bounded) until the run is terminal.
+    const deadline = Date.now() + DRAIN_TIMEOUT_MS;
+    while (runId && Date.now() < deadline) {
+      const phase = this.options.store.getTestRun(runId)?.phase;
+      if (phase !== "queued" && phase !== "running") break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (this.ending.get(projectId)?.session === session) this.ending.delete(projectId);
   }
 
   async forget(projectId: string): Promise<void> {
@@ -140,9 +151,8 @@ export class GodotWebService {
 
   async close(): Promise<void> {
     this.closed = true;
-    const sessions = [...this.sessions.values()].map(({ session }) => session);
     for (const projectId of [...this.sessions.keys()]) this.endSession(projectId, "shutdown");
-    await Promise.all(sessions.map((session) => session.settled(DRAIN_TIMEOUT_MS)));
+    await Promise.all([...this.ending.keys()].map((projectId) => this.drain(projectId)));
   }
 
   private async beginSession(projectId: string, worktreePath: string, config: GodotWebConfig): Promise<void> {
@@ -189,6 +199,8 @@ export class GodotWebService {
     this.stopped.set(projectId, { ...session.status(null), state: "stopped", activeRunId: null, pendingRebuild: false, currentStale: false });
     session.dispose();
     if (runId) {
+      this.ending.set(projectId, { session, runId });
+      // At most one entry per project; drain removes it once the run is terminal.
       // Cancellation follows the queue's own rules; a late settle is ignored because the session is disposed.
       void this.options.jobs.cancel(runId, GODOT_WEB_ACTOR).catch((error: unknown) => {
         this.options.logs.controller("godot_web.cancel_failed", { projectId, runId, error: String(error) });
@@ -270,17 +282,17 @@ export class GodotWebService {
       if (decision.kind === "publish") {
         try {
           const containment = resolved.outputDirectory === store.stagingDirectory ? store.stagingDirectory : resolved.cwd;
-          if (session.disposed) throw new Error("session_ended");
+          if (session.disposed) throw new GenerationSupersededError();
           const { generation, skipped } = await store.publish(resolved.outputDirectory, containment, {
             runId: run.id, head: run.source.finish?.head ?? run.worktreeHead, dirty: run.source.finish?.dirty ?? run.worktreeDirty, worktreePath,
-          }, webWorktreeKey(session.worktreePath));
+          }, webWorktreeKey(session.worktreePath), () => !session.disposed);
           const { worktreePath: _omitted, ...current } = generation;
           void _omitted;
           session.current = current;
           log(`web_export.published generation=${generation.id} files=${generation.files} bytes=${generation.bytes} skipped=${skipped}`);
           this.options.store.recordProjectEvent(session.projectId, "godot_web.published", GODOT_WEB_ACTOR, { generation: generation.id, runId: run.id, files: generation.files, bytes: generation.bytes });
         } catch (error) {
-          if (error instanceof Error && error.message === "session_ended") { log("web_export.publication=suppressed reason=session_ended"); decision = { kind: "ignored" }; }
+          if (error instanceof GenerationSupersededError) { log("web_export.publication=suppressed reason=session_ended"); decision = { kind: "ignored" }; }
           else {
             const code = error instanceof GenerationOutputError ? "output_invalid" : "publication_failed";
             decision = { kind: "failed", code, message: safeMessage(error, "The completed export could not be published.") };
