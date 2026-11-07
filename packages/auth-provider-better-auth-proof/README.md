@@ -950,6 +950,6 @@ factors; explicit `factors: "reset"` requires a new password and the provider's
 `localFactorReset: "v1"` readiness plus separate reset method. Password, sessions,
 factor bindings, challenge authority and account generation change in one sole
 connection transaction. IDs, roles, grants, audit, TOTP steps and account budgets
-remain. See [authentication](../../../docs/authentication.md#protected-factor-loss-recovery-p3a) for the operator contract.
+remain. See [authentication](../../docs/authentication.md#protected-factor-loss-recovery-p3a) for the operator contract.
 Restored provenance remains denied until P3b; public account activation and A5
 transport enforcement remain separate gates.
