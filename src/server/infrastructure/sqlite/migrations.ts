@@ -1,3 +1,4 @@
+import { applyHumanTestRunMigration } from "./human-test-run-migration";
 import { applyHumanRuntimeMigration } from "./human-runtime-migration";
 import { applyRuntimeMembershipMigration } from "./runtime-membership-migration";
 import { applyTestRunRequesterMigration } from "./test-run-requester-migration";
@@ -381,6 +382,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyTestRunRequesterMigration(database);
       applyRuntimeMembershipMigration(database);
       applyHumanRuntimeMigration(database);
+      applyHumanTestRunMigration(database);
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();

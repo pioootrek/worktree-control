@@ -50,7 +50,7 @@ describe("real provider human runtime mutations", () => {
         await expect(f.core(()=>f.composition.identity.authorizeRuntime(actor,f.a.id,action))).rejects.toMatchObject({code:"runtime_forbidden"});
       }
       expect((await http.human.call(route,{body:claim(f,"explicit-start",{start:true})})).status).toBe(403);
-      for(const permissions of [[],["tests:run"],["config:write"],["env:use"],["claims:manage","claims:manage"]]) {
+      for(const permissions of [[],["config:write"],["env:use"],["claims:manage","claims:manage"]]) {
         await expect(assign(f,f.human,permissions,1)).rejects.toThrow();
       }
       expect((await http.human.call("/api/runtime/read",{body:{operation:"list-projects"}})).body.projects).toEqual([]);

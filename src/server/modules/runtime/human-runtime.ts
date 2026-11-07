@@ -31,7 +31,7 @@ export class HumanRuntimeService {
       const original = this.authorizer.resolveHumanRuntimeAuthority(actor, input.projectId, actions);
       const current = () => {
         const a = this.authorizer.resolveHumanRuntimeAuthority(actor, input.projectId, actions);
-        if (!sameAuthority(a, original)) throw new RuntimeAccessDenied();
+        if (!sameHumanRuntimeAuthority(a, original)) throw new RuntimeAccessDenied();
         return a;
       };
       if (input.operation !== "claim") this.requireLease(current(), input.projectId, input.reservationId, actions, input.operation === "release");
@@ -126,7 +126,7 @@ export class HumanRuntimeService {
 
   private requireLease(a: HumanRuntimeAuthority, projectId: string, id: string, actions: readonly RuntimeAction[], allowReleased = false): Reservation {
     const lease = this.leases.lease(id), now = new Date().toISOString();
-    if (!lease || !sameAuthority(a, lease.authority) || lease.reservation.projectId !== projectId
+    if (!lease || !sameHumanRuntimeAuthority(a, lease.authority) || lease.reservation.projectId !== projectId
       || !lease.reservation.expiresAt || lease.reservation.expiresAt <= now
       || actions.some(action => !lease.authority.permissions.includes(action))) throw stale();
     const active = this.store.getActiveReservation(projectId);
@@ -136,7 +136,7 @@ export class HumanRuntimeService {
     return lease.reservation;
   }
 }
-function sameAuthority(a: HumanRuntimeAuthority, b: HumanRuntimeAuthority) {
+export function sameHumanRuntimeAuthority(a: HumanRuntimeAuthority, b: HumanRuntimeAuthority) {
   return a.principalId === b.principalId && a.sessionKey === b.sessionKey && a.evidenceKey === b.evidenceKey
     && a.generation === b.generation && a.membershipRevision === b.membershipRevision && a.deadline === b.deadline
     && JSON.stringify(a.permissions) === JSON.stringify(b.permissions);

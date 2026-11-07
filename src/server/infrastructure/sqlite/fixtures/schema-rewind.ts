@@ -22,7 +22,13 @@ export const WITHOUT_AUTHENTICATION_PROVIDER_STORAGE = `DROP TABLE authenticatio
  * preset CHECK stays at the latest bootstrap shape, which inspection accepts at
  * every older version (like the other latest constraints these fixtures keep).
  */
+export function rewindHumanTestRuns(database: Database.Database): void {
+  if (!database.prepare("SELECT 1 FROM schema_migrations WHERE version=47").get()) return;
+  database.exec("DROP TABLE human_test_run_intents; DROP TABLE human_test_run_requesters; ALTER TABLE test_runs DROP COLUMN provider_bound; DELETE FROM schema_migrations WHERE version=47");
+  rebuildTable(database, "runtime_human_memberships", "BETWEEN 1 AND 4", "BETWEEN 1 AND 3");
+}
 export function rewindHumanRuntime(database: Database.Database): void {
+  rewindHumanTestRuns(database);
   if (!database.prepare("SELECT 1 FROM schema_migrations WHERE version=46").get()) return;
   database.exec("DROP TABLE human_runtime_intents; DROP TABLE human_runtime_leases; ALTER TABLE reservations DROP COLUMN provider_bound; DELETE FROM schema_migrations WHERE version=46");
   rebuildTable(database, "runtime_human_memberships", "CHECK(role IN ('reader','operator'))", "CHECK(role='reader')");

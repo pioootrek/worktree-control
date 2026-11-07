@@ -22,9 +22,15 @@ export class ScopedVerificationService {
     private readonly commands: Pick<ProjectTestCommandResolver, "discover">,
     private readonly verification: VerificationService,
     tests?: VerificationJobs,
+    humanDispatch?: (run: TestRun, requester: import("@/server/state-store").HumanTestRunRequester) => void,
   ) {
     this.dispatchAvailable = !!tests?.configureRequesterAuthorizer;
-    tests?.configureRequesterAuthorizer?.((run, requester) => this.authorizeDispatch(run, requester));
+    tests?.configureRequesterAuthorizer?.((run, requester) => {
+      if ("kind" in requester) {
+        if (!humanDispatch) throw new RuntimeAccessDenied();
+        humanDispatch(run, requester);
+      } else this.authorizeDispatch(run, requester);
+    });
   }
 
   async presets(actor: AuthenticatedPrincipal, value: unknown) {
@@ -89,16 +95,7 @@ export class ScopedVerificationService {
     this.owned(actor, input.runId, input.projectId);
     const run = this.store.getTestRunStatus(input.runId);
     if (!run) throw new RuntimeAccessDenied();
-    return {
-      runId: run.id, projectId: run.projectId, presetId: run.presetId, worktreePath: run.worktreePath,
-      phase: run.phase, queuedAt: run.queuedAt, startedAt: run.startedAt, finishedAt: run.finishedAt,
-      exitCode: run.exitCode, errorCode: run.error ? "test_error" : null,
-      source: {
-        queuedHead: run.source.enqueue?.head ?? run.worktreeHead,
-        preflightHead: run.source.preflight?.head ?? null, finishHead: run.source.finish?.head ?? null,
-        attribution: run.source.attribution, processOutcome: run.source.processOutcome,
-      },
-    };
+    return safeTestStatus(run);
   }
 
   async cancel(actor: AuthenticatedPrincipal, session: { owner: string }, value: unknown): Promise<ScopedTestRunStatus> {
@@ -169,4 +166,17 @@ function parse<T>(schema: import("zod").ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
   if (!result.success) throw invalid();
   return result.data;
+}
+
+export function safeTestStatus(run: import("@/server/state-store").TestRunStatusRecord): ScopedTestRunStatus {
+  return {
+    runId: run.id, projectId: run.projectId, presetId: run.presetId, worktreePath: run.worktreePath,
+    phase: run.phase, queuedAt: run.queuedAt, startedAt: run.startedAt, finishedAt: run.finishedAt,
+    exitCode: run.exitCode, errorCode: run.error ? "test_error" : null,
+    source: {
+      queuedHead: run.source.enqueue?.head ?? run.worktreeHead,
+      preflightHead: run.source.preflight?.head ?? null, finishHead: run.source.finish?.head ?? null,
+      attribution: run.source.attribution, processOutcome: run.source.processOutcome,
+    },
+  };
 }

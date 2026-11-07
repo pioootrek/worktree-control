@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 
 import type { TestQueueStatus, TestRun } from "@/shared/contracts";
 import type { LogWriter } from "./log-writer";
-import type { StateStore, TestRunRequester } from "./state-store";
+import type { StateStore, VerificationRequester } from "./state-store";
 import { admissionOf, admitWithRetry, type DatabaseAdmission } from "./database-admission";
 
 import { OwnedProcessGroup } from "./owned-process-group";
@@ -57,7 +57,7 @@ export class TestJobManager {
   private readonly observers = new Map<string, TestSourceObserver>();
   private readonly settlements = new Map<string, NonNullable<EnqueueTestInput["settle"]>>();
   private pathAdmission: (paths: string[]) => void = () => undefined;
-  private requesterAuthorizer: ((run: TestRun, requester: TestRunRequester) => void) | null = null;
+  private requesterAuthorizer: ((run: TestRun, requester: VerificationRequester) => void) | null = null;
   private sourceObserver: TestSourceObserver | null = null;
   private logMaintenance: Promise<void> = Promise.resolve();
   private pruneOperation: Promise<void> | null = null;
@@ -96,13 +96,17 @@ export class TestJobManager {
   /** Installation recovery exclusions apply at enqueue and again before work. */
   configurePathAdmission(check: (paths: string[]) => void): void { this.pathAdmission = check; }
 
-  configureRequesterAuthorizer(authorize: (run: TestRun, requester: TestRunRequester) => void): void {
+  configureRequesterAuthorizer(authorize: (run: TestRun, requester: VerificationRequester) => void): void {
+    if (this.requesterAuthorizer) throw new Error("Test requester authorizer is already configured.");
     this.requesterAuthorizer = authorize;
   }
 
-  private authorizeRequester(run: TestRun): void {
-    const requester = this.store.getTestRunRequester(run.id);
-    if (!requester) return; // Historical/installation and remote execution retain their existing policy.
+  authorizeRequester(run: TestRun): void {
+    const requester = this.store.getHumanTestRunRequester?.(run.id) ?? this.store.getTestRunRequester(run.id);
+    if (!requester) {
+      if (run.actor.startsWith("human:test:")) throw new Error("Human test attribution is unavailable.");
+      return; // Historical/installation and remote execution retain their existing policy.
+    }
     if (!this.requesterAuthorizer) throw new Error("Scoped test authorization is unavailable.");
     this.requesterAuthorizer(run, requester);
   }
@@ -117,6 +121,7 @@ export class TestJobManager {
     if (repeated.projectId !== projectId || repeated.worktreePath !== worktreePath || repeated.presetId !== presetId) {
       throw new Error("Klucz idempotencji jest już używany przez inne uruchomienie testu.");
     }
+    this.authorizeRequester(repeated);
     return repeated;
   }
 

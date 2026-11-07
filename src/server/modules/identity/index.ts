@@ -19,6 +19,8 @@ export type {
   ProviderSessionActor,
   ProviderSessionAuthority,
   ProviderRuntimeSession,
+  RetainedProviderSession,
+  HumanVerificationAuthorizer,
   HumanRuntimeAuthority,
   AuthenticatedIdentity,
   AuthenticationMethod,

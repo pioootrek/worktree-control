@@ -1,3 +1,4 @@
+import { HumanVerificationService } from "./modules/verification";
 import { HumanRuntimeService } from "./modules/runtime";
 import type { ProviderSessionActor } from "./modules/identity";
 import type { DatabaseAdmissionOptions } from "./database-admission";
@@ -73,6 +74,7 @@ export class ControlService {
   private readonly dashboardQueries: DashboardQueryService;
   private readonly statusQueries: StatusService;
   private readonly scopedVerification?: ScopedVerificationService;
+  private readonly humanVerification?: HumanVerificationService;
   private readonly humanRuntime?: HumanRuntimeService;
   private readonly scopedRuntime?: ScopedRuntimeService;
   private readonly scopedConfiguration?: ScopedConfigurationService;
@@ -115,8 +117,15 @@ export class ControlService {
       this.humanRuntime = new HumanRuntimeService({ resolveHumanRuntimeAuthority: runtimeAuthorizer.resolveHumanRuntimeAuthority.bind(runtimeAuthorizer) },
         store, store.humanRuntime(), git, this.lifecycle, this.runtime);
     }
+    if (runtimeAuthorizer?.captureHumanVerificationAuthority && runtimeAuthorizer.validateHumanVerificationAuthority && store.humanRuntime) {
+      this.humanVerification = new HumanVerificationService({
+        captureHumanVerificationAuthority: runtimeAuthorizer.captureHumanVerificationAuthority.bind(runtimeAuthorizer),
+        validateHumanVerificationAuthority: runtimeAuthorizer.validateHumanVerificationAuthority.bind(runtimeAuthorizer),
+      }, store, store.humanRuntime(), git, testCommands, this.verification, this.statusQueries, !!tests?.configureRequesterAuthorizer);
+    }
     if (runtimeAuthorizer) {
-      this.scopedVerification = new ScopedVerificationService(runtimeAuthorizer, store, git, testCommands, this.verification, tests);
+      this.scopedVerification = new ScopedVerificationService(runtimeAuthorizer, store, git, testCommands, this.verification, tests,
+        this.humanVerification && ((run, requester) => this.humanVerification!.authorizeDispatch(run, requester)));
       this.scopedRuntime = new ScopedRuntimeService(runtimeAuthorizer, store, git, processes, this.lifecycle, this.runtime, logs);
       this.scopedConfiguration = new ScopedConfigurationService(runtimeAuthorizer, store, git, processes, this.lifecycle,
         worktreePath => testCommands.discover(worktreePath), logs);
@@ -133,6 +142,10 @@ export class ControlService {
   scopedProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession | null, projectId: string) { const status = this.requireScopedRuntime().projectStatus(actor, session, projectId);
     const ownClaim = actor.authenticationMethod === "provider_session" ? this.humanRuntime?.ownClaim(actor, projectId) : null;
     return ownClaim ? { ...status, claim: "own" as const, ownClaim } : status; }
+  humanVerificationOperation(actor: ProviderSessionActor, value: unknown, options?: DatabaseAdmissionOptions, deliver?: (result: unknown) => void): Promise<unknown> {
+    if (!this.humanVerification) return Promise.reject(new RuntimeAccessDenied());
+    return this.humanVerification.execute(value, actor, options, deliver);
+  }
   mutateHumanRuntime(actor: ProviderSessionActor, value: unknown, options?: DatabaseAdmissionOptions, deliver?: (result: RuntimeMutateResult) => void): Promise<RuntimeMutateResult> {
     if (!this.humanRuntime) return Promise.reject(new RuntimeAccessDenied());
     return this.humanRuntime.execute(value, actor, options, deliver);

@@ -9,8 +9,8 @@ const target = {
   scope: z.object({ kind: z.literal("runtime-project"), id }).strict(),
   expectedRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER - 1),
 };
-export const humanRuntimeActions = ["projects:read", "claims:manage", "runtime:control"] as const;
-export const humanRuntimePermissionsSchema = z.array(z.enum(humanRuntimeActions)).min(1).max(3)
+export const humanRuntimeActions = ["projects:read", "claims:manage", "runtime:control", "tests:run"] as const;
+export const humanRuntimePermissionsSchema = z.array(z.enum(humanRuntimeActions)).min(1).max(4)
   .refine(values => new Set(values).size === values.length);
 export const runtimeMembershipSetSchema = z.discriminatedUnion("role", [
   z.object({ ...target, role: z.literal("reader"), permissions: z.tuple([z.literal("projects:read")]) }).strict(),

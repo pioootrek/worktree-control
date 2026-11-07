@@ -122,6 +122,7 @@
     "test:ui:dev-vault": "playwright test tests/ui/dev-vault.spec.ts",
     "test:docs": "python3 scripts/docs.py fmt && python3 scripts/docs.py check && git diff --check",
     "test:runtime-mutations": "vitest run --maxWorkers 1 src/server/infrastructure/sqlite/human-runtime-migration.test.ts src/server/infrastructure/sqlite/runtime-membership-queries.test.ts src/server/infrastructure/sqlite/runtime-membership-migration.test.ts src/server/modules/authorization/policy.test.ts src/cli/auth-provider-input.test.ts src/server/transports/authentication-http.test.ts && vitest run --config vitest.auth-provider-proof.config.ts runtime-mutate runtime-reader",
+    "test:human-jobs": "vitest run --maxWorkers 1 src/server/infrastructure/sqlite/human-test-run-migration.test.ts src/server/transports/authentication-http.test.ts src/server/modules/authorization/policy.test.ts src/server/infrastructure/sqlite/runtime-membership-queries.test.ts src/cli/auth-provider-input.test.ts && vitest run --config vitest.auth-provider-proof.config.ts runtime-verification runtime-mutate runtime-reader",
     "test:runtime-readers": "vitest run --maxWorkers 1 src/server/infrastructure/sqlite/runtime-membership-queries.test.ts src/server/infrastructure/sqlite/runtime-membership-migration.test.ts src/server/modules/authorization/policy.test.ts src/cli/auth-provider-input.test.ts && vitest run --config vitest.auth-provider-proof.config.ts runtime-reader"
   },
   "dependencies": {

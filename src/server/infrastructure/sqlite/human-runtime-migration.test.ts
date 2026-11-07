@@ -36,7 +36,7 @@ describe("human runtime schema46 and durable intents",()=>{
       const names=["remote_principals","principal_credentials","runtime_human_memberships","reservations","knowledge_history","runtime_credential_scopes","test_run_requesters"],before=tables(db,names),registry=tables(db,["schema_migrations"]);
       expect(()=>initializeSchema(db,false,()=>{throw new Error("rollback46");})).toThrow("rollback46");
       expect(inspectSchema(db).version).toBe(45);expect(tables(db,names)).toEqual(before);
-      initializeSchema(db,false,inspectSchema);expect(inspectSchema(db).version).toBe(46);
+      initializeSchema(db,false,inspectSchema);expect(inspectSchema(db).version).toBe(47);
       expect(tables(db,names.filter(t=>t!=="reservations"))).toEqual(before.filter((_,i)=>i!==3));
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=45").all()).toEqual(registry[0]);
       expect(db.prepare("SELECT role,permissions_json FROM runtime_human_memberships").all()).toEqual([{role:"reader",permissions_json:'["projects:read"]'}]);
@@ -88,7 +88,7 @@ describe("human runtime schema46 and durable intents",()=>{
       const db=new Database(path);genuine45(db);initializeSchema(db);
       if(mode==="checksum")db.exec("UPDATE schema_migrations SET checksum='wrong' WHERE version=46");
       if(mode==="premature")db.exec("DELETE FROM schema_migrations WHERE version=46");
-      if(mode==="permissions")db.exec(`UPDATE runtime_human_memberships SET role='operator',permissions_json='["tests:run"]'`);
+      if(mode==="permissions")db.exec(`UPDATE runtime_human_memberships SET role='operator',permissions_json='["env:use"]'`);
       if(mode==="marker")db.exec("UPDATE reservations SET provider_bound=1");
       db.close();const before=readFileSync(path);expect(()=>new SqliteStateStore(path)).toThrow(/schema|invariant/);expect(readFileSync(path)).toEqual(before);
     }finally{rmSync(root,{recursive:true,force:true});}

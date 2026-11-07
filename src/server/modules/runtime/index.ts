@@ -5,4 +5,4 @@ export { AGENT_LEASE_DEFAULT_SECONDS, AGENT_LEASE_MAX_SECONDS, ScopedRuntimeServ
 
 export { HUMAN_RUNTIME_LIMITS, type HumanRuntimeStore, type HumanRuntimeLease, type HumanRuntimeIntent } from "./human-runtime-store";
 
-export { HumanRuntimeService, type HumanRuntimeAuthorizer } from "./human-runtime";
+export { sameHumanRuntimeAuthority, HumanRuntimeService, type HumanRuntimeAuthorizer } from "./human-runtime";

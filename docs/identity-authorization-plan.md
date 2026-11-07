@@ -40,8 +40,11 @@ and IdentityService. P2a adds explicit runtime-project reader memberships and
 current-session cookie reads through shared policy and existing projections.
 P2b1 adds explicit operator subsets and session/evidence/revision-bound finite
 human runtime leases with durable retry intent and closed HTTP control. No
-operator receives tests/profiles/config/ENV/admin rights. Public browser mounting,
-P2b2 jobs/remaining transport workflows, P3 protected
+operator receives implied tests/profiles/config/ENV/admin rights. P2b2 adds explicit
+independent tests:run through the shared queue, original-session own-run access
+and bounded waits, with schema 47 immutable attribution and current native
+provider authority at dispatch. See [human finite verification](authentication.md#human-finite-verification-p2b2).
+Public browser mounting, remaining profile/configuration and transport parity, P3 protected
 recovery/restore fencing, factor management/recovery,
 invitations, general delegated roles and GUI remain open.
 Shared core admission, exclusive provider admission and background persistence

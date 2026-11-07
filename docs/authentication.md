@@ -344,7 +344,7 @@ performs no live enrollment and never uses owner creation to replace that accoun
 open/token/legacy modes. Provider sessions gain neither owner-session nor
 installation authority, and never replace signed Ed25519 vault proof. P2a supplies
 the reader workflow below, and P2b1 adds explicit human runtime leases and control.
-P2b2 jobs/remaining transport enforcement and P3 protected recovery/restore
+Remaining P2 transport enforcement and P3 protected recovery/restore
 fencing remain activation gates.
 
 ### Human runtime readers (P2a)
@@ -424,7 +424,7 @@ Selected optional TOTP/passkeys and separate Ed25519 vault proof retain their ga
 
 This is backend source implementation and isolated real-provider verification.
 Production startup still does not mount public login or this cookie workflow;
-`requireSelectable` continues to refuse account-mode selection. P2b2/P3 remain
+`requireSelectable` continues to refuse account-mode selection. Remaining P2/P3 stay
 required before activation. In particular, the P1 restored-provenance refusal
 continues across reboots and is not a completed protected-recovery mechanism.
 
@@ -432,7 +432,7 @@ continues across reboots and is not a completed protected-recovery mechanism.
 
 The same protected `runtime-access set/list/revoke` workflow now accepts
 `operator` with a nonempty, unique explicit subset of `projects:read`,
-`claims:manage` and `runtime:control`. A role grants no implicit actions.
+`claims:manage`, `runtime:control` and independently `tests:run` (P2b2). A role grants no implicit actions.
 Reader remains exactly `["projects:read"]`. Existing aggregates are copied
 unchanged into schema 46; no existing owner, credential or grant gains rights.
 For example, an operator who can reserve and control but cannot read uses:
@@ -512,11 +512,94 @@ after their absolute maximum, while the reservation marker persists.
 `pnpm test:runtime-mutations` covers core migration/policy/transport guards and
 real-provider cookies with finite process doubles, including another session,
 principal, agent, revocation races, disconnect/retry and database/provider reopen.
-No development server is needed. Jobs/tests, profiles, configuration, logs,
-capacity, waits, delegation, administration and ENV remain denied to these
-human roles pending their own workflows. Optional factors and separate vault
+No development server is needed. P2b2 supplies the independent jobs and bounded
+run-wait workflow below. Profiles, configuration, logs, capacity, delegation,
+administration and ENV remain denied pending their own workflows. Optional factors and separate vault
 signatures retain their existing policy. P2b2/P3/A5 and public activation remain
 open; this backend workflow does not mount a public login listener.
+
+### Human finite verification (P2b2)
+
+Protected `runtime-access set` accepts `operator` with exactly `["tests:run"]`,
+or an explicit subset including that action. It adds no default grants and
+implies no project read, claim, runtime control, profile, configuration or ENV
+rights. Reader remains exactly `["projects:read"]`. Knowledge memberships and
+owner status supply no test authority.
+
+The internal shared composition accepts the existing controller as its
+`verification` port. Closed `POST /api/runtime/tests` accepts these strict DTOs:
+
+```json
+{"operation":"presets","projectId":"PROJECT_ID"}
+{"operation":"enqueue","projectId":"PROJECT_ID","worktreePath":"DISCOVERED_PATH","presetId":"node:test","idempotencyKey":"test-1"}
+{"operation":"status","runId":"RUN_ID"}
+{"operation":"wait","runId":"RUN_ID","cursor":"CURSOR","timeoutMs":20000}
+{"operation":"cancel","runId":"RUN_ID"}
+```
+
+Enqueue may additionally name `reservationId`; status, wait and cancel may
+add `projectId` to constrain the known run. No request supplies an actor,
+principal, session, command, environment or profile. Discovery is limited to
+64 discovered non-prunable worktrees, 256 presets and 64 KiB. It returns only
+exact paths and clean-profile preset IDs/timeouts. Execution revalidates the
+worktree and trusted shell-free command through the existing resolver. Clean
+profiles retain their declared literals and fixed system allowlist; inherited
+server profiles and vault delivery remain unavailable.
+
+An unclaimed project can enqueue with tests-only rights. If a claim exists,
+its exact original human session, membership revision and worktree must match.
+The run captures either no claim or that claim ID. A later claim, including a
+replacement by the same session, release or expiry blocks dispatch and retry.
+New rights never attach to an accepted run retroactively.
+
+All human own-run reads, waits, cancellation and replay require the exact
+**original provider session** and current original membership revision and
+evidence, including for completed runs. A new login or revoke/regrant cannot
+adopt history. A durable key is scoped to its principal and cannot duplicate
+an old run when retried by another session. A separate durable key ledger
+survives detailed-run retention until the original session deadline. It refuses
+retry when details have been removed and never evicts live keys under pressure.
+The bounds are 4096 keys globally and 128 per original session.
+The original still-valid cookie
+retains this relationship after an ordinary controller reboot. Existing
+interrupted-run recovery remains in force; reopening never reruns stale jobs.
+Read/cancel authority does not depend on continued claim ownership; the claim
+fences execution and enqueue replay. Revocation does not kill an already
+running process. Existing process cancellation/cleanup semantics remain.
+
+Schema 47 adds a permanent `test_runs.provider_bound` marker and an immutable
+human requester sidecar, atomically with run/summary creation on the sole
+connection. It preserves SQL/checksums 1..46 and all old rows without backfill.
+Human attribution uses no fake credential or MCP session. A server-only native
+session row reference permits current provider lookup, contains no cookie or
+token, and stays outside DTOs, logs and audit payloads. The provider validates
+current session/account/mapping/evidence/generation/expiry rows. Persistence
+alone grants no authority. Missing/corrupt marked attribution refuses lookup,
+replay, dispatch and pre-spawn instead of falling through to legacy execution.
+One typed queue dispatcher preserves the existing agent checker alongside the
+human checker; requests cannot replace it.
+
+Shared operations recheck after Git, project-lock and database-admission waits,
+at dispatch and pre-spawn, and before delivery. SQL-free waits release the same
+connection admission. Run envelopes reuse scoped allowlists and `StatusService`
+sampling, cursors and waiter budgets. Cursors bind principal, actual session
+and run; waits accept at most 20 seconds and clean up on disconnect, timeout,
+authority loss and shutdown. Envelopes reveal no logs, commands, ENV, profiles,
+requester/session internals, queue positions or global capacity. Unknown and
+forbidden runs return the same denial. The closed route retains POST-only,
+strict duplicate-key JSON, 4 KiB body, current cookie, Host/Origin/CSRF,
+no-store and slot-until-settlement guards. Authentication remains outside core
+admission. Legacy installation tokens cannot bypass this cookie path.
+
+The agent contract is unchanged: the same credential in a new MCP session may
+read a known run; cancellation requires its original session. Human sessions
+are never represented as agents for ownership, waiter budgets or cursors.
+Optional TOTP/passkeys and separate Ed25519 vault proof retain their policies.
+`pnpm test:human-jobs` exercises real provider composition, temporary native
+sessions, the existing finite queue and migration/transport/policy regressions.
+P2 remaining profile/configuration and transport parity, P3 protected recovery
+and external restore fencing, and A5 activation remain open. The public mount
+and `requireSelectable` gate stay closed.
 
 ### Bounded browser adapter
 
@@ -776,7 +859,7 @@ fencing stay separate gates. See the
 ### Closed factor HTTP API
 
 A3-I20 mounts login and first enrollment through the isolated composition only. It
-uses the same provider, current core schema 46, contract 5, `AccountProtection` and sole
+uses the same provider, current core schema 47, contract 5, `AccountProtection` and sole
 connection as [integrated factor authority](#integrated-factor-authority). Production
 main still has no caller or flag, account mode stays refused, and recovery, removal,
 replacement, additional passkeys and trusted devices stay refused.

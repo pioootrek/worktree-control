@@ -165,7 +165,15 @@ intent ledger. The existing lifecycle locks, capacity and process verifier are
 reused; pending/interrupted intent never reruns automatically. Exact original
 membership/session authority fences mutation and delivery, including replays.
 See [human runtime leases](authentication.md#human-runtime-operators-and-leases-p2b1).
-P2b2 jobs/remaining transports and P3 recovery/restore fencing remain activation
+P2b2 adds human tests-only discovery/enqueue/own-run status/wait/cancel on the
+existing finite queue and shared status budgets. Schema 47 keeps a durable
+provider-bound run marker and separate immutable requester attribution. A
+provider-owned native-row reference revalidates original current session and
+membership without constructing an agent or trusting persistence as authority.
+Missing attribution fails closed. Original no-claim/exact-claim fences govern
+dispatch and replay; all human own-run access retains its original session and
+membership revision, including completed history. Remaining profile/configuration
+and transport parity, P3 recovery/restore fencing and A5 remain activation
 gates; no public browser mount is enabled.
 
 ## Resource policy
@@ -584,7 +592,7 @@ admitted phase. Accepted cleanup uses reserved queue room on the same gate, with
 lock, counter or connection.
 
 Current isolated provider API is contract 5, storage revision 3, implementation
-`0.0.0-proof.5` and core schema 46. Earlier versions evolved as follows.
+`0.0.0-proof.5` and core schema 47. Earlier versions evolved as follows.
 Provider API contract 2 requires durable `signOut`; version 1 fails compatibility
 checks. Contract 3 adds the application-owned `host.protection` port: the provider
 calls it synchronously inside its open transaction, and `AccountProtection` keeps

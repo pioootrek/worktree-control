@@ -56,6 +56,17 @@ export interface TestRunRequester {
   leaseTokenHash: string | null;
 }
 
+export interface HumanTestRunRequester {
+  kind: "human";
+  projectId: string;
+  sessionOwner: string;
+  authority: import("./modules/identity").HumanRuntimeAuthority;
+  reference: import("./modules/identity").RetainedProviderSession;
+  reservationId: string | null;
+  fingerprint: string;
+}
+export type VerificationRequester = TestRunRequester | HumanTestRunRequester;
+
 /** Durable credential binding of a scoped agent lease, in addition to session owner and lease hash. */
 export interface ReservationBinding {
   principalId: string;
@@ -152,7 +163,9 @@ export interface StateStore {
   getTestRunStatus(id: string): TestRunStatusRecord | null;
   findTestRunByIdempotency(actor: string, idempotencyKey: string): TestRun | null;
   getTestRunRequester(id: string): TestRunRequester | null;
-  saveTestRun(run: TestRun, idempotencyKey?: string, requester?: TestRunRequester): void;
+  /** Marked rows with absent/corrupt attribution throw, never become legacy jobs. */
+  getHumanTestRunRequester?(id: string): HumanTestRunRequester | null;
+  saveTestRun(run: TestRun, idempotencyKey?: string, requester?: VerificationRequester): void;
   markInterruptedTestRuns(): void;
   pruneTestSummaryHistory(): number;
   getWorktreeStorage(projectId: string, worktreePath: string): WorktreeStorageSnapshot | null;

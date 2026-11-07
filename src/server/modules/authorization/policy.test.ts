@@ -28,9 +28,14 @@ describe("shared authorization policy", () => {
     const membership = { principalId: "actor", scope: { kind: "runtime-project" as const, id: "p" }, role: "operator" as const,
       permissions: ["runtime:control" as const], revision: 1, updatedAt: "now", revokedAt: null };
     expect(effectiveHumanRuntimeActions(subject, "p", { providerSession: true, project: {id:"p"}, membership })).toEqual(["runtime:control"]);
-    for (const permissions of [[], ["tests:run"], ["profiles:select"], ["config:write"], ["env:use"], ["claims:manage","claims:manage"]]) {
+    for (const permissions of [[], ["profiles:select"], ["config:write"], ["env:use"], ["claims:manage","claims:manage"]]) {
       expect(effectiveHumanRuntimeActions(subject, "p", {providerSession:true,project:{id:"p"},membership:{...membership,permissions} as never})).toEqual([]);
     }
+  });
+  it("allows tests-only operator with no implied project/control/claim permissions", () => {
+    const membership = { principalId: "actor", scope: { kind: "runtime-project" as const, id: "p" }, role: "operator" as const,
+      permissions: ["tests:run" as const], revision: 1, updatedAt: "now", revokedAt: null };
+    expect(effectiveHumanRuntimeActions(subject, "p", {providerSession:true,project:{id:"p"},membership})).toEqual(["tests:run"]);
   });
   it.each<[KnowledgeRole, SubjectKind, string[]]>([
     ["reader", "human", ["knowledge:read", "knowledge:export", "attachments:read"]],

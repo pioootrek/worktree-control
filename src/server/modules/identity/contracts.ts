@@ -59,14 +59,23 @@ export interface ProviderRuntimeSession {
   readonly generation: number;
   readonly deadline: string;
 }
+export interface RetainedProviderSession extends ProviderRuntimeSession {
+  readonly nativeSessionId: string;
+}
 export interface HumanRuntimeAuthority extends ProviderRuntimeSession {
   readonly membershipRevision: number;
   readonly permissions: readonly RuntimeAction[];
+}
+export interface HumanVerificationAuthorizer {
+  captureHumanVerificationAuthority(actor: ProviderSessionActor, projectId: string): { authority: HumanRuntimeAuthority; reference: RetainedProviderSession };
+  validateHumanVerificationAuthority(authority: HumanRuntimeAuthority, reference: RetainedProviderSession, projectId: string): void;
 }
 /** Synchronous current-state checks on the admitted connection; never borrows the provider. */
 export interface ProviderSessionAuthority {
   isCurrentProviderSession(actor: ProviderSessionActor, now: string): boolean;
   resolveRuntimeSession?(actor: ProviderSessionActor, now: string): ProviderRuntimeSession | null;
+  captureRuntimeSession?(actor: ProviderSessionActor, now: string): RetainedProviderSession | null;
+  validateRetainedRuntimeSession?(reference: RetainedProviderSession, now: string): boolean;
 }
 
 export type ControllerAuthentication =

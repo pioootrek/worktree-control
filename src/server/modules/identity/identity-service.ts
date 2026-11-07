@@ -588,6 +588,28 @@ export class IdentityService {
     return Object.freeze({ ...session, membershipRevision: membership.revision, permissions: Object.freeze([...membership.permissions]) });
   }
 
+  captureHumanVerificationAuthority(actor: ProviderSessionActor, projectId: string) {
+    const authority = this.resolveHumanRuntimeAuthority(actor, projectId, ["tests:run"]);
+    const reference = this.providerSessions?.captureRuntimeSession?.(actor, this.clock());
+    if (!reference || reference.sessionKey !== authority.sessionKey) throw new IdentityError("runtime_forbidden", RUNTIME_ACCESS_DENIED);
+    return { authority, reference };
+  }
+
+  validateHumanVerificationAuthority(authority: import("./contracts").HumanRuntimeAuthority,
+    reference: import("./contracts").RetainedProviderSession, projectId: string): void {
+    const principal = this.store.getPrincipal(authority.principalId);
+    const membership = this.runtimeMemberships?.getRuntimeMembership(authority.principalId, projectId);
+    if (!principal || principal.status !== "active" || (principal.kind !== "human" && principal.kind !== "owner")
+      || reference.principalId !== authority.principalId || reference.sessionKey !== authority.sessionKey
+      || reference.evidenceKey !== authority.evidenceKey || reference.generation !== authority.generation || reference.deadline !== authority.deadline
+      || !this.providerSessions?.validateRetainedRuntimeSession?.(reference, this.clock())
+      || !membership || membership.revision !== authority.membershipRevision
+      || JSON.stringify(membership.permissions) !== JSON.stringify(authority.permissions)
+      || !effectiveHumanRuntimeActions({ id: principal.id, kind: "human", humanSession: false }, projectId, {
+        providerSession: true, project: this.runtimeAccess?.hasRuntimeProject(projectId) ? { id: projectId } : null, membership,
+      }).includes("tests:run")) throw new IdentityError("runtime_forbidden", RUNTIME_ACCESS_DENIED);
+  }
+
   private humanRuntimeAuthority(actor: AuthenticatedPrincipal, projectId: string) {
     return {
       providerSession: actor.authenticationMethod === "provider_session",

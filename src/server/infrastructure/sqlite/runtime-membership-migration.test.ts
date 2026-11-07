@@ -34,7 +34,7 @@ describe("runtime membership migration 45", () => {
       expect(() => initializeSchema(db, false, () => { throw new Error("rollback45"); })).toThrow("rollback45");
       expect(inspectSchema(db).version).toBe(44); expect(kept(db)).toEqual(before);
       initializeSchema(db, false, inspectSchema);
-      expect(inspectSchema(db).version).toBe(46); expect(kept(db)).toEqual(before);
+      expect(inspectSchema(db).version).toBe(47); expect(kept(db)).toEqual(before);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=44").all()).toEqual(registry);
       expect(db.prepare("SELECT * FROM runtime_human_memberships").all()).toEqual([]);
       expect(db.prepare("SELECT name,checksum FROM schema_migrations WHERE version=45").get())
@@ -51,7 +51,7 @@ describe("runtime membership migration 45", () => {
       const target = join(root, "restored.sqlite3"); restoreControllerBackup(join(root, "backup"), target);
       const restored = new SqliteStateStore(target);
       try {
-        expect(restored.schemaVersion()).toBe(46);
+        expect(restored.schemaVersion()).toBe(47);
         expect(restored.runtimeMemberships().getRuntimeMembership("human", "runtime")).toEqual(row);
         expect(restored.listPrincipalCredentials("human")).toEqual([]);
         expect(restored.hasAuthenticationProviderData()).toBe(false);

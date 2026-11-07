@@ -1,5 +1,6 @@
 import { humanRuntimePermissionsSchema, runtimeMembershipSetSchema } from "@/shared/contracts/runtime-memberships";
 import type Database from "better-sqlite3";
+import { TestRunQueries } from "./test-run-queries";
 import { AuthenticationQueries } from "./authentication-queries";
 
 export function validateDatabase(database: Database.Database, version: number): void {
@@ -42,6 +43,12 @@ export function validateDatabase(database: Database.Database, version: number): 
       OR h.maximum_expires_at>strftime('%Y-%m-%dT%H:%M:%fZ',r.created_at,'+8 hours') LIMIT 1`).get()) fail("human lease binding");
     if (database.prepare(`SELECT 1 FROM reservations WHERE provider_bound=1 AND (kind<>'human' OR token_hash IS NOT NULL
       OR principal_id IS NOT NULL OR credential_id IS NOT NULL OR request_fingerprint IS NULL) LIMIT 1`).get()) fail("human lease marker");
+  }
+  if (version >= 47) {
+    const runs = new TestRunQueries(database);
+    for (const row of database.prepare("SELECT id FROM test_runs WHERE provider_bound=1 UNION SELECT run_id AS id FROM human_test_run_requesters").iterate() as Iterable<{id:string}>) {
+      try { runs.getHumanTestRunRequester(row.id); } catch { fail("human test attribution"); }
+    }
   }
   // Evidence and trust describe one provider account. Selected-protection flags are
   // checked per account at every decision, so one inconsistent row refuses only itself.

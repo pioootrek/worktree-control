@@ -507,6 +507,27 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
       evidenceKey, generation: original.evidence.generation, deadline: original.expiresAt });
   }
 
+  /** Capture only from an exact runtime-owned actor; no cookie/token is retained. */
+  captureRuntimeSession(actor: ProviderSessionActor, now: string): import("../identity").RetainedProviderSession | null {
+    const binding = this.resolveRuntimeSession(actor, now);
+    return binding ? Object.freeze({ ...binding, nativeSessionId: this.#actors.get(actor)!.sessionId }) : null;
+  }
+
+  /** Queue authority comes from current native rows, never from a reconstructed actor. */
+  validateRetainedRuntimeSession(reference: import("../identity").RetainedProviderSession, now: string): boolean {
+    if (this.disposed || !this.#supportsSessionAuthority() || !this.#input.storage.available() || !canonicalInstant(now)
+      || typeof reference?.nativeSessionId !== "string" || !reference.nativeSessionId || reference.nativeSessionId.length > 512) return false;
+    const state = this.#input.storage.currentSession(this.#input.providerId, reference.nativeSessionId);
+    const authority = state && evaluateSessionAuthority(state, now);
+    if (!state || !authority) return false;
+    const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+    const evidenceKey = digest(["wtc-human-evidence-v1", authority.evidence, state.mappingLinkedAt, authority.authentication]);
+    const sessionKey = digest(["wtc-human-session-v1", this.#input.providerId, reference.nativeSessionId, state.subject,
+      state.principalId, state.principalKind, state.createdAt, state.mappingLinkedAt, evidenceKey]);
+    return state.principalId === reference.principalId && sessionKey === reference.sessionKey && evidenceKey === reference.evidenceKey
+      && authority.evidence.generation === reference.generation && authority.deadline === reference.deadline;
+  }
+
   /**
    * Fixed browser operations only, called outside core admission, with no caller
    * callbacks. The provider work runs in one actual queued borrow. Everything it

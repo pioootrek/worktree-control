@@ -49,11 +49,11 @@ describe("provider session history migration 39", () => {
   it("creates recognized fresh storage with provider storage revision 1 and honest history method", () => {
     const f = directory(), store = new SqliteStateStore(f.path);
     try {
-      expect(store.schemaVersion()).toBe(46);
+      expect(store.schemaVersion()).toBe(47);
       expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     } finally { store.close(); }
     raw(f.path, db => {
-      expect(inspectSchema(db)).toEqual({ version: 46, fresh: false });
+      expect(inspectSchema(db)).toEqual({ version: 47, fresh: false });
       expect(db.prepare("SELECT name,checksum FROM schema_migrations WHERE version=39").get())
         .toEqual({ name: providerSessionHistoryMigration.name, checksum: providerSessionHistoryChecksum });
       expect(db.prepare("SELECT sql FROM sqlite_master WHERE name='knowledge_history'").get()).toMatchObject({ sql: expect.stringContaining("'provider_session'") });
@@ -83,7 +83,7 @@ describe("provider session history migration 39", () => {
     expect(backup).toMatch(/^pre-migration-v38-/);
     expect(JSON.parse(readFileSync(join(backups, backup!, "manifest.json"), "utf8")).database.schemaVersion).toBe(38);
     raw(f.path, db => {
-      expect(inspectSchema(db).version).toBe(46);
+      expect(inspectSchema(db).version).toBe(47);
       expect(preserved(db)).toEqual(before.rows);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=38 ORDER BY version").all()).toEqual(before.registry);
       expect(db.prepare("SELECT name,sql FROM sqlite_master WHERE type='index' AND tbl_name='knowledge_history' ORDER BY name").all()).toEqual(before.indexes);
@@ -95,7 +95,7 @@ describe("provider session history migration 39", () => {
     const restoredPath = join(f.root, "restored38", "state.sqlite3");
     restoreControllerBackup(join(backups, backup!), restoredPath);
     const restored = new SqliteStateStore(restoredPath);
-    try { expect(restored.schemaVersion()).toBe(46); } finally { restored.close(); }
+    try { expect(restored.schemaVersion()).toBe(47); } finally { restored.close(); }
     raw(restoredPath, db => expect(preserved(db)).toEqual(before.rows));
   });
 
@@ -149,7 +149,7 @@ describe("provider session history migration 39", () => {
     restoreControllerBackup(backup, restoredPath);
     const restored = new SqliteStateStore(restoredPath);
     try {
-      expect(restored.schemaVersion()).toBe(46);
+      expect(restored.schemaVersion()).toBe(47);
       expect(restored.listHistory("kept", "task", task.value.id, 25, 0).items[0]?.authenticationMethod).toBe("provider_session");
     } finally { restored.close(); }
     const target = new SqliteStateStore(join(f.root, "logical.sqlite3"));

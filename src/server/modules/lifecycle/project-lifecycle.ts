@@ -11,6 +11,7 @@ export interface OperationActor {
   revalidate?: () => void;
   /** Only a shared human operation creates this verifier from the opaque actor and durable lease. */
   humanClaim?: (projectId: string, reservationId: string) => import("@/shared/contracts").Reservation;
+  humanTestReservation?: (projectId: string, worktreePath: string | null) => void;
   leaseToken?: string;
   /** Scoped agent leases also bind the authenticated principal and credential. */
   binding?: ReservationBinding;
@@ -45,6 +46,11 @@ export class ProjectLifecycle {
   }
 
   assertReservationAllows(projectId: string, worktreePath: string | null, actor: OperationActor): void {
+    if (actor.humanTestReservation) {
+      if (actor.binding || actor.leaseToken || actor.owner.startsWith("agent:")) throw new ReservationError("claim_stale", "Invalid human test authority.");
+      actor.humanTestReservation(projectId, worktreePath);
+      return;
+    }
     const reservation = this.store.authorizeReservation(
       projectId,
       actor.owner,
