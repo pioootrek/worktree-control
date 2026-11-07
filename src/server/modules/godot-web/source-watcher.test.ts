@@ -1,0 +1,253 @@
+import { execFileSync } from "node:child_process";
+import { SystemGitWorktreeReader } from "@/server/git-worktrees";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { SourceWatcher, type WatchFactory } from "./source-watcher";
+
+const roots: string[] = [];
+afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+function tree() {
+  const root = mkdtempSync(join(tmpdir(), "wtc-watch-")); roots.push(root);
+  for (const directory of ["game/units", ".git/objects", ".godot/imported", "exports/web", "node_modules/x", "analysis-local"]) mkdirSync(join(root, directory), { recursive: true });
+  writeFileSync(join(root, "project.godot"), "");
+  const outside = mkdtempSync(join(tmpdir(), "wtc-watch-outside-")); roots.push(outside);
+  mkdirSync(join(outside, "deep"));
+  symlinkSync(outside, join(root, "linked"));
+  return root;
+}
+/** Records watched directories and lets the test emit events synchronously. */
+function fakeWatch() {
+  const listeners = new Map<string, (event: string, name: string | null) => void>();
+  const closed: string[] = [];
+  const factory: WatchFactory = (path, listener) => {
+    listeners.set(path, listener as (event: string, name: string | null) => void);
+    return { close: () => { closed.push(path); listeners.delete(path); }, on: () => undefined } as unknown as ReturnType<WatchFactory>;
+  };
+  return { factory, listeners, closed };
+}
+
+describe("Godot Web source watcher", () => {
+  it("watches one directory at a time, skipping symlinks, .git/.godot/output and Git-ignored paths", async () => {
+    const root = tree(), fake = fakeWatch();
+    const watcher = new SourceWatcher({ root, paths: ["."], ignore: ["exports/web", "analysis-local"], debounceMs: 100, onChange: () => undefined, watch: fake.factory });
+    await watcher.start();
+    expect([...fake.listeners.keys()].map((path) => path.slice(root.length)).sort()).toEqual(["", "/exports", "/game", "/game/units"]);
+    expect(watcher.state).toBe("watching");
+    watcher.dispose();
+    expect(fake.listeners.size).toBe(0);
+    expect(watcher.state).toBe("stopped");
+  });
+
+  it("coalesces bursts into one debounced change and ignores generated or temporary files", async () => {
+    vi.useFakeTimers();
+    const root = tree(), fake = fakeWatch(), onChange = vi.fn(), onInvalidate = vi.fn();
+    const watcher = new SourceWatcher({ root, paths: ["."], ignore: ["exports/web"], debounceMs: 200, maxWaitMs: 1_000, onChange, onInvalidate, watch: fake.factory });
+    await watcher.start();
+    const emit = (directory: string, name: string) => fake.listeners.get(join(root, directory))!("change", name);
+    emit("exports", "web"); emit("game", ".unit.gd.swp"); emit("game", "unit.gd~");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onInvalidate).not.toHaveBeenCalled();
+    for (let index = 0; index < 5; index += 1) { emit("game", "unit.gd"); await vi.advanceTimersByTimeAsync(100); }
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onInvalidate).toHaveBeenCalledTimes(5);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    // A continuous stream still yields a change once maxWait elapses.
+    for (let index = 0; index < 12; index += 1) { emit("game/units", "tank.tscn"); await vi.advanceTimersByTimeAsync(100); }
+    expect(onChange).toHaveBeenCalledTimes(2);
+    watcher.dispose();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(onChange).toHaveBeenCalledTimes(2);
+  });
+
+  it("limits configured files to their own names and caps the directory count", async () => {
+    const root = tree(), fake = fakeWatch(), onChange = vi.fn(), states: string[] = [];
+    const files = new SourceWatcher({ root, paths: ["project.godot"], ignore: [], debounceMs: 100, onChange, watch: fake.factory });
+    await files.start();
+    expect([...fake.listeners.keys()]).toEqual([root]);
+    fake.listeners.get(root)!("change", "README.md");
+    files.dispose();
+    expect(onChange).not.toHaveBeenCalled();
+    const limited = new SourceWatcher({ root, paths: ["."], ignore: [], debounceMs: 100, maxDirectories: 2, onChange, onState: (state) => states.push(state), watch: fakeWatch().factory });
+    await limited.start();
+    expect(limited.state).toBe("limit_exceeded");
+    expect(limited.watchedDirectories).toBe(0);
+    expect(states).toEqual(["limit_exceeded"]);
+  });
+
+  it("adds watchers for directories created later with real fs events", async () => {
+    const root = tree(), onChange = vi.fn();
+    const watcher = new SourceWatcher({ root, paths: ["game"], ignore: [], debounceMs: 50, onChange });
+    await watcher.start();
+    mkdirSync(join(root, "game/new"));
+    await vi.waitFor(() => expect(watcher.watchedDirectories).toBe(4), { timeout: 2_000 });
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalled(), { timeout: 2_000 });
+    onChange.mockClear();
+    writeFileSync(join(root, "game/new/scene.tscn"), "x");
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1), { timeout: 2_000 });
+    watcher.dispose();
+  });
+
+  it.each(["scenes", "future/scenes"])("attaches missing configured path %s when created, and after recreation", async (path) => {
+    const root = tree(), onChange = vi.fn();
+    const watcher = new SourceWatcher({ root, paths: [path, "project.godot"], ignore: [], debounceMs: 30, onChange });
+    try {
+      await watcher.start();
+      expect(watcher.watchedDirectories).toBe(1);
+      writeFileSync(join(root, "unrelated.txt"), "ignored");
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(onChange).not.toHaveBeenCalled();
+      const expectedDirectories = path.split("/").length + 1;
+      for (let cycle = 0; cycle < 2; cycle += 1) {
+        mkdirSync(join(root, path), { recursive: true });
+        await vi.waitFor(() => expect(watcher.watchedDirectories).toBe(expectedDirectories), { timeout: 2_000 });
+        await vi.waitFor(() => expect(onChange).toHaveBeenCalled(), { timeout: 2_000 });
+        onChange.mockClear();
+        writeFileSync(join(root, path, "scene.tscn"), `scene ${cycle}`);
+        await vi.waitFor(() => expect(onChange).toHaveBeenCalled(), { timeout: 2_000 });
+        rmSync(join(root, path.split("/")[0]), { recursive: true });
+        await vi.waitFor(() => expect(watcher.watchedDirectories).toBe(1), { timeout: 2_000 });
+        await vi.waitFor(() => expect(onChange.mock.calls.length).toBeGreaterThan(1), { timeout: 2_000 });
+        onChange.mockClear();
+      }
+    } finally { watcher.dispose(); }
+  });
+
+  it("does not follow symlink ancestors of configured paths and keeps the limit on late creation", async () => {
+    const root = tree(), fake = fakeWatch();
+    const watcher = new SourceWatcher({ root, paths: ["linked/deep", "future/scenes"], ignore: [], debounceMs: 30, maxDirectories: 2, onChange: () => undefined, watch: fake.factory });
+    try {
+      await watcher.start();
+      expect([...fake.listeners.keys()]).toEqual([root]);
+      mkdirSync(join(root, "future/scenes"), { recursive: true });
+      fake.listeners.get(root)!("rename", "future");
+      await vi.waitFor(() => expect(watcher.state).toBe("limit_exceeded"));
+      expect(watcher.watchedDirectories).toBe(0);
+    } finally { watcher.dispose(); }
+  });
+  it("ignores exporter side effects first created after startup using current Git rules", async () => {
+    const root = tree(), onChange = vi.fn(), onInvalidate = vi.fn();
+    execFileSync("git", ["init", "-q", root]);
+    writeFileSync(join(root, ".gitignore"), "/reports/\n*.log\n!keep.log\n");
+    const reader = new SystemGitWorktreeReader();
+    const watcher = new SourceWatcher({ root, paths: ["."], ignore: [], debounceMs: 30, onChange, onInvalidate,
+      checkIgnoredPaths: (paths, signal) => reader.checkIgnoredPaths(root, paths, signal) });
+    try {
+      await watcher.start();
+      const directories = watcher.watchedDirectories;
+      mkdirSync(join(root, "reports"));
+      for (let run = 0; run < 4; run += 1) {
+        writeFileSync(join(root, "reports/export.log"), String(run));
+        writeFileSync(join(root, "export.log"), String(run));
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        await watcher.flush();
+      }
+      expect(onInvalidate).not.toHaveBeenCalled();
+      expect(onChange).not.toHaveBeenCalled();
+      expect(watcher.watchedDirectories).toBe(directories);
+      writeFileSync(join(root, "keep.log"), "source");
+      await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+      expect(onInvalidate).toHaveBeenCalled();
+    } finally { watcher.dispose(); reader.close(); }
+  });
+
+  it("coalesces ignore queries and waits for classification before publication", async () => {
+    const root = tree(), fake = fakeWatch(), onInvalidate = vi.fn();
+    let release!: (ignored: string[]) => void;
+    const checkIgnoredPaths = vi.fn(async (): Promise<string[]> => []);
+    const watcher = new SourceWatcher({ root, paths: ["."], ignore: [], debounceMs: 30, onChange: () => undefined, onInvalidate, watch: fake.factory, checkIgnoredPaths });
+    await watcher.start();
+    checkIgnoredPaths.mockClear();
+    checkIgnoredPaths.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    for (let index = 0; index < 100; index += 1) fake.listeners.get(root)!("change", "source.gd");
+    let flushed = false;
+    const flush = watcher.flush().then(() => { flushed = true; });
+    await vi.waitFor(() => expect(checkIgnoredPaths).toHaveBeenCalledTimes(1));
+    expect(flushed).toBe(false);
+    expect(onInvalidate).not.toHaveBeenCalled();
+    release([]);
+    await flush;
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+    watcher.dispose();
+  });
+
+  it("stops automatic watching and invalidates on ignore-query failure", async () => {
+    const root = tree(), fake = fakeWatch(), onInvalidate = vi.fn();
+    const checkIgnoredPaths = vi.fn(async (): Promise<string[]> => []);
+    const watcher = new SourceWatcher({ root, paths: ["."], ignore: [], debounceMs: 30, onChange: () => undefined, onInvalidate, watch: fake.factory, checkIgnoredPaths });
+    await watcher.start();
+    checkIgnoredPaths.mockRejectedValue(new Error("Git unavailable"));
+    fake.listeners.get(root)!("rename", "reports");
+    await watcher.flush();
+    expect(watcher.state).toBe("unavailable");
+    expect(watcher.watchedDirectories).toBe(0);
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+    watcher.dispose();
+  });
+
+  it.each([
+    { selected: ".", ruleFile: ".gitignore", assets: "assets", rule: "/assets/\n", atomic: false },
+    { selected: ".", ruleFile: ".gitignore", assets: "assets", rule: "/assets/\n", atomic: true },
+    { selected: "assets", ruleFile: ".gitignore", assets: "assets", rule: "/assets/\n", atomic: false },
+    { selected: "game/assets", ruleFile: "game/.gitignore", assets: "game/assets", rule: "assets/\n", atomic: true },
+  ])("reconciles ignored directories after rule changes ($selected, $ruleFile, atomic=$atomic)", async ({ selected, ruleFile, assets, rule, atomic }) => {
+    const root = tree(), onChange = vi.fn();
+    execFileSync("git", ["init", "-q", root]);
+    mkdirSync(join(root, assets, "deep"), { recursive: true });
+    writeFileSync(join(root, assets, "deep/scene.tscn"), "before");
+    writeFileSync(join(root, ruleFile), rule);
+    const reader = new SystemGitWorktreeReader();
+    const watcher = new SourceWatcher({ root, paths: [selected], ignore: [], debounceMs: 30, onChange,
+      checkIgnoredPaths: (paths, signal) => reader.checkIgnoredPaths(root, paths, signal) });
+    const editRules = (content: string) => {
+      if (atomic) { writeFileSync(join(root, `${ruleFile}.tmp`), content); renameSync(join(root, `${ruleFile}.tmp`), join(root, ruleFile)); }
+      else writeFileSync(join(root, ruleFile), content);
+    };
+    try {
+      await watcher.start();
+      const original = watcher.watchedDirectories;
+      for (let cycle = 0; cycle < 2; cycle += 1) {
+        editRules("");
+        await vi.waitFor(() => expect(watcher.watchedDirectories).toBe(original + 2));
+        await vi.waitFor(() => expect(onChange).toHaveBeenCalled());
+        await watcher.flush();
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        onChange.mockClear();
+        writeFileSync(join(root, assets, "deep/scene.tscn"), `source ${cycle}`);
+        await vi.waitFor(() => expect(onChange).toHaveBeenCalled());
+        onChange.mockClear();
+        editRules(rule);
+        await vi.waitFor(() => expect(watcher.watchedDirectories).toBe(original));
+        await vi.waitFor(() => expect(onChange).toHaveBeenCalled());
+        await watcher.flush();
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        onChange.mockClear();
+        writeFileSync(join(root, assets, "deep/scene.tscn"), `ignored ${cycle}`);
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        expect(onChange).not.toHaveBeenCalled();
+        expect(watcher.state).toBe("watching");
+      }
+    } finally { watcher.dispose(); reader.close(); }
+  });
+
+  it("keeps the directory bound when changed rules expose too many subdirectories", async () => {
+    const root = tree(), fake = fakeWatch();
+    let ignored = true;
+    const watcher = new SourceWatcher({ root, paths: ["."], ignore: [], debounceMs: 30, maxDirectories: 2, watch: fake.factory,
+      checkIgnoredPaths: async (paths) => ignored ? paths : [], onChange: () => undefined });
+    try {
+      await watcher.start();
+      expect(watcher.watchedDirectories).toBe(1);
+      ignored = false;
+      fake.listeners.get(root)!("change", ".gitignore");
+      await watcher.flush();
+      expect(watcher.state).toBe("limit_exceeded");
+      expect(watcher.watchedDirectories).toBe(0);
+    } finally { watcher.dispose(); }
+  });
+
+});

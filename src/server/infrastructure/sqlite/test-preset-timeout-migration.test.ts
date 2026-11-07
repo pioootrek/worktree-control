@@ -29,8 +29,8 @@ it("upgrades schema 30 with empty overrides, preserves policies, rolls back fail
     expect(inspectSchema(db).version).toBe(30);
     expect(db.prepare("SELECT * FROM projects").get()).toEqual(before);
     initializeSchema(db);
-    expect(inspectSchema(db).version).toBe(42);
-    expect(db.prepare("SELECT * FROM projects").get()).toEqual({ ...before as object, test_preset_timeouts_json: "{}" });
+    expect(inspectSchema(db).version).toBe(43);
+    expect(db.prepare("SELECT * FROM projects").get()).toEqual({ ...before as object, test_preset_timeouts_json: "{}", godot_web_json: null });
     expect(db.prepare("SELECT name,checksum FROM schema_migrations WHERE version=31").get()).toEqual({ name: testPresetTimeoutMigration.name, checksum: testPresetTimeoutChecksum });
     expect(db.pragma("foreign_key_check")).toEqual([]);
   } finally { db.close(); }

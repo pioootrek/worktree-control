@@ -73,6 +73,7 @@ export function AddProjectDialog({ open, onOpenChange, mutate, token, showTrigge
                 <SelectItem value="node">{t("preset.node")}</SelectItem>
                 <SelectItem value="django">{t("preset.django")}</SelectItem>
                 <SelectItem value="none">{t("preset.none")}</SelectItem>
+                <SelectItem value="godot-web">{t("preset.godot-web")}</SelectItem>
               </SelectContent>
             </Select>
           </div>

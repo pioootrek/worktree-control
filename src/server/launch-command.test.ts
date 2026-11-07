@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ProjectLaunchCommandResolver } from "./launch-command";
+import { ProjectLaunchCommandResolver, webWorktreeKey } from "./launch-command";
 
 const directories: string[] = [];
 
@@ -203,5 +203,24 @@ describe("verification-only launch preset", () => {
     writeFileSync(join(directory, "manage.py"), "fixture");
     expect(resolver.resolve(directory, 3210).preset).toBe("django");
     expect(() => resolver.resolve(directory, 3210, "none", { mode: "generated", keyPath: null, certPath: null, caPath: null })).toThrow("no managed server");
+  });
+});
+
+describe("godot-web launch preset", () => {
+  it("is explicit opt-in, refuses TLS and binds the bundled server to its worktree", () => {
+    const directory = mkdtempSync(join(tmpdir(), "worktree-control-godot-web-"));
+    directories.push(directory);
+    writeFileSync(join(directory, "project.godot"), "config_version=5\n");
+    const resolver = new ProjectLaunchCommandResolver({ executable: "/usr/bin/node", args: ["/pkg/dist/cli/godot-web-server.js"], publicDirectory: (id) => `/state/godot-web/${id}/public` });
+    expect(resolver.resolve(directory, 3210).preset).toBe("none");
+    const launch = resolver.resolve(directory, 3210, "godot-web", undefined, { projectId: "p1", godotWeb: null });
+    expect(launch).toMatchObject({ preset: "godot-web", executable: "/usr/bin/node", portMethod: "environment" });
+    expect(launch.args).toEqual(["/pkg/dist/cli/godot-web-server.js", "--root", "/state/godot-web/p1/public", "--worktree-key", webWorktreeKey(directory), "--live-reload", "1", "--isolation", "1"]);
+    expect(webWorktreeKey(directory)).toMatch(/^[a-f0-9]{16}$/);
+    expect(webWorktreeKey(`${directory}-other`)).not.toBe(webWorktreeKey(directory));
+    expect(() => resolver.resolve(directory, 3210, "godot-web", { mode: "generated", keyPath: null, certPath: null, caPath: null })).toThrow("not supported for the godot-web preset");
+    expect(() => new ProjectLaunchCommandResolver().resolve(directory, 3210, "godot-web")).toThrow("unavailable in this controller mode");
+    rmSync(join(directory, "project.godot"));
+    expect(() => resolver.resolve(directory, 3210, "godot-web")).toThrow("no project.godot");
   });
 });

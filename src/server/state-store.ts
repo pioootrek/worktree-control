@@ -1,4 +1,5 @@
 import type { TestSummaryEntry, TestHistoryCoverage } from "@/shared/contracts/verification-history";
+import type { GodotWebConfig } from "@/shared/contracts/godot-web";
 import type { DevServerTlsMode, EnvironmentProfile, LaunchPreset, Project, Reservation, ServerCapacitySettings, TestEnvironmentProfile, TestQueueSettings, TestRun, WorktreeStorageHistoryPoint, WorktreeStorageSnapshot } from "@/shared/contracts";
 
 export interface WorktreeStorageSample extends WorktreeStorageHistoryPoint {
@@ -12,6 +13,15 @@ export interface NewProject {
   repositoryPath: string;
   port: number;
   launchPreset?: LaunchPreset;
+  /** Only with the explicit `godot-web` preset. */
+  godotWeb?: GodotWebConfig | null;
+}
+
+export interface ProjectGodotWebUpdate {
+  launchPreset: Exclude<LaunchPreset, "auto">;
+  godotWeb: GodotWebConfig | null;
+  executable: string;
+  args: string[];
 }
 
 export interface ProjectRegistration extends NewProject {
@@ -103,6 +113,11 @@ export interface StateStore {
   assertProjectRemovalAllowed(projectId: string): void;
   removeProject(projectId: string, actor: string): void;
   updateProjectLaunch(projectId: string, input: ProjectLaunchUpdate, actor?: string): void;
+  /**
+   * Atomically changes the preset, its Godot Web configuration and resolved launch
+   * command, increments the configuration revision and writes an audit event.
+   */
+  setProjectGodotWeb(projectId: string, input: ProjectGodotWebUpdate, actor: string): void;
   updateProjectEnvironment(projectId: string, environment: Record<string, string>, actor: string): void;
   saveProjectEnvironmentProfile(projectId: string, profile: EnvironmentProfile, actor: string): void;
   deleteProjectEnvironmentProfile(projectId: string, profileName: string, actor: string): void;

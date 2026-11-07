@@ -431,3 +431,35 @@ describe("TestJobManager", () => {
     managers.splice(managers.indexOf(manager), 1);
   });
 });
+
+describe("TestJobManager trusted settle hook", () => {
+  it("settles with the final run before releasing the worktree slot and uses the run's own observer", async () => {
+    const { store, project, manager, worktree, command } = fixture();
+    manager.setLimit(4);
+    const observe = vi.fn(async (): Promise<TestSourceObservation> => ({ observedAt: new Date().toISOString(), head: "aaa", branch: "main", dirty: true, statusDigest: "d", statusEntries: 1, complete: true, errorCode: null }));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const settled: string[] = [];
+    const first = manager.enqueue({
+      projectId: project.id, worktree: worktree("/tmp/settle"), command: command(10), environment: resolved(), actor: "local-user",
+      sourceObservation: await observe(), observe,
+      settle: async (run, log) => { settled.push(`${run.phase}:${run.source.processOutcome}`); log("settled-line"); await gate; },
+    });
+    const second = manager.enqueue({ projectId: project.id, worktree: worktree("/tmp/settle"), command: command(10), environment: resolved(), actor: "local-user" });
+    await vi.waitFor(() => expect(settled).toEqual(["failed:passed"]));
+    expect(observe).toHaveBeenCalledTimes(3); // enqueue, preflight and finish
+    // The same worktree stays exclusive until the settle hook finishes.
+    expect(store.getTestRun(second.id)?.phase).toBe("queued");
+    release();
+    await vi.waitFor(() => expect(store.getTestRun(second.id)?.phase).toBe("passed"));
+    expect(store.getTestRun(first.id)?.logs).toContain("settled-line");
+    expect(store.getTestRun(first.id)?.phase).toBe("failed"); // dirty source never certifies a pass
+  });
+
+  it("isolates a failing settle hook from the run outcome", async () => {
+    const { store, project, manager, worktree, command } = fixture();
+    const run = manager.enqueue({ projectId: project.id, worktree: worktree("/tmp/settle-fail"), command: command(5), environment: resolved(), actor: "local-user",
+      settle: async () => { throw new Error("hook failed"); } });
+    await vi.waitFor(() => expect(store.getTestRun(run.id)?.phase).toBe("passed"));
+  });
+});

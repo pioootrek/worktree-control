@@ -19,7 +19,7 @@ export function dashboardFixture(): ControllerDashboardResponse {
         executable: "pnpm", args: ["run", "dev"], environment: {},
         environmentProfiles: [{ name: "default", environment: {} }], selectedEnvironmentProfile: "default",
         testEnvironmentProfiles: [{ name: "unit", policy: { mode: "clean", serverProfile: null }, variableNames: [], nodeEnv: "test", requiredVariables: [] }],
-        testPresetProfiles: {}, testPresetTimeouts: {}, healthcheckPath: "/", startupTimeoutMs: 30_000,
+        testPresetProfiles: {}, testPresetTimeouts: {}, godotWeb: null, healthcheckPath: "/", startupTimeoutMs: 30_000,
         selectedWorktreePath: worktreePath, createdAt: now, updatedAt: now,
       },
       runtime: {
@@ -190,6 +190,13 @@ export async function mountDashboard(
           break;
         }
         case "/api/test-runs/run-1/cancel": snapshot.testRuns[0].phase = "cancelled"; break;
+        case "/api/projects/web/godot-web":
+          snapshot.project.launchPreset = body.config ? "godot-web" : "none";
+          snapshot.project.godotWeb = body.config;
+          break;
+        case "/api/projects/web/godot-web/rebuild":
+          if (snapshot.webExport) snapshot.webExport = { ...snapshot.webExport, state: "queued", activeRunId: "export-2" };
+          break;
         default: return route.fulfill({ status: 400, json: { error: "Unconfigured fixture mutation" } });
       }
       return route.fulfill({ json: {} });

@@ -1,9 +1,38 @@
 import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { isAbsolute, join, relative } from "node:path";
 
 import type { LaunchPreset } from "@/shared/contracts";
+import type { GodotWebConfig } from "@/shared/contracts/godot-web";
 
 export const NO_SERVER_MESSAGE = "Verification-only projects have no managed server (launch preset none).";
+export const GODOT_WEB_TLS_MESSAGE = "Managed HTTPS is not supported for the godot-web preset.";
+
+/** The bundled static server and the per-project generation directory it may read. */
+export interface GodotWebServerLaunch {
+  executable: string;
+  args: string[];
+  publicDirectory(projectId: string): string;
+}
+
+export interface LaunchContext {
+  projectId?: string;
+  godotWeb?: GodotWebConfig | null;
+}
+
+/** Opaque, path-free identity binding a served generation to the runtime's worktree. */
+export function webWorktreeKey(worktreePath: string): string {
+  return createHash("sha256").update(worktreePath).digest("hex").slice(0, 16);
+}
+
+function hasGodotProject(worktreePath: string): boolean {
+  try {
+    const root = realpathSync(worktreePath);
+    const file = realpathSync(join(root, "project.godot"));
+    const path = relative(root, file);
+    return !path.startsWith("..") && !isAbsolute(path) && statSync(file).isFile();
+  } catch { return false; }
+}
 
 export interface LaunchCommand {
   preset: Exclude<LaunchPreset, "auto">;
@@ -21,7 +50,7 @@ export interface NextTlsConfiguration {
 }
 
 export interface LaunchCommandResolver {
-  resolve(worktreePath: string, port: number, preset?: LaunchPreset, tls?: NextTlsConfiguration): LaunchCommand;
+  resolve(worktreePath: string, port: number, preset?: LaunchPreset, tls?: NextTlsConfiguration, context?: LaunchContext): LaunchCommand;
 }
 
 type PackageJson = {
@@ -143,11 +172,14 @@ export function detectLaunchPreset(worktreePath: string): Exclude<LaunchPreset, 
 }
 
 export class ProjectLaunchCommandResolver implements LaunchCommandResolver {
+  constructor(private readonly godotWebServer?: GodotWebServerLaunch) {}
+
   resolve(
     worktreePath: string,
     port: number,
     preset: LaunchPreset = "auto",
     tlsInput: NextTlsConfiguration = { mode: "off", keyPath: null, certPath: null, caPath: null },
+    context: LaunchContext = {},
   ): LaunchCommand {
     const packageJsonPath = join(worktreePath, "package.json");
     const managePyPath = join(worktreePath, "manage.py");
@@ -157,6 +189,8 @@ export class ProjectLaunchCommandResolver implements LaunchCommandResolver {
       if (tlsInput.mode !== "off") throw new Error(NO_SERVER_MESSAGE);
       return { preset: "none", executable: "", args: [], portMethod: "none", tls: { mode: "off", keyPath: null, certPath: null, caPath: null } };
     }
+
+    if (resolvedPreset === "godot-web") return this.godotWeb(worktreePath, tlsInput, context);
 
     if (resolvedPreset === "django") {
       if (!existsSync(managePyPath) || !statSync(managePyPath).isFile()) throw new Error("Nie znaleziono manage.py w katalogu głównym worktree.");
@@ -200,6 +234,24 @@ export class ProjectLaunchCommandResolver implements LaunchCommandResolver {
       args: ["run", scriptName, ...forwardedArgs(executable, devArgs)],
       portMethod: passPortAsArgument ? "argument" : "environment",
       tls,
+    };
+  }
+
+  /** Explicit opt-in only: auto detection never resolves to godot-web. */
+  private godotWeb(worktreePath: string, tlsInput: NextTlsConfiguration, context: LaunchContext): LaunchCommand {
+    if (tlsInput.mode !== "off") throw new Error(GODOT_WEB_TLS_MESSAGE);
+    if (!hasGodotProject(worktreePath)) throw new Error("The selected worktree has no project.godot at its root.");
+    if (!this.godotWebServer) throw new Error("The Godot Web runtime is unavailable in this controller mode.");
+    const config = context.godotWeb;
+    const args = [...this.godotWebServer.args];
+    // Registration happens before the project ID exists; every start re-resolves with it.
+    if (context.projectId) args.push("--root", this.godotWebServer.publicDirectory(context.projectId));
+    args.push("--worktree-key", webWorktreeKey(worktreePath),
+      "--live-reload", config?.liveReload === false ? "0" : "1",
+      "--isolation", config?.crossOriginIsolation === false ? "0" : "1");
+    return {
+      preset: "godot-web", executable: this.godotWebServer.executable, args, portMethod: "environment",
+      tls: { mode: "off", keyPath: null, certPath: null, caPath: null },
     };
   }
 }

@@ -286,6 +286,7 @@ and revisions, not a model-generated summary, and are not project backups.
 | Angular | Uses `dev: ng serve` or the standard `start: ng serve` |
 | Django | Runs a root-level `manage.py` with `.venv/bin/python`, `venv/bin/python` or `python3` |
 | Godot / verification only | No managed server; finite verification presets run through the test queue |
+| Godot Web (explicit `--preset godot-web`) | Bundled static server for the Web export; exports run in the test queue and the page reloads after each complete build |
 
 Use `worktree-control project add /path/to/repo --preset none` for a
 verification-only repository, including one without `package.json` or `manage.py`.
@@ -302,6 +303,11 @@ and `godot:export-macos`. They execute `bash scripts/project.sh check` and
 public script's setup and resource guards. Without that script there are no
 Godot presets. Worktree Control does not locate Godot or start an editor.
 Use a test environment profile for script inputs such as `GODOT_BIN`.
+
+To play the game in a browser while editing, opt the project into `godot-web`.
+Worktree Control then exports through the queue on source changes, publishes
+only complete builds and reloads the page. It restarts the game; it does not
+preserve game state. See [Godot Web preview](docs/godot-web.md).
 
 Each worktree needs its own installed dependencies and runtime setup. Server
 profiles provide named environment overrides. Tests have separate environment

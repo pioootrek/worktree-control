@@ -318,6 +318,9 @@ save_test_environment_profile
 delete_test_environment_profile
 assign_test_preset_profile
 set_test_preset_timeout
+configure_godot_web
+get_web_export_status
+rebuild_web_export
 claim_project
 start_project
 restart_project

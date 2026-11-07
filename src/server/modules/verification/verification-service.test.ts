@@ -17,7 +17,7 @@ function fixture() {
     executable: "pnpm", args: ["run", "dev"], environment: { SERVER_ONLY: "server-value" },
     environmentProfiles: [{ name: "default", environment: { SERVER_ONLY: "server-value" } }],
     selectedEnvironmentProfile: "default", testEnvironmentProfiles: [...BUILT_IN_TEST_PROFILES],
-    testPresetProfiles: {}, testPresetTimeouts: {}, healthcheckPath: "/", startupTimeoutMs: 30_000,
+    testPresetProfiles: {}, testPresetTimeouts: {}, godotWeb: null, healthcheckPath: "/", startupTimeoutMs: 30_000,
     selectedWorktreePath: worktree.path, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
   };
   const run: TestRun = {

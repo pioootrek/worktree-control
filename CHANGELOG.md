@@ -3,6 +3,26 @@
 All notable changes to `worktree-control` are recorded here. The project is
 pre-1.0: the CLI, configuration and data model may change between minor versions.
 
+## Unreleased
+
+### Added
+
+- Opt-in `godot-web` launch preset: a bundled static server serves only
+  complete, immutable Web export generations on the project port, watches the
+  selected worktree while running, exports through the shared test queue
+  (standard Godot preset or a project-owned command) and reloads the page over
+  server-sent events. Live reload restarts the game; it is not stateful HMR.
+  Available in the dashboard, CLI (`project add --preset godot-web`,
+  `project godot-web`, `project rebuild-web`), HTTP and MCP
+  (`configure_godot_web`, `rebuild_web_export`, `get_web_export_status`).
+  Automatic detection still registers Godot projects as verification-only.
+  See [Godot Web preview](docs/godot-web.md).
+
+### Changed
+
+- Schema migration 43 adds the `godot-web` preset and its project
+  configuration. Existing projects keep their preset and an empty configuration.
+
 ## 0.1.1 - 2026-10-08
 
 First-run fixes for new installations, bounded MCP sessions and a safer service

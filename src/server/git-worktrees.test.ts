@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -133,5 +133,30 @@ describe("SystemGitWorktreeReader.observe", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+});
+
+
+describe("SystemGitWorktreeReader.checkIgnoredPaths", () => {
+  it("checks absent paths, nested rules and negation while preserving tracked files", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wtc-ignore-rules-"));
+    const reader = new SystemGitWorktreeReader();
+    try {
+      execFileSync("git", ["init", "-q", root]);
+      mkdirSync(join(root, "game"));
+      writeFileSync(join(root, ".gitignore"), "/reports/\n*.log\n!keep.log\n");
+      writeFileSync(join(root, "game/.gitignore"), "*.generated\n");
+      writeFileSync(join(root, "tracked.log"), "source");
+      execFileSync("git", ["-C", root, "add", "-f", "tracked.log"]);
+      const paths = ["reports", "reports/export.log", "new.log", "keep.log", "tracked.log", "game/a.generated", "game/scene.tscn", "odd\nname.log"];
+      expect(await reader.checkIgnoredPaths(root, paths)).toEqual(["reports/export.log", "new.log", "game/a.generated", "odd\nname.log"]);
+      // A trailing slash identifies directories before they exist. Live rename events use existing dirs.
+      expect(await reader.checkIgnoredPaths(root, ["reports/"])).toEqual(["reports/"]);
+      mkdirSync(join(root, "reports"));
+      expect(await reader.checkIgnoredPaths(root, ["reports"])).toEqual(["reports"]);
+      writeFileSync(join(root, ".gitignore"), "");
+      expect(await reader.checkIgnoredPaths(root, ["new.log", "keep.log"])).toEqual([]);
+      await expect(reader.checkIgnoredPaths(root, Array(129).fill("file"))).rejects.toThrow("bounds");
+    } finally { reader.close(); rmSync(root, { recursive: true, force: true }); }
   });
 });
