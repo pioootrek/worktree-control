@@ -1,3 +1,5 @@
+import { HumanConfigurationQueries } from "./human-configuration-queries";
+import { HumanRuntimeQueries } from "./human-runtime-queries";
 import { humanRuntimePermissionsSchema, runtimeMembershipSetSchema } from "@/shared/contracts/runtime-memberships";
 import type Database from "better-sqlite3";
 import { TestRunQueries } from "./test-run-queries";
@@ -43,6 +45,9 @@ export function validateDatabase(database: Database.Database, version: number): 
       OR h.maximum_expires_at>strftime('%Y-%m-%dT%H:%M:%fZ',r.created_at,'+8 hours') LIMIT 1`).get()) fail("human lease binding");
     if (database.prepare(`SELECT 1 FROM reservations WHERE provider_bound=1 AND (kind<>'human' OR token_hash IS NOT NULL
       OR principal_id IS NOT NULL OR credential_id IS NOT NULL OR request_fingerprint IS NULL) LIMIT 1`).get()) fail("human lease marker");
+  }
+  if (version >= 48) {
+    try { new HumanConfigurationQueries(database, new HumanRuntimeQueries(database)).validateAll(); } catch { fail("human configuration context"); }
   }
   if (version >= 47) {
     const runs = new TestRunQueries(database);

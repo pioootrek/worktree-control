@@ -44,7 +44,8 @@ operator receives implied tests/profiles/config/ENV/admin rights. P2b2 adds expl
 independent tests:run through the shared queue, original-session own-run access
 and bounded waits, with schema 47 immutable attribution and current native
 provider authority at dispatch. See [human finite verification](authentication.md#human-finite-verification-p2b2).
-Public browser mounting, remaining profile/configuration and transport parity, P3 protected
+P2c adds explicit literal profile selection and timeout-only configuration.
+Public browser mounting, remaining transport parity, P3 protected
 recovery/restore fencing, factor management/recovery,
 invitations, general delegated roles and GUI remain open.
 Shared core admission, exclusive provider admission and background persistence
@@ -531,3 +532,24 @@ provider version/SQLite adapter and factor UX in A3; exact credential/session
 bounds in A2/A3; mapping
 human accounts to existing external vault proofs in A4; recovery and host
 isolation contract in A5. None permits weakening current protections by default.
+
+### P2c explicit human configuration scope
+
+The implemented human operator aggregate now accepts explicit `profiles:select`
+and `config:write` alongside its four earlier actions. Each is independently
+usable; reader still permits only `projects:read`, and existing owners receive
+no automatic project grant. Protected CLI/IPC assignment remains strict and uses
+membership CAS before provider loading.
+
+For this slice `config:write` means discovered-preset timeout overrides only.
+It does not implement the broader proposed manager configuration role, grant
+ENV/vault access, allow profile editing or preset-profile assignment, or authorize
+launch/TLS/global administration. Literal profile selection requires stopped
+owned runtime and never restarts it. Actual original provider authority,
+membership revision and original no-claim/exact-claim context govern durable
+receipts, including after reopening the store. See
+[the operational contract](authentication.md#human-literal-profiles-and-preset-timeouts-p2c).
+
+P3 still owns protected recovery/factor loss and external restore/revocation
+fences. Minimum agent diagnostics, complete transport enforcement, public mount,
+activation, release and client migration remain separate acceptance gates.

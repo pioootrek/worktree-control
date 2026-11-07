@@ -52,11 +52,11 @@ describe("authentication factor migration 40", () => {
   it("creates recognized empty storage on a fresh database", () => {
     const f = directory(), store = new SqliteStateStore(f.path);
     try {
-      expect(store.schemaVersion()).toBe(47);
+      expect(store.schemaVersion()).toBe(48);
       expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     } finally { store.close(); }
     raw(f.path, db => {
-      expect(inspectSchema(db)).toEqual({ version: 47, fresh: false });
+      expect(inspectSchema(db)).toEqual({ version: 48, fresh: false });
       expect(factorTables(db)).toEqual(FACTOR_TABLES);
       for (const table of FACTOR_TABLES) expect(db.prepare(`SELECT count(*) n FROM "${table}"`).get()).toEqual({ n: 0 });
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=40").get()).toEqual({ name: authenticationFactorMigration.name, checksum: authenticationFactorChecksum });
@@ -78,7 +78,7 @@ describe("authentication factor migration 40", () => {
     });
     const backups = join(f.root, "backups");
     const store = await openControllerStore(f.path, { backupBeforeMigration: true, backupDirectory: backups, applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") });
-    try { expect(store.schemaVersion()).toBe(47); } finally { store.close(); }
+    try { expect(store.schemaVersion()).toBe(48); } finally { store.close(); }
     const [backup] = readdirSync(backups);
     expect(backup).toMatch(/^pre-migration-v39-/);
     raw(f.path, db => {
@@ -91,7 +91,7 @@ describe("authentication factor migration 40", () => {
     const restoredPath = join(f.root, "restored39", "state.sqlite3");
     restoreControllerBackup(join(backups, backup!), restoredPath);
     const restored = new SqliteStateStore(restoredPath);
-    try { expect(restored.schemaVersion()).toBe(47); } finally { restored.close(); }
+    try { expect(restored.schemaVersion()).toBe(48); } finally { restored.close(); }
     raw(restoredPath, db => expect(preserved(db)).toEqual(before.rows));
   });
 
@@ -104,7 +104,7 @@ describe("authentication factor migration 40", () => {
     const restoredPath = join(f.root, "restored", "state.sqlite3");
     restoreControllerBackup(target, restoredPath);
     const reopened = new SqliteStateStore(restoredPath);
-    try { expect(reopened.schemaVersion()).toBe(47); } finally { reopened.close(); }
+    try { expect(reopened.schemaVersion()).toBe(48); } finally { reopened.close(); }
     raw(restoredPath, db => {
       expect(db.prepare("SELECT last_step FROM authentication_totp_steps").all()).toEqual([{ last_step: 59788416 }]);
       expect(db.prepare("SELECT method, generation FROM authentication_session_evidence").all()).toEqual([{ method: "password_totp", generation: 2 }]);

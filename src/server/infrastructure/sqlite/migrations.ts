@@ -1,3 +1,4 @@
+import { applyHumanConfigurationMigration } from "./human-configuration-migration";
 import { applyHumanTestRunMigration } from "./human-test-run-migration";
 import { applyHumanRuntimeMigration } from "./human-runtime-migration";
 import { applyRuntimeMembershipMigration } from "./runtime-membership-migration";
@@ -383,6 +384,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyRuntimeMembershipMigration(database);
       applyHumanRuntimeMigration(database);
       applyHumanTestRunMigration(database);
+      applyHumanConfigurationMigration(database);
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();

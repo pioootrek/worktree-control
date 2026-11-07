@@ -149,6 +149,8 @@ export interface StateStore {
   setProjectTestPresetTimeout(projectId: string, presetId: string, timeoutMs: number | null, actor: string): void;
   /** Incremented by every configuration write; null when the project does not exist. */
   getProjectConfigurationRevision(projectId: string): number | null;
+  beginHumanConfiguration?: import("./modules/environments").HumanConfigurationStore["beginHumanConfiguration"];
+  commitHumanConfiguration?: import("./modules/environments").HumanConfigurationStore["commitHumanConfiguration"];
   commitScopedConfiguration(input: ScopedConfigurationCommit): ScopedConfigurationCommitResult;
   setSelectedWorktree(projectId: string, path: string, actor?: string): void;
   getServerCapacitySettings(): ServerCapacitySettings;

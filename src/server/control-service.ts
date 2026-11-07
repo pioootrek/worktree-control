@@ -6,7 +6,7 @@ import type { RuntimeMutateResult } from "@/shared/contracts/runtime-mutate";
 import { scopedWaitSchema } from "@/shared/contracts/scoped-verification";
 import { randomBytes } from "node:crypto";
 import { DashboardQueryService } from "./modules/dashboard";
-import { EnvironmentService, redactProject, ScopedConfigurationService, type ScopedConfigurationSession } from "./modules/environments";
+import { EnvironmentService, HumanConfigurationService, redactProject, ScopedConfigurationService, type ScopedConfigurationSession } from "./modules/environments";
 import type { AuthenticatedPrincipal } from "./modules/identity";
 import { KnowledgeService, type KnowledgeHistoryEntry, type KnowledgeHistoryOptions, type KnowledgePageOptions, type KnowledgeRecordKind, type KnowledgeTaskPriority, type KnowledgeTaskStatus, type KnowledgeWriteOptions } from "./modules/knowledge";
 import { leaseTokenHash, type OperationActor, ProjectLifecycle } from "./modules/lifecycle";
@@ -75,6 +75,7 @@ export class ControlService {
   private readonly statusQueries: StatusService;
   private readonly scopedVerification?: ScopedVerificationService;
   private readonly humanVerification?: HumanVerificationService;
+  private readonly humanConfiguration?: HumanConfigurationService;
   private readonly humanRuntime?: HumanRuntimeService;
   private readonly scopedRuntime?: ScopedRuntimeService;
   private readonly scopedConfiguration?: ScopedConfigurationService;
@@ -117,6 +118,12 @@ export class ControlService {
       this.humanRuntime = new HumanRuntimeService({ resolveHumanRuntimeAuthority: runtimeAuthorizer.resolveHumanRuntimeAuthority.bind(runtimeAuthorizer) },
         store, store.humanRuntime(), git, this.lifecycle, this.runtime);
     }
+    if (runtimeAuthorizer?.resolveHumanRuntimeAuthority && store.humanRuntime && store.beginHumanConfiguration && store.commitHumanConfiguration) {
+      this.humanConfiguration = new HumanConfigurationService({ resolveHumanRuntimeAuthority: runtimeAuthorizer.resolveHumanRuntimeAuthority.bind(runtimeAuthorizer) },
+        { admission: admissionOf(store), getProject: store.getProject.bind(store), getActiveReservation: store.getActiveReservation.bind(store),
+          getProjectConfigurationRevision: store.getProjectConfigurationRevision.bind(store), beginHumanConfiguration: store.beginHumanConfiguration.bind(store), commitHumanConfiguration: store.commitHumanConfiguration.bind(store) },
+        store.humanRuntime(), git, processes, this.lifecycle, path => testCommands.discover(path));
+    }
     if (runtimeAuthorizer?.captureHumanVerificationAuthority && runtimeAuthorizer.validateHumanVerificationAuthority && store.humanRuntime) {
       this.humanVerification = new HumanVerificationService({
         captureHumanVerificationAuthority: runtimeAuthorizer.captureHumanVerificationAuthority.bind(runtimeAuthorizer),
@@ -142,6 +149,14 @@ export class ControlService {
   scopedProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession | null, projectId: string) { const status = this.requireScopedRuntime().projectStatus(actor, session, projectId);
     const ownClaim = actor.authenticationMethod === "provider_session" ? this.humanRuntime?.ownClaim(actor, projectId) : null;
     return ownClaim ? { ...status, claim: "own" as const, ownClaim } : status; }
+  humanConfigurationOperation(actor: ProviderSessionActor, value: unknown, options?: DatabaseAdmissionOptions, deliver?: (result: unknown) => void): Promise<unknown> {
+    if (!this.humanConfiguration) return Promise.reject(new RuntimeAccessDenied());
+    return this.humanConfiguration.execute(value, actor, options, result => {
+      const receipt = result as { outcome?: string; replayed?: boolean; projectId?: string };
+      if (receipt.outcome === "completed" && !receipt.replayed && receipt.projectId) this.invalidateDashboardMetadata(receipt.projectId);
+      deliver?.(result);
+    });
+  }
   humanVerificationOperation(actor: ProviderSessionActor, value: unknown, options?: DatabaseAdmissionOptions, deliver?: (result: unknown) => void): Promise<unknown> {
     if (!this.humanVerification) return Promise.reject(new RuntimeAccessDenied());
     return this.humanVerification.execute(value, actor, options, deliver);

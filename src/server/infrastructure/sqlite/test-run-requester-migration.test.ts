@@ -48,7 +48,7 @@ describe("test requester migration 44", () => {
       expect(() => initializeSchema(db, false, () => { throw new Error("rollback"); })).toThrow("rollback");
       expect(inspectSchema(db).version).toBe(43);
       initializeSchema(db, false, inspectSchema);
-      expect(inspectSchema(db).version).toBe(47);
+      expect(inspectSchema(db).version).toBe(48);
       expect(db.prepare("SELECT * FROM test_runs").all()).toEqual(run.map(row => ({ ...(row as object), provider_bound: 0 })));
       expect(db.prepare("SELECT * FROM runtime_credential_scopes").all()).toEqual(scopes);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=43").all()).toEqual(registry);

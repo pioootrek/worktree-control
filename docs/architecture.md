@@ -172,9 +172,26 @@ provider-owned native-row reference revalidates original current session and
 membership without constructing an agent or trusting persistence as authority.
 Missing attribution fails closed. Original no-claim/exact-claim fences govern
 dispatch and replay; all human own-run access retains its original session and
-membership revision, including completed history. Remaining profile/configuration
-and transport parity, P3 recovery/restore fencing and A5 remain activation
+membership revision, including completed history. P2c supplies explicit literal
+profile selection and timeout-only configuration below. Remaining transport parity, P3 recovery/restore fencing and A5 remain activation
 gates; no public browser mount is enabled.
+
+### Human configuration operations
+
+`HumanConfigurationService` accepts only actual provider-session actors and uses
+IdentityService, the existing ProjectLifecycle lock/admission and discovered
+worktrees/presets. ControlService and the closed internal authentication HTTP
+adapter call that shared application. Profile selection and timeout-only overrides
+are independent explicit human permissions, with no implied runtime or ENV rights.
+
+Schema 48 extends the existing bounded human runtime intent ledger with a typed
+configuration context and marker. Original session/evidence/membership and
+no-claim or exact pinned-lease context fence both writes and receipt replay.
+SqliteStateStore shares the agent configuration mutation/revision/audit fragment;
+the human transaction also completes the durable receipt on the sole connection.
+No new lifecycle, queue, lock map, capacity counter or provider connection is added.
+Selection never controls processes; queued timeout snapshots remain unchanged.
+See [the bounded contract](authentication.md#human-literal-profiles-and-preset-timeouts-p2c).
 
 ## Resource policy
 
@@ -592,7 +609,7 @@ admitted phase. Accepted cleanup uses reserved queue room on the same gate, with
 lock, counter or connection.
 
 Current isolated provider API is contract 5, storage revision 3, implementation
-`0.0.0-proof.5` and core schema 47. Earlier versions evolved as follows.
+`0.0.0-proof.5` and core schema 48. Earlier versions evolved as follows.
 Provider API contract 2 requires durable `signOut`; version 1 fails compatibility
 checks. Contract 3 adds the application-owned `host.protection` port: the provider
 calls it synchronously inside its open transaction, and `AccountProtection` keeps

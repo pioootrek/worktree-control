@@ -28,7 +28,7 @@ describe("shared authorization policy", () => {
     const membership = { principalId: "actor", scope: { kind: "runtime-project" as const, id: "p" }, role: "operator" as const,
       permissions: ["runtime:control" as const], revision: 1, updatedAt: "now", revokedAt: null };
     expect(effectiveHumanRuntimeActions(subject, "p", { providerSession: true, project: {id:"p"}, membership })).toEqual(["runtime:control"]);
-    for (const permissions of [[], ["profiles:select"], ["config:write"], ["env:use"], ["claims:manage","claims:manage"]]) {
+    for (const permissions of [[], ["profiles:edit"], ["config:admin"], ["env:use"], ["claims:manage","claims:manage"]]) {
       expect(effectiveHumanRuntimeActions(subject, "p", {providerSession:true,project:{id:"p"},membership:{...membership,permissions} as never})).toEqual([]);
     }
   });

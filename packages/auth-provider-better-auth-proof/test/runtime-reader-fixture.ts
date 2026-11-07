@@ -24,7 +24,7 @@ import { ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, PROVIDER_ENTRY } from "./fixture";
 export const EXISTING_OWNER = "69849424-2aba-4fdd-b4fa-a394a77a193c";
 export const SECRET = "sentinel-foreign-lease-env-command-log";
 let peers = 1;
-export async function runtimeReaderFixture(options: { mutations?: boolean; verification?: boolean } = {}) {
+export async function runtimeReaderFixture(options: { mutations?: boolean; verification?: boolean; configuration?: boolean } = {}) {
   const files = cliFixture(), lock = acquireControllerLock(files.paths.controllerLockPath), store = new SqliteStateStore(files.paths.databasePath);
   const repoA = options.verification ? join(files.root,"a") : "/code/a", repoB = options.verification ? join(files.root,"b") : "/code/b";
   if (options.verification) { mkdirSync(repoA); mkdirSync(repoB); }
@@ -54,7 +54,7 @@ export async function runtimeReaderFixture(options: { mutations?: boolean; verif
   const discovered: Worktree = { path: "/code/a", head: "a".repeat(40), shortHead: "aaaaaaa", branch: "main", detached: false, locked: false, prunable: false, dirty: false, statusError: SECRET };
   const observation = () => ({observedAt:new Date().toISOString(),head:"a".repeat(40),branch:"main",dirty:false,statusDigest:"empty",statusEntries:0,complete:true,errorCode:null});
   const git = { ...(options.verification ? {observe:vi.fn(async () => {await hooks.observe?.("source");return observation();})} : {}), list: vi.fn(async (path: string) => { await hooks.git?.(); return [{ ...discovered, path }]; }) } as unknown as GitWorktreeReader;
-  const states = new Map<string, {phase:"stopped"|"running";worktreePath:string|null;startedAt:string|null;pid:number|null}>();
+  const states = new Map<string, {phase:"stopped"|"running"|"starting"|"stopping"|"failed";worktreePath:string|null;startedAt:string|null;pid:number|null}>();
   const state = (id: string) => states.get(id) ?? {phase:"stopped" as const, worktreePath:null,startedAt:null,pid:null};
   const start = vi.fn(async (project: {id:string}, path: string, verify?: () => void) => {
     await store.admission.idle(async () => { await hooks.beforeSpawn?.(); });
@@ -76,7 +76,7 @@ export async function runtimeReaderFixture(options: { mutations?: boolean; verif
   }) };
   const manager = options.verification ? await store.admission.run(() => new TestJobManager(store,nullLogWriter)) : undefined;
   const service = new ControlService(store, git, processes, undefined, options.mutations ? commands as never : undefined, undefined, undefined,
-    options.verification ? testCommands as unknown as ProjectTestCommandResolver : undefined, manager, undefined, undefined, undefined, composition.identity);
+    (options.verification || options.configuration) ? testCommands as unknown as ProjectTestCommandResolver : undefined, manager, undefined, undefined, undefined, composition.identity);
 
   const app = new ProviderRuntimeReadApplication(store.admission, composition.identity, service);
   const admin = await listenAdminSocket(files.paths.adminSocketPath, body => composition.execute(body));
@@ -86,7 +86,7 @@ export async function runtimeReaderFixture(options: { mutations?: boolean; verif
   const peer = `198.19.1.${peers++}`;
   let http: ReturnType<typeof createServer> | undefined;
   const listen = async () => {
-    const adapter = await composition.prepareBrowserAuthentication({ origin: ORIGIN, knowledge, runtimeReads: service, ...(options.mutations ? {runtimeMutations:service} : {}), ...(options.verification ? {verification:service} : {}), trustedFixturePeer: peer });
+    const adapter = await composition.prepareBrowserAuthentication({ origin: ORIGIN, knowledge, runtimeReads: service, ...(options.mutations ? {runtimeMutations:service} : {}), ...(options.verification ? {verification:service} : {}), ...(options.configuration ? {configuration:service} : {}), trustedFixturePeer: peer });
     http = createServer((request, response) => { void adapter.handle(request, response); });
     const socket = join(files.root, "runtime-reader.sock"); await new Promise<void>(resolve => http!.listen(socket, resolve));
     return { owner: new BrowserClient(socket), human: new BrowserClient(socket), adapter };
@@ -114,5 +114,5 @@ export async function runtimeReaderFixture(options: { mutations?: boolean; verif
   };
   const close = async () => { await detach(); files.remove(); };
   return { ...files, store, composition, knowledge, service, app, load, a, b, human: principal.id, oldOwner, agentActor,
-    installationToken, hooks, git, start, stop, commands, manager, testCommands, marker, observation, setDelay:(ms:number)=>{delay=ms;}, core, enroll, listen, set, revoke, actor, sql, runtime: () => runtime!, detach, close };
+    installationToken, states, hooks, git, start, stop, commands, manager, testCommands, marker, observation, setDelay:(ms:number)=>{delay=ms;}, core, enroll, listen, set, revoke, actor, sql, runtime: () => runtime!, detach, close };
 }

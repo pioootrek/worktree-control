@@ -7,7 +7,7 @@ import {
   type ProviderConfiguration, type ProviderMaintenanceState, type ProviderInvalidation,
 } from "../modules/authentication";
 import type { KnowledgeService } from "../modules/knowledge";
-import { ProviderKnowledgeApplication, ProviderRuntimeReadApplication, ProviderRuntimeMutateApplication, ProviderVerificationApplication, type ProviderVerificationPort, type ProviderRuntimeReadPort, type ProviderRuntimeMutatePort } from "../modules/authentication";
+import { ProviderConfigurationApplication, type ProviderConfigurationApplicationPort, ProviderKnowledgeApplication, ProviderRuntimeReadApplication, ProviderRuntimeMutateApplication, ProviderVerificationApplication, type ProviderVerificationPort, type ProviderRuntimeReadPort, type ProviderRuntimeMutatePort } from "../modules/authentication";
 import { AuthenticationHttp } from "../transports/authentication-http";
 import type { ProviderSessionAuthority } from "../modules/identity";
 import type { SqliteStateStore } from "../sqlite-store";
@@ -37,7 +37,7 @@ export interface ControllerAuthenticationOptions {
 }
 
 interface BrowserAuthenticationInput {
-  origin: string; knowledge: KnowledgeService; runtimeReads?: ProviderRuntimeReadPort; runtimeMutations?: ProviderRuntimeMutatePort; verification?: ProviderVerificationPort;
+  origin: string; knowledge: KnowledgeService; runtimeReads?: ProviderRuntimeReadPort; runtimeMutations?: ProviderRuntimeMutatePort; verification?: ProviderVerificationPort; configuration?: ProviderConfigurationApplicationPort;
   /** Temporary Unix fixtures only. A real listener derives its peer from the socket. */
   trustedFixturePeer?: string;
 }
@@ -176,13 +176,14 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
         await d.store.admission.run(guard);
         if (value.disposed || !value.issuanceBounded) throw new AuthenticationProviderError("provider_unavailable", "Authentication provider is unavailable.");
         if (browser) {
-          if (browser.binding.origin !== binding.origin || browser.binding.knowledge !== binding.knowledge || browser.binding.runtimeReads !== binding.runtimeReads || browser.binding.runtimeMutations !== binding.runtimeMutations || browser.binding.verification !== binding.verification
+          if (browser.binding.origin !== binding.origin || browser.binding.knowledge !== binding.knowledge || browser.binding.runtimeReads !== binding.runtimeReads || browser.binding.runtimeMutations !== binding.runtimeMutations || browser.binding.verification !== binding.verification || browser.binding.configuration !== binding.configuration
             || browser.binding.trustedFixturePeer !== binding.trustedFixturePeer) throw new ProviderAdminError("configuration_invalid");
           return browser.adapter;
         }
         const adapter = new AuthenticationHttp({ origin: binding.origin, runtime: value, admission: d.store.admission,
           knowledge: new ProviderKnowledgeApplication(d.store.admission, identity, binding.knowledge),
           runtimeReads: binding.runtimeReads && new ProviderRuntimeReadApplication(d.store.admission, identity, binding.runtimeReads),
+          configuration: binding.configuration && new ProviderConfigurationApplication(binding.configuration),
           verification: binding.verification && new ProviderVerificationApplication(binding.verification),
           runtimeMutations: binding.runtimeMutations && new ProviderRuntimeMutateApplication(binding.runtimeMutations),
           maintenance, assertAvailable: guard,

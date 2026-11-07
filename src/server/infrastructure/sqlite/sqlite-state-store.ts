@@ -1,3 +1,8 @@
+import { SCOPED_TEST_PRESET_OVERRIDE_LIMIT } from "@/shared/contracts/scoped-configuration";
+import { HumanConfigurationQueries } from "./human-configuration-queries";
+import type { HumanConfigurationIntent, HumanConfigurationCommit } from "@/server/modules/environments";
+import type { ScopedConfigurationReceipt } from "@/shared/contracts/scoped-configuration";
+import { RuntimeAccessDenied, ScopedRuntimeError } from "@/server/modules/runtime";
 import { HumanRuntimeQueries } from "./human-runtime-queries";
 import { RuntimeMembershipQueries } from "./runtime-membership-queries";
 import type { TestRunRequester, HumanTestRunRequester, VerificationRequester } from "@/server/state-store";
@@ -697,40 +702,82 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       } else if (input.claim.worktreePath !== undefined && row.worktree_path !== input.claim.worktreePath) {
         return { status: "claim_worktree_mismatch" };
       }
-      if (revision !== input.expectedRevision) return { status: "revision_conflict" };
-      const { change } = input;
-      let eventType: string;
-      let changed: Record<string, unknown>;
-      if (change.kind === "select_environment_profile") {
-        const profile = project.environmentProfiles.find(({ name }) => name === change.profileName);
-        if (!profile) return { status: "profile_not_found" };
-        if (project.selectedEnvironmentProfile === profile.name) return { status: "noop", revision };
-        this.database.prepare(`UPDATE projects SET selected_environment_profile = ?, environment_json = ?, updated_at = ?,
-          configuration_revision = configuration_revision + 1 WHERE id = ? AND configuration_revision = ?`)
-          .run(profile.name, JSON.stringify(profile.environment), new Date().toISOString(), input.projectId, revision);
-        eventType = "configuration.environment_profile_selected";
-        changed = { selectedProfile: profile.name };
-      } else {
-        const timeouts = { ...project.testPresetTimeouts };
-        if ((timeouts[change.presetId] ?? null) === change.timeoutMs) return { status: "noop", revision };
-        if (change.timeoutMs === null) delete timeouts[change.presetId];
-        else {
-          if (!(change.presetId in timeouts) && Object.keys(timeouts).length >= change.overrideLimit) return { status: "override_limit" };
-          timeouts[change.presetId] = change.timeoutMs;
-        }
-        this.database.prepare(`UPDATE projects SET test_preset_timeouts_json = ?, updated_at = ?,
-          configuration_revision = configuration_revision + 1 WHERE id = ? AND configuration_revision = ?`)
-          .run(JSON.stringify(timeouts), new Date().toISOString(), input.projectId, revision);
-        eventType = "configuration.test_preset_timeout_set";
-        changed = { presetId: change.presetId, timeoutMs: change.timeoutMs };
+      return this.applyConfigurationChange(input, project, revision);
+    }).immediate();
+  }
+
+  /** Both actor kinds use this one revision/mutation/audit implementation inside their owning transaction. */
+  private applyConfigurationChange(input: Pick<ScopedConfigurationCommit, "projectId" | "expectedRevision" | "change"> & {
+    claim: { reservationId: string } | null;
+    attribution: ScopedConfigurationCommit["attribution"] | { principalId: string; operationId: string };
+  }, project: Project, revision: number): ScopedConfigurationCommitResult {
+    if (revision !== input.expectedRevision) return { status: "revision_conflict" };
+    const { change } = input;
+    let eventType: string;
+    let changed: Record<string, unknown>;
+    if (change.kind === "select_environment_profile") {
+      const profile = project.environmentProfiles.find(({ name }) => name === change.profileName);
+      if (!profile) return { status: "profile_not_found" };
+      if (project.selectedEnvironmentProfile === profile.name) return { status: "noop", revision };
+      this.database.prepare(`UPDATE projects SET selected_environment_profile = ?, environment_json = ?, updated_at = ?,
+        configuration_revision = configuration_revision + 1 WHERE id = ? AND configuration_revision = ?`)
+        .run(profile.name, JSON.stringify(profile.environment), new Date().toISOString(), input.projectId, revision);
+      eventType = "configuration.environment_profile_selected";
+      changed = { selectedProfile: profile.name };
+    } else {
+      const timeouts = { ...project.testPresetTimeouts };
+      if ((timeouts[change.presetId] ?? null) === change.timeoutMs) return { status: "noop", revision };
+      if (change.timeoutMs === null) delete timeouts[change.presetId];
+      else {
+        if (!(change.presetId in timeouts) && Object.keys(timeouts).length >= change.overrideLimit) return { status: "override_limit" };
+        timeouts[change.presetId] = change.timeoutMs;
       }
-      // Attribution only: no ENV names or values, lease secrets or session handles.
-      this.audit(input.projectId, eventType, `principal:${input.attribution.principalId}`, {
-        principalId: input.attribution.principalId, credentialId: input.attribution.credentialId,
-        operationId: input.attribution.operationId, reservationId: input.claim?.reservationId ?? null,
-        previousRevision: revision, revision: revision + 1, outcome: "completed", ...changed,
-      });
-      return { status: "completed", revision: revision + 1 };
+      this.database.prepare(`UPDATE projects SET test_preset_timeouts_json = ?, updated_at = ?,
+        configuration_revision = configuration_revision + 1 WHERE id = ? AND configuration_revision = ?`)
+        .run(JSON.stringify(timeouts), new Date().toISOString(), input.projectId, revision);
+      eventType = "configuration.test_preset_timeout_set";
+      changed = { presetId: change.presetId, timeoutMs: change.timeoutMs };
+    }
+    // Attribution only: no ENV names or values, lease secrets or session handles.
+    this.audit(input.projectId, eventType, `principal:${input.attribution.principalId}`, {
+      principalId: input.attribution.principalId, ...("credentialId" in input.attribution ? { credentialId: input.attribution.credentialId } : { authenticationMethod: "provider_session" }),
+      operationId: input.attribution.operationId, reservationId: input.claim?.reservationId ?? null,
+      previousRevision: revision, revision: revision + 1, outcome: "completed", ...changed,
+    });
+    return { status: "completed", revision: revision + 1 };
+  }
+
+  beginHumanConfiguration(intent: HumanConfigurationIntent): ScopedConfigurationReceipt | null {
+    this.expireReservations(intent.projectId);
+    return new HumanConfigurationQueries(this.database, this.humanRuntime()).begin(intent);
+  }
+
+  commitHumanConfiguration(input: HumanConfigurationCommit): ScopedConfigurationReceipt {
+    return this.database.transaction(() => {
+      const { intent } = input, request = intent.request;
+      const change: ScopedConfigurationCommit["change"] = request.operation === "select_environment_profile"
+        ? { kind: request.operation, profileName: request.name }
+        : { kind: request.operation, presetId: request.presetId, timeoutMs: request.timeoutMs, overrideLimit: SCOPED_TEST_PRESET_OVERRIDE_LIMIT };
+      const queries = new HumanConfigurationQueries(this.database, this.humanRuntime());
+      this.expireReservations(intent.projectId);
+      queries.authorize(intent);
+      if (queries.read(intent).state !== "pending") throw new RuntimeAccessDenied();
+      const action = change.kind === "select_environment_profile" ? "profiles:select" : "config:write";
+      if (!intent.authority.permissions.includes(action)) throw new RuntimeAccessDenied();
+      const project = this.getProject(intent.projectId), revision = this.getProjectConfigurationRevision(intent.projectId);
+      if (!project || revision === null) throw new RuntimeAccessDenied();
+      const result = this.applyConfigurationChange({ projectId: intent.projectId, expectedRevision: request.expectedRevision, change,
+        claim: intent.reservationId ? { reservationId: intent.reservationId } : null,
+        attribution: { principalId: intent.authority.principalId, operationId: input.operationId } }, project, revision);
+      if (result.status !== "completed" && result.status !== "noop") throw new ScopedRuntimeError(result.status, "Configuration change refused.");
+      const base = { schemaVersion: 1 as const, operationId: input.operationId, projectId: intent.projectId,
+        configurationRevision: result.revision, outcome: result.status, replayed: false, observedAt: new Date().toISOString() };
+      const receipt: ScopedConfigurationReceipt = change.kind === "select_environment_profile"
+        ? { ...base, operation: change.kind, selectedProfile: change.profileName }
+        : { ...base, operation: change.kind, presetId: change.presetId, timeoutMs: change.timeoutMs };
+      // Failure here rolls back configuration, revision and audit on this same connection.
+      queries.finish(intent, receipt);
+      return receipt;
     }).immediate();
   }
 

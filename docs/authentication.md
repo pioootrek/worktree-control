@@ -432,7 +432,8 @@ continues across reboots and is not a completed protected-recovery mechanism.
 
 The same protected `runtime-access set/list/revoke` workflow now accepts
 `operator` with a nonempty, unique explicit subset of `projects:read`,
-`claims:manage`, `runtime:control` and independently `tests:run` (P2b2). A role grants no implicit actions.
+`claims:manage`, `runtime:control`, independent `tests:run` (P2b2),
+`profiles:select` and timeout-only `config:write` (P2c). A role grants no implicit actions.
 Reader remains exactly `["projects:read"]`. Existing aggregates are copied
 unchanged into schema 46; no existing owner, credential or grant gains rights.
 For example, an operator who can reserve and control but cannot read uses:
@@ -513,9 +514,10 @@ after their absolute maximum, while the reservation marker persists.
 real-provider cookies with finite process doubles, including another session,
 principal, agent, revocation races, disconnect/retry and database/provider reopen.
 No development server is needed. P2b2 supplies the independent jobs and bounded
-run-wait workflow below. Profiles, configuration, logs, capacity, delegation,
-administration and ENV remain denied pending their own workflows. Optional factors and separate vault
-signatures retain their existing policy. P2b2/P3/A5 and public activation remain
+run-wait workflow below. P2c supplies explicit profile selection and timeout
+configuration. Logs, capacity, delegation, administration and ENV remain denied
+pending their own workflows. Optional factors and separate vault
+signatures retain their existing policy. P3/A5 and public activation remain
 open; this backend workflow does not mount a public login listener.
 
 ### Human finite verification (P2b2)
@@ -600,6 +602,64 @@ sessions, the existing finite queue and migration/transport/policy regressions.
 P2 remaining profile/configuration and transport parity, P3 protected recovery
 and external restore fencing, and A5 activation remain open. The public mount
 and `requireSelectable` gate stay closed.
+
+### Human literal profiles and preset timeouts (P2c)
+
+The shared controller composition accepts the opaque actual provider-session
+actor for profile and timeout operations. An operator receives an explicit
+`profiles:select` or `config:write` permission on one runtime project. Either
+permission works alone. Reader remains exactly `projects:read`; claims, runtime
+control and tests grant neither configuration action. Protected CLI/IPC
+`runtime-access set/list/revoke` validates strict JSON and membership CAS before
+loading the provider. No default grant or owner exception is added.
+
+The closed POST `/api/runtime/configuration` adapter offers `profiles`,
+`select_environment_profile`, `configuration` and `set_test_preset_timeout`.
+Profiles expose only existing literal names, current selection and configuration
+revision. A changed selection requires no owned process, including startup,
+shutdown and failed cleanup. An unchanged selection may return a no-op. Selection
+never starts, stops or restarts a process. Timeout reads expose only discovered
+preset IDs, defaults, overrides and revision for the exact discovered worktree.
+Setting or clearing an override affects future enqueues; queued and running jobs
+keep their captured timeout. Existing bounds apply. Neither action exposes ENV
+names/values or vault references, edits profiles, assigns test profiles, accepts
+commands, or changes launch, TLS, identity or global settings. Selecting a literal
+profile supplies no vault-use grant and preserves existing execution guards.
+
+An unclaimed mutation needs no claim permission. With an active claim, it needs
+the exact original human lease, session, evidence, generation, membership revision,
+permission ceiling and pinned worktree. Consuming that lease requires the relevant
+configuration permission in its original ceiling, without another
+`claims:manage` authorization check. A regrant changes revision and cannot attach
+new rights to an older lease. Foreign human, agent and legacy claims refuse access.
+
+Authority is checked before lookup, after the shared project lock, after Git idle
+and database readmission, immediately before the synchronous atomic effect, and
+before delivery. Durable intents freeze the original absence of a claim or the
+exact lease and placement. A later claim, including one created by the same
+session, cannot adopt an intent or release its cached receipt. New logins,
+revocation, expiry and regrants cannot take over earlier authority.
+
+Additive migration 48 preserves migrations/checksums 1 through 47 and copies
+memberships unchanged. Configuration uses the existing human runtime intent ledger
+and its shared limits of 4096 total, 128 per original session and 8 KiB per receipt.
+Live keys are never evicted; retention ends at the original session deadline.
+An immutable typed context and marker distinguish configuration intents. The
+shared agent/human mutation implementation uses one SQLite transaction for the
+change, common configuration revision, safe human audit and completed receipt.
+No-op receipts add no change event or revision. A conflicting CAS or failed receipt
+write leaves no partial configuration effect. Retries require original current
+authority and the original claim contract; changed effective inputs conflict.
+Pending unknown outcomes are refused, never retried automatically after restart.
+Audit identifies the real principal and provider-session method without a fake
+machine credential, session handles, cookies or ENV content.
+
+This backend slice extends the internal composition only. Public browser mounting,
+account-mode selection, protected recovery and external restore fences remain
+separate gates. The P1 restored-provenance refusal and optional TOTP/passkey and
+signed Ed25519 vault policies remain in force. The historical five full-proof
+factor compatibility failures remain visible; these fixtures establish no
+production-readiness claim. Evidence and acceptance belong to Knowledge A3.
 
 ### Bounded browser adapter
 
@@ -859,7 +919,7 @@ fencing stay separate gates. See the
 ### Closed factor HTTP API
 
 A3-I20 mounts login and first enrollment through the isolated composition only. It
-uses the same provider, current core schema 47, contract 5, `AccountProtection` and sole
+uses the same provider, current core schema 48, contract 5, `AccountProtection` and sole
 connection as [integrated factor authority](#integrated-factor-authority). Production
 main still has no caller or flag, account mode stays refused, and recovery, removal,
 replacement, additional passkeys and trusted devices stay refused.
