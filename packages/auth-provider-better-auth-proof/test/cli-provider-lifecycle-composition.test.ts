@@ -18,11 +18,12 @@ import { gate } from "./strict-fixture";
 import type { ProofFaultInjection } from "../src/index";
 
 const EXISTING_OWNER = "69849424-2aba-4fdd-b4fa-a394a77a193c";
+let peerSequence = 1;
 const enrollment = { email: OWNER_EMAIL, name: "Existing owner", password: OWNER_PASSWORD };
 afterEach(() => vi.restoreAllMocks());
 
 async function compositionFixture(options: { beforeLoad?(): Promise<void>; afterLoad?(): Promise<void>; faults?: ProofFaultInjection; configure?: boolean } = {}) {
-  const files = cliFixture();
+  const files = cliFixture(), peer = `198.18.2.${peerSequence++}`;
   if (options.configure !== false) await files.configure();
   const lock = acquireControllerLock(files.paths.controllerLockPath), store = new SqliteStateStore(files.paths.databasePath);
   let firstId = true;
@@ -59,7 +60,7 @@ async function compositionFixture(options: { beforeLoad?(): Promise<void>; after
   const browser = () => composition.prepareBrowserAuthentication({ origin: ORIGIN, knowledge });
   const listen = async () => {
     const socket = join(files.root, "composition.sock");
-    const unixAdapter = await composition.prepareBrowserAuthentication({ origin: ORIGIN, knowledge, trustedFixturePeer: "198.18.1.1" });
+    const unixAdapter = await composition.prepareBrowserAuthentication({ origin: ORIGIN, knowledge, trustedFixturePeer: peer });
     const unix = createServer((request, response) => { void unixAdapter.handle(request, response); });
     await new Promise<void>(resolve => unix.listen(socket, resolve));
     return { client: new BrowserClient(socket), close: () => new Promise<void>((resolve, reject) => unix.close(error => error ? reject(error) : resolve())) };
@@ -106,7 +107,7 @@ describe("production shared provider composition", () => {
       expect(await f.app.execute(mutation(f), retained)).toMatchObject({ replayed: true });
       await f.command("recover", { newPassword: "replacement-owner-password-1" });
       await expect(f.app.execute(mutation(f), retained)).rejects.toMatchObject({ code: "invalid_credential" });
-      expect((await http.client.session()).status).toBe(401);
+      expect(await http.client.session()).toMatchObject({ status: 200, body: { authenticated: false } });
       expect(f.load).toHaveBeenCalledOnce();
       expect(await f.run(() => f.authentication.status())).toMatchObject({ activeMode: "token", configuredMode: "token", restartRequired: false });
       await expect(f.run(() => f.authentication.setMode("better-auth", "local-cli"))).rejects.toThrow("to be implemented");
@@ -163,7 +164,7 @@ describe("production shared provider composition", () => {
       expect(await f.app.describeIdentity(retained)).toMatchObject({ principal: { kind: "human" } });
       await f.composition.execute({ command: "auth-provider", action: "human-disable", principalId: human.principal.id });
       await expect(f.app.describeIdentity(retained)).rejects.toMatchObject({ code: "invalid_credential" });
-      expect((await http.client.session()).status).toBe(401);
+      expect(await http.client.session()).toMatchObject({ status: 200, body: { authenticated: false } });
     } finally { await http?.close(); await f.cleanup(); }
   });
 
@@ -183,7 +184,7 @@ describe("production shared provider composition", () => {
   });
 
   it("rechecks changed configuration after initialization before enrollment or browser release", async () => {
-    const entered = gate(), resume = gate(), f = await compositionFixture({ beforeLoad: async () => { entered.open(); await resume.opened; } });
+    const entered = gate(), resume = gate(), f = await compositionFixture({ afterLoad: async () => { entered.open(); await resume.opened; } });
     try {
       const enroll = f.command("enroll").catch(error => error), browser = f.browser().catch(error => error);
       await entered.opened; await f.configure("https://changed.invalid", "preserve"); resume.open();
