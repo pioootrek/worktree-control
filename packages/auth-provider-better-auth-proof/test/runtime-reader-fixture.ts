@@ -21,7 +21,7 @@ import { ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, PROVIDER_ENTRY } from "./fixture";
 export const EXISTING_OWNER = "69849424-2aba-4fdd-b4fa-a394a77a193c";
 export const SECRET = "sentinel-foreign-lease-env-command-log";
 let peers = 1;
-export async function runtimeReaderFixture() {
+export async function runtimeReaderFixture(options: { mutations?: boolean } = {}) {
   const files = cliFixture(), lock = acquireControllerLock(files.paths.controllerLockPath), store = new SqliteStateStore(files.paths.databasePath);
   let first = true;
   const oldIdentity = new IdentityService(store, undefined, () => { if (first) { first = false; return EXISTING_OWNER; } return randomUUID(); }, undefined, undefined, store);
@@ -45,12 +45,24 @@ export async function runtimeReaderFixture() {
   const load = vi.fn(async (input: Parameters<typeof loadAuthenticationProvider>[0]) => { runtime = await loadAuthenticationProvider(input); return runtime; });
   const composition = createControllerAuthentication({ store, dataDirectory: files.paths.dataDirectory, authentication, actor: "local-admin", loadProvider: load });
   const knowledge = new KnowledgeService(store, composition.identity);
-  const hooks: { git?(): Promise<void> } = {};
+  const hooks: { git?(): Promise<void>; beforeSpawn?(): Promise<void>; afterSpawn?(): Promise<void>; stop?(): Promise<void> } = {};
   const discovered: Worktree = { path: "/code/a", head: "abcd", shortHead: "abcd", branch: "main", detached: false, locked: false, prunable: false, dirty: false, statusError: SECRET };
-  const git = { list: vi.fn(async () => { await hooks.git?.(); return [discovered]; }) } as unknown as GitWorktreeReader;
-  const processes = { snapshot: () => ({ phase: "stopped", worktreePath: null, startedAt: null, logs: [SECRET], error: SECRET }),
-    statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null, failureCode: null, ownsProcess: false }) } as unknown as ProcessManager;
-  const service = new ControlService(store, git, processes, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, composition.identity);
+  const git = { list: vi.fn(async (path: string) => { await hooks.git?.(); return [{ ...discovered, path }]; }) } as unknown as GitWorktreeReader;
+  const states = new Map<string, {phase:"stopped"|"running";worktreePath:string|null;startedAt:string|null;pid:number|null}>();
+  const state = (id: string) => states.get(id) ?? {phase:"stopped" as const, worktreePath:null,startedAt:null,pid:null};
+  const start = vi.fn(async (project: {id:string}, path: string, verify?: () => void) => {
+    await store.admission.idle(async () => { await hooks.beforeSpawn?.(); });
+    await store.admission.run(() => { verify?.(); states.set(project.id, {phase:"running",worktreePath:path,startedAt:new Date().toISOString(),pid:12345}); });
+    await store.admission.idle(async () => { await hooks.afterSpawn?.(); });
+  });
+  const stop = vi.fn(async (id: string) => {
+    await store.admission.idle(async () => { await hooks.stop?.(); });
+    states.set(id, {phase:"stopped",worktreePath:null,startedAt:null,pid:null});
+  });
+  const processes = { snapshot: (id: string) => ({ ...state(id), logs: [SECRET], error: SECRET, failure:null }), start, stop,
+    statusSummary: (id: string) => ({...state(id),failureCode:null,ownsProcess:state(id).pid!==null}) } as unknown as ProcessManager;
+  const commands = { resolve: vi.fn(() => ({executable:"node",args:["finite-process-double"],tls:{mode:"off",keyPath:null,certPath:null,caPath:null}})) };
+  const service = new ControlService(store, git, processes, undefined, options.mutations ? commands as never : undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, composition.identity);
   const app = new ProviderRuntimeReadApplication(store.admission, composition.identity, service);
   const admin = await listenAdminSocket(files.paths.adminSocketPath, body => composition.execute(body));
   const entry = join(files.root, "runtime-provider.mjs"); writeFileSync(entry, `export { authenticationProvider } from ${JSON.stringify(PROVIDER_ENTRY)};`, { mode: 0o600 });
@@ -59,7 +71,7 @@ export async function runtimeReaderFixture() {
   const peer = `198.19.1.${peers++}`;
   let http: ReturnType<typeof createServer> | undefined;
   const listen = async () => {
-    const adapter = await composition.prepareBrowserAuthentication({ origin: ORIGIN, knowledge, runtimeReads: service, trustedFixturePeer: peer });
+    const adapter = await composition.prepareBrowserAuthentication({ origin: ORIGIN, knowledge, runtimeReads: service, ...(options.mutations ? {runtimeMutations:service} : {}), trustedFixturePeer: peer });
     http = createServer((request, response) => { void adapter.handle(request, response); });
     const socket = join(files.root, "runtime-reader.sock"); await new Promise<void>(resolve => http!.listen(socket, resolve));
     return { owner: new BrowserClient(socket), human: new BrowserClient(socket), adapter };
@@ -78,10 +90,14 @@ export async function runtimeReaderFixture() {
     const storage = store.authenticationProviderStorage(), connection = storage.createProviderConnection();
     try { await storage.borrow(async () => { connection.prepare(statement).run(parameters as never); }); } finally { connection.close(); }
   };
-  const close = async () => {
+  let detached = false;
+  const detach = async () => {
+    if (detached) return;
+    detached = true;
     await new Promise<void>((resolve, reject) => http ? http.close(error => error ? reject(error) : resolve()) : resolve());
-    await admin.close(); await composition.dispose(); await store.closeAfterDrain(); lock.release(); files.remove();
+    await admin.close(); await composition.dispose(); await store.closeAfterDrain(); lock.release();
   };
+  const close = async () => { await detach(); files.remove(); };
   return { ...files, store, composition, knowledge, service, app, load, a, b, human: principal.id, oldOwner, agentActor,
-    installationToken, hooks, git, core, enroll, listen, set, revoke, actor, sql, runtime: () => runtime!, close };
+    installationToken, hooks, git, start, stop, commands, core, enroll, listen, set, revoke, actor, sql, runtime: () => runtime!, detach, close };
 }

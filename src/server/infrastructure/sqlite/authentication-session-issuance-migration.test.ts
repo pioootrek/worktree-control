@@ -59,11 +59,11 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
   it("creates recognized empty storage on a fresh database and bumps the storage revision", () => {
     const f = directory(), store = new SqliteStateStore(f.path);
     try {
-      expect(store.schemaVersion()).toBe(45);
+      expect(store.schemaVersion()).toBe(46);
       expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     } finally { store.close(); }
     raw(f.path, db => {
-      expect(inspectSchema(db)).toEqual({ version: 45, fresh: false });
+      expect(inspectSchema(db)).toEqual({ version: 46, fresh: false });
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=41").get()).toEqual({ name: authenticationSessionIssuanceMigration.name, checksum: authenticationSessionIssuanceChecksum });
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=40").get()).toEqual({ name: authenticationFactorMigration.name, checksum: authenticationFactorChecksum });
       // No token, cookie, password, actor or process identity has a column here.
@@ -76,7 +76,7 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
     const before = raw(f.path, db => ({ rows: preserved(db), registry: registry(db), bytes: readFileSync(f.path) }));
     expect(raw(f.path, db => inspectSchema(db).version)).toBe(40);
     const store = await openControllerStore(f.path, { backupBeforeMigration: true, backupDirectory: backups, applicationVersion: "test", attachmentDirectory });
-    try { expect(store.schemaVersion()).toBe(45); } finally { store.close(); }
+    try { expect(store.schemaVersion()).toBe(46); } finally { store.close(); }
     raw(f.path, db => {
       expect(preserved(db)).toEqual(before.rows);
       expect(registry(db)).toEqual(before.registry);
@@ -88,7 +88,7 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
     const restoredPath = join(f.root, "restored", "state.sqlite3");
     restoreControllerBackup(join(backups, backup), restoredPath);
     const restored = new SqliteStateStore(restoredPath);
-    try { expect(restored.schemaVersion()).toBe(45); } finally { restored.close(); }
+    try { expect(restored.schemaVersion()).toBe(46); } finally { restored.close(); }
     raw(restoredPath, db => { expect(preserved(db)).toEqual(before.rows); });
   });
 
@@ -107,7 +107,7 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
       expect(inspectSchema(db).version).toBe(40);
     });
     const retry = new SqliteStateStore(f.path);
-    try { expect(retry.schemaVersion()).toBe(45); } finally { retry.close(); }
+    try { expect(retry.schemaVersion()).toBe(46); } finally { retry.close(); }
   });
 
   it("carries markers through a backup as a structurally valid snapshot, while its owner reports the restore", async () => {

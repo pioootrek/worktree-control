@@ -1,6 +1,6 @@
 import type { KnowledgePermission, KnowledgeRoleBinding } from "@/shared/contracts/authorization";
 import type { KnowledgeProject } from "@/shared/contracts/knowledge";
-import type { RuntimeAccessEntry, RuntimeCredentialScope, RuntimeDelegation } from "@/shared/contracts/runtime-access";
+import type { RuntimeAccessEntry, RuntimeAction, RuntimeCredentialScope, RuntimeDelegation } from "@/shared/contracts/runtime-access";
 /** `installation` is the single installation-wide authority; it never holds credentials or grants. */
 export type PrincipalKind = "owner" | "human" | "agent" | "worker" | "installation";
 export type IdentityStatus = "active" | "revoked";
@@ -51,9 +51,22 @@ export interface ProviderSessionActor {
 }
 export type AuthenticatedPrincipal = CredentialAuthenticatedPrincipal | ProviderSessionActor;
 
-/** Synchronous current-state check on the admitted controller connection; never borrows the provider. */
+/** Server-only non-secret identity digest. Never part of an identity/HTTP projection. */
+export interface ProviderRuntimeSession {
+  readonly principalId: string;
+  readonly sessionKey: string;
+  readonly evidenceKey: string;
+  readonly generation: number;
+  readonly deadline: string;
+}
+export interface HumanRuntimeAuthority extends ProviderRuntimeSession {
+  readonly membershipRevision: number;
+  readonly permissions: readonly RuntimeAction[];
+}
+/** Synchronous current-state checks on the admitted connection; never borrows the provider. */
 export interface ProviderSessionAuthority {
   isCurrentProviderSession(actor: ProviderSessionActor, now: string): boolean;
+  resolveRuntimeSession?(actor: ProviderSessionActor, now: string): ProviderRuntimeSession | null;
 }
 
 export type ControllerAuthentication =

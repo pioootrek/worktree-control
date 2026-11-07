@@ -38,7 +38,10 @@ unavailable. Closed factor HTTP routes and ordinary-human memberships now work
 inside the isolated composition. P1 implements the production shared lifetime
 and IdentityService. P2a adds explicit runtime-project reader memberships and
 current-session cookie reads through shared policy and existing projections.
-Public browser mounting, P2b mutation/session/lease/job binding, P3 protected
+P2b1 adds explicit operator subsets and session/evidence/revision-bound finite
+human runtime leases with durable retry intent and closed HTTP control. No
+operator receives tests/profiles/config/ENV/admin rights. Public browser mounting,
+P2b2 jobs/remaining transport workflows, P3 protected
 recovery/restore fencing, factor management/recovery,
 invitations, general delegated roles and GUI remain open.
 Shared core admission, exclusive provider admission and background persistence
@@ -269,8 +272,11 @@ Knowledge history audit attribution, and schema 40 adds factor and evidence stor
 with historical provider storage revision 2. Issuance schema 41 uses revision 3;
 schema 42 adds ordinary humans without changing provider contract 5,
 storage 3 or proof implementation 5. Core schema 43 adds Godot Web project configuration; schema 44 adds
-immutable scoped-test requester attribution; current schema 45 adds an empty
-human runtime membership aggregate, without changing the provider. Earlier migration SQL/checksums remain unchanged.
+immutable scoped-test requester attribution; schema 45 adds an empty human
+runtime membership aggregate. Current schema 46 extends explicit membership to
+operator subsets, with provider-bound reservation sidecars and durable bounded
+runtime intents on the same connection. No grants are backfilled and provider
+contract/storage remain unchanged. Earlier migration SQL/checksums remain unchanged.
 Full/logical backup compatibility
 has focused migration tests. Protected CLI failure/concurrency handling and
 isolated closed HTTP/factor routes are implemented. Safe production integration

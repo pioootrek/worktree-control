@@ -52,7 +52,7 @@ describe("human runtime membership aggregate", () => {
     try {
       for (const extra of [{ principalId: "agent" }, { principalId: "worker" }, { principalId: "installation" }, { principalId: "missing" },
         { scope: { kind: "knowledge-project", id: "runtime" } }, { scope: { kind: "runtime-project", id: "knowledge-only" } },
-        { role: "operator" }, { role: "manager" }, { permissions: [] }, { permissions: ["runtime:control"] },
+        { role: "manager" }, { permissions: [] }, { permissions: ["runtime:control"] },
         { permissions: ["projects:read", "projects:read"] }, { permissions: ["projects:read", "tests:run"] }, { actor: "owner" }]) {
         expect(() => f.queries.saveRuntimeMembership({ ...f.input, ...extra } as never, "local-cli", now)).toThrow();
       }

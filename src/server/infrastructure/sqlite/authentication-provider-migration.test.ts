@@ -51,7 +51,7 @@ describe("authentication provider storage migration 38", () => {
     const f = directory();
     const store = new SqliteStateStore(f.path);
     try {
-      expect(store.schemaVersion()).toBe(45);
+      expect(store.schemaVersion()).toBe(46);
       expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     } finally { store.close(); }
     raw(f.path, db => {
@@ -59,7 +59,7 @@ describe("authentication provider storage migration 38", () => {
       for (const table of PROVIDER_TABLES) expect(db.prepare(`SELECT count(*) n FROM "${table}"`).get()).toEqual({ n: 0 });
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=38").get())
         .toEqual({ name: authenticationProviderMigration.name, checksum: authenticationProviderChecksum });
-      expect(inspectSchema(db)).toEqual({ version: 45, fresh: false });
+      expect(inspectSchema(db)).toEqual({ version: 46, fresh: false });
     });
   });
 
@@ -74,7 +74,7 @@ describe("authentication provider storage migration 38", () => {
     });
     const backups = join(f.root, "backups");
     const store = await openControllerStore(f.path, { backupBeforeMigration: true, backupDirectory: backups, applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") });
-    try { expect(store.schemaVersion()).toBe(45); } finally { store.close(); }
+    try { expect(store.schemaVersion()).toBe(46); } finally { store.close(); }
     const [backup] = readdirSync(backups);
     expect(backup).toMatch(/^pre-migration-v37-/);
     expect(JSON.parse(readFileSync(join(backups, backup!, "manifest.json"), "utf8")).database.schemaVersion).toBe(37);

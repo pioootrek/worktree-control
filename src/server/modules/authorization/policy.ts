@@ -1,3 +1,4 @@
+import { runtimeMembershipSetSchema } from "@/shared/contracts/runtime-memberships";
 import { knowledgePermissions, type AuthorizationAction, type AuthorizationResource, type KnowledgePermission, type KnowledgeRole, type KnowledgeRoleBinding, type SubjectKind } from "@/shared/contracts/authorization";
 import { isRuntimeAction, runtimeActions, type RuntimeAction, type RuntimeCredentialScope, type RuntimeDelegation } from "@/shared/contracts/runtime-access";
 import type { RuntimeMembership } from "@/shared/contracts/runtime-memberships";
@@ -69,10 +70,11 @@ export function effectiveHumanRuntimeActions(subject: AuthorizationSubject, proj
   const { project, membership } = authority;
   if (subject.kind !== "human" || !authority.providerSession || project?.id !== projectId) return [];
   if (!membership || membership.principalId !== subject.id || membership.scope.kind !== "runtime-project"
-    || membership.scope.id !== projectId || membership.revokedAt !== null || membership.role !== "reader"
-    || !Number.isSafeInteger(membership.revision) || membership.revision < 1
-    || !Array.isArray(membership.permissions) || membership.permissions.length !== 1 || membership.permissions[0] !== "projects:read") return [];
-  return ["projects:read"];
+    || membership.scope.id !== projectId || membership.revokedAt !== null
+    || !Number.isSafeInteger(membership.revision) || membership.revision < 1) return [];
+  const parsed = runtimeMembershipSetSchema.safeParse({ principalId: membership.principalId, scope: membership.scope,
+    role: membership.role, permissions: membership.permissions, expectedRevision: 0 });
+  return parsed.success ? runtimeActions.filter(action => (parsed.data.permissions as readonly string[]).includes(action)) : [];
 }
 
 export function isAuthorized(

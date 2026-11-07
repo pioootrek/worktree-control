@@ -1,3 +1,4 @@
+import { admissionOf } from "@/server/database-admission";
 import type { GitWorktreeReader } from "@/server/git-worktrees";
 import { GODOT_WEB_TLS_MESSAGE, NO_SERVER_MESSAGE, type LaunchCommandResolver, type NextTlsConfiguration } from "@/server/launch-command";
 import { type LogWriter } from "@/server/log-writer";
@@ -40,15 +41,16 @@ export class RuntimeService {
       authority();
       const operationId = randomUUID();
       const project = this.lifecycle.requireProject(projectId);
-      const claim = this.lifecycle.requireAgentClaim(projectId, reservationId, actor);
+      const claim = this.requireClaim(projectId, reservationId, actor);
       const verify = () => { this.revalidateClaim(projectId, reservationId, actor); authority(); };
-      const actorRef = `mcp:${createHash("sha256").update(actor.owner).digest("hex").slice(0, 12)}`;
-      this.store.recordProjectEvent(projectId, "agent.runtime_accepted", actorRef, { operationId, reservationId, action });
-      this.logs.controller("agent.runtime_accepted", { operationId, projectId, reservationId, action, actor: actorRef });
+      const actorRef = actor.humanClaim ? actor.owner : `mcp:${createHash("sha256").update(actor.owner).digest("hex").slice(0, 12)}`;
+      const kind = actor.humanClaim ? "human" : "agent";
+      this.store.recordProjectEvent(projectId, `${kind}.runtime_accepted`, actorRef, { operationId, reservationId, action });
+      this.logs.controller(`${kind}.runtime_accepted`, { operationId, projectId, reservationId, action, actor: actorRef });
       const initial = this.processes.snapshot(projectId);
       // Scoped claims can reserve without placing the server. Their explicit
       // runtime operation controls the project under the validated bound lease.
-      const scopedPlacement = actor.binding !== undefined && initial.worktreePath !== claim.worktreePath;
+      const scopedPlacement = (actor.binding !== undefined || actor.humanClaim !== undefined) && initial.worktreePath !== claim.worktreePath;
 
       let outcome: ClaimedRuntimeReceipt["outcome"] = "completed";
       let operationError: ClaimedRuntimeReceipt["error"] = null;
@@ -65,7 +67,9 @@ export class RuntimeService {
         } else {
           let selected;
           try {
-            const worktrees = await this.git.list(project.repositoryPath);
+            const worktrees = actor.humanClaim
+              ? await admissionOf(this.store).idle(() => this.git.list(project.repositoryPath))
+              : await this.git.list(project.repositoryPath);
             selected = this.lifecycle.resolveWorktree(project, worktrees, claim.worktreePath);
           } catch {
             throw new ClaimedRuntimeOperationError("worktree_unavailable", "The claimed worktree is unavailable.");
@@ -109,7 +113,7 @@ export class RuntimeService {
       }
       const runtime = this.processes.snapshot(projectId);
       let leaseHeld = false;
-      try { this.lifecycle.requireAgentClaim(projectId, reservationId, actor); leaseHeld = true; }
+      try { this.requireClaim(projectId, reservationId, actor); leaseHeld = true; }
       catch (error) { if (!(error instanceof ReservationError)) throw error; }
       const capacity = this.lifecycle.capacityStatus();
       const receipt: ClaimedRuntimeReceipt = {
@@ -120,10 +124,10 @@ export class RuntimeService {
         occupiesCapacity: capacity.holders.some((holder) => holder.projectId === projectId),
         capacity: { enabled: capacity.enabled, limit: capacity.limit, used: capacity.used, available: capacity.available },
       };
-      this.logs.controller(`agent.runtime_${outcome}`, {
+      this.logs.controller(`${kind}.runtime_${outcome}`, {
         operationId, projectId, reservationId, action, outcome, actor: actorRef, errorCode: operationError?.code ?? null,
       });
-      this.store.recordProjectEvent(projectId, `agent.runtime_${outcome}`, actorRef, {
+      this.store.recordProjectEvent(projectId, `${kind}.runtime_${outcome}`, actorRef, {
         operationId, reservationId, action, outcome, errorCode: operationError?.code ?? null,
       });
       // Effects already happened are audited above; revoked callers still receive no status.
@@ -176,9 +180,10 @@ export class RuntimeService {
   }
 
   private recordDenied(projectId: string, operationId: string, reservationId: string, action: ClaimedRuntimeAction, actorRef: string): void {
+    const kind = actorRef.startsWith("human:") ? "human" : "agent";
     try {
-      this.store.recordProjectEvent(projectId, "agent.runtime_denied", actorRef, { operationId, reservationId, action });
-      this.logs.controller("agent.runtime_denied", { operationId, projectId, reservationId, action, actor: actorRef });
+      this.store.recordProjectEvent(projectId, `${kind}.runtime_denied`, actorRef, { operationId, reservationId, action });
+      this.logs.controller(`${kind}.runtime_denied`, { operationId, projectId, reservationId, action, actor: actorRef });
     } catch { /* the denial itself is authoritative */ }
   }
 
@@ -188,9 +193,17 @@ export class RuntimeService {
     return { code: "runtime_operation_failed", message: "The managed runtime operation failed." };
   }
 
+  private requireClaim(projectId: string, reservationId: string, actor: OperationActor) {
+    if (actor.humanClaim) {
+      if (!this.lifecycle.requireBoundClaim) throw new RuntimeAccessDenied();
+      return this.lifecycle.requireBoundClaim(projectId, reservationId, actor);
+    }
+    return this.lifecycle.requireAgentClaim(projectId, reservationId, actor);
+  }
+
   private revalidateClaim(projectId: string, reservationId: string, actor: OperationActor): void {
     try {
-      this.lifecycle.requireAgentClaim(projectId, reservationId, actor);
+      this.requireClaim(projectId, reservationId, actor);
     } catch (error) {
       if (!(error instanceof ReservationError)) throw error;
       throw new ClaimedRuntimeOperationError("claim_stale", "The MCP claim is stale, expired, or no longer active.");

@@ -22,7 +22,18 @@ export const WITHOUT_AUTHENTICATION_PROVIDER_STORAGE = `DROP TABLE authenticatio
  * preset CHECK stays at the latest bootstrap shape, which inspection accepts at
  * every older version (like the other latest constraints these fixtures keep).
  */
+export function rewindHumanRuntime(database: Database.Database): void {
+  if (!database.prepare("SELECT 1 FROM schema_migrations WHERE version=46").get()) return;
+  database.exec("DROP TABLE human_runtime_intents; DROP TABLE human_runtime_leases; ALTER TABLE reservations DROP COLUMN provider_bound; DELETE FROM schema_migrations WHERE version=46");
+  rebuildTable(database, "runtime_human_memberships", "CHECK(role IN ('reader','operator'))", "CHECK(role='reader')");
+  // Synthetic fixtures use empty memberships. Restore the exact original CHECK.
+  const sql = (database.prepare("SELECT sql FROM sqlite_master WHERE name='runtime_human_memberships'").get() as {sql:string}).sql;
+  const start = sql.indexOf("CHECK(json_valid(permissions_json)"), end = sql.indexOf(",\n  revision", start);
+  if (start < 0 || end < 0) throw new Error("Unknown membership fixture shape");
+  rebuildTable(database, "runtime_human_memberships", sql.slice(start, end), `CHECK(permissions_json='["projects:read"]')`);
+}
 export function rewindGodotWeb(database: Database.Database): void {
+  rewindHumanRuntime(database);
   if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=45").get()) {
     database.exec("DROP TABLE runtime_human_memberships; DELETE FROM schema_migrations WHERE version=45");
   }

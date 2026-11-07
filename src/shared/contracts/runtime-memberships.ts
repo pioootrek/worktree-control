@@ -9,9 +9,13 @@ const target = {
   scope: z.object({ kind: z.literal("runtime-project"), id }).strict(),
   expectedRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER - 1),
 };
-export const runtimeMembershipSetSchema = z.object({
-  ...target, role: z.literal("reader"), permissions: z.tuple([z.literal("projects:read")]),
-}).strict();
+export const humanRuntimeActions = ["projects:read", "claims:manage", "runtime:control"] as const;
+export const humanRuntimePermissionsSchema = z.array(z.enum(humanRuntimeActions)).min(1).max(3)
+  .refine(values => new Set(values).size === values.length);
+export const runtimeMembershipSetSchema = z.discriminatedUnion("role", [
+  z.object({ ...target, role: z.literal("reader"), permissions: z.tuple([z.literal("projects:read")]) }).strict(),
+  z.object({ ...target, role: z.literal("operator"), permissions: humanRuntimePermissionsSchema }).strict(),
+]);
 export const runtimeMembershipRevokeSchema = z.object(target).strict();
 export type RuntimeMembershipPage = z.infer<typeof runtimeMembershipPageSchema>;
 export type RuntimeMembershipSet = z.infer<typeof runtimeMembershipSetSchema>;
@@ -20,8 +24,8 @@ export type RuntimeMembershipRevoke = z.infer<typeof runtimeMembershipRevokeSche
 export interface RuntimeMembership {
   principalId: string;
   scope: { kind: "runtime-project"; id: string };
-  role: "reader";
-  permissions: Array<"projects:read">;
+  role: "reader" | "operator";
+  permissions: Array<typeof humanRuntimeActions[number]>;
   revision: number;
   updatedAt: string;
   revokedAt: string | null;

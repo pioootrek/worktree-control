@@ -343,8 +343,9 @@ performs no live enrollment and never uses owner creation to replace that accoun
 `productionAccountModeAvailable:false`. Startup does not mount public login in
 open/token/legacy modes. Provider sessions gain neither owner-session nor
 installation authority, and never replace signed Ed25519 vault proof. P2a supplies
-the reader workflow below. P2b human mutation/lease/job binding and remaining
-transport enforcement, and P3 protected recovery/restore fencing, remain activation gates.
+the reader workflow below, and P2b1 adds explicit human runtime leases and control.
+P2b2 jobs/remaining transport enforcement and P3 protected recovery/restore
+fencing remain activation gates.
 
 ### Human runtime readers (P2a)
 
@@ -395,8 +396,10 @@ Responses carry the operation and respectively `projects`, `status` or
 worktrees reuse the scoped allowlist: identity/name/port, phase and placement,
 claim relation, and discovered path/branch/head/dirty metadata. They expose no
 commands, ENV/TLS/profile values, logs, foreign lease owners/secrets, global
-queue or capacity. A human has no agent lease session: claim is `none` or
-`other`, and `ownClaim` is always null. This slice adds no SSE, waits or cursors.
+queue or capacity. Humans cannot own an agent lease. P2b1 additionally recognizes
+`own` only for the exact current provider session and original human lease
+authority; an ordinary reader still sees `none` or `other` with no `ownClaim`.
+This slice adds no SSE, waits or cursors.
 
 Authentication uses the real provider cookie outside core admission. Shared
 IdentityService and application policy require the exact runtime-owned actor,
@@ -421,9 +424,99 @@ Selected optional TOTP/passkeys and separate Ed25519 vault proof retain their ga
 
 This is backend source implementation and isolated real-provider verification.
 Production startup still does not mount public login or this cookie workflow;
-`requireSelectable` continues to refuse account-mode selection. P2b/P3 remain
+`requireSelectable` continues to refuse account-mode selection. P2b2/P3 remain
 required before activation. In particular, the P1 restored-provenance refusal
 continues across reboots and is not a completed protected-recovery mechanism.
+
+### Human runtime operators and leases (P2b1)
+
+The same protected `runtime-access set/list/revoke` workflow now accepts
+`operator` with a nonempty, unique explicit subset of `projects:read`,
+`claims:manage` and `runtime:control`. A role grants no implicit actions.
+Reader remains exactly `["projects:read"]`. Existing aggregates are copied
+unchanged into schema 46; no existing owner, credential or grant gains rights.
+For example, an operator who can reserve and control but cannot read uses:
+
+```json
+{"principalId":"HUMAN_ID","scope":{"kind":"runtime-project","id":"PROJECT_ID"},"role":"operator","permissions":["claims:manage","runtime:control"],"expectedRevision":0}
+```
+
+The internal composition accepts a `runtimeMutations` controller port. Its
+closed `POST /api/runtime/mutate` route accepts these strict discriminated DTOs:
+
+```json
+{"operation":"claim","projectId":"PROJECT_ID","worktreePath":"DISCOVERED_PATH","reason":"Task","idempotencyKey":"claim-1","ttlSeconds":1800,"start":false}
+{"operation":"renew","projectId":"PROJECT_ID","reservationId":"RESERVATION_ID","idempotencyKey":"renew-1","ttlSeconds":1800}
+{"operation":"release","projectId":"PROJECT_ID","reservationId":"RESERVATION_ID","idempotencyKey":"release-1"}
+{"operation":"start","projectId":"PROJECT_ID","reservationId":"RESERVATION_ID","idempotencyKey":"start-1"}
+{"operation":"restart","projectId":"PROJECT_ID","reservationId":"RESERVATION_ID","idempotencyKey":"restart-1"}
+{"operation":"stop","projectId":"PROJECT_ID","reservationId":"RESERVATION_ID","idempotencyKey":"stop-1"}
+```
+
+Claim, renew and release need `claims:manage`; explicit claim `start:true`
+also needs `runtime:control`. Start/restart/stop need `runtime:control` captured
+at claim and still held now. No operation implicitly grants `projects:read`.
+Claim defaults to `start:false`. TTL defaults to 1800 seconds and accepts
+30..1800; each deadline is capped by the original provider session deadline
+and an eight-hour absolute lease maximum. Less than 30 seconds remaining
+refuses admission/renewal. Stop retains the lease; release retains the running
+process. Expiry and revocation do not automatically stop an already authorized
+process. Inspect current placement before a new intent after uncertainty.
+
+Shared runtime operations resolve only the exact opaque runtime-issued actor
+against current session, principal, mapping and evidence. A server-only digest
+binds the actual provider/session identity, evidence identity, protection
+generation and original principal linkage. Each lease also captures the exact
+membership revision and explicit permissions. Every later decision requires
+both captured and current authority. Revoke/regrant, revision changes, logout,
+recovery, expiry or a different login cannot attach new authority to an old
+lease. The same still-valid cookie resolves the same binding across requests
+and ordinary controller reboots. Restored provenance remains fenced by P1;
+these semantics do not implement the P3 external restore/recovery fence.
+
+Schema 46 uses the existing `reservations` table, a permanent provider-bound
+marker and a typed lease sidecar on the sole SQLite connection. Finite deadlines
+are stored in the sidecar and projected by existing reservation reads. Legacy
+human records and agent credential/session/hash requirements remain unchanged.
+The old unbound owner-string authorization/release path rejects marked leases,
+even after sidecar cleanup. Human operations use a dedicated bound-claim
+verifier and the existing project lock, process ownership and capacity gates.
+Trusted local operator force-release remains separate; this route has no force
+parameter. No machine credential, MCP session or second client lease secret is
+created. Identity/HTTP/log projections contain no session IDs, cookies, binding
+digests or evidence internals.
+
+The application checks current rights at admission, after project-lock/Git/
+provider waits, before external runtime effects and spawn, and in the admitted
+final delivery/replay phase. Only the exact current binding can see `ownClaim`.
+Runtime receipts use an allowlist, omit global capacity/ENV/commands/foreign
+lease details, and contain safe operation results even without project-read
+permission. The closed route inherits the existing Host/Origin/CSRF/cookie/
+socket-peer/lifetime/slot guards and 4 KiB body limit. Only read and mutate are
+claimed as runtime routes without a cookie; unknown cookie routes fail closed.
+Provider authentication stays outside core admission. Cancellation keeps the
+HTTP slot until the actual work settles.
+
+Normalized idempotency intent is durable before effects and scoped to the real
+session/principal/project/operation/claim. Reusing a key for different intent
+conflicts. Concurrent pending retries and interrupted intent after reboot
+return `outcome_unknown`, requiring inspection; they never automatically rerun
+an effect. Completed receipts replay only after current/original authority and
+reservation checks. A disconnect can leave a completed or unknown outcome;
+failed runtime receipts also retain their original intent. Intent retention is
+bounded to 4096 globally, 128 per session, and 8192 bytes per receipt; leases
+have a 4096-sidecar cap. Exhaustion refuses new work. Intent keys expire only
+when their original provider session deadline has passed; sidecars expire only
+after their absolute maximum, while the reservation marker persists.
+
+`pnpm test:runtime-mutations` covers core migration/policy/transport guards and
+real-provider cookies with finite process doubles, including another session,
+principal, agent, revocation races, disconnect/retry and database/provider reopen.
+No development server is needed. Jobs/tests, profiles, configuration, logs,
+capacity, waits, delegation, administration and ENV remain denied to these
+human roles pending their own workflows. Optional factors and separate vault
+signatures retain their existing policy. P2b2/P3/A5 and public activation remain
+open; this backend workflow does not mount a public login listener.
 
 ### Bounded browser adapter
 
@@ -683,7 +776,7 @@ fencing stay separate gates. See the
 ### Closed factor HTTP API
 
 A3-I20 mounts login and first enrollment through the isolated composition only. It
-uses the same provider, current core schema 45, contract 5, `AccountProtection` and sole
+uses the same provider, current core schema 46, contract 5, `AccountProtection` and sole
 connection as [integrated factor authority](#integrated-factor-authority). Production
 main still has no caller or flag, account mode stays refused, and recovery, removal,
 replacement, additional passkeys and trusted devices stay refused.

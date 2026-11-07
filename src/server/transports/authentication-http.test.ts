@@ -55,6 +55,20 @@ function adapter(assertAvailable?: () => void) {
   return { value, browser };
 }
 describe("authentication request lifetime and socket peer", () => {
+  it("claims only the explicit runtime routes without a cookie and refuses unknown cookie routes", async () => {
+    const f = adapter();
+    for (const path of ["/api/runtime/read", "/api/runtime/mutate", "/api/runtime/unknown"]) {
+      const request = incoming("127.0.0.1"); request.url = path;
+      const response = outgoing();
+      expect(await f.value.handle(request as never, response as never)).toBe(path !== "/api/runtime/unknown");
+      if (path !== "/api/runtime/unknown") expect(response.status).toBe(401);
+      response.emit("finish");
+    }
+    const request = incoming("127.0.0.1"); request.url = "/api/runtime/unknown";
+    Object.assign(request.headers, {cookie:"__Secure-wtc.session_token=fixture"});
+    const response = outgoing(); expect(await f.value.handle(request as never,response as never)).toBe(true);
+    expect(response.status).toBe(401); expect(f.browser).not.toHaveBeenCalled(); response.emit("finish");
+  });
   it.each(["maintenance", "provider_configuration_restart_required"] as const)("reports unavailable guarded composition without calling the provider: %s", async code => {
     const f = adapter(() => { throw new AuthenticationProviderError(code, "private configuration detail"); }), response = outgoing();
     await f.value.handle(incoming("127.0.0.1") as never, response as never);

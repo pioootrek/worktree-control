@@ -1,17 +1,18 @@
 import type Database from "better-sqlite3";
 import { HumanAccountError, type RuntimeMembershipStore } from "@/server/modules/identity";
 import {
-  runtimeMembershipPageSchema, runtimeMembershipSetSchema, runtimeMembershipRevokeSchema,
+  runtimeMembershipPageSchema, runtimeMembershipSetSchema, runtimeMembershipRevokeSchema, humanRuntimePermissionsSchema,
   type RuntimeMembership, type RuntimeMembershipPage, type RuntimeMembershipSet, type RuntimeMembershipRevoke,
 } from "@/shared/contracts/runtime-memberships";
 
-type Row = { principal_id: string; project_id: string; scope_kind: "runtime-project"; role: "reader";
+type Row = { principal_id: string; project_id: string; scope_kind: "runtime-project"; role: RuntimeMembership["role"];
   permissions_json: string; revision: number; updated_at: string; revoked_at: string | null };
 function membership(row: Row): RuntimeMembership {
-  let permissions: Array<"projects:read"> = [];
+  let permissions: RuntimeMembership["permissions"] = [];
   try {
     const value: unknown = JSON.parse(row.permissions_json);
-    if (Array.isArray(value) && value.length === 1 && value[0] === "projects:read") permissions = ["projects:read"];
+    const parsed = humanRuntimePermissionsSchema.safeParse(value);
+    if (parsed.success) permissions = parsed.data;
   } catch { /* Malformed current authority never grants access. */ }
   return { principalId: row.principal_id, scope: { kind: row.scope_kind, id: row.project_id }, role: row.role,
     permissions, revision: row.revision, updatedAt: row.updated_at, revokedAt: row.revoked_at };
@@ -46,7 +47,7 @@ export class RuntimeMembershipQueries implements RuntimeMembershipStore {
         throw new HumanAccountError("membership_revision_conflict");
       }
       const row: RuntimeMembership = { principalId: input.principalId, scope: input.scope,
-        role: "reader", permissions: ["projects:read"], revision: input.expectedRevision + 1, updatedAt: now, revokedAt: set ? null : now };
+        role: setValue.success ? setValue.data.role : current!.role, permissions: setValue.success ? setValue.data.permissions : current!.permissions, revision: input.expectedRevision + 1, updatedAt: now, revokedAt: set ? null : now };
       this.database.prepare(`INSERT INTO runtime_human_memberships(principal_id,project_id,scope_kind,role,permissions_json,revision,updated_at,revoked_at)
         VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(principal_id,project_id) DO UPDATE SET
         role=excluded.role,permissions_json=excluded.permissions_json,revision=excluded.revision,updated_at=excluded.updated_at,revoked_at=excluded.revoked_at`)

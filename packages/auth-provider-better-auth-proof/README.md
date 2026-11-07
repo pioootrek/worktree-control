@@ -349,7 +349,7 @@ caller session, covering a real delete-hook failure that native sign-out swallow
 The core drops native bodies and arbitrary headers; no bearer token is returned
 in browser JSON. Library logs/router exceptions become fixed events. After-commit
 notification failures remain `committed:true`, without automatic mutation replay.
-The current composition uses core schema 45 and provider storage revision 3. Contract 5
+The current composition uses core schema 46 and provider storage revision 3. Contract 5
 adds durable session issuance and changes no pinned dependency.
 
 Provider-cookie requests to unconverted HTTP operations and the actual separate
@@ -410,7 +410,7 @@ TOTP was an unselected compatibility candidate. The owner has since selected
 both TOTP and passkeys as optional methods; the pinned TOTP implementation still
 needed an accepted replay remedy at that stage. That historical baseline was
 schema 39, provider storage revision 1 and contract 2. Later integrated authority
-uses current core schema 45, storage 3 and contract 5. This experiment changes no
+uses current core schema 46, storage 3 and contract 5. This experiment changes no
 production provider, route, actor, mode or migration. Account mode remains
 unavailable; A4, A5, general delegated roles and GUI remain separate.
 
@@ -906,7 +906,38 @@ Run `pnpm test:runtime-readers` through the managed verification queue for the
 focused core plus real-provider matrix. Full proof retains its historical native/
 old-bounded TOTP replay and failed-guess rollback negatives; this slice does not
 change or skip them. Provider contract/storage/implementation remain 5/3/5.
-Public login/account-mode selection remains gated. Human mutations, lease/job
-binding (P2b) and protected recovery/external restore fencing (P3) remain open.
+Public login/account-mode selection remains gated. P2b1 human runtime leases
+and control are described below; P2b2 jobs/remaining transports and protected
+recovery/external restore fencing (P3) remain open.
 The current restored-provenance refusal remains across boots. These tests neither
 activate the installed service nor certify full RBAC readiness.
+
+## Human runtime mutations (P2b1)
+
+`runtime-mutate.test.ts` uses the shared production composition, real existing-owner
+and ordinary-human cookies, two sessions, another human and an agent across two
+runtime projects. Finite process doubles cover start/restart/stop without starting
+a development server. Protected operator assignment grants only explicit subsets
+of projects:read/claims:manage/runtime:control. No role, Knowledge link, owner kind
+or provider load creates extra authority.
+
+Schema 46 adds a permanent reservation marker, original session/evidence/revision
+lease sidecar and bounded durable intent/receipt ledger on the existing connection.
+TTL is 30..1800 seconds, default 1800, with an eight-hour/session absolute maximum.
+Legacy owner-string calls cannot authorize marked leases; machine binding stays
+unchanged. Rights are checked after Git/lock/borrow/readmission, before spawn and
+at delivery/replay. Revoke/regrant or a new login cannot take an old lease.
+
+Tests cover strict HTTP fields/origin/body bounds, independent control/read rights,
+exact own status, foreign and cloned actors, lease expiry, disconnect/concurrent
+retry, real database/provider reopening with the same cookie, and interrupted
+intent returning outcome_unknown without repeating effects. Reboots preserve only
+still-current ordinary sessions. Restored provider load remains P1 fail-closed;
+P3 must implement protected recovery/external revocation fencing before activation.
+Receipts/identity/logs expose no native session/binding secrets, ENV, commands or
+global capacity. Release, expiry and revocation do not stop an existing process.
+
+Run `pnpm test:runtime-mutations` through the managed queue for focused core and
+provider tests, then the complete provider proof. Its five historical native/old
+bounded factor negatives remain visible. P2b2 job/remaining transports, P3/A5,
+public browser mounting and account-mode activation are separate gates.

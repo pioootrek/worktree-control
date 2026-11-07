@@ -1,3 +1,7 @@
+import { HumanRuntimeService } from "./modules/runtime";
+import type { ProviderSessionActor } from "./modules/identity";
+import type { DatabaseAdmissionOptions } from "./database-admission";
+import type { RuntimeMutateResult } from "@/shared/contracts/runtime-mutate";
 import { scopedWaitSchema } from "@/shared/contracts/scoped-verification";
 import { randomBytes } from "node:crypto";
 import { DashboardQueryService } from "./modules/dashboard";
@@ -69,6 +73,7 @@ export class ControlService {
   private readonly dashboardQueries: DashboardQueryService;
   private readonly statusQueries: StatusService;
   private readonly scopedVerification?: ScopedVerificationService;
+  private readonly humanRuntime?: HumanRuntimeService;
   private readonly scopedRuntime?: ScopedRuntimeService;
   private readonly scopedConfiguration?: ScopedConfigurationService;
 
@@ -106,6 +111,10 @@ export class ControlService {
     });
     this.statusQueries = new StatusService(store, processes,
       () => this.lifecycle.capacityStatusCompact(), () => this.testQueueStatus());
+    if (runtimeAuthorizer?.resolveHumanRuntimeAuthority && store.humanRuntime) {
+      this.humanRuntime = new HumanRuntimeService({ resolveHumanRuntimeAuthority: runtimeAuthorizer.resolveHumanRuntimeAuthority.bind(runtimeAuthorizer) },
+        store, store.humanRuntime(), git, this.lifecycle, this.runtime);
+    }
     if (runtimeAuthorizer) {
       this.scopedVerification = new ScopedVerificationService(runtimeAuthorizer, store, git, testCommands, this.verification, tests);
       this.scopedRuntime = new ScopedRuntimeService(runtimeAuthorizer, store, git, processes, this.lifecycle, this.runtime, logs);
@@ -119,8 +128,15 @@ export class ControlService {
 
   /** Scoped agent runtime access; enforcement and safe views live in the runtime module. */
   scopedRuntimeEnabled(): boolean { return !!this.scopedRuntime; }
-  scopedProjects(actor: AuthenticatedPrincipal, session: ScopedSession | null) { return this.requireScopedRuntime().listProjects(actor, session); }
-  scopedProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession | null, projectId: string) { return this.requireScopedRuntime().projectStatus(actor, session, projectId); }
+  scopedProjects(actor: AuthenticatedPrincipal, session: ScopedSession | null) { return this.requireScopedRuntime().listProjects(actor, session).map(project => actor.authenticationMethod === "provider_session"
+    && this.humanRuntime?.ownClaim(actor, project.id) ? { ...project, claim: "own" as const } : project); }
+  scopedProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession | null, projectId: string) { const status = this.requireScopedRuntime().projectStatus(actor, session, projectId);
+    const ownClaim = actor.authenticationMethod === "provider_session" ? this.humanRuntime?.ownClaim(actor, projectId) : null;
+    return ownClaim ? { ...status, claim: "own" as const, ownClaim } : status; }
+  mutateHumanRuntime(actor: ProviderSessionActor, value: unknown, options?: DatabaseAdmissionOptions, deliver?: (result: RuntimeMutateResult) => void): Promise<RuntimeMutateResult> {
+    if (!this.humanRuntime) return Promise.reject(new RuntimeAccessDenied());
+    return this.humanRuntime.execute(value, actor, options, deliver);
+  }
   scopedCompactProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string) {
     // Cursor/wait binding remains the established machine session contract.
     if (actor.authenticationMethod === "provider_session") throw new RuntimeAccessDenied();

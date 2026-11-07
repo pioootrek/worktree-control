@@ -79,3 +79,5 @@ export type {
 export { ProviderRuntimeReadApplication, type ProviderRuntimeReadPort } from "./provider-runtime-read-application";
 
 export { parseStrictProviderJson } from "./strict-json";
+
+export { ProviderRuntimeMutateApplication, type ProviderRuntimeMutatePort } from "./provider-runtime-mutate-application";

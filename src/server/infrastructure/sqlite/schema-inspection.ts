@@ -1,3 +1,4 @@
+import { humanRuntimeMigration, humanRuntimeChecksum } from "./human-runtime-migration";
 import { runtimeMembershipMigration, runtimeMembershipChecksum } from "./runtime-membership-migration";
 import { testRunRequesterMigration, testRunRequesterChecksum } from "./test-run-requester-migration";
 import { humanPrincipalMigration, humanPrincipalChecksum } from "./human-principal-migration";
@@ -27,6 +28,7 @@ type ForeignKey = { table: string; from: string; to: string; on_delete: string; 
 // Historical installations may already have tables from the bootstrap DDL. Require
 // them only after their introducing migration, but validate any that are present.
 const tableVersions: Record<string, number> = {
+  human_runtime_leases: 46, human_runtime_intents: 46,
   runtime_human_memberships: 45,
   test_run_requesters: 44,
   authentication_ba_two_factor: 40, authentication_ba_passkey: 40, authentication_account_policies: 40,
@@ -57,6 +59,7 @@ const columnVersions: Record<string, number> = {
   "reservations.maximum_expires_at": 4, "reservations.token_hash": 4, "reservations.idempotency_key": 4,
   "reservations.principal_id": 36, "reservations.credential_id": 36,
   "reservations.request_fingerprint": 36,
+  "reservations.provider_bound": 46,
   "projects.configuration_revision": 37,
   // Migration 13 explicitly supports the legacy lineage without launch_preset.
   "projects.launch_preset": 15, "projects.environment_json": 8,
@@ -156,6 +159,7 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : x.version === 42 ? x.name !== humanPrincipalMigration.name || x.checksum !== humanPrincipalChecksum
       : x.version === 43 ? x.name !== godotWebMigration.name || x.checksum !== godotWebChecksum
       : x.version === 44 ? x.name !== testRunRequesterMigration.name || x.checksum !== testRunRequesterChecksum
+      : x.version === 46 ? x.name !== humanRuntimeMigration.name || x.checksum !== humanRuntimeChecksum
       : x.version === 45 ? x.name !== runtimeMembershipMigration.name || x.checksum !== runtimeMembershipChecksum
       : true)) refuse("migration checksum or name");
   }
@@ -187,6 +191,10 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
     // A known historical expression must not hide additional, unknown CHECKs.
     if (historicalLease && (actualChecks.length !== 2 || !actualChecks.includes("kindin('human','agent')"))) refuse("constraint in reservations: lease");
     for (let check of expected.checks) {
+      if (table === "runtime_human_memberships" && version < 46) {
+        if (check.startsWith("role")) check = "role='reader'";
+        if (check.startsWith("json_valid")) check = "permissions_json='[\"projects:read\"]'";
+      }
       if (table === "projects" && version < 43) check = check.replace(",'godot-web'", "");
       if (table === "projects" && version < 30) check = check.replace(",'none'", "");
       if (table === "test_runs" && version < 30) check = check.replace(",'godot'", "");

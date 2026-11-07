@@ -1,3 +1,4 @@
+import { HumanRuntimeQueries } from "./human-runtime-queries";
 import { RuntimeMembershipQueries } from "./runtime-membership-queries";
 import type { TestRunRequester } from "@/server/state-store";
 import { HumanAccountQueries } from "./human-account-queries";
@@ -861,6 +862,8 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     this.identity.savePrincipal(principal, actor);
   }
 
+  humanRuntime(): HumanRuntimeQueries { return new HumanRuntimeQueries(this.database); }
+
   runtimeMemberships(): RuntimeMembershipQueries { return new RuntimeMembershipQueries(this.database); }
 
   humanAccounts(): HumanAccountQueries { return new HumanAccountQueries(this.database); }
@@ -1190,7 +1193,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
              maximum_expires_at, token_hash, idempotency_key, released_at, principal_id, credential_id
       FROM reservations WHERE project_id = ? AND released_at IS NULL
     `).get(projectId) as ReservationRow | undefined;
-    return row ? mapReservation(row) : null;
+    return row ? this.projectReservation(row) : null;
   }
 
   getEffectiveReservation(projectId: string, observedAt: string): Reservation | null {
@@ -1201,7 +1204,16 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       WHERE project_id = ? AND released_at IS NULL
         AND (expires_at IS NULL OR expires_at > ?)
     `).get(projectId, observedAt) as ReservationRow | undefined;
-    return row ? mapReservation(row) : null;
+    const reservation = row ? this.projectReservation(row) : null;
+    return reservation && (reservation.expiresAt === null || reservation.expiresAt > observedAt) ? reservation : null;
+  }
+
+  private projectReservation(row: ReservationRow): Reservation {
+    const human = this.humanRuntime().lease(row.id);
+    return human ? human.reservation : this.providerBound(row.id) ? { ...mapReservation(row), expiresAt: "1970-01-01T00:00:00.000Z", maximumExpiresAt: "1970-01-01T00:00:00.000Z" } : mapReservation(row);
+  }
+  private providerBound(id: string): boolean {
+    return !!this.database.prepare("SELECT 1 FROM reservations WHERE id=? AND provider_bound=1").get(id);
   }
 
   acquireReservation(input: ReservationRequest): Reservation {
@@ -1286,6 +1298,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     const reservation = this.getActiveReservation(projectId);
     if (!reservation) return null;
     const row = this.activeReservationRow(projectId)!;
+    if (this.providerBound(row.id)) throw new ReservationError("claim_stale", "Provider-bound claim requires its original human session.");
     if (reservation.owner !== owner) throw new ReservationError("claim_stale", `Projekt jest zablokowany przez ${reservation.owner}.`);
     if (reservation.kind === "agent" && (!leaseTokenHash || !equalHash(row.token_hash, leaseTokenHash) || !equalBinding(row, binding))) {
       throw new ReservationError("claim_stale", "Nieprawidłowy token dzierżawy agenta.");
@@ -1335,6 +1348,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       this.expireReservations(projectId);
       const active = this.getActiveReservation(projectId);
       if (!active) return;
+      if (!force && this.providerBound(active.id)) throw new ReservationError("claim_stale", "Provider-bound claim requires its original human session.");
       if (!force && active.kind === "agent") throw new Error("Dzierżawę agenta może zdjąć tylko jej właściciel lub człowiek przez force release.");
       if (!force && active.owner !== owner) throw new Error("Tylko właściciel może zdjąć tę blokadę.");
       const row = this.activeReservationRow(projectId)!;
@@ -1391,8 +1405,10 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
         SELECT id, project_id, worktree_path, kind, owner, reason, created_at, expires_at,
                maximum_expires_at, token_hash, idempotency_key, released_at, principal_id, credential_id
         FROM reservations
-        WHERE project_id = ? AND released_at IS NULL AND expires_at IS NOT NULL AND expires_at <= ?
-      `).all(projectId, now) as ReservationRow[];
+        WHERE project_id = ? AND released_at IS NULL AND (
+          (expires_at IS NOT NULL AND expires_at <= ?) OR (provider_bound=1 AND NOT EXISTS
+          (SELECT 1 FROM human_runtime_leases h WHERE h.reservation_id=reservations.id AND h.expires_at>?)))
+      `).all(projectId, now, now) as ReservationRow[];
       for (const row of expired) {
         this.database.prepare(`
           UPDATE reservations SET released_at = ?, released_by = 'system:expiry' WHERE id = ?

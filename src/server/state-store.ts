@@ -159,6 +159,7 @@ export interface StateStore {
   saveWorktreeStorage(sample: WorktreeStorageSample): void;
   recordProjectEvent(projectId: string, eventType: string, actor: string, details: unknown): void;
   listWorktreeLaunches(projectId: string): Record<string, string>;
+  humanRuntime?(): import("@/server/modules/runtime").HumanRuntimeStore;
   getActiveReservation(projectId: string): Reservation | null;
   getEffectiveReservation(projectId: string, observedAt: string): Reservation | null;
   acquireReservation(input: ReservationRequest): Reservation;

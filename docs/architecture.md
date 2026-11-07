@@ -157,8 +157,16 @@ for explicit engineering limits. P2a adds an explicit runtime reader aggregate
 (schema 45), protected local administration and current-provider-session reads
 through the existing scoped projections and controller facade. Discovery yields
 the same connection admission and rechecks before result delivery. Humans have
-no agent lease ownership. P2b mutation/session binding and P3 recovery/restore
-fencing remain activation gates; no public browser mount is enabled.
+no agent lease ownership. P2b1 adds explicit operator action subsets and actual
+provider-session human leases through shared runtime operations and a closed
+mutate route. Schema 46 retains reservations on the sole connection, adds a
+permanent bound marker, finite-deadline/evidence sidecar and bounded durable
+intent ledger. The existing lifecycle locks, capacity and process verifier are
+reused; pending/interrupted intent never reruns automatically. Exact original
+membership/session authority fences mutation and delivery, including replays.
+See [human runtime leases](authentication.md#human-runtime-operators-and-leases-p2b1).
+P2b2 jobs/remaining transports and P3 recovery/restore fencing remain activation
+gates; no public browser mount is enabled.
 
 ## Resource policy
 
@@ -576,7 +584,7 @@ admitted phase. Accepted cleanup uses reserved queue room on the same gate, with
 lock, counter or connection.
 
 Current isolated provider API is contract 5, storage revision 3, implementation
-`0.0.0-proof.5` and core schema 45. Earlier versions evolved as follows.
+`0.0.0-proof.5` and core schema 46. Earlier versions evolved as follows.
 Provider API contract 2 requires durable `signOut`; version 1 fails compatibility
 checks. Contract 3 adds the application-owned `host.protection` port: the provider
 calls it synchronously inside its open transaction, and `AccountProtection` keeps

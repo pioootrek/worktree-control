@@ -1,3 +1,4 @@
+import { humanRuntimePermissionsSchema, runtimeMembershipSetSchema } from "@/shared/contracts/runtime-memberships";
 import type Database from "better-sqlite3";
 import { AuthenticationQueries } from "./authentication-queries";
 
@@ -21,6 +22,27 @@ export function validateDatabase(database: Database.Database, version: number): 
       OR (c.kind='worker_token' AND p.kind<>'worker') LIMIT 1`).get()) fail("credential principal kind");
   if (version >= 45 && database.prepare(`SELECT 1 FROM runtime_human_memberships m
     JOIN remote_principals p ON p.id=m.principal_id WHERE p.kind NOT IN ('owner','human') LIMIT 1`).get()) fail("runtime membership principal");
+  if (version >= 46) {
+    for (const m of database.prepare("SELECT * FROM runtime_human_memberships").all() as Array<{principal_id:string;project_id:string;role:string;permissions_json:string}>) {
+      let permissions: unknown;
+      try { permissions = JSON.parse(m.permissions_json); } catch { fail("runtime membership permissions"); }
+      if (!runtimeMembershipSetSchema.safeParse({ principalId: m.principal_id, scope: {kind:"runtime-project",id:m.project_id}, role:m.role,permissions,expectedRevision:0 }).success) fail("runtime membership permissions");
+    }
+    for (const lease of database.prepare("SELECT permissions_json FROM human_runtime_leases").all() as Array<{permissions_json:string}>) {
+      let permissions: unknown;
+      try { permissions=JSON.parse(lease.permissions_json); } catch { fail("human lease permissions"); }
+      if (!humanRuntimePermissionsSchema.safeParse(permissions).success) fail("human lease permissions");
+    }
+    if (database.prepare(`SELECT 1 FROM human_runtime_leases h JOIN reservations r ON r.id=h.reservation_id
+      JOIN remote_principals p ON p.id=h.principal_id WHERE r.provider_bound<>1 OR r.kind<>'human'
+      OR p.kind NOT IN ('human','owner') OR h.fingerprint<>r.request_fingerprint OR r.owner<>('human:'||h.principal_id) OR h.expires_at<=r.created_at OR h.maximum_expires_at>h.session_deadline
+      OR h.expires_at IS NOT strftime('%Y-%m-%dT%H:%M:%fZ',h.expires_at)
+      OR h.maximum_expires_at IS NOT strftime('%Y-%m-%dT%H:%M:%fZ',h.maximum_expires_at)
+      OR h.session_deadline IS NOT strftime('%Y-%m-%dT%H:%M:%fZ',h.session_deadline)
+      OR h.maximum_expires_at>strftime('%Y-%m-%dT%H:%M:%fZ',r.created_at,'+8 hours') LIMIT 1`).get()) fail("human lease binding");
+    if (database.prepare(`SELECT 1 FROM reservations WHERE provider_bound=1 AND (kind<>'human' OR token_hash IS NOT NULL
+      OR principal_id IS NOT NULL OR credential_id IS NOT NULL OR request_fingerprint IS NULL) LIMIT 1`).get()) fail("human lease marker");
+  }
   // Evidence and trust describe one provider account. Selected-protection flags are
   // checked per account at every decision, so one inconsistent row refuses only itself.
   if (version >= 40 && database.prepare(`SELECT 1 FROM authentication_session_evidence e

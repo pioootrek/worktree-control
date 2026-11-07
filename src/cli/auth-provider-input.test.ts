@@ -163,7 +163,7 @@ describe("protected runtime reader input", () => {
     const input = { principalId: "owner", scope: { kind: "runtime-project", id: "p" }, role: "reader", permissions: ["projects:read"], expectedRevision: 0 };
     expect(await providerCommandFromArgs(["provider", "runtime-access", "set", "--input-stdin"], Readable.from([JSON.stringify(input)])))
       .toEqual({ command: "auth-provider", action: "runtime-access-set", input });
-    for (const extra of [{ role: "operator" }, { permissions: ["tests:run"] }, { scope: { kind: "knowledge-project", id: "p" } }, { actor: "local-admin" }, { sponsorId: "owner" }]) {
+    for (const extra of [{ role: "manager" }, { permissions: ["tests:run"] }, { scope: { kind: "knowledge-project", id: "p" } }, { actor: "local-admin" }, { sponsorId: "owner" }]) {
       await expect(providerCommandFromArgs(["provider", "runtime-access", "set", "--input-stdin"], Readable.from([JSON.stringify({ ...input, ...extra })])))
         .rejects.toMatchObject({ code: "invalid_input" });
     }

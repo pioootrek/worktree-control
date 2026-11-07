@@ -20,6 +20,7 @@ export const AGENT_LEASE_MAX_SECONDS = 8 * 60 * 60;
 /** Current-authority port; IdentityService re-reads credential, agent, delegation, ceiling and sponsor. */
 export interface RuntimeAuthorizer {
   authorizeRuntime(actor: AuthenticatedPrincipal, projectId: string, action: RuntimeAction): void;
+  resolveHumanRuntimeAuthority?: import("./human-runtime").HumanRuntimeAuthorizer["resolveHumanRuntimeAuthority"];
   runtimeAccessFor(actor: AuthenticatedPrincipal): RuntimeAccessEntry[];
 }
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
@@ -490,6 +491,20 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     return evidence.method === frozen.method && evidence.authenticatedAt === frozen.authenticatedAt && evidence.originalDeadline === frozen.originalDeadline
       && evidence.generation === frozen.generation && evidence.policyRevision === frozen.policyRevision && evidence.credential === frozen.credential
       && evidence.credentialBinding === frozen.credentialBinding && evidence.attemptId === frozen.attemptId;
+  }
+
+  /** Stable across requests and ordinary reboots only while the original committed session survives.
+   * The original evidence and mapping linkage are hashed, never released to a client or log.
+   */
+  resolveRuntimeSession(actor: ProviderSessionActor, now: string): import("../identity").ProviderRuntimeSession | null {
+    if (!this.isCurrentProviderSession(actor, now)) return null;
+    const original = this.#actors.get(actor)!;
+    const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+    const evidenceKey = digest(["wtc-human-evidence-v1", original.evidence, original.mappingLinkedAt, original.authentication]);
+    return Object.freeze({ principalId: original.principalId,
+      sessionKey: digest(["wtc-human-session-v1", this.#input.providerId, original.sessionId, original.subject,
+        original.principalId, original.principalKind, original.createdAt, original.mappingLinkedAt, evidenceKey]),
+      evidenceKey, generation: original.evidence.generation, deadline: original.expiresAt });
   }
 
   /**

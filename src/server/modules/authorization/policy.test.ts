@@ -15,7 +15,7 @@ describe("shared authorization policy", () => {
     for (const action of ["claims:manage", "runtime:control", "profiles:select", "config:write", "tests:run", "knowledge:read", "env:read"] as const) {
       expect(isAuthorized(subject, action, { kind: "runtime-project", id: "p" }, { ...context, humanRuntime })).toBe(false);
     }
-    for (const mutation of [{ role: "operator" }, { role: "manager" }, { permissions: [] }, { permissions: null }, { permissions: ["tests:run"] },
+    for (const mutation of [{ role: "manager" }, { permissions: [] }, { permissions: null }, { permissions: ["tests:run"] },
       { permissions: ["projects:read", "runtime:control"] }, { principalId: "other" }, { revokedAt: "now" },
       { revision: 0 }, { scope: { kind: "knowledge-project", id: "p" } }, { scope: { kind: "runtime-project", id: "q" } }]) {
       expect(effectiveHumanRuntimeActions(subject, "p", { ...humanRuntime, membership: { ...membership, ...mutation } as never })).toEqual([]);
@@ -23,6 +23,14 @@ describe("shared authorization policy", () => {
     for (const authority of [{ ...humanRuntime, providerSession: false }, { ...humanRuntime, project: null },
       { ...humanRuntime, membership: null }]) expect(effectiveHumanRuntimeActions(subject, "p", authority)).toEqual([]);
     for (const kind of ["agent", "worker", "installation"] as const) expect(effectiveHumanRuntimeActions({ ...subject, kind }, "p", humanRuntime)).toEqual([]);
+  });
+  it("requires explicit operator actions without granting read, jobs, configuration or ENV", () => {
+    const membership = { principalId: "actor", scope: { kind: "runtime-project" as const, id: "p" }, role: "operator" as const,
+      permissions: ["runtime:control" as const], revision: 1, updatedAt: "now", revokedAt: null };
+    expect(effectiveHumanRuntimeActions(subject, "p", { providerSession: true, project: {id:"p"}, membership })).toEqual(["runtime:control"]);
+    for (const permissions of [[], ["tests:run"], ["profiles:select"], ["config:write"], ["env:use"], ["claims:manage","claims:manage"]]) {
+      expect(effectiveHumanRuntimeActions(subject, "p", {providerSession:true,project:{id:"p"},membership:{...membership,permissions} as never})).toEqual([]);
+    }
   });
   it.each<[KnowledgeRole, SubjectKind, string[]]>([
     ["reader", "human", ["knowledge:read", "knowledge:export", "attachments:read"]],

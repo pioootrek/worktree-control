@@ -574,6 +574,20 @@ export class IdentityService {
     return this.runtimeAccess;
   }
 
+  /** Exact opaque session plus current explicit aggregate; no stored machine credential. */
+  resolveHumanRuntimeAuthority(actor: ProviderSessionActor, projectId: string, actions: readonly RuntimeAction[]): import("./contracts").HumanRuntimeAuthority {
+    this.requireCurrentAuthentication(actor);
+    if (actor.authenticationMethod !== "provider_session") throw new IdentityError("invalid_credential", "Invalid provider session.");
+    for (const action of actions) this.authorizeRuntime(actor, projectId, action);
+    const session = this.providerSessions?.resolveRuntimeSession?.(actor, this.clock());
+    const membership = this.runtimeMemberships?.getRuntimeMembership(actor.principalId, projectId);
+    if (!session || session.principalId !== actor.principalId || !membership
+      || !effectiveHumanRuntimeActions(this.subject(actor), projectId, this.humanRuntimeAuthority(actor, projectId)).length) {
+      throw new IdentityError("runtime_forbidden", RUNTIME_ACCESS_DENIED);
+    }
+    return Object.freeze({ ...session, membershipRevision: membership.revision, permissions: Object.freeze([...membership.permissions]) });
+  }
+
   private humanRuntimeAuthority(actor: AuthenticatedPrincipal, projectId: string) {
     return {
       providerSession: actor.authenticationMethod === "provider_session",

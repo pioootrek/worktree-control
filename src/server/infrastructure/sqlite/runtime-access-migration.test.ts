@@ -65,7 +65,7 @@ describe("runtime access migration 36", () => {
       expect(inspectSchema(db).version).toBe(35);
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'runtime_%'").all()).toEqual([]);
       initializeSchema(db, false);
-      expect(inspectSchema(db).version).toBe(45);
+      expect(inspectSchema(db).version).toBe(46);
       expect(db.prepare("SELECT id, owner, token_hash, released_at FROM reservations").all()).toEqual(before);
       expect(db.prepare("SELECT principal_id, credential_id, request_fingerprint FROM reservations").all())
         .toEqual([{ principal_id: null, credential_id: null, request_fingerprint: null }]);

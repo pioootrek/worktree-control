@@ -18,6 +18,8 @@ export type {
   CredentialAuthenticatedPrincipal,
   ProviderSessionActor,
   ProviderSessionAuthority,
+  ProviderRuntimeSession,
+  HumanRuntimeAuthority,
   AuthenticatedIdentity,
   AuthenticationMethod,
   ControllerAuthentication,

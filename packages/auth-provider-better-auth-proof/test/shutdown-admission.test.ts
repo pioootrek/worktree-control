@@ -76,7 +76,7 @@ describe("owning service shutdown with strict provider admission", () => {
       await service.shutdown();
       expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
       const reopened = new SqliteStateStore(f.path);
-      try { expect(reopened.schemaVersion()).toBe(45); } finally { reopened.close(); }
+      try { expect(reopened.schemaVersion()).toBe(46); } finally { reopened.close(); }
       // No late write/notification survived the forced rollback; dispose's failed result stays idempotent.
       expect(readCommitted(f.path, db => (db.prepare("SELECT count(*) n FROM authentication_ba_user").get() as { n: number }).n)).toBe(0);
       expect(f.evidence.events).toEqual([]);

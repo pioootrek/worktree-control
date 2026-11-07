@@ -5,7 +5,7 @@ import { IdentityError, type ProviderSessionActor } from "@/server/modules/ident
 import { RuntimeAccessDenied, ScopedRuntimeError } from "@/server/modules/runtime";
 import { knowledgeFailure } from "@/server/modules/knowledge";
 import { admitWithRetry, databaseAdmissionFailure, type DatabaseAdmission } from "@/server/database-admission";
-import { AuthenticationProviderError, BROWSER_OPERATIONS, browserOperationRequires, type AuthenticationProviderRuntime, type BrowserOperation, type BrowserRelease, type ProviderKnowledgeApplication, type ProviderRuntimeReadApplication } from "@/server/modules/authentication";
+import { AuthenticationProviderError, BROWSER_OPERATIONS, browserOperationRequires, type AuthenticationProviderRuntime, type BrowserOperation, type BrowserRelease, type ProviderKnowledgeApplication, type ProviderRuntimeReadApplication, type ProviderRuntimeMutateApplication } from "@/server/modules/authentication";
 import {
   approvedAuthenticationCookies, BoundaryError, CHALLENGE_COOKIE, COOKIE_POLICY, deletionCookie, fail, parseStrictJson, PASSKEY_COOKIE, readBoundedBody, requestCookies, SESSION_COOKIE,
   validateTransportLimits, type AuthenticationTransportLimits,
@@ -13,6 +13,7 @@ import {
 
 export { approvedAuthenticationCookies, type AuthenticationTransportLimits } from "./authentication-http-boundary";
 
+const RUNTIME_ROUTES = new Set(["/api/runtime/read", "/api/runtime/mutate"]);
 const ROUTES = new Map(Object.entries(BROWSER_OPERATIONS).map(([operation, definition]) => [`/api/auth${definition.path}`, operation as BrowserOperation]));
 /** The headers whose repetition could otherwise change what a single value means. */
 const SINGLE_HEADERS = ["host", "origin", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "content-type", "content-length", "content-encoding", "transfer-encoding"] as const;
@@ -66,6 +67,7 @@ export class AuthenticationHttp {
     admission: DatabaseAdmission;
     knowledge: ProviderKnowledgeApplication;
     runtimeReads?: ProviderRuntimeReadApplication;
+    runtimeMutations?: ProviderRuntimeMutateApplication;
     status(): BrowserAuthenticationStatus;
     maintenance?(): boolean;
     /** Controller composition guard, invoked only inside fresh core admission. */
@@ -108,7 +110,7 @@ export class AuthenticationHttp {
   async handle(request: IncomingMessage, response: ServerResponse): Promise<boolean> {
     const path = request.url ?? "";
     const cookie = hasProviderCookie(request);
-    if (!path.includes("auth") && !path.startsWith("/api/runtime") && !cookie) return false;
+    if (!path.includes("auth") && !RUNTIME_ROUTES.has(path) && !cookie) return false;
     // The slot is held until the response closed AND real provider work ended.
     let counted = false, operationFinished = false, responseFinished = response.writableFinished || response.destroyed;
     const release = () => {
@@ -116,7 +118,7 @@ export class AuthenticationHttp {
     };
     const lifetime = new RequestLifetime(request, response, () => { responseFinished = true; release(); });
     const started: Array<Promise<void>> = [];
-    let unreleased: BrowserRelease | null = null, knowledge = false, runtimeRead = false;
+    let unreleased: BrowserRelease | null = null, knowledge = false, runtimeRead = false, runtimeMutation = false;
     try {
       this.boundary(request);
       if (this.deps.maintenance?.()) fail(503, "database_unavailable");
@@ -126,11 +128,12 @@ export class AuthenticationHttp {
       }
       knowledge = path === "/api/knowledge" && cookie;
       runtimeRead = path === "/api/runtime/read" && cookie && !!this.deps.runtimeReads;
+      runtimeMutation = path === "/api/runtime/mutate" && cookie && !!this.deps.runtimeMutations;
       const routed = ROUTES.get(path);
       // A closed factor route is the same generic denial as an unknown one.
       const operation = routed && (!browserOperationRequires(routed, "factor") || this.deps.runtime.factorsEnabled) ? routed : undefined;
-      if (!operation && !knowledge && !runtimeRead) fail(401, "invalid_credential");
-      if (request.method !== (knowledge || runtimeRead ? "POST" : BROWSER_OPERATIONS[operation!].method)) fail(405, "method_not_allowed");
+      if (!operation && !knowledge && !runtimeRead && !runtimeMutation) fail(401, "invalid_credential");
+      if (request.method !== (knowledge || runtimeRead || runtimeMutation ? "POST" : BROWSER_OPERATIONS[operation!].method)) fail(405, "method_not_allowed");
       const reserved = operation && browserOperationRequires(operation, "initiating") ? this.#limits.reservedCompletionSlots : 0;
       if (this.#active >= this.#maxInFlight - reserved) fail(503, "database_busy");
       this.#active++; counted = true;
@@ -146,21 +149,22 @@ export class AuthenticationHttp {
       let input: unknown;
       if (request.method === "POST") {
         if (request.headers["content-type"] !== "application/json") fail(400, "invalid_request");
-        const limit = runtimeRead ? Math.min(4096, this.#limits.passwordBodyBytes) : knowledge ? this.#limits.knowledgeBodyBytes : operation!.startsWith("passkey-") ? this.#limits.webAuthnBodyBytes : this.#limits.passwordBodyBytes;
+        const limit = runtimeRead || runtimeMutation ? Math.min(4096, this.#limits.passwordBodyBytes) : knowledge ? this.#limits.knowledgeBodyBytes : operation!.startsWith("passkey-") ? this.#limits.webAuthnBodyBytes : this.#limits.passwordBodyBytes;
         const text = await readBoundedBody(request, { limit, timeoutMs: this.#limits.bodyTimeoutMs, signal: lifetime.signal });
         input = parseStrictJson(text, knowledge ? this.#limits.knowledgeJson : this.#limits.json);
       }
       lifetime.detachRequest();
       if (this.deps.maintenance?.()) fail(503, "database_unavailable");
-      if (knowledge || runtimeRead) {
+      if (knowledge || runtimeRead || runtimeMutation) {
         const cookieHeader = cookies.get(SESSION_COOKIE);
         if (cookieHeader !== undefined) nativeHeaders.set("cookie", `${SESSION_COOKIE}=${cookieHeader}`);
         const authenticated = this.deps.runtime.authenticateRequest(nativeHeaders, { signal: lifetime.signal });
         started.push(authenticated.settled);
         const actor = await authenticated.result;
         if (!actor) fail(401, "invalid_credential");
-        if (runtimeRead) {
-          await this.deps.runtimeReads!.execute(input, actor, { signal: lifetime.signal }, result => {
+        if (runtimeRead || runtimeMutation) {
+          const application = runtimeMutation ? this.deps.runtimeMutations! : this.deps.runtimeReads!;
+          await application.execute(input, actor, { signal: lifetime.signal }, result => {
             if (this.deps.maintenance?.()) fail(503, "database_unavailable");
             this.deps.assertAvailable?.();
             if (lifetime.open) authenticationJson(response, 200, result);
@@ -220,7 +224,7 @@ export class AuthenticationHttp {
         unreleased = null;
       }, { signal: lifetime.signal, reserved: true });
     } catch (error) {
-      await this.failed(error, unreleased, knowledge || runtimeRead, response, lifetime, started);
+      await this.failed(error, unreleased, knowledge || runtimeRead || runtimeMutation, response, lifetime, started);
     } finally {
       lifetime.detachRequest();
       // No Promise.race: a timed-out borrow's execution keeps this slot until it really ends.
@@ -296,8 +300,12 @@ export class AuthenticationHttp {
 /** One fixed public failure. No branch distinguishes account, mapping, generation or SQL detail. */
 function failure(error: unknown, knowledge: boolean): { status: number; code: string; committed?: boolean } {
   if (error instanceof RuntimeAccessDenied || (error instanceof IdentityError && error.code === "runtime_forbidden")) return { status: 403, code: "project_access_denied" };
-  if (error instanceof ScopedRuntimeError) return error.code === "invalid_request" ? { status: 400, code: "invalid_request" }
-    : { status: 503, code: "runtime_read_unavailable" };
+  if (error instanceof ScopedRuntimeError) {
+    if (error.code === "invalid_request") return { status: 400, code: "invalid_request" };
+    if (["idempotency_conflict", "claim_conflict", "claim_stale"].includes(error.code)) return { status: 409, code: error.code };
+    if (error.code === "outcome_unknown") return { status: 409, code: "outcome_unknown" };
+    return { status: 503, code: "runtime_read_unavailable" };
+  }
   if (error instanceof BoundaryError) return { status: error.status, code: error.code };
   const admission = databaseAdmissionFailure(error);
   if (admission) return { status: admission.status, code: admission.code };
