@@ -5,9 +5,11 @@ import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
 import { SqliteStateStore } from "@/server/infrastructure/sqlite";
+import { maintainSecurityFence } from "@/server/bootstrap/security-maintenance";
+import { resolveAppPaths } from "@/server/paths";
 import { AuthenticationProviderError, AuthenticationService, loadAuthenticationProvider, resolveControllerAuthentication } from "@/server/modules/authentication";
 import type { ProofFaultInjection } from "../src/index";
-import { BASE_URL, cleanupRoots, Client, count, IP_HEADER, loadProof, ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, proofFixture, PROVIDER_ENTRY, readCommitted, SECRET, SESSION_POLICY, storeFixture } from "./fixture";
+import { cleanupRoots, Client, count, loadProof, ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, proofFixture, PROVIDER_ENTRY, readCommitted, SESSION_POLICY, storeFixture } from "./fixture";
 
 afterEach(() => { vi.useRealTimers(); cleanupRoots(); });
 
@@ -544,20 +546,26 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
     expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
     const restoredPath = join(f.root, "restored", "state.sqlite3");
     restoreControllerBackup(backup, restoredPath, join(f.root, "restored-attachments"));
+    expect(() => new SqliteStateStore(restoredPath)).toThrow(/security_fence_recovery_required/);
+    const paths=resolveAppPaths(join(f.root,"restored"));
+    const status=maintainSecurityFence(paths,{action:"inspect"});
+    expect(maintainSecurityFence(paths,{action:"resume",expect:status.preflight,mode:"token"})).toMatchObject({trusted:true,quarantined:true});
     const restored = new SqliteStateStore(restoredPath);
     try {
-      expect(restored.schemaVersion()).toBe(48);
+      expect(restored.schemaVersion()).toBe(49);
       expect(count(restoredPath, "authentication_provider_subjects")).toBe(1);
       expect(restored.listProjects().map(project => project.name)).toEqual(["after-disposal"]);
-      // Its marked rows may be older than what was published, so this owner never gets issuance bounds.
-      await expect(restored.recoverIssuedSessions(SESSION_POLICY)).rejects.toThrow("provenance");
-      await expect(loadProof(restored)).rejects.toThrow();
-      const reloaded = await loadAuthenticationProvider({ entry: PROVIDER_ENTRY, providerId: "better-auth", storage: restored.authenticationProviderStorage(),
-        options: { baseURL: BASE_URL, secret: SECRET, clientIpHeader: IP_HEADER } });
+      // The durable protected receipt permits issuance only after restored authorities are quarantined.
+      await restored.recoverIssuedSessions(SESSION_POLICY);
+      const reloaded = (await loadProof(restored)).runtime;
       try {
-        // A restored snapshot brings back its sessions; external revocation fences are A5 work.
-        expect((await new Client(reloaded).resolve(client.cookieHeader()))?.principalId).toBe(f.owner.principalId);
-        expect((await new Client(reloaded, "203.0.113.80").signIn(NEW_PASSWORD)).status).toBe(503);
+        expect(await new Client(reloaded).resolve(client.cookieHeader())).toBeNull();
+        expect((await new Client(reloaded, "203.0.113.80").signIn(NEW_PASSWORD)).status).toBe(401);
+        expect(restored.getPrincipal(f.owner.principalId)).toMatchObject({id:f.owner.principalId,kind:"owner",status:"active"});
+        await reloaded.recoverLocal({principalId:f.owner.principalId,newPassword:"fixture-restored-owner-password-3",actor:"local-cli"});
+        const fresh=new Client(reloaded,"203.0.113.82");
+        expect((await fresh.signIn("fixture-restored-owner-password-3")).status).toBe(200);
+        expect((await fresh.resolve())?.principalId).toBe(f.owner.principalId);
       } finally { await reloaded.dispose(); }
     } finally { restored.close(); }
   });
