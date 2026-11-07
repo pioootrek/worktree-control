@@ -43,7 +43,7 @@ export interface VerificationJobs {
   enqueue(input: EnqueueTestInput): TestRun;
   cancel(runId: string, actor: string, revalidate?: () => void): Promise<TestRun>;
   configureRequesterAuthorizer?(authorize: (run: TestRun, requester: VerificationRequester) => void): void;
-  authorizeRequester?(run: TestRun): void;
+  revalidateRequester?(runId: string): void;
   configureSourceObserver?(observer: TestSourceObserver): void;
   replay?(actor: string, idempotencyKey: string, projectId: string, worktreePath: string, presetId: string): TestRun | null;
 }

@@ -101,7 +101,9 @@ export class TestJobManager {
     this.requesterAuthorizer = authorize;
   }
 
-  authorizeRequester(run: TestRun): void {
+  revalidateRequester(runId: string): void { this.authorizeRequester(this.requireRun(runId)); }
+
+  private authorizeRequester(run: TestRun): void {
     const requester = this.store.getHumanTestRunRequester?.(run.id) ?? this.store.getTestRunRequester(run.id);
     if (!requester) {
       if (run.actor.startsWith("human:test:")) throw new Error("Human test attribution is unavailable.");

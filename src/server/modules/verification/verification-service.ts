@@ -20,7 +20,11 @@ export class VerificationService {
   ) {
     if (this.git.observe && this.tests?.configureSourceObserver) {
       this.tests.configureSourceObserver(async (run, stage) => this.lifecycle.serialized(run.projectId, async () => {
-        const current = () => { if (stage === "preflight") this.tests?.authorizeRequester?.(run); };
+        const current = () => {
+          if (stage !== "preflight" || !this.tests?.revalidateRequester) return;
+          if (!("id" in run) || typeof run.id !== "string") throw new Error("Test source identity is unavailable.");
+          this.tests.revalidateRequester(run.id);
+        };
         current();
         const project = this.lifecycle.requireProject(run.projectId);
         const worktrees = await admissionOf(this.store).idle(() => this.git.list(project.repositoryPath));

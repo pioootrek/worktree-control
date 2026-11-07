@@ -237,7 +237,7 @@ describe("real provider human finite verification",()=>{
   it.each(["configuration","disposal"])("fails closed at dispatch when the shared provider has lost %s authority",async mode=>{
     const f=await fixture(),blocker=await f.block();try{
       await assign(f);const queued=await f.enqueue(),actor=await f.actor(f.http.human);
-      if(mode==="configuration")await f.composition.execute({command:"auth-provider",action:"configure",input:{module:join(f.root,"runtime-provider.mjs"),origin:ORIGIN,signingSecret:{kind:"generate"}}});
+      if(mode==="configuration")await f.composition.execute({command:"auth-provider",action:"configure",input:{module:join(f.root,"runtime-provider.mjs"),origin:"https://next-controller.test",signingSecret:{kind:"preserve"}}});
       else await f.composition.dispose();
       await expect(f.service.humanVerificationOperation(actor,{operation:"status",runId:queued.status.runId})).rejects.toThrow();
       blocker.release();expect((await f.terminal(queued.status.runId)).phase).toBe("failed");expect(existsSync(f.marker)).toBe(false);expect(f.load).toHaveBeenCalledOnce();
