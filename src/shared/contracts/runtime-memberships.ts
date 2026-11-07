@@ -21,7 +21,7 @@ export interface RuntimeMembership {
   principalId: string;
   scope: { kind: "runtime-project"; id: string };
   role: "reader";
-  permissions: ["projects:read"];
+  permissions: Array<"projects:read">;
   revision: number;
   updatedAt: string;
   revokedAt: string | null;

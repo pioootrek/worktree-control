@@ -108,15 +108,17 @@ describe("real shared provider human runtime reader", () => {
     const f = await runtimeReaderFixture(), entered = gate(), resume = gate();
     let pending: Promise<unknown> | undefined;
     try {
-      const http = await login(f); await f.set(f.human); const actor = await f.actor(http.human);
+      const http = await login(f), principalId = reason === "recovery" ? EXISTING_OWNER : f.human;
+      const client = reason === "recovery" ? http.owner : http.human;
+      await f.set(principalId); const actor = await f.actor(client);
       f.hooks.git = async () => { entered.open(); await resume.opened; };
-      pending = http.human.call(route, { body: { operation: "list-worktrees", projectId: f.a.id } });
+      pending = client.call(route, { body: { operation: "list-worktrees", projectId: f.a.id } });
       await entered.opened;
       expect(f.store.admissionSnapshot().coreActive).toBe(0);
       if (reason === "revoke") await f.revoke(f.human);
       if (reason === "disable") await f.run(["human", "disable", "--principal-id", f.human]);
       if (reason === "logout") expect((await http.human.call("/api/auth/sign-out", { body: {} })).status).toBe(200);
-      if (reason === "recovery") await f.run(["recover", "--principal-id", f.human, ...f.input({ newPassword: "replacement-human-password-1" })]);
+      if (reason === "recovery") await f.run(["recover", "--principal-id", EXISTING_OWNER, ...f.input({ newPassword: "replacement-human-password-1" })]);
       if (reason === "expiry") await f.sql('UPDATE authentication_ba_session SET "expiresAt"=?', [new Date(Date.now() - 60_000).toISOString()]);
       if (reason === "membership-delete") await f.sql("DELETE FROM runtime_human_memberships WHERE principal_id=?", [f.human]);
       if (reason === "subject-revoke") await f.sql("UPDATE authentication_provider_subjects SET status='revoked',revoked_at=? WHERE principal_id=?", [new Date().toISOString(), f.human]);

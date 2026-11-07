@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { request } from "node:http";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -16,6 +17,23 @@ function directory(): string {
 }
 
 describe("admin socket", () => {
+  it("refuses duplicate protected provider JSON keys before application dispatch", async () => {
+    const root = directory(), path = join(root, "state", "admin.sock");
+    let dispatched = false;
+    const admin = await listenAdminSocket(path, () => { dispatched = true; return {}; });
+    cleanups.push(() => admin.close());
+    const reply = await new Promise<{ status: number; body: unknown }>((resolve, reject) => {
+      const call = request({ socketPath: path, path: "/auth", method: "POST" }, response => {
+        const chunks: Buffer[] = [];
+        response.on("data", chunk => chunks.push(chunk));
+        response.on("end", () => resolve({ status: response.statusCode!, body: JSON.parse(Buffer.concat(chunks).toString()) }));
+      });
+      call.on("error", reject);
+      call.end('{"command":"auth-provider","action":"runtime-access-list","input":{"principalId":"owner","principalId":"agent"}}');
+    });
+    expect(reply).toMatchObject({ status: 400, body: { code: "invalid_input" } });
+    expect(dispatched).toBe(false);
+  });
   it("is reachable only through an owner-only socket and replaces a stale one", async () => {
     const root = directory();
     const path = join(root, "state", "admin.sock");

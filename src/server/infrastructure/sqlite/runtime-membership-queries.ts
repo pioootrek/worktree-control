@@ -8,8 +8,13 @@ import {
 type Row = { principal_id: string; project_id: string; scope_kind: "runtime-project"; role: "reader";
   permissions_json: string; revision: number; updated_at: string; revoked_at: string | null };
 function membership(row: Row): RuntimeMembership {
+  let permissions: Array<"projects:read"> = [];
+  try {
+    const value: unknown = JSON.parse(row.permissions_json);
+    if (Array.isArray(value) && value.length === 1 && value[0] === "projects:read") permissions = ["projects:read"];
+  } catch { /* Malformed current authority never grants access. */ }
   return { principalId: row.principal_id, scope: { kind: row.scope_kind, id: row.project_id }, role: row.role,
-    permissions: JSON.parse(row.permissions_json), revision: row.revision, updatedAt: row.updated_at, revokedAt: row.revoked_at };
+    permissions, revision: row.revision, updatedAt: row.updated_at, revokedAt: row.revoked_at };
 }
 
 /** Uses the sole controller connection. Validation also applies to direct store calls. */

@@ -71,7 +71,7 @@ export function effectiveHumanRuntimeActions(subject: AuthorizationSubject, proj
   if (!membership || membership.principalId !== subject.id || membership.scope.kind !== "runtime-project"
     || membership.scope.id !== projectId || membership.revokedAt !== null || membership.role !== "reader"
     || !Number.isSafeInteger(membership.revision) || membership.revision < 1
-    || membership.permissions.length !== 1 || membership.permissions[0] !== "projects:read") return [];
+    || !Array.isArray(membership.permissions) || membership.permissions.length !== 1 || membership.permissions[0] !== "projects:read") return [];
   return ["projects:read"];
 }
 

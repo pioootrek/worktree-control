@@ -15,7 +15,7 @@ describe("shared authorization policy", () => {
     for (const action of ["claims:manage", "runtime:control", "profiles:select", "config:write", "tests:run", "knowledge:read", "env:read"] as const) {
       expect(isAuthorized(subject, action, { kind: "runtime-project", id: "p" }, { ...context, humanRuntime })).toBe(false);
     }
-    for (const mutation of [{ role: "operator" }, { role: "manager" }, { permissions: [] }, { permissions: ["tests:run"] },
+    for (const mutation of [{ role: "operator" }, { role: "manager" }, { permissions: [] }, { permissions: null }, { permissions: ["tests:run"] },
       { permissions: ["projects:read", "runtime:control"] }, { principalId: "other" }, { revokedAt: "now" },
       { revision: 0 }, { scope: { kind: "knowledge-project", id: "p" } }, { scope: { kind: "runtime-project", id: "q" } }]) {
       expect(effectiveHumanRuntimeActions(subject, "p", { ...humanRuntime, membership: { ...membership, ...mutation } as never })).toEqual([]);

@@ -1,3 +1,4 @@
+import { decodeProviderJson } from "./authentication-provider-configuration";
 import { chmodSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { dirname } from "node:path";
@@ -53,6 +54,7 @@ export async function listenAdminSocket(
         try { body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))); }
         catch { throw new ProviderAdminError("invalid_input"); }
         provider = typeof body === "object" && body !== null && "command" in body && body.command === "auth-provider";
+        if (provider) body = decodeProviderJson(Buffer.concat(chunks));
         const result = await execute(body);
         if (provider && Buffer.byteLength(JSON.stringify(result)) > BODY_LIMIT) throw new ProviderAdminError("provider_failed");
         reply(200, { result });
