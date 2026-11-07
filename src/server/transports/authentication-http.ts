@@ -66,6 +66,8 @@ export class AuthenticationHttp {
     knowledge: ProviderKnowledgeApplication;
     status(): BrowserAuthenticationStatus;
     maintenance?(): boolean;
+    /** Controller composition guard, invoked only inside fresh core admission. */
+    assertAvailable?(): void;
     /** Finite proof fixtures only; production derives peer exclusively from socket.remoteAddress. */
     trustedFixturePeer?: string;
     maxInFlight?: number;
@@ -116,6 +118,7 @@ export class AuthenticationHttp {
     try {
       this.boundary(request);
       if (this.deps.maintenance?.()) fail(503, "database_unavailable");
+      if (this.deps.assertAvailable) await this.deps.admission.run(this.deps.assertAvailable, { signal: lifetime.signal });
       if (path === "/api/auth/status" && request.method === "GET") {
         authenticationJson(response, 200, this.deps.status()); return true;
       }
@@ -155,6 +158,7 @@ export class AuthenticationHttp {
         if (!actor) fail(401, "invalid_credential");
         await this.deps.admission.run(() => {
           if (this.deps.maintenance?.()) fail(503, "database_unavailable");
+          this.deps.assertAvailable?.();
           if (!lifetime.open) return;
           let result: unknown;
           try { result = this.deps.knowledge.executeAdmitted(input, actor); }
@@ -198,6 +202,7 @@ export class AuthenticationHttp {
       // whatever happens to this response. No client acknowledgment exists or is implied.
       await admitWithRetry(this.deps.admission, () => {
         if (this.deps.maintenance?.()) fail(503, "database_unavailable");
+        this.deps.assertAvailable?.();
         if (!lifetime.open) fail(499, "client_closed");
         const safe = this.deps.runtime.finishBrowserRelease(result);
         authenticationJson(response, 200, safe, lines);

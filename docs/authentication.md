@@ -45,8 +45,9 @@ It exercises real handler requests, cookies, password changes, session
 revocation and local recovery. Startup does not load it. Explicit protected CLI
 maintenance can load a configured module without activating accounts.
 Selecting `better-auth` still fails; this slice adds no login UI,
-production browser authorization or account endpoints. A bounded browser adapter
-is composed only by isolated proof fixtures; see [browser adapter](#bounded-browser-adapter).
+public account endpoints. Production startup now owns the shared provider
+composition described below; the bounded browser adapter remains unmounted
+on production listeners. See [browser adapter](#bounded-browser-adapter).
 
 The versioned local loader checks readiness and storage compatibility. Local
 modules execute as trusted controller code, with no sandbox. Each operation
@@ -76,8 +77,8 @@ for database phases. See the [architecture contract](architecture.md#database-ad
 Provider resolution inside a core scope fails as reentrant. The implemented
 [provider authorization handoff](#provider-authorization-handoff) resolves outside
 admission and validates current stored authority inside each Knowledge operation.
-The isolated browser composition below mounts it in a temporary fixture only.
-Production account mode remains unavailable.
+Temporary fixtures mount the browser adapter using either the original isolated
+proof or the shared controller composition. Production account mode remains unavailable.
 
 Disposal rejects new provider work and tracks actual execution, including a
 continuation whose public promise timed out. Late SQL and host notifications
@@ -291,6 +292,55 @@ lost response its outcome is unknown. Another intentional recovery is a new
 password/revoke-all effect, including sessions created since the first.
 Same-OS-user agents share operator authority. Host isolation, delegated account
 administration, full A3 acceptance and production RBAC remain separate gates.
+
+### Shared controller provider composition (P1)
+
+`src/cli/index.ts` constructs `createControllerAuthentication` once and passes its
+IdentityService to the controller, MCP, Knowledge, vault and other application
+services. Protected administration and the internal bounded-browser preparation
+method share its single retained load promise, pinned private configuration and
+provider runtime. The stopped CLI uses the same composition through
+`createAuthenticationAdministration`. Neither path opens another database or
+upgrades a core admission into a provider borrow.
+
+Loading remains lazy. Enrollment, recovery or internal browser preparation first
+runs the existing store-owned ordinary-restart session recovery, then loads the
+configured module. Restored or unconfirmed provenance refuses recovery before
+loading and leaves pending markers intact. This preserves the restore refusal;
+it does not implement the external P3 recovery/revocation fence.
+
+The shared identity checks the exact runtime-owned actor and current stored
+session, subject mapping, principal and protection evidence on every admitted
+authorization. It also checks that the pinned configuration is still valid and
+unchanged. Expiry, logout, recovery, revocation, account disablement, maintenance
+and disposal deny retained actors without depending on notification delivery.
+The browser adapter repeats the configuration guard after admission and before
+response release. Body reads remain outside admission. Accepted preparation and
+administration drain through one disposal before SQLite closes; uncertain cleanup
+retains ownership and the same rejected disposal promise.
+
+Internal browser preparation requires a canonical HTTPS origin equal to the
+protected provider configuration. Its explicit controller engineering bounds are
+64 unreleased sessions, 4,096 native session rows across boots, reconciliation in
+batches of 32, and 16 concurrent requests with four slots reserved for completion.
+Bodies are capped at 8 KiB for passwords, 64 KiB for WebAuthn and 128 KiB for
+Knowledge; cookies at 8 KiB; body reads at 10 seconds. JSON bounds are depth 8 /
+128 fields for authentication and depth 16 / 2,048 fields for Knowledge. Loader
+and transport validators enforce these inputs. These capacity choices are
+separate from fixture limits and from account-security policy. They do not
+mandate MFA or enable optional factors without their explicit provider policy.
+
+Existing accounts enroll by principal ID. The production composition test creates
+a temporary pre-existing owner `69849424-2aba-4fdd-b4fa-a394a77a193c`, then configures
+and enrolls it while preserving its kind, credentials, grants and history. It
+performs no live enrollment and never uses owner creation to replace that account.
+
+`requireSelectable` still rejects `better-auth`, and private status still reports
+`productionAccountModeAvailable:false`. Startup does not mount public login in
+open/token/legacy modes. Provider sessions gain neither owner-session nor
+installation authority, and never replace signed Ed25519 vault proof. P2 human
+roles and transport coverage, and P3 protected recovery/restore fencing, remain
+activation gates.
 
 ### Bounded browser adapter
 

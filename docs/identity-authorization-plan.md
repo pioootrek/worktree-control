@@ -35,8 +35,9 @@ old history and migrations 1..38. Migration 40 and A3-I18 add
 recognized optional TOTP and passkey storage, one application-owned protection
 policy and persisted session evidence behind the same handoff. Account mode remains
 unavailable. Closed factor HTTP routes and ordinary-human memberships now work
-inside the isolated composition. Production mounting, factor management/recovery,
-invitations, general delegated roles and GUI remain open.
+inside the isolated composition. The production shared lifetime and IdentityService are implemented in P1;
+public browser mounting, factor management/recovery, invitations, general delegated
+roles and GUI remain open.
 Shared core admission, exclusive provider admission and background persistence
 boundaries are implemented as partial infrastructure. Strict integration tests
 cover HTTP body-read admission errors and the installed restore completion
@@ -377,7 +378,11 @@ checks are described in [authentication](authentication.md#bounded-browser-adapt
 Contract 2 specializes durable logout; password changes recheck authority inside
 the actual provider borrow. No provider cookie gains installation authority on
 unconverted HTTP/MCP operations, even during an open-mode proof boot. Provider
-browser composition has no production CLI caller or enable flag. Protected CLI
+isolated browser composition remains fixture-only. Production startup now owns
+one shared provider composition for protected administration and current-session
+identity, with an internal bounded-browser preparation method and no public mount.
+See [P1 composition](authentication.md#shared-controller-provider-composition-p1).
+Protected CLI
 maintenance can explicitly load a configured provider without mounting it.
 Experimental numbers and strength labels do not establish full RBAC, MFA or ASVS
 Level 2.

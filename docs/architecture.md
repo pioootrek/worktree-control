@@ -145,6 +145,16 @@ locks; it adds no process signalling, database owner or report protocol.
 See the [remote verification setup contract](remote-verification-plan.md) for
 commands, proof assumptions, retained artifacts and remaining acceptance gates.
 
+The production authentication bootstrap owns one lazy provider composition.
+Protected administration and the internal browser preparation method share its
+runtime, configuration pin, current-session authority and IdentityService.
+Ordinary-restart issuance recovery runs once on the existing store before load;
+restored provenance refuses it without sweeping pending rows. One disposal joins
+accepted administration/preparation and drains the provider before SQLite closes.
+The public browser mount and account-mode selector remain gated. See
+[shared provider composition](authentication.md#shared-controller-provider-composition-p1)
+for explicit engineering limits and the remaining P2/P3 acceptance gates.
+
 ## Resource policy
 
 Managed development applications have priority over Worktree Control. The

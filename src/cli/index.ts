@@ -36,7 +36,7 @@ import { writeCliLine } from "./output";
 import { cliInformation } from "./help";
 import { runAuthCommand } from "./auth-management";
 import { isProviderCommandArgs, parseProviderArguments } from "./auth-provider-input";
-import { createAuthenticationAdministration, retainAuthenticationOwnership } from "../server/bootstrap/authentication-administration";
+import { retainAuthenticationOwnership } from "../server/bootstrap/authentication-administration";
 import { ProviderAdminError, providerAdminErrorBody } from "../server/modules/authentication";
 import { bootstrapInstallationToken, bootstrapServiceInstallationToken } from "./first-run-token";
 import { runIdentityCommand } from "./identity-management";
@@ -59,7 +59,7 @@ import { FileLogWriter } from "../server/log-writer";
 import { ProjectLifecycle } from "../server/modules/lifecycle";
 import { AuthenticationService } from "../server/modules/authentication";
 import { authenticationAdminHandler } from "../server/authentication-admin";
-import { IdentityService } from "../server/modules/identity";
+import { createControllerAuthentication } from "../server/bootstrap/authentication";
 import { KnowledgeAttachmentService, loadAttachmentLimits, KnowledgeService, KnowledgeError, knowledgeFailure } from "../server/modules/knowledge";
 import { createMcpControllerServer } from "../server/mcp-http-server";
 import { GitCommandAdmission, SystemGitWorktreeReader } from "../server/git-worktrees";
@@ -258,7 +258,10 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     kinds: ["tests", "controller"],
     ...(projectId ? { projectIds: [projectId] } : {}),
   }));
-  const identity = new IdentityService(store, undefined, undefined, undefined, authentication, store);
+  const providerAdministration = createControllerAuthentication({ store, authentication, dataDirectory: paths.dataDirectory,
+    actor: "local-admin", maintenance: () => maintenance,
+    configurationEvent: () => logs.controller("authentication.provider_configuration_written", {}) });
+  const identity = providerAdministration.identity;
   const devVault = createDevVault(store.devVault, identity, paths, lifecycle);
   const recovery = new WorkerRecoveryService(store.remoteConnection, new LinuxWorkerRecoveryHost(paths.databasePath), identity);
   tests.configurePathAdmission(paths => recovery.assertPathsAvailable(paths));
@@ -282,7 +285,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       projectName: projectId => store.getKnowledgeProject(projectId)?.name ?? null,
       exportDiscussions: (projectId, maxBytes) => store.exportUserDiscussions(projectId, maxBytes),
     });
-  } catch (error) { userSchedules?.close(); await backups.close(); await logs.close(); store.close(); controllerLock.release(); throw error; }
+  } catch (error) { userSchedules?.close(); await backups.close(); await providerAdministration.dispose(); await logs.close(); store.close(); controllerLock.release(); throw error; }
   const attachments = new KnowledgeAttachmentService(store, identity, paths.knowledgeAttachmentDirectory, knowledgeLimits);
   const knowledge = new KnowledgeService(store, identity, undefined, undefined, events.publishKnowledge, attachments);
   const gitAdmission = new GitCommandAdmission();
@@ -291,7 +294,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   try {
     remoteVerification = createRemoteVerificationRuntime(remoteVerificationConfig, { store, identity, jobs: tests, lifecycle, git, admission: gitAdmission, recovery });
   } catch (error) {
-    userSchedules?.close(); await backups.close(); await tests.shutdown(); git.close(); await logs.close(); store.close(); controllerLock.release(); throw error;
+    userSchedules?.close(); await backups.close(); await tests.shutdown(); git.close(); await providerAdministration.dispose(); await logs.close(); store.close(); controllerLock.release(); throw error;
   }
   const godotWebRuntime = createGodotWebRuntime(paths.stateDirectory, {
     store, git, processes, jobs: tests, lifecycle, logs,
@@ -382,6 +385,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     await mcp?.close();
     await controller.close();
     await remoteVerification?.close();
+    await providerAdministration.dispose();
     await service.shutdown();
     controllerLock.release();
     throw error;
@@ -412,9 +416,6 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     authenticationMode: authentication.mode(),
   });
   let adminSocket: AdminSocketServer;
-  const providerAdministration = createAuthenticationAdministration({ store, authentication, dataDirectory: paths.dataDirectory,
-    actor: "local-admin", maintenance: () => maintenance,
-    configurationEvent: () => logs.controller("authentication.provider_configuration_written", {}) });
   try {
     const authenticationHandler = authenticationAdminHandler({
       authentication,
