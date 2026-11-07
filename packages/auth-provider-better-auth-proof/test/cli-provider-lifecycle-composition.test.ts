@@ -224,7 +224,7 @@ describe("production shared provider composition", () => {
       try { await storage.borrow(async () => { connection.prepare("UPDATE authentication_session_issuance SET state='pending'").run([]); }); }
       finally { connection.close(); }
       const backup = join(f.root, "snapshot"), target = join(f.root, "restored", "state.sqlite3");
-      await createControllerBackup(f.store, backup, { applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") });
+      await f.run(() => createControllerBackup(f.store, backup, { applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") }));
       restoreControllerBackup(backup, target);
       restored = new SqliteStateStore(target);
       const authentication = new AuthenticationService(restored); restored.requireAdmission();
