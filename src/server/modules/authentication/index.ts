@@ -58,6 +58,7 @@ export type {
   AuthenticationProviderReadiness,
   LocalProvisionInput,
   LocalRecoveryInput,
+  LocalFactorResetSummary,
   ProviderAccountProtection,
   ProviderAuditEvent,
   ProviderAuthenticationEvidence,

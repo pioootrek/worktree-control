@@ -550,6 +550,18 @@ membership revision and original no-claim/exact-claim context govern durable
 receipts, including after reopening the store. See
 [the operational contract](authentication.md#human-literal-profiles-and-preset-timeouts-p2c).
 
-P3 still owns protected recovery/factor loss and external restore/revocation
+P3a supplies protected recovery below. P3b still owns external restore/revocation
 fences. Minimum agent diagnostics, complete transport enforcement, public mount,
 activation, release and client migration remain separate acceptance gates.
+
+### Protected recovery boundary (P3a)
+
+The shared production provider now supports password recovery for existing active
+humans and the single active owner. Private CLI input defaults to preserving
+factors; explicit `factors: "reset"` requires a new password and the provider's
+`localFactorReset: "v1"` readiness plus separate reset method. Password, sessions,
+factor bindings, challenge authority and account generation change in one sole
+connection transaction. IDs, roles, grants, audit, TOTP steps and account budgets
+remain. See [authentication](authentication.md#protected-factor-loss-recovery-p3a) for the operator contract.
+Restored provenance remains denied until P3b; public account activation and A5
+transport enforcement remain separate gates.

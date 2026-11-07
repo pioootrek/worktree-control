@@ -16,7 +16,7 @@ export class AuthenticationProviderQueries implements ProviderSubjectStore {
   constructor(private readonly database: Database.Database, private readonly providerId: string) {}
 
   isActiveOwner(principalId: string): boolean {
-    return Boolean(this.database.prepare("SELECT 1 FROM remote_principals WHERE id = ? AND kind = 'owner' AND status = 'active'").get(principalId));
+    return Boolean(this.database.prepare("SELECT 1 FROM remote_principals WHERE id = ? AND kind = 'owner' AND status = 'active' AND (SELECT count(*) FROM remote_principals WHERE kind='owner')=1").get(principalId));
   }
 
   activeAccountKind(principalId: string): "owner" | "human" | null {

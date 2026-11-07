@@ -40,7 +40,7 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
         kysely: packageVersion(packageDirectory, "kysely"),
         driver: packageVersion(join(packageDirectory, "../.."), "better-sqlite3"),
       }).toEqual({ betterAuth: "1.7.14", core: "1.7.14", kysely: "0.28.17", driver: "13.0.3" });
-      expect(f.runtime.readiness).toEqual({ providerId: "better-auth", implementationVersion: "0.0.0-proof.5", library: { name: "better-auth", version: "1.7.14" }, schema: "verified" });
+      expect(f.runtime.readiness).toEqual({ providerId: "better-auth", implementationVersion: "0.0.0-proof.5", library: { name: "better-auth", version: "1.7.14" }, schema: "verified", localFactorReset: "v1" });
       const authentication = new AuthenticationService(f.store);
       expect(() => authentication.setMode("better-auth", "test")).toThrow(expect.objectContaining({ code: "auth_provider_unavailable" }));
       expect(resolveControllerAuthentication(

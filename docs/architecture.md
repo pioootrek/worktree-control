@@ -838,3 +838,15 @@ worktree-control service install --refresh
 Without `--refresh`, installation refuses to replace a definition that points
 at different paths or settings. Uninstall removes only the user-service
 artifact and preserves the database, tokens, configuration, and logs.
+
+### Protected recovery boundary (P3a)
+
+The shared production provider now supports password recovery for existing active
+humans and the single active owner. Private CLI input defaults to preserving
+factors; explicit `factors: "reset"` requires a new password and the provider's
+`localFactorReset: "v1"` readiness plus separate reset method. Password, sessions,
+factor bindings, challenge authority and account generation change in one sole
+connection transaction. IDs, roles, grants, audit, TOTP steps and account budgets
+remain. See [authentication](authentication.md#protected-factor-loss-recovery-p3a) for the operator contract.
+Restored provenance remains denied until P3b; public account activation and A5
+transport enforcement remain separate gates.

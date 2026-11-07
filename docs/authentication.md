@@ -344,7 +344,7 @@ performs no live enrollment and never uses owner creation to replace that accoun
 open/token/legacy modes. Provider sessions gain neither owner-session nor
 installation authority, and never replace signed Ed25519 vault proof. P2a supplies
 the reader workflow below, and P2b1 adds explicit human runtime leases and control.
-Remaining P2 transport enforcement and P3 protected recovery/restore
+Remaining P2 transport enforcement and P3b external restore
 fencing remain activation gates.
 
 ### Human runtime readers (P2a)
@@ -895,8 +895,8 @@ administration, runtime control or vault action.
 
 **Not supported yet, each explicitly denied.** The closed route list refuses recovery
 codes, TOTP or passkey replacement and removal, additional passkeys, reauthentication,
-trusted devices, administrative factor reset and every other native plugin route.
-Recovery therefore has no factor-loss path: `recoverLocal` replaces a password and
+trusted devices, browser administrative factor reset and every other native plugin route.
+Default protected recovery retains selected factors: `recoverLocal` replaces a password and
 revokes sessions and outstanding password-backed TOTP challenges but leaves selected
 protection in place. Native password change/reset and explicit revoke-all share that
 transactional invalidation. The pinned library stores the subject ID as the verification
@@ -1217,8 +1217,8 @@ Human commands use the trusted local bootstrap context; request actor/kind/spons
 strength fields confer no authority. Ordinary human cookies cannot administer
 accounts/members, create agents, sponsor credentials, operate runtimes/claims,
 approve Knowledge, access ENV/vault, or administer backups/remote workers.
-Owner recovery stays owner-only. New human recovery, factor reset/removal and
-invitations remain unsupported. Current-session password changes and optional
+Protected recovery supports existing active owners and humans. Explicit local factor-loss
+reset is described below; browser factor removal and invitations remain unsupported. Current-session password changes and optional
 TOTP/passkey protection retain their existing rules.
 
 `human-account-administration.test.ts` uses actual native accounts, separate cookies
@@ -1790,3 +1790,46 @@ This does not solve A5 provider-session resurrection after restoring older
 password/session data. External restore revocation fencing, account authentication,
 readiness of optional methods and complete transport coverage still gate
 production RBAC activation.
+
+## Protected factor-loss recovery (P3a)
+
+The protected CLI `auth provider recover --principal-id <id>` accepts a private
+JSON input file or stdin containing `newPassword` and optional `factors`.
+Omit `factors`, or choose `"preserve"`, to retain selected protection. Choose
+`"reset"` only when intentionally removing every TOTP and passkey binding for
+that account. The new password is always required. Never put it in argv.
+
+Recovery applies to an existing active human or the single active owner with an
+exact active provider mapping. Disabled accounts, revoked mappings, missing
+enrollment, agents, workers and ambiguous owners refuse. It preserves principal
+ID, kind, memberships, sponsorship and historical audit. It issues no browser
+cookie, bearer, machine credential or additional permission.
+
+The configured real provider advertises readiness `localFactorReset: "v1"` and a
+separate `recoverLocalWithFactorReset` method under contract 5/storage revision 3.
+Both are required before a reset can write. Older password-only implementations
+remain loadable and refuse explicit reset. Status does not load provider code;
+its recovery field reports whether the loaded runtime supports reset.
+
+One transaction on the controller connection replaces the password, deletes old
+sessions and evidence, advances account generation and policy revision, removes
+native TOTP/passkey rows and their trust/staging bindings, and invalidates the
+account's pending contexts and charged receipts. Subject-bound native challenges
+are deleted. Anonymous options cannot authenticate a removed key. TOTP replay
+steps, account budgets, receipt history and audit remain; reset never refunds a
+failed guess. Safe output reports selected TOTP removal and trusted passkey count.
+A reset with no factors still advances the generation and succeeds.
+
+Current mapping/principal and maintenance/configuration are checked again after
+hashing and before commit. A rollback retains old state. A notification error
+after commit reports `committed:true`; do not automatically repeat recovery after
+an uncertain or lost response. Fresh login uses the same principal and current
+original grants. Optional enrollment creates a new factor binding.
+
+Only the existing OS-protected Unix administration channel and offline singleton
+owner path authorize this operation. HTTP, MCP, browser sessions, shared tokens
+and agent credentials cannot request it. An agent running as the controller OS
+user remains trusted by that boundary. The independent signed vault proof is
+unchanged. Restored/unconfirmed database provenance still refuses provider load;
+external restore and revocation fencing belongs to P3b. Account activation and
+complete transport enforcement remain A5 gates.

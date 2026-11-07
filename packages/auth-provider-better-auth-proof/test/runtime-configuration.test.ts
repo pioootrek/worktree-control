@@ -154,7 +154,7 @@ describe("real provider human profile selection and timeout-only configuration",
       expect((await f.call(input)).status).toBe(409); expect(await rev(f)).toBe(1); expect(audits(f)).toHaveLength(1);
     } finally { await f.close(); }
   });
-  it.each(["revoke", "regrant", "disable", "logout", "expiry", "generation", "configuration", "recovery"])("rechecks exact original authority after Git idle/readmission: %s", async reason => {
+  it.each(["revoke", "regrant", "disable", "logout", "expiry", "generation", "configuration", "recovery", "factor-reset"])("rechecks exact original authority after Git idle/readmission: %s", async reason => {
     const f = await fixture(["config:write"]); const entered = gate(), resume = gate(); let pending: Promise<unknown> | undefined;
     try {
       const client = reason === "recovery" ? f.http.owner : f.http.human;
@@ -169,6 +169,7 @@ describe("real provider human profile selection and timeout-only configuration",
       if (reason === "generation") await f.sql("UPDATE authentication_account_policies SET generation=generation+1");
       if (reason === "configuration") await f.composition.execute({ command: "auth-provider", action: "configure", input: { module: join(f.root, "runtime-provider.mjs"), origin: "https://next-controller.test", signingSecret: { kind: "preserve" } } });
       if (reason === "recovery") await f.run(["recover", "--principal-id", EXISTING_OWNER, ...f.input({ newPassword: "replacement-config-password-1" })]);
+      if (reason === "factor-reset") await f.run(["recover", "--principal-id", f.human, ...f.input({ newPassword: "replacement-human-reset-password-1", factors: "reset" })]);
       resume.open(); expect([401, 403]).toContain((await pending as {status:number}).status); expect(await rev(f)).toBe(0); expect(audits(f)).toEqual([]);
     } finally { resume.open(); await pending; await f.close(); }
   });

@@ -155,6 +155,7 @@ export type BoundedProtectionTable = "contexts" | "receipts" | "budgets" | "stag
 
 /** Row-level persistence. Joins the caller's transaction; owns no connection or policy. */
 export interface ProtectionStore {
+  resetLocalFactors?(subject: string): import("./provider-contract").LocalFactorResetSummary;
   activePrincipal(subject: string): string | null;
   account(subject: string): Omit<ProviderAccountState, "consistent"> | null;
   createAccount(subject: string, now: string): void;
@@ -205,8 +206,8 @@ export const totpBinding = (ciphertext: string) => createHash("sha256").update(c
 /**
  * Selected-protection policy shared by TOTP and passkeys. A method is an
  * alternative, never an additional mandatory step. Selecting one advances the
- * account's generation, which atomically outdates all prior evidence; no route
- * here removes a selection, resets a step or upgrades existing evidence.
+ * account's generation, which atomically outdates all prior evidence. Protected
+ * local recovery alone removes selections; replay steps remain monotonic.
  */
 export class AccountProtection implements ProviderAccountProtection, ProviderReleaseProtection {
   readonly #limits: ProviderFactorLimits | null;
@@ -219,6 +220,11 @@ export class AccountProtection implements ProviderAccountProtection, ProviderRel
   #issue(evidence: ProviderSessionEvidence): void {
     if (!this.issuance) throw new SessionIssuanceError("Session issuance was refused.");
     this.issuance.record(evidence, value => { this.store.insertEvidence(value); });
+  }
+
+  resetLocalFactors(subject: string): import("./provider-contract").LocalFactorResetSummary {
+    if (!this.store.activePrincipal(subject) || !this.store.resetLocalFactors) throw new ProviderSettlementRefusedError();
+    return this.store.resetLocalFactors(subject);
   }
 
   get enabled(): boolean { return this.#limits !== null; }

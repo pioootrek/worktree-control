@@ -176,3 +176,13 @@ describe("protected runtime reader input", () => {
     }
   });
 });
+
+describe("protected recovery factor choice", () => {
+  it.each([undefined, "preserve", "reset"])("accepts only an explicit private factor choice %s", factors => {
+    const input = { newPassword: "fixture-private-recovery-password", ...(factors ? { factors } : {}) };
+    expect(parseProviderAdminCommand({ command: "auth-provider", action: "recover", principalId: "human", input })).toMatchObject({ input });
+  });
+  it.each([true, false, 1, null, "true", "all", {}, []])("rejects a freeform reset choice %s", factors => {
+    expect(() => parseProviderAdminCommand({ command: "auth-provider", action: "recover", principalId: "human", input: { newPassword: "fixture-private-password", factors } })).toThrow();
+  });
+});

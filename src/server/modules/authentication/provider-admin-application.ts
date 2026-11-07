@@ -15,6 +15,7 @@ export interface ProviderConfigurationPort {
 export type ProviderMaintenanceState = "not_loaded" | "loading" | "ready" | "failed" | "disposing" | "disposal_unconfirmed";
 export interface ProviderAdministrationRuntime {
   state(): ProviderMaintenanceState;
+  factorResetSupport?(): "not_loaded" | "supported" | "unsupported";
   configurationRestartRequired(current: ProviderConfiguration | null): boolean;
   get(current: ProviderConfiguration): Promise<AuthenticationProviderRuntime>;
 }
@@ -52,6 +53,7 @@ export class ProviderAdminApplication {
         return { configuration, activeMode: mode.activeMode, configuredMode: mode.configuredMode,
           modeRestartRequired: mode.restartRequired, maintenance: d.runtime.state(),
           configurationRestartRequired: d.runtime.configurationRestartRequired(current),
+          recovery: { password: "protected-local", factors: "preserve-by-default", reset: d.runtime.factorResetSupport?.() ?? "not_loaded" },
           productionAccountModeAvailable: false, owner: d.identity.ownerStatus(), ...(principal ? { principal } : {}) };
       });
       if (request.action === "configure") return await phase(() => {
@@ -85,8 +87,11 @@ export class ProviderAdminApplication {
       // Import, readiness and account effects must never upgrade a core participant.
       const runtime = await d.runtime.get(material);
       if (request.action === "enroll") await runtime.provisionLocal({ principalId: request.principalId, ...request.input, actor: d.actor });
-      else await runtime.recoverLocal({ principalId: request.principalId, ...request.input, actor: d.actor });
-      return { principalId: request.principalId, ...(request.action === "enroll" ? { enrolled: true } : { recovered: true }) };
+      else {
+        const reset = await runtime.recoverLocal({ principalId: request.principalId, ...request.input, actor: d.actor });
+        return { principalId: request.principalId, recovered: true, ...(reset ? { factors: "reset", removed: reset } : {}) };
+      }
+      return { principalId: request.principalId, enrolled: true };
     } catch (error) { throw providerAdminFailure(error); }
   }
 }

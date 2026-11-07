@@ -127,7 +127,7 @@ describe("real provider human runtime mutations", () => {
       expect((await f.http.human.call(route,{body:body("stop",f,id)})).status).toBe(200);
     } finally {await f.close();}
   });
-  it.each(["revoke","disable","logout","recovery","expiry","generation","permissions","regrant"] as const)("rechecks original authority after Git wait: %s",async reason=>{
+  it.each(["revoke","disable","logout","recovery","factor-reset","expiry","generation","permissions","regrant"] as const)("rechecks original authority after Git wait: %s",async reason=>{
     const f=await fixture(),entered=gate(),resume=gate();let pending:Promise<unknown>|undefined;
     try {
       const principalId=reason==="recovery"?EXISTING_OWNER:f.human;
@@ -141,6 +141,7 @@ describe("real provider human runtime mutations", () => {
       if(reason==="disable")await f.run(["human","disable","--principal-id",f.human]);
       if(reason==="logout")await f.http.human.call("/api/auth/sign-out",{body:{}});
       if(reason==="recovery")await f.run(["recover","--principal-id",EXISTING_OWNER,...f.input({newPassword:"replacement-runtime-password-1"})]);
+      if (reason === "factor-reset") await f.run(["recover", "--principal-id", f.human, ...f.input({ newPassword: "replacement-human-reset-password-1", factors: "reset" })]);
       if(reason==="expiry")await f.sql('UPDATE authentication_ba_session SET "expiresAt"=?',[new Date(Date.now()-60_000).toISOString()]);
       if(reason==="generation")await f.sql("UPDATE authentication_account_policies SET generation=generation+1");
       if(reason==="permissions")await f.sql(`UPDATE runtime_human_memberships SET permissions_json='["claims:manage"]' WHERE principal_id=?`,[f.human]);

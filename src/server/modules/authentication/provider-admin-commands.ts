@@ -16,7 +16,7 @@ export const providerConfigurationInputSchema = z.object({
 }).strict();
 export type ProviderConfigurationInput = z.infer<typeof providerConfigurationInputSchema>;
 export const providerEnrollmentInputSchema = z.object({ email: text, name: text, password: text }).strict();
-export const providerRecoveryInputSchema = z.object({ newPassword: text }).strict();
+export const providerRecoveryInputSchema = z.object({ newPassword: text, factors: z.enum(["preserve", "reset"]).optional() }).strict();
 const command = z.literal("auth-provider");
 const commandSchema = z.discriminatedUnion("action", [
   z.object({ command, action: z.literal("status"), principalId: text.optional() }).strict(),
@@ -38,6 +38,7 @@ export type ProviderAdminCommand = z.infer<typeof commandSchema>;
 
 const messages = {
   invalid_input: "Invalid protected provider administration input.",
+  recovery_unavailable: "The loaded authentication provider does not support explicit factor recovery.",
   provider_unavailable: "The authentication provider is unavailable.",
   provider_failed: "The authentication provider operation failed; inspect state before another explicit operation.",
   principal_unavailable: "The requested account principal is unavailable.",

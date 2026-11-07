@@ -270,6 +270,15 @@ describe("real provider human finite verification",()=>{
       expect(existsSync(f.marker)).toBe(false);
     }finally{blocker.release();await f.close();}
   });
+  it("human factor-loss reset fences queued jobs and a new login cannot adopt the old key",async()=>{
+    const f=await fixture(),blocker=await f.block();try{
+      await assign(f);const r=await f.call(f.enqueueInput);expect(r.status).toBe(200);const id=(r.body.status as ScopedTestRunStatus).runId;
+      await f.run(["recover","--principal-id",f.human,...f.input({newPassword:"replacement-human-jobs-password-123",factors:"reset"})]);
+      blocker.release();expect((await f.terminal(id)).phase).toBe("failed");
+      expect((await f.http.human.login("replacement-human-jobs-password-123","runtime-human@fixture.invalid")).status).toBe(200);
+      expect((await f.call(f.enqueueInput)).status).toBe(403);expect(existsSync(f.marker)).toBe(false);
+    }finally{blocker.release();await f.close();}
+  });
   it("uses only clean declared test profiles and does not resolve vault/server environment authority",async()=>{
     const f=await fixture();try{
       await assign(f);

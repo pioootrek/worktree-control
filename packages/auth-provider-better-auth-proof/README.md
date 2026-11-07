@@ -97,7 +97,7 @@ storage 3, native tables and signed vault proof remain unchanged. Current-schema
 positive expectations change 43 to 44; the historical negative bodies remain unchanged.
 
 Knowledge write includes project archive/restore. Human runtime-link writes deny
-before lookup/replay; linked IDs grant no runtime authority. Human recovery,
+before lookup/replay; linked IDs grant no runtime authority. Browser recovery,
 factor reset/removal, privileged approval, administration, runtime/claims and ENV
 remain denied. Production browser mounting/account mode and full A3/A4/A5 remain
 outside this bounded workflow.
@@ -933,7 +933,7 @@ exact own status, foreign and cloned actors, lease expiry, disconnect/concurrent
 retry, real database/provider reopening with the same cookie, and interrupted
 intent returning outcome_unknown without repeating effects. Reboots preserve only
 still-current ordinary sessions. Restored provider load remains P1 fail-closed;
-P3 must implement protected recovery/external revocation fencing before activation.
+P3a supplies protected recovery below. P3b must supply external revocation fencing before activation.
 Receipts/identity/logs expose no native session/binding secrets, ENV, commands or
 global capacity. Release, expiry and revocation do not stop an existing process.
 
@@ -941,3 +941,15 @@ Run `pnpm test:runtime-mutations` through the managed queue for focused core and
 provider tests, then the complete provider proof. Its five historical native/old
 bounded factor negatives remain visible. P2b2 job/remaining transports, P3/A5,
 public browser mounting and account-mode activation are separate gates.
+
+### Protected recovery boundary (P3a)
+
+The shared production provider now supports password recovery for existing active
+humans and the single active owner. Private CLI input defaults to preserving
+factors; explicit `factors: "reset"` requires a new password and the provider's
+`localFactorReset: "v1"` readiness plus separate reset method. Password, sessions,
+factor bindings, challenge authority and account generation change in one sole
+connection transaction. IDs, roles, grants, audit, TOTP steps and account budgets
+remain. See [authentication](../../../docs/authentication.md#protected-factor-loss-recovery-p3a) for the operator contract.
+Restored provenance remains denied until P3b; public account activation and A5
+transport enforcement remain separate gates.

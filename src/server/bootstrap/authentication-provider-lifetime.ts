@@ -100,6 +100,7 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
     return pending;
   };
   const providerRuntime = {
+    factorResetSupport: (): "not_loaded" | "supported" | "unsupported" => runtime ? (runtime.supportsLocalFactorReset ? "supported" : "unsupported") : "not_loaded",
     state: (): ProviderMaintenanceState => state === "ready" && !storage.available() ? "failed" : state,
     configurationRestartRequired: changed,
     get(current: ProviderConfiguration) {
@@ -120,7 +121,12 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
             sessionRows: CONTROLLER_AUTHENTICATION_POLICY.sessionRows,
             sessionReconcileBatch: CONTROLLER_AUTHENTICATION_POLICY.sessionReconcileBatch,
             options: { baseURL: current.baseURL, secret: current.secret, clientIpHeader: "x-worktree-control-client-ip" },
-            onInvalidation: d.onInvalidation });
+            // Maintenance fences transaction entry. Once writing, shutdown drains
+            // accepted recovery; changed configuration still fences its commit.
+            assertAvailable: phase => {
+              if (phase !== "commit") return guard();
+              if (changed(configuration.read())) throw new AuthenticationProviderError("provider_configuration_restart_required", "Provider configuration requires a new owner boot.");
+            }, onInvalidation: d.onInvalidation });
         }).then(value => { runtime = value; if (!stopping) state = "ready"; return value; }, error => {
           failure = error;
           if (!stopping) state = error instanceof AuthenticationProviderError && error.code === "disposal_unconfirmed" ? "disposal_unconfirmed" : "failed";

@@ -110,7 +110,7 @@ describe("real shared provider human runtime reader", () => {
     } finally { await f.close(); await other.close(); }
   });
 
-  it.each(["revoke", "disable", "logout", "recovery", "expiry", "role", "permissions", "membership-delete", "subject-revoke", "owner-disable", "permissions-malformed"] as const)("suppresses the HTTP and direct retained result after %s during Git discovery", async reason => {
+  it.each(["revoke", "disable", "logout", "recovery", "factor-reset", "expiry", "role", "permissions", "membership-delete", "subject-revoke", "owner-disable", "permissions-malformed"] as const)("suppresses the HTTP and direct retained result after %s during Git discovery", async reason => {
     const f = await runtimeReaderFixture(), entered = gate(), resume = gate();
     let pending: Promise<unknown> | undefined;
     try {
@@ -125,6 +125,7 @@ describe("real shared provider human runtime reader", () => {
       if (reason === "disable") await f.run(["human", "disable", "--principal-id", f.human]);
       if (reason === "logout") expect((await http.human.call("/api/auth/sign-out", { body: {} })).status).toBe(200);
       if (reason === "recovery") await f.run(["recover", "--principal-id", EXISTING_OWNER, ...f.input({ newPassword: "replacement-human-password-1" })]);
+      if (reason === "factor-reset") await f.run(["recover", "--principal-id", f.human, ...f.input({ newPassword: "replacement-human-reset-password-1", factors: "reset" })]);
       if (reason === "owner-disable") await f.sql("UPDATE remote_principals SET status='revoked' WHERE id=?", [EXISTING_OWNER]);
       if (reason === "expiry") await f.sql('UPDATE authentication_ba_session SET "expiresAt"=?', [new Date(Date.now() - 60_000).toISOString()]);
       if (reason === "membership-delete") await f.sql("DELETE FROM runtime_human_memberships WHERE principal_id=?", [f.human]);

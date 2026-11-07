@@ -13,6 +13,7 @@ import {
   type AuthenticationProviderReadiness,
   type LocalProvisionInput,
   type LocalRecoveryInput,
+  type LocalFactorResetSummary,
   type ProviderAccountProtection,
   type ProviderAuthenticationEvidence,
   type ProviderFactorLimits,
@@ -31,7 +32,7 @@ import { UnreleasedSessions, type UnreleasedSession } from "./unreleased-session
 import { SessionIssuance, validateSessionRowPolicy, type SessionIssuanceState, type SessionIssuanceStore, type SessionRowPolicy } from "./session-issuance";
 
 export type AuthenticationProviderErrorCode =
-  | "provider_unavailable" | "principal_unavailable" | "subject_conflict" | "not_linked"
+  | "recovery_unavailable" | "provider_unavailable" | "principal_unavailable" | "subject_conflict" | "not_linked"
   | "invalid_session" | "invalid_input" | "invalidation_failed" | "provider_disposed" | "provider_failed" | "disposal_unconfirmed"
   | "maintenance" | "provider_configuration_restart_required"
   | "authentication_failed" | "rate_limited" | "capacity" | "cancelled" | "outcome_unconfirmed" | "outcome_committed";
@@ -104,6 +105,7 @@ export interface LoadAuthenticationProviderInput {
   sessionReconcileBatch?: number;
   /** Called after commit. A throw is reported as `invalidation_failed` with `committed: true`. */
   onInvalidation?: (event: ProviderInvalidation) => void;
+  assertAvailable?: (phase?: "commit") => void;
   log?: (level: "error" | "warn" | "info" | "debug", message: string) => void;
 }
 
@@ -149,7 +151,7 @@ function guardedProtection(protection: ProviderAccountProtection & ProviderRelea
     if (typeof session === "string") issued(session);
     return result;
   }]));
-  return Object.freeze({ ...methods, enabled: protection.enabled }) as unknown as ProviderAccountProtection;
+  return Object.freeze({ ...methods, ...(protection.resetLocalFactors ? { resetLocalFactors: (subject: string) => controller(() => protection.resetLocalFactors!(subject)) } : {}), enabled: protection.enabled }) as unknown as ProviderAccountProtection;
 }
 
 const REQUIRED_METHODS = ["initialize", "handle", "signOut", "resolveSession", "provisionLocal", "recoverLocal", "revokeSession", "revokeSubjectSessions", "dispose"] as const;
@@ -887,18 +889,38 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     });
   }
 
+  get supportsLocalFactorReset(): boolean { return this.readiness.localFactorReset === "v1" && typeof this.#instance.recoverLocalWithFactorReset === "function"; }
+
   /** Protected local recovery: replaces the password and revokes the account's sessions atomically. */
-  recoverLocal(input: LocalRecoveryInput): Promise<void> {
+  recoverLocal(input: LocalRecoveryInput): Promise<void | LocalFactorResetSummary> {
     for (const value of [input.principalId, input.newPassword, input.actor]) {
       if (typeof value !== "string" || !value || value.length > 1024) return Promise.reject(new AuthenticationProviderError("invalid_input", "Recovery input is invalid."));
     }
+    if (input.factors !== undefined && input.factors !== "preserve" && input.factors !== "reset") return Promise.reject(new AuthenticationProviderError("invalid_input", "Recovery input is invalid."));
     return this.#run(async () => {
+      if (input.factors === "reset" && !this.supportsLocalFactorReset) {
+        throw new AuthenticationProviderError("recovery_unavailable", "Explicit factor recovery is unavailable.");
+      }
       const linked = this.#input.storage.runControllerOperation(() => this.#subjects.findByPrincipal(input.principalId));
       if (!linked) throw new AuthenticationProviderError("not_linked", "The principal has no provider account.");
-      if (this.#input.storage.runControllerOperation(() => this.#subjects.isActiveOwner(input.principalId) && this.#subjects.resolveActivePrincipal(linked.subject) === input.principalId) !== true) {
-        throw new AuthenticationProviderError("principal_unavailable", "The active owner principal is unavailable.");
+      const assertCurrent = (phase?: "commit") => this.#input.storage.runControllerOperation(() => {
+        this.#input.assertAvailable?.(phase);
+        const kind = this.#subjects.activeAccountKind(input.principalId);
+        if (!kind || (kind === "owner" && !this.#subjects.isActiveOwner(input.principalId)) || this.#subjects.resolveActivePrincipal(linked.subject) !== input.principalId
+          || this.#subjects.findByPrincipal(input.principalId)?.linkedAt !== linked.linkedAt) {
+          throw new AuthenticationProviderError("principal_unavailable", "The active account principal is unavailable.");
+        }
+      });
+      assertCurrent();
+      const request = { ...input, assertCurrent };
+      if (input.factors === "reset") {
+        const summary = await this.#instance.recoverLocalWithFactorReset!(request);
+        if (!summary || typeof summary.totp !== "boolean" || !Number.isSafeInteger(summary.passkeys) || summary.passkeys < 0) {
+          throw new AuthenticationProviderError("outcome_unconfirmed", "Recovery outcome was not confirmed.");
+        }
+        return { totp: summary.totp, passkeys: summary.passkeys };
       }
-      await this.#instance.recoverLocal(input);
+      await this.#instance.recoverLocal(request);
     });
   }
 
