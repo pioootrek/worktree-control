@@ -36,12 +36,19 @@ export interface ControllerAuthenticationOptions {
   holdLifetime?: () => () => void;
 }
 
+interface BrowserAuthenticationInput {
+  origin: string; knowledge: KnowledgeService;
+  /** Temporary Unix fixtures only. A real listener derives its peer from the socket. */
+  trustedFixturePeer?: string;
+}
+
 /** One provider lifetime and current-session authority on the existing controller store. */
 export function createControllerAuthentication(d: ControllerAuthenticationOptions) {
   let stopping = false, state: ProviderMaintenanceState = "not_loaded";
   let pinned: ProviderConfiguration | undefined, loaded: Promise<AuthenticationProviderRuntime> | undefined;
   let runtime: AuthenticationProviderRuntime | undefined, failure: unknown, disposal: Promise<void> | undefined;
   let releaseLifetime: (() => void) | undefined;
+  let browser: { adapter: AuthenticationHttp; binding: Readonly<BrowserAuthenticationInput> } | undefined;
   const retainLifetime = () => {
     releaseLifetime ??= d.holdLifetime?.() ?? (() => {
       const lifetime = setInterval(() => { void runtime; void failure; }, 60_000);
@@ -58,10 +65,12 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
     if (maintenance()) throw new AuthenticationProviderError("maintenance", "Controller provider administration is in maintenance.");
     if (changed(configuration.read())) throw new AuthenticationProviderError("provider_configuration_restart_required", "Provider configuration requires a new owner boot.");
   };
-  // Reuse the ONE existing connection gate. Guard runs when the queued borrow actually executes.
+  // Reuse the ONE existing connection gate. New work checks the current config in its actual borrow.
+  // Reserved work is runtime-owned cleanup of exact sessions minted here, never new authentication.
+  // It must still be able to settle after maintenance/configuration changes fence new work.
   const guardedStorage: AuthenticationProviderStorage = { ...storage,
     borrow: (operation, options) => storage.borrow(() => {
-      storage.runControllerOperation(guard);
+      if (!options?.reserved) storage.runControllerOperation(guard);
       return operation();
     }, options),
   };
@@ -140,11 +149,8 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
      * Uses this exact runtime and identity; an HTTPS deployment origin must match pinned config.
      * The caller owns listener drain before dispose(), as in createControllerShutdown.
      */
-    prepareBrowserAuthentication(input: {
-      origin: string; knowledge: KnowledgeService;
-      /** Temporary Unix fixtures only. A real listener derives its peer from the socket. */
-      trustedFixturePeer?: string;
-    }): Promise<AuthenticationHttp> {
+    prepareBrowserAuthentication(input: BrowserAuthenticationInput): Promise<AuthenticationHttp> {
+      const binding = Object.freeze({ ...input });
       if (maintenance()) return Promise.reject(new ProviderAdminError("maintenance"));
       retainLifetime();
       return track(Promise.resolve().then(async () => {
@@ -152,19 +158,26 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
           guard();
           const value = configuration.read();
           if (!value) throw new ProviderAdminError("configuration_missing");
-          if (new URL(value.baseURL).origin !== input.origin) throw new ProviderAdminError("configuration_invalid");
+          if (new URL(value.baseURL).origin !== binding.origin) throw new ProviderAdminError("configuration_invalid");
           return value;
         });
         const value = await providerRuntime.get(current);
         await d.store.admission.run(guard);
         if (value.disposed || !value.issuanceBounded) throw new AuthenticationProviderError("provider_unavailable", "Authentication provider is unavailable.");
-        return new AuthenticationHttp({ origin: input.origin, runtime: value, admission: d.store.admission,
-          knowledge: new ProviderKnowledgeApplication(d.store.admission, identity, input.knowledge),
+        if (browser) {
+          if (browser.binding.origin !== binding.origin || browser.binding.knowledge !== binding.knowledge
+            || browser.binding.trustedFixturePeer !== binding.trustedFixturePeer) throw new ProviderAdminError("configuration_invalid");
+          return browser.adapter;
+        }
+        const adapter = new AuthenticationHttp({ origin: binding.origin, runtime: value, admission: d.store.admission,
+          knowledge: new ProviderKnowledgeApplication(d.store.admission, identity, binding.knowledge),
           maintenance, assertAvailable: guard,
-          trustedFixturePeer: input.trustedFixturePeer,
+          trustedFixturePeer: binding.trustedFixturePeer,
           maxInFlight: CONTROLLER_AUTHENTICATION_POLICY.maxInFlight, limits: CONTROLLER_AUTHENTICATION_POLICY.limits,
           status: () => ({ mode: d.authentication.mode(), loginAvailable: !value.disposed }),
         });
+        browser = { adapter, binding };
+        return adapter;
       }));
     },
     execute(body: unknown): Promise<unknown> {
@@ -180,8 +193,8 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
         await Promise.allSettled([...accepted]);
         await loaded?.catch(() => undefined);
         if (failure instanceof AuthenticationProviderError && failure.code === "disposal_unconfirmed") throw failure;
-        await runtime?.dispose({ timeoutMs: d.drainTimeoutMs });
-        if (!await storage.drain(d.drainTimeoutMs ?? 10_000)) throw new ProviderAdminError("disposal_unconfirmed", undefined, false);
+        if (runtime) await runtime.dispose({ timeoutMs: d.drainTimeoutMs });
+        else if (!await storage.drain(d.drainTimeoutMs ?? 10_000)) throw new ProviderAdminError("disposal_unconfirmed", undefined, false);
         releaseLifetime?.(); releaseLifetime = undefined;
       }).catch(error => { failure = error; state = "disposal_unconfirmed"; throw new ProviderAdminError("disposal_unconfirmed", undefined, false); });
       return disposal;

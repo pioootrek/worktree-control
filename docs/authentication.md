@@ -299,7 +299,9 @@ administration, full A3 acceptance and production RBAC remain separate gates.
 IdentityService to the controller, MCP, Knowledge, vault and other application
 services. Protected administration and the internal bounded-browser preparation
 method share its single retained load promise, pinned private configuration and
-provider runtime. The stopped CLI uses the same composition through
+provider runtime. Repeated browser preparation returns the same adapter and its
+capacity counter; changing its origin, Knowledge service or trusted fixture peer
+requires a new owner. The stopped CLI uses the same composition through
 `createAuthenticationAdministration`. Neither path opens another database or
 upgrades a core admission into a provider borrow.
 
@@ -317,7 +319,9 @@ and disposal deny retained actors without depending on notification delivery.
 The browser adapter repeats the configuration guard after admission and before
 response release. Body reads remain outside admission. Accepted preparation and
 administration drain through one disposal before SQLite closes; uncertain cleanup
-retains ownership and the same rejected disposal promise.
+retains ownership and the same rejected disposal promise. Reserved cleanup may
+settle only this runtime's own unpublished sessions after the fence; it cannot
+admit new authentication or sweep restored pending rows.
 
 Internal browser preparation requires a canonical HTTPS origin equal to the
 protected provider configuration. Its explicit controller engineering bounds are

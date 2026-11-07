@@ -121,12 +121,14 @@ describe("production shared provider composition", () => {
       await entered.opened;
       expect(f.load).toHaveBeenCalledOnce();
       expect(await f.run(() => f.store.listPrincipals("owner"))).toHaveLength(1);
-      resume.open(); await enrollment; await prepared;
+      resume.open(); await enrollment; const adapter = await prepared;
       expect(f.load.mock.calls[0]![0]).toMatchObject({ unreleasedSessions: CONTROLLER_AUTHENTICATION_POLICY.unreleasedSessions,
         sessionRows: CONTROLLER_AUTHENTICATION_POLICY.sessionRows, sessionReconcileBatch: CONTROLLER_AUTHENTICATION_POLICY.sessionReconcileBatch });
       expect(f.activeRuntime().issuanceBounded).toBe(true);
       expect(() => new SqliteStateStore(f.paths.databasePath)).toThrow();
-      await f.browser(); expect(f.load).toHaveBeenCalledOnce();
+      expect(await f.browser()).toBe(adapter); expect(f.load).toHaveBeenCalledOnce();
+      await expect(f.composition.prepareBrowserAuthentication({ origin: ORIGIN,
+        knowledge: new KnowledgeService(f.store, f.composition.identity) })).rejects.toMatchObject({ code: "configuration_invalid" });
     } finally { resume.open(); await f.cleanup(); }
   });
 
@@ -213,6 +215,28 @@ describe("production shared provider composition", () => {
       expect(() => new SqliteStateStore(f.paths.databasePath)).toThrow();
       await expect(f.composition.dispose()).rejects.toMatchObject({ code: "disposal_unconfirmed" }); expect(f.load).toHaveBeenCalledOnce();
     } finally { resume.open(); await closing?.catch(() => {}); await f.cleanup(); }
+  });
+
+  it.each(["maintenance", "configuration"] as const)("settles only this runtime's unreleased session during %s and drains once", async fence => {
+    const f = await compositionFixture();
+    try {
+      await f.command("enroll");
+      const execution = f.activeRuntime().browser("sign-in", new Request(`${ORIGIN}/api/auth/sign-in/email`, {
+        method: "POST", headers: { "content-type": "application/json", origin: ORIGIN, "x-worktree-control-client-ip": `198.18.3.${peerSequence++}` },
+        body: JSON.stringify({ email: OWNER_EMAIL, password: OWNER_PASSWORD }),
+      }));
+      // An accepted result whose listener never publishes a cookie or calls discard.
+      await execution.result; await execution.settled;
+      expect(count(f.paths.databasePath, "authentication_ba_session")).toBe(1);
+      expect(readCommitted(f.paths.databasePath, db => db.prepare("SELECT state FROM authentication_session_issuance").pluck().all())).toEqual(["pending"]);
+      const drain = vi.spyOn(f.load.mock.calls[0]![0].storage, "drain");
+      if (fence === "maintenance") f.stop(); else await f.configure("https://changed.invalid", "preserve");
+      const disposal = f.composition.dispose(); expect(f.composition.dispose()).toBe(disposal);
+      await disposal;
+      expect(drain).toHaveBeenCalledOnce();
+      expect(count(f.paths.databasePath, "authentication_ba_session")).toBe(0);
+      await expect(f.command("enroll")).rejects.toMatchObject({ code: "maintenance" });
+    } finally { await f.cleanup(); }
   });
 
   it("refuses restored pending rows before loading, without sweeping them as unpublished", async () => {
