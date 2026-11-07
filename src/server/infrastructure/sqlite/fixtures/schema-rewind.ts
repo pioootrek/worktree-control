@@ -16,13 +16,15 @@ export const WITHOUT_AUTHENTICATION_PROVIDER_STORAGE = `DROP TABLE authenticatio
   DROP TABLE "authentication_ba_verification"; DROP TABLE "authentication_ba_user";
   DELETE FROM schema_migrations WHERE version >= 38;`;
 
-/**
- * Only for synthetic old-schema fixtures: removes migration 43's column and
- * record so a current test database can be rewound to schema 42. The launch
- * preset CHECK stays at the latest bootstrap shape, which inspection accepts at
- * every older version (like the other latest constraints these fixtures keep).
- */
+/** Only synthetic fixture databases; production migrations and checksums stay immutable. */
+export function rewindHumanConfiguration(database: Database.Database): void {
+  if (!database.prepare("SELECT 1 FROM schema_migrations WHERE version=48").get()) return;
+  database.exec("ALTER TABLE human_runtime_intents DROP COLUMN configuration_context_json; ALTER TABLE human_runtime_intents DROP COLUMN configuration_bound; DELETE FROM schema_migrations WHERE version=48");
+  rebuildTable(database, "runtime_human_memberships", "BETWEEN 1 AND 6", "BETWEEN 1 AND 4");
+}
+/** Remove schema47 job attribution before earlier synthetic fixture rewinds. */
 export function rewindHumanTestRuns(database: Database.Database): void {
+  rewindHumanConfiguration(database);
   if (!database.prepare("SELECT 1 FROM schema_migrations WHERE version=47").get()) return;
   database.exec("DROP TABLE human_test_run_intents; DROP TABLE human_test_run_requesters; ALTER TABLE test_runs DROP COLUMN provider_bound; DELETE FROM schema_migrations WHERE version=47");
   rebuildTable(database, "runtime_human_memberships", "BETWEEN 1 AND 4", "BETWEEN 1 AND 3");
