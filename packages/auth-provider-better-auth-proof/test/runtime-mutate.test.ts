@@ -231,10 +231,16 @@ describe("real provider human runtime mutations", () => {
     const f=await fixture();
     try{
       await assign(f);
-      // The real native deadline is authoritative; a too-short remainder refuses claim.
-      await f.sql('UPDATE authentication_ba_session SET "expiresAt"=?',[new Date(Date.now()+20_000).toISOString()]);
+      // Native refresh may move expiresAt, but cannot extend committed original evidence.
+      const deadline = async (seconds:number) => {
+        const value=new Date(Date.now()+seconds*1000).toISOString();
+        await f.sql('UPDATE authentication_ba_session SET "expiresAt"=?',[value]);
+        await f.sql("UPDATE authentication_session_evidence SET original_deadline=?",[value]);
+        await f.sql("UPDATE authentication_session_issuance SET original_deadline=?",[value]);
+      };
+      await deadline(20);
       expect((await f.http.human.call(route,{body:claim(f,"too-short")})).status).toBe(409);
-      await f.sql('UPDATE authentication_ba_session SET "expiresAt"=?',[new Date(Date.now()+120_000).toISOString()]);
+      await deadline(120);
       const response=await f.http.human.call(route,{body:claim(f,"explicit",{start:true})});
       expect(response).toMatchObject({status:200,body:{startRequested:true}});expect(f.start).toHaveBeenCalledOnce();
       const c=response.body.claim as {reservationId:string;expiresAt:string;maximumExpiresAt:string};
