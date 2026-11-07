@@ -50,8 +50,8 @@ describe("verification projects migration 30", () => {
     const indexes = beforeDb.prepare("SELECT name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL ORDER BY name").all(); beforeDb.close();
     const owned = new OwnedSqliteDatabase(f.path); const store = new SqliteStateStore(f.path, owned);
     try {
-      // Migration 43 (Godot Web) later adds a NULL configuration column to every project.
-      expect(contents(owned.database)).toEqual({ ...before, projects: (before.projects as object[]).map(row => ({ ...row, godot_web_json: null })) });
+      // Later migrations add only NULL Godot Web configuration and an unbound (0) reservation marker.
+      expect(contents(owned.database)).toEqual({ ...before, reservations: (before.reservations as object[]).map(row => ({ ...row, provider_bound: 0 })), projects: (before.projects as object[]).map(row => ({ ...row, godot_web_json: null })) });
       // Later migrations (38) add their own indexes; every pre-existing index survives unchanged.
       expect(owned.database.prepare("SELECT name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL AND tbl_name NOT LIKE 'authentication\\_%' ESCAPE '\\' ORDER BY name").all()).toEqual(indexes);
       expect(owned.database.pragma("foreign_key_check")).toEqual([]);
