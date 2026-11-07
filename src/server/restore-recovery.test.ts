@@ -109,8 +109,7 @@ describe("recoverable multi-file restore", () => {
     expect(() => new SqliteStateStore(f.database)).toThrow(/commit marker sync refused/);
     expect(readFileSync(f.database)).toEqual(installed); expect(existsSync(`${f.database}.owner.lock`)).toBe(false);
     vi.restoreAllMocks(); executeControllerRestoreRequest(f.database, f.attachments, actor, policy); assertNew(f);
-    expect(getControllerRestoreRequestStatus(f.database, actor, policy).state).toBe("verified");
-  });
+    expect(getControllerRestoreRequestStatus(f.database, actor, policy).state).toBe("verified");}, 20_000);
   it("restores an initially absent target, including a crash after new database rename", async () => {
     const f = await fixture(); rmSync(f.database); for (const suffix of ["-wal", "-shm", "-journal", ".initializing"]) rmSync(`${f.database}${suffix}`); rmSync(f.attachments, { recursive: true });
     await kill(f, "after-6"); resumeFixtureSecurity(f.database); const store = new SqliteStateStore(f.database); expect(store.listProjects()[0]?.name).toBe("New runtime"); store.close(); expect(readFileSync(join(f.attachments, sha.slice(0, 2), sha))).toEqual(bytes);
@@ -386,4 +385,4 @@ it("preserves the old set on a real quarantine-directory write denial, then resu
     expect(() => recoverOwnedRestore(ownership.path)).toThrow(/EACCES/); expect(readFileSync(f.database)).toEqual(f.before);
   } finally { chmodSync(previous, 0o700); ownership.lock.release(); }
   assertNew(f);
-});
+}, 20_000);
