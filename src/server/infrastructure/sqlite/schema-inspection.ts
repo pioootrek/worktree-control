@@ -87,6 +87,7 @@ interface TableShape { columns: Column[]; foreignKeys: ForeignKey[]; checks: str
 // Tables from migration 38 on are never in bootstrap DDL; their explicit indexes are part of the contract.
 const STRICT_TABLES_FROM = 38;
 const normalizedSql = (sql: string) => sql.replace(/\s+/g, "").toLowerCase();
+const recognizedSecurityTriggers=new Map(securityTriggers.map(trigger=>[trigger.name,normalizedSql(trigger.sql)]));
 function explicitIndexes(database: Database.Database, table: string): string[] {
   return (database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL").all(table) as Array<{ sql: string }>)
     .map(({ sql }) => normalizedSql(sql)).sort();
@@ -253,7 +254,7 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
   if (!ownershipIndex || !/createuniqueindex(?:ifnotexists)?one_active_reservation_per_projectonreservations\(project_id\)wherereleased_atisnull/i.test(ownershipIndex.sql.replace(/\s+/g,""))) refuse();
   const actualTriggers = database.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger'").all() as Array<{name:string;sql:string}>;
   if (actualTriggers.length !== (version >= 49 ? securityTriggers.length : 0)
-    || actualTriggers.some(actual => !securityTriggers.some(expected => expected.name === actual.name && normalizedSql(expected.sql) === normalizedSql(actual.sql)))) refuse("security triggers");
+    || actualTriggers.some(actual => recognizedSecurityTriggers.get(actual.name)!==normalizedSql(actual.sql))) refuse("security triggers");
   return { version, fresh: false };
 }
 

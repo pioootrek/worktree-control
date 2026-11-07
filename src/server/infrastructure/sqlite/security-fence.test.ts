@@ -102,6 +102,8 @@ describe("external security checkpoint",()=>{
       database.transaction(()=>{for(let n=0;n<80;n++){
         database.prepare("INSERT INTO controller_audit_events(event_type,actor,details_json,created_at) VALUES('spill','fixture',?,?)").run(JSON.stringify({value:"x".repeat(8192)}),new Date().toISOString());
         expect(new AuthenticationService(f.store).verifyInstallationToken(f.token)).toBe(true);
+        const cursor=database.prepare("SELECT id FROM controller_audit_events LIMIT 2").iterate();
+        expect(cursor.next().done).toBe(false);cursor.return?.();
       }})();
       expect(new AuthenticationService(f.store).verifyInstallationToken(f.token)).toBe(true);
     }finally{f.store.close();}

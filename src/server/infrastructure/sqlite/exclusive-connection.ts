@@ -317,7 +317,6 @@ export class ExclusiveSqliteConnection {
         return borrowedStatement(this.boundary ? this.boundary.execute(() => this.#raw.prepare(sql),true) : this.#raw.prepare(sql), () => {
           if (facade.closed) throw fail("closed", "The provider connection was closed.");
           if (!borrow.active || this.#currentBorrow() !== borrow) throw this.#released();
-          this.boundary?.assert();
         }, borrow.iterators, this.boundary);
       },
       close: (): void => { facade.closed = true; },
@@ -639,31 +638,35 @@ function borrowedStatement(statement: Database.Statement, check: () => void, ite
     iterate(parameters) {
       check();
       if (boundary && !statement.readonly) throw fail("unadmitted", "Mutating SQL iterators are unavailable.");
-      boundary?.assert();
-      const iterator = statement.iterate(...parameters);
-      iterators.add(iterator);
-      return guardedIterator(iterator, check, () => { iterators.delete(iterator); });
+      const iterator = execute(() => statement.iterate(...parameters));
+      const guarded = guardedIterator(iterator, check, () => { iterators.delete(guarded); }, execute);
+      iterators.add(guarded);
+      return guarded;
     },
   };
 }
 
-function guardedIterator<T>(iterator: IterableIterator<T>, check: () => void, finished: () => void = () => undefined): IterableIterator<T> {
+function guardedIterator<T>(iterator: IterableIterator<T>, check: () => void, finished: () => void = () => undefined, execute: <R>(operation: () => R) => R = operation => operation()): IterableIterator<T> {
   const guarded: IterableIterator<T> = {
     next() {
       try {
         check();
-        const result = iterator.next();
+        const result = execute(() => iterator.next());
         if (result.done) finished();
         return result;
       } catch (error) {
-        try { iterator.return?.(); finished(); } catch { /* retained for borrow cleanup */ }
+        try { guarded.return?.(); } catch { /* retained for borrow cleanup */ }
         throw error;
       }
     },
     return(value?: unknown) {
-      const result = iterator.return?.(value) ?? { done: true, value: undefined as T };
-      finished();
-      return result;
+      let ran=false;
+      const close=()=>{ran=true;return iterator.return?.(value) ?? {done:true,value:undefined as T};};
+      let result:IteratorResult<T>;
+      try{result=execute(close);}catch(error){if(ran)throw error;result=close();}
+      // Resource cleanup remains possible after a lost fence. A failed physical
+      // close stays tracked for the owner's existing cleanup/poison protocol.
+      finished();return result;
     },
     [Symbol.iterator]() { return guarded; },
   };
@@ -690,12 +693,12 @@ function coreFacade(
     get name() { return raw.name; },
     get open() { return raw.open; },
     get inTransaction() { return raw.inTransaction; },
-    prepare(source: string) { assert(); return coreStatement(execute(() => raw.prepare(source),true), facade as unknown as Database.Database, assert, track, boundary); },
+    prepare(source: string) { checked(); return coreStatement(execute(() => raw.prepare(source),true), facade as unknown as Database.Database, checked, track, boundary); },
     transaction(fn: (...parameters: unknown[]) => unknown) {
-      assert();
+      checked();
       const inner = raw.transaction(fn);
       const guard = (variant: (...parameters: unknown[]) => unknown) => function guardedTransaction(this: unknown, ...parameters: unknown[]) {
-        assert();
+        checked();
         return execute(() => variant.apply(this, parameters), true);
       };
       const variants = { default: guard(inner.default), deferred: guard(inner.deferred), immediate: guard(inner.immediate), exclusive: guard(inner.exclusive) };
@@ -707,8 +710,8 @@ function coreFacade(
       for (const variant of Object.values(variants)) Object.defineProperties(variant, properties);
       return variants.default;
     },
-    exec(source: string) { assert(); execute(() => raw.exec(source)); return facade; },
-    pragma(source: string, options?: Database.PragmaOptions) { assert(); return execute(() => raw.pragma(source, options)); },
+    exec(source: string) { checked(); execute(() => raw.exec(source)); return facade; },
+    pragma(source: string, options?: Database.PragmaOptions) { checked(); return execute(() => raw.pragma(source, options)); },
     function(...parameters: unknown[]) { assert(); (raw.function as (...values: unknown[]) => unknown)(...parameters); return facade; },
     aggregate(name: string, options: Database.AggregateOptions) { assert(); raw.aggregate(name, options); return facade; },
     loadExtension(path: string) { assert(); raw.loadExtension(path); return facade; },
@@ -743,8 +746,10 @@ function coreStatement(
       assert();
       if (boundary && !statement.readonly) throw fail("unadmitted", "Mutating SQL iterators are unavailable.");
       // An admitted operation's cursors close when it ends, before a provider can be admitted.
-      const iterator = statement.iterate(...parameters) as IterableIterator<unknown>;
-      return guardedIterator(iterator, assert, track(iterator));
+      const iterator = execute(() => statement.iterate(...parameters)) as IterableIterator<unknown>;
+      let finished:(()=>void)|undefined;
+      const guarded=guardedIterator(iterator,assert,()=>finished?.(),execute);
+      finished=track(guarded);return guarded;
     },
     pluck(...parameters: [boolean?]) { statement.pluck(...parameters); return wrapper; },
     expand(...parameters: [boolean?]) { statement.expand(...parameters); return wrapper; },
