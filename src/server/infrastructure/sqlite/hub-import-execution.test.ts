@@ -459,7 +459,7 @@ describe("K6b Hub import execution",()=>{
     db.prepare("UPDATE knowledge_import_sources SET mapping_version=1,target_revision=NULL WHERE project_id='uncertain' AND target_kind='historical_comment' AND target_id=?").run(original[0]!.id);
     db.prepare("UPDATE knowledge_import_sources SET source_path='wrong#notes/1' WHERE project_id='uncertain' AND target_kind='historical_comment' AND target_id=?").run(original[1]!.id);
     db.prepare("UPDATE knowledge_import_sources SET original_payload_json='{broken' WHERE project_id='uncertain' AND target_kind='historical_comment' AND target_id=?").run(original[2]!.id);
-    (f.store as unknown as {database:Database.Database}).database.prepare("INSERT INTO knowledge_projects(id,name,status,revision,created_at,updated_at) VALUES ('other-project','Other','active',1,?,?)").run(NOW,NOW);
+    (f.store as unknown as {database:import("better-sqlite3").Database}).database.prepare("INSERT INTO knowledge_projects(id,name,status,revision,created_at,updated_at) VALUES ('other-project','Other','active',1,?,?)").run(NOW,NOW);
     db.prepare(`INSERT INTO knowledge_import_sources(id,project_id,source_id,source_repository,source_commit,source_path,legacy_id,source_sha256,mapping_version,target_kind,target_id,original_payload_json,created_at,target_revision)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run("foreign-provenance","other-project","other","/source","d".repeat(40),"foreign/path#notes/0","other:note:0","a".repeat(64),2,"historical_comment",original[0]!.id,"{}",NOW,1);
     db.prepare(`INSERT INTO knowledge_import_sources(id,project_id,source_id,source_repository,source_commit,source_path,legacy_id,source_sha256,mapping_version,target_kind,target_id,original_payload_json,created_at,target_revision)
