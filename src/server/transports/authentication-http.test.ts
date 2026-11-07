@@ -55,7 +55,7 @@ function adapter(assertAvailable?: () => void) {
   return { value, browser };
 }
 describe("authentication request lifetime and socket peer", () => {
-  it.each(["maintenance", "provider_configuration_restart_required"])("reports unavailable guarded composition without calling the provider: %s", async code => {
+  it.each(["maintenance", "provider_configuration_restart_required"] as const)("reports unavailable guarded composition without calling the provider: %s", async code => {
     const f = adapter(() => { throw new AuthenticationProviderError(code, "private configuration detail"); }), response = outgoing();
     await f.value.handle(incoming("127.0.0.1") as never, response as never);
     expect(response.status).toBe(503);
