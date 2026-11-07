@@ -25,6 +25,8 @@ import { EnvironmentSettingsDialog } from "@/features/environments/environment-s
 import { localizedFailure } from "@/features/runtime/localized-failure";
 import { RuntimeBadge } from "@/features/runtime/runtime-badge";
 import { TlsSettingsDialog } from "@/features/runtime/tls-settings-dialog";
+import { GodotWebSettingsDialog } from "@/features/runtime/godot-web-settings-dialog";
+import { WebExportPanel } from "@/features/runtime/web-export-panel";
 import { useI18n } from "@/i18n/provider";
 import type { ProjectSnapshot } from "@/shared/contracts";
 import { AlertTriangle, GitBranch, LockKeyhole, Play, RefreshCw, RotateCcw, Server, Square, Trash2, UnlockKeyhole } from "lucide-react";
@@ -125,7 +127,8 @@ export function ProjectCard({
 
   const projectHeaderActions = <>
     <EnvironmentSettingsDialog project={project} phase={runtime.phase} mutate={mutate} setError={setError} />
-    {project.launchPreset !== "django" && project.launchPreset !== "none" && <TlsSettingsDialog project={project} phase={runtime.phase} token={token} mutate={mutate} setError={setError} />}
+    {(project.launchPreset === "none" || project.launchPreset === "godot-web") && <GodotWebSettingsDialog project={project} phase={runtime.phase} mutate={mutate} setError={setError} />}
+    {project.launchPreset !== "django" && project.launchPreset !== "none" && project.launchPreset !== "godot-web" && <TlsSettingsDialog project={project} phase={runtime.phase} token={token} mutate={mutate} setError={setError} />}
     <AlertDialog>
       <AlertDialogTrigger asChild>
         <Button variant="ghost" size="icon" disabled={isBusy} aria-label={t("project.remove")}><Trash2 aria-hidden /></Button>
@@ -215,6 +218,7 @@ export function ProjectCard({
             </AlertDescription>
           </Alert>
         )}
+        {project.launchPreset === "godot-web" && <WebExportPanel snapshot={snapshot} mutate={mutate} setError={setError} />}
         {section !== "worktrees" && selectedWorktree?.dirty && (
           <Alert variant="warning" className="mb-4">
             <AlertTriangle aria-hidden />

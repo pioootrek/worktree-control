@@ -148,6 +148,7 @@ export function useDashboard(sessionsActive = false) {
                   storage: update.storage ?? snapshot.storage,
                   testRuns: update.testRuns ?? snapshot.testRuns,
                   testHistoryComplete: update.testHistoryComplete ?? snapshot.testHistoryComplete,
+                  webExport: update.webExport !== undefined ? update.webExport : snapshot.webExport,
                 };
               }),
             }));

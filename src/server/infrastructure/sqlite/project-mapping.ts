@@ -1,4 +1,5 @@
 import type { LaunchPreset, Project } from "@/shared/contracts";
+import { godotWebConfigSchema } from "@/shared/contracts/godot-web";
 
 export type ProjectRow = {
   id: string;
@@ -18,6 +19,8 @@ export type ProjectRow = {
   test_environment_profiles_json: string;
   test_preset_profiles_json: string;
   test_preset_timeouts_json: string;
+  /** Absent before migration 43. */
+  godot_web_json?: string | null;
   healthcheck_path: string;
   startup_timeout_ms: number;
   selected_worktree_path: string | null;
@@ -44,6 +47,7 @@ export function mapProject(row: ProjectRow): Project {
     testEnvironmentProfiles: JSON.parse(row.test_environment_profiles_json) as Project["testEnvironmentProfiles"],
     testPresetProfiles: JSON.parse(row.test_preset_profiles_json) as Project["testPresetProfiles"],
     testPresetTimeouts: JSON.parse(row.test_preset_timeouts_json) as Project["testPresetTimeouts"],
+    godotWeb: row.godot_web_json ? godotWebConfigSchema.parse(JSON.parse(row.godot_web_json)) : null,
     healthcheckPath: row.healthcheck_path,
     startupTimeoutMs: row.startup_timeout_ms,
     selectedWorktreePath: row.selected_worktree_path,

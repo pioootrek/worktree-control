@@ -223,6 +223,17 @@ On timeout, use `retryAfterMs`; on a lost session, inspect again and never repea
 a mutation solely because waiting failed. Older controllers can be polled with
 the legacy status tools.
 
+## Godot Web previews
+
+A project with the `godot-web` preset serves its latest complete Web export on
+the project port while its runtime runs. Claim and start it like any other
+server. Source edits queue an export automatically; use `rebuild_web_export`
+to request one and `get_web_export_status` to read the served build, build
+state and last failure. Exports occupy the shared test queue, so do not also
+run the same export command through `run_test` or a shell. A reload restarts
+the game; it does not preserve game state. Change the exporter only with
+`configure_godot_web` while the server is stopped and the user asked for it.
+
 ## Report the result
 
 When a server operation matters to the task, report the project name, selected

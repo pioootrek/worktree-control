@@ -14,3 +14,5 @@ coverage/
 test-results/
 playwright-report/
 resource-benchmark-report.json
+# Optional real Godot Web export for tests/e2e/godot-web-live-reload.spec.ts
+/.godot-web-acceptance/

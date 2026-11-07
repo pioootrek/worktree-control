@@ -28,7 +28,7 @@ function project(port: number): Project {
     environmentProfiles: [{ name: "default", environment: {} }],
     selectedEnvironmentProfile: "default",
     testEnvironmentProfiles: [],
-    testPresetProfiles: {}, testPresetTimeouts: {},
+    testPresetProfiles: {}, testPresetTimeouts: {}, godotWeb: null,
     healthcheckPath: "/",
     startupTimeoutMs: 5000,
     selectedWorktreePath: process.cwd(),

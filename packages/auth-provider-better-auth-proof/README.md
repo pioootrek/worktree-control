@@ -88,6 +88,10 @@ binary against schema 42. The five historical factor negative bodies remain
 unchanged and unskipped; their current-schema positive expectation alone changes
 41 to 42. The whole proof must still report those failures explicitly.
 
+Core schema 43 adds only the Godot Web project configuration. It likewise changes
+no provider API, storage, native tables or proof; current-schema positive
+expectations change 42 to 43.
+
 Knowledge write includes project archive/restore. Human runtime-link writes deny
 before lookup/replay; linked IDs grant no runtime authority. Human recovery,
 factor reset/removal, privileged approval, administration, runtime/claims and ENV
@@ -341,7 +345,7 @@ caller session, covering a real delete-hook failure that native sign-out swallow
 The core drops native bodies and arbitrary headers; no bearer token is returned
 in browser JSON. Library logs/router exceptions become fixed events. After-commit
 notification failures remain `committed:true`, without automatic mutation replay.
-The current composition uses core schema 42 and provider storage revision 3. Contract 5
+The current composition uses core schema 43 and provider storage revision 3. Contract 5
 adds durable session issuance and changes no pinned dependency.
 
 Provider-cookie requests to unconverted HTTP operations and the actual separate
@@ -402,7 +406,7 @@ TOTP was an unselected compatibility candidate. The owner has since selected
 both TOTP and passkeys as optional methods; the pinned TOTP implementation still
 needed an accepted replay remedy at that stage. That historical baseline was
 schema 39, provider storage revision 1 and contract 2. Later integrated authority
-uses current core schema 42, storage 3 and contract 5. This experiment changes no
+uses current core schema 43, storage 3 and contract 5. This experiment changes no
 production provider, route, actor, mode or migration. Account mode remains
 unavailable; A4, A5, general delegated roles and GUI remain separate.
 

@@ -5,5 +5,5 @@ import nextTypescript from "eslint-config-next/typescript";
 export default defineConfig([
   ...nextVitals,
   ...nextTypescript,
-  globalIgnores([".next/**", "dist/**", "out/**", "next-env.d.ts"]),
+  globalIgnores([".next/**", "dist/**", "out/**", "next-env.d.ts", ".godot-web-acceptance/**"]),
 ]);

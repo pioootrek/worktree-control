@@ -16,8 +16,22 @@ export const WITHOUT_AUTHENTICATION_PROVIDER_STORAGE = `DROP TABLE authenticatio
   DROP TABLE "authentication_ba_verification"; DROP TABLE "authentication_ba_user";
   DELETE FROM schema_migrations WHERE version >= 38;`;
 
+/**
+ * Only for synthetic old-schema fixtures: removes migration 43's column and
+ * record so a current test database can be rewound to schema 42. The launch
+ * preset CHECK stays at the latest bootstrap shape, which inspection accepts at
+ * every older version (like the other latest constraints these fixtures keep).
+ */
+export function rewindGodotWeb(database: Database.Database): void {
+  if (!database.prepare("SELECT 1 FROM schema_migrations WHERE version=43").get()) return;
+  database.transaction(() => {
+    database.exec("ALTER TABLE projects DROP COLUMN godot_web_json; DELETE FROM schema_migrations WHERE version=43");
+  }).immediate();
+}
+
 /** Only for synthetic old-schema fixtures: an empty current schema, rewound to 39. */
 export function rewindAuthenticationFactors(database: Database.Database): void {
+  rewindGodotWeb(database);
   if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=42").get()) {
     const foreignKeys = database.pragma("foreign_keys", { simple: true });
     database.pragma("foreign_keys=OFF");

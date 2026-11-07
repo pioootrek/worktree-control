@@ -1,6 +1,6 @@
 ---
 audience: "contributors and coding agents extracting or adding modules"
-last_reviewed: "2026-10-07"
+last_reviewed: "2026-11-06"
 source_of_truth: "incremental module organization and dependency rules"
 status: "active"
 ---
@@ -30,7 +30,9 @@ are not a claim that the directory migration is complete.
 | Translations and locale handling | `src/i18n/` | Keep the existing typed translation system |
 
 Existing areas include projects, reservations, runtime, verification,
-environments, status, dashboard queries, identity, authentication and knowledge.
+environments, status, dashboard queries, identity, authentication, knowledge
+and the Godot Web preview (`modules/godot-web`, static server under
+`infrastructure/godot-web`).
 Remote verification has request/attempt and workspace foundations, without a
 connected-worker execution flow. Add further worker or coordination modules
 with their first implemented workflow. Do not create empty modules or generic

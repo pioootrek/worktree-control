@@ -1,6 +1,6 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-11-02"
+last_reviewed: "2026-11-06"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
@@ -142,7 +142,10 @@ commands, proof assumptions, retained artifacts and remaining acceptance gates.
 Managed development applications have priority over Worktree Control. The
 controller must be event-driven and have bounded memory use:
 
-- no recursive filesystem watcher over managed repositories;
+- no recursive filesystem watcher over managed repositories, except the
+  bounded per-directory source watcher of a running `godot-web` preview
+  (opt-in, Git-ignored and output paths skipped, at most 4,096 directories,
+  disposed when the runtime stops; see [Godot Web preview](godot-web.md));
 - no continuous Git polling while the dashboard is closed;
 - a repository-keyed dashboard metadata projection with single-flight refresh,
   30-second freshness/error disclosure, at most 128 entries and an 8 MiB
@@ -454,6 +457,22 @@ new run's timeout; adapters retain their 15-minute defaults. See
 [preset timeout configuration](reservations-and-mcp.md) for bounds and reset
 semantics.
 
+The `godot-web` preset is explicit opt-in and never chosen by detection. Its
+runtime is the bundled `godot-web-server` entry started as an owned process
+group with the project's port; it reads only the per-project public store
+under the state directory and is bound to its worktree by an opaque key in its
+arguments. The controller owns the watcher, export scheduling and atomic
+generation publication. Exports are finite jobs (`godot:web-export`) in the
+shared queue; trusted in-process `observe` and `settle` hooks let the module
+observe source and publish while the job still holds its worktree slot.
+Migration 43 rebuilds the `projects.launch_preset` CHECK with the existing
+helper and adds the nullable `projects.godot_web_json`, in the same ordered
+schema transaction, after the released migrations 35–42. The rebuild keeps the
+foreign keys of every `projects` child, including the runtime-access tables.
+Godot Web background work (runtime events, watcher timers, queue settlement and
+follow-up exports) takes its own database admission and releases it while
+waiting for an export to settle. See [Godot Web preview](godot-web.md).
+
 The concrete executable and arguments are resolved against the selected
 worktree before every start. Django therefore uses a worktree-local `.venv` or
 `venv` when present and otherwise invokes `python3`, always through `shell:false`.
@@ -534,7 +553,7 @@ admitted phase. Accepted cleanup uses reserved queue room on the same gate, with
 lock, counter or connection.
 
 Current isolated provider API is contract 5, storage revision 3, implementation
-`0.0.0-proof.5` and core schema 42. Earlier versions evolved as follows.
+`0.0.0-proof.5` and core schema 43. Earlier versions evolved as follows.
 Provider API contract 2 requires durable `signOut`; version 1 fails compatibility
 checks. Contract 3 adds the application-owned `host.protection` port: the provider
 calls it synchronously inside its open transaction, and `AccountProtection` keeps

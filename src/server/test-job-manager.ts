@@ -54,6 +54,8 @@ export class TestJobManager {
   private readonly preparationPromises = new Map<string, Promise<void>>();
   private readonly preparations = new Map<string, NonNullable<EnqueueTestInput["preparation"]>>();
   private readonly preparationSessions = new Map<string, PreparationSession>();
+  private readonly observers = new Map<string, TestSourceObserver>();
+  private readonly settlements = new Map<string, NonNullable<EnqueueTestInput["settle"]>>();
   private pathAdmission: (paths: string[]) => void = () => undefined;
   private sourceObserver: TestSourceObserver | null = null;
   private logMaintenance: Promise<void> = Promise.resolve();
@@ -174,6 +176,8 @@ export class TestJobManager {
     catch (error) { this.telemetry.forget(run.id); throw error; }
     this.environments.set(run.id, input.environment.environment);
     if (input.preparation) this.preparations.set(run.id, input.preparation);
+    if (input.observe) this.observers.set(run.id, input.observe);
+    if (input.settle) this.settlements.set(run.id, input.settle);
     this.timeouts.set(run.id, input.command.preset.timeoutMs);
     this.logs.openTest(run.id);
     this.write(run, `$ ${run.executable} ${run.args.join(" ")}`);
@@ -351,7 +355,7 @@ export class TestJobManager {
         this.environments.set(run.id, input.environment.environment);
         this.timeouts.set(run.id, input.command.preset.timeoutMs);
       }
-      const observer = preparation?.observe ?? this.sourceObserver;
+      const observer = preparation?.observe ?? this.observers.get(run.id) ?? this.sourceObserver;
       if (!observer || !run.source.enqueue) {
         if (!preparation) this.preparing.delete(run.id);
         await this.admission.run(() => this.start(run));
@@ -587,7 +591,7 @@ export class TestJobManager {
         run.phase = active.cancellationRequested ? "cancelled" : active.timedOut ? "timed_out"
           : run.exitCode === 0 && !run.error ? "passed" : "failed";
         run.source.processOutcome = run.phase;
-        const observer = this.preparations.get(run.id)?.observe ?? this.sourceObserver;
+        const observer = this.preparations.get(run.id)?.observe ?? this.observers.get(run.id) ?? this.sourceObserver;
         if (observer && run.source.enqueue) {
           try {
             run.source.finish = await observer(run, "finish");
@@ -708,6 +712,13 @@ export class TestJobManager {
           return;
         }
         this.preparations.delete(run.id);
+      }
+      const settle = this.settlements.get(run.id);
+      this.settlements.delete(run.id);
+      this.observers.delete(run.id);
+      if (settle && !run.telemetry!.finalizedAt) {
+        try { await settle(run, (line) => this.write(run, line)); }
+        catch (error) { this.logs.controller("test_run.settle_failed", { runId: run.id, error: String(error) }); }
       }
       if (!run.telemetry!.finalizedAt) {
         try {

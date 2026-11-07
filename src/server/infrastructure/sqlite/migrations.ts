@@ -7,6 +7,7 @@ import { applyAuthenticationFactorMigration } from "./authentication-factor-migr
 import { applyAuthenticationSessionIssuanceMigration } from "./authentication-session-issuance-migration";
 import { applyAuthenticationProviderMigration } from "./authentication-provider-migration";
 import { applyDevVaultMigration } from "./dev-vault-migration";
+import { applyGodotWebMigration } from "./godot-web-migration";
 import { applyRemoteConnectionMigration } from "./remote-connection-migration";
 import Database from "better-sqlite3";
 import { applyRegistryMigration, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
@@ -373,6 +374,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyAuthenticationFactorMigration(database);
       applyAuthenticationSessionIssuanceMigration(database);
       applyHumanPrincipalMigration(database);
+      applyGodotWebMigration(database);
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();

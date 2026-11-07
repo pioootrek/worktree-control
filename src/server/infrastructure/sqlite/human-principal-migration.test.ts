@@ -11,6 +11,7 @@ import { inspectSchema } from "./schema-inspection";
 import { validateDatabase } from "./database-validation";
 import { SqliteStateStore } from "./sqlite-state-store";
 import { humanPrincipalChecksum, humanPrincipalMigration } from "./human-principal-migration";
+import { rewindGodotWeb } from "./fixtures/schema-rewind";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -47,7 +48,7 @@ describe("ordinary human principal migration 42", () => {
       expect(() => initializeSchema(db, false, () => { throw Error("after rebuild"); })).toThrow("after rebuild");
       expect(inspectSchema(db).version).toBe(41); expect(kept(db)).toEqual(before);
       initializeSchema(db, false, inspectSchema);
-      expect(inspectSchema(db).version).toBe(42); expect(kept(db)).toEqual(before);
+      expect(inspectSchema(db).version).toBe(43); expect(kept(db)).toEqual(before);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=41 ORDER BY version").all()).toEqual(registry);
       expect(db.prepare("SELECT name,checksum FROM schema_migrations WHERE version=42").get()).toEqual({ name: humanPrincipalMigration.name, checksum: humanPrincipalChecksum });
       expect(db.prepare("SELECT 1 FROM sqlite_master WHERE name='historical_principal_status'").get()).toBeTruthy();
@@ -67,12 +68,12 @@ describe("ordinary human principal migration 42", () => {
     const backups = join(root, "backups");
     const store = await openControllerStore(path, { backupBeforeMigration: true, backupDirectory: backups,
       applicationVersion: "human-upgrade-test", attachmentDirectory: join(root, "attachments") });
-    try { expect(store.schemaVersion()).toBe(42); expect(store.getPrincipal("owner")).toEqual({ id: "owner", kind: "owner", status: "active" }); }
+    try { expect(store.schemaVersion()).toBe(43); expect(store.getPrincipal("owner")).toEqual({ id: "owner", kind: "owner", status: "active" }); }
     finally { await store.closeAfterDrain(); }
     const names = readdirSync(backups); expect(names).toHaveLength(1); expect(names[0]).toMatch(/^pre-migration-v41-/);
     const backup = join(backups, names[0]);
     expect(JSON.parse(readFileSync(join(backup, "manifest.json"), "utf8")).database.schemaVersion).toBe(41);
-    for (const [file, version] of [[path, 42], [join(backup, "state.sqlite3"), 41]] as const) {
+    for (const [file, version] of [[path, 43], [join(backup, "state.sqlite3"), 41]] as const) {
       const db = new Database(file, { readonly: true, fileMustExist: true });
       try {
         expect(inspectSchema(db).version).toBe(version); expect(kept(db)).toEqual(before);
@@ -99,6 +100,8 @@ describe("ordinary human principal migration 42", () => {
       if (variant === "checksum" || variant === "name") db.exec(`UPDATE schema_migrations SET ${variant}='tampered' WHERE version=42`);
       if (variant === "old-wide" || variant === "old-row") {
         if (variant === "old-row") db.exec("INSERT INTO remote_principals VALUES('h','human','active')");
+        // Remove the later Godot Web migration first so the registry ends at 41.
+        rewindGodotWeb(db);
         db.exec("DELETE FROM schema_migrations WHERE version=42");
         expect(() => inspectSchema(db)).toThrow(/human principal precedes/); return;
       }
@@ -111,7 +114,7 @@ describe("ordinary human principal migration 42", () => {
     const root = mkdtempSync(join(tmpdir(), "human-migration-")); roots.push(root);
     const path = join(root, "data", "state.sqlite3"), store = new SqliteStateStore(path);
     const human = new HumanAccountService(store.humanAccounts(), "local-cli").create();
-    expect(store.schemaVersion()).toBe(42); expect(store.authenticationProviderStorage().storageRevision).toBe(3);
+    expect(store.schemaVersion()).toBe(43); expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     const storage = store.authenticationProviderStorage(), connection = storage.createProviderConnection();
     await storage.borrow(async () => {
       connection.prepare("INSERT INTO authentication_ba_user(id,name,email,emailVerified,createdAt,updatedAt) VALUES('s','Fixture','fixture@invalid.test',0,'2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z')").run([]);
