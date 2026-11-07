@@ -128,8 +128,15 @@ describe("immutable attachments during backup", () => {
     const f = fixture(), external = fixture(), exported = join(external.root, "export");
     external.upload(Buffer.from("external"), "external");
     exportKnowledgeProject(external.store, external.identity, external.project.id, exported, external.attachments, external.owner, { applicationVersion: "test" });
-    const sync = fs.fsyncSync;
-    vi.spyOn(fs, "fsyncSync").mockImplementation(fd => { if (fs.fstatSync(fd).isDirectory()) throw Object.assign(new Error("sync failed"), { code: "ENOSPC" }); sync(fd); });
+    const sync = fs.fsyncSync, open=fs.openSync, opened=new Map<number,string>();
+    vi.spyOn(fs,"openSync").mockImplementation((path,flags,mode)=>{const fd=open(path,flags,mode);opened.set(fd,String(path));return fd;});
+    // Fail attachment publication, not an earlier security-witness publication.
+    // The independent fence suite covers uncertainty at its own fsync boundary.
+    vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
+      const path=opened.get(fd)??"";
+      if (fs.fstatSync(fd).isDirectory() && (path===f.attachments || path.startsWith(join(f.attachments,"/"))))throw Object.assign(new Error("sync failed"), { code: "ENOSPC" });
+      sync(fd);
+    });
     expect(() => {
       if (operation === "upload") f.upload(Buffer.from("failed"), "failed");
       if (operation === "hub") hub(f, Buffer.from("failed"));
