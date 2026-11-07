@@ -58,7 +58,7 @@ describe("Godot Web migration 43", () => {
       expect(inspectSchema(db).version).toBe(42);
       expect(rows(db, "projects")).toEqual(before);
       initializeSchema(db, false, inspectSchema);
-      expect(inspectSchema(db)).toEqual({ version: 43, fresh: false });
+      expect(inspectSchema(db)).toEqual({ version: 44, fresh: false });
       expect(rows(db, "projects")).toEqual((before as object[]).map((row) => ({ ...row, godot_web_json: null })));
       expect(rows(db, "audit_events")).toEqual(audit);
       expect(rows(db, "runtime_delegations")).toEqual(delegations);
@@ -80,7 +80,7 @@ describe("Godot Web migration 43", () => {
     const path = v42();
     const store = new SqliteStateStore(path);
     try {
-      expect(store.schemaVersion()).toBe(43);
+      expect(store.schemaVersion()).toBe(44);
       expect(store.getProject("kept")).toMatchObject({ launchPreset: "none", godotWeb: null });
       expect(store.getProjectConfigurationRevision("kept")).toBe(7);
       store.setProjectGodotWeb("kept", { launchPreset: "godot-web", godotWeb: DEFAULT_GODOT_WEB_CONFIG, executable: "node", args: ["server.js"] }, "local-user");

@@ -1,3 +1,4 @@
+import { registerScopedVerificationTools } from "./scoped-verification-tools";
 import type { DevVaultOperations } from "@/server/modules/dev-vault";
 import { registerDevVaultTools } from "./dev-vault-tools";
 import { testPresetTimeoutSchema, testHistorySchema, testMetricsSchema, testSummarySchema, testComparisonSchema } from "@/server/modules/verification";
@@ -456,6 +457,7 @@ export class McpRuntime {
           const port = this.scopedPort(session, actor);
           registerScopedRuntimeTools(server, this.service, actor, port);
           registerScopedConfigurationTools(server, this.service, actor, port);
+          registerScopedVerificationTools(server, this.service, actor, port);
         }
         return server;
       }

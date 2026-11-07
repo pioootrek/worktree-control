@@ -8,3 +8,5 @@ export { VerificationHistoryService } from "./history-service";
 export { testHistorySchema, testMetricsSchema, testSummarySchema, testComparisonSchema } from "./history-input";
 
 export { emptyRunResources, observeRunResources, resourceReason, TEST_RESOURCE_INTERVAL_MS, type RunResourceObservation, type RunResourceOptions } from "./run-resources";
+
+export { ScopedVerificationService } from "./scoped-verification";

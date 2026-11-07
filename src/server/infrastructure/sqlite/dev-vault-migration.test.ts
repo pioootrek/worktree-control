@@ -50,14 +50,14 @@ describe("Knowledge 33 and DEV vault 34 integration", () => {
 
     const upgraded = new SqliteStateStore(f.path);
     try {
-      expect(upgraded.schemaVersion()).toBe(43);
+      expect(upgraded.schemaVersion()).toBe(44);
       expect(upgraded.getProject(f.project.id)).toEqual(f.project);
       expect(upgraded.getAuthenticationPolicy()).toEqual(f.policy);
       expect(upgraded.devVault.load(f.project.id)).toBeNull();
     } finally { upgraded.close(); }
     const check = new Database(f.path, { readonly: true });
     try {
-      expect(inspectSchema(check).version).toBe(43);
+      expect(inspectSchema(check).version).toBe(44);
       expect(check.prepare("SELECT version,name,checksum FROM schema_migrations WHERE version BETWEEN 33 AND 34 ORDER BY version").all()).toEqual([
         { version: 33, name: taskCurrentStateMigration.name, checksum: taskCurrentStateChecksum },
         { version: 34, name: devVaultMigration.name, checksum: devVaultChecksum },

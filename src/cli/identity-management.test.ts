@@ -41,10 +41,10 @@ describe("identity management CLI", () => {
     store.close();
     const expiry = new Date(Date.now() + 3600_000).toISOString();
     for (const project of projects) {
-      await runIdentityCommand(["set-runtime-delegation", "--principal-id", principalId, "--project-id", project.id, "--actions", "projects:read,claims:manage,profiles:select,config:write", "--expires-at", expiry, "--expected-revision", "0"], appPaths, dependencies);
+      await runIdentityCommand(["set-runtime-delegation", "--principal-id", principalId, "--project-id", project.id, "--actions", "projects:read,claims:manage,profiles:select,config:write,tests:run", "--expires-at", expiry, "--expected-revision", "0"], appPaths, dependencies);
       expect(JSON.parse(lines.pop()!).delegation).toMatchObject({ sponsorId: owner.principalId, revision: 1, expiresAt: expiry });
     }
-    const scopes = projects.map(project => ({ projectId: project.id, actions: ["projects:read", "claims:manage", "profiles:select", "config:write"] }));
+    const scopes = projects.map(project => ({ projectId: project.id, actions: ["projects:read", "claims:manage", "profiles:select", "config:write", "tests:run"] }));
     await runIdentityCommand(["issue-runtime-credential", "--principal-id", principalId, "--label", "Private client", "--projects-json", JSON.stringify(scopes), "--expires-at", expiry], appPaths, dependencies);
     expect(lines).toHaveLength(1);
     const issued = JSON.parse(lines.pop()!);
@@ -90,7 +90,7 @@ describe("identity management CLI", () => {
     ["list-runtime-access", "--principal-id", "agent", "--token", "secret"],
     ["list-runtime-access", "--principal-id", "agent", "trailing"],
     ["issue-runtime-credential", "--principal-id", "agent", "--label", "client", "--projects-json", "@file"],
-    ["issue-runtime-credential", "--principal-id", "agent", "--label", "client", "--projects-json", '[{"projectId":"p","actions":["tests:run"]}]'],
+    ["issue-runtime-credential", "--principal-id", "agent", "--label", "client", "--projects-json", '[{"projectId":"p","actions":["tests:launch"]}]'],
     ["issue-runtime-credential", "--principal-id", "agent", "--label", "client", "--projects-json", '[{"projectId":"p","actions":["projects:read"],"sponsorId":"owner"}]'],
     ["issue-runtime-credential", "--principal-id", "agent", "--label", "client"],
     ["rotate-runtime-credential", "--credential-id", "id", "--label", "a", "--label", "b"],

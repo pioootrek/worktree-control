@@ -1,3 +1,4 @@
+import { scopedWaitSchema } from "@/shared/contracts/scoped-verification";
 import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 
@@ -10,7 +11,7 @@ import { RuntimeAccessDenied, ScopedRuntimeError } from "../../modules/runtime";
 
 type ScopedService = Pick<ControlService,
   "scopedProjects" | "scopedProjectStatus" | "scopedWorktrees" | "claimScopedProject" | "renewScopedClaim"
-  | "scopedCompactProjectStatus" | "waitForScopedStatusChange"
+  | "scopedCompactProjectStatus" | "waitForScopedStatusChange" | "waitForScopedTestChange"
   | "releaseScopedClaim" | "operateScopedRuntime" | "authorizeScopedRuntimeReplay">;
 
 /** Session-held secrets and timers stay in the MCP runtime; tools only reach them through this port. */
@@ -87,13 +88,12 @@ export function registerScopedRuntimeTools(server: McpServer, service: ScopedSer
   }, async ({ projectId }) => jsonContent(await safe(() => service.scopedCompactProjectStatus(actor, scoped(), projectId))));
 
   server.registerTool("wait_for_status_change", {
-    description: "Wait up to 20 seconds for an authorized project's compact cursor. Authority is rechecked before delivery; test-run waits are unavailable.",
-    inputSchema: { projectId: z.string().uuid(), runId: z.string().optional(), cursor: z.string().min(1).max(128), timeoutMs: z.number().int().min(1).max(20_000).optional() },
+    description: "Wait up to 20 seconds for one authorized project or own test run cursor. Current authority is rechecked before delivery.",
+    inputSchema: scopedWaitSchema,
     annotations: { readOnlyHint: true, idempotentHint: true },
-  }, async ({ projectId, runId, cursor, timeoutMs }, extra) => jsonContent(await safe(() => {
-    if (runId !== undefined) throw new ScopedRuntimeError("invalid_request", "Scoped waits require only a project target.");
-    return service.waitForScopedStatusChange(actor, scoped(), { projectId, cursor, timeoutMs }, extra.signal, () => session.closing());
-  })));
+  }, async ({ projectId, runId, cursor, timeoutMs }, extra) => jsonContent(await safe(() => runId
+    ? service.waitForScopedTestChange(actor, scoped(), { runId, cursor, timeoutMs }, extra.signal, () => session.closing())
+    : service.waitForScopedStatusChange(actor, scoped(), { projectId: projectId!, cursor, timeoutMs }, extra.signal, () => session.closing()))));
 
   server.registerTool("list_worktrees", {
     description: "List Git worktrees discovered for one authorized project.",

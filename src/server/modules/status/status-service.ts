@@ -1,3 +1,4 @@
+import type { ScopedTestRunStatus } from "@/shared/contracts/scoped-verification";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import { admitNowOrLater, admissionOf, type DatabaseAdmission } from "@/server/database-admission";
@@ -71,8 +72,9 @@ export interface CompactTestStatus {
 }
 
 type Target = { kind: "project"; id: string } | { kind: "run"; id: string }
-  | { kind: "scoped-project"; id: string; read: () => CompactEnvelope<ScopedProjectStatus> };
-type AnyEnvelope = CompactEnvelope<CompactProjectStatus | CompactTestStatus | ScopedProjectStatus>;
+  | { kind: "scoped-project"; id: string; read: () => CompactEnvelope<ScopedProjectStatus> }
+  | { kind: "scoped-run"; id: string; read: () => CompactEnvelope<ScopedTestRunStatus> };
+type AnyEnvelope = CompactEnvelope<CompactProjectStatus | CompactTestStatus | ScopedProjectStatus | ScopedTestRunStatus>;
 
 interface Waiter {
   read: () => AnyEnvelope;
@@ -129,6 +131,11 @@ export class StatusService {
   /** The application supplies an authorized allowlist, never a raw snapshot. */
   scopedProject(status: ScopedProjectStatus, binding: string): CompactEnvelope<ScopedProjectStatus> {
     return this.envelope(`scoped-project:${status.id}:${binding}`, new Date().toISOString(), status, this.projectRetry(status.phase));
+  }
+
+  scopedTest(status: ScopedTestRunStatus, binding: string): CompactEnvelope<ScopedTestRunStatus> {
+    const pending = status.phase === "queued" || status.phase === "running";
+    return this.envelope(`scoped-run:${status.runId}:${binding}`, new Date().toISOString(), status, pending ? 1_000 : null);
   }
 
   test(runId: string): CompactEnvelope<CompactTestStatus> {
@@ -188,7 +195,7 @@ export class StatusService {
     if (this.closed) throw new Error("STATUS_CLOSED");
     return this.admission.run(async () => {
       const outcome = await this.waitAdmitted(target, cursor, sessionKey, timeoutMs, signal);
-      if (target.kind !== "scoped-project") return outcome;
+      if (target.kind !== "scoped-project" && target.kind !== "scoped-run") return outcome;
       // idle() re-admits after sampling/timeout. Authority may have changed
       // while that admission was queued: never deliver the retained result.
       if (this.closed) throw new Error("STATUS_CLOSED");
@@ -320,7 +327,7 @@ export class StatusService {
   }
 
   private read(target: Target, owner: string): AnyEnvelope {
-    if (target.kind === "scoped-project") return target.read();
+    if (target.kind === "scoped-project" || target.kind === "scoped-run") return target.read();
     return target.kind === "project" ? this.project(target.id, owner) : this.test(target.id);
   }
 
@@ -359,7 +366,7 @@ export class StatusService {
           try {
             // Scoped readers authorize each waiter separately, including when
             // its visible status has not changed. No installation observation.
-            const result = group.target.kind === "scoped-project" ? waiter.read()
+            const result = (group.target.kind === "scoped-project" || group.target.kind === "scoped-run") ? waiter.read()
               : sharedProject ? this.projectEnvelope(sharedProject, waiter.sessionKey) : sharedTest!;
             // Each waiter supplied the cursor represented by the group state at registration.
             // Resolve only when the caller-visible projection changed.

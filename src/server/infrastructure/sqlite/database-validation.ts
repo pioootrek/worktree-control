@@ -32,6 +32,11 @@ export function validateDatabase(database: Database.Database, version: number): 
     LEFT JOIN "authentication_ba_session" s ON s."id"=i.session_id
     WHERE i.state NOT IN ('pending','may_publish') OR e.session_id IS NULL OR s."id" IS NULL OR e.original_deadline<>i.original_deadline
       OR i.original_deadline IS NOT strftime('%Y-%m-%dT%H:%M:%fZ',i.original_deadline) LIMIT 1`).get()) fail("session issuance");
+  if (version >= 44 && database.prepare(`SELECT 1 FROM test_run_requesters b
+    JOIN test_runs r ON r.id=b.run_id JOIN principal_credentials c ON c.id=b.credential_id
+    JOIN remote_principals p ON p.id=b.principal_id
+    WHERE r.project_id<>b.project_id OR r.actor<>b.session_owner OR c.principal_id<>b.principal_id
+      OR c.kind<>'agent_token' OR p.kind<>'agent' LIMIT 1`).get()) fail("test requester binding");
   if (version >= 25) {
     try { new AuthenticationQueries(database).getAuthenticationPolicy(); } catch { fail("authentication policy"); }
     if (!database.prepare("SELECT 1 FROM remote_principals WHERE id='installation' AND kind='installation' AND status='active'").get()) fail("installation principal");

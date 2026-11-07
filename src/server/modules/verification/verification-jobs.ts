@@ -1,3 +1,4 @@
+import type { TestRunRequester } from "@/server/state-store";
 import type { ResolvedTestEnvironment } from "@/server/modules/environments";
 import type { TestCommand } from "@/server/test-command";
 import type { TestSourceObserver } from "@/server/test-source-attribution";
@@ -7,6 +8,7 @@ import type { VerificationPreparationContext } from "./preparation-session";
 export interface EnqueueTestInput {
   /** Only trusted application adapters may supply a durable execution identity. */
   runId?: string;
+  requester?: TestRunRequester;
   preparation?: VerificationPreparation;
   projectId: string;
   worktree: Worktree;
@@ -39,7 +41,8 @@ export interface VerificationJobs {
   status(): TestQueueStatus;
   setLimit(limit: number): TestQueueStatus;
   enqueue(input: EnqueueTestInput): TestRun;
-  cancel(runId: string, actor: string): Promise<TestRun>;
+  cancel(runId: string, actor: string, revalidate?: () => void): Promise<TestRun>;
+  configureRequesterAuthorizer?(authorize: (run: TestRun, requester: TestRunRequester) => void): void;
   configureSourceObserver?(observer: TestSourceObserver): void;
   replay?(actor: string, idempotencyKey: string, projectId: string, worktreePath: string, presetId: string): TestRun | null;
 }

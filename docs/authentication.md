@@ -1,6 +1,6 @@
 ---
 audience: "people running Worktree Control and choosing how callers authenticate"
-last_reviewed: "2026-11-02"
+last_reviewed: "2026-11-07"
 source_of_truth: "authentication modes, owner CLI and scoped runtime agent workflow"
 status: "active"
 ---
@@ -10,8 +10,8 @@ status: "active"
 For planned human accounts, project roles, scoped agents and ENV permissions,
 see the [identity and authorization plan](identity-authorization-plan.md).
 A1 Knowledge roles and A2 scoped projects, claims, runtime control, profile
-selection and timeout configuration are implemented below. Protected ordinary
-human accounts and isolated cookie-based Knowledge access are also implemented.
+selection, timeout configuration and finite verification are implemented below.
+Protected ordinary human accounts and isolated cookie-based Knowledge access are also implemented.
 Production account activation and ENV roles remain gated.
 
 One authentication policy applies to the dashboard, the HTTP API, live updates,
@@ -919,7 +919,8 @@ external revocation fences are an A5 gate before account-mode activation.
 
 A scoped agent can discover registered runtime projects, reserve one discovered
 worktree, control its claimed managed server, select an existing literal profile
-and configure preset timeouts. The accepted runtime actions are:
+and configure preset timeouts. Independently delegated finite verification is
+also available. The accepted runtime actions are:
 
 | Action | Operations |
 | --- | --- |
@@ -928,6 +929,7 @@ and configure preset timeouts. The accepted runtime actions are:
 | `runtime:control` | Start, restart and stop under an active own lease; also required for `claim_project` with `start: true` |
 | `profiles:select` | List literal profile names/selection/revision and select an existing profile while stopped |
 | `config:write` | Read discovered preset IDs/default/override timeouts and change project-wide timeout overrides for future enqueues |
+| `tests:run` | Discover exact worktrees/presets, enqueue finite jobs and read/wait for own credential-bound runs; originating session may cancel |
 
 The owner delegates actions to a stable agent for each registered runtime
 project. Each credential has an exact project/action ceiling. Effective access
@@ -1071,18 +1073,19 @@ lease produces a stale-claim error; revoked authority produces a denial.
 Check `leaseHeld`, `error` and current safe status after an operation. Release
 with `release_project_claim` when finished; release does not stop the server.
 
-These scoped tools omit ENV and profile content editing, local test admission,
-logs, storage, capacity and foreign lease details. With `projects:read`, agents
+These scoped tools omit ENV and profile content editing, logs, storage,
+capacity and foreign lease details. Finite test admission requires the separate
+`tests:run` action. With `projects:read`, agents
 can discover/read filtered project and worktree resources, call
 `get_project_status_compact` and wait for one project's cursor with
 `wait_for_status_change`. The shared waiter budgets apply; sampling, timeout
 and delivery after database re-admission recheck current authority. Revocation
 rejects pending waits without returning retained data. Cursors cover only the
 allowlisted project view and are bound to the credential and MCP session.
-There is no test-run wait or global queue/capacity projection for these agents.
+Own-run waits require `tests:run`; there is no global queue/capacity projection.
 The HTTP runtime/dashboard API continues to reject their
 credentials, including existing configuration routes; runtime access is through
-these MCP tools. Test/log/ENV permissions such as `tests:run` cannot be granted.
+these MCP tools. Log and ENV permissions remain unavailable.
 
 ### Independent profile and timeout access
 
@@ -1131,6 +1134,63 @@ own agent claim. Supplying a stale reservation never falls back to unclaimed
 access. A timeout request must target the claim's worktree, even when a claim
 acquired with `start: false` left the selected runtime worktree elsewhere.
 
+### Independently delegated finite verification
+
+Grant `tests:run` explicitly through the protected owner delegation and
+credential commands above. None of the other five actions implies it, and it
+implies none of them. Adding it to a delegation does not change an existing
+credential ceiling; issue a new credential with the intended scope. Agents
+cannot issue credentials or approve their own elevation.
+
+Call `list_test_presets` with `projectId`. This action supplies its own safe
+exact-path discovery even without `projects:read`. Use a returned `worktreePath`
+and preset ID with `run_test`, plus a stable `idempotencyKey`. No command,
+arguments, ENV, profile or requester override is accepted. Both `full` and
+`compact` response modes return the safe compact envelope for scoped callers.
+The existing finite queue executes the job without claiming, starting or moving
+a development server.
+
+An unclaimed project needs no lease. An active reservation requires this
+session's exact own claim and `reservationId`, with its retained secret and
+principal/credential binding. A human lock, foreign claim, stale supplied ID or
+worktree mismatch denies enqueue. The original reservation is rechecked during
+queued dispatch, immediately before spawn and before an identical retry returns.
+Authority is also checked before enqueue, after asynchronous discovery/source
+preparation, at dispatch and before spawn. A revoked/expired agent, credential,
+delegation or disabled sponsor prevents a new process. Revocation does not
+retroactively terminate an already running process.
+
+`tests:run` grants no ENV read or vault use. Human-configured clean test profiles
+keep their declared literal variables and fixed system allowlist. Presets that
+inherit a server profile are denied until separate ENV-use authority exists.
+Nothing reads vault plaintext or changes the signed vault-proof contract.
+
+`get_test_run` and `get_test_run_status` return the same safe envelope. They
+require current `tests:run` on the target project and the run's original
+principal and credential. A missing, foreign or installation/legacy job returns
+the same denial. A new session using the **same credential** may read or wait
+for a retained run. A replacement or rotated credential cannot adopt it, even
+for the same principal. Supply exactly one `runId` or `projectId` to
+`wait_for_status_change`; project waits still require `projects:read`. Run
+cursors bind the run, credential and current session and share the existing
+sampler, waiter budgets, timeout, cancellation and re-admission checks.
+
+Cancellation remains restricted to the originating MCP session as well as the
+original principal/credential and current action. A reconnect that resumes the
+same logical session retains this right; initialization of a new logical session
+does not. `cancel_test_run` requests cancellation and may return `running` while
+owned-process cleanup is pending. Only confirmed cleanup permits a terminal
+running-process result. Closing a session disposes waits but does not cancel jobs.
+Retained enqueue retries remain scoped to the original session and idempotency
+key while detailed records exist; a new session must inspect a known run before
+making a new enqueue decision.
+
+Safe envelopes expose only run/project/preset/worktree IDs, phase, timestamps,
+exit code, a fixed error code and bounded source HEAD/outcome evidence. They
+omit logs, commands, ENV and profile contents/names, actor bindings, foreign IDs,
+queue positions, global counts and capacity. Current authority is rechecked for
+replayed enqueues and every wait result after database re-admission.
+
 ### Rotate and revoke
 
 ```bash
@@ -1165,6 +1225,9 @@ open and legacy compatibility callers retain their previous broad runtime
 authority; scoped credentials do not isolate those callers. Migration 37 adds
 the project configuration revision. Existing compatibility configuration
 writes increment it alongside scoped changes; no old credential gains actions.
+Migration 44 adds immutable test requester attribution on the same connection,
+atomically with initial enqueue. It backfills no jobs or credentials. Retention
+cascades requester rows with their detailed jobs; full backups preserve them.
 
 Opening an older database with this version applies the pending migrations. Plan an
 installation upgrade with a stopped-controller backup and a compatible restore
@@ -1177,9 +1240,9 @@ The controller removes its token and keyfile environment variables from managed
 process inheritance. Scoped authorization is not an OS sandbox: repository code
 still executes with the controller's host identity and its permitted filesystem
 access. The original A2 projects/claims/profiles/configuration criteria are
-implemented; completion requires recorded verification. Scoped finite-job
-admission/own-run access (`415205f2-4583-4b13-a508-49a9b618a19e`) remains
-denied. Scoped resources/compact status/project wait are implemented under
+implemented. Scoped finite-job admission/own-run access is implemented under
+`415205f2-4583-4b13-a508-49a9b618a19e`; completion requires recorded verification.
+Scoped resources/compact status/project wait are implemented under
 `e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`. A3 owns account GUI/human administration, A4
 ENV policy and A5 compatibility cutover. This describes source behavior, not a
 live installation upgrade.

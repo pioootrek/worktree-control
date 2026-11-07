@@ -1,3 +1,4 @@
+import { applyTestRunRequesterMigration } from "./test-run-requester-migration";
 import { applyHumanPrincipalMigration } from "./human-principal-migration";
 import { applyKnowledgeRoleMigration } from "./knowledge-role-migration";
 import { applyRuntimeAccessMigration } from "./runtime-access-migration";
@@ -375,6 +376,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyAuthenticationSessionIssuanceMigration(database);
       applyHumanPrincipalMigration(database);
       applyGodotWebMigration(database);
+      applyTestRunRequesterMigration(database);
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();

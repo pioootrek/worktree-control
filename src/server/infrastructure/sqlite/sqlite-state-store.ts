@@ -1,3 +1,4 @@
+import type { TestRunRequester } from "@/server/state-store";
 import { HumanAccountQueries } from "./human-account-queries";
 import type { KnowledgeRoleBinding, KnowledgePermission } from "@/shared/contracts/authorization";
 import { DevVaultQueries } from "./dev-vault-queries";
@@ -837,8 +838,10 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     return this.testRuns.findTestRunByIdempotency(actor, idempotencyKey);
   }
 
-  saveTestRun(run: TestRun, idempotencyKey?: string): void {
-    return this.testRuns.saveTestRun(run, idempotencyKey);
+  getTestRunRequester(id: string): TestRunRequester | null { return this.testRuns.getTestRunRequester(id); }
+
+  saveTestRun(run: TestRun, idempotencyKey?: string, requester?: TestRunRequester): void {
+    return this.testRuns.saveTestRun(run, idempotencyKey, requester);
   }
 
   pruneTestSummaryHistory(): number {

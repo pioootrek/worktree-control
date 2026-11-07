@@ -2,7 +2,7 @@ import type { GitWorktreeReader } from "@/server/git-worktrees";
 import { type LogWriter } from "@/server/log-writer";
 import { projectTestPreset, testPresetTimeoutSchema } from "./preset-timeout";
 import { redactProject, resolveTestEnvironment, testProfileFor } from "../environments";
-import type { StateStore } from "@/server/state-store";
+import type { StateStore, TestRunRequester } from "@/server/state-store";
 import type { ProjectTestCommandResolver } from "@/server/test-command";
 import type { VerificationJobs } from "./verification-jobs";
 import type { Project, TestQueueStatus, TestRun, WorktreeTestPresets } from "@/shared/contracts";
@@ -52,25 +52,37 @@ export class VerificationService {
     presetId: string,
     actor: OperationActor = { owner: "local-user" },
     idempotencyKey?: string,
+    requester?: TestRunRequester,
+    validateEnvironment?: (project: Project, preset: import("@/shared/contracts").TestPreset) => void,
   ): Promise<TestRun> {
+    actor.revalidate?.();
     return this.lifecycle.serialized(projectId, async () => {
+      actor.revalidate?.();
       const project = this.lifecycle.requireProject(projectId);
       const worktrees = await this.git.list(project.repositoryPath);
+      actor.revalidate?.();
       const worktree = this.lifecycle.resolveWorktree(project, worktrees, worktreePath);
       this.lifecycle.assertReservationAllows(projectId, worktree.path, actor);
       if (idempotencyKey && this.tests?.replay) {
         const repeated = this.tests.replay(actor.owner, idempotencyKey, projectId, worktree.path, presetId);
         if (repeated) return repeated;
       }
+      if (requester && !this.testCommands.discover(worktree.path).some(preset => preset.id === presetId)) {
+        throw new Error("Test preset is not discovered.");
+      }
       const resolved = this.testCommands.resolve(worktree.path, presetId);
       const command = { ...resolved, preset: projectTestPreset(project, resolved.preset) };
+      validateEnvironment?.(project, command.preset);
       const environment = resolveTestEnvironment({
         project,
         worktree,
         profile: testProfileFor(project, command.preset),
       });
       const sourceObservation = this.git.observe ? await this.git.observe(worktree.path) : undefined;
+      actor.revalidate?.();
+      this.lifecycle.assertReservationAllows(projectId, worktree.path, actor);
       const run = this.requireTests().enqueue({
+        requester,
         projectId,
         worktree,
         command,
@@ -109,7 +121,7 @@ export class VerificationService {
     const run = this.store.getTestRun(runId);
     if (!run) throw new Error("Nie znaleziono uruchomienia testu.");
     this.lifecycle.requireProject(run.projectId);
-    const cancelled = await this.requireTests().cancel(runId, actor.owner);
+    const cancelled = await this.requireTests().cancel(runId, actor.owner, actor.revalidate);
     this.logs.controller("test_run.cancelled", { runId, projectId: run.projectId, actor: actor.owner });
     return cancelled;
   }

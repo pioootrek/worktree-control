@@ -58,7 +58,7 @@ describe("durable bounded test summary history", () => {
     expect(inspectSchema(old).version).toBe(28); old.close();
     const owned = new OwnedSqliteDatabase(f.path);
     const reopened = new SqliteStateStore(f.path, owned); stores.push(reopened);
-    expect(reopened.schemaVersion()).toBe(43);
+    expect(reopened.schemaVersion()).toBe(44);
     expect(reopened.getTestRun(run.id)?.telemetry).toMatchObject({ availability: "legacy_unknown", admittedAt: null, exitedAt: null });
     expect(new TestSummaryQueries(owned.database).get(run.id)?.telemetry.durations.processMs).toBeNull();
     expect(owned.database.prepare("SELECT name,checksum FROM schema_migrations WHERE version=29").get()).toEqual({ name: telemetryMigration.name, checksum: telemetryChecksum });

@@ -1,12 +1,13 @@
+import { scopedWaitSchema } from "@/shared/contracts/scoped-verification";
 import { randomBytes } from "node:crypto";
 import { DashboardQueryService } from "./modules/dashboard";
 import { EnvironmentService, redactProject, ScopedConfigurationService, type ScopedConfigurationSession } from "./modules/environments";
 import type { AuthenticatedPrincipal } from "./modules/identity";
 import { KnowledgeService, type KnowledgeHistoryEntry, type KnowledgeHistoryOptions, type KnowledgePageOptions, type KnowledgeRecordKind, type KnowledgeTaskPriority, type KnowledgeTaskStatus, type KnowledgeWriteOptions } from "./modules/knowledge";
 import { leaseTokenHash, type OperationActor, ProjectLifecycle } from "./modules/lifecycle";
-import { AGENT_LEASE_DEFAULT_SECONDS, AGENT_LEASE_MAX_SECONDS, RuntimeService, ScopedRuntimeService, type RuntimeAuthorizer, type ScopedClaimRequest, type ScopedSession } from "./modules/runtime";
+import { AGENT_LEASE_DEFAULT_SECONDS, AGENT_LEASE_MAX_SECONDS, RuntimeService, ScopedRuntimeService, ScopedRuntimeError, type RuntimeAuthorizer, type ScopedClaimRequest, type ScopedSession } from "./modules/runtime";
 import { StatusService, type CompactProjectStatus, type CompactTestStatus, type CompactEnvelope } from "./modules/status";
-import { VerificationService, VerificationHistoryService } from "./modules/verification";
+import { VerificationService, VerificationHistoryService, ScopedVerificationService } from "./modules/verification";
 import type { RemoteVerificationController } from "./modules/remote-verification";
 import type { GodotWebService } from "./modules/godot-web";
 import { DEFAULT_GODOT_WEB_CONFIG, parseGodotWebConfig, type WebExportStatus } from "@/shared/contracts/godot-web";
@@ -67,6 +68,7 @@ export class ControlService {
   private readonly verificationHistory: VerificationHistoryService;
   private readonly dashboardQueries: DashboardQueryService;
   private readonly statusQueries: StatusService;
+  private readonly scopedVerification?: ScopedVerificationService;
   private readonly scopedRuntime?: ScopedRuntimeService;
   private readonly scopedConfiguration?: ScopedConfigurationService;
 
@@ -105,6 +107,7 @@ export class ControlService {
     this.statusQueries = new StatusService(store, processes,
       () => this.lifecycle.capacityStatusCompact(), () => this.testQueueStatus());
     if (runtimeAuthorizer) {
+      this.scopedVerification = new ScopedVerificationService(runtimeAuthorizer, store, git, testCommands, this.verification, tests);
       this.scopedRuntime = new ScopedRuntimeService(runtimeAuthorizer, store, git, processes, this.lifecycle, this.runtime, logs);
       this.scopedConfiguration = new ScopedConfigurationService(runtimeAuthorizer, store, git, processes, this.lifecycle,
         worktreePath => testCommands.discover(worktreePath), logs);
@@ -145,6 +148,33 @@ export class ControlService {
   authorizeScopedRuntimeReplay(...args: Parameters<ScopedRuntimeService["authorizeReplay"]>): void {
     this.requireScopedRuntime().authorizeReplay(...args);
   }
+  scopedTestPresets(actor: AuthenticatedPrincipal, input: unknown) { return this.requireScopedVerification().presets(actor, input); }
+  enqueueScopedTest(actor: AuthenticatedPrincipal, session: ScopedConfigurationSession, input: unknown) {
+    return this.requireScopedVerification().enqueue(actor, session, input);
+  }
+  scopedTestRun(actor: AuthenticatedPrincipal, session: ScopedSession, input: unknown) {
+    const status = this.requireScopedVerification().status(actor, input);
+    return this.statusQueries.scopedTest(status, JSON.stringify([actor.principalId, actor.credentialId, session.owner]));
+  }
+  async cancelScopedTest(actor: AuthenticatedPrincipal, session: ScopedSession, input: unknown) {
+    await this.requireScopedVerification().cancel(actor, session, input);
+    return this.scopedTestRun(actor, session, input);
+  }
+  waitForScopedTestChange(actor: AuthenticatedPrincipal, session: ScopedSession,
+    value: unknown, signal?: AbortSignal, sessionClosed?: () => boolean) {
+    const parsed = scopedWaitSchema.safeParse(value);
+    if (!parsed.success || !parsed.data.runId) throw new ScopedRuntimeError("invalid_request", "Exactly one run status target is required.");
+    const input = { ...parsed.data, runId: parsed.data.runId };
+    return this.statusQueries.wait({ kind: "scoped-run", id: input.runId, read: () => {
+      if (sessionClosed?.()) throw new Error("STATUS_CLOSED");
+      return this.scopedTestRun(actor, session, { runId: input.runId });
+    } }, input.cursor, session.owner, input.timeoutMs, signal);
+  }
+  private requireScopedVerification(): ScopedVerificationService {
+    if (!this.scopedVerification) throw new Error("Scoped verification is unavailable.");
+    return this.scopedVerification;
+  }
+
   /** Scoped profile selection and configuration; enforcement, revision CAS and safe views live in the environments module. */
   scopedEnvironmentProfiles(actor: AuthenticatedPrincipal, input: unknown) { return this.requireScopedConfiguration().listEnvironmentProfiles(actor, input); }
   selectScopedEnvironmentProfile(actor: AuthenticatedPrincipal, session: ScopedConfigurationSession, input: unknown) {

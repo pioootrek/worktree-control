@@ -1,4 +1,4 @@
-import type { PendingTestRun, TestRunStatusRecord } from "@/server/state-store";
+import type { PendingTestRun, TestRunStatusRecord, TestRunRequester } from "@/server/state-store";
 import type { TestEnvironmentMode, TestRun, TestRunPhase } from "@/shared/contracts";
 import Database from "better-sqlite3";
 import { emptyTelemetry, emptyRunResources, resourceReason } from "@/server/modules/verification";
@@ -145,8 +145,25 @@ export class TestRunQueries {
     return row ? mapTestRun(row) : null;
   }
 
-  saveTestRun(run: TestRun, idempotencyKey?: string): void {
-    this.database.transaction(() => this.saveRunAndSummary(run, idempotencyKey))();
+  getTestRunRequester(id: string): TestRunRequester | null {
+    return this.database.prepare(`SELECT principal_id AS principalId, credential_id AS credentialId,
+      project_id AS projectId, session_owner AS sessionOwner, reservation_id AS reservationId,
+      lease_token_hash AS leaseTokenHash FROM test_run_requesters WHERE run_id=?`).get(id) as TestRunRequester | undefined ?? null;
+  }
+
+  saveTestRun(run: TestRun, idempotencyKey?: string, requester?: TestRunRequester): void {
+    this.database.transaction(() => {
+      // Attribution is insert-only and atomic with the first run write.
+      if (requester && this.hasTestRun(run.id)) throw new Error("Test requester is immutable.");
+      this.saveRunAndSummary(run, idempotencyKey);
+      if (requester) {
+        if (requester.projectId !== run.projectId || requester.sessionOwner !== run.actor) throw new Error("Invalid test requester.");
+        this.database.prepare(`INSERT INTO test_run_requesters
+          (run_id,principal_id,credential_id,project_id,session_owner,reservation_id,lease_token_hash)
+          VALUES (?,?,?,?,?,?,?)`).run(run.id, requester.principalId, requester.credentialId,
+            requester.projectId, requester.sessionOwner, requester.reservationId, requester.leaseTokenHash);
+      }
+    })();
   }
 
   private saveRunAndSummary(run: TestRun, idempotencyKey?: string): void {

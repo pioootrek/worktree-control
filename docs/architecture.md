@@ -1,6 +1,6 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-11-06"
+last_reviewed: "2026-11-07"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
@@ -102,6 +102,19 @@ per line, while the bounded SQLite tail is persisted on a short debounce and
 again at completion. Queue counts and scheduling candidates use filtered SQL
 queries that do not hydrate historical log tails. Controller shutdown cancels
 active jobs; stale queued or running records become `interrupted` during recovery.
+
+Scoped finite verification adds independent `tests:run` authorization in the
+verification application module. Migration 44 writes an immutable requester
+row atomically with enqueue, binding principal, credential, project, originating
+session and any required reservation/hash. Existing jobs and credentials receive
+no backfill. The same queue checks current authority at dispatch and immediately
+before spawn; it retains existing process ownership and cleanup semantics.
+Own-run reads/waits use an allowlist through the shared status sampler and
+recheck authority after admission. New sessions with the same credential may
+read retained results; cancellation remains restricted to the originating
+session. Server-profile inheritance requires separate ENV authority and is
+denied for these scoped enqueues. Raw HTTP runtime routes remain closed.
+See [finite verification](authentication.md#independently-delegated-finite-verification).
 
 Queued verification records bounded Git source observations at enqueue, before
 spawn, and after owned-process cleanup. Preparation consumes the same global

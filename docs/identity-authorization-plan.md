@@ -1,6 +1,6 @@
 ---
 audience: "owner, implementers and reviewers of human, agent and ENV access"
-last_reviewed: "2026-11-02"
+last_reviewed: "2026-11-07"
 source_of_truth: "planned identity, role and environment authorization contracts and acceptance gates"
 status: "active"
 ---
@@ -78,7 +78,7 @@ the CLI, transport verification and operational docs extend that contract.
 | Installation authentication | `token`, `open`, `legacy`; rotation and policy invalidation; optional server-free Better Auth/SQLite proof | `better-auth` still rejects activation; no browser account integration |
 | Identity | Owner, ordinary human, agent, worker and installation principals; revocable legacy credentials and isolated human sessions | General delegated role administration |
 | Knowledge | Shared policy, explicit grants and optional Knowledge role ceilings; installation compatibility bypass | Explicit human approval in account mode |
-| MCP | Agent sessions add filtered discovery/resources, compact project status/wait, explicit-start claims, claimed control, literal profile selection and preset timeout overrides; Knowledge/vault/remote grants stay independent | Scoped finite-job admission/own-run access remains a separate followup |
+| MCP | Agent sessions add filtered discovery/resources, compact project status/wait, explicit-start claims, claimed control, literal profile selection and preset timeout overrides; Knowledge/vault/remote grants stay independent | Scoped finite-job execution and own-run access now require independent tests:run; general logs/capacity remain gated |
 | Remote verification | Separate submitter/project and worker/project/preset grants | Integrate without replacing both checks with a broad project role |
 | DEV vault | Encrypted profiles, signed owner operations, exact agent grants; backend and GUI on main | General role integration; execution delivery remains unavailable |
 
@@ -164,7 +164,8 @@ The role assignments below are proposed. A2 implements its five runtime actions
 through explicit owner-sponsored delegation and credential ceilings, without
 assigning these roles. In particular, an agent can hold timeout-only
 `config:write` without a manager role. Other action groups remain subject to
-their slice's implementation; `tests:run` and scoped logs are still denied.
+their slice's implementation. `tests:run` now uses the same explicit delegation
+and immutable ceilings for finite jobs. Scoped logs remain denied.
 Domain-specific guards apply even when an action is allowed.
 
 | Action group | Default assignment | Additional restriction |
@@ -473,7 +474,7 @@ Active reservations require exact own-session/credential/secret/ID proof;
 unclaimed mutations remain useful without claim/runtime rights. See the
 [operational contract](reservations-and-mcp.md#scoped-configuration-workflow).
 
-Scoped finite-job admission and own-run access remain denied under followup
+Scoped finite-job admission and own-run access are implemented under
 `415205f2-4583-4b13-a508-49a9b618a19e`. Scoped resources, compact project status
 and bounded project wait are implemented under `e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`,
 with current authority checked after waiting and no global capacity or queue data.

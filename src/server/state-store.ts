@@ -46,6 +46,16 @@ export type TestRunStatusRecord = Pick<TestRun,
   | "source"
 >;
 
+/** Server-only immutable requester attribution; never accepted from a transport. */
+export interface TestRunRequester {
+  principalId: string;
+  credentialId: string;
+  projectId: string;
+  sessionOwner: string;
+  reservationId: string | null;
+  leaseTokenHash: string | null;
+}
+
 /** Durable credential binding of a scoped agent lease, in addition to session owner and lease hash. */
 export interface ReservationBinding {
   principalId: string;
@@ -141,7 +151,8 @@ export interface StateStore {
   getTestRun(id: string): TestRun | null;
   getTestRunStatus(id: string): TestRunStatusRecord | null;
   findTestRunByIdempotency(actor: string, idempotencyKey: string): TestRun | null;
-  saveTestRun(run: TestRun, idempotencyKey?: string): void;
+  getTestRunRequester(id: string): TestRunRequester | null;
+  saveTestRun(run: TestRun, idempotencyKey?: string, requester?: TestRunRequester): void;
   markInterruptedTestRuns(): void;
   pruneTestSummaryHistory(): number;
   getWorktreeStorage(projectId: string, worktreePath: string): WorktreeStorageSnapshot | null;
