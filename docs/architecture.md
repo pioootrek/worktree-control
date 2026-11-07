@@ -86,10 +86,15 @@ phases to the long-lived development-server state machine. `NodeTestCommandAdapt
 discovers allowlisted package scripts, while `DjangoTestCommandAdapter` resolves
 `manage.py test` with the interpreter belonging to the exact worktree.
 `GodotTestCommandAdapter` requires a root `project.godot` and a worktree-contained
-`scripts/project.sh`, then exposes only `godot:check` and `godot:export-macos`.
-These resolve to `bash` plus `["scripts/project.sh", "check"]` or
-`["scripts/project.sh", "export-macos"]`. Discovery and execution revalidate the
-files; no script means no presets. All adapters produce shell-free executable
+`scripts/project.sh`, then exposes `godot:check` and `godot:export-macos`.
+An optional `scripts/worktree-control-presets.json` v1 adds validated names
+under `godot.presets`; see the [manifest format](../README.md#supported-projects).
+All Godot presets resolve to `bash` plus `["scripts/project.sh", name]`.
+Discovery and execution revalidate the files and manifest; no script means no
+presets. An invalid manifest is an error, with a bounded 16 KiB read, strict
+schema, at most 16 additional names, and regular-file/worktree containment checks.
+The manifest does not change environment profiles or timeout policy.
+All adapters produce shell-free executable
 and argument arrays for the shared queue; project scripts own their internal
 tool resolution and guards.
 

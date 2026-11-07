@@ -159,8 +159,11 @@ detection uses it for a root `project.godot` only when Node/Django is absent.
 These projects keep the configured port field but use no port or server capacity.
 Their dashboard shows no server and hides runtime/TLS controls. Queue tests
 without an MCP runtime claim. A Godot project with `scripts/project.sh` exposes
-`godot:check` and `godot:export-macos` through that public script; without it,
-there are no Godot presets.
+`godot:check` and `godot:export-macos` through that public script. An optional
+`scripts/worktree-control-presets.json` v1 declares up to 16 additional finite
+operation names through the same script, without changing timeout or profile
+policy. Malformed manifests are refused; without the script, there are no
+Godot presets.
 
 For Node.js
 projects, it detects `pnpm`, `npm`, `yarn`, or `bun` from

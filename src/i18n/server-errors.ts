@@ -74,6 +74,7 @@ const exactEnglish = new Map<string, string>([
   ["Nieobsługiwany adapter testów.", "Unsupported test adapter."],
   ["Wybrany preset testowy Node.js nie istnieje już w tym worktree.", "The selected Node.js test preset no longer exists in this worktree."],
   ["Wybrany preset testowy Django nie istnieje już w tym worktree.", "The selected Django test preset no longer exists in this worktree."],
+  ["Wybrany preset testowy Godot nie istnieje już w tym worktree.", "The selected Godot test preset no longer exists in this worktree."],
   ["Nie udało się odczytać package.json podczas wykrywania testów.", "package.json could not be read while discovering tests."],
   ["Anuluj testy projektu przed jego usunięciem.", "Cancel the project's tests before removing it."],
   ["Poczekaj na zakończenie testów tego worktree przed usunięciem katalogu .next.", "Wait for this worktree's tests to finish before removing its .next directory."],
@@ -103,7 +104,9 @@ export function localizeServerMessage(message: string, locale: Locale): string {
   const exact = exactEnglish.get(message);
   if (exact) return exact;
 
-  let match = message.match(/^Nieprawidłowe pole (.+)\.$/);
+  let match = message.match(/^Nie można wczytać scripts\/worktree-control-presets\.json \((io_error|outside_worktree|not_regular_file|too_large|invalid_utf8|invalid_json|invalid_schema)\)\.$/);
+  if (match) return `Cannot load scripts/worktree-control-presets.json (${match[1]}).`;
+  match = message.match(/^Nieprawidłowe pole (.+)\.$/);
   if (match) return `Invalid ${match[1]} field.`;
   match = message.match(/^Wskaż plik: (.+)\.$/);
   if (match) return `Select the ${fileLabels.get(match[1]) ?? match[1]} file.`;

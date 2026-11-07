@@ -1,14 +1,18 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectTestCommandResolver } from "./test-command";
 
 const directories: string[] = [];
+vi.mock("node:fs", async importOriginal => ({ ...await importOriginal<typeof import("node:fs")>() }));
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -57,7 +61,7 @@ describe("ProjectTestCommandResolver", () => {
 });
 
 describe("Godot public verification entrypoint", () => {
-  it("discovers only the fixed finite script operations and revalidates removal", () => {
+  it("defaults to the built-in finite script operations and revalidates removal", () => {
     const directory = fixture();
     writeFileSync(join(directory, "project.godot"), "config_version=5\n");
     const resolver = new ProjectTestCommandResolver();
@@ -81,5 +85,181 @@ describe("Godot public verification entrypoint", () => {
     mkdirSync(join(directory, "scripts"));
     symlinkSync(join(outside, "project.sh"), join(directory, "scripts/project.sh"));
     expect(new ProjectTestCommandResolver().discover(directory)).toEqual([]);
+  });
+});
+
+describe("Godot project preset manifest", () => {
+  const manifestPath = "scripts/worktree-control-presets.json";
+  const builtins = ["godot:check", "godot:export-macos"];
+  const resolver = new ProjectTestCommandResolver();
+  function project(): string {
+    const directory = fixture();
+    writeFileSync(join(directory, "project.godot"), "config_version=5\n");
+    mkdirSync(join(directory, "scripts"));
+    writeFileSync(join(directory, "scripts/project.sh"), "# public script\n");
+    return directory;
+  }
+  function manifest(directory: string, presets: unknown): void {
+    writeFileSync(join(directory, manifestPath), JSON.stringify({ version: 1, godot: { presets } }));
+  }
+
+  it("appends project names in order and resolves them through the public wrapper", () => {
+    const directory = project();
+    const names = ["suite-python", "suite-game", "suite-ai-decision", "suite-ai-runtime"];
+    manifest(directory, names);
+    expect(resolver.discover(directory).map(({ id }) => id)).toEqual([...builtins, ...names.map(name => `godot:${name}`)]);
+    for (const name of names) {
+      expect(resolver.resolve(directory, `godot:${name}`)).toEqual({
+        preset: { id: `godot:${name}`, name, adapter: "godot", timeoutMs: 900_000 },
+        executable: "bash", args: ["scripts/project.sh", name], cwd: directory,
+      });
+    }
+  });
+
+  it("accepts an empty list and revalidates a removed or malformed manifest at resolution", () => {
+    const directory = project();
+    manifest(directory, ["suite-game"]);
+    resolver.discover(directory);
+    manifest(directory, []);
+    expect(resolver.discover(directory).map(({ id }) => id)).toEqual(builtins);
+    expect(() => resolver.resolve(directory, "godot:suite-game")).toThrow("nie istnieje");
+    writeFileSync(join(directory, manifestPath), "{");
+    expect(() => resolver.resolve(directory, "godot:check")).toThrow("worktree-control-presets.json");
+    rmSync(join(directory, manifestPath));
+    expect(resolver.discover(directory).map(({ id }) => id)).toEqual(builtins);
+  });
+
+  it.each([
+    "", "{", "null", "[]", "{}",
+    JSON.stringify({ version: 1 }),
+    JSON.stringify({ version: 1, godot: {} }),
+    JSON.stringify({ version: 2, godot: { presets: [] } }),
+    JSON.stringify({ version: "1", godot: { presets: [] } }),
+    JSON.stringify({ version: 1, godot: [] }),
+    JSON.stringify({ version: 1, godot: { presets: [], timeoutMs: 1000 } }),
+    JSON.stringify({ version: 1, godot: { presets: [] }, command: "sh" }),
+  ])("rejects invalid JSON/schema without falling back to builtins: %s", (document) => {
+    const directory = project();
+    writeFileSync(join(directory, manifestPath), document);
+    expect(() => resolver.discover(directory)).toThrow("worktree-control-presets.json");
+  });
+
+  it.each([
+    null, "suite", {}, [null], [1], [""], ["check"], ["export-macos"], ["same", "same"],
+    ["../escape"], ["suite;id"], ["suite\n"], ["a b"], ["--help"], ["Suite"], ["a_b"],
+    ["a:b"], ["a".repeat(64)], Array.from({ length: 17 }, (_, i) => `suite-${i}`),
+  ].map((names) => [names]))("rejects invalid preset lists: %j", (names) => {
+    const directory = project();
+    manifest(directory, names);
+    expect(() => resolver.discover(directory)).toThrow("worktree-control-presets.json");
+  });
+
+  it("accepts the name/count/byte boundaries and rejects oversized files", () => {
+    const directory = project();
+    const names = ["a".repeat(63), ...Array.from({ length: 15 }, (_, i) => `suite-${i}`)];
+    const document = JSON.stringify({ version: 1, godot: { presets: names } });
+    writeFileSync(join(directory, manifestPath), document.padEnd(16 * 1024, " "));
+    expect(resolver.discover(directory)).toHaveLength(18);
+    writeFileSync(join(directory, manifestPath), document.padEnd(16 * 1024 + 1, " "));
+    expect(() => resolver.discover(directory)).toThrow("worktree-control-presets.json");
+  });
+
+  it("rejects invalid UTF-8 instead of repairing the document", () => {
+    const directory = project();
+    writeFileSync(join(directory, manifestPath), Buffer.from([0xff, 0xfe]));
+    expect(() => resolver.discover(directory)).toThrow("worktree-control-presets.json");
+  });
+
+  it("rejects directories and dangling or escaping manifest links", () => {
+    const directory = project(), outside = fixture();
+    const path = join(directory, manifestPath);
+    mkdirSync(path);
+    expect(() => resolver.discover(directory)).toThrow("worktree-control-presets.json");
+    rmSync(path, { recursive: true });
+    symlinkSync(join(directory, "missing.json"), path);
+    expect(() => resolver.discover(directory)).toThrow("worktree-control-presets.json");
+    rmSync(path);
+    writeFileSync(join(outside, "manifest.json"), JSON.stringify({ version: 1, godot: { presets: [] } }));
+    symlinkSync(join(outside, "manifest.json"), path);
+    expect(() => resolver.discover(directory)).toThrow("worktree-control-presets.json");
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a FIFO without opening a blocking reader", () => {
+    const directory = project();
+    execFileSync("mkfifo", [join(directory, manifestPath)]);
+    expect(() => resolver.discover(directory)).toThrow("worktree-control-presets.json");
+  });
+
+  it("accepts contained manifest links but rechecks replacement targets", () => {
+    const directory = project();
+    const path = join(directory, manifestPath);
+    writeFileSync(join(directory, "presets.json"), JSON.stringify({ version: 1, godot: { presets: ["suite"] } }));
+    symlinkSync(join(directory, "presets.json"), path);
+    expect(resolver.resolve(directory, "godot:suite").args).toEqual(["scripts/project.sh", "suite"]);
+    rmSync(join(directory, "presets.json"));
+    expect(() => resolver.resolve(directory, "godot:suite")).toThrow("worktree-control-presets.json");
+  });
+
+  it("does not apply Godot manifests to Node or Django projects", () => {
+    const directory = project();
+    rmSync(join(directory, "project.godot"));
+    writeFileSync(join(directory, manifestPath), "malformed");
+    writeFileSync(join(directory, "package.json"), JSON.stringify({ scripts: { check: "tsc" } }));
+    writeFileSync(join(directory, "manage.py"), "# django");
+    expect(resolver.discover(directory).map(({ id }) => id)).toEqual(["node:check", "django:test"]);
+  });
+
+  it("does not expose Godot presets without the public script, even with a malformed manifest", () => {
+    const directory = project();
+    rmSync(join(directory, "scripts/project.sh"));
+    manifest(directory, ["suite"]);
+    expect(resolver.discover(directory)).toEqual([]);
+    writeFileSync(join(directory, manifestPath), "malformed");
+    expect(resolver.discover(directory)).toEqual([]);
+  });
+
+  it("bounds reads when a manifest grows after its size was checked", () => {
+    const directory = project();
+    manifest(directory, []);
+    const stat = fs.fstatSync;
+    vi.spyOn(fs, "fstatSync").mockImplementationOnce((fd) => {
+      const before = stat(fd);
+      writeFileSync(join(directory, manifestPath), " ".repeat(32 * 1024));
+      return before;
+    });
+    const read = vi.spyOn(fs, "readSync");
+    const close = vi.spyOn(fs, "closeSync");
+    expect(() => resolver.discover(directory)).toThrow("(too_large)");
+    expect(read.mock.results.reduce((bytes, result) => bytes + (result.value as number), 0)).toBe(16 * 1024 + 1);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a file replaced by a FIFO immediately before open", () => {
+    const directory = project();
+    manifest(directory, []);
+    const open = fs.openSync;
+    vi.spyOn(fs, "openSync").mockImplementationOnce((path, flags, mode) => {
+      // Check the flag before opening: a regression must fail, not hang the test.
+      expect(typeof flags).toBe("number");
+      expect((flags as number) & fs.constants.O_NONBLOCK).not.toBe(0);
+      rmSync(join(directory, manifestPath));
+      execFileSync("mkfifo", [join(directory, manifestPath)]);
+      return open(path, flags, mode);
+    });
+    expect(() => resolver.discover(directory)).toThrow("(not_regular_file)");
+  });
+
+  it("distinguishes I/O errors from invalid documents without leaking contents or paths", () => {
+    const directory = project();
+    manifest(directory, []);
+    const failure = Object.assign(new Error("private/path and file contents"), { code: "EMFILE" });
+    vi.spyOn(fs, "openSync").mockImplementationOnce(() => { throw failure; });
+    expect(() => resolver.discover(directory)).toThrow("Nie można wczytać scripts/worktree-control-presets.json (io_error).");
+    vi.spyOn(fs, "lstatSync").mockImplementationOnce(() => { throw failure; });
+    expect(() => resolver.discover(directory)).toThrow("Nie można wczytać scripts/worktree-control-presets.json (io_error).");
+    writeFileSync(join(directory, manifestPath), "{private");
+    expect(() => resolver.discover(directory)).toThrow("(invalid_json)");
+    manifest(directory, ["private-invalid-name;id"]);
+    expect(() => resolver.discover(directory)).toThrow("(invalid_schema)");
   });
 });

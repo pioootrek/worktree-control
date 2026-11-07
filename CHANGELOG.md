@@ -7,6 +7,11 @@ pre-1.0: the CLI, configuration and data model may change between minor versions
 
 ### Added
 
+- Godot projects can declare additional finite verification presets in
+  `scripts/worktree-control-presets.json`. Names run through the existing public
+  project script, with strict bounded validation and unchanged timeout/profile
+  policy.
+
 - Opt-in `godot-web` launch preset: a bundled static server serves only
   complete, immutable Web export generations on the project port, watches the
   selected worktree while running, exports through the shared test queue

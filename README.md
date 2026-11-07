@@ -304,6 +304,30 @@ public script's setup and resource guards. Without that script there are no
 Godot presets. Worktree Control does not locate Godot or start an editor.
 Use a test environment profile for script inputs such as `GODOT_BIN`.
 
+Godot projects can commit an optional `scripts/worktree-control-presets.json`
+to expose additional finite operations through the same public script:
+
+```json
+{"version":1,"godot":{"presets":["suite-game","suite-ai"]}}
+```
+
+This adds `godot:suite-game` and `godot:suite-ai`, executed as `bash` with
+arguments `scripts/project.sh` and the chosen name. The built-in presets remain.
+The manifest accepts only the fields shown, at most 16 unique names, each
+1–63 lowercase ASCII letters, digits or hyphens, beginning with a letter.
+Names cannot duplicate `check` or `export-macos`. An empty list is valid.
+The JSON file must be at most 16 KiB and resolve to a regular file inside the
+worktree; dangling links and links outside it are refused. Invalid files fail
+discovery and resolution rather than silently falling back to the defaults.
+The manifest is read again when resolving a command. Commit it with the public
+script for reproducible verification; discovery does not check Git tracking.
+It cannot configure commands, arguments, environment or timeouts. New presets
+keep the default 15-minute timeout and the Godot default `tooling` test profile.
+Existing per-preset timeout and profile controls apply as they do to built-ins.
+Errors identify a bounded reason: `io_error`, `outside_worktree`,
+`not_regular_file`, `too_large`, `invalid_utf8`, `invalid_json` or `invalid_schema`.
+They do not include the file contents or resolved filesystem paths.
+
 To play the game in a browser while editing, opt the project into `godot-web`.
 Worktree Control then exports through the queue on source changes, publishes
 only complete builds and reloads the page. It restarts the game; it does not
