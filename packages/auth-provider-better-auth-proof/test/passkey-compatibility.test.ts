@@ -38,7 +38,7 @@ describe("A3-I14 pinned real passkey proof, nonauthorizing",() => {
   test("finds the frozen plugin storage and readiness verifies it",async () => owned(async f => {
     expect(f.ddl.created).toEqual([]);expect(f.ddl.outstanding).toBe(0);
     expect(f.runtime.implementationVersion).toBe(PASSKEY_IMPLEMENTATION);
-    expect((await passkeyState(f)).schema).toBe(43);
+    expect((await passkeyState(f)).schema).toBe(44);
     success(await new Browser(f).signIn());
     expect((await passkeyState(f)).evidence.map(e=>e.method)).toEqual(["password"]);
   }));
