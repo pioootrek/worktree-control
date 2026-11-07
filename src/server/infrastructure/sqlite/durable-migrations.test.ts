@@ -164,7 +164,6 @@ describe("durable SQLite initialization and migration", () => {
       const [message]=await once(child,"message",{signal:AbortSignal.timeout(5000)});expect(message).toEqual({interrupted:true});
     } finally { const ended=once(child,"exit");child.kill("SIGKILL");await ended; }
     if(stage!=="fresh")establishFixtureSecurity(f.path);
-    resumeFixtureSecurity(f.path);
     const retry=new SqliteStateStore(f.path);try{expect(retry.schemaVersion()).toBe(49);expect(retry.getAuthenticationPolicy().mode).toBe("token");}finally{retry.close();}
     released(f.path);
   },10000);

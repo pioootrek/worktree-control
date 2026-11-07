@@ -59,7 +59,7 @@ describe("TestJobManager", () => {
     await vi.waitFor(()=>{const line=store.getTestRun(run.id)?.logs.find(value=>value.startsWith("owned-pid:"));expect(line).toBeTruthy();pid=Number(line!.slice(10));});
     rmSync(join(project.repositoryPath,"state.sqlite3.security","witness.json"));
     try {
-      await expect(manager.shutdown()).rejects.toThrow(/persistence remains unconfirmed/);
+      await expect(manager.shutdown()).rejects.toMatchObject({code:"security_fence_recovery_required"});
       await vi.waitFor(()=>expect(()=>process.kill(pid,0)).toThrow());
       expect(()=>manager.enqueue({projectId:project.id,worktree:worktree(project.repositoryPath),command:cmd,environment:resolved(),actor:"local-user"})).toThrow();
     } finally {

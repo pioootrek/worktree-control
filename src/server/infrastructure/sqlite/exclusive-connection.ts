@@ -314,7 +314,7 @@ export class ExclusiveSqliteConnection {
       prepare: (sql: string): BorrowedSqliteStatement => {
         if (facade.closed) throw fail("closed", "The provider connection was closed.");
         const borrow = this.#currentBorrow();
-        return borrowedStatement(this.#raw.prepare(sql), () => {
+        return borrowedStatement(this.boundary ? this.boundary.execute(() => this.#raw.prepare(sql),true) : this.#raw.prepare(sql), () => {
           if (facade.closed) throw fail("closed", "The provider connection was closed.");
           if (!borrow.active || this.#currentBorrow() !== borrow) throw this.#released();
           this.boundary?.assert();
@@ -598,7 +598,10 @@ export class ExclusiveSqliteConnection {
     }
     borrow.iterators.clear();
     if (this.#raw.open && this.#raw.inTransaction) {
-      try { this.#options.rollback(this.#raw); this.boundary?.execute(() => undefined, true); } catch { /* Transaction state checked below; the fence retains any publication failure. */ }
+      let ran=false;
+      const rollback=()=>{ran=true;this.#options.rollback(this.#raw);};
+      try { if(this.boundary)this.boundary.execute(rollback,false);else rollback(); }
+      catch { if(!ran)try{rollback();}catch{/* Cleanup remains independent of lost authority. */} }
       if (this.#raw.inTransaction) {
         this.#state = "poisoned";
         error = fail("poisoned", "A provider transaction could not be rolled back; the database connection is unusable.");
@@ -687,7 +690,7 @@ function coreFacade(
     get name() { return raw.name; },
     get open() { return raw.open; },
     get inTransaction() { return raw.inTransaction; },
-    prepare(source: string) { assert(); return coreStatement(raw.prepare(source), facade as unknown as Database.Database, assert, track, boundary); },
+    prepare(source: string) { assert(); return coreStatement(execute(() => raw.prepare(source),true), facade as unknown as Database.Database, assert, track, boundary); },
     transaction(fn: (...parameters: unknown[]) => unknown) {
       assert();
       const inner = raw.transaction(fn);
@@ -705,7 +708,7 @@ function coreFacade(
       return variants.default;
     },
     exec(source: string) { assert(); execute(() => raw.exec(source)); return facade; },
-    pragma(source: string, options?: Database.PragmaOptions) { assert(); return raw.pragma(source, options); },
+    pragma(source: string, options?: Database.PragmaOptions) { assert(); return execute(() => raw.pragma(source, options)); },
     function(...parameters: unknown[]) { assert(); (raw.function as (...values: unknown[]) => unknown)(...parameters); return facade; },
     aggregate(name: string, options: Database.AggregateOptions) { assert(); raw.aggregate(name, options); return facade; },
     loadExtension(path: string) { assert(); raw.loadExtension(path); return facade; },

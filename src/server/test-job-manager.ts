@@ -1,3 +1,4 @@
+import { AuthenticationProviderError } from "./modules/authentication";
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 
@@ -272,6 +273,9 @@ export class TestJobManager {
       if (failures.length) throw new AggregateError(failures, "Nie zakończono poprawnie anulowania zadań testowych.");
       if (this.persistenceFailure) throw this.persistenceFailure;
     } catch (error) {
+      const isFence=(failure:unknown,depth=0):boolean=>depth<4 && (failure instanceof AuthenticationProviderError
+        ? failure.code.startsWith("security_fence_") : failure instanceof AggregateError && failure.errors.slice(0,128).some(value=>isFence(value,depth+1)));
+      if(!isFence(error))throw error;
       // Loss of SQLite/fence authority must never prevent termination of process
       // groups already verified and owned by this manager. No requester is
       // reauthenticated and no new job is adopted from the restored database.
@@ -282,8 +286,9 @@ export class TestJobManager {
         await this.stopWithRetries(active.group);
         active.resources?.stop();
       }));
-      throw new AggregateError([error,...stopped.filter(result=>result.status==="rejected").map(result=>result.reason)],
-        "Test shutdown stopped owned groups where confirmed; persistence remains unconfirmed.");
+      const failures=stopped.filter(result=>result.status==="rejected").map(result=>result.reason);
+      if(failures.length)throw new AggregateError([error,...failures],`${error instanceof Error?error.message:"Security fence refusal"}; owned process cleanup remains unconfirmed.`);
+      throw error;
     } finally {
       // Even failed shutdown closes observation before ControlService closes the
       // store. Process ownership/occupied slots remain intact for cleanup retry.

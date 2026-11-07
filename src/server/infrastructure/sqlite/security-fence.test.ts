@@ -95,6 +95,32 @@ describe("external security checkpoint",()=>{
     resume(f.paths);copyFileSync(snapshot,f.paths.databasePath);
     expect(()=>openRemoteRecoveryInspection(f.paths.databasePath)).toThrow(/security_fence/);
   });
+  it("accounts for SQLite cache spills and preparation inside owned transactions",()=>{
+    const f=fixture(),database=(f.store as unknown as {database:Database.Database}).database;
+    try{
+      database.pragma("cache_size=2");
+      database.transaction(()=>{for(let n=0;n<80;n++){
+        database.prepare("INSERT INTO controller_audit_events(event_type,actor,details_json,created_at) VALUES('spill','fixture',?,?)").run(JSON.stringify({value:"x".repeat(8192)}),new Date().toISOString());
+        expect(new AuthenticationService(f.store).verifyInstallationToken(f.token)).toBe(true);
+      }})();
+      expect(new AuthenticationService(f.store).verifyInstallationToken(f.token)).toBe(true);
+    }finally{f.store.close();}
+  });
+  it.each(["database","wal"])("refuses live in-place %s rollback before an admitted effect",async kind=>{
+    const f=fixture(),snapshot=join(f.root,"live-snapshot.sqlite3");await f.store.backup(snapshot);
+    const oldWal=readFileSync(`${f.paths.databasePath}-wal`);
+    new AuthenticationService(f.store).rotateToken("local-cli");
+    const database=(f.store as unknown as {database:Database.Database}).database;
+    if(kind==="database")database.pragma("wal_checkpoint(TRUNCATE)");
+    f.store.getAuthenticationPolicy(); // Prime SQLite's checkpoint cache.
+    const path=kind==="database"?f.paths.databasePath:`${f.paths.databasePath}-wal`,current=readFileSync(path);
+    let effects=0;
+    try{
+      writeFileSync(path,kind==="database"?readFileSync(snapshot):oldWal);
+      await expect(f.store.admission.run(async()=>{effects++;})).rejects.toMatchObject({code:"security_fence_recovery_required"});
+      expect(effects).toBe(0);
+    }finally{writeFileSync(path,current);f.store.close();}
+  });
   it("preserves active open mode through an ordinary confirmed restart",()=>{
     const f=fixture();new AuthenticationService(f.store).setMode("open","local-cli");f.store.close();
     const current=new SqliteStateStore(f.paths.databasePath);

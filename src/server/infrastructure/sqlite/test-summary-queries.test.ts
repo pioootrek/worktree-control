@@ -1,3 +1,4 @@
+import { ownedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity } from "./fixtures/protected-security";
 import { randomUUID } from "node:crypto";
@@ -33,7 +34,7 @@ function fixture() {
     error: "free-form-secret", logs: ["log-secret"], environmentMode: "clean", environmentProfile: "private-profile-secret",
     inheritedServerProfile: "server-profile-secret", environmentVariableNames: ["ENV_SECRET"], source: legacySourceEvidence(), ...overrides,
   });
-  return { root, path, owned, store, project, other, run, summaries: new TestSummaryQueries(owned.database) };
+  return { root, path, owned, store, project, other, run, db:ownedFixtureDatabase(store), summaries: new TestSummaryQueries(ownedFixtureDatabase(store)) };
 }
 
 describe("durable bounded test summary history", () => {
@@ -102,7 +103,7 @@ describe("durable bounded test summary history", () => {
 
   it("rolls back detail and summary together when primary summary durability fails", () => {
     const f = fixture(); const run = f.run();
-    f.owned.database.exec("CREATE TEMP TRIGGER fail_summary BEFORE INSERT ON test_run_summaries BEGIN SELECT RAISE(ABORT,'summary disk failure'); END");
+    f.db.exec("CREATE TEMP TRIGGER fail_summary BEFORE INSERT ON test_run_summaries BEGIN SELECT RAISE(ABORT,'summary disk failure'); END");
     expect(() => f.store.saveTestRun(run)).toThrow("summary disk failure");
     expect(f.store.getTestRun(run.id)).toBeNull();
     expect(f.summaries.coverage(f.project.id).records).toBe(0);
@@ -114,30 +115,30 @@ describe("durable bounded test summary history", () => {
     expect(f.summaries.get(run.id)?.worktreePath).toMatch(/^sha256:/);
     expect(f.summaries.get(run.id)?.sourceReasonCodes).toEqual(["source_evidence_incomplete"]);
     expect(JSON.stringify(f.summaries.get(run.id))).not.toContain("reason-secret");
-    const tiny = new TestSummaryQueries(f.owned.database, { ...TEST_SUMMARY_POLICY, maxRecordBytes: 100 });
-    expect(() => f.owned.database.transaction(() => tiny.save(f.run()))()).toThrow("record budget");
+    const tiny = new TestSummaryQueries(f.db, { ...TEST_SUMMARY_POLICY, maxRecordBytes: 100 });
+    expect(() => f.db.transaction(() => tiny.save(f.run()))()).toThrow("record budget");
   });
 
   it("enforces per-project and global count caps without deleting active summaries or detail state", () => {
-    const f = fixture(); const q = new TestSummaryQueries(f.owned.database, { ...TEST_SUMMARY_POLICY, perProjectRecords: 3, globalRecords: 4 });
+    const f = fixture(); const q = new TestSummaryQueries(f.db, { ...TEST_SUMMARY_POLICY, perProjectRecords: 3, globalRecords: 4 });
     const active = f.run({ phase: "running", finishedAt: null, telemetry: emptyTelemetry("observed") });
     f.store.saveTestRun(active);
-    for (let i = 0; i < 5; i++) f.owned.database.transaction(() => q.save(f.run({ queuedAt: new Date(Date.now() + i).toISOString() })))();
-    f.owned.database.transaction(() => q.prune(f.project.id))();
+    for (let i = 0; i < 5; i++) f.db.transaction(() => q.save(f.run({ queuedAt: new Date(Date.now() + i).toISOString() })))();
+    f.db.transaction(() => q.prune(f.project.id))();
     expect(q.coverage(f.project.id)).toMatchObject({ records: 3, evicted: 3 });
-    for (let i = 0; i < 3; i++) f.owned.database.transaction(() => q.save(f.run({ projectId: f.other.id, queuedAt: new Date(Date.now() + 100 + i).toISOString() })))();
-    f.owned.database.transaction(() => q.prune(f.other.id))();
+    for (let i = 0; i < 3; i++) f.db.transaction(() => q.save(f.run({ projectId: f.other.id, queuedAt: new Date(Date.now() + 100 + i).toISOString() })))();
+    f.db.transaction(() => q.prune(f.other.id))();
     expect(q.coverage(f.project.id).records + q.coverage(f.other.id).records).toBe(4);
     expect(q.get(active.id)?.phase).toBe("running");
     expect(f.store.getTestRun(active.id)?.phase).toBe("running");
   });
 
   it.each(["per-project", "global"])("enforces logical byte budgets: %s", mode => {
-    const f = fixture(); const q = new TestSummaryQueries(f.owned.database, { ...TEST_SUMMARY_POLICY,
+    const f = fixture(); const q = new TestSummaryQueries(f.db, { ...TEST_SUMMARY_POLICY,
       perProjectBytes: mode === "per-project" ? 2500 : TEST_SUMMARY_POLICY.perProjectBytes,
       globalBytes: mode === "global" ? 2500 : TEST_SUMMARY_POLICY.globalBytes });
-    for (let i = 0; i < 6; i++) f.owned.database.transaction(() => q.save(f.run()))();
-    f.owned.database.transaction(() => q.prune(f.project.id))();
+    for (let i = 0; i < 6; i++) f.db.transaction(() => q.save(f.run()))();
+    f.db.transaction(() => q.prune(f.project.id))();
     expect(q.coverage(f.project.id).bytes).toBeLessThanOrEqual(2500);
     expect(q.coverage(f.project.id).evicted).toBeGreaterThan(0);
   });
@@ -146,7 +147,7 @@ describe("durable bounded test summary history", () => {
     const f = fixture(); const expired = "2000-01-01T00:00:00.000Z";
     const active = f.run({ phase: "queued", queuedAt: expired, finishedAt: null, telemetry: emptyTelemetry("observed") });
     f.store.saveTestRun(active);
-    for (let i = 0; i < 130; i++) f.owned.database.transaction(() => f.summaries.save(f.run({ queuedAt: expired })))();
+    for (let i = 0; i < 130; i++) f.db.transaction(() => f.summaries.save(f.run({ queuedAt: expired })))();
     expect(f.summaries.coverage(f.project.id).maintenancePending).toBe(true);
     expect(f.store.pruneTestSummaryHistory()).toBe(64);
     expect(f.summaries.coverage(f.project.id)).toMatchObject({ records: 67, evicted: 64, maintenancePending: true });

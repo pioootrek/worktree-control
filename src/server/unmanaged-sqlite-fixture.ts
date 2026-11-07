@@ -8,3 +8,10 @@ export function unmanagedFixtureDatabase(filename:string|Buffer=":memory:",optio
   database.function("worktree_security_pending",()=>0);
   return database;
 }
+
+/** Test data manipulation on a live store uses its actual guarded sole handle.
+ * This borrowed view owns no connection: the fixture closes its owning store. */
+export function ownedFixtureDatabase(store:unknown):Database.Database {
+  const core=(store as {database:Database.Database}).database;
+  return Object.assign(Object.create(core),{close(){return this;}}) as Database.Database;
+}

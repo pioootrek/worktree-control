@@ -1815,7 +1815,7 @@ native TOTP/passkey rows and their trust/staging bindings, and invalidates the
 account's pending contexts and charged receipts. Subject-bound native challenges
 are deleted. Anonymous options cannot authenticate a removed key. TOTP replay
 steps, account budgets, receipt history and audit remain; reset never refunds a
-failed guess. Safe output reports selected TOTP removal and trusted passkey count.
+failed guess. Safe output reports native TOTP and passkey rows removed, including staged passkeys.
 A reset with no factors still advances the generation and succeeds.
 
 Current mapping/principal and maintenance/configuration are checked again after
@@ -1868,6 +1868,10 @@ hashes, factor material, vault keys or signing secrets.
 ### Commit and crash protocol
 
 All SQL execution uses the existing sole connection and core/provider admission.
+Between owned executions, device/inode, size and nanosecond modification/change
+metadata of SQLite and WAL must remain unchanged. This detects live in-place
+rollback before effects even when SQLite has cached the checkpoint. Only an
+owned execution can account for its own WAL writes, checkpointing and rollback.
 Before a covered authority row changes, a fixed BEFORE trigger invokes the
 owner's synchronous filesystem observer. It atomically writes `pending`, fsyncs
 the new file, renames it and fsyncs the private directory. The observer performs

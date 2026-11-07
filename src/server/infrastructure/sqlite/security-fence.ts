@@ -28,6 +28,12 @@ export class SecurityFenceError extends AuthenticationProviderError {
 export const securityFenceRoot = (database: string) => `${database}.security`;
 const witnessPath = (database: string) => join(securityFenceRoot(database), "witness.json");
 const fileIdentity=(database:string)=>{const stat=lstatSync(database);return {device:stat.dev,inode:stat.ino};};
+/** Changes outside owned SQLite execution are never attributed to SQLite's cache.
+ * atime is deliberately excluded; reads and backups may update it. */
+const imageStamp=(database:string)=>[database,`${database}-wal`].map(path=>{
+  try{const stat=lstatSync(path,{bigint:true});return [stat.dev,stat.ino,stat.size,stat.mtimeNs,stat.ctimeNs,stat.mode,stat.uid,stat.nlink].join(":");}
+  catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return "missing";throw error;}
+}).join("|");
 const binding = (database: string) => hash(["worktree-control/security-fence/v1", database, witnessPath(database)]);
 const restore = (database: string) => getOwnedRestoreStatus(database)?.operationId ?? null;
 function checkpoint(database: Database.Database): { installation: string; epoch: string } {
@@ -82,8 +88,10 @@ export class SecurityFence implements SqliteExecutionBoundary {
   private failed = false;
   private readonly inode: { dev: number; ino: number };
   private readonly readCurrent:()=>Record;
+  private images:string;
   private constructor(private readonly path: string, private readonly database: Database.Database, private record: Record) {
     const {dev,ino} = lstatSync(path); this.inode = {dev,ino};
+    this.images=imageStamp(path);
     const reader=privateBoundedFileReader(witnessPath(path),4096);
     this.readCurrent=()=>decode(path,reader());
     // Runs from fixed BEFORE triggers on this same connection. The callback
@@ -161,14 +169,17 @@ export class SecurityFence implements SqliteExecutionBoundary {
     if (this.failed) throw new SecurityFenceError("security_fence_pending");
     try {
       const stat = lstatSync(this.path), current = this.readCurrent();
-      if (stat.dev !== this.inode.dev || stat.ino !== this.inode.ino || !current || hash(current) !== hash(this.record)
+      if (stat.dev !== this.inode.dev || stat.ino !== this.inode.ino || imageStamp(this.path)!==this.images || !current || hash(current) !== hash(this.record)
         || current.restore !== restore(this.path)) throw new Error();
-      if (!this.pending) { const point=checkpoint(this.database); if(current.epoch!==point.epoch || current.installation!==point.installation)throw new Error(); }
+      if (!this.pending) { const point=checkpoint(this.database); if(current.epoch!==point.epoch || current.installation!==point.installation)throw new Error();
+        // Even this owned SELECT can spill dirty non-authority cache pages to WAL.
+        this.images=imageStamp(this.path);
+      }
     } catch { this.failed = true; throw new SecurityFenceError("security_fence_recovery_required"); }
   }
   execute<T>(operation: () => T, readonly: boolean): T {
     this.assert();
-    if(!readonly)assertDurability(this.database);
+    if(!readonly){assertDurability(this.database);this.images=imageStamp(this.path);}
     let result: T;
     try { result = operation(); }
     catch (error) {
@@ -179,6 +190,11 @@ export class SecurityFence implements SqliteExecutionBoundary {
         this.confirm(); // Proven rollback on the sole connection, before returning the original failure.
       }
       throw error;
+    } finally {
+      // Only a completed owned execution may account for SQLite's own writes,
+      // WAL creation/checkpointing or rollback. Outside changes are refused by
+      // assert BEFORE the next admitted effect, even if SQLite cached its epoch.
+      if(!this.failed)try{this.images=imageStamp(this.path);}catch{this.failed=true;throw new SecurityFenceError("security_fence_pending");}
     }
     if (this.pending && !this.database.inTransaction) this.confirm();
     return result;
