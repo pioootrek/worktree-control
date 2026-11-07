@@ -32,7 +32,8 @@ describe("protected real provider factor-loss recovery", () => {
   it.each(["none", "totp", "passkey", "both"])("resets %s, keeps identity/roles/history, denies old proofs, permits optional new enrollment", async kind => {
     const f = await create(); await f.grant();
     const browser = f.browser(); await browser.signIn();
-    const actor = await f.authenticate(browser);
+    let actor = await f.authenticate(browser);
+    let activeBrowser = browser;
     let totp: Awaited<ReturnType<typeof enrollTotp>> | undefined;
     let passkey: Awaited<ReturnType<typeof enrollPasskey>> | undefined;
     if (kind === "passkey" || kind === "both") passkey = await enrollPasskey(f, browser);
@@ -40,6 +41,17 @@ describe("protected real provider factor-loss recovery", () => {
       const b = passkey ? (await passkeyLogin(f, passkey)).browser : f.browser();
       totp = await enrollTotp(f, b);
     }
+    // Recover a currently authorizing strong session, not only the password
+    // cookie that selecting a factor already invalidated.
+    if (totp) {
+      advance(2 * STEP); activeBrowser = await pendingLogin(f);
+      expect((await verify(activeBrowser, totp.authenticator.code())).status).toBe(200);
+      advance(2 * STEP);
+    } else if (passkey) {
+      const signedIn = await passkeyLogin(f, passkey); expect(signedIn.result.status).toBe(200);
+      activeBrowser = signedIn.browser;
+    }
+    actor = await f.authenticate(activeBrowser); expect(actor).not.toBeNull(); await expect(f.read(actor!)).resolves.toBeDefined();
     const pending = totp ? await pendingLogin(f) : undefined;
     const oldOptions = passkey ? await passkeyOptions(f.browser(), "authenticate") : undefined;
     const before = await protectionState(f);
@@ -55,6 +67,7 @@ describe("protected real provider factor-loss recovery", () => {
     expect(await select(f, "SELECT * FROM authentication_provider_subjects")).toEqual(mappings);
     expect(await select(f, "SELECT * FROM knowledge_project_grants")).toEqual(grants);
     expect(await f.authenticate(browser)).toBeNull();
+    expect(await f.authenticate(activeBrowser)).toBeNull();
     await expect(f.read(actor!)).rejects.toMatchObject({ code: "invalid_credential" });
     expect((await f.browser().signIn()).status).toBe(401);
     if (pending) expect((await verify(pending, totp!.authenticator.code())).status).toBeGreaterThanOrEqual(400);
