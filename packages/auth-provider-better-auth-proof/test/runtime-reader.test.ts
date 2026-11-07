@@ -93,6 +93,9 @@ describe("real shared provider human runtime reader", () => {
       await expect(f.core(() => f.service.claimScopedProject(actor, { owner: `agent:mcp:${SECRET}` }, { projectId: f.a.id, worktreePath: "/code/a", reason: "spoof", idempotencyKey: "spoof" }))).rejects.toMatchObject({ code: "project_access_denied" });
       await expect(f.app.execute(list, { ...actor } as ProviderSessionActor)).rejects.toMatchObject({ code: "invalid_credential" });
       await expect(other.app.execute(list, actor)).rejects.toMatchObject({ code: "invalid_credential" });
+      await login(other); await other.set(EXISTING_OWNER);
+      // Both loaded runtimes contain this same stable owner ID. Object ownership still differs.
+      await expect(other.app.execute(list, await f.actor(http.owner))).rejects.toMatchObject({ code: "invalid_credential" });
       const identityWithoutAuthority = new IdentityService(f.store, undefined, undefined, undefined, undefined, f.store, undefined, f.store.runtimeMemberships());
       await expect(new ProviderRuntimeReadApplication(f.store.admission, identityWithoutAuthority, f.service).execute(list, actor)).rejects.toMatchObject({ code: "invalid_credential" });
       await expect(f.core(() => f.composition.identity.authorizeRuntime(f.oldOwner, f.a.id, "projects:read"))).rejects.toMatchObject({ code: "runtime_forbidden" });
