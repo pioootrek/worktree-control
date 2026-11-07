@@ -1,4 +1,4 @@
-import { unmanagedFixtureDatabase } from "./unmanaged-sqlite-fixture";
+import { ownedFixtureDatabase } from "./unmanaged-sqlite-fixture";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -124,7 +124,7 @@ describe("real knowledge HTTP, MCP and CLI", () => {
     const knowledge = new KnowledgeService(f.store, f.identity, () => "2026-10-27T09:00:00.000Z", () => ids.shift()!);
     knowledge.createThread(projectId, { title: "Discussion", body: "Context" }, { idempotencyKey: "legacy-thread" }, f.owner);
     knowledge.createTaskFromThread(projectId, threadId, { title: "Task", description: "Deliver" }, { idempotencyKey: "legacy-task" }, f.owner);
-    const db = unmanagedFixtureDatabase(f.databasePath);
+    const db = ownedFixtureDatabase(f.store);
     db.prepare(`INSERT INTO knowledge_import_sources
       (id,project_id,source_id,source_repository,source_commit,source_path,legacy_id,source_sha256,mapping_version,target_kind,target_id,created_at,target_revision)
       VALUES ('legacy-source',?,?, '/source',?,?, 'A',?,2,'task',?,?,1)`)

@@ -1,4 +1,4 @@
-import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { unmanagedFixtureDatabase, ownedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -229,7 +229,7 @@ describe("task current state", () => {
   it("replaces an unreadable stored state and keeps the raw text in history", () => {
     const f = setup();
     f.write(mergedNotDeployed());
-    const database = unmanagedFixtureDatabase(f.path);
+    const database = ownedFixtureDatabase(f.store);
     try { database.prepare("UPDATE knowledge_tasks SET current_state_json = ? WHERE id = ?").run("{broken", f.task.id); } finally { database.close(); }
     expect(f.read()).toMatchObject({ state: null, stateUnreadable: true });
 
