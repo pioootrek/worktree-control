@@ -26,15 +26,20 @@ export function validateDatabase(database: Database.Database, version: number): 
   if (version >= 45 && database.prepare(`SELECT 1 FROM runtime_human_memberships m
     JOIN remote_principals p ON p.id=m.principal_id WHERE p.kind NOT IN ('owner','human') LIMIT 1`).get()) fail("runtime membership principal");
   if (version >= 46) {
+    // Expanded schema48 permissions must never legitimize previously invalid stored grants.
+    const supportedPermissions = (value: unknown) => {
+      const parsed = humanRuntimePermissionsSchema.safeParse(value);
+      return parsed.success && (version >= 48 || parsed.data.every(action => action !== "profiles:select" && action !== "config:write"));
+    };
     for (const m of database.prepare("SELECT * FROM runtime_human_memberships").all() as Array<{principal_id:string;project_id:string;role:string;permissions_json:string}>) {
       let permissions: unknown;
       try { permissions = JSON.parse(m.permissions_json); } catch { fail("runtime membership permissions"); }
-      if (!runtimeMembershipSetSchema.safeParse({ principalId: m.principal_id, scope: {kind:"runtime-project",id:m.project_id}, role:m.role,permissions,expectedRevision:0 }).success) fail("runtime membership permissions");
+      if (!supportedPermissions(permissions) || !runtimeMembershipSetSchema.safeParse({ principalId: m.principal_id, scope: {kind:"runtime-project",id:m.project_id}, role:m.role,permissions,expectedRevision:0 }).success) fail("runtime membership permissions");
     }
     for (const lease of database.prepare("SELECT permissions_json FROM human_runtime_leases").all() as Array<{permissions_json:string}>) {
       let permissions: unknown;
       try { permissions=JSON.parse(lease.permissions_json); } catch { fail("human lease permissions"); }
-      if (!humanRuntimePermissionsSchema.safeParse(permissions).success) fail("human lease permissions");
+      if (!supportedPermissions(permissions)) fail("human lease permissions");
     }
     if (database.prepare(`SELECT 1 FROM human_runtime_leases h JOIN reservations r ON r.id=h.reservation_id
       JOIN remote_principals p ON p.id=h.principal_id WHERE r.provider_bound<>1 OR r.kind<>'human'

@@ -61,6 +61,16 @@ describe("human configuration schema48 and atomic ledger", () => {
       db.prepare("UPDATE runtime_human_memberships SET permissions_json=?").run('["projects:read","claims:manage","runtime:control","tests:run","profiles:select","config:write"]');
     } finally { db.close(); }
   });
+  it.each(["profiles:select", "config:write"])("refuses a premature %s grant in a genuine47 file before any upgrade writes", permission => {
+    const root = mkdtempSync(join(tmpdir(), "premature-configuration-")), path = join(root, "state.sqlite3");
+    try {
+      const db = new Database(path); genuine47(db);
+      db.prepare("UPDATE runtime_human_memberships SET permissions_json=?").run(JSON.stringify([permission])); db.close();
+      const before = readFileSync(path);
+      expect(() => new SqliteStateStore(path)).toThrow(/runtime membership permissions/);
+      expect(readFileSync(path)).toEqual(before);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it("rolls back mutation, revision, audit and completed receipt when receipt persistence fails", () => {
     const f = fixture();
     try {
