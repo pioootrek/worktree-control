@@ -1072,9 +1072,15 @@ Check `leaseHeld`, `error` and current safe status after an operation. Release
 with `release_project_claim` when finished; release does not stop the server.
 
 These scoped tools omit ENV and profile content editing, local test admission,
-logs, storage, capacity and foreign lease details. Runtime resources,
-`get_project_status_compact` and `wait_for_status_change` are unavailable to
-scoped agents. The HTTP runtime/dashboard API continues to reject their
+logs, storage, capacity and foreign lease details. With `projects:read`, agents
+can discover/read filtered project and worktree resources, call
+`get_project_status_compact` and wait for one project's cursor with
+`wait_for_status_change`. The shared waiter budgets apply; sampling, timeout
+and delivery after database re-admission recheck current authority. Revocation
+rejects pending waits without returning retained data. Cursors cover only the
+allowlisted project view and are bound to the credential and MCP session.
+There is no test-run wait or global queue/capacity projection for these agents.
+The HTTP runtime/dashboard API continues to reject their
 credentials, including existing configuration routes; runtime access is through
 these MCP tools. Test/log/ENV permissions such as `tests:run` cannot be granted.
 
@@ -1172,9 +1178,9 @@ process inheritance. Scoped authorization is not an OS sandbox: repository code
 still executes with the controller's host identity and its permitted filesystem
 access. The original A2 projects/claims/profiles/configuration criteria are
 implemented; completion requires recorded verification. Scoped finite-job
-admission/own-run access (`415205f2-4583-4b13-a508-49a9b618a19e`) and scoped
-resources/compact status/wait (`e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`) remain
-separate followups and are denied. A3 owns account GUI/human administration, A4
+admission/own-run access (`415205f2-4583-4b13-a508-49a9b618a19e`) remains
+denied. Scoped resources/compact status/project wait are implemented under
+`e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`. A3 owns account GUI/human administration, A4
 ENV policy and A5 compatibility cutover. This describes source behavior, not a
 live installation upgrade.
 

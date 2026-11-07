@@ -70,6 +70,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "test:modules": "vitest run src/server/modules src/server/infrastructure src/architecture.test.ts",
+    "test:scoped-status": "vitest run src/server/modules/status/status-service.test.ts src/server/control-service-scoped-runtime.test.ts src/server/scoped-runtime-transports.test.ts src/server/mcp-http-server.test.ts",
     "test:knowledge": "vitest run src/server/infrastructure/sqlite/hub-import-execution.test.ts src/server/infrastructure/sqlite/knowledge-memory.test.ts src/server/infrastructure/sqlite/knowledge-project-transfer.test.ts src/server/knowledge-transports.test.ts",
     "test:ui": "playwright test",
     "test:ui:detail-focus": "playwright test tests/ui/detail-focus.spec.ts",

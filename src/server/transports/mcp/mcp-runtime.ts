@@ -1042,6 +1042,7 @@ export class McpRuntime {
 
   /** Dispose session-held claim handles and secrets; persisted leases keep their remaining TTL. */
   private clearTimers(session: McpSession): void {
+    if (session.owner) this.service.cancelStatusWaits?.(session.owner);
     for (const claim of session.claims.values()) if (claim.timer) { this.clock.clearTimeout(claim.timer); claim.timer = null; this.diagnostics.change(session.observation, "renewalTimers", -1); }
     this.diagnostics.change(session.observation, "claims", -session.observation.claims);
     session.claims.clear();

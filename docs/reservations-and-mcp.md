@@ -141,8 +141,26 @@ phase. Explicit start uses the discovered claimed worktree. Claims with only
 only `own` includes the reservation handle and expiry. Unauthorized and missing
 projects return the same denial before Git discovery.
 
-Scoped runtime sessions have no runtime resources, compact status, wait API,
-logs, capacity/storage tools, local test tools, profile editing or ENV
+With `projects:read`, scoped sessions discover only their project status and
+worktree resource URIs, plus `worktree-switcher://projects` with a filtered list.
+Resource reads use the same application policy and allowlists as their tools;
+worktree discovery rechecks authority after Git returns.
+
+`get_project_status_compact` wraps the safe scoped status in a versioned envelope
+with `epoch`, `cursor`, `observedAt` and `retryAfterMs`. It reads no Git, logs,
+global capacity or test queue. Its cursor binds project, principal, credential
+and MCP session, and changes only with the visible projection. A cursor grants
+no authority and cannot be used to read another project.
+
+Scoped `wait_for_status_change` accepts `projectId`, `cursor` and optional
+`timeoutMs` (default 10 seconds, maximum 20); test-run targets are refused.
+It shares the existing 128-global/four-per-session/64-target waiter limits and
+one sampler. Each waiter rechecks credential, delegation, expiry and sponsor at
+registration, sampling, timeout and after database re-admission before delivery.
+Revocation rejects the wait on the next admitted check, even when status has
+not changed. Logical session close, cancellation and shutdown release waiters.
+
+Scoped runtime sessions have no logs, capacity/storage tools, local test tools, profile editing or ENV
 administration. They do not accept `responseMode`. New identity administration
 and credential minting are owner-session CLI/HTTP operations, never MCP tools.
 The HTTP runtime API does not accept a scoped credential.
@@ -266,8 +284,8 @@ entry is lost or the controller restarts; it is not cross-session persistence.
 All inputs reject unknown fields. `config:write` assigns no manager role and
 cannot mutate ENV, profiles, commands, launch/TLS/global settings, identities or
 vaults. Scoped finite verification remains denied under followup
-`415205f2-4583-4b13-a508-49a9b618a19e`; scoped resources, compact status and
-bounded wait remain denied under `e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`.
+`415205f2-4583-4b13-a508-49a9b618a19e`. Scoped resources, compact status and
+bounded project wait are described above (`e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`).
 
 ### Compatibility tools and resources
 

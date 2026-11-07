@@ -4,6 +4,7 @@ import { admitNowOrLater, admissionOf, type DatabaseAdmission } from "@/server/d
 import type { ProcessManager, RuntimeStatusSummary } from "@/server/process-manager";
 import type { StateStore, TestRunStatusRecord } from "@/server/state-store";
 import type { Project, Reservation, ServerCapacityStatus, TestQueueStatus } from "@/shared/contracts";
+import type { ScopedProjectStatus } from "@/shared/contracts/runtime-access";
 
 const SAMPLE_MS = 1_000;
 const DEFAULT_WAIT_MS = 10_000;
@@ -69,10 +70,12 @@ export interface CompactTestStatus {
   };
 }
 
-type Target = { kind: "project"; id: string } | { kind: "run"; id: string };
-type AnyEnvelope = CompactEnvelope<CompactProjectStatus | CompactTestStatus>;
+type Target = { kind: "project"; id: string } | { kind: "run"; id: string }
+  | { kind: "scoped-project"; id: string; read: () => CompactEnvelope<ScopedProjectStatus> };
+type AnyEnvelope = CompactEnvelope<CompactProjectStatus | CompactTestStatus | ScopedProjectStatus>;
 
 interface Waiter {
+  read: () => AnyEnvelope;
   sessionKey: string;
   initialCursor: string;
   resolve: (value: AnyEnvelope) => void;
@@ -121,6 +124,11 @@ export class StatusService {
 
   project(projectId: string, owner: string): CompactEnvelope<CompactProjectStatus> {
     return this.projectEnvelope(this.observeProject(projectId), owner);
+  }
+
+  /** The application supplies an authorized allowlist, never a raw snapshot. */
+  scopedProject(status: ScopedProjectStatus, binding: string): CompactEnvelope<ScopedProjectStatus> {
+    return this.envelope(`scoped-project:${status.id}:${binding}`, new Date().toISOString(), status, this.projectRetry(status.phase));
   }
 
   test(runId: string): CompactEnvelope<CompactTestStatus> {
@@ -178,10 +186,22 @@ export class StatusService {
    */
   async wait(target: Target, cursor: string, sessionKey: string, timeoutMs = DEFAULT_WAIT_MS, signal?: AbortSignal): Promise<{ changed: boolean; result?: AnyEnvelope; epoch: string; cursor: string; retryAfterMs: number; errorCode?: "status_wait_busy" }> {
     if (this.closed) throw new Error("STATUS_CLOSED");
-    return this.admission.run(() => this.waitAdmitted(target, cursor, sessionKey, timeoutMs, signal));
+    return this.admission.run(async () => {
+      const outcome = await this.waitAdmitted(target, cursor, sessionKey, timeoutMs, signal);
+      if (target.kind !== "scoped-project") return outcome;
+      // idle() re-admits after sampling/timeout. Authority may have changed
+      // while that admission was queued: never deliver the retained result.
+      if (this.closed) throw new Error("STATUS_CLOSED");
+      if (signal?.aborted) throw new Error("STATUS_WAIT_CANCELLED");
+      const current = target.read();
+      return { ...outcome, changed: current.cursor !== cursor,
+        result: current.cursor !== cursor ? current : undefined,
+        cursor: current.cursor, retryAfterMs: outcome.errorCode ? outcome.retryAfterMs : current.retryAfterMs ?? 2_000 };
+    });
   }
 
   private waitAdmitted(target: Target, cursor: string, sessionKey: string, timeoutMs: number, signal?: AbortSignal): Promise<{ changed: boolean; result?: AnyEnvelope; epoch: string; cursor: string; retryAfterMs: number; errorCode?: "status_wait_busy" }> {
+    if (signal?.aborted) throw new Error("STATUS_WAIT_CANCELLED");
     const current = this.read(target, sessionKey);
     if (current.cursor !== cursor) return Promise.resolve({ changed: true, result: current, epoch: this.epoch, cursor: current.cursor, retryAfterMs: current.retryAfterMs ?? 0 });
     if (this.waiterCount() >= MAX_WAITERS || (this.sessionCounts.get(sessionKey) ?? 0) >= MAX_SESSION_WAITERS) {
@@ -194,6 +214,7 @@ export class StatusService {
     const boundedTimeout = Math.max(1, Math.min(MAX_WAIT_MS, timeoutMs));
     const waiting = new Promise<{ changed: boolean; result?: AnyEnvelope; epoch: string; cursor: string; retryAfterMs: number }>((resolve, reject) => {
       const waiter: Waiter = {
+        read: () => this.read(target, sessionKey),
         sessionKey, initialCursor: cursor, reject,
         resolve: (result) => resolve({ changed: true, result, epoch: this.epoch, cursor: result.cursor, retryAfterMs: result.retryAfterMs ?? 0 }),
         timer: setTimeout(() => {
@@ -247,6 +268,14 @@ export class StatusService {
     }
   }
 
+  cancelSession(sessionKey: string): void {
+    for (const [key, group] of this.targets) for (const waiter of group.waiters) {
+      if (waiter.sessionKey !== sessionKey) continue;
+      this.remove(key, waiter);
+      waiter.reject(new Error("STATUS_WAIT_CANCELLED"));
+    }
+  }
+
   private observeProject(projectId: string): ProjectObservation {
     const observedAt = new Date().toISOString();
     const project = this.store.getProject(projectId);
@@ -291,6 +320,7 @@ export class StatusService {
   }
 
   private read(target: Target, owner: string): AnyEnvelope {
+    if (target.kind === "scoped-project") return target.read();
     return target.kind === "project" ? this.project(target.id, owner) : this.test(target.id);
   }
 
@@ -317,7 +347,7 @@ export class StatusService {
         let sharedTest: AnyEnvelope | null = null;
         try {
           if (group.target.kind === "project") sharedProject = this.observeProject(group.target.id);
-          else sharedTest = this.test(group.target.id);
+          else if (group.target.kind === "run") sharedTest = this.test(group.target.id);
         } catch (error) {
           for (const waiter of [...group.waiters]) {
             this.remove(key, waiter);
@@ -327,7 +357,10 @@ export class StatusService {
         }
         for (const waiter of [...group.waiters]) {
           try {
-            const result = sharedProject ? this.projectEnvelope(sharedProject, waiter.sessionKey) : sharedTest!;
+            // Scoped readers authorize each waiter separately, including when
+            // its visible status has not changed. No installation observation.
+            const result = group.target.kind === "scoped-project" ? waiter.read()
+              : sharedProject ? this.projectEnvelope(sharedProject, waiter.sessionKey) : sharedTest!;
             // Each waiter supplied the cursor represented by the group state at registration.
             // Resolve only when the caller-visible projection changed.
             if (result.cursor !== waiter.initialCursor) { this.remove(key, waiter); waiter.resolve(result); }

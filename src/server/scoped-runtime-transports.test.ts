@@ -68,6 +68,10 @@ async function fixture(clock?: ManualMcpClock, verificationOnly = false) {
   }]));
   const processes = {
     snapshot: (id: string) => ({ ...runtimes.get(id)! }),
+    statusSummary: vi.fn((id: string) => {
+      const { phase, worktreePath, startedAt } = runtimes.get(id)!;
+      return { phase, worktreePath, startedAt, ownsProcess: phase === "running", failureCode: null };
+    }),
     start: vi.fn(async (project: { id: string }, path: string, beforeSpawn?: () => void) => {
       beforeSpawn?.();
       Object.assign(runtimes.get(project.id)!, { phase: "running", pid: 500, worktreePath: path, startedAt: new Date().toISOString() });
@@ -183,9 +187,23 @@ describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
       expect(f.git.list).not.toHaveBeenCalled();
       const names = (await client.listTools()).tools.map(tool => tool.name);
       expect(names).toEqual(expect.arrayContaining(["get_identity", "claim_project", "start_project", "restart_project", "stop_project"]));
-      for (const name of ["get_project_status_compact", "wait_for_status_change", "get_runtime_logs", "get_server_capacity", "run_test", "list_test_presets", "set_project_environment", "save_environment_profile", "issue_runtime_credential", "set_runtime_delegation"]) expect(names).not.toContain(name);
-      await expect(client.listResources()).rejects.toThrow();
-      await expect(client.readResource({ uri: "worktree-switcher://projects" })).rejects.toThrow();
+      expect(names).toEqual(expect.arrayContaining(["get_project_status_compact", "wait_for_status_change"]));
+      for (const name of ["get_runtime_logs", "get_server_capacity", "run_test", "list_test_presets", "set_project_environment", "save_environment_profile", "issue_runtime_credential", "set_runtime_delegation"]) expect(names).not.toContain(name);
+      const resources = await client.listResources();
+      expect(resources.resources.map(resource => resource.uri).sort()).toEqual([
+        "worktree-switcher://projects", `worktree-switcher://projects/${project.id}/status`, `worktree-switcher://projects/${project.id}/worktrees`,
+      ].sort());
+      for (const resource of resources.resources) {
+        const result = JSON.stringify(await client.readResource({ uri: resource.uri }));
+        for (const forbidden of [foreign.id, foreign.name, SENTINEL, "PRIVATE_API_KEY", "pnpm", "environment", "logs", "capacity", "tls"]) expect(result).not.toContain(forbidden);
+      }
+      for (const kind of ["status", "worktrees"]) {
+        const denied = await client.readResource({ uri: `worktree-switcher://projects/${foreign.id}/${kind}` }).catch(error => error);
+        const missing = await client.readResource({ uri: `worktree-switcher://projects/${randomUUID()}/${kind}` }).catch(error => error);
+        expect(denied.message).toContain("project_access_denied");
+        expect(denied.message).toBe(missing.message);
+      }
+      for (const uri of ["worktree-switcher://capacity", "worktree-switcher://tests/queue"]) await expect(client.readResource({ uri })).rejects.toThrow();
       for (const path of ["/api/projects", `/api/projects/${project.id}/worktrees`, `/api/projects/${project.id}/start`]) {
         const response = await fetch(`${f.base}${path}`, { headers: { Authorization: `Bearer ${f.issued[index].token}` } });
         expect(response.status).toBe(401);
@@ -194,6 +212,38 @@ describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
       expect((await f.call(client, "get_identity")).value.runtimeAccess).toEqual([{ projectId: project.id, actions: all, expiresAt: null }]);
     }
     expect(f.processes.start).not.toHaveBeenCalled();
+  });
+
+  it("delivers only authorized compact changes over MCP, then denies revoked waits and resource discovery", async () => {
+    const f = await fixture();
+    const client = f.clients[0], projectId = f.projects[0].id;
+    const current = (await f.call(client, "get_project_status_compact", { projectId })).value;
+    const waitInput = { projectId, cursor: current.cursor, timeoutMs: 3000 };
+    const waiting = f.call(client, "wait_for_status_change", waitInput);
+    await vi.waitFor(() => expect(f.service.statusWaitDiagnostics().waiters).toBe(1));
+    f.runtimes.get(projectId)!.phase = "running";
+    const changed = await waiting;
+    expect(changed.value).toMatchObject({ changed: true, result: { status: { id: projectId, phase: "running" } } });
+    expect(changed.output).not.toMatch(/capacity|testQueue|logs|environment/);
+    const denied = f.call(client, "wait_for_status_change", { ...waitInput, cursor: changed.value.cursor });
+    await vi.waitFor(() => expect(f.service.statusWaitDiagnostics().waiters).toBe(1));
+    f.identity.revokeRuntimeDelegation({ principalId: f.agents[0].id, projectId, expectedRevision: 1 }, f.owner);
+    expect((await denied).output).toMatch(/^project_access_denied:/);
+    expect(f.service.statusWaitDiagnostics().waiters).toBe(0);
+    expect((await client.listResources()).resources.map(resource => resource.uri)).toEqual(["worktree-switcher://projects"]);
+    await expect(client.readResource({ uri: `worktree-switcher://projects/${projectId}/status` })).rejects.toThrow("project_access_denied");
+    expect(f.git.list).not.toHaveBeenCalled();
+    expect((await f.call(client, "wait_for_status_change", { ...waitInput, runId: randomUUID() })).output).toMatch(/^invalid_request:/);
+  });
+
+  it("rechecks worktree resource authority after asynchronous discovery", async () => {
+    const f = await fixture();
+    const projectId = f.projects[0].id;
+    f.git.list.mockImplementationOnce(async () => {
+      f.identity.revokeRuntimeDelegation({ principalId: f.agents[0].id, projectId, expectedRevision: 1 }, f.owner);
+      return f.worktrees.get(f.projects[0].repositoryPath)!;
+    });
+    await expect(f.clients[0].readResource({ uri: `worktree-switcher://projects/${projectId}/worktrees` })).rejects.toThrow("project_access_denied");
   });
 
   it("preserves delegation expiry when HTTP updates omit it and clears it only explicitly", async () => {
@@ -479,12 +529,15 @@ describe("independent scoped configuration transport boundaries", () => {
     expect((await f.call(client, "set_test_preset_timeout", { ...timeout, presetId: "node:undiscovered" })).output).toMatch(/^preset_not_found:/);
     expect((await f.call(client, "get_project_configuration", { projectId, worktreePath: `${worktreePath}/../Alpha` })).output).toMatch(/^worktree_unavailable:/);
     const names = (await client.listTools()).tools.map(tool => tool.name);
-    for (const name of ["set_project_environment", "save_environment_profile", "delete_environment_profile", "save_test_environment_profile", "assign_test_preset_profile", "run_test", "get_test_run", "get_project_status_compact", "wait_for_status_change", "set_runtime_delegation"]) {
+    for (const name of ["set_project_environment", "save_environment_profile", "delete_environment_profile", "save_test_environment_profile", "assign_test_preset_profile", "run_test", "get_test_run", "set_runtime_delegation"]) {
       expect(names).not.toContain(name);
       expect((await f.call(client, name, { projectId })).error).toBe(true);
     }
-    await expect(client.listResources()).rejects.toThrow();
-    await expect(client.readResource({ uri: `worktree-switcher://projects/${projectId}/status` })).rejects.toThrow();
+    const configOnly = await f.connect(f.issue(0, ["config:write"]).token);
+    expect((await configOnly.listResources()).resources.map(resource => resource.uri)).toEqual(["worktree-switcher://projects"]);
+    await expect(configOnly.readResource({ uri: `worktree-switcher://projects/${projectId}/status` })).rejects.toThrow("project_access_denied");
+    expect((await f.call(configOnly, "get_project_status_compact", { projectId })).output).toMatch(/^project_access_denied:/);
+    expect((await f.call(configOnly, "wait_for_status_change", { projectId, cursor: "stale" })).output).toMatch(/^project_access_denied:/);
     for (const [suffix, body] of [
       ["environment", { environment: { INJECTED: SENTINEL } }],
       ["environment-profiles", { name: "new", environment: {} }],

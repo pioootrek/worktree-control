@@ -1,6 +1,6 @@
 import type { GitWorktreeReader } from "@/server/git-worktrees";
 import type { LogWriter } from "@/server/log-writer";
-import type { ProcessManager } from "@/server/process-manager";
+import type { ProcessManager, RuntimeStatusSummary } from "@/server/process-manager";
 import { ReservationError, type ReservationBinding, type StateStore } from "@/server/state-store";
 import type { ClaimedRuntimeAction, ClaimedRuntimeReceipt, Project, Reservation } from "@/shared/contracts";
 import type {
@@ -46,7 +46,7 @@ export class ScopedRuntimeService {
     private readonly authorizer: RuntimeAuthorizer,
     private readonly store: Pick<StateStore, "getProject" | "getActiveReservation" | "acquireReservation" | "renewAgentReservation" | "releaseAgentReservation">,
     private readonly git: Pick<GitWorktreeReader, "list">,
-    private readonly processes: Pick<ProcessManager, "snapshot">,
+    private readonly processes: Pick<ProcessManager, "snapshot" | "statusSummary">,
     private readonly lifecycle: LifecycleAccess,
     private readonly runtime: Pick<RuntimeService, "operateClaimed" | "placeClaimed">,
     private readonly logs: Pick<LogWriter, "controller">,
@@ -64,6 +64,12 @@ export class ScopedRuntimeService {
   projectStatus(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string): ScopedProjectStatus {
     this.check(actor, projectId, ["projects:read"]);
     return this.status(this.requireProject(projectId), actor, session);
+  }
+
+  compactProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string): ScopedProjectStatus {
+    this.check(actor, projectId, ["projects:read"]);
+    const project = this.requireProject(projectId);
+    return this.status(project, actor, session, this.processes.statusSummary(projectId));
   }
 
   async worktrees(actor: AuthenticatedPrincipal, projectId: string): Promise<ScopedWorktree[]> {
@@ -232,9 +238,9 @@ export class ScopedRuntimeService {
     };
   }
 
-  private status(project: Project, actor: AuthenticatedPrincipal, session: ScopedSession): ScopedProjectStatus {
+  private status(project: Project, actor: AuthenticatedPrincipal, session: ScopedSession,
+    runtime: Pick<RuntimeStatusSummary, "phase" | "worktreePath" | "startedAt"> = this.processes.snapshot(project.id)): ScopedProjectStatus {
     const actions = this.authorizer.runtimeAccessFor(actor).find(entry => entry.projectId === project.id)?.actions ?? [];
-    const runtime = this.processes.snapshot(project.id);
     const reservation = this.store.getActiveReservation(project.id);
     const claim = this.relation(reservation, session);
     return {

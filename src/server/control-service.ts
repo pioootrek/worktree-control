@@ -118,6 +118,17 @@ export class ControlService {
   scopedRuntimeEnabled(): boolean { return !!this.scopedRuntime; }
   scopedProjects(actor: AuthenticatedPrincipal, session: ScopedSession) { return this.requireScopedRuntime().listProjects(actor, session); }
   scopedProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string) { return this.requireScopedRuntime().projectStatus(actor, session, projectId); }
+  scopedCompactProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string) {
+    const status = this.requireScopedRuntime().compactProjectStatus(actor, session, projectId);
+    return this.statusQueries.scopedProject(status, JSON.stringify([actor.principalId, actor.credentialId, session.owner]));
+  }
+  waitForScopedStatusChange(actor: AuthenticatedPrincipal, session: ScopedSession,
+    input: { projectId: string; cursor: string; timeoutMs?: number }, signal?: AbortSignal, sessionClosed?: () => boolean) {
+    return this.statusQueries.wait({ kind: "scoped-project", id: input.projectId, read: () => {
+      if (sessionClosed?.()) throw new Error("STATUS_CLOSED");
+      return this.scopedCompactProjectStatus(actor, session, input.projectId);
+    } }, input.cursor, session.owner, input.timeoutMs, signal);
+  }
   scopedWorktrees(actor: AuthenticatedPrincipal, projectId: string) { return this.requireScopedRuntime().worktrees(actor, projectId); }
   claimScopedProject(actor: AuthenticatedPrincipal, session: ScopedSession, input: ScopedClaimRequest, existingLeaseToken?: string) {
     return this.requireScopedRuntime().claim(actor, session, input, existingLeaseToken);
@@ -312,6 +323,7 @@ export class ControlService {
   }
 
   statusWaitDiagnostics(owner?: string) { return this.statusQueries.diagnostics(owner); }
+  cancelStatusWaits(owner: string) { this.statusQueries.cancelSession(owner); }
 
   waitForStatusChange(input: { projectId?: string; runId?: string; cursor: string; timeoutMs?: number }, owner: string, signal?: AbortSignal) {
     const target = input.projectId ? { kind: "project" as const, id: input.projectId } : { kind: "run" as const, id: input.runId! };

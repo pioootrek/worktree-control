@@ -78,7 +78,7 @@ the CLI, transport verification and operational docs extend that contract.
 | Installation authentication | `token`, `open`, `legacy`; rotation and policy invalidation; optional server-free Better Auth/SQLite proof | `better-auth` still rejects activation; no browser account integration |
 | Identity | Owner, ordinary human, agent, worker and installation principals; revocable legacy credentials and isolated human sessions | General delegated role administration |
 | Knowledge | Shared policy, explicit grants and optional Knowledge role ceilings; installation compatibility bypass | Explicit human approval in account mode |
-| MCP | Agent sessions add filtered discovery, explicit-start claims, claimed control, literal profile selection and preset timeout overrides; Knowledge/vault/remote grants stay independent | Scoped finite-job admission/own-run access, runtime resources, compact status and wait API are separate followups |
+| MCP | Agent sessions add filtered discovery/resources, compact project status/wait, explicit-start claims, claimed control, literal profile selection and preset timeout overrides; Knowledge/vault/remote grants stay independent | Scoped finite-job admission/own-run access remains a separate followup |
 | Remote verification | Separate submitter/project and worker/project/preset grants | Integrate without replacing both checks with a broad project role |
 | DEV vault | Encrypted profiles, signed owner operations, exact agent grants; backend and GUI on main | General role integration; execution delivery remains unavailable |
 
@@ -474,8 +474,9 @@ unclaimed mutations remain useful without claim/runtime rights. See the
 [operational contract](reservations-and-mcp.md#scoped-configuration-workflow).
 
 Scoped finite-job admission and own-run access remain denied under followup
-`415205f2-4583-4b13-a508-49a9b618a19e`. Scoped resources, compact status and
-bounded wait remain denied under `e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`.
+`415205f2-4583-4b13-a508-49a9b618a19e`. Scoped resources, compact project status
+and bounded project wait are implemented under `e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`,
+with current authority checked after waiting and no global capacity or queue data.
 These are separate followups, not delivered A2 behavior or part of A3–A5.
 
 | Slice and Knowledge task | Deliverable | Acceptance gate |
