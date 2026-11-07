@@ -66,7 +66,7 @@ describe("human runtime schema46 and durable intents",()=>{
         expect(restored.listPrincipalCredentials("human")).toEqual([]);
         expect(restored.runtimeMemberships().getRuntimeMembership("human","p")!.permissions).toEqual(["projects:read"]);
         expect(restored.hasAuthenticationProviderData()).toBe(false);
-        await expect(restored.recoverIssuedSessions({sessionRows:4096,sessionReconcileBatch:32,unreleasedSessions:64})).rejects.toThrow();
+        await expect(restored.recoverIssuedSessions({sessionRows:4096,sessionReconcileBatch:32})).rejects.toThrow();
       }finally{restored.close();}
     }finally{store?.close();rmSync(root,{recursive:true,force:true});}
   });

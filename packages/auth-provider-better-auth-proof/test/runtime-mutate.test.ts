@@ -301,7 +301,7 @@ describe("real provider human runtime mutations", () => {
       const missing=await f.http.human.call(route,{body:claim(f,"missing",{projectId:"missing"})}),forbidden=await f.http.human.call(route,{body:claim(f,"forbidden",{projectId:f.b.id})});expect(missing.body).toEqual(forbidden.body);
       for(const path of ["/api/tests","/api/runtime/unknown","/api/runtime/claim","/api/capacity","/api/logs","/api/projects","/api/admin"])expect((await f.http.human.call(path,{body:{}})).status).toBe(401);
       const actor=await f.actor(f.http.human);
-      for(const method of [()=>f.service.scopedTestPresets(actor,{projectId:f.a.id,worktreePath:"/code/a"}),()=>f.service.scopedProjectConfiguration(actor,{projectId:f.a.id})])await expect(f.core(method)).rejects.toThrow();
+      for(const method of [()=>f.service.scopedTestPresets(actor,{projectId:f.a.id,worktreePath:"/code/a"}),()=>f.service.scopedProjectConfiguration(actor,{projectId:f.a.id})])await expect(f.core<unknown>(method)).rejects.toThrow();
       const raw=readCommitted(f.paths.databasePath,db=>db.prepare("SELECT * FROM principal_credentials WHERE principal_id=?").all(f.human));expect(raw).toEqual([]);
     }finally{await f.close();}
   });
