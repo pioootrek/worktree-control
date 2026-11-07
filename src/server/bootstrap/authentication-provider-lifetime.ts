@@ -81,35 +81,35 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
     return pending;
   };
   const providerRuntime = {
-      state: (): ProviderMaintenanceState => state === "ready" && !storage.available() ? "failed" : state,
-      configurationRestartRequired: changed,
-      get(current: ProviderConfiguration) {
-        if (maintenance()) return Promise.reject(new ProviderAdminError("maintenance"));
-        if (changed(current)) return Promise.reject(new ProviderAdminError("provider_configuration_restart_required"));
-        if (!storage.available()) { state = "failed"; return Promise.reject(new ProviderAdminError("database_unavailable")); }
-        if (!loaded) {
-          pinned = Object.freeze({ ...current }); state = "loading";
-          // Promise publication precedes import/create, including synchronous loader failures.
-          retainLifetime();
-          loaded = Promise.resolve().then(async () => {
-            // Ordinary boot recovery is owned/cached by this store. Restored provenance refuses it.
-            await d.store.recoverIssuedSessions(CONTROLLER_AUTHENTICATION_POLICY);
-            await d.store.admission.run(guard);
-            validateProviderEntry(current.entry);
-            return (d.loadProvider ?? loadAuthenticationProvider)({ entry: current.entry, providerId: "better-auth", storage: guardedStorage,
-              unreleasedSessions: CONTROLLER_AUTHENTICATION_POLICY.unreleasedSessions,
-              sessionRows: CONTROLLER_AUTHENTICATION_POLICY.sessionRows,
-              sessionReconcileBatch: CONTROLLER_AUTHENTICATION_POLICY.sessionReconcileBatch,
-              options: { baseURL: current.baseURL, secret: current.secret, clientIpHeader: "x-worktree-control-client-ip" },
-              onInvalidation: d.onInvalidation });
-          }).then(value => { runtime = value; if (!stopping) state = "ready"; return value; }, error => {
-            failure = error;
-            if (!stopping) state = error instanceof AuthenticationProviderError && error.code === "disposal_unconfirmed" ? "disposal_unconfirmed" : "failed";
-            throw error;
-          });
-        }
-        return loaded;
-      },
+    state: (): ProviderMaintenanceState => state === "ready" && !storage.available() ? "failed" : state,
+    configurationRestartRequired: changed,
+    get(current: ProviderConfiguration) {
+      if (maintenance()) return Promise.reject(new ProviderAdminError("maintenance"));
+      if (changed(current)) return Promise.reject(new ProviderAdminError("provider_configuration_restart_required"));
+      if (!storage.available()) { state = "failed"; return Promise.reject(new ProviderAdminError("database_unavailable")); }
+      if (!loaded) {
+        pinned = Object.freeze({ ...current }); state = "loading";
+        // Promise publication precedes import/create, including synchronous loader failures.
+        retainLifetime();
+        loaded = Promise.resolve().then(async () => {
+          // Ordinary boot recovery is owned/cached by this store. Restored provenance refuses it.
+          await d.store.recoverIssuedSessions(CONTROLLER_AUTHENTICATION_POLICY);
+          await d.store.admission.run(guard);
+          validateProviderEntry(current.entry);
+          return (d.loadProvider ?? loadAuthenticationProvider)({ entry: current.entry, providerId: "better-auth", storage: guardedStorage,
+            unreleasedSessions: CONTROLLER_AUTHENTICATION_POLICY.unreleasedSessions,
+            sessionRows: CONTROLLER_AUTHENTICATION_POLICY.sessionRows,
+            sessionReconcileBatch: CONTROLLER_AUTHENTICATION_POLICY.sessionReconcileBatch,
+            options: { baseURL: current.baseURL, secret: current.secret, clientIpHeader: "x-worktree-control-client-ip" },
+            onInvalidation: d.onInvalidation });
+        }).then(value => { runtime = value; if (!stopping) state = "ready"; return value; }, error => {
+          failure = error;
+          if (!stopping) state = error instanceof AuthenticationProviderError && error.code === "disposal_unconfirmed" ? "disposal_unconfirmed" : "failed";
+          throw error;
+        });
+      }
+      return loaded;
+    },
   };
 
   const application = new ProviderAdminApplication({

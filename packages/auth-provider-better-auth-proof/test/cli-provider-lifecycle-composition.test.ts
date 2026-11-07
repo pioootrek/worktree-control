@@ -24,7 +24,6 @@ afterEach(() => vi.restoreAllMocks());
 
 async function compositionFixture(options: { beforeLoad?(): Promise<void>; afterLoad?(): Promise<void>; faults?: ProofFaultInjection; configure?: boolean } = {}) {
   const files = cliFixture(), peer = `198.18.2.${peerSequence++}`;
-  if (options.configure !== false) await files.configure();
   const lock = acquireControllerLock(files.paths.controllerLockPath), store = new SqliteStateStore(files.paths.databasePath);
   let firstId = true;
   const existingIdentity = new IdentityService(store, undefined, () => {
@@ -77,6 +76,7 @@ async function compositionFixture(options: { beforeLoad?(): Promise<void>; after
     await composition.dispose().catch(() => {});
     await store.closeAfterDrain(); lock.release(); releases.forEach(release => release()); files.remove();
   };
+  if (options.configure !== false) await configure(ORIGIN, "generate");
   return { ...files, configure, store, lock, existing, ownerActor, project, authentication, token, composition, knowledge, app, load, run, command, browser, listen, activeRuntime, stop, cleanup };
 }
 type Fixture = Awaited<ReturnType<typeof compositionFixture>>;
@@ -221,7 +221,7 @@ describe("production shared provider composition", () => {
     try {
       await f.command("enroll"); http = await f.listen(); await http.client.authenticated();
       const storage = f.store.authenticationProviderStorage(), connection = storage.createProviderConnection();
-      try { await storage.borrow(async () => { connection.prepare("UPDATE authentication_session_issuance SET state='pending'").run(); }); }
+      try { await storage.borrow(async () => { connection.prepare("UPDATE authentication_session_issuance SET state='pending'").run([]); }); }
       finally { connection.close(); }
       const backup = join(f.root, "snapshot"), target = join(f.root, "restored", "state.sqlite3");
       await createControllerBackup(f.store, backup, { applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") });

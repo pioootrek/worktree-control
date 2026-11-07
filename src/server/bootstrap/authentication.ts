@@ -1,4 +1,4 @@
-export { createControllerAuthentication, CONTROLLER_AUTHENTICATION_POLICY } from "./authentication-provider-lifetime";
+export { createControllerAuthentication, CONTROLLER_AUTHENTICATION_POLICY, type ControllerAuthenticationOptions } from "./authentication-provider-lifetime";
 import type { DatabaseAdmission } from "@/server/database-admission";
 import { AuthenticationProviderError, ProviderKnowledgeApplication, type AuthenticationProviderRuntime, type AuthenticationService } from "@/server/modules/authentication";
 import { IdentityService, type IdentityStore, type RuntimeAccessStore } from "@/server/modules/identity";

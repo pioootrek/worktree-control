@@ -348,9 +348,9 @@ activation gates.
 `composeIsolatedBrowserAuthentication` helper wires the existing immutable
 `AuthenticationService`, loaded runtime, seventh-argument identity authority and
 `ProviderKnowledgeApplication`. `createControllerServer` calls it before blanket
-core admission. The production CLI has no caller, configuration switch or flag
-for that composition. It neither loads the optional package nor makes
-`better-auth` selectable. No login GUI is implemented.
+core admission when an adapter is supplied. The production CLI owns the shared
+provider lifetime above, but supplies no browser adapter to the public listener.
+Neither composition makes `better-auth` selectable. No login GUI is implemented.
 
 The public production `GET /api/auth/status` returns only active `mode` and
 `loginAvailable: false`. It exposes no pending selection, token metadata, account
