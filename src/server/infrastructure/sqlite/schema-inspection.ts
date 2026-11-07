@@ -1,3 +1,4 @@
+import { securityFenceMigration, securityFenceChecksum, securityTriggers } from "./security-fence-migration";
 import { humanConfigurationMigration, humanConfigurationChecksum } from "./human-configuration-migration";
 import { humanTestRunMigration, humanTestRunChecksum } from "./human-test-run-migration";
 import { humanRuntimeMigration, humanRuntimeChecksum } from "./human-runtime-migration";
@@ -30,6 +31,7 @@ type ForeignKey = { table: string; from: string; to: string; on_delete: string; 
 // Historical installations may already have tables from the bootstrap DDL. Require
 // them only after their introducing migration, but validate any that are present.
 const tableVersions: Record<string, number> = {
+  security_checkpoint: 49,
   human_test_run_requesters: 47, human_test_run_intents: 47,
   human_runtime_leases: 46, human_runtime_intents: 46,
   runtime_human_memberships: 45,
@@ -165,6 +167,7 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : x.version === 42 ? x.name !== humanPrincipalMigration.name || x.checksum !== humanPrincipalChecksum
       : x.version === 43 ? x.name !== godotWebMigration.name || x.checksum !== godotWebChecksum
       : x.version === 44 ? x.name !== testRunRequesterMigration.name || x.checksum !== testRunRequesterChecksum
+      : x.version === 49 ? x.name !== securityFenceMigration.name || x.checksum !== securityFenceChecksum
       : x.version === 48 ? x.name !== humanConfigurationMigration.name || x.checksum !== humanConfigurationChecksum
       : x.version === 47 ? x.name !== humanTestRunMigration.name || x.checksum !== humanTestRunChecksum
       : x.version === 46 ? x.name !== humanRuntimeMigration.name || x.checksum !== humanRuntimeChecksum
@@ -172,7 +175,8 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : true)) refuse("migration checksum or name");
   }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));
-  if (objects.some(x => x.type === "view" || x.type === "trigger") || [...tables].some(x => !(x in tableVersions))) refuse();
+  if (objects.some(x => x.type === "view") || [...tables].some(x => !(x in tableVersions))) refuse();
+
   for (const [table, introduced] of Object.entries(tableVersions)) {
     if (!tables.has(table)) { if (version >= introduced) refuse(); continue; }
     if (introduced >= STRICT_TABLES_FROM && version < introduced) refuse(`${table} precedes its migration`);
@@ -247,6 +251,9 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
   }
   const ownershipIndex = database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='one_active_reservation_per_project'").get() as {sql:string}|undefined;
   if (!ownershipIndex || !/createuniqueindex(?:ifnotexists)?one_active_reservation_per_projectonreservations\(project_id\)wherereleased_atisnull/i.test(ownershipIndex.sql.replace(/\s+/g,""))) refuse();
+  const actualTriggers = database.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger'").all() as Array<{name:string;sql:string}>;
+  if (actualTriggers.length !== (version >= 49 ? securityTriggers.length : 0)
+    || actualTriggers.some(actual => !securityTriggers.some(expected => expected.name === actual.name && normalizedSql(expected.sql) === normalizedSql(actual.sql)))) refuse("security triggers");
   return { version, fresh: false };
 }
 

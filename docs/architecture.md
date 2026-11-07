@@ -149,7 +149,7 @@ The production authentication bootstrap owns one lazy provider composition.
 Protected administration and the internal browser preparation method share its
 runtime, configuration pin, current-session authority and IdentityService.
 Ordinary-restart issuance recovery runs once on the existing store before load;
-restored provenance refuses it without sweeping pending rows. One disposal joins
+P3b refuses unacknowledged restore before opening the store; its protected quarantine receipt permits subsequent recovery without erasing provenance. One disposal joins
 accepted administration/preparation and drains the provider before SQLite closes.
 The public browser mount and account-mode selector remain gated. See
 [shared provider composition](authentication.md#shared-controller-provider-composition-p1)
@@ -173,7 +173,7 @@ membership without constructing an agent or trusting persistence as authority.
 Missing attribution fails closed. Original no-claim/exact-claim fences govern
 dispatch and replay; all human own-run access retains its original session and
 membership revision, including completed history. P2c supplies explicit literal
-profile selection and timeout-only configuration below. Remaining transport parity, P3b external restore fencing and A5 remain activation
+profile selection and timeout-only configuration below. Remaining transport parity and A5 remain activation
 gates; no public browser mount is enabled.
 
 ### Human configuration operations
@@ -551,10 +551,11 @@ admission after waits.
 
 Version-2 restore handoffs persist active `executionMode` separately from the
 latest configured authentication policy. Execution uses the former and the
-current captured token ID; startup restores the latter before capturing the new
-boot mode. Old format-1 handoffs use their historical policy mode. New malformed,
-unknown or inconsistent records fail closed. Existing restore revocation fences
-and owner locks remain; A5 provider-session resurrection remains unresolved.
+current captured token ID. Old format-1 handoffs use their historical policy mode.
+P3b requires protected quarantine before the next boot: captured policy/token
+remain evidence, resumed mode is explicit, and a durable receipt follows handoff
+acknowledgement. Malformed records fail closed; A5 transport/cutover acceptance
+remains open.
 
 New databases default to `token` and cannot
 start until a token has been generated. Existing databases migrate to `legacy`;
@@ -609,7 +610,7 @@ admitted phase. Accepted cleanup uses reserved queue room on the same gate, with
 lock, counter or connection.
 
 Current isolated provider API is contract 5, storage revision 3, implementation
-`0.0.0-proof.5` and core schema 48. Earlier versions evolved as follows.
+`0.0.0-proof.5` and core schema 49. Earlier versions evolved as follows.
 Provider API contract 2 requires durable `signOut`; version 1 fails compatibility
 checks. Contract 3 adds the application-owned `host.protection` port: the provider
 calls it synchronously inside its open transaction, and `AccountProtection` keeps
@@ -619,7 +620,7 @@ in-memory ID records tied to the exclusive borrow. Issuers are refused before mi
 at the bound. Schema 41 keeps session issuance durable: each new session commits with a
 `pending` marker, `may_publish` commits before any cookie leaves, and the owner's one
 ordinary-restart recovery removes `pending` rows before an issuer can load. Installation-wide
-row and batch bounds are required inputs. A recognized restore refuses that recovery. See
+row and batch bounds are required inputs. An unacknowledged restore refuses that recovery before store opening; a protected quarantine receipt permits subsequent boot recovery. See
 [durable issuance](authentication.md#closed-factor-http-api).
 The owning shutdown helper disposes the optional provider after external
 producers/listeners/accepted responses drain and before service/SQLite close.
@@ -848,5 +849,29 @@ factors; explicit `factors: "reset"` requires a new password and the provider's
 factor bindings, challenge authority and account generation change in one sole
 connection transaction. IDs, roles, grants, audit, TOTP steps and account budgets
 remain. See [authentication](authentication.md#protected-factor-loss-recovery-p3a) for the operator contract.
-Restored provenance remains denied until P3b; public account activation and A5
-transport enforcement remain separate gates.
+P3b now requires an external checkpoint and protected quarantine receipt before restored provider loading. Public account activation and A5 transport enforcement remain separate gates.
+
+### External restore checkpoint and protected resume (P3b)
+
+Migration49 adds a fixed SQLite checkpoint and authority-table triggers, preserving
+migrations1..48. The sole core/provider connection publishes a private external
+pending witness from the BEFORE-trigger observer before authority rows change,
+and a confirmed witness after FULL SQLite COMMIT.
+Normal confirmed restarts preserve current rights. Supported restore and raw
+DB-only rollback fail closed before provider/listeners, including older schemas.
+The bounded witness binds the canonical database path and installation outside
+the application backup payload; custom state-directory nesting does not change
+that boundary. Whole-host rollback including the witness is outside this local
+OS-owner trust model.
+
+Protected offline `auth fence inspect/establish/resume` uses both singleton locks
+and an exact preflight. Resume quarantines restored credentials, sessions, factors,
+passwords, grants, leases and pending work, preserves the same owner and history,
+then acknowledges the existing handoff and publishes a durable receipt. No public
+session or token can perform it. Captured mode/token policy remains historical
+evidence; resumed mode is explicit, and old verifiers stay invalid. Schedules and
+vault use an additional receipt floor while retaining their separate signed proof.
+See [operator flow and crash protocol](authentication.md#external-security-fence-and-protected-resume-p3b).
+Production account-mode selection/public mounting, minimum agent diagnostics,
+complete transport enforcement, independent review and verified release/client
+migration remain A5 gates. The five historical factor negatives remain visible.

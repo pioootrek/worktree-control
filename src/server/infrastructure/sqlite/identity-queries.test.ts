@@ -1,10 +1,12 @@
+import { establishFixtureSecurity } from "./fixtures/protected-security";
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import { IdentityService, type CredentialAuthenticationRecord } from "@/server/modules/identity";
@@ -48,7 +50,7 @@ describe("identity and knowledge access SQLite persistence", () => {
     initial.saveRemotePrincipal({ id: "agent-before-k1", kind: "agent", status: "active" }, "bootstrap");
     initial.close();
 
-    const legacy = new Database(path);
+    const legacy = unmanagedFixtureDatabase(path);
     stripMigrationProvenance(legacy);
     legacy.exec(`
       DROP TABLE knowledge_project_runtime_links;
@@ -59,6 +61,7 @@ describe("identity and knowledge access SQLite persistence", () => {
     `);
     legacy.close();
 
+    establishFixtureSecurity(path);
     const migrated = new SqliteStateStore(path);
     expect(migrated.getPrincipal("agent-before-k1")).toEqual({
       id: "agent-before-k1", kind: "agent", status: "active",
@@ -77,11 +80,12 @@ describe("identity and knowledge access SQLite persistence", () => {
     store.saveCredential({ ...ownerCredential(), tokenPrefix: `wts_${OWNER_CREDENTIAL_ID}_aaaaaaaa` }, "bootstrap");
     store.close();
 
-    const legacy = new Database(path);
+    const legacy = unmanagedFixtureDatabase(path);
     stripMigrationProvenance(legacy);
     legacy.prepare("DELETE FROM schema_migrations WHERE version >= 18").run();
     legacy.close();
 
+    establishFixtureSecurity(path);
     const migrated = new SqliteStateStore(path);
     expect(migrated.listPrincipalCredentials("owner-1")[0]?.tokenPrefix).toBe(`wts_${OWNER_CREDENTIAL_ID}`);
     migrated.close();
@@ -114,7 +118,7 @@ describe("identity and knowledge access SQLite persistence", () => {
     }]);
     store.close();
 
-    const database = new Database(path, { readonly: true });
+    const database = unmanagedFixtureDatabase(path, { readonly: true });
     const serialized = JSON.stringify(database.prepare("SELECT * FROM principal_credentials").all())
       + JSON.stringify(database.prepare("SELECT * FROM controller_audit_events").all());
     expect(serialized).not.toContain(OWNER_TOKEN);

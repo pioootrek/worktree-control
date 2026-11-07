@@ -1,3 +1,5 @@
+import { unmanagedFixtureDatabase } from "./unmanaged-sqlite-fixture";
+import { resumeFixtureSecurity } from "./infrastructure/sqlite/fixtures/protected-security";
 import { fork } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
@@ -6,7 +8,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "./controller-backup";
 import { acquireDatabaseOwnership, SqliteStateStore, SUPPORTED_SCHEMA_VERSION } from "./infrastructure/sqlite";
@@ -53,6 +55,7 @@ async function kill(f: Awaited<ReturnType<typeof fixture>>, point: string, mode 
   }
 }
 function assertNew(f: Awaited<ReturnType<typeof fixture>>) {
+  resumeFixtureSecurity(f.database);
   const store = new SqliteStateStore(f.database);
   try { expect(store.listProjects().map(project => project.name)).toEqual(["New runtime"]); }
   finally { store.close(); }
@@ -88,7 +91,8 @@ describe("recoverable multi-file restore", () => {
   }, 30_000);
   it("does not apply an already verified backup over subsequent application writes", async () => {
     const f = await fixture(); restoreControllerBackup(f.backup, f.database, f.attachments); assertNew(f);
-    const store = new SqliteStateStore(f.database); store.addProject({ name: "After restore", repositoryPath: join(f.root, "another"), port: 4569, executable: "pnpm", args: ["dev"] }); store.close();
+    resumeFixtureSecurity(f.database);
+  const store = new SqliteStateStore(f.database); store.addProject({ name: "After restore", repositoryPath: join(f.root, "another"), port: 4569, executable: "pnpm", args: ["dev"] }); store.close();
     const reopened = new SqliteStateStore(f.database); expect(reopened.listProjects()).toHaveLength(2); reopened.close();
   });
   it("requires verified-marker directory synchronization again before reopening after its fsync failure", async () => {
@@ -109,7 +113,7 @@ describe("recoverable multi-file restore", () => {
   });
   it("restores an initially absent target, including a crash after new database rename", async () => {
     const f = await fixture(); rmSync(f.database); for (const suffix of ["-wal", "-shm", "-journal", ".initializing"]) rmSync(`${f.database}${suffix}`); rmSync(f.attachments, { recursive: true });
-    await kill(f, "after-6"); const store = new SqliteStateStore(f.database); expect(store.listProjects()[0]?.name).toBe("New runtime"); store.close(); expect(readFileSync(join(f.attachments, sha.slice(0, 2), sha))).toEqual(bytes);
+    await kill(f, "after-6"); resumeFixtureSecurity(f.database); const store = new SqliteStateStore(f.database); expect(store.listProjects()[0]?.name).toBe("New runtime"); store.close(); expect(readFileSync(join(f.attachments, sha.slice(0, 2), sha))).toEqual(bytes);
   }, 20_000);
   it.each(["invalid-json", "checksum", "missing-file", "conflicting-file"])("refuses %s without losing recovery material", async damage => {
     const f = await fixture(); await kill(f, "after-0"); const root = restoreRoot(f.database), journal = join(root, "journal.json");
@@ -161,7 +165,7 @@ describe("strict restore validation before replacement", () => {
   it.each(["foreign-key", "domain", "sqlite-corruption"])("rejects %s even with a matching manifest hash", async invalid => {
     const f = await fixture(), path = join(f.backup, "state.sqlite3");
     if (invalid === "sqlite-corruption") writeFileSync(path, "not sqlite", { mode: 0o600 });
-    else { const db = new Database(path); db.pragma("foreign_keys=OFF");
+    else { const db = unmanagedFixtureDatabase(path); db.pragma("foreign_keys=OFF");
       if (invalid === "foreign-key") db.exec("UPDATE knowledge_attachments SET project_id='missing'");
       else db.exec("UPDATE knowledge_attachments SET record_id='missing'"); db.close(); }
     changeManifest(f, manifest => { Object.assign(manifest.database, hashFile(path)); });
@@ -201,7 +205,7 @@ describe("strict restore validation before replacement", () => {
     expect(readFileSync(f.database)).toEqual(f.before); expect(existsSync(parent)).toBe(mode === "interrupted"); expect(existsSync(restoreRoot(f.database))).toBe(false);
     vi.restoreAllMocks(); restoreControllerBackup(f.backup, f.database, target);
     expect(readFileSync(join(target, sha.slice(0, 2), sha))).toEqual(bytes);
-    const restored = new SqliteStateStore(f.database);
+    resumeFixtureSecurity(f.database); const restored = new SqliteStateStore(f.database);
     try { expect(restored.listProjects().map(project => project.name)).toEqual(["New runtime"]); } finally { restored.close(); }
   });
   it("refuses actual different-device attachments before replacing data", async () => {
@@ -272,7 +276,7 @@ describe("controlled restore request handoff", () => {
 
 describe("restore durability and historical snapshots", () => {
   it("normalizes historical WAL snapshots in staging while preserving source bytes and metadata", async () => {
-    const f = await fixture(), databaseFile = join(f.backup, "state.sqlite3"), source = new Database(databaseFile);
+    const f = await fixture(), databaseFile = join(f.backup, "state.sqlite3"), source = unmanagedFixtureDatabase(databaseFile);
     source.pragma("journal_mode=WAL"); source.close();
     changeManifest(f, manifest => { Object.assign(manifest.database, hashFile(databaseFile)); });
     writeFileSync(`${databaseFile}-wal`, "", { mode: 0o600 }); writeFileSync(`${databaseFile}-shm`, Buffer.alloc(32768), { mode: 0o600 });
@@ -333,7 +337,8 @@ describe("restore durability and historical snapshots", () => {
     } finally { ownership.lock.release(); }
     expect(getControllerRestoreRequestStatus(f.database, actor, policy).state).toBe("requested");
     restoreControllerBackup(f.backup, f.database, f.attachments);
-    const store = new SqliteStateStore(f.database); store.addProject({ name: "After", repositoryPath: join(f.root, "after"), port: 5678, executable: "pnpm", args: ["dev"] }); store.close();
+    resumeFixtureSecurity(f.database);
+  const store = new SqliteStateStore(f.database); store.addProject({ name: "After", repositoryPath: join(f.root, "after"), port: 5678, executable: "pnpm", args: ["dev"] }); store.close();
     expect(executeControllerRestoreRequest(f.database, f.attachments, actor, policy).state).toBe("verified");
     const reopened = new SqliteStateStore(f.database); expect(reopened.listProjects()).toHaveLength(2); reopened.close();
   });

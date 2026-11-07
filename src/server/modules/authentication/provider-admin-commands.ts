@@ -37,6 +37,11 @@ const commandSchema = z.discriminatedUnion("action", [
 export type ProviderAdminCommand = z.infer<typeof commandSchema>;
 
 const messages = {
+  security_fence_owner_running: "Stop the owning controller before protected offline security maintenance.",
+  security_fence_establishment_required: "Protected offline security fence establishment is required; use auth fence inspect.",
+  security_fence_recovery_required: "Protected offline security recovery is required; use auth fence inspect.",
+  security_fence_pending: "Security checkpoint publication is unconfirmed; use protected offline auth fence inspect.",
+  security_fence_preflight_changed: "Security preflight changed; inspect again before explicit recovery.",
   invalid_input: "Invalid protected provider administration input.",
   recovery_unavailable: "The loaded authentication provider does not support explicit factor recovery.",
   provider_unavailable: "The authentication provider is unavailable.",

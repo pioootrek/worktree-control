@@ -1,7 +1,9 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { establishFixtureSecurity, resumeFixtureSecurity } from "./fixtures/protected-security";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
 import { initializeSchema } from "./migrations";
@@ -27,14 +29,14 @@ function genuine44(db: Database.Database) {
 const kept = (db: Database.Database) => Object.fromEntries(["remote_principals", "principal_credentials", "knowledge_project_grants", "knowledge_role_bindings", "knowledge_history", "runtime_credential_scopes", "runtime_delegations", "test_run_requesters", "projects"].map(t => [t, db.prepare(`SELECT * FROM ${t}`).all()]));
 describe("runtime membership migration 45", () => {
   it("recognizes genuine 44, preserves every old migration/identity/history and rolls back the additive change", () => {
-    const db = new Database(":memory:");
+    const db = unmanagedFixtureDatabase(":memory:");
     try {
       genuine44(db); expect(inspectSchema(db).version).toBe(44);
       const before = kept(db), registry = db.prepare("SELECT * FROM schema_migrations").all();
       expect(() => initializeSchema(db, false, () => { throw new Error("rollback45"); })).toThrow("rollback45");
       expect(inspectSchema(db).version).toBe(44); expect(kept(db)).toEqual(before);
       initializeSchema(db, false, inspectSchema);
-      expect(inspectSchema(db).version).toBe(48); expect(kept(db)).toEqual(before);
+      expect(inspectSchema(db).version).toBe(49); expect(kept(db)).toEqual(before);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=44").all()).toEqual(registry);
       expect(db.prepare("SELECT * FROM runtime_human_memberships").all()).toEqual([]);
       expect(db.prepare("SELECT name,checksum FROM schema_migrations WHERE version=45").get())
@@ -43,16 +45,18 @@ describe("runtime membership migration 45", () => {
   });
   it("preserves an explicit aggregate across backup/restore without minting roles or provider sessions", async () => {
     const root = mkdtempSync(join(tmpdir(), "runtime-membership-backup-")), path = join(root, "state.sqlite3");
-    const db = new Database(path); genuine44(db); db.close();
+    const db = unmanagedFixtureDatabase(path); genuine44(db); db.close();
+    establishFixtureSecurity(path);
     const store = new SqliteStateStore(path);
     try {
       const row = store.runtimeMemberships().saveRuntimeMembership({ principalId: "human", scope: { kind: "runtime-project", id: "runtime" }, role: "reader", permissions: ["projects:read"], expectedRevision: 0 }, "local-cli", new Date().toISOString());
       await createControllerBackup(store, join(root, "backup"), { applicationVersion: "test", attachmentDirectory: join(root, "attachments") });
       const target = join(root, "restored.sqlite3"); restoreControllerBackup(join(root, "backup"), target);
+      resumeFixtureSecurity(target);
       const restored = new SqliteStateStore(target);
       try {
-        expect(restored.schemaVersion()).toBe(48);
-        expect(restored.runtimeMemberships().getRuntimeMembership("human", "runtime")).toEqual(row);
+        expect(restored.schemaVersion()).toBe(49);
+        expect(restored.runtimeMemberships().getRuntimeMembership("human", "runtime")).toMatchObject({...row,revision:row.revision+1,revokedAt:expect.any(String),updatedAt:expect.any(String)});
         expect(restored.listPrincipalCredentials("human")).toEqual([]);
         expect(restored.hasAuthenticationProviderData()).toBe(false);
       } finally { restored.close(); }
@@ -61,7 +65,7 @@ describe("runtime membership migration 45", () => {
   it.each(["checksum", "premature", "kind"])("refuses malformed %s before writing the source", mode => {
     const root = mkdtempSync(join(tmpdir(), "runtime-membership-malformed-")), path = join(root, "state.sqlite3");
     try {
-      const db = new Database(path); genuine44(db); initializeSchema(db, false, inspectSchema);
+      const db = unmanagedFixtureDatabase(path); genuine44(db); initializeSchema(db, false, inspectSchema);
       if (mode === "checksum") db.exec("UPDATE schema_migrations SET checksum='wrong' WHERE version=45");
       if (mode === "premature") db.exec("DELETE FROM schema_migrations WHERE version=45");
       if (mode === "kind") db.exec(`INSERT INTO remote_principals VALUES('agent','agent','active');

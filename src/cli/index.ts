@@ -95,6 +95,11 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   }
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
+  if (command === "auth" && process.argv[3] === "fence") {
+    const raw=process.argv.slice(3);
+    await runAuthCommand(raw, resolveAppPaths(option("--data-dir",raw), option("--state-dir",raw)), {write:writeCliLine});
+    return;
+  }
   if (command === "auth" && isProviderCommandArgs(process.argv.slice(3))) {
     const raw = process.argv.slice(3), parsed = parseProviderArguments(raw);
     const providerPaths = resolveAppPaths(parsed.dataDir, parsed.stateDir);
@@ -223,7 +228,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   let logs: FileLogWriter;
   try {
     authentication = new AuthenticationService(store);
-    // Only a first start may issue the token; a restore handoff keeps the restored policy as is.
+    // Fresh startup or protected quarantine may issue new material; restored verifiers never return.
     if (!retainedLock) bootstrapInstallationToken(authentication, { terminal: process.stdout, locale, serviceMode });
     authentication.assertStartupPolicy();
     logs = new FileLogWriter(paths.logDirectory);
@@ -702,6 +707,9 @@ function findLanAddress(): string | null {
 }
 
 main().catch((error) => {
+  if (process.argv[2] === "auth" && process.argv[3] === "fence") {
+    console.error(JSON.stringify(providerAdminErrorBody(error))); process.exitCode=1; return;
+  }
   if (process.argv[2] === "auth" && isProviderCommandArgs(process.argv.slice(3))) {
     const body = error instanceof AdminRequestError
       ? { code: error.code ?? "admin_outcome_unknown", error: error.message,

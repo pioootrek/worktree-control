@@ -1,3 +1,4 @@
+import { SecurityFenceError, securityRecoveryBoundary } from "../../infrastructure/sqlite";
 import { admitWithRetry } from "@/server/database-admission";
 import { join } from "node:path";
 import { z } from "zod";
@@ -6,8 +7,8 @@ import { BackupError, type BackupPolicy } from "./policy";
 import { readRecord, recordHash, writeRecord } from "./records";
 import type { RestoreOperation, RestorePreview } from "@/shared/contracts/backups";
 import { backupCommandSchema } from "@/shared/contracts/backups";
-import { executeControllerRestoreRequest, finishControllerRestoreRequest, getControllerRestoreRequestStatus, requestControllerRestoreAsync, type RestoreRequestPolicy } from "@/server/restore-requests";
-import { restoreActorSchema, type RestoreActor } from "@/server/infrastructure/sqlite";
+import { acknowledgeVerifiedControllerRestoreRequest, executeControllerRestoreRequest, finishControllerRestoreRequest, getControllerRestoreRequestStatus, requestControllerRestoreAsync, type RestoreRequestPolicy } from "@/server/restore-requests";
+import { getOwnedRestoreStatus, restoreActorSchema, type RestoreActor } from "@/server/infrastructure/sqlite";
 import { privateDirectory } from "@/server/private-storage";
 import type { AuthenticationMode, AuthenticationPolicy, AuthenticationStore } from "@/server/modules/authentication";
 import type { IdentityStore } from "@/server/modules/identity";
@@ -56,6 +57,24 @@ export function assertNoUnfinishedBackupHandoff(database: string): RestoreHandof
   if (record && record.state !== "verified" && record.state !== "failed" && record.state !== "interrupted") throw new BackupError("backup_busy", 409);
   return record;
 }
+/** Protected maintenance may acknowledge only a completely verified matching move. */
+export function preflightSecurityRecoveryHandoff(database:string):RestoreHandoff|null {
+  const record=readRecord(join(`${database}.backup-operations`,"handoff.json"),handoffSchema);
+  if(record?.state!=="executing") return assertNoUnfinishedBackupHandoff(database);
+  const journal=getOwnedRestoreStatus(database);
+  if(!journal || journal.state!=="verified" || journal.operationId!==record.operationId) throw new BackupError("backup_invalid");
+  return record;
+}
+/** Only called after protected quarantine. Never rewrites the captured authentication policy. */
+export function acknowledgeRecoveredBackupHandoff(database: string): void {
+  const record = preflightSecurityRecoveryHandoff(database);
+  if (record?.state !== "executing") return;
+  const journal = getOwnedRestoreStatus(database);
+  if (!journal || journal.state !== "verified" || journal.operationId !== record.operationId) throw new BackupError("backup_invalid");
+  acknowledgeVerifiedControllerRestoreRequest(database,record.actor,record.operationId);
+  record.state = "verified";
+  writeRecord(handoffPath(database), record);
+}
 function executionPolicy(record: RestoreHandoff, policy: BackupPolicy, catalog: BackupCatalog): RestoreRequestPolicy {
   return {
     authorize(actorId, backupId) {
@@ -80,12 +99,13 @@ export function recoverBackupHandoff(database: string, attachments: string, poli
 }
 /** Replay after crash is safe; completion comes after all credential invalidation. */
 export function finishBackupHandoff(database: string, record: RestoreHandoff, store: AuthenticationStore & Pick<IdentityStore, "listPrincipals" | "listPrincipalCredentials" | "revokeCredential">): void {
-  if (!record.authentication) throw new Error("Missing restore authentication fence; preserve recovery material.");
-  store.saveAuthenticationPolicy(record.authentication, "authentication.restore_fenced", "local-admin");
-  for (const principal of store.listPrincipals()) {
-    for (const credential of store.listPrincipalCredentials(principal.id)) store.revokeCredential(credential.id, new Date().toISOString(), "restore-fence");
-  }
-  record.state = "verified"; writeRecord(handoffPath(database), record);
+  const fence=securityRecoveryBoundary(database);
+  if(!fence || fence.restore!==record.operationId) throw new SecurityFenceError("security_fence_recovery_required");
+  // Reading the policy also checks this store's exact checkpoint. The captured
+  // pre-restore token/policy remains historical handoff evidence, never new authority.
+  store.getAuthenticationPolicy();
+  const current=preflightSecurityRecoveryHandoff(database);
+  if(!current || current.operationId!==record.operationId || current.state!=="verified") throw new SecurityFenceError("security_fence_recovery_required");
 }
 export class RestoreOperations {
   private busy = false;

@@ -1,9 +1,10 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { openProtectedUpgradeFixture } from "./fixtures/protected-security";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { openControllerStore } from "@/server/controller-storage";
 import { authenticationProviderChecksum, authenticationProviderMigration } from "./authentication-provider-migration";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
@@ -19,7 +20,7 @@ function directory() {
   return { root, path: join(root, "data", "state.sqlite3") };
 }
 function raw<T>(path: string, operation: (db: Database.Database) => T): T {
-  const db = new Database(path); try { return operation(db); } finally { db.close(); }
+  const db = unmanagedFixtureDatabase(path); try { return operation(db); } finally { db.close(); }
 }
 /** A database written by the A2 release (migrations.ts at 7dd311e), plus representative identity rows. */
 function genuineV37() {
@@ -51,7 +52,7 @@ describe("authentication provider storage migration 38", () => {
     const f = directory();
     const store = new SqliteStateStore(f.path);
     try {
-      expect(store.schemaVersion()).toBe(48);
+      expect(store.schemaVersion()).toBe(49);
       expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     } finally { store.close(); }
     raw(f.path, db => {
@@ -59,7 +60,7 @@ describe("authentication provider storage migration 38", () => {
       for (const table of PROVIDER_TABLES) expect(db.prepare(`SELECT count(*) n FROM "${table}"`).get()).toEqual({ n: 0 });
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=38").get())
         .toEqual({ name: authenticationProviderMigration.name, checksum: authenticationProviderChecksum });
-      expect(inspectSchema(db)).toEqual({ version: 48, fresh: false });
+      expect(inspectSchema(db)).toEqual({ version: 49, fresh: false });
     });
   });
 
@@ -73,8 +74,8 @@ describe("authentication provider storage migration 38", () => {
       expect(identityState(db)).toEqual(before);
     });
     const backups = join(f.root, "backups");
-    const store = await openControllerStore(f.path, { backupBeforeMigration: true, backupDirectory: backups, applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") });
-    try { expect(store.schemaVersion()).toBe(48); } finally { store.close(); }
+    const store = await openProtectedUpgradeFixture(f.path, { backupBeforeMigration: true, backupDirectory: backups, applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") });
+    try { expect(store.schemaVersion()).toBe(49); } finally { store.close(); }
     const [backup] = readdirSync(backups);
     expect(backup).toMatch(/^pre-migration-v37-/);
     expect(JSON.parse(readFileSync(join(backups, backup!, "manifest.json"), "utf8")).database.schemaVersion).toBe(37);

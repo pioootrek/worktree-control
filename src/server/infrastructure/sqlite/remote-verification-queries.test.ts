@@ -1,9 +1,11 @@
+import { establishFixtureSecurity } from "./fixtures/protected-security";
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -174,7 +176,7 @@ describe("remote verification SQLite persistence", () => {
       revokedAt: null,
     }, "local-user");
     expect(() => new SqliteStateStore(path)).toThrow("already running");
-    const secondConnection = new Database(path);
+    const secondConnection = unmanagedFixtureDatabase(path);
     const second = new RemoteVerificationQueries(secondConnection);
 
     expect(first.createOrReplayRemoteVerificationRequest(request("request-1"))).toEqual(request("request-1"));
@@ -185,7 +187,7 @@ describe("remote verification SQLite persistence", () => {
 
     first.close();
     secondConnection.close();
-    const database = new Database(path, { readonly: true });
+    const database = unmanagedFixtureDatabase(path, { readonly: true });
     expect(database.prepare("SELECT COUNT(*) AS count FROM remote_verification_requests").get()).toEqual({ count: 2 });
     database.close();
   });
@@ -214,7 +216,7 @@ describe("remote verification SQLite persistence", () => {
     expect(store.getRemotePrincipalProjectGrant("owner-1", "project-1")?.revokedAt).toBe("2026-09-11T00:02:00.000Z");
     store.close();
 
-    const database = new Database(path, { readonly: true });
+    const database = unmanagedFixtureDatabase(path, { readonly: true });
     const audit = database.prepare(`
       SELECT actor, details_json FROM controller_audit_events
       WHERE event_type = 'remote.principal_project_grant_saved'
@@ -295,7 +297,7 @@ describe("remote verification SQLite persistence", () => {
     provision(first);
     const accepted = submit(first);
     expect(() => new SqliteStateStore(path)).toThrow("already running");
-    const secondConnection = new Database(path);
+    const secondConnection = unmanagedFixtureDatabase(path);
     const second = new RemoteVerificationQueries(secondConnection);
     const firstService = attemptService(first, ["2026-09-11T00:01:00.000Z"], ["attempt-1"]);
     const secondService = attemptService(second, ["2026-09-11T00:02:00.000Z"], ["attempt-2"]);
@@ -306,7 +308,7 @@ describe("remote verification SQLite persistence", () => {
 
     first.close();
     secondConnection.close();
-    const database = new Database(path, { readonly: true });
+    const database = unmanagedFixtureDatabase(path, { readonly: true });
     expect(database.prepare("SELECT COUNT(*) AS count FROM remote_verification_attempts").get()).toEqual({ count: 1 });
     database.close();
   });
@@ -671,7 +673,7 @@ describe("remote verification SQLite persistence", () => {
     const projectId = provision(store);
     store.close();
 
-    const branchDatabase = new Database(path);
+    const branchDatabase = unmanagedFixtureDatabase(path);
     stripMigrationProvenance(branchDatabase);
     branchDatabase.exec(`
       DELETE FROM schema_migrations WHERE version >= 15;
@@ -680,11 +682,12 @@ describe("remote verification SQLite persistence", () => {
     `);
     branchDatabase.close();
 
+    establishFixtureSecurity(path);
     const upgraded = new SqliteStateStore(path);
     expect(upgraded.getProject(projectId)?.launchPreset).toBe("auto");
     upgraded.close();
 
-    const inspected = new Database(path, { readonly: true });
+    const inspected = unmanagedFixtureDatabase(path, { readonly: true });
     expect(inspected.prepare("SELECT 1 FROM schema_migrations WHERE version = 15").get()).toBeTruthy();
     inspected.close();
   });
@@ -692,7 +695,7 @@ describe("remote verification SQLite persistence", () => {
   it("records and safely replays remote verification migrations", () => {
     const path = databasePath();
     new SqliteStateStore(path).close();
-    const first = new Database(path);
+    const first = unmanagedFixtureDatabase(path);
     expect(first.prepare("SELECT 1 FROM schema_migrations WHERE version = 13").get()).toBeTruthy();
     expect(first.prepare("SELECT 1 FROM schema_migrations WHERE version = 14").get()).toBeTruthy();
     expect(first.prepare("SELECT 1 FROM schema_migrations WHERE version = 15").get()).toBeTruthy();
@@ -700,8 +703,9 @@ describe("remote verification SQLite persistence", () => {
     first.prepare("DELETE FROM schema_migrations WHERE version >= 14").run();
     first.close();
 
+    establishFixtureSecurity(path);
     new SqliteStateStore(path).close();
-    const replayed = new Database(path, { readonly: true });
+    const replayed = unmanagedFixtureDatabase(path, { readonly: true });
     expect(replayed.prepare("SELECT version FROM schema_migrations WHERE version IN (14, 15) ORDER BY version").all())
       .toEqual([{ version: 14 }, { version: 15 }]);
     expect(replayed.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'remote_verification_requests'").get())

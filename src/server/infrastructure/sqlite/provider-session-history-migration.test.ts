@@ -1,9 +1,10 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { establishFixtureSecurity, resumeFixtureSecurity, openProtectedUpgradeFixture } from "./fixtures/protected-security";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { openControllerStore } from "@/server/controller-storage";
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
 import { IdentityService } from "@/server/modules/identity";
 import { KnowledgeService, exportKnowledgeProject, importKnowledgeProject } from "@/server/modules/knowledge";
@@ -21,7 +22,7 @@ function directory() {
   return { root, path: join(root, "data", "state.sqlite3") };
 }
 function raw<T>(path: string, operation: (db: Database.Database) => T): T {
-  const db = new Database(path); try { return operation(db); } finally { db.close(); }
+  const db = unmanagedFixtureDatabase(path); try { return operation(db); } finally { db.close(); }
 }
 function genuine38() {
   const f = directory();
@@ -49,11 +50,11 @@ describe("provider session history migration 39", () => {
   it("creates recognized fresh storage with provider storage revision 1 and honest history method", () => {
     const f = directory(), store = new SqliteStateStore(f.path);
     try {
-      expect(store.schemaVersion()).toBe(48);
+      expect(store.schemaVersion()).toBe(49);
       expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     } finally { store.close(); }
     raw(f.path, db => {
-      expect(inspectSchema(db)).toEqual({ version: 48, fresh: false });
+      expect(inspectSchema(db)).toEqual({ version: 49, fresh: false });
       expect(db.prepare("SELECT name,checksum FROM schema_migrations WHERE version=39").get())
         .toEqual({ name: providerSessionHistoryMigration.name, checksum: providerSessionHistoryChecksum });
       expect(db.prepare("SELECT sql FROM sqlite_master WHERE name='knowledge_history'").get()).toMatchObject({ sql: expect.stringContaining("'provider_session'") });
@@ -76,14 +77,14 @@ describe("provider session history migration 39", () => {
       expect(db.prepare("SELECT seq FROM sqlite_sequence WHERE name='knowledge_history'").get()).toEqual({ seq: 99 });
     });
     const backups = join(f.root, "backups");
-    const store = await openControllerStore(f.path, { backupBeforeMigration: true, backupDirectory: backups,
+    const store = await openProtectedUpgradeFixture(f.path, { backupBeforeMigration: true, backupDirectory: backups,
       applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") });
     store.close();
     const [backup] = readdirSync(backups);
     expect(backup).toMatch(/^pre-migration-v38-/);
     expect(JSON.parse(readFileSync(join(backups, backup!, "manifest.json"), "utf8")).database.schemaVersion).toBe(38);
     raw(f.path, db => {
-      expect(inspectSchema(db).version).toBe(48);
+      expect(inspectSchema(db).version).toBe(49);
       expect(preserved(db)).toEqual(before.rows);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=38 ORDER BY version").all()).toEqual(before.registry);
       expect(db.prepare("SELECT name,sql FROM sqlite_master WHERE type='index' AND tbl_name='knowledge_history' ORDER BY name").all()).toEqual(before.indexes);
@@ -94,9 +95,16 @@ describe("provider session history migration 39", () => {
     // Restore the genuine old snapshot through the supported restore path, then migrate on open.
     const restoredPath = join(f.root, "restored38", "state.sqlite3");
     restoreControllerBackup(join(backups, backup!), restoredPath);
+    resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
-    try { expect(restored.schemaVersion()).toBe(48); } finally { restored.close(); }
-    raw(restoredPath, db => expect(preserved(db)).toEqual(before.rows));
+    try { expect(restored.schemaVersion()).toBe(49); } finally { restored.close(); }
+    raw(restoredPath, db => {
+      const after=preserved(db);
+      for(const table of ["knowledge_history","knowledge_tasks","remote_principals","authentication_provider_subjects"])expect(after[table]).toEqual(before.rows[table]);
+      expect(after.knowledge_project_grants).toEqual(before.rows.knowledge_project_grants.map((grant:unknown)=>({...grant as object,revoked_at:expect.any(String)})));
+      expect(after.principal_credentials).toEqual([]);
+      expect(db.prepare("SELECT seq FROM sqlite_sequence WHERE name='knowledge_history'").get()).toEqual({seq:99});
+    });
   });
 
   it.each(["checksum", "constraint", "import-constraint"])("refuses malformed %s storage before writes", kind => {
@@ -130,6 +138,7 @@ describe("provider session history migration 39", () => {
 
   it("round-trips provider history through full backup/restore and authorized logical export/import", async () => {
     const f = genuine38();
+    establishFixtureSecurity(f.path);
     const store = new SqliteStateStore(f.path), identity = new IdentityService(store);
     const owner = identity.recoverOwnerSession(), actor = identity.authenticateBearer(owner.token);
     const knowledge = new KnowledgeService(store, identity);
@@ -147,9 +156,10 @@ describe("provider session history migration 39", () => {
     } finally { reopened.close(); }
     const restoredPath = join(f.root, "restored39", "state.sqlite3");
     restoreControllerBackup(backup, restoredPath);
+    resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
     try {
-      expect(restored.schemaVersion()).toBe(48);
+      expect(restored.schemaVersion()).toBe(49);
       expect(restored.listHistory("kept", "task", task.value.id, 25, 0).items[0]?.authenticationMethod).toBe("provider_session");
     } finally { restored.close(); }
     const target = new SqliteStateStore(join(f.root, "logical.sqlite3"));

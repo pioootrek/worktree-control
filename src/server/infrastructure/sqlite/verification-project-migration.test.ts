@@ -1,7 +1,9 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { establishFixtureSecurity } from "./fixtures/protected-security";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { OwnedSqliteDatabase, SqliteStateStore, inspectSchema } from "./index";
 import { initializeSchema } from "./migrations";
@@ -13,7 +15,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "wtc-godot-migration-")); roots.push(root);
   const path = join(root, "state.sqlite3");
-  const db = new Database(path);
+  const db = unmanagedFixtureDatabase(path);
   db.exec(readFileSync(new URL("./fixtures/schema-v26.sql", import.meta.url), "utf8"));
   for (const preset of ["node", "django"]) {
     db.prepare(`INSERT INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at,launch_preset,environment_profiles_json,test_environment_profiles_json)
@@ -44,10 +46,11 @@ function contents(db: Database.Database) {
 
 describe("verification projects migration 30", () => {
   it("preserves populated Node/Django rows, profiles, summaries, FK references and indexes across upgrade/reopen", () => {
-    const f = fixture(); const beforeDb = new Database(f.path);
+    const f = fixture(); const beforeDb = unmanagedFixtureDatabase(f.path);
     expect(inspectSchema(beforeDb).version).toBe(29);
     const before = contents(beforeDb);
     const indexes = beforeDb.prepare("SELECT name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL ORDER BY name").all(); beforeDb.close();
+    establishFixtureSecurity(f.path);
     const owned = new OwnedSqliteDatabase(f.path); const store = new SqliteStateStore(f.path, owned);
     try {
       // Later migrations add only NULL Godot Web configuration and unbound (0) reservation and test-run markers.
@@ -69,7 +72,7 @@ describe("verification projects migration 30", () => {
   });
 
   it("rolls both rebuilds and provenance back on validation failure, then upgrades cleanly", () => {
-    const f = fixture(); const db = new Database(f.path); db.pragma("foreign_keys=ON");
+    const f = fixture(); const db = unmanagedFixtureDatabase(f.path); db.pragma("foreign_keys=ON");
     const before = contents(db);
     expect(() => initializeSchema(db, false, () => { throw new Error("injected validation failure"); })).toThrow("injected");
     expect(inspectSchema(db).version).toBe(29);
@@ -77,6 +80,7 @@ describe("verification projects migration 30", () => {
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
     db.close();
+    establishFixtureSecurity(f.path);
     new SqliteStateStore(f.path).close();
   });
 });

@@ -1,3 +1,4 @@
+import { runSecurityFenceCommand } from "./security-fence";
 import type { AppPaths } from "../server/paths";
 import { requestAdminSocket } from "../server/admin-socket";
 import { acquireControllerLock, ControllerAlreadyRunningError } from "../server/controller-lock";
@@ -32,6 +33,7 @@ export async function runAuthCommand(
   paths: AppPaths,
   dependencies: AuthCommandDependencies = {},
 ): Promise<void> {
+  if (args[0] === "fence") return runSecurityFenceCommand(args, paths, dependencies.write ?? console.log);
   if (isProviderCommandArgs(args)) return runProviderCommand(args, paths, dependencies);
   const write = dependencies.write ?? console.log;
   const request = authenticationCommandFromArgs(args);

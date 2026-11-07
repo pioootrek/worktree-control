@@ -32,6 +32,7 @@ import { UnreleasedSessions, type UnreleasedSession } from "./unreleased-session
 import { SessionIssuance, validateSessionRowPolicy, type SessionIssuanceState, type SessionIssuanceStore, type SessionRowPolicy } from "./session-issuance";
 
 export type AuthenticationProviderErrorCode =
+  | "security_fence_owner_running" | "security_fence_establishment_required" | "security_fence_recovery_required" | "security_fence_pending" | "security_fence_preflight_changed"
   | "recovery_unavailable" | "provider_unavailable" | "principal_unavailable" | "subject_conflict" | "not_linked"
   | "invalid_session" | "invalid_input" | "invalidation_failed" | "provider_disposed" | "provider_failed" | "disposal_unconfirmed"
   | "maintenance" | "provider_configuration_restart_required"

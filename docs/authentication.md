@@ -113,9 +113,9 @@ Schema 41 adds durable session issuance; see [closed factor HTTP API](#closed-fa
 Schema 42 widens only the core principal kind for ordinary humans; provider
 contract 5, storage revision 3 and implementation `0.0.0-proof.5` are unchanged.
 Full controller backups record the current schema and include provider rows.
-Genuine schema-38, schema-39, schema-40 and schema-41 snapshots can be restored and upgraded on open.
-Older binaries reject a newer schema; restoring a backup is not a downgrade procedure. Restoring a snapshot can revive old sessions and
-passwords; the external revocation/recovery fence remains A5 work. Better Auth
+Genuine schema-38, schema-39, schema-40 and schema-41 snapshots can be restored
+and upgraded through protected maintenance; ordinary opening refuses until then.
+Older binaries reject a newer schema; restoring a backup is not a downgrade procedure. P3b fences restored snapshots and quarantines old authentication before protected resume. Better Auth
 stores bearer session tokens, and the proof's native sign-in and password-change
 JSON responses include session tokens. Those responses are not an approved
 browser API design. Password-only evidence is neither MFA nor an ASVS Level 2
@@ -348,7 +348,7 @@ performs no live enrollment and never uses owner creation to replace that accoun
 open/token/legacy modes. Provider sessions gain neither owner-session nor
 installation authority, and never replace signed Ed25519 vault proof. P2a supplies
 the reader workflow below, and P2b1 adds explicit human runtime leases and control.
-Remaining P2 transport enforcement and P3b external restore
+Remaining transport enforcement and A5 acceptance
 fencing remain activation gates.
 
 ### Human runtime readers (P2a)
@@ -429,8 +429,7 @@ Selected optional TOTP/passkeys and separate Ed25519 vault proof retain their ga
 This is backend source implementation and isolated real-provider verification.
 Production startup still does not mount public login or this cookie workflow;
 `requireSelectable` continues to refuse account-mode selection. Remaining P2/P3 stay
-required before activation. In particular, the P1 restored-provenance refusal
-continues across reboots and is not a completed protected-recovery mechanism.
+required before activation. P3b now fences restored authority before opening the store and supplies protected offline recovery below.
 
 ### Human runtime operators and leases (P2b1)
 
@@ -603,7 +602,7 @@ are never represented as agents for ownership, waiter budgets or cursors.
 Optional TOTP/passkeys and separate Ed25519 vault proof retain their policies.
 `pnpm test:human-jobs` exercises real provider composition, temporary native
 sessions, the existing finite queue and migration/transport/policy regressions.
-Remaining transport parity, P3b external restore fencing and A5 activation remain open. The public mount
+Remaining transport parity and A5 activation remain open. The public mount
 and `requireSelectable` gate stay closed.
 
 ### Human literal profiles and preset timeouts (P2c)
@@ -658,7 +657,7 @@ Audit identifies the real principal and provider-session method without a fake
 machine credential, session handles, cookies or ENV content.
 
 This backend slice extends the internal composition only. Public browser mounting,
-account-mode selection and P3b external restore fences remain separate gates. The P1 restored-provenance refusal and optional TOTP/passkey and
+account-mode selection remain gated. P3b supplies the external restore fence below. Optional TOTP/passkey and
 signed Ed25519 vault policies remain in force. The historical five full-proof
 factor compatibility failures remain visible; these fixtures establish no
 production-readiness claim. Evidence and acceptance belong to Knowledge A3.
@@ -750,8 +749,7 @@ The owning shutdown helper disposes the optional provider after accepted
 responses, listeners and external producers settle, before the service closes
 SQLite. Unconfirmed disposal retains both ownership locks and the shared failure.
 The real temporary Unix fixture exercises that order and rejection. Production
-loading, OS restart, full restore/reboot, factors/MFA, roles and A5 transport and
-external restore fences remain separate gates. This is bounded backend evidence,
+loading, OS restart, factors/MFA, roles and A5 transport remain separate acceptance gates. P3b supplies protected restore/reboot fencing below. This is bounded backend evidence,
 not completed A3 or safe production RBAC.
 
 ### Provider authorization handoff
@@ -912,17 +910,17 @@ hold TOTP refused until real time passes the step. The protected operator can
 explicitly reset lost factors; ordinary password recovery still preserves the step. These need accepted management decisions, along with final numeric
 limits and consecutive-failure accounting.
 
-Backups include this storage, and a restore keeps its rows. Restoring an older snapshot
-reopens older sessions, steps, generations and factors, which remains the A5 external
-fence. Schema 40 has no downgrade: older binaries refuse it and A3-I18 adds no rollback
-path except restoring a backup. A4 vault authority and A5 transport, cutover and restore
-fencing stay separate gates. See the
+Backups include this storage. P3b detects a stale SQLite checkpoint against the
+external witness before opening authentication. Protected resume quarantines
+restored factors, sessions and passwords; it preserves TOTP steps and historical
+records. Schema 40 has no downgrade. Public account activation, optional-method
+readiness and A5 transport/cutover acceptance remain separate gates. See the
 [proof details](../packages/auth-provider-better-auth-proof/README.md#a3-i18-integrated-factor-authority).
 
 ### Closed factor HTTP API
 
 A3-I20 mounts login and first enrollment through the isolated composition only. It
-uses the same provider, current core schema 48, contract 5, `AccountProtection` and sole
+uses the same provider, current core schema 49, contract 5, `AccountProtection` and sole
 connection as [integrated factor authority](#integrated-factor-authority). Production
 main still has no caller or flag, account mode stays refused, and recovery, removal,
 replacement, additional passkeys and trusted devices stay refused.
@@ -1084,15 +1082,15 @@ TOTP step, passkey counter, receipts and unrelated sessions do not change. A row
 cannot resolve fails readiness rather than being skipped, and a killed pass resumes from
 current rows. A maintenance-only load without bounds can administer and cannot mint.
 
-**Restored databases.** A `pending` row in a snapshot may have been published after that
-snapshot was taken, so ordinary recovery must not read it as unpublished. The owner reports
-provenance from the existing restore journal. A recognized restore, or a journal it cannot
-read, refuses the sweep and isolated browser readiness and changes no row. There is no
-caller flag, and this path does not clear or reclassify the journal, so a restored
-installation stays refused for browser proof issuance. Community open and token modes and
-maintenance administration are unaffected. A backup holding more than B rows stays
-structurally valid. A manual file rollback leaves no provenance and is outside this
-guarantee, and A5's external restore fence remains unsolved.
+**Restored databases.** A snapshot's pending row may have been published later.
+P3b therefore checks the external security witness before the store enables
+writes, including raw DB-only replacement. An unacknowledged restore never reaches
+this sweep or provider loading. Protected offline resume removes native sessions
+and their issuance/evidence atomically with the rest of the quarantine, then
+publishes a durable external receipt. Only that receipt permits subsequent boot
+recovery. The permanent restore journal and its original provenance stay intact.
+A backup with more than B rows remains structurally valid. See
+[protected restore recovery](#external-security-fence-and-protected-resume-p3b).
 
 **Outcomes.** Refusals use fixed bodies:
 
@@ -1285,7 +1283,7 @@ require its separate signed proof and exact grants, with `use` unavailable.
 
 Full backups retain bindings, revisions, tombstones and audit. As with existing
 credentials, restoring an older snapshot can restore older authorization state;
-external revocation fences are an A5 gate before account-mode activation.
+P3b now refuses that snapshot until protected quarantine; A5 still owns complete cutover acceptance.
 
 ## Scoped runtime agents (A2)
 
@@ -1606,7 +1604,7 @@ installation upgrade with a stopped-controller backup and a compatible restore
 version; do not use a live database as a test fixture or open it with an older
 binary after upgrade. Full backups preserve runtime grants, ceilings and lease
 bindings. Restoring an older snapshot can restore older credential/delegation
-state; A5 still owns external revocation fences and cutover acceptance.
+state; P3b fences it before use, and A5 still owns cutover acceptance.
 
 The controller removes its token and keyfile environment variables from managed
 process inheritance. Scoped authorization is not an OS sandbox: repository code
@@ -1779,20 +1777,17 @@ New installations differ from earlier releases:
 ## Restore and pending mode selection
 
 A token-authorized restore keeps the immutable active execution mode separate
-from the configured policy restored into the next boot. Format-2 durable
-handoffs require `executionMode`; format-1 records retain their historical
-`authentication.mode` interpretation. Missing, unknown or inconsistent new
-records fail closed. The captured token ID remains current, and existing
-credential/revocation fences and ownership locks still apply. A pending open
-selection therefore cannot authorize a restore or invalidate an admitted token
-restore. Recovery writes the captured configured policy before constructing the
-new boot's authentication service. No SQLite migration is needed for this
-behavior.
+from the configured selection. Format-2 durable handoffs retain both; format-1
+records retain their historical execution interpretation. Missing or inconsistent
+records fail closed. A pending open selection cannot authorize a restore or
+invalidate an admitted token restore.
 
-This does not solve A5 provider-session resurrection after restoring older
-password/session data. External restore revocation fencing, account authentication,
-readiness of optional methods and complete transport coverage still gate
-production RBAC activation.
+After replacement, P3b refuses normal startup before constructing authentication
+or listeners. The captured policy and token remain handoff evidence. They are
+never copied back into live authority. Protected resume requires an explicit mode,
+invalidates all restored verifiers and acknowledges a completely verified matching
+handoff before publishing its final receipt. Token mode then needs a fresh token;
+better-auth mode still fails the existing production selection/startup gate.
 
 ## Protected factor-loss recovery (P3a)
 
@@ -1834,5 +1829,137 @@ owner path authorize this operation. HTTP, MCP, browser sessions, shared tokens
 and agent credentials cannot request it. An agent running as the controller OS
 user remains trusted by that boundary. The independent signed vault proof is
 unchanged. Restored/unconfirmed database provenance still refuses provider load;
-external restore and revocation fencing belongs to P3b. Account activation and
+external restore and revocation fencing is implemented in P3b below. Account activation and
 complete transport enforcement remain A5 gates.
+
+## External security fence and protected resume (P3b)
+
+Migration 49 adds one `security_checkpoint` row and fixed triggers over the
+provider, identity, grant, policy, encrypted vault and durable execution authority
+tables. Migrations 1 through 48 and their checksums are unchanged. Each covered
+write changes a 256-bit checkpoint nonce inside its own transaction. The
+installation nonce stays fixed. Trigger definitions, required tables and row
+shape are recognized before writable PRAGMAs or migration effects.
+
+The witness is `<canonical-database-path>.security/witness.json`. This private
+sibling directory is outside the application backup payload, which contains only
+SQLite, its manifest and referenced attachment objects. It is derived from the
+canonical database path even with custom `--data-dir`/`--state-dir`; nesting the
+state directory under data does not move the trust boundary. Restore refuses
+attachment targets overlapping the witness directory. Never include this witness
+in a restore of application data. Copying an installation to a new path needs
+explicit protected resume and quarantine.
+
+The OS owner and the private path ancestry are trusted. This design detects
+DB-only rollback, missing/corrupt/stale/wrong-installation witnesses, and supported
+restore. It cannot detect rollback of the whole host or a manually copied trust
+domain containing both the matching SQLite and witness. There is no off-host
+anchor. Checksums detect corruption; they do not defend against the trusted OS
+owner replacing both sides.
+
+The strict checksummed witness is bounded to 4 KiB. Its directory admits at most
+32 named witness/publication files. Existing files require private ownership and
+permissions, no symlink/hardlink aliases and descriptor identity checks; recovery
+does not repair unsafe permissions into trust. The record binds canonical paths,
+installation/checkpoint, database device/inode, configured mode/generation, owner identity, acknowledged
+restore operation and protected recovery receipt. It contains no tokens, password
+hashes, factor material, vault keys or signing secrets.
+
+### Commit and crash protocol
+
+All SQL execution uses the existing sole connection and core/provider admission.
+Before a covered authority row changes, a fixed BEFORE trigger invokes the
+owner's synchronous filesystem observer. It atomically writes `pending`, fsyncs
+the new file, renames it and fsyncs the private directory. The observer performs
+no SQL. The trigger then updates the checkpoint in the same transaction,
+including native provider changes and FK cascades. Raw connections lacking the
+observer cannot write these tables. Non-authority attachment writes do not stage
+a security publication. SQLite
+uses WAL, FULL synchronous commits and foreign keys. After a completed COMMIT,
+the owner reads the actual checkpoint and policy and durably publishes
+`confirmed` in the same file/rename/directory order. Reads never hash the whole
+database. The explicit offline preflight streams bounded SQLite/WAL hashes once.
+
+A proved rollback confirms the unchanged old checkpoint and returns the original
+failure. A failed or uncertain publication fences the current owner; a confirmed
+DB mutation reports `committed: true`. After process death, a pending or mismatched
+witness requires protected recovery, even if the old transaction probably rolled
+back. A clean confirmed restart preserves valid sessions, factors, credentials and
+grants without installation-wide rotation. A failed final fsync never reports
+success, and the owner attempts to retain a pending witness.
+
+Checkpoint coverage includes account provisioning/disable/recovery, passwords,
+logout/session publication/revocation, factors/challenges/steps, machine
+credential issue/rotate/revoke, human memberships, delegations/credential ceilings,
+Knowledge grants, mode/token policy, encrypted vault changes and durable leases,
+intents and finite/remote job authority. Credential-based offline remote recovery
+inspection also verifies the witness before authentication and on retained reads.
+New authority tables must add migration
+coverage. The nonce is an equality fence, not a wall-clock ordering claim or an
+unbounded revocation log.
+
+### Protected operator workflow
+
+Use the installed compatible CLI with the controller stopped. The commands
+acquire both the state-directory singleton and canonical database-owner lock;
+they have no HTTP, MCP, shared-token or public provider equivalent and never
+start a server. A running owner causes refusal instead of an online fallback.
+For custom paths, pass the same `--data-dir` and `--state-dir` on every command.
+
+```sh
+worktree-control auth fence inspect --data-dir /private/installation
+worktree-control auth fence establish --expect <preflight-hash> --data-dir /private/installation
+```
+
+Establishment is permitted only for a recognized existing pre-fence store without
+external witness or restore evidence. Inspect and preserve a verified application
+backup before this explicit adoption. A fresh database uses its verified creation
+marker; a missing witness on an established database is never first boot.
+
+For restore, stale/missing/corrupt witness or uncertain publication, inspect again,
+then explicitly choose the resumed mode:
+
+```sh
+worktree-control auth fence inspect --data-dir /private/installation
+worktree-control auth fence resume --expect <preflight-hash> --mode token --data-dir /private/installation
+```
+
+Resume first publishes a pending receipt. One sole-connection transaction removes
+all restored provider passwords/tokens, native sessions, TOTP/passkeys and
+challenge authority; revokes principal credentials and all project/role/runtime
+and worker grants; advances account generations and membership revisions; releases
+leases; interrupts pending finite jobs with the existing truthful writer; and
+cancels pending remote work. It retains IDs, kinds, roles, membership rows, audit,
+run/intention attribution, TOTP steps, budgets and encrypted vault content.
+The same existing owner is preserved, and a readable external owner anchor must
+match. No owner, credential, project permission or ENV grant is created.
+
+Only after quarantine and handoff acknowledgement does the owner publish the
+confirmed receipt. Repeated resume on that unchanged confirmed state is a no-op.
+A crash during recovery remains fenced; repeating explicit recovery can only
+quarantine again. The journal and restore-request history are never deleted or
+reclassified. Raw rollback after a successful receipt is fenced again.
+
+In token mode, issue a fresh token through the protected existing command. For
+accounts, restore the separate private provider configuration and use P3a
+`auth provider recover` with a private new-password input for the existing active
+owner or chosen human. Reissue machine credentials and regrant access explicitly.
+Ordinary P3a password recovery still preserves selected factors by default.
+`--mode open` is an explicit loss of account isolation; `--mode better-auth`
+retains the unavailable production account-mode gate and creates no fallback.
+
+The receipt adds a generation/time floor to `controllerRestoreBoundary` for
+schedules and encrypted vault grants/receipts. The existing Ed25519 owner proof,
+strict proof/grant `createdAt` checks, credential binding and encrypted state
+remain required. Recovery neither substitutes a provider session for that proof
+nor revives a previous vault grant. Process cleanup continues through existing
+verified owned-process shutdown; recovery never infers ownership from an occupied
+port and never reauthorizes old pending work.
+
+Neutral fixed errors distinguish `security_fence_establishment_required`,
+`security_fence_recovery_required`, `security_fence_pending` and
+`security_fence_preflight_changed`. A running owner returns `security_fence_owner_running`. Status and errors expose no credential material.
+Tests cover raw/supported rollback, native provider recovery, corrupt/missing
+witnesses, fsync faults, SQL rollback, idle rechecks and real child-process crashes.
+Full provider proof still exposes its five unchanged historical factor negatives;
+P3b does not claim public account-mode or A5 production readiness.

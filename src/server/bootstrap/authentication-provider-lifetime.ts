@@ -112,7 +112,8 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
         // Promise publication precedes import/create, including synchronous loader failures.
         retainLifetime();
         loaded = Promise.resolve().then(async () => {
-          // Ordinary boot recovery is owned/cached by this store. Restored provenance refuses it.
+          // The store checks the external checkpoint before boot recovery. A restored
+          // store requires its protected quarantine receipt before this lifetime exists.
           await d.store.recoverIssuedSessions(CONTROLLER_AUTHENTICATION_POLICY);
           await d.store.admission.run(guard);
           validateProviderEntry(current.entry);

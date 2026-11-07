@@ -1,8 +1,9 @@
+import { unmanagedFixtureDatabase } from "../server/unmanaged-sqlite-fixture";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import { listenAdminSocket } from "../server/admin-socket";
@@ -47,7 +48,7 @@ describe("auth administration CLI", () => {
     const status = await run(["status"], appPaths);
     expect(JSON.stringify(status)).not.toContain(rotated.token);
 
-    const database = new Database(appPaths.databasePath, { readonly: true });
+    const database = unmanagedFixtureDatabase(appPaths.databasePath, { readonly: true });
     const persisted = JSON.stringify(database.prepare("SELECT * FROM controller_settings").all())
       + JSON.stringify(database.prepare("SELECT * FROM controller_audit_events").all());
     database.close();

@@ -271,6 +271,19 @@ export class TestJobManager {
       const failures = cancellations.filter((result) => result.status === "rejected").map((result) => result.reason);
       if (failures.length) throw new AggregateError(failures, "Nie zakończono poprawnie anulowania zadań testowych.");
       if (this.persistenceFailure) throw this.persistenceFailure;
+    } catch (error) {
+      // Loss of SQLite/fence authority must never prevent termination of process
+      // groups already verified and owned by this manager. No requester is
+      // reauthenticated and no new job is adopted from the restored database.
+      for (const session of this.preparationSessions.values()) session.cancel();
+      const stopped=await Promise.allSettled([...this.active.values()].map(async active=>{
+        active.cancellationRequested=true;
+        clearTimeout(active.timeout);
+        await this.stopWithRetries(active.group);
+        active.resources?.stop();
+      }));
+      throw new AggregateError([error,...stopped.filter(result=>result.status==="rejected").map(result=>result.reason)],
+        "Test shutdown stopped owned groups where confirmed; persistence remains unconfirmed.");
     } finally {
       // Even failed shutdown closes observation before ControlService closes the
       // store. Process ownership/occupied slots remain intact for cleanup retry.

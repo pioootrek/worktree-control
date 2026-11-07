@@ -1,8 +1,9 @@
+import { unmanagedFixtureDatabase } from "./unmanaged-sqlite-fixture";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OwnedSqliteDatabase, SqliteStateStore } from "./infrastructure/sqlite";
 import { IdentityService } from "./modules/identity";
@@ -89,7 +90,7 @@ describe("immutable attachments during backup", () => {
         f.owned.database.prepare("DELETE FROM knowledge_attachments WHERE id=?").run(original.id);
       } };
       const destination = join(f.root, "backup"), manifest = await createControllerBackup(source, destination, { applicationVersion: "test", attachmentDirectory: f.attachments });
-      const snapshot = new Database(join(destination, "state.sqlite3"), { readonly: true });
+      const snapshot = unmanagedFixtureDatabase(join(destination, "state.sqlite3"), { readonly: true });
       try {
         const rows = snapshot.prepare("SELECT DISTINCT sha256,size FROM knowledge_attachments ORDER BY sha256").all() as Array<{ sha256: string; size: number }>;
         expect(manifest.attachments.map(({ sha256, size }) => ({ sha256, size }))).toEqual(rows);

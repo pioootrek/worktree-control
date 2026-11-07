@@ -72,7 +72,7 @@ describe("verification history on the existing SQLite owner", () => {
       summary: { telemetry: { resources: run.telemetry!.resources } } });
     const legacy = f.run({ queuedAt: f.at(100) }); delete legacy.telemetry!.resources;
     f.store.saveTestRun(legacy);
-    f.owned.database.prepare("UPDATE test_runs SET telemetry_json=? WHERE id=?").run(JSON.stringify(legacy.telemetry), legacy.id);
+    (f.store as unknown as {database:import("better-sqlite3").Database}).database.prepare("UPDATE test_runs SET telemetry_json=? WHERE id=?").run(JSON.stringify(legacy.telemetry), legacy.id);
     expect(f.store.getTestRun(legacy.id)?.telemetry?.resources?.status).toBe("legacy_unknown");
     // Exercise already-stored JSON from the previous release, not only new writes.
     const json = JSON.parse(f.owned.database.prepare("SELECT summary_json FROM test_run_summaries WHERE run_id=?").pluck().get(legacy.id) as string);

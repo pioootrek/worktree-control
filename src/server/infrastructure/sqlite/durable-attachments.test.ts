@@ -1,3 +1,6 @@
+import { maintainSecurityFence } from "../../bootstrap/security-maintenance";
+import { resolveAppPaths } from "../../paths";
+import { resumeFixtureSecurity } from "./fixtures/protected-security";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -32,9 +35,17 @@ describe("attachment publication process interruption", () => {
       const metadata = JSON.parse(readFileSync(join(root, "fixture.json"), "utf8")) as { token: string; projectId: string; taskId: string; sha256: string; size: number };
       const directory = join(root, "attachments"), path = join(directory, metadata.sha256.slice(0, 2), metadata.sha256);
       expect(existsSync(path)).toBe(point !== "before-file");
-      const store = new SqliteStateStore(join(root, "state.sqlite3"));
+      const databasePath=join(root,"state.sqlite3");
+      const status=maintainSecurityFence({...resolveAppPaths(root),databasePath},{action:"inspect"});
+      // Pure attachment interruption preserves credentials. Hub/project creation
+      // changes authority; its uncertain transaction requires explicit quarantine.
+      if(operation==="upload")expect(status.trusted).toBe(true);
+      if(!status.trusted)resumeFixtureSecurity(databasePath);
+      const store = new SqliteStateStore(databasePath);
       try {
-        const identity = new IdentityService(store), owner = identity.authenticateBearer(metadata.token);
+        const identity = new IdentityService(store);
+        if(!status.trusted)expect(()=>identity.authenticateBearer(metadata.token)).toThrow();
+        const owner=identity.authenticateBearer(status.trusted?metadata.token:identity.recoverOwnerSession().token);
         const target = operation === "hub" ? "imported" : metadata.projectId;
         expect(store.exportKnowledgeProject(target)?.attachments ?? []).toHaveLength(0);
         const bytes = Buffer.from("process interruption attachment");

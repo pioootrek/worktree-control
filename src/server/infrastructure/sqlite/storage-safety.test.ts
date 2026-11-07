@@ -1,3 +1,5 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { openProtectedUpgradeFixture } from "./fixtures/protected-security";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
@@ -5,7 +7,7 @@ import { createHash } from "node:crypto";
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveAppPaths } from "@/server/paths";
 import { runBackupCommand } from "@/cli/backup-management";
@@ -21,7 +23,7 @@ function fixture(version: 12 | 24 | 26 = 24) {
   const root = mkdtempSync(join(tmpdir(), "sqlite-safety-")); roots.push(root);
   const paths = resolveAppPaths(join(root,"data"), join(root,"state"));
   mkdirSync(paths.dataDirectory, {mode:0o700});
-  const db = new Database(paths.databasePath);
+  const db = unmanagedFixtureDatabase(paths.databasePath);
   db.exec(readFileSync(new URL(`./fixtures/schema-v${version}.sql`, import.meta.url), "utf8"));
   db.exec(`INSERT INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at)
     VALUES('kept','Kept','/isolated/repo',3456,'pnpm','["dev"]','/',30000,'then','then');`);
@@ -41,7 +43,7 @@ function fixture(version: 12 | 24 | 26 = 24) {
   return {root,paths,sha256};
 }
 function raw(path: string, fn: (db: Database.Database) => void) {
-  const db=new Database(path); try { fn(db); } finally { db.close(); }
+  const db=unmanagedFixtureDatabase(path); try { fn(db); } finally { db.close(); }
 }
 const options = (attachmentDirectory: string, backupDirectory?: string) => ({
   attachmentDirectory, applicationVersion:"isolated-test", backupBeforeMigration:Boolean(backupDirectory), backupDirectory,
@@ -80,7 +82,7 @@ describe("SQLite storage safety", () => {
     // The record must come from WAL; reading only the main file still sees its old value.
     const mainOnlyPath = join(f.root, "main-only.sqlite3");
     writeFileSync(mainOnlyPath, before);
-    const mainOnly = new Database(mainOnlyPath, { readonly: true });
+    const mainOnly = unmanagedFixtureDatabase(mainOnlyPath, { readonly: true });
     try { expect(mainOnly.prepare("SELECT name FROM projects").get()).toEqual({ name: "Kept" }); }
     finally { mainOnly.close(); }
 
@@ -94,14 +96,14 @@ describe("SQLite storage safety", () => {
     await runBackupCommand(["create", backup], f.paths, "test", () => {});
     expect(readFileSync(f.paths.databasePath)).toEqual(before);
     expect(readFileSync(`${f.paths.databasePath}-wal`)).toEqual(walBefore);
-    const snapshot = new Database(join(backup, "state.sqlite3"), { readonly: true });
+    const snapshot = unmanagedFixtureDatabase(join(backup, "state.sqlite3"), { readonly: true });
     try {
       expect(inspectSchema(snapshot).version).toBe(12);
       expect(snapshot.prepare("SELECT name FROM projects").get()).toEqual({ name: "Committed in WAL" });
     } finally { snapshot.close(); }
-    const store = await openControllerStore(f.paths.databasePath, options(f.paths.knowledgeAttachmentDirectory, join(f.root, "pre-migration")));
+    const store = await openProtectedUpgradeFixture(f.paths.databasePath, options(f.paths.knowledgeAttachmentDirectory, join(f.root, "pre-migration")));
     try {
-      expect(store.schemaVersion()).toBe(48);
+      expect(store.schemaVersion()).toBe(49);
       expect(store.getProject("kept")?.name).toBe("Committed in WAL");
     } finally { store.close(); }
     expect(existsSync(`${f.paths.databasePath}.owner.lock`)).toBe(false);
@@ -129,7 +131,7 @@ describe("SQLite storage safety", () => {
     const destination=join(f.root,"backup");
     await runBackupCommand(["create",destination],f.paths,"isolated-test",()=>{});
     expect(readFileSync(f.paths.databasePath)).toEqual(before);
-    const snapshot=new Database(join(destination,"state.sqlite3"),{readonly:true});
+    const snapshot=unmanagedFixtureDatabase(join(destination,"state.sqlite3"),{readonly:true});
     try {
       expect(inspectSchema(snapshot).version).toBe(version);
       expect(snapshot.prepare("SELECT name FROM projects").all()).toEqual([{name:"Kept"}]);
@@ -148,11 +150,11 @@ describe("SQLite storage safety", () => {
 
   it("verifies the old snapshot before migrating and preserves its authentication and attachments", async () => {
     const f=fixture(); const target=join(f.root,"backups");
-    const store=await openControllerStore(f.paths.databasePath,options(f.paths.knowledgeAttachmentDirectory,target));
-    try { expect(store.schemaVersion()).toBe(48); expect(store.getProject("kept")?.name).toBe("Kept"); expect(store.getAuthenticationPolicy().mode).toBe("legacy"); } finally { store.close(); }
+    const store=await openProtectedUpgradeFixture(f.paths.databasePath,options(f.paths.knowledgeAttachmentDirectory,target));
+    try { expect(store.schemaVersion()).toBe(49); expect(store.getProject("kept")?.name).toBe("Kept"); expect(store.getAuthenticationPolicy().mode).toBe("legacy"); } finally { store.close(); }
     const [backup]=readdirSync(target);
     expect(backup).toMatch(/^pre-migration-v24-/);
-    const snapshot=new Database(join(target,backup,"state.sqlite3"),{readonly:true});
+    const snapshot=unmanagedFixtureDatabase(join(target,backup,"state.sqlite3"),{readonly:true});
     try { expect(inspectSchema(snapshot).version).toBe(24); expect(snapshot.prepare("SELECT 1 FROM controller_settings WHERE key='authentication'").get()).toBeUndefined(); } finally { snapshot.close(); }
     const reopened=await openControllerStore(f.paths.databasePath,options(f.paths.knowledgeAttachmentDirectory,target)); reopened.close();
     expect(readdirSync(target)).toHaveLength(1);
@@ -172,8 +174,8 @@ describe("SQLite storage safety", () => {
 
   it("migrates with backups disabled without requiring a destination or attachment storage", async () => {
     const f=fixture(); rmSync(f.paths.knowledgeAttachmentDirectory,{recursive:true});
-    const store=await openControllerStore(f.paths.databasePath,options(f.paths.knowledgeAttachmentDirectory));
-    try { expect(store.schemaVersion()).toBe(48); expect(store.getProject("kept")?.name).toBe("Kept"); } finally {store.close();}
+    const store=await openProtectedUpgradeFixture(f.paths.databasePath,options(f.paths.knowledgeAttachmentDirectory));
+    try { expect(store.schemaVersion()).toBe(49); expect(store.getProject("kept")?.name).toBe("Kept"); } finally {store.close();}
     expect(readdirSync(f.root).sort()).toEqual(["data"]);
   });
 

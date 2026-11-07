@@ -38,7 +38,7 @@ export interface ControllerFixture {
   releaseTestGate(project: FixtureProject, worktreePath?: string): Promise<void>;
   testEvents(project: FixtureProject): Promise<FixtureTestEvent[]>;
   ownedPids(project: FixtureProject, worktreePath?: string): Promise<number[]>;
-  restart(): Promise<void>; stop(): Promise<void>; close(): Promise<void>;
+  restart(): Promise<void>; recoverRestore():Promise<void>; stop(): Promise<void>; close(): Promise<void>;
   diagnostics(): string;
 }
 
@@ -123,7 +123,8 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
   const generated = options.restoredInstallation ? undefined : await exec(process.execPath, [artifactCli, "auth", "token", "generate"], {
     cwd: repositoryRoot, env: { ...runtimeEnvironment, WORKTREE_CONTROL_DATA_DIR: data, WORKTREE_CONTROL_STATE_DIR: state }, timeout: 30000,
   });
-  const token = options.restoredInstallation?.token ?? (JSON.parse(generated!.stdout) as { token: string }).token;
+  let token = options.restoredInstallation?.token ?? (JSON.parse(generated!.stdout) as { token: string }).token;
+  const tokenHistory=new Set([token]);
   let userBackupProjectId: string | undefined;
   if (options.userBackups) {
     const created = await exec(process.execPath, [artifactCli, "identity", "create-knowledge-project", "--name", "Scheduled discussions"], {
@@ -249,8 +250,22 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
         const evidence = await readFile(join(worktreePath, "process-evidence.log"), "utf8").catch(() => "");
         return evidence.split("\n").flatMap((line) => { const pid = Number(line.split(" ")[1]); return Number.isInteger(pid) && pid > 0 ? [pid] : []; });
       },
-      async restart() { await stop(); await start(); fixture.endpoint = endpoint; fixture.accessUrl = accessUrl; }, stop,
-      diagnostics: () => controllerOutput.replaceAll(token, "[REDACTED]").replaceAll(base, "[FIXTURE]") + `\nexit=${child?.exitCode} signal=${child?.signalCode}`,
+      async restart() { await stop(); await start(); fixture.endpoint = endpoint; fixture.accessUrl = accessUrl; },
+      async recoverRestore() {
+        if(child) {
+          const restoredOwner=child;
+          await waitFor(()=>restoredOwner.exitCode!==null || restoredOwner.signalCode!==null ? true:null,10000,()=>"Restored fixture did not stop at its security fence.");
+          if(restoredOwner.exitCode!==1 || !controllerOutput.includes("security_fence_recovery_required")) throw new Error("Fixture did not fail at the expected restore fence.");
+          child=undefined;
+        }
+        const before=JSON.parse(await fixture.cli(["auth","fence","inspect"])) as {preflight:string;trusted:boolean};
+        if(before.trusted)throw new Error("Restored fixture unexpectedly trusted old SQLite authority.");
+        const receipt=JSON.parse(await fixture.cli(["auth","fence","resume","--expect",before.preflight,"--mode","token"])) as {trusted:boolean;quarantined:boolean};
+        if(!receipt.trusted || !receipt.quarantined)throw new Error("Protected fixture quarantine did not complete.");
+        token=(JSON.parse(await fixture.cli(["auth","token","generate"])) as {token:string}).token;tokenHistory.add(token);fixture.installationToken=token;
+        await start();fixture.endpoint=endpoint;fixture.accessUrl=accessUrl;
+      }, stop,
+      diagnostics: () => [...tokenHistory].reduce((value,secret)=>value.replaceAll(secret,"[REDACTED]"),controllerOutput).replaceAll(base, "[FIXTURE]") + `\nexit=${child?.exitCode} signal=${child?.signalCode}`,
       async close() { try { await stop(); } finally { await rm(base, { recursive: true, force: true }); } },
     }; return fixture;
   } catch (error) { await stop().catch(() => undefined); await rm(base, { recursive: true, force: true }); throw error; }

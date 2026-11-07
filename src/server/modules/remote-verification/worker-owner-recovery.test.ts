@@ -1,8 +1,9 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, it, vi } from "vitest";
-import Database from "better-sqlite3";
+
 import { LinuxWorkerRecoveryHost } from "@/server/infrastructure/git";
 import { IdentityService, type AuthenticatedPrincipal } from "@/server/modules/identity";
 import { SqliteStateStore } from "@/server/sqlite-store";
@@ -146,7 +147,7 @@ it.each(["legacy", "legacy-reused-pids", "malformed", "tampered-pids", "tampered
     if (kind === "tampered-boot") receipt.recovery!.provenance.boot = originalBoot.replace(/^1/, "3");
     if (kind === "tampered-path") receipt.recovery!.provenance.cache.path = f.human;
     // Deliberate on-disk corruption; production persistence refuses journal rewriting.
-    const database = new Database(f.databasePath);
+    const database = unmanagedFixtureDatabase(f.databasePath);
     try { database.prepare("UPDATE remote_worker_receipts SET payload_json=? WHERE attempt_id='attempt'").run(JSON.stringify(receipt)); }
     finally { database.close(); }
   }

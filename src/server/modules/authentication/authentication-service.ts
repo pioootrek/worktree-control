@@ -75,6 +75,7 @@ export class AuthenticationService implements InstallationAuthority {
 
   /** Open mode: every caller acts as the anonymous installation authority, recorded as `none`. */
   anonymousInstallation(): CredentialAuthenticatedPrincipal | null {
+    this.readPolicy(); // Recheck external security fence even in immutable open boot mode.
     if (this.mode() !== "open") return null;
     return {
       principalId: INSTALLATION_PRINCIPAL_ID,

@@ -1,4 +1,5 @@
-import Database from "better-sqlite3";
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+
 import { describe, expect, it } from "vitest";
 import { RuntimeMembershipService } from "@/server/modules/identity";
 import { initializeSchema } from "./migrations";
@@ -6,7 +7,7 @@ import { RuntimeMembershipQueries } from "./runtime-membership-queries";
 
 const now = "2026-11-07T12:00:00.000Z";
 function fixture() {
-  const db = new Database(":memory:"); initializeSchema(db); db.pragma("foreign_keys=ON");
+  const db = unmanagedFixtureDatabase(":memory:"); initializeSchema(db); db.pragma("foreign_keys=ON");
   db.exec(`INSERT INTO remote_principals VALUES('owner','owner','active'),('human','human','active'),('agent','agent','active'),('worker','worker','active');
     INSERT INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at)
     VALUES('runtime','Runtime','/code/runtime',3601,'node','[]','/',45000,'now','now');

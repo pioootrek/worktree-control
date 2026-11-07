@@ -1,3 +1,4 @@
+import { resumeFixtureSecurity } from "../../infrastructure/sqlite/fixtures/protected-security";
 import { existsSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -90,13 +91,15 @@ describe("operator restore orchestration", () => {
     await f.backups.close(); f.store.close();
     const handoff = recoverBackupHandoff(f.database, f.attachments, f.policy)!;
     expect(handoff.operationId).toBe(accepted.operationId);
+    expect(()=>new SqliteStateStore(f.database)).toThrow(/security_fence/);
+    resumeFixtureSecurity(f.database);
     const restored = new SqliteStateStore(f.database);
     try {
       finishBackupHandoff(f.database, handoff, restored);
       expect(() => assertBackupHandoffCompleted(f.database)).not.toThrow();
       const auth = new AuthenticationService(restored), identity = new IdentityService(restored, undefined, undefined, undefined, auth);
       expect(auth.authenticateInstallation(f.oldToken)).toBeNull();
-      expect(auth.authenticateInstallation(f.newToken)).not.toBeNull();
+      expect(auth.authenticateInstallation(f.newToken)).toBeNull();
       expect(() => identity.authenticateBearer(f.owner.token)).toThrow();
       expect(restored.listProjects().map(p => p.name)).toEqual(["Before"]);
       restored.addProject({ name: "Post-restore", repositoryPath: join(f.root, "post"), port: 4402, executable: "node", args: [] });
@@ -149,6 +152,8 @@ describe("restore execution mode versus next boot selection", () => {
     expect(JSON.parse(readFileSync(path, "utf8")).payload).toMatchObject({ format: 2, executionMode: "token", authentication: { mode: "open" } });
     await f.backups.close(); f.store.close(); f.execute();
     const handoff = recoverBackupHandoff(f.database, f.attachments, f.policy)!;
+    expect(()=>new SqliteStateStore(f.database)).toThrow(/security_fence/);
+    resumeFixtureSecurity(f.database,"open");
     const restored = new SqliteStateStore(f.database);
     try {
       finishBackupHandoff(f.database, handoff, restored);
@@ -156,7 +161,7 @@ describe("restore execution mode versus next boot selection", () => {
       expect(next.assertStartupPolicy()).toMatchObject({ activeMode: "open", configuredMode: "open", restartRequired: false });
       expect(next.anonymousInstallation()).not.toBeNull();
       expect(next.authenticateInstallation(f.newToken)).toBeNull();
-      expect(next.verifyInstallationToken(f.newToken)).toBe(true);
+      expect(next.verifyInstallationToken(f.newToken)).toBe(false);
       expect(next.verifyInstallationToken(f.oldToken)).toBe(false);
     } finally { restored.close(); }
   });
@@ -169,6 +174,8 @@ describe("restore execution mode versus next boot selection", () => {
     delete record.executionMode; record.format = 1; writeRecord(path, record);
     const recovered = recoverBackupHandoff(f.database, f.attachments, f.policy)!;
     expect(recovered.format).toBe(1);
+    expect(()=>new SqliteStateStore(f.database)).toThrow(/security_fence/);
+    resumeFixtureSecurity(f.database);
     const restored = new SqliteStateStore(f.database);
     try { finishBackupHandoff(f.database, recovered, restored); expect(new AuthenticationService(restored).mode()).toBe("token"); }
     finally { restored.close(); }

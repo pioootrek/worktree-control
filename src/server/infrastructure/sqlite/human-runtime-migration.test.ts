@@ -1,7 +1,9 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { establishFixtureSecurity, resumeFixtureSecurity } from "./fixtures/protected-security";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
 import { humanRuntimePermissionsSchema } from "@/shared/contracts/runtime-memberships";
@@ -31,12 +33,12 @@ const authority=()=>({principalId:"human",sessionKey:"a".repeat(64),evidenceKey:
 const tables=(db:Database.Database,names:string[])=>names.map(t=>db.prepare(`SELECT * FROM ${t}`).all());
 describe("human runtime schema46 and durable intents",()=>{
   it("upgrades genuine45, preserving old membership/reservation/identity and every old checksum, with atomic rollback",()=>{
-    const db=new Database(":memory:");try{
+    const db=unmanagedFixtureDatabase(":memory:");try{
       genuine45(db);expect(inspectSchema(db).version).toBe(45);
       const names=["remote_principals","principal_credentials","runtime_human_memberships","reservations","knowledge_history","runtime_credential_scopes","test_run_requesters"],before=tables(db,names),registry=tables(db,["schema_migrations"]);
       expect(()=>initializeSchema(db,false,()=>{throw new Error("rollback46");})).toThrow("rollback46");
       expect(inspectSchema(db).version).toBe(45);expect(tables(db,names)).toEqual(before);
-      initializeSchema(db,false,inspectSchema);expect(inspectSchema(db).version).toBe(48);
+      initializeSchema(db,false,inspectSchema);expect(inspectSchema(db).version).toBe(49);
       expect(tables(db,names.filter(t=>t!=="reservations"))).toEqual(before.filter((_,i)=>i!==3));
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=45").all()).toEqual(registry[0]);
       expect(db.prepare("SELECT role,permissions_json FROM runtime_human_memberships").all()).toEqual([{role:"reader",permissions_json:'["projects:read"]'}]);
@@ -49,7 +51,7 @@ describe("human runtime schema46 and durable intents",()=>{
     const root=mkdtempSync(join(tmpdir(),"human-runtime-reboot-")),path=join(root,"state.sqlite3");
     let store:SqliteStateStore|undefined;
     try {
-      const db=new Database(path);genuine45(db);db.close();store=new SqliteStateStore(path);
+      const db=unmanagedFixtureDatabase(path);genuine45(db);db.close();establishFixtureSecurity(path);store=new SqliteStateStore(path);
       const a=authority(),q=store.humanRuntime();
       expect(q.begin(a,"p","interrupted","c".repeat(64))).toBeNull();
       const lease=q.claim(a,{projectId:"p",worktreePath:"/code/runtime",reason:"finite",key:"interrupted",fingerprint:"c".repeat(64),ttlSeconds:60});
@@ -61,17 +63,18 @@ describe("human runtime schema46 and durable intents",()=>{
       expect(()=>store!.humanRuntime().begin(a,"p","complete","e".repeat(64))).toThrowError(expect.objectContaining({code:"idempotency_conflict"}));
       await createControllerBackup(store,join(root,"backup"),{applicationVersion:"test",attachmentDirectory:join(root,"attachments")});
       const restoredPath=join(root,"restored.sqlite3");restoreControllerBackup(join(root,"backup"),restoredPath);
-      const restored=new SqliteStateStore(restoredPath);try{
-        expect(restored.humanRuntime().lease(lease.id)).toEqual(expected);
+      resumeFixtureSecurity(restoredPath); const restored=new SqliteStateStore(restoredPath);try{
+        expect(restored.humanRuntime().lease(lease.id)).toMatchObject({...expected,released:true});
+        expect(restored.runtimeMemberships().getRuntimeMembership("human","p")!.revokedAt).not.toBeNull();
         expect(restored.listPrincipalCredentials("human")).toEqual([]);
         expect(restored.runtimeMemberships().getRuntimeMembership("human","p")!.permissions).toEqual(["projects:read"]);
         expect(restored.hasAuthenticationProviderData()).toBe(false);
-        await expect(restored.recoverIssuedSessions({sessionRows:4096,sessionReconcileBatch:32})).rejects.toThrow();
+        await expect(restored.recoverIssuedSessions({sessionRows:4096,sessionReconcileBatch:32})).resolves.toBeUndefined();
       }finally{restored.close();}
     }finally{store?.close();rmSync(root,{recursive:true,force:true});}
   });
   it("bounds intent storage without evicting a live key, and cleans only after original session expiry",()=>{
-    const db=new Database(":memory:");try{
+    const db=unmanagedFixtureDatabase(":memory:");try{
       genuine45(db);initializeSchema(db);const q=new HumanRuntimeQueries(db),a=authority();
       for(let i=0;i<128;i++)expect(q.begin(a,"p",String(i),"c".repeat(64))).toBeNull();
       expect(()=>q.begin(a,"p","overflow","c".repeat(64))).toThrowError(expect.objectContaining({code:"capacity"}));
@@ -85,7 +88,7 @@ describe("human runtime schema46 and durable intents",()=>{
   it.each(["checksum","premature","permissions","marker"])("refuses %s corruption before changing the source",mode=>{
     const root=mkdtempSync(join(tmpdir(),"human-runtime-corrupt-")),path=join(root,"state.sqlite3");
     try{
-      const db=new Database(path);genuine45(db);initializeSchema(db);
+      const db=unmanagedFixtureDatabase(path);genuine45(db);initializeSchema(db);
       if(mode==="checksum")db.exec("UPDATE schema_migrations SET checksum='wrong' WHERE version=46");
       if(mode==="premature")db.exec("DELETE FROM schema_migrations WHERE version=46");
       if(mode==="permissions")db.exec(`UPDATE runtime_human_memberships SET role='operator',permissions_json='["env:use"]'`);

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
 import { SqliteStateStore } from "@/server/infrastructure/sqlite";
@@ -306,8 +306,8 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
     await retained.signIn();
     await g.runtime.dispose(); g.store.close();
     // Revoke the owner offline, as no current controller operation revokes owners.
-    const writer = new Database(g.path);
-    try { writer.prepare("UPDATE remote_principals SET status='revoked' WHERE id=?").run(g.owner.principalId); } finally { writer.close(); }
+    const offline = new SqliteStateStore(g.path);
+    try { (offline as unknown as {database:Database.Database}).database.prepare("UPDATE remote_principals SET status='revoked' WHERE id=?").run(g.owner.principalId); } finally { offline.close(); }
     const reopened = new SqliteStateStore(g.path);
     const reloaded = await loadProof(reopened);
     try {

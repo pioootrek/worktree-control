@@ -1,3 +1,4 @@
+import { unmanagedFixtureDatabase } from "./unmanaged-sqlite-fixture";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
@@ -6,7 +7,7 @@ import { join } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { RuntimeSnapshot, TestPreset, TestRun, Worktree } from "@/shared/contracts";
@@ -137,7 +138,7 @@ async function fixture(clock?: ManualMcpClock, verificationOnly = false, realTes
     return { client: await connect(credential.token), credential };
   };
   const audits = () => {
-    const db = new Database(paths.databasePath, { readonly: true });
+    const db = unmanagedFixtureDatabase(paths.databasePath, { readonly: true });
     try { return db.prepare("SELECT actor, event_type, details_json FROM audit_events WHERE event_type LIKE 'configuration.%' ORDER BY id").all() as Array<{ actor: string; event_type: string; details_json: string }>; }
     finally { db.close(); }
   };
@@ -350,7 +351,7 @@ describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
       await runIdentityCommand(["revoke-runtime-delegation", "--principal-id", f.agents[0].id, "--project-id", f.projects[0].id, "--expected-revision", "3"], onlinePaths, cli);
       expect(JSON.parse(lines.pop()!).delegation.revokedAt).toEqual(expect.any(String));
       expect(existsSync(onlinePaths.databasePath)).toBe(false);
-      const db = new Database(f.paths.databasePath, { readonly: true });
+      const db = unmanagedFixtureDatabase(f.paths.databasePath, { readonly: true });
       try {
         const persisted = JSON.stringify(db.prepare("SELECT * FROM principal_credentials").all()) + JSON.stringify(db.prepare("SELECT * FROM controller_audit_events").all());
         expect(persisted).not.toContain(issued.token);

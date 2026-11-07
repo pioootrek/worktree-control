@@ -1,3 +1,4 @@
+import { resumeFixtureSecurity } from "../../infrastructure/sqlite/fixtures/protected-security";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
@@ -26,12 +27,14 @@ it.each(["requested", "maintenance", "closed", "executing", "restore-intent", "r
     await Promise.race([once(child, "message", { signal: abort.signal }), once(child, "exit").then(() => { throw new Error(`Crash fixture missed boundary: ${stderr}`); })]);
     const exit = once(child, "exit"); child.kill("SIGKILL"); expect((await exit)[1]).toBe("SIGKILL");
     const handoff = recoverBackupHandoff(database, attachments, policy);
+    if(handoff)resumeFixtureSecurity(database);
     const restored = new SqliteStateStore(database);
     try {
       if (handoff) finishBackupHandoff(database, handoff, restored);
       expect(restored.listProjects().map(p => p.name)).toEqual(handoff ? ["Before"] : ["After", "Before"]);
       const authentication = new AuthenticationService(restored);
-      expect(authentication.authenticateInstallation(token)).not.toBeNull();
+      if(handoff){expect(authentication.authenticateInstallation(token)).toBeNull();expect(restored.getAuthenticationPolicy().mode).toBe("token");}
+      else expect(authentication.authenticateInstallation(token)).not.toBeNull();
       expect(authentication.authenticateInstallation(oldToken)).toBeNull();
       restored.addProject({ name: "After recovery", repositoryPath: join(root, "post"), port: 4442, executable: "node", args: [] });
     } finally { restored.close(); }

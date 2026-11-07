@@ -1,8 +1,10 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { resumeFixtureSecurity } from "./fixtures/protected-security";
 import { rewindHumanRuntime } from "./fixtures/schema-rewind";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
 import { IdentityService } from "@/server/modules/identity";
@@ -37,7 +39,7 @@ function fixture() {
 describe("test requester migration 44", () => {
   it("adds only an empty table after schema 43, rolls back together, and never backfills old jobs or ceilings", () => {
     const f = fixture(); f.store.saveTestRun(f.run, "kept"); f.store.close();
-    const db = new Database(f.path);
+    const db = unmanagedFixtureDatabase(f.path);
     try {
       rewindHumanRuntime(db);
       db.exec("DROP TABLE runtime_human_memberships; DELETE FROM schema_migrations WHERE version=45; DROP TABLE test_run_requesters; DELETE FROM schema_migrations WHERE version=44");
@@ -48,7 +50,7 @@ describe("test requester migration 44", () => {
       expect(() => initializeSchema(db, false, () => { throw new Error("rollback"); })).toThrow("rollback");
       expect(inspectSchema(db).version).toBe(43);
       initializeSchema(db, false, inspectSchema);
-      expect(inspectSchema(db).version).toBe(48);
+      expect(inspectSchema(db).version).toBe(49);
       expect(db.prepare("SELECT * FROM test_runs").all()).toEqual(run.map(row => ({ ...(row as object), provider_bound: 0 })));
       expect(db.prepare("SELECT * FROM runtime_credential_scopes").all()).toEqual(scopes);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=43").all()).toEqual(registry);
@@ -68,10 +70,11 @@ describe("test requester migration 44", () => {
     const backup = join(f.root, "backup");
     await createControllerBackup(f.store, backup, { applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") }); f.store.close();
     const path = join(f.root, "restored.sqlite3"); restoreControllerBackup(backup, path);
+    resumeFixtureSecurity(path);
     const restored = new SqliteStateStore(path);
     try { expect(restored.getTestRunRequester("run")).toEqual(f.requester); expect(restored.getTestRun("run")?.exitCode).toBe(42); }
     finally { restored.close(); }
-    const db = new Database(path);
+    const db = unmanagedFixtureDatabase(path);
     try {
       db.pragma("foreign_keys=ON"); db.prepare("DELETE FROM test_runs WHERE id='run'").run();
       expect(db.prepare("SELECT * FROM test_run_requesters").all()).toEqual([]);
@@ -80,7 +83,7 @@ describe("test requester migration 44", () => {
 
   it.each(["checksum", "binding", "premature-table"])("strictly refuses malformed %s without migration writes", mode => {
     const f = fixture(); f.store.saveTestRun(f.run, "key", f.requester); f.store.close();
-    const db = new Database(f.path);
+    const db = unmanagedFixtureDatabase(f.path);
     if (mode === "checksum") db.exec("UPDATE schema_migrations SET checksum='wrong' WHERE version=44");
     if (mode === "binding") db.exec("UPDATE test_run_requesters SET session_owner='agent:mcp:forged'");
     if (mode === "premature-table") db.exec("DELETE FROM schema_migrations WHERE version=44");

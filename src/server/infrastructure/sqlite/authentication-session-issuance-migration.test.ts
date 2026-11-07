@@ -1,10 +1,11 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { establishFixtureSecurity, resumeFixtureSecurity, openProtectedUpgradeFixture } from "./fixtures/protected-security";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
-import { openControllerStore } from "@/server/controller-storage";
 import { authenticationFactorChecksum, authenticationFactorMigration } from "./authentication-factor-migration";
 import { AuthenticationSessionIssuanceQueries } from "./authentication-session-issuance-queries";
 import { authenticationSessionIssuanceChecksum, authenticationSessionIssuanceMigration } from "./authentication-session-issuance-migration";
@@ -23,7 +24,11 @@ function directory() {
   return { root, path: join(root, "data", "state.sqlite3") };
 }
 function raw<T>(path: string, operation: (db: Database.Database) => T): T {
-  const db = new Database(path); try { return operation(db); } finally { db.close(); }
+  const db = unmanagedFixtureDatabase(path); try { return operation(db); } finally { db.close(); }
+}
+function guarded<T>(path:string,operation:(db:Database.Database)=>T):T {
+  const store=new SqliteStateStore(path);
+  try{return operation((store as unknown as {database:Database.Database}).database);}finally{store.close();}
 }
 const session = (id: string, expires = DEADLINE) => `INSERT INTO "authentication_ba_session"("id","expiresAt","token","createdAt","updatedAt","userId") VALUES('${id}','${expires}','token-${id}','2026-10-28T00:00:00.000Z','2026-10-28T00:00:00.000Z','subject');`;
 const evidence = (id: string, deadline = DEADLINE, subject = "subject") => `INSERT INTO authentication_session_evidence VALUES('${id}','better-auth','${subject}','password','2026-10-28T00:00:00.000Z','${deadline}',1,1,NULL,NULL,'attempt-${id}');`;
@@ -59,11 +64,11 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
   it("creates recognized empty storage on a fresh database and bumps the storage revision", () => {
     const f = directory(), store = new SqliteStateStore(f.path);
     try {
-      expect(store.schemaVersion()).toBe(48);
+      expect(store.schemaVersion()).toBe(49);
       expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     } finally { store.close(); }
     raw(f.path, db => {
-      expect(inspectSchema(db)).toEqual({ version: 48, fresh: false });
+      expect(inspectSchema(db)).toEqual({ version: 49, fresh: false });
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=41").get()).toEqual({ name: authenticationSessionIssuanceMigration.name, checksum: authenticationSessionIssuanceChecksum });
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=40").get()).toEqual({ name: authenticationFactorMigration.name, checksum: authenticationFactorChecksum });
       // No token, cookie, password, actor or process identity has a column here.
@@ -75,8 +80,8 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
     const f = genuine40(), attachmentDirectory = join(f.root, "attachments"), backups = join(f.root, "backups");
     const before = raw(f.path, db => ({ rows: preserved(db), registry: registry(db), bytes: readFileSync(f.path) }));
     expect(raw(f.path, db => inspectSchema(db).version)).toBe(40);
-    const store = await openControllerStore(f.path, { backupBeforeMigration: true, backupDirectory: backups, applicationVersion: "test", attachmentDirectory });
-    try { expect(store.schemaVersion()).toBe(48); } finally { store.close(); }
+    const store = await openProtectedUpgradeFixture(f.path, { backupBeforeMigration: true, backupDirectory: backups, applicationVersion: "test", attachmentDirectory });
+    try { expect(store.schemaVersion()).toBe(49); } finally { store.close(); }
     raw(f.path, db => {
       expect(preserved(db)).toEqual(before.rows);
       expect(registry(db)).toEqual(before.registry);
@@ -87,9 +92,10 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
     expect(JSON.parse(readFileSync(join(backups, backup, "manifest.json"), "utf8")).database.schemaVersion).toBe(40);
     const restoredPath = join(f.root, "restored", "state.sqlite3");
     restoreControllerBackup(join(backups, backup), restoredPath);
+    resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
-    try { expect(restored.schemaVersion()).toBe(48); } finally { restored.close(); }
-    raw(restoredPath, db => { expect(preserved(db)).toEqual(before.rows); });
+    try { expect(restored.schemaVersion()).toBe(49); } finally { restored.close(); }
+    raw(restoredPath, db => { expect(db.prepare("SELECT * FROM remote_principals ORDER BY rowid").all()).toEqual(before.rows.remote_principals); expect(db.prepare("SELECT * FROM authentication_totp_steps ORDER BY rowid").all()).toEqual(before.rows.authentication_totp_steps); expect(db.prepare("SELECT * FROM authentication_ba_session").all()).toEqual([]); });
   });
 
   it("rolls every migration effect back when initialization fails after the new DDL", () => {
@@ -106,14 +112,15 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
       expect(registry(db)).toEqual(before.registry);
       expect(inspectSchema(db).version).toBe(40);
     });
+    establishFixtureSecurity(f.path);
     const retry = new SqliteStateStore(f.path);
-    try { expect(retry.schemaVersion()).toBe(48); } finally { retry.close(); }
+    try { expect(retry.schemaVersion()).toBe(49); } finally { retry.close(); }
   });
 
   it("carries markers through a backup as a structurally valid snapshot, while its owner reports the restore", async () => {
     const f = genuine40();
-    new SqliteStateStore(f.path).close();
-    raw(f.path, db => db.exec(`${session("published")} ${evidence("published")} ${issuance("published", "may_publish")}
+    establishFixtureSecurity(f.path);
+    guarded(f.path, db => db.exec(`${session("published")} ${evidence("published")} ${issuance("published", "may_publish")}
       ${session("pending")} ${evidence("pending")} ${issuance("pending", "pending")}`));
     const target = join(f.root, "manual"), store = new SqliteStateStore(f.path);
     try { await createControllerBackup(store, target, { applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") }); } finally { store.close(); }
@@ -124,21 +131,23 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
     const bytes = () => raw(restoredPath, db => ({ rows: preserved(db), markers: db.prepare("SELECT * FROM authentication_session_issuance ORDER BY session_id").all() }));
     const before = bytes();
     expect(before.markers).toHaveLength(2);
+    resumeFixtureSecurity(restoredPath);
     const reopened = new SqliteStateStore(restoredPath);
     try {
       expect(reopened.databaseProvenance).toBe("restored");
-      // Community and token paths see an ordinary store. Only the destructive sweep refuses.
+      // The protected receipt acknowledges quarantine; history still reports restored.
       expect(reopened.getAuthenticationPolicy().mode).toBeDefined();
-      await expect(reopened.recoverIssuedSessions(POLICY)).rejects.toThrow("provenance");
-      expect(reopened.authenticationProviderStorage().sessionRecoveryComplete()).toBe(false);
+      await expect(reopened.recoverIssuedSessions(POLICY)).resolves.toBeUndefined();
+      expect(reopened.authenticationProviderStorage().sessionRecoveryComplete()).toBe(true);
     } finally { reopened.close(); }
-    expect(bytes()).toEqual(before);
+    expect(bytes().markers).toEqual([]);
+    expect(bytes().rows.remote_principals).toEqual(before.rows.remote_principals);
   });
 
   it("recovers an ordinary restart once, removing positively owned rows only", async () => {
     const f = genuine40();
-    new SqliteStateStore(f.path).close();
-    raw(f.path, db => db.exec(`${session("published")} ${evidence("published")} ${issuance("published", "may_publish")}
+    establishFixtureSecurity(f.path);
+    guarded(f.path, db => db.exec(`${session("published")} ${evidence("published")} ${issuance("published", "may_publish")}
       ${session("lapsed", "2026-10-29T00:00:00.000Z")} ${evidence("lapsed", "2026-10-29T00:00:00.000Z")} ${issuance("lapsed", "may_publish", "2026-10-29T00:00:00.000Z")}
       ${session("pending-a")} ${evidence("pending-a")} ${issuance("pending-a", "pending")}
       ${session("pending-b")} ${evidence("pending-b")} ${issuance("pending-b", "pending")}
@@ -163,8 +172,8 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
 
   it("refuses a pending row it cannot resolve, without skipping it into readiness", async () => {
     const opened = genuine40();
-    new SqliteStateStore(opened.path).close();
-    raw(opened.path, db => db.exec(`${session("pending")} ${evidence("pending")} ${issuance("pending", "pending")}`));
+    establishFixtureSecurity(opened.path);
+    guarded(opened.path, db => db.exec(`${session("pending")} ${evidence("pending")} ${issuance("pending", "pending")}`));
     const live = new SqliteStateStore(opened.path);
     try {
       // After the open-time validation: only a row changed under a running owner can look like this.
@@ -203,7 +212,7 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
   ];
   it.each(damaged)("refuses %s without writing", (_, change, message) => {
     const f = genuine40();
-    new SqliteStateStore(f.path).close();
+    establishFixtureSecurity(f.path);
     raw(f.path, db => { db.exec("INSERT INTO remote_principals VALUES('owner-2','owner','revoked')"); db.pragma("foreign_keys = OFF"); db.exec(change); });
     const bytes = readFileSync(f.path);
     expect(() => new SqliteStateStore(f.path)).toThrow(message);
@@ -235,7 +244,7 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
 
   it("deletes the marker with its session, through the existing cascades", () => {
     const f = genuine40();
-    new SqliteStateStore(f.path).close();
+    establishFixtureSecurity(f.path);
     raw(f.path, db => {
       db.pragma("foreign_keys = ON");
       db.exec(`${issuance("released", "may_publish")} DELETE FROM "authentication_ba_session" WHERE "id"='released';`);

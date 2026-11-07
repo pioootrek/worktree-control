@@ -1,10 +1,12 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { establishFixtureSecurity } from "./fixtures/protected-security";
 import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { createHash } from "node:crypto";
 import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { TestRun } from "@/shared/contracts";
@@ -56,10 +58,11 @@ describe("SqliteStateStore", () => {
     const initial = new SqliteStateStore(path);
     const project = initial.addProject(projectInput("Legacy", "/code/legacy", 3218));
     initial.close();
-    const legacy = new Database(path);
+    const legacy = unmanagedFixtureDatabase(path);
     stripMigrationProvenance(legacy);
     legacy.exec("ALTER TABLE knowledge_import_batches DROP COLUMN authentication_method; ALTER TABLE projects DROP COLUMN launch_preset; DELETE FROM schema_migrations WHERE version > 12;");
     legacy.close();
+    establishFixtureSecurity(path);
     const repaired = new SqliteStateStore(path);
     expect(repaired.getProject(project.id)?.launchPreset).toBe("auto");
     expect(repaired.listProjects()[0].launchPreset).toBe("auto");
@@ -82,10 +85,11 @@ describe("SqliteStateStore", () => {
     const auto = initial.addProject({ ...projectInput("Auto", "/code/auto", 3216), launchPreset: "auto" });
     const django = initial.addProject({ ...projectInput("Django", "/code/django", 3217), launchPreset: "django" });
     initial.close();
-    const legacy = new Database(path);
+    const legacy = unmanagedFixtureDatabase(path);
     stripMigrationProvenance(legacy);
     legacy.exec("DELETE FROM schema_migrations WHERE version >= 13");
     legacy.close();
+    establishFixtureSecurity(path);
     const repaired = new SqliteStateStore(path);
     expect(repaired.getProject(auto.id)?.launchPreset).toBe("auto");
     expect(repaired.getProject(django.id)?.launchPreset).toBe("django");
@@ -151,12 +155,13 @@ describe("SqliteStateStore", () => {
     store.saveTestRun(run);
     store.close();
 
-    const database = new Database(databasePath);
+    const database = unmanagedFixtureDatabase(databasePath);
     database.exec("ALTER TABLE test_runs DROP COLUMN source_json");
     stripMigrationProvenance(database);
     database.prepare("DELETE FROM schema_migrations WHERE version >= 12").run();
     database.close();
 
+    establishFixtureSecurity(databasePath);
     const migrated = new SqliteStateStore(databasePath);
     expect(migrated.getTestRun(run.id)?.source).toMatchObject({ attribution: "legacy_unknown", enqueue: null, processOutcome: null });
     migrated.close();
@@ -177,7 +182,7 @@ describe("SqliteStateStore", () => {
     expect(() => store.removeProject(project.id, "local-user")).toThrow("Nie znaleziono projektu");
     expect(store.addProject(projectInput("New App", "/code/new-app", 3210)).port).toBe(3210);
 
-    const database = new Database(databasePath);
+    const database = unmanagedFixtureDatabase(databasePath);
     const event = database.prepare("SELECT actor, details_json FROM controller_audit_events WHERE event_type = 'project.removed'").get() as { actor: string; details_json: string };
     expect(event.actor).toBe("local-user");
     expect(JSON.parse(event.details_json)).toMatchObject({ projectId: project.id, name: "Old App", port: 3210 });
@@ -260,13 +265,14 @@ describe("SqliteStateStore", () => {
     const project = store.addProject(projectInput("Web", "/code/web", 3212));
     store.close();
 
-    const database = new Database(databasePath);
+    const database = unmanagedFixtureDatabase(databasePath);
     database.prepare("UPDATE projects SET args_json = ? WHERE id = ?")
       .run(JSON.stringify(["dev", "--", "--port", "3212"]), project.id);
     stripMigrationProvenance(database);
     database.prepare("DELETE FROM schema_migrations WHERE version >= 2").run();
     database.close();
 
+    establishFixtureSecurity(databasePath);
     const migrated = new SqliteStateStore(databasePath);
     expect(migrated.getProject(project.id)?.args).toEqual(["run", "dev"]);
     migrated.close();
@@ -306,7 +312,7 @@ describe("SqliteStateStore", () => {
     store.deleteProjectEnvironmentProfile(project.id, "default", "agent:mcp:test");
     expect(store.getProject(project.id)?.environmentProfiles).toEqual([{ name: "e2e", environment: { PLAYWRIGHT_E2E: "1" } }]);
     store.close();
-    const database = new Database(databasePath);
+    const database = unmanagedFixtureDatabase(databasePath);
     const audit = database.prepare("SELECT actor, details_json FROM audit_events WHERE event_type = 'project.environment_profile_saved'").get() as { actor: string; details_json: string };
     expect(audit.actor).toBe("agent:mcp:test");
     expect(JSON.parse(audit.details_json)).toEqual({ profileName: "e2e", variableNames: ["PLAYWRIGHT_E2E"] });
@@ -322,11 +328,12 @@ describe("SqliteStateStore", () => {
     store.saveProjectEnvironmentProfile(project.id, { name: "staging", environment: { FEATURE_MODE: "staging" } }, "local-user");
     store.close();
 
-    const database = new Database(databasePath);
+    const database = unmanagedFixtureDatabase(databasePath);
     stripMigrationProvenance(database);
     database.prepare("DELETE FROM schema_migrations WHERE version >= 9").run();
     database.close();
 
+    establishFixtureSecurity(databasePath);
     const migrated = new SqliteStateStore(databasePath);
     expect(migrated.getProject(project.id)?.environmentProfiles).toEqual([
       { name: "default", environment: {} },
@@ -379,7 +386,7 @@ describe("SqliteStateStore", () => {
     const directory = mkdtempSync(join(tmpdir(), "worktree-control-store-v2-"));
     directories.push(directory);
     const databasePath = join(directory, "state.sqlite3");
-    const database = new Database(databasePath);
+    const database = unmanagedFixtureDatabase(databasePath);
     database.exec(readFileSync(new URL("./fixtures/schema-v12.sql", import.meta.url), "utf8"));
     database.exec(`
       DELETE FROM schema_migrations WHERE version > 2;
@@ -392,6 +399,7 @@ describe("SqliteStateStore", () => {
     `);
     database.close();
 
+    establishFixtureSecurity(databasePath);
     const migrated = new SqliteStateStore(databasePath);
     expect(migrated.getProject("legacy")).toMatchObject({ tlsMode: "off", tlsKeyPath: null, launchPreset: "node" });
     migrated.close();
@@ -401,7 +409,7 @@ describe("SqliteStateStore", () => {
     const directory = mkdtempSync(join(tmpdir(), "worktree-control-store-v3-"));
     directories.push(directory);
     const databasePath = join(directory, "state.sqlite3");
-    const database = new Database(databasePath);
+    const database = unmanagedFixtureDatabase(databasePath);
     database.exec(readFileSync(new URL("./fixtures/schema-v12.sql", import.meta.url), "utf8"));
     database.exec(`
       DELETE FROM schema_migrations WHERE version > 3;
@@ -417,10 +425,11 @@ describe("SqliteStateStore", () => {
     `);
     database.close();
 
+    establishFixtureSecurity(databasePath);
     const migrated = new SqliteStateStore(databasePath);
     migrated.close();
     new SqliteStateStore(databasePath).close();
-    const inspected = new Database(databasePath);
+    const inspected = unmanagedFixtureDatabase(databasePath);
     const columns = inspected.prepare("PRAGMA table_info(reservations)").all() as Array<{ name: string }>;
     expect(columns.map(({ name }) => name)).toEqual(expect.arrayContaining([
       "maximum_expires_at",

@@ -1,7 +1,8 @@
+import { unmanagedFixtureDatabase } from "../server/unmanaged-sqlite-fixture";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+
 import { afterEach, expect, it } from "vitest";
 import { acquireControllerLock } from "@/server/controller-lock";
 import { AuthenticationService } from "@/server/modules/authentication";
@@ -36,7 +37,7 @@ it("exports and imports a logical project in open mode without token variables a
   await runBackupCommand(["export-project",projectId,exported],source,"test",line=>lines.push(line),{});
   expect(JSON.parse(lines[0]!)).toMatchObject({projectId});
   await runBackupCommand(["import-project",exported],target,"test",()=>{},{});
-  const database=new Database(target.databasePath,{readonly:true});
+  const database=unmanagedFixtureDatabase(target.databasePath,{readonly:true});
   expect(database.prepare("SELECT principal_id, authentication_method FROM knowledge_history WHERE project_id = ? AND record_kind = 'task'").all(projectId))
     .toEqual([{principal_id:"installation",authentication_method:"none"}]);
   database.close();

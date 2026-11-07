@@ -1,3 +1,5 @@
+import { SecurityFence } from "./security-fence";
+import { ExclusiveSqliteConnection } from "./exclusive-connection";
 import Database from "better-sqlite3";
 import { IdentityService } from "@/server/modules/identity";
 import { acquireDatabaseOwnership } from "./owned-database";
@@ -15,10 +17,11 @@ export function openRemoteRecoveryInspection(path: string) {
   try {
     database = new Database(ownership.path, { readonly: true, fileMustExist: true });
     if (inspectSchema(database).version !== SUPPORTED_SCHEMA_VERSION) throw new Error("recovery_schema_upgrade_required");
+    const core=new ExclusiveSqliteConnection(database,{},SecurityFence.attach(ownership.path,database,false)).core;
     return {
-      identity: new IdentityService(new InspectionIdentityQueries(database)),
-      connection: new RemoteConnectionQueries(database),
-      close() { try { database!.close(); } finally { ownership.lock.release(); } },
+      identity: new IdentityService(new InspectionIdentityQueries(core)),
+      connection: new RemoteConnectionQueries(core),
+      close() { database!.close(); ownership.lock.release(); },
     };
   } catch (error) { try { database?.close(); } finally { ownership.lock.release(); } throw error; }
 }

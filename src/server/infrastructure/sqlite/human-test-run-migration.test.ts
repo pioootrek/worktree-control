@@ -1,8 +1,10 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { resumeFixtureSecurity } from "./fixtures/protected-security";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import type { TestRun } from "@/shared/contracts";
 import type { HumanTestRunRequester } from "@/server/state-store";
@@ -39,12 +41,12 @@ function fixture() {
 }
 describe("human test attribution schema47",()=>{
   it("upgrades genuine46 atomically without changing SQL/checksums1..46 or backfilling jobs/rights",()=>{
-    const db=new Database(":memory:");try{
+    const db=unmanagedFixtureDatabase(":memory:");try{
       genuine46(db);expect(inspectSchema(db).version).toBe(46);
       const tables=["schema_migrations","remote_principals","principal_credentials","runtime_human_memberships","reservations","knowledge_history","runtime_credential_scopes","test_run_requesters"];
       const before=tables.map(t=>db.prepare(`SELECT * FROM ${t}`).all());
       expect(()=>initializeSchema(db,false,()=>{throw new Error("rollback47");})).toThrow("rollback47");expect(inspectSchema(db).version).toBe(46);expect(tables.map(t=>db.prepare(`SELECT * FROM ${t}`).all())).toEqual(before);
-      initializeSchema(db,false,inspectSchema);expect(inspectSchema(db).version).toBe(48);
+      initializeSchema(db,false,inspectSchema);expect(inspectSchema(db).version).toBe(49);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=46").all()).toEqual(before[0]);
       expect(tables.slice(1).map(t=>db.prepare(`SELECT * FROM ${t}`).all())).toEqual(before.slice(1));
       expect(db.prepare("SELECT * FROM human_test_run_requesters").all()).toEqual([]);
@@ -67,8 +69,8 @@ describe("human test attribution schema47",()=>{
   it("retains typed nonsecret attribution through backup/restore/reopen, without granting provider authority",async()=>{
     const f=fixture();try{
       f.store.saveTestRun(f.run,"key",f.requester);const backup=join(f.root,"backup");await createControllerBackup(f.store,backup,{applicationVersion:"test",attachmentDirectory:join(f.root,"attachments")});f.store.close();
-      const path=join(f.root,"restored.sqlite3");restoreControllerBackup(backup,path);const store=new SqliteStateStore(path);try{
-        expect(store.getHumanTestRunRequester(f.run.id)).toEqual(f.requester);expect(store.schemaVersion()).toBe(48);
+      const path=join(f.root,"restored.sqlite3");restoreControllerBackup(backup,path);resumeFixtureSecurity(path);const store=new SqliteStateStore(path);try{
+        expect(store.getHumanTestRunRequester(f.run.id)).toEqual(f.requester);expect(store.schemaVersion()).toBe(49);
         const identity=new IdentityService(store,undefined,undefined,undefined,undefined,store,undefined,store.runtimeMemberships());
         expect(()=>identity.validateHumanVerificationAuthority(f.requester.authority,f.requester.reference,f.run.projectId)).toThrow();
       }finally{store.close();}
@@ -76,7 +78,7 @@ describe("human test attribution schema47",()=>{
   });
   it.each(["missing","corrupt","marker","checksum","premature"])("refuses %s attribution on current lookup and/or reopen without rewriting data",mode=>{
     const f=fixture();try{
-      f.store.saveTestRun(f.run,"key",f.requester);f.store.close();const db=new Database(f.path);
+      f.store.saveTestRun(f.run,"key",f.requester);f.store.close();const db=unmanagedFixtureDatabase(f.path);
       if(mode==="missing")db.exec("DELETE FROM human_test_run_requesters");
       if(mode==="corrupt")db.exec("UPDATE human_test_run_requesters SET reference_json='{}'");
       if(mode==="marker")db.exec("UPDATE test_runs SET provider_bound=0");

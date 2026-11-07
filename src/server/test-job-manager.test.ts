@@ -51,6 +51,23 @@ function fixture() {
 }
 
 describe("TestJobManager", () => {
+  it("stops only its verified owned group after witness loss and refuses to report completed persistence",async()=>{
+    const {store,project,manager,worktree,command}=fixture();
+    const cmd=command(60_000);cmd.args=["-e","console.log('owned-pid:'+process.pid);setInterval(()=>{},1000)"];cmd.preset.timeoutMs=60_000;
+    const run=manager.enqueue({projectId:project.id,worktree:worktree(project.repositoryPath),command:cmd,environment:resolved(),actor:"local-user"});
+    let pid=0;
+    await vi.waitFor(()=>{const line=store.getTestRun(run.id)?.logs.find(value=>value.startsWith("owned-pid:"));expect(line).toBeTruthy();pid=Number(line!.slice(10));});
+    rmSync(join(project.repositoryPath,"state.sqlite3.security","witness.json"));
+    try {
+      await expect(manager.shutdown()).rejects.toThrow(/persistence remains unconfirmed/);
+      await vi.waitFor(()=>expect(()=>process.kill(pid,0)).toThrow());
+      expect(()=>manager.enqueue({projectId:project.id,worktree:worktree(project.repositoryPath),command:cmd,environment:resolved(),actor:"local-user"})).toThrow();
+    } finally {
+      managers.splice(managers.indexOf(manager),1);
+      await manager.shutdown().catch(()=>undefined);
+      store.close();
+    }
+  },15_000);
   const cleanSource = (): TestSourceObservation => ({ observedAt: new Date().toISOString(), head: "aaa", branch: "main", dirty: false, statusDigest: "empty", statusEntries: 0, complete: true, errorCode: null });
 
   it("blocks all new execution after uncertain remote process recovery without signalling unknown processes", async () => {

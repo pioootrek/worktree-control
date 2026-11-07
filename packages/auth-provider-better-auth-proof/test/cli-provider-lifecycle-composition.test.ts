@@ -241,7 +241,6 @@ describe("production shared provider composition", () => {
 
   it("refuses restored pending rows before loading, without sweeping them as unpublished", async () => {
     const f = await compositionFixture(); let http: Awaited<ReturnType<Fixture["listen"]>> | undefined;
-    let restored: SqliteStateStore | undefined, restoredComposition: ReturnType<typeof createControllerAuthentication> | undefined;
     try {
       await f.command("enroll"); http = await f.listen(); await http.client.authenticated();
       const storage = f.store.authenticationProviderStorage(), connection = storage.createProviderConnection();
@@ -250,21 +249,12 @@ describe("production shared provider composition", () => {
       const backup = join(f.root, "snapshot"), target = join(f.root, "restored", "state.sqlite3");
       await f.run(() => createControllerBackup(f.store, backup, { applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") }));
       restoreControllerBackup(backup, target);
-      restored = new SqliteStateStore(target);
-      const authentication = new AuthenticationService(restored); restored.requireAdmission();
-      const loader = vi.fn(loadAuthenticationProvider);
-      restoredComposition = createControllerAuthentication({ store: restored, dataDirectory: f.paths.dataDirectory,
-        authentication, actor: "local-admin", loadProvider: loader });
-      expect(restored.databaseProvenance).toBe("restored");
       const markers = () => readCommitted(target, db => db.prepare("SELECT * FROM authentication_session_issuance").all());
       const before = markers(); expect(before).toHaveLength(1);
-      await expect(restoredComposition.execute({ command: "auth-provider", action: "recover", principalId: EXISTING_OWNER,
-        input: { newPassword: "restored-recovery-password-1" } })).rejects.toMatchObject({ code: "provider_failed" });
-      await expect(restoredComposition.prepareBrowserAuthentication({ origin: ORIGIN,
-        knowledge: new KnowledgeService(restored, restoredComposition.identity) })).rejects.toThrow("provenance");
-      expect(loader).not.toHaveBeenCalled(); expect(markers()).toEqual(before);
-      expect(restored.authenticationProviderStorage().sessionRecoveryComplete()).toBe(false);
-    } finally { await restoredComposition?.dispose(); await restored?.closeAfterDrain(); await http?.close(); await f.cleanup(); }
+      expect(()=>new SqliteStateStore(target)).toThrow(/security_fence_recovery_required/);
+      expect(markers()).toEqual(before); // Refusal did not sweep restored pending rows.
+
+    } finally { await http?.close(); await f.cleanup(); }
   });
 
   it("invalid current configuration rejects an already retained actor without relying on notifications", async () => {

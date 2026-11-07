@@ -1,10 +1,11 @@
+import { unmanagedFixtureDatabase } from "../server/unmanaged-sqlite-fixture";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import { acquireControllerLock } from "../server/controller-lock";
@@ -159,7 +160,7 @@ describe("identity management CLI", () => {
     expect(result.token).toMatch(/^wts_[0-9a-f-]{36}_[0-9a-f]{64}$/);
     expect(Date.parse(result.credential.expiresAt)).toBeGreaterThan(Date.now());
 
-    const database = new Database(appPaths.databasePath, { readonly: true });
+    const database = unmanagedFixtureDatabase(appPaths.databasePath, { readonly: true });
     const persisted = JSON.stringify(database.prepare("SELECT * FROM principal_credentials").all())
       + JSON.stringify(database.prepare("SELECT * FROM controller_audit_events").all());
     expect(persisted).not.toContain(result.token);

@@ -1,3 +1,4 @@
+import { SecurityFence } from "./security-fence";
 import { SCOPED_TEST_PRESET_OVERRIDE_LIMIT } from "@/shared/contracts/scoped-configuration";
 import { HumanConfigurationQueries } from "./human-configuration-queries";
 import type { HumanConfigurationIntent, HumanConfigurationCommit } from "@/server/modules/environments";
@@ -55,7 +56,7 @@ import { AuthenticationSessionIssuanceQueries } from "./authentication-session-i
 import { AUTHENTICATION_PROVIDER_STORAGE_REVISION } from "./authentication-provider-migration";
 import type { HubImportBatch, HubImportExecutionStore, HubImportMapping, KnowledgeHistoryEntry, KnowledgeMutationContext, KnowledgeMutationResult, KnowledgePage, KnowledgeProjectSnapshot, KnowledgeRelation, KnowledgeReply, KnowledgeRuntimeLinkResult, KnowledgeStore, KnowledgeTask, KnowledgeThread } from "@/server/modules/knowledge";
 import { KnowledgeError, publishKnowledgeAttachment, DEFAULT_ATTACHMENT_LIMITS, assertAttachmentCapacity } from "@/server/modules/knowledge";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { initializeSchema } from "./migrations";
@@ -88,19 +89,22 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   private readonly ownedDatabase: OwnedSqliteDatabase;
   /** Every query module receives `connection.core`; the raw handle stays here. */
   private readonly connection: ExclusiveSqliteConnection;
+  private readonly securityFence: SecurityFence;
   private sessionRecovery: Promise<void> | undefined;
   private sessionsRecovered = false;
 
   constructor(databasePath: string, inspected?: OwnedSqliteDatabase, connectionOptions?: ExclusiveConnectionOptions) {
     this.ownedDatabase = inspected ?? new OwnedSqliteDatabase(databasePath, true);
     try {
+      SecurityFence.inspect(this.ownedDatabase.canonicalPath, this.ownedDatabase.database, this.ownedDatabase.inspection.fresh);
       const writable = this.ownedDatabase.enableWrites();
       configureDurability(writable);
       initializeSchema(writable, this.ownedDatabase.inspection.fresh, inspectSchema);
       assertDurability(writable);
       this.ownedDatabase.completeInitialization();
       // Query modules register functions while being built; strict admission starts once they exist.
-      this.connection = new ExclusiveSqliteConnection(writable, { ...connectionOptions, admission: "compatible" });
+      this.securityFence=SecurityFence.attach(this.ownedDatabase.canonicalPath, writable, this.ownedDatabase.inspection.fresh);
+      this.connection = new ExclusiveSqliteConnection(writable, { ...connectionOptions, admission: "compatible" }, this.securityFence);
       this.database = this.connection.core;
       this.testRuns = new TestRunQueries(this.database);
       this.storage = new StorageQueries(this.database);
@@ -1434,11 +1438,13 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
    * The ordinary-restart recovery of this owner's lifetime, before any issuer can
    * exist. It runs once however often it is called, so a later runtime can never
    * read another runtime's live `pending` rows as a dead process's leftovers.
-   * Restore provenance comes from this owner, and a refusal changes no row.
+   * The external fence is checked before writes and on every SQL execution. A restored
+   * owner reaches this point only with a durable protected quarantine receipt.
+   * Historical provenance remains unchanged; this is acknowledgement, not erasure.
    */
   recoverIssuedSessions(policy: SessionRowPolicy): Promise<void> {
     const validated = validateSessionRowPolicy(policy);
-    this.sessionRecovery ??= recoverIssuedSessions({ provenance: this.ownedDatabase.provenance, policy: validated, store: new AuthenticationSessionIssuanceQueries(this.database),
+    this.sessionRecovery ??= recoverIssuedSessions({ provenance: this.securityFence.sessionRecoveryProvenance(this.ownedDatabase.provenance), policy: validated, store: new AuthenticationSessionIssuanceQueries(this.database),
       run: operation => this.admission.run(operation), now: () => new Date().toISOString() }).then(() => { this.sessionsRecovered = true; });
     return this.sessionRecovery;
   }

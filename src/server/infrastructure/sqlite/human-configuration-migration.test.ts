@@ -1,8 +1,11 @@
+import { resumeFixtureSecurity } from "./fixtures/protected-security";
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { humanConfigurationFingerprint, type HumanConfigurationIntent } from "@/server/modules/environments";
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
@@ -47,14 +50,14 @@ function fixture() {
 }
 describe("human configuration schema48 and atomic ledger", () => {
   it("upgrades genuine47 without changing history, identities, grants or memberships and rolls back a failed upgrade", () => {
-    const db = new Database(":memory:");
+    const db = unmanagedFixtureDatabase(":memory:");
     try {
       genuine47(db); expect(inspectSchema(db).version).toBe(47);
       const tables = ["schema_migrations", "remote_principals", "principal_credentials", "runtime_human_memberships", "reservations", "knowledge_history", "runtime_credential_scopes", "test_runs"];
       const before = tables.map(t => db.prepare(`SELECT * FROM ${t}`).all());
       expect(() => initializeSchema(db, false, () => { throw new Error("rollback48"); })).toThrow("rollback48");
       expect(inspectSchema(db).version).toBe(47); expect(tables.map(t => db.prepare(`SELECT * FROM ${t}`).all())).toEqual(before);
-      initializeSchema(db, false, inspectSchema); expect(inspectSchema(db).version).toBe(48);
+      initializeSchema(db, false, inspectSchema); expect(inspectSchema(db).version).toBe(49);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=47").all()).toEqual(before[0]);
       expect(tables.slice(1).map(t => db.prepare(`SELECT * FROM ${t}`).all())).toEqual(before.slice(1));
       expect(db.prepare("SELECT name,checksum FROM schema_migrations WHERE version=48").get()).toEqual({ name: humanConfigurationMigration.name, checksum: humanConfigurationChecksum });
@@ -64,7 +67,7 @@ describe("human configuration schema48 and atomic ledger", () => {
   it.each(["profiles:select", "config:write"])("refuses a premature %s grant in a genuine47 file before any upgrade writes", permission => {
     const root = mkdtempSync(join(tmpdir(), "premature-configuration-")), path = join(root, "state.sqlite3");
     try {
-      const db = new Database(path); genuine47(db);
+      const db = unmanagedFixtureDatabase(path); genuine47(db);
       db.prepare("UPDATE runtime_human_memberships SET permissions_json=?").run(JSON.stringify([permission])); db.close();
       const before = readFileSync(path);
       expect(() => new SqliteStateStore(path)).toThrow(/runtime membership permissions/);
@@ -98,8 +101,12 @@ describe("human configuration schema48 and atomic ledger", () => {
       expect(reopened.getProjectConfigurationRevision(f.project.id)).toBe(1);
       reopened.close();
       const restored = join(f.root, "restored.sqlite3"); restoreControllerBackup(backup, restored);
-      reopened = new SqliteStateStore(restored); expect(reopened.beginHumanConfiguration(f.intent)).toEqual(receipt);
-      // Storage retains evidence only. Actual provider authority is still required by the application.
+      resumeFixtureSecurity(restored);
+      reopened = new SqliteStateStore(restored);
+      expect(()=>reopened!.beginHumanConfiguration(f.intent)).toThrow();
+      const evidence=unmanagedFixtureDatabase(restored,{readonly:true});
+      try{expect(JSON.parse((evidence.prepare("SELECT result_json FROM human_runtime_intents WHERE configuration_bound=1").get() as {result_json:string}).result_json)).toEqual(receipt);}finally{evidence.close();}
+      // Quarantine retains original evidence without adopting the revoked membership or session.
     } finally { reopened?.close(); f.store.close(); f.remove(); }
   });
   it("shares CAS with the historical agent mutation and rejects changed intent fields", () => {
@@ -120,7 +127,7 @@ describe("human configuration schema48 and atomic ledger", () => {
     const f = fixture();
     try {
       f.store.beginHumanConfiguration(f.intent); f.store.commitHumanConfiguration({ intent: f.intent, operationId: randomUUID() }); f.store.close();
-      const db = new Database(f.path);
+      const db = unmanagedFixtureDatabase(f.path);
       if (mode === "context") db.exec("UPDATE human_runtime_intents SET configuration_context_json=NULL");
       if (mode === "marker") db.exec("UPDATE human_runtime_intents SET configuration_bound=0");
       if (mode === "checksum") db.exec("UPDATE schema_migrations SET checksum='wrong' WHERE version=48");

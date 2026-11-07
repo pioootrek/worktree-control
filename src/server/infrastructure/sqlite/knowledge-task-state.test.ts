@@ -1,7 +1,8 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SqliteStateStore } from "./sqlite-state-store";
 import { IdentityService } from "@/server/modules/identity";
@@ -67,7 +68,7 @@ function mergedNotDeployed(evidence: string[] = []): TaskStateInput & { blockers
 describe("task current state", () => {
   it("adds the nullable column through migration 33 and reports a missing state honestly", () => {
     const f = setup();
-    const database = new Database(f.path, { readonly: true });
+    const database = unmanagedFixtureDatabase(f.path, { readonly: true });
     try {
       expect(database.prepare("SELECT max(version) AS version, name FROM schema_migrations WHERE version = 33").get()).toEqual({ version: 33, name: "knowledge-task-current-state" });
       expect((database.prepare("PRAGMA table_info(knowledge_tasks)").all() as Array<{ name: string; notnull: number }>).find(column => column.name === "current_state_json")).toMatchObject({ notnull: 0 });
@@ -228,7 +229,7 @@ describe("task current state", () => {
   it("replaces an unreadable stored state and keeps the raw text in history", () => {
     const f = setup();
     f.write(mergedNotDeployed());
-    const database = new Database(f.path);
+    const database = unmanagedFixtureDatabase(f.path);
     try { database.prepare("UPDATE knowledge_tasks SET current_state_json = ? WHERE id = ?").run("{broken", f.task.id); } finally { database.close(); }
     expect(f.read()).toMatchObject({ state: null, stateUnreadable: true });
 

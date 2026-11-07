@@ -550,8 +550,7 @@ membership revision and original no-claim/exact-claim context govern durable
 receipts, including after reopening the store. See
 [the operational contract](authentication.md#human-literal-profiles-and-preset-timeouts-p2c).
 
-P3a supplies protected recovery below. P3b still owns external restore/revocation
-fences. Minimum agent diagnostics, complete transport enforcement, public mount,
+P3a supplies protected account recovery below. P3b supplies the external restore/revocation fence and protected installation resume. Minimum agent diagnostics, complete transport enforcement, public mount,
 activation, release and client migration remain separate acceptance gates.
 
 ### Protected recovery boundary (P3a)
@@ -563,5 +562,29 @@ factors; explicit `factors: "reset"` requires a new password and the provider's
 factor bindings, challenge authority and account generation change in one sole
 connection transaction. IDs, roles, grants, audit, TOTP steps and account budgets
 remain. See [authentication](authentication.md#protected-factor-loss-recovery-p3a) for the operator contract.
-Restored provenance remains denied until P3b; public account activation and A5
-transport enforcement remain separate gates.
+P3b now requires an external checkpoint and protected quarantine receipt before restored provider loading. Public account activation and A5 transport enforcement remain separate gates.
+
+### External restore checkpoint and protected resume (P3b)
+
+Migration49 adds a fixed SQLite checkpoint and authority-table triggers, preserving
+migrations1..48. The sole core/provider connection publishes a private external
+pending witness from the BEFORE-trigger observer before authority rows change,
+and a confirmed witness after FULL SQLite COMMIT.
+Normal confirmed restarts preserve current rights. Supported restore and raw
+DB-only rollback fail closed before provider/listeners, including older schemas.
+The bounded witness binds the canonical database path and installation outside
+the application backup payload; custom state-directory nesting does not change
+that boundary. Whole-host rollback including the witness is outside this local
+OS-owner trust model.
+
+Protected offline `auth fence inspect/establish/resume` uses both singleton locks
+and an exact preflight. Resume quarantines restored credentials, sessions, factors,
+passwords, grants, leases and pending work, preserves the same owner and history,
+then acknowledges the existing handoff and publishes a durable receipt. No public
+session or token can perform it. Captured mode/token policy remains historical
+evidence; resumed mode is explicit, and old verifiers stay invalid. Schedules and
+vault use an additional receipt floor while retaining their separate signed proof.
+See [operator flow and crash protocol](authentication.md#external-security-fence-and-protected-resume-p3b).
+Production account-mode selection/public mounting, minimum agent diagnostics,
+complete transport enforcement, independent review and verified release/client
+migration remain A5 gates. The five historical factor negatives remain visible.

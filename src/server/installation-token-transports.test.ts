@@ -1,10 +1,11 @@
+import { unmanagedFixtureDatabase } from "./unmanaged-sqlite-fixture";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SqliteStateStore } from "./sqlite-store";
@@ -135,7 +136,7 @@ describe("installation token mode across transports", () => {
     });
     expect(admin.status).toBe(200);
 
-    const database = new Database(f.databasePath, { readonly: true });
+    const database = unmanagedFixtureDatabase(f.databasePath, { readonly: true });
     const history = database.prepare("SELECT principal_id, authentication_method FROM knowledge_history WHERE record_kind = 'task'").all();
     database.close();
     expect(history).toEqual([{ principal_id: "installation", authentication_method: "installation_token" }]);
@@ -186,7 +187,7 @@ describe("installation token mode across transports", () => {
     cleanups.push(() => client.close());
     expect((await client.listTools()).tools.map(({ name }) => name)).toEqual(expect.arrayContaining(["list_projects", "knowledge_create_task"]));
 
-    const database = new Database(f.databasePath, { readonly: true });
+    const database = unmanagedFixtureDatabase(f.databasePath, { readonly: true });
     const history = database.prepare("SELECT principal_id, authentication_method FROM knowledge_history WHERE record_kind = 'task'").all();
     database.close();
     expect(history).toEqual([{ principal_id: "installation", authentication_method: "none" }]);
@@ -221,7 +222,7 @@ describe("installation token mode across transports", () => {
     expect((await f.cli("identity", ["list-knowledge-grants", "--principal-id", agent.id])).grants)
       .toEqual([expect.objectContaining({ projectId: f.project.id, permissions: ["knowledge:read"] })]);
 
-    const database = new Database(f.databasePath, { readonly: true });
+    const database = unmanagedFixtureDatabase(f.databasePath, { readonly: true });
     const history = database.prepare("SELECT principal_id, authentication_method FROM knowledge_history WHERE record_kind = 'task'").all();
     database.close();
     expect(history).toEqual([{ principal_id: "installation", authentication_method: "none" }]);

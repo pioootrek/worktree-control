@@ -1,3 +1,5 @@
+import { rmSync } from "node:fs";
+import { securityTriggers } from "../security-fence-migration";
 import type Database from "better-sqlite3";
 import { rebuildTable } from "../verification-project-migration";
 
@@ -18,6 +20,13 @@ export const WITHOUT_AUTHENTICATION_PROVIDER_STORAGE = `DROP TABLE authenticatio
 
 /** Only synthetic fixture databases; production migrations and checksums stay immutable. */
 export function rewindHumanConfiguration(database: Database.Database): void {
+  if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=49").get()) {
+    for(const trigger of securityTriggers) database.exec(`DROP TRIGGER IF EXISTS ${trigger.name}`);
+    database.exec("DROP TABLE security_checkpoint; DELETE FROM schema_migrations WHERE version=49");
+    // A synthetic older release never owned an external witness. This helper is
+    // fixture construction only; production restore never removes that evidence.
+    if(database.name!==":memory:")rmSync(`${database.name}.security`,{recursive:true,force:true});
+  }
   if (!database.prepare("SELECT 1 FROM schema_migrations WHERE version=48").get()) return;
   database.exec("ALTER TABLE human_runtime_intents DROP COLUMN configuration_context_json; ALTER TABLE human_runtime_intents DROP COLUMN configuration_bound; DELETE FROM schema_migrations WHERE version=48");
   rebuildTable(database, "runtime_human_memberships", "BETWEEN 1 AND 6", "BETWEEN 1 AND 4");

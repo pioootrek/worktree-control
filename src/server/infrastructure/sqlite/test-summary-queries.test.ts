@@ -1,8 +1,10 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { establishFixtureSecurity } from "./fixtures/protected-security";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it } from "vitest";
 import { legacySourceEvidence } from "@/server/test-source-attribution";
 import { emptyTelemetry } from "@/server/modules/verification";
@@ -53,30 +55,32 @@ describe("durable bounded test summary history", () => {
   it("migrates a real v28 database, backfills honest legacy data and records checked provenance", () => {
     const f = fixture(); const run = f.run(); f.store.saveTestRun(run);
     f.store.close(); stores.splice(stores.indexOf(f.store), 1);
-    const old = new Database(f.path);
+    const old = unmanagedFixtureDatabase(f.path);
     rewindProviderSessionHistory(old); old.exec(WITHOUT_AUTHENTICATION_PROVIDER_STORAGE + "DROP TABLE test_run_summaries; DROP TABLE test_summary_coverage; ALTER TABLE test_runs DROP COLUMN telemetry_json; DELETE FROM schema_migrations WHERE version>=29;");
     expect(inspectSchema(old).version).toBe(28); old.close();
+    establishFixtureSecurity(f.path);
     const owned = new OwnedSqliteDatabase(f.path);
     const reopened = new SqliteStateStore(f.path, owned); stores.push(reopened);
-    expect(reopened.schemaVersion()).toBe(48);
+    expect(reopened.schemaVersion()).toBe(49);
     expect(reopened.getTestRun(run.id)?.telemetry).toMatchObject({ availability: "legacy_unknown", admittedAt: null, exitedAt: null });
     expect(new TestSummaryQueries(owned.database).get(run.id)?.telemetry.durations.processMs).toBeNull();
     expect(owned.database.prepare("SELECT name,checksum FROM schema_migrations WHERE version=29").get()).toEqual({ name: telemetryMigration.name, checksum: telemetryChecksum });
-    expect(inspectSchema(owned.database).version).toBe(48);
+    expect(inspectSchema(owned.database).version).toBe(49);
   });
 
   it("rolls migration 29 and its backfill back together, and rejects changed provenance", () => {
     const f = fixture(); const run = f.run(); f.store.saveTestRun(run);
     f.store.close(); stores.splice(stores.indexOf(f.store), 1);
-    const old = new Database(f.path);
+    const old = unmanagedFixtureDatabase(f.path);
     rewindProviderSessionHistory(old); old.exec(WITHOUT_AUTHENTICATION_PROVIDER_STORAGE + "DROP TABLE test_run_summaries; DROP TABLE test_summary_coverage; ALTER TABLE test_runs DROP COLUMN telemetry_json; DELETE FROM schema_migrations WHERE version>=29;");
     expect(() => initializeSchema(old, false, () => { throw Error("injected migration validation failure"); })).toThrow("injected migration");
     expect(inspectSchema(old).version).toBe(28);
     expect(old.prepare("SELECT 1 FROM sqlite_master WHERE name='test_run_summaries'").get()).toBeUndefined();
     expect(old.prepare("SELECT id FROM test_runs").get()).toEqual({ id: run.id });
     old.close();
+    establishFixtureSecurity(f.path);
     const reopened = new SqliteStateStore(f.path); reopened.close();
-    const tampered = new Database(f.path);
+    const tampered = unmanagedFixtureDatabase(f.path);
     tampered.exec("UPDATE schema_migrations SET checksum='wrong' WHERE version=29"); tampered.close();
     expect(() => new SqliteStateStore(f.path)).toThrow("migration checksum or name");
   });

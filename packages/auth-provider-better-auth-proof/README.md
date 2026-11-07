@@ -907,9 +907,8 @@ focused core plus real-provider matrix. Full proof retains its historical native
 old-bounded TOTP replay and failed-guess rollback negatives; this slice does not
 change or skip them. Provider contract/storage/implementation remain 5/3/5.
 Public login/account-mode selection remains gated. P2b1 human runtime leases
-and control are described below; P2b2 jobs/remaining transports and protected
-external restore fencing (P3b) remains open.
-The current restored-provenance refusal remains across boots. These tests neither
+and control are described below. P3b supplies external restore fencing and
+protected quarantine. Unacknowledged restored provenance refuses across boots. These tests neither
 activate the installed service nor certify full RBAC readiness.
 
 ## Human runtime mutations (P2b1)
@@ -933,7 +932,7 @@ exact own status, foreign and cloned actors, lease expiry, disconnect/concurrent
 retry, real database/provider reopening with the same cookie, and interrupted
 intent returning outcome_unknown without repeating effects. Reboots preserve only
 still-current ordinary sessions. Restored provider load remains P1 fail-closed;
-P3a supplies protected recovery below. P3b must supply external revocation fencing before activation.
+P3a supplies protected recovery below. P3b now supplies external revocation fencing and protected quarantine; activation still waits for A5.
 Receipts/identity/logs expose no native session/binding secrets, ENV, commands or
 global capacity. Release, expiry and revocation do not stop an existing process.
 
@@ -951,5 +950,29 @@ factors; explicit `factors: "reset"` requires a new password and the provider's
 factor bindings, challenge authority and account generation change in one sole
 connection transaction. IDs, roles, grants, audit, TOTP steps and account budgets
 remain. See [authentication](../../docs/authentication.md#protected-factor-loss-recovery-p3a) for the operator contract.
-Restored provenance remains denied until P3b; public account activation and A5
-transport enforcement remain separate gates.
+P3b now requires an external checkpoint and protected quarantine receipt before restored provider loading. Public account activation and A5 transport enforcement remain separate gates.
+
+### External restore checkpoint and protected resume (P3b)
+
+Migration49 adds a fixed SQLite checkpoint and authority-table triggers, preserving
+migrations1..48. The sole core/provider connection publishes a private external
+pending witness from the BEFORE-trigger observer before authority rows change,
+and a confirmed witness after FULL SQLite COMMIT.
+Normal confirmed restarts preserve current rights. Supported restore and raw
+DB-only rollback fail closed before provider/listeners, including older schemas.
+The bounded witness binds the canonical database path and installation outside
+the application backup payload; custom state-directory nesting does not change
+that boundary. Whole-host rollback including the witness is outside this local
+OS-owner trust model.
+
+Protected offline `auth fence inspect/establish/resume` uses both singleton locks
+and an exact preflight. Resume quarantines restored credentials, sessions, factors,
+passwords, grants, leases and pending work, preserves the same owner and history,
+then acknowledges the existing handoff and publishes a durable receipt. No public
+session or token can perform it. Captured mode/token policy remains historical
+evidence; resumed mode is explicit, and old verifiers stay invalid. Schedules and
+vault use an additional receipt floor while retaining their separate signed proof.
+See [operator flow and crash protocol](../../docs/authentication.md#external-security-fence-and-protected-resume-p3b).
+Production account-mode selection/public mounting, minimum agent diagnostics,
+complete transport enforcement, independent review and verified release/client
+migration remain A5 gates. The five historical factor negatives remain visible.

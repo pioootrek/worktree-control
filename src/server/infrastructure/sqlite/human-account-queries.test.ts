@@ -1,7 +1,8 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { HumanAccountService, IdentityService } from "@/server/modules/identity";
 import { HumanAccountQueries } from "./human-account-queries";
@@ -10,7 +11,7 @@ import { initializeSchema } from "./migrations";
 
 const NOW = "2026-11-02T12:00:00.000Z";
 function fixture(path = ":memory:") {
-  const db = new Database(path); initializeSchema(db); db.pragma("foreign_keys = ON");
+  const db = unmanagedFixtureDatabase(path); initializeSchema(db); db.pragma("foreign_keys = ON");
   const queries = new IdentityQueries(db), identity = new IdentityService(queries);
   const owner = identity.bootstrapOwnerSession(), actor = identity.authenticateBearer(owner.token);
   const humans = new HumanAccountService(new HumanAccountQueries(db), "local-cli", () => NOW);
@@ -82,7 +83,7 @@ describe("ordinary human account aggregate", () => {
       f.db.prepare("UPDATE authentication_provider_subjects SET status='revoked',revoked_at=? WHERE subject='human'").run(NOW);
       expect(f.humans.disable(f.human.id).changed).toBe(true);
       f.db.close();
-      reopened = new Database(path); reopened.pragma("foreign_keys = ON");
+      reopened = unmanagedFixtureDatabase(path); reopened.pragma("foreign_keys = ON");
       const humans = new HumanAccountService(new HumanAccountQueries(reopened), "local-cli");
       expect(humans.disable(f.human.id).changed).toBe(false);
       expect(humans.reclaimDisabledSession(f.human.id)).toBe(true);
