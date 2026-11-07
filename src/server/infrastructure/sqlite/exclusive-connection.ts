@@ -747,9 +747,8 @@ function coreStatement(
       if (boundary && !statement.readonly) throw fail("unadmitted", "Mutating SQL iterators are unavailable.");
       // An admitted operation's cursors close when it ends, before a provider can be admitted.
       const iterator = execute(() => statement.iterate(...parameters)) as IterableIterator<unknown>;
-      let finished:(()=>void)|undefined;
       const guarded=guardedIterator(iterator,assert,()=>finished?.(),execute);
-      finished=track(guarded);return guarded;
+      const finished=track(guarded);return guarded;
     },
     pluck(...parameters: [boolean?]) { statement.pluck(...parameters); return wrapper; },
     expand(...parameters: [boolean?]) { statement.expand(...parameters); return wrapper; },
