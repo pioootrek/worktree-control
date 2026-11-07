@@ -167,7 +167,8 @@ describe("protected runtime reader input", () => {
       await expect(providerCommandFromArgs(["provider", "runtime-access", "set", "--input-stdin"], Readable.from([JSON.stringify({ ...input, ...extra })])))
         .rejects.toMatchObject({ code: "invalid_input" });
     }
-    await expect(providerCommandFromArgs(["provider", "runtime-access", "set", "--input-stdin"], Readable.from(['{"principalId":"a","principalId":"b"}'])))
+    const repeated = JSON.stringify(input).replace('"role":"reader"', '"role":"manager","role":"reader"');
+    await expect(providerCommandFromArgs(["provider", "runtime-access", "set", "--input-stdin"], Readable.from([repeated])))
       .rejects.toMatchObject({ code: "invalid_input" });
     for (const args of [["list", "--principal-id", "p", "--limit", "21"], ["list", "--principal-id", "p", "--input-stdin"],
       ["set", "--principal-id", "owner", "--input-stdin"], ["set", "--input-stdin", "--actor", "local-admin"]]) {

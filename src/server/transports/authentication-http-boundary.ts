@@ -1,5 +1,5 @@
 import type { IncomingMessage } from "node:http";
-import { BROWSER_COOKIE, type BrowserOperation } from "@/server/modules/authentication";
+import { parseStrictProviderJson, BROWSER_COOKIE, type BrowserOperation } from "@/server/modules/authentication";
 
 export class BoundaryError extends Error {
   constructor(readonly status: number, readonly code: string) { super(code); }
@@ -73,29 +73,7 @@ export async function readBoundedBody(request: IncomingMessage, options: { limit
  * `JSON.parse` would silently resolve as last-wins, plus excess depth and fields.
  */
 export function parseStrictJson(text: string, ceiling: { maxDepth: number; maxFields: number }): unknown {
-  let parsed: unknown;
-  try { parsed = JSON.parse(text); } catch { fail(400, "invalid_request"); }
-  const stack: Array<Set<string> | null> = [];
-  let fields = 0;
-  for (let index = 0; index < text.length; index++) {
-    const character = text[index];
-    if (character === "{" || character === "[") {
-      stack.push(character === "{" ? new Set() : null);
-      if (stack.length > ceiling.maxDepth) fail(400, "invalid_request");
-    } else if (character === "}" || character === "]") stack.pop();
-    else if (character === '"') {
-      const start = index++;
-      while (text[index] !== '"') index += text[index] === "\\" ? 2 : 1;
-      let next = index + 1;
-      while (text[next] === " " || text[next] === "\n" || text[next] === "\r" || text[next] === "\t") next++;
-      if (text[next] !== ":") continue;
-      // Compare decoded keys: "a" and "a" are the same field.
-      const key = JSON.parse(text.slice(start, index + 1)) as string, object = stack.at(-1);
-      if (!object || object.has(key) || ++fields > ceiling.maxFields) fail(400, "invalid_request");
-      object.add(key);
-    }
-  }
-  return parsed;
+  try { return parseStrictProviderJson(text, ceiling); } catch { fail(400, "invalid_request"); }
 }
 
 export const { session: SESSION_COOKIE, challenge: CHALLENGE_COOKIE, passkey: PASSKEY_COOKIE } = BROWSER_COOKIE;

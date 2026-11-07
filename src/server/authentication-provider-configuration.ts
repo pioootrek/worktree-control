@@ -4,7 +4,7 @@ import { dirname, isAbsolute } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 import { durableJson, privateDirectory, readPrivateBoundedFile, validateSensitivePath } from "./private-storage";
-import { ProviderAdminError, providerConfigurationInputSchema, type ProviderConfiguration, type ProviderConfigurationInput, type ProviderConfigurationPort } from "./modules/authentication";
+import { parseStrictProviderJson, ProviderAdminError, providerConfigurationInputSchema, type ProviderConfiguration, type ProviderConfigurationInput, type ProviderConfigurationPort } from "./modules/authentication";
 
 export const PROVIDER_INPUT_LIMIT = 8 * 1024;
 const persisted = z.object({ format: z.literal(1), providerId: z.literal("better-auth"),
@@ -13,7 +13,7 @@ const persisted = z.object({ format: z.literal(1), providerId: z.literal("better
 export function decodeProviderJson(bytes: Uint8Array): unknown {
   try {
     if (!bytes.byteLength || bytes.byteLength > PROVIDER_INPUT_LIMIT) throw new Error();
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    return parseStrictProviderJson(new TextDecoder("utf-8", { fatal: true }).decode(bytes), { maxDepth: 8, maxFields: 128 });
   } catch { throw new ProviderAdminError("invalid_input"); }
 }
 
