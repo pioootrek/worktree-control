@@ -237,7 +237,7 @@ describe("protected CLI ordinary-human recovery", () => {
     let closeProvider: (() => Promise<void>) | undefined;
     try {
       if (!online) await f.configure();
-      const id = online?.principalId ?? await f.create();
+      const id = online ? ((await f.run(["human", "create"])).principal as { id: string }).id : await f.create();
       await f.run(["enroll", "--principal-id", id, ...f.input({ email: OWNER_EMAIL, name: "Owner", password: OWNER_PASSWORD })]);
       const open = async () => {
         const store = new SqliteStateStore(f.paths.databasePath), config = new FileProviderConfiguration(join(f.paths.dataDirectory, "authentication-provider.json")).read()!;
@@ -257,6 +257,18 @@ describe("protected CLI ordinary-human recovery", () => {
       const started = await login.post("/two-factor/enable", { password: OWNER_PASSWORD });
       const seed = new Authenticator(started.json!.totpURI as string);
       expect((await verify(login, seed.code())).status).toBe(200);
+      if (online) {
+        // Exercise an ordinary human with BOTH selected factors through the
+        // actual protected IPC, including the default preservation path.
+        const preservedPassword = "fixture-preserved-human-password";
+        await f.run(["recover", "--principal-id", id, ...f.input({ newPassword: preservedPassword })]);
+        const preserved = new Browser({ runtime });
+        expect((await preserved.signIn(preservedPassword)).json).toEqual({ outcome: "challenge" });
+        advance(2 * STEP); expect((await verify(preserved, seed.code())).status).toBe(200);
+        expect((await runtime.authenticate(new Headers({ cookie: preserved.cookieHeader() })))?.principalId).toBe(id);
+        const withKey = new Browser({ runtime });
+        expect((await withKey.post("/passkey/verify-authentication", { response: key.assert(await passkeyOptions(withKey, "authenticate")) })).status).toBe(200);
+      }
       if (!online) await closeProvider!();
       expect(await f.run(["recover", "--principal-id", id, ...f.input({ newPassword: nextPassword, factors: "reset" })])).toMatchObject({ recovered: true, removed: { totp: true, passkeys: 1 } });
       const current = online ? runtime : await open();
