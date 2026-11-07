@@ -192,7 +192,7 @@ describe("protected real provider factor-loss recovery", () => {
   it("invalidates a staged credential and confirmation context", async () => {
     const f = await create(), browser = f.browser(); await browser.signIn();
     const key = await stagePasskey(f, browser), options = await passkeyOptions(browser, "confirm");
-    await recover(f, "reset");
+    expect(await recover(f, "reset")).toEqual({ totp: false, passkeys: 1 });
     expect((await browser.post("/passkey/verify-confirmation", { response: key.assert(options) })).status).toBeGreaterThanOrEqual(400);
     expect((await protectionState(f)).staged).toBe(0);
   });

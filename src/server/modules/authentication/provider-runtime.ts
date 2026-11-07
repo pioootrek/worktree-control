@@ -916,7 +916,7 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
       if (input.factors === "reset") {
         const summary = await this.#instance.recoverLocalWithFactorReset!(request);
         if (!summary || typeof summary.totp !== "boolean" || !Number.isSafeInteger(summary.passkeys) || summary.passkeys < 0) {
-          throw new AuthenticationProviderError("outcome_unconfirmed", "Recovery outcome was not confirmed.");
+          throw new AuthenticationProviderError("outcome_committed", "Recovery committed, but its summary was not confirmed.", true);
         }
         return { totp: summary.totp, passkeys: summary.passkeys };
       }

@@ -33,8 +33,9 @@ export class AuthenticationProtectionQueries implements ProtectionStore {
   resetLocalFactors(subject: string): { totp: boolean; passkeys: number } {
     if (!this.database.inTransaction || !this.activePrincipal(subject)) throw new Error("Recovery requires an active account transaction.");
     const policy = this.account(subject);
-    const passkeys = (this.database.prepare("SELECT count(*) n FROM authentication_passkey_trust WHERE provider_id=? AND subject=?").get(this.providerId, subject) as { n: number }).n;
-    const summary = { totp: policy?.totpSelected ?? false, passkeys };
+    const passkeys = (this.database.prepare('SELECT count(*) n FROM authentication_ba_passkey WHERE "userId"=?').get(subject) as { n: number }).n;
+    const totp = !!this.database.prepare('SELECT 1 FROM authentication_ba_two_factor WHERE "userId"=? LIMIT 1').get(subject);
+    const summary = { totp, passkeys };
     if (!policy) this.createAccount(subject, new Date().toISOString());
     const changed = this.database.prepare(`UPDATE authentication_account_policies SET generation=generation+1, policy_revision=policy_revision+1,
       totp_selected=0, passkey_selected=0, updated_at=? WHERE provider_id=? AND subject=? AND generation < 9007199254740991 AND policy_revision < 9007199254740991`)
