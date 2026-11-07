@@ -1,4 +1,6 @@
 import { fileURLToPath } from "node:url";
+import { HumanAccountService } from "@/server/modules/identity";
+import { readFileSync, writeFileSync } from "node:fs";
 import { SqliteStateStore } from "@/server/infrastructure/sqlite";
 import { FileProviderConfiguration } from "@/server/authentication-provider-configuration";
 import { loadAuthenticationProvider } from "@/server/modules/authentication";
@@ -67,6 +69,26 @@ describe("protected real provider factor-loss recovery", () => {
     if (passkey) expect((await passkeyLogin(f, passkey)).result.status).toBeGreaterThanOrEqual(400);
   });
 
+  it("treats repeated empty resets as explicit new operations with monotonic generation", async () => {
+    const f = await create();
+    expect(await recover(f, "reset")).toEqual({ totp: false, passkeys: 0 });
+    const before = (await protectionState(f)).policy!;
+    expect(await recover(f, "reset")).toEqual({ totp: false, passkeys: 0 });
+    expect((await protectionState(f)).policy).toMatchObject({ generation: before.generation + 1, policy_revision: before.policy_revision + 1 });
+    expect((await f.browser().signIn(nextPassword)).status).toBe(200);
+  });
+
+  it("preserves both selected methods in ordinary password-only recovery", async () => {
+    const f = await create(), b = f.browser(); await b.signIn();
+    const key = await enrollPasskey(f, b), { authenticator } = await enrollTotp(f, (await passkeyLogin(f, key)).browser);
+    const before = await protectionState(f);
+    await recover(f);
+    expect((await protectionState(f)).policy).toEqual(before.policy);
+    expect((await passkeyLogin(f, key)).result.status).toBe(200);
+    advance(2 * STEP);
+    expect((await verify(await pendingLogin(f, nextPassword), authenticator.code())).status).toBe(200);
+  });
+
   it("reenrolls a new TOTP binding and refuses the old seed", async () => {
     const f = await create(), old = await enrollTotp(f);
     await recover(f, "reset"); advance(2 * STEP);
@@ -95,7 +117,7 @@ describe("protected real provider factor-loss recovery", () => {
     const faults: ProofFaultInjection = {}, f = await create(faults);
     const { authenticator } = await enrollTotp(f); await pendingLogin(f); advance(2 * STEP);
     const before = await snapshot(f);
-    const patterns = { sessions: /delete from "authentication_ba_session"/i, password: /update "authentication_ba_account"/i, native: /DELETE FROM authentication_ba_passkey/i, audit: /INSERT INTO controller_audit_events/i, commit: /^commit$/i };
+    const patterns = { sessions: /delete from "authentication_ba_session"/i, password: /update "authentication_ba_account"/i, commit: /^commit$/i };
     faults.sqlFault = { sql: patterns[edge as keyof typeof patterns], when: "before", remaining: 1 };
     await expect(recover(f, "reset")).rejects.toBeDefined();
     expect(await snapshot(f)).toEqual(before);
@@ -110,11 +132,11 @@ describe("protected real provider factor-loss recovery", () => {
     ["totp", "DELETE", "authentication_ba_two_factor"],
     ["flags", "UPDATE", "authentication_ba_user"],
     ["audit", "INSERT", "controller_audit_events"],
-  ])("rolls back native/core state on a real %s SQL failure", async (_edge, verb, table) => {
+  ])("rolls back native/core state on a real %s SQL failure", async (edge, verb, table) => {
     const f = await create(), b = f.browser(); await b.signIn();
     const key = await enrollPasskey(f, b); await enrollTotp(f, (await passkeyLogin(f, key)).browser); await pendingLogin(f);
     const before = await snapshot(f);
-    await sql(f, `CREATE TEMP TRIGGER recovery_fault BEFORE ${verb} ON ${table} BEGIN SELECT RAISE(ABORT, 'fixture recovery fault'); END`);
+    await sql(f, `CREATE TEMP TRIGGER recovery_fault BEFORE ${verb} ON ${table} BEGIN SELECT RAISE(ABORT, 'fixture recovery fault ${edge}'); END`);
     try { await expect(recover(f, "reset")).rejects.toBeDefined(); expect(await snapshot(f)).toEqual(before); }
     finally { await sql(f, "DROP TRIGGER recovery_fault"); }
   });
@@ -129,10 +151,11 @@ describe("protected real provider factor-loss recovery", () => {
 
   it.each(["agent", "worker", "missing", "unlinked", "disabled", "revoked-mapping", "ambiguous-owner"])("refuses %s without changing recovery state", async kind => {
     const f = await create(); let principalId = f.owner.principalId;
-    if (kind === "agent" || kind === "worker" || kind === "unlinked") {
+    if (kind === "agent" || kind === "worker") {
       principalId = "unrecoverable-principal";
-      await f.run(() => f.store.savePrincipal({ id: principalId, kind: kind === "unlinked" ? "human" : kind, status: "active" }, "fixture"));
+      await f.run(() => f.store.savePrincipal({ id: principalId, kind, status: "active" }, "fixture"));
     }
+    if (kind === "unlinked") principalId = (await f.run(() => new HumanAccountService(f.store.humanAccounts(), "local-cli").create())).id;
     if (kind === "missing") principalId = "missing-principal";
     if (kind === "disabled") await f.run(() => f.store.savePrincipal({ id: principalId, kind: "owner", status: "revoked" }, "fixture"));
     if (kind === "revoked-mapping") await sql(f, "UPDATE authentication_provider_subjects SET status='revoked', revoked_at=?", [new Date().toISOString()]);
@@ -238,6 +261,21 @@ describe("protected CLI ordinary-human recovery", () => {
       const before = readCommitted(f.paths.databasePath, db => db.prepare("SELECT * FROM authentication_ba_account").all());
       faults.beforeRecoveryHash = async () => { f.maintenance(); };
       await expect(f.run(["recover", "--principal-id", f.principalId, ...f.input({ newPassword: nextPassword, factors: "reset" })])).rejects.toMatchObject({ code: "maintenance" });
+      expect(readCommitted(f.paths.databasePath, db => db.prepare("SELECT * FROM authentication_ba_account").all())).toEqual(before);
+    } finally { await f.close(); }
+  });
+
+  it("refuses configuration drift during hashing without replacing the password", async () => {
+    const faults: ProofFaultInjection = {}, f = await onlineCliFixture({ faults });
+    try {
+      await f.run(["enroll", "--principal-id", f.principalId, ...f.input({ email: OWNER_EMAIL, name: "Owner", password: OWNER_PASSWORD })]);
+      const before = readCommitted(f.paths.databasePath, db => db.prepare("SELECT * FROM authentication_ba_account").all());
+      faults.beforeRecoveryHash = async () => {
+        const path = join(f.paths.dataDirectory, "authentication-provider.json");
+        const config = JSON.parse(readFileSync(path, "utf8"));
+        writeFileSync(path, JSON.stringify({ ...config, baseURL: "https://changed.fixture.invalid/api/auth" }), { mode: 0o600 });
+      };
+      await expect(f.run(["recover", "--principal-id", f.principalId, ...f.input({ newPassword: nextPassword, factors: "reset" })])).rejects.toMatchObject({ code: "provider_configuration_restart_required" });
       expect(readCommitted(f.paths.databasePath, db => db.prepare("SELECT * FROM authentication_ba_account").all())).toEqual(before);
     } finally { await f.close(); }
   });
