@@ -7,7 +7,7 @@ import { RuntimeMembershipQueries } from "./runtime-membership-queries";
 const now = "2026-11-07T12:00:00.000Z";
 function fixture() {
   const db = new Database(":memory:"); initializeSchema(db); db.pragma("foreign_keys=ON");
-  db.exec(`INSERT INTO remote_principals VALUES('owner','owner','active'),('human','human','active'),('agent','agent','active'),('worker','worker','active'),('installation','installation','active');
+  db.exec(`INSERT INTO remote_principals VALUES('owner','owner','active'),('human','human','active'),('agent','agent','active'),('worker','worker','active');
     INSERT INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at)
     VALUES('runtime','Runtime','/code/runtime',3601,'node','[]','/',45000,'now','now');
     INSERT INTO knowledge_projects VALUES('runtime','Same ID, separate namespace','active',1,'now','now'),('knowledge-only','Knowledge','active',1,'now','now');`);
