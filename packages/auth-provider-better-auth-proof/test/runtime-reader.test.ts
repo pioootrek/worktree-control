@@ -86,6 +86,9 @@ describe("real shared provider human runtime reader", () => {
       for (const action of ["claims:manage", "runtime:control", "profiles:select", "config:write", "tests:run"] as const) {
         await expect(f.core(() => f.composition.identity.authorizeRuntime(actor, f.a.id, action))).rejects.toMatchObject({ code: "runtime_forbidden" });
       }
+      await expect(f.core(() => f.service.scopedCompactProjectStatus(actor, { owner: "agent:mcp:spoof" }, f.a.id))).rejects.toMatchObject({ code: "project_access_denied" });
+      await expect(f.core(() => f.service.waitForScopedStatusChange(actor, { owner: "agent:mcp:spoof" }, { projectId: f.a.id, cursor: "spoof" }))).rejects.toMatchObject({ code: "project_access_denied" });
+      expect(f.service.statusWaitDiagnostics().waiters).toBe(0);
       await expect(f.core(() => f.composition.identity.requireOwnerSession(actor))).rejects.toMatchObject({ code: "owner_authentication_required" });
       await expect(f.core(() => f.service.claimScopedProject(actor, { owner: `agent:mcp:${SECRET}` }, { projectId: f.a.id, worktreePath: "/code/a", reason: "spoof", idempotencyKey: "spoof" }))).rejects.toMatchObject({ code: "project_access_denied" });
       await expect(f.app.execute(list, { ...actor } as ProviderSessionActor)).rejects.toMatchObject({ code: "invalid_credential" });
@@ -104,12 +107,12 @@ describe("real shared provider human runtime reader", () => {
     } finally { await f.close(); await other.close(); }
   });
 
-  it.each(["revoke", "disable", "logout", "recovery", "expiry", "role", "permissions", "membership-delete", "subject-revoke"] as const)("suppresses the HTTP and direct retained result after %s during Git discovery", async reason => {
+  it.each(["revoke", "disable", "logout", "recovery", "expiry", "role", "permissions", "membership-delete", "subject-revoke", "owner-disable", "permissions-malformed"] as const)("suppresses the HTTP and direct retained result after %s during Git discovery", async reason => {
     const f = await runtimeReaderFixture(), entered = gate(), resume = gate();
     let pending: Promise<unknown> | undefined;
     try {
-      const http = await login(f), principalId = reason === "recovery" ? EXISTING_OWNER : f.human;
-      const client = reason === "recovery" ? http.owner : http.human;
+      const http = await login(f), ownerRead = reason === "recovery" || reason === "owner-disable";
+      const principalId = ownerRead ? EXISTING_OWNER : f.human, client = ownerRead ? http.owner : http.human;
       await f.set(principalId); const actor = await f.actor(client);
       f.hooks.git = async () => { entered.open(); await resume.opened; };
       pending = client.call(route, { body: { operation: "list-worktrees", projectId: f.a.id } });
@@ -119,13 +122,14 @@ describe("real shared provider human runtime reader", () => {
       if (reason === "disable") await f.run(["human", "disable", "--principal-id", f.human]);
       if (reason === "logout") expect((await http.human.call("/api/auth/sign-out", { body: {} })).status).toBe(200);
       if (reason === "recovery") await f.run(["recover", "--principal-id", EXISTING_OWNER, ...f.input({ newPassword: "replacement-human-password-1" })]);
+      if (reason === "owner-disable") await f.sql("UPDATE remote_principals SET status='revoked' WHERE id=?", [EXISTING_OWNER]);
       if (reason === "expiry") await f.sql('UPDATE authentication_ba_session SET "expiresAt"=?', [new Date(Date.now() - 60_000).toISOString()]);
       if (reason === "membership-delete") await f.sql("DELETE FROM runtime_human_memberships WHERE principal_id=?", [f.human]);
       if (reason === "subject-revoke") await f.sql("UPDATE authentication_provider_subjects SET status='revoked',revoked_at=? WHERE principal_id=?", [new Date().toISOString(), f.human]);
-      if (reason === "role" || reason === "permissions") {
+      if (reason === "role" || reason === "permissions" || reason === "permissions-malformed") {
         // Simulate corrupted current rows; policy must still refuse a retained actor.
         await f.sql("PRAGMA ignore_check_constraints=ON");
-        try { await f.sql(reason === "role" ? "UPDATE runtime_human_memberships SET role='manager'" : `UPDATE runtime_human_memberships SET permissions_json='["tests:run"]'`); }
+        try { await f.sql(reason === "role" ? "UPDATE runtime_human_memberships SET role='manager'" : reason === "permissions-malformed" ? "UPDATE runtime_human_memberships SET permissions_json='null'" : `UPDATE runtime_human_memberships SET permissions_json='["tests:run"]'`); }
         finally { await f.sql("PRAGMA ignore_check_constraints=OFF"); }
       }
       resume.open(); const result = await pending as { status: number; body: unknown };
@@ -171,17 +175,32 @@ describe("real shared provider human runtime reader", () => {
 
   it("holds the shared HTTP slot until cancelled discovery actually settles and emits no result", async () => {
     const f = await runtimeReaderFixture(), entered = gate(), resume = gate();
+    const slow: Array<{ abort(): void; completed: Promise<unknown> }> = [];
     try {
       const http = await login(f); await f.set(f.human);
       f.hooks.git = async () => { entered.open(); await resume.opened; };
-      const request = http.human.start(route, { body: { operation: "list-worktrees", projectId: f.a.id } });
+      const request = http.human.start(route);
       const cancelled = request.completed.catch(error => error);
       request.send(JSON.stringify({ operation: "list-worktrees", projectId: f.a.id }));
-      await entered.opened; request.abort(); await cancelled;
-      // Other admitted controller work remains possible while the abandoned Git callback settles.
+      await entered.opened;
+      // Occupy the other 15 real controller slots with bounded, incomplete bodies.
+      for (let i = 0; i < 15; i++) {
+        const call = http.human.start(route);
+        slow.push({ abort: call.abort, completed: call.completed.catch(error => error) });
+        call.write('{"operation":');
+      }
+      await vi.waitFor(async () => expect((await http.human.call(route, { body: list })).status).toBe(503));
+      request.abort(); await cancelled;
+      expect((await http.human.call(route, { body: list })).status).toBe(503);
       expect(await f.core(() => f.store.getPrincipal(f.human))).toMatchObject({ status: "active" });
+      for (const call of slow) call.abort();
+      await Promise.all(slow.map(call => call.completed));
       resume.open();
-    } finally { resume.open(); await f.close(); }
+      await vi.waitFor(async () => expect((await http.human.call(route, { body: list })).status).toBe(200));
+    } finally {
+      for (const call of slow) call.abort();
+      resume.open(); await Promise.allSettled(slow.map(call => call.completed)); await f.close();
+    }
   });
 
   it("applies runtime-specific origin, peer, cookie, strict JSON and body bounds through the same closed adapter", async () => {

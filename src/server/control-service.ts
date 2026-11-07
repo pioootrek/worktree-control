@@ -5,7 +5,7 @@ import { EnvironmentService, redactProject, ScopedConfigurationService, type Sco
 import type { AuthenticatedPrincipal } from "./modules/identity";
 import { KnowledgeService, type KnowledgeHistoryEntry, type KnowledgeHistoryOptions, type KnowledgePageOptions, type KnowledgeRecordKind, type KnowledgeTaskPriority, type KnowledgeTaskStatus, type KnowledgeWriteOptions } from "./modules/knowledge";
 import { leaseTokenHash, type OperationActor, ProjectLifecycle } from "./modules/lifecycle";
-import { AGENT_LEASE_DEFAULT_SECONDS, AGENT_LEASE_MAX_SECONDS, RuntimeService, ScopedRuntimeService, ScopedRuntimeError, type RuntimeAuthorizer, type ScopedClaimRequest, type ScopedSession } from "./modules/runtime";
+import { AGENT_LEASE_DEFAULT_SECONDS, AGENT_LEASE_MAX_SECONDS, RuntimeService, ScopedRuntimeService, ScopedRuntimeError, RuntimeAccessDenied, type RuntimeAuthorizer, type ScopedClaimRequest, type ScopedSession } from "./modules/runtime";
 import { StatusService, type CompactProjectStatus, type CompactTestStatus, type CompactEnvelope } from "./modules/status";
 import { VerificationService, VerificationHistoryService, ScopedVerificationService } from "./modules/verification";
 import type { RemoteVerificationController } from "./modules/remote-verification";
@@ -122,11 +122,14 @@ export class ControlService {
   scopedProjects(actor: AuthenticatedPrincipal, session: ScopedSession | null) { return this.requireScopedRuntime().listProjects(actor, session); }
   scopedProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession | null, projectId: string) { return this.requireScopedRuntime().projectStatus(actor, session, projectId); }
   scopedCompactProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string) {
+    // Cursor/wait binding remains the established machine session contract.
+    if (actor.authenticationMethod === "provider_session") throw new RuntimeAccessDenied();
     const status = this.requireScopedRuntime().compactProjectStatus(actor, session, projectId);
     return this.statusQueries.scopedProject(status, JSON.stringify([actor.principalId, actor.credentialId, session.owner]));
   }
   waitForScopedStatusChange(actor: AuthenticatedPrincipal, session: ScopedSession,
     input: { projectId: string; cursor: string; timeoutMs?: number }, signal?: AbortSignal, sessionClosed?: () => boolean) {
+    if (actor.authenticationMethod === "provider_session") throw new RuntimeAccessDenied();
     return this.statusQueries.wait({ kind: "scoped-project", id: input.projectId, read: () => {
       if (sessionClosed?.()) throw new Error("STATUS_CLOSED");
       return this.scopedCompactProjectStatus(actor, session, input.projectId);
