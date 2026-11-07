@@ -561,7 +561,7 @@ admitted phase. Accepted cleanup uses reserved queue room on the same gate, with
 lock, counter or connection.
 
 Current isolated provider API is contract 5, storage revision 3, implementation
-`0.0.0-proof.5` and core schema 43. Earlier versions evolved as follows.
+`0.0.0-proof.5` and core schema 44. Earlier versions evolved as follows.
 Provider API contract 2 requires durable `signOut`; version 1 fails compatibility
 checks. Contract 3 adds the application-owned `host.protection` port: the provider
 calls it synchronously inside its open transaction, and `AccountProtection` keeps

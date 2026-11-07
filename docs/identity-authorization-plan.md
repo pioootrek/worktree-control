@@ -264,8 +264,8 @@ privileged approval and vault proof substitution. Schema 39 widens only
 Knowledge history audit attribution, and schema 40 adds factor and evidence storage
 with historical provider storage revision 2. Issuance schema 41 uses revision 3;
 schema 42 adds ordinary humans without changing provider contract 5,
-storage 3 or proof implementation 5. Current core schema 43 adds only Godot Web
-project configuration. Earlier migration SQL/checksums remain unchanged.
+storage 3 or proof implementation 5. Core schema 43 adds Godot Web project configuration; current schema 44 adds
+immutable scoped-test requester attribution without changing the provider. Earlier migration SQL/checksums remain unchanged.
 Full/logical backup compatibility
 has focused migration tests. Protected CLI failure/concurrency handling and
 isolated closed HTTP/factor routes are implemented. Safe production integration
