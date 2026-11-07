@@ -171,6 +171,7 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
     const expected = knownStructure().get(table)!;
     const columns = database.prepare(`PRAGMA table_info("${table}")`).all() as Column[];
     for (const column of columns) {
+      if (table === "reservations" && column.name === "provider_bound" && version < 46) refuse("human lease marker precedes migration 46");
       const known = expected.columns.find(x => x.name === column.name);
       if (!known || known.type !== column.type || known.pk !== column.pk || known.notnull !== column.notnull) refuse();
       // A strict column may not appear before the migration that introduces it.
@@ -189,7 +190,7 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
     }
     const historicalLease = table === "reservations" && actualChecks.includes(historicalLeaseCheck);
     // A known historical expression must not hide additional, unknown CHECKs.
-    if (historicalLease && (actualChecks.length !== 2 || !actualChecks.includes("kindin('human','agent')"))) refuse("constraint in reservations: lease");
+    if (historicalLease && (actualChecks.length !== (version >= 46 ? 3 : 2) || !actualChecks.includes("kindin('human','agent')"))) refuse("constraint in reservations: lease");
     for (let check of expected.checks) {
       if (table === "runtime_human_memberships" && version < 46) {
         if (check.startsWith("role")) check = "role='reader'";

@@ -7,7 +7,7 @@ import { ReservationError } from "@/server/state-store";
 import { mapReservation, type ReservationRow } from "./reservation-mapping";
 
 export class HumanRuntimeQueries implements HumanRuntimeStore {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: Database.Database, private readonly expireReservations: (projectId: string) => void = () => undefined) {}
   begin(a: HumanRuntimeAuthority, projectId: string, key: string, fingerprint: string): HumanRuntimeIntent | null {
     return this.db.transaction(() => {
       const now = new Date().toISOString();
@@ -54,11 +54,8 @@ export class HumanRuntimeQueries implements HumanRuntimeStore {
       if ((this.db.prepare("SELECT count(*) n FROM human_runtime_leases").get() as {n:number}).n >= HUMAN_RUNTIME_LIMITS.leases) {
         throw new ScopedRuntimeError("capacity", "Runtime lease capacity is exhausted.");
       }
-      // Expiry follows the same reservation state machine, never a second runtime lock or engine.
-      this.db.prepare(`UPDATE reservations SET released_at=?,released_by='lease-expired' WHERE project_id=? AND released_at IS NULL
-        AND ((expires_at IS NOT NULL AND expires_at<=?) OR (provider_bound=1 AND NOT EXISTS
-          (SELECT 1 FROM human_runtime_leases h WHERE h.reservation_id=reservations.id AND h.expires_at>?)))`)
-        .run(now, input.projectId, now, now);
+      // The store owns the existing expiry transition and audit for both lease kinds.
+      this.expireReservations(input.projectId);
       if (this.db.prepare("SELECT 1 FROM reservations WHERE project_id=? AND released_at IS NULL").get(input.projectId)) {
         throw new ReservationError("claim_conflict", "The project already has an active claim.");
       }

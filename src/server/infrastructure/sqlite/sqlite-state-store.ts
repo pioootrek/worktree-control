@@ -862,7 +862,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     this.identity.savePrincipal(principal, actor);
   }
 
-  humanRuntime(): HumanRuntimeQueries { return new HumanRuntimeQueries(this.database); }
+  humanRuntime(): HumanRuntimeQueries { return new HumanRuntimeQueries(this.database, projectId => this.expireReservations(projectId)); }
 
   runtimeMemberships(): RuntimeMembershipQueries { return new RuntimeMembershipQueries(this.database); }
 
