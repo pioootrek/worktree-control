@@ -908,7 +908,7 @@ old-bounded TOTP replay and failed-guess rollback negatives; this slice does not
 change or skip them. Provider contract/storage/implementation remain 5/3/5.
 Public login/account-mode selection remains gated. P2b1 human runtime leases
 and control are described below; P2b2 jobs/remaining transports and protected
-recovery/external restore fencing (P3) remain open.
+external restore fencing (P3b) remains open.
 The current restored-provenance refusal remains across boots. These tests neither
 activate the installed service nor certify full RBAC readiness.
 

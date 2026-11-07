@@ -173,7 +173,7 @@ membership without constructing an agent or trusting persistence as authority.
 Missing attribution fails closed. Original no-claim/exact-claim fences govern
 dispatch and replay; all human own-run access retains its original session and
 membership revision, including completed history. P2c supplies explicit literal
-profile selection and timeout-only configuration below. Remaining transport parity, P3 recovery/restore fencing and A5 remain activation
+profile selection and timeout-only configuration below. Remaining transport parity, P3b external restore fencing and A5 remain activation
 gates; no public browser mount is enabled.
 
 ### Human configuration operations

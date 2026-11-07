@@ -256,15 +256,19 @@ passwords/sessions until A5 provides an external recovery fence.
 with no credential, token, role or grant. Any existing owner, including revoked,
 prevents creation. Status reports none/single/ambiguous; existing installations
 choose an active ID explicitly. Enrollment input is exactly `{email,name,password}`;
-recovery input is `{newPassword}`. The pinned proof requires 12–256-character
+recovery input is `{newPassword,factors?}`, where `factors` is `"preserve"` or
+`"reset"` and omission preserves selected factors. The pinned proof requires 12–256-character
 passwords, which remains experimental policy. Email never selects an identity.
 Principal creation and enrollment are separate transactions. Failed enrollment
 leaves a harmless uncredentialed principal for inspection and explicit retry.
 Any mapping history, including revoked, prevents re-enrollment.
 
-Recovery checks the exact active owner/mapping inside the actual queued borrow,
-then atomically replaces the password, deletes every subject session and audits.
-It preserves principal/provider IDs, grants, bindings and tombstones. Revoked
+Recovery checks the exact active owner or human and mapping inside the actual
+queued borrow and again after hashing and at transaction entry. It atomically
+replaces the password, deletes every subject session and audits. Explicit factor
+loss reset also removes factor bindings and advances generation as described
+[below](#protected-factor-loss-recovery-p3a).
+It preserves principal/provider IDs, authorization grants/bindings and tombstones. Revoked
 principals/mappings are not reactivated. Session revocation is immediate despite
 a pending next-start mode selection.
 
@@ -599,8 +603,7 @@ are never represented as agents for ownership, waiter budgets or cursors.
 Optional TOTP/passkeys and separate Ed25519 vault proof retain their policies.
 `pnpm test:human-jobs` exercises real provider composition, temporary native
 sessions, the existing finite queue and migration/transport/policy regressions.
-P2 remaining profile/configuration and transport parity, P3 protected recovery
-and external restore fencing, and A5 activation remain open. The public mount
+Remaining transport parity, P3b external restore fencing and A5 activation remain open. The public mount
 and `requireSelectable` gate stay closed.
 
 ### Human literal profiles and preset timeouts (P2c)
@@ -655,8 +658,7 @@ Audit identifies the real principal and provider-session method without a fake
 machine credential, session handles, cookies or ENV content.
 
 This backend slice extends the internal composition only. Public browser mounting,
-account-mode selection, protected recovery and external restore fences remain
-separate gates. The P1 restored-provenance refusal and optional TOTP/passkey and
+account-mode selection and P3b external restore fences remain separate gates. The P1 restored-provenance refusal and optional TOTP/passkey and
 signed Ed25519 vault policies remain in force. The historical five full-proof
 factor compatibility failures remain visible; these fixtures establish no
 production-readiness claim. Evidence and acceptance belong to Knowledge A3.
@@ -902,11 +904,12 @@ protection in place. Native password change/reset and explicit revoke-all share 
 transactional invalidation. The pinned library stores the subject ID as the verification
 value for TOTP login and reset tokens; both are deleted on revoke-all. Factor contexts
 then fail their required native-row check, including a previously charged attempt before
-native entry. WebAuthn challenges use structured values and remain independent. No account
-generation changes, so a completed password replacement keeps its inherited evidence.
+native entry. WebAuthn challenges use structured values and remain independent. Ordinary password replacement does not change account
+generation, so its completed replacement keeps inherited evidence. Explicit protected
+factor-loss reset advances generation and invalidates that evidence.
 Rollback preserves the prior password, sessions and challenges. A clock that ran ahead can
-hold TOTP refused until real time passes the step, and with no other method that
-account waits. These need accepted management decisions, along with final numeric
+hold TOTP refused until real time passes the step. The protected operator can
+explicitly reset lost factors; ordinary password recovery still preserves the step. These need accepted management decisions, along with final numeric
 limits and consecutive-failure accounting.
 
 Backups include this storage, and a restore keeps its rows. Restoring an older snapshot
