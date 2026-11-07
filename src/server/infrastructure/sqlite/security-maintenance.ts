@@ -111,4 +111,3 @@ export function maintainSqliteSecurityFence(paths: AppPaths, command: SecurityMa
     lock.release();
   }
 }
-
