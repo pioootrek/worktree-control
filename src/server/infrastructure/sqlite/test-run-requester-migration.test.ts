@@ -38,7 +38,7 @@ describe("test requester migration 44", () => {
     const f = fixture(); f.store.saveTestRun(f.run, "kept"); f.store.close();
     const db = new Database(f.path);
     try {
-      db.exec("DROP TABLE test_run_requesters; DELETE FROM schema_migrations WHERE version=44");
+      db.exec("DROP TABLE runtime_human_memberships; DELETE FROM schema_migrations WHERE version=45; DROP TABLE test_run_requesters; DELETE FROM schema_migrations WHERE version=44");
       expect(inspectSchema(db).version).toBe(43);
       const run = db.prepare("SELECT * FROM test_runs").all();
       const scopes = db.prepare("SELECT * FROM runtime_credential_scopes").all();
@@ -46,7 +46,7 @@ describe("test requester migration 44", () => {
       expect(() => initializeSchema(db, false, () => { throw new Error("rollback"); })).toThrow("rollback");
       expect(inspectSchema(db).version).toBe(43);
       initializeSchema(db, false, inspectSchema);
-      expect(inspectSchema(db).version).toBe(44);
+      expect(inspectSchema(db).version).toBe(45);
       expect(db.prepare("SELECT * FROM test_runs").all()).toEqual(run);
       expect(db.prepare("SELECT * FROM runtime_credential_scopes").all()).toEqual(scopes);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=43").all()).toEqual(registry);

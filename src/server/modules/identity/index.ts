@@ -37,3 +37,5 @@ export type {
 } from "./contracts";
 
 export { HumanAccountService, HumanAccountError, type HumanAccountStore } from "./human-account-service";
+
+export { RuntimeMembershipService, type RuntimeMembershipStore } from "./runtime-membership-service";

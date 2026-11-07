@@ -1,3 +1,4 @@
+import { runtimeMembershipPageSchema, runtimeMembershipSetSchema, runtimeMembershipRevokeSchema } from "@/shared/contracts/runtime-memberships";
 import { humanPageSchema, humanMembershipPageSchema, humanKnowledgeSetSchema, humanKnowledgeRevokeSchema } from "@/shared/contracts/human-accounts";
 import { HumanAccountError } from "../identity";
 import { z } from "zod";
@@ -27,6 +28,9 @@ const commandSchema = z.discriminatedUnion("action", [
   z.object({ command, action: z.literal("knowledge-access-list"), input: humanMembershipPageSchema }).strict(),
   z.object({ command, action: z.literal("knowledge-access-set"), input: humanKnowledgeSetSchema }).strict(),
   z.object({ command, action: z.literal("knowledge-access-revoke"), input: humanKnowledgeRevokeSchema }).strict(),
+  z.object({ command, action: z.literal("runtime-access-list"), input: runtimeMembershipPageSchema }).strict(),
+  z.object({ command, action: z.literal("runtime-access-set"), input: runtimeMembershipSetSchema }).strict(),
+  z.object({ command, action: z.literal("runtime-access-revoke"), input: runtimeMembershipRevokeSchema }).strict(),
   z.object({ command, action: z.literal("enroll"), principalId: text, input: providerEnrollmentInputSchema }).strict(),
   z.object({ command, action: z.literal("recover"), principalId: text, input: providerRecoveryInputSchema }).strict(),
 ]);
@@ -37,7 +41,7 @@ const messages = {
   provider_unavailable: "The authentication provider is unavailable.",
   provider_failed: "The authentication provider operation failed; inspect state before another explicit operation.",
   principal_unavailable: "The requested account principal is unavailable.",
-  membership_revision_conflict: "Human Knowledge membership revision changed; inspect current state before another explicit operation.",
+  membership_revision_conflict: "Human membership revision changed; inspect current state before another explicit operation.",
   owner_already_initialized: "An owner principal already exists. Inspect private provider status.",
   subject_conflict: "The principal has provider enrollment history; enrollment is refused.",
   not_linked: "The principal has no active provider enrollment.",

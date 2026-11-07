@@ -119,8 +119,8 @@ export class ControlService {
 
   /** Scoped agent runtime access; enforcement and safe views live in the runtime module. */
   scopedRuntimeEnabled(): boolean { return !!this.scopedRuntime; }
-  scopedProjects(actor: AuthenticatedPrincipal, session: ScopedSession) { return this.requireScopedRuntime().listProjects(actor, session); }
-  scopedProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string) { return this.requireScopedRuntime().projectStatus(actor, session, projectId); }
+  scopedProjects(actor: AuthenticatedPrincipal, session: ScopedSession | null) { return this.requireScopedRuntime().listProjects(actor, session); }
+  scopedProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession | null, projectId: string) { return this.requireScopedRuntime().projectStatus(actor, session, projectId); }
   scopedCompactProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string) {
     const status = this.requireScopedRuntime().compactProjectStatus(actor, session, projectId);
     return this.statusQueries.scopedProject(status, JSON.stringify([actor.principalId, actor.credentialId, session.owner]));
@@ -132,7 +132,7 @@ export class ControlService {
       return this.scopedCompactProjectStatus(actor, session, input.projectId);
     } }, input.cursor, session.owner, input.timeoutMs, signal);
   }
-  scopedWorktrees(actor: AuthenticatedPrincipal, projectId: string) { return this.requireScopedRuntime().worktrees(actor, projectId); }
+  scopedWorktrees(actor: AuthenticatedPrincipal, projectId: string, signal?: AbortSignal) { return this.requireScopedRuntime().worktrees(actor, projectId, signal); }
   claimScopedProject(actor: AuthenticatedPrincipal, session: ScopedSession, input: ScopedClaimRequest, existingLeaseToken?: string) {
     return this.requireScopedRuntime().claim(actor, session, input, existingLeaseToken);
   }

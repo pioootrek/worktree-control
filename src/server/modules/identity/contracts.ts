@@ -81,7 +81,7 @@ export interface AuthenticatedIdentity {
   /** Null for installation authority and provider sessions; neither has a stored A2 credential. */
   credential: PrincipalCredential | null;
   knowledgeGrants: Array<Pick<KnowledgeProjectGrant, "projectId" | "permissions">>;
-  /** Present for agents: the credential's current effective runtime scope. */
+  /** Current effective scope for scoped agents and provider-session humans. */
   runtimeAccess?: RuntimeAccessEntry[];
   installationAuthority?: true;
 }

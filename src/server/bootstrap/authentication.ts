@@ -1,7 +1,7 @@
 export { createControllerAuthentication, CONTROLLER_AUTHENTICATION_POLICY, type ControllerAuthenticationOptions } from "./authentication-provider-lifetime";
 import type { DatabaseAdmission } from "@/server/database-admission";
-import { AuthenticationProviderError, ProviderKnowledgeApplication, type AuthenticationProviderRuntime, type AuthenticationService } from "@/server/modules/authentication";
-import { IdentityService, type IdentityStore, type RuntimeAccessStore } from "@/server/modules/identity";
+import { AuthenticationProviderError, ProviderKnowledgeApplication, ProviderRuntimeReadApplication, type ProviderRuntimeReadPort, type AuthenticationProviderRuntime, type AuthenticationService } from "@/server/modules/authentication";
+import { IdentityService, type IdentityStore, type RuntimeAccessStore, type RuntimeMembershipStore } from "@/server/modules/identity";
 import { KnowledgeService, type KnowledgeStore } from "@/server/modules/knowledge";
 import { AuthenticationHttp, type AuthenticationTransportLimits } from "@/server/transports/authentication-http";
 
@@ -13,7 +13,8 @@ import { AuthenticationHttp, type AuthenticationTransportLimits } from "@/server
  * provider resource to createControllerShutdown before closing its store.
  */
 export function composeIsolatedBrowserAuthentication(input: {
-  store: IdentityStore & KnowledgeStore & RuntimeAccessStore;
+  store: IdentityStore & KnowledgeStore & RuntimeAccessStore & { runtimeMemberships?(): RuntimeMembershipStore };
+  runtimeReads?: ProviderRuntimeReadPort;
   admission: DatabaseAdmission;
   authentication: AuthenticationService;
   runtime: AuthenticationProviderRuntime;
@@ -26,10 +27,11 @@ export function composeIsolatedBrowserAuthentication(input: {
 }) {
   // Browser login needs the loader's explicit unreleased-session bound.
   if (input.runtime.disposed || !input.runtime.issuanceBounded) throw new AuthenticationProviderError("provider_unavailable", "Authentication provider is unavailable.");
-  const identity = new IdentityService(input.store, undefined, undefined, undefined, input.authentication, input.store, input.runtime);
+  const identity = new IdentityService(input.store, undefined, undefined, undefined, input.authentication, input.store, input.runtime, input.store.runtimeMemberships?.());
   const knowledge = new KnowledgeService(input.store, identity);
   const providerKnowledge = new ProviderKnowledgeApplication(input.admission, identity, knowledge);
   const browserAuthentication = new AuthenticationHttp({ ...input, knowledge: providerKnowledge,
+    runtimeReads: input.runtimeReads && new ProviderRuntimeReadApplication(input.admission, identity, input.runtimeReads),
     status: () => ({ mode: input.authentication.mode(), loginAvailable: !input.runtime.disposed }) });
   return { identity, providerKnowledge, browserAuthentication, authenticationProvider: input.runtime };
 }

@@ -1,5 +1,6 @@
 import { knowledgePermissions, type AuthorizationAction, type AuthorizationResource, type KnowledgePermission, type KnowledgeRole, type KnowledgeRoleBinding, type SubjectKind } from "@/shared/contracts/authorization";
 import { isRuntimeAction, runtimeActions, type RuntimeAction, type RuntimeCredentialScope, type RuntimeDelegation } from "@/shared/contracts/runtime-access";
+import type { RuntimeMembership } from "@/shared/contracts/runtime-memberships";
 
 export interface AuthorizationSubject {
   id: string;
@@ -58,13 +59,30 @@ export function effectiveRuntimeActions(subject: AuthorizationSubject, projectId
   return runtimeActions.filter(action => delegation.actions.includes(action) && scope.actions.includes(action));
 }
 
+export interface HumanRuntimeAuthority {
+  /** Set only after the runtime-owned provider actor passes current-session authentication. */
+  providerSession: boolean;
+  project: { id: string } | null;
+  membership: RuntimeMembership | null;
+}
+export function effectiveHumanRuntimeActions(subject: AuthorizationSubject, projectId: string, authority: HumanRuntimeAuthority): RuntimeAction[] {
+  const { project, membership } = authority;
+  if (subject.kind !== "human" || !authority.providerSession || project?.id !== projectId) return [];
+  if (!membership || membership.principalId !== subject.id || membership.scope.kind !== "runtime-project"
+    || membership.scope.id !== projectId || membership.revokedAt !== null || membership.role !== "reader"
+    || !Number.isSafeInteger(membership.revision) || membership.revision < 1
+    || membership.permissions.length !== 1 || membership.permissions[0] !== "projects:read") return [];
+  return ["projects:read"];
+}
+
 export function isAuthorized(
   subject: AuthorizationSubject,
   action: AuthorizationAction,
   resource: AuthorizationResource,
-  context: KnowledgeAuthority & { project: { id: string; status: "active" | "archived" } | null; allowArchived?: boolean; runtime?: RuntimeAuthority },
+  context: KnowledgeAuthority & { project: { id: string; status: "active" | "archived" } | null; allowArchived?: boolean; runtime?: RuntimeAuthority; humanRuntime?: HumanRuntimeAuthority },
 ): boolean {
   if (resource.kind === "runtime-project") {
+    if (context.humanRuntime) return isRuntimeAction(action) && effectiveHumanRuntimeActions(subject, resource.id, context.humanRuntime).includes(action);
     return isRuntimeAction(action) && !!context.runtime && effectiveRuntimeActions(subject, resource.id, context.runtime).includes(action);
   }
   if (resource.kind !== "knowledge-project" || !knowledgePermissions.includes(action as KnowledgePermission)) return false;

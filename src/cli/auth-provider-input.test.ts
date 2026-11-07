@@ -154,3 +154,24 @@ describe("human protected command grammar", () => {
     expect(() => parseProviderArguments(args)).toThrowError(expect.objectContaining({ code: "invalid_input" }));
   });
 });
+
+
+describe("protected runtime reader input", () => {
+  it("accepts bounded list and private stdin with a typed explicit aggregate", async () => {
+    expect(await providerCommandFromArgs(["provider", "runtime-access", "list", "--principal-id", "owner", "--limit", "2", "--after", "p"]))
+      .toEqual({ command: "auth-provider", action: "runtime-access-list", input: { principalId: "owner", limit: 2, after: "p" } });
+    const input = { principalId: "owner", scope: { kind: "runtime-project", id: "p" }, role: "reader", permissions: ["projects:read"], expectedRevision: 0 };
+    expect(await providerCommandFromArgs(["provider", "runtime-access", "set", "--input-stdin"], Readable.from([JSON.stringify(input)])))
+      .toEqual({ command: "auth-provider", action: "runtime-access-set", input });
+    for (const extra of [{ role: "operator" }, { permissions: ["tests:run"] }, { scope: { kind: "knowledge-project", id: "p" } }, { actor: "local-admin" }, { sponsorId: "owner" }]) {
+      await expect(providerCommandFromArgs(["provider", "runtime-access", "set", "--input-stdin"], Readable.from([JSON.stringify({ ...input, ...extra })])))
+        .rejects.toMatchObject({ code: "invalid_input" });
+    }
+    await expect(providerCommandFromArgs(["provider", "runtime-access", "set", "--input-stdin"], Readable.from(['{"principalId":"a","principalId":"b"}'])))
+      .rejects.toMatchObject({ code: "invalid_input" });
+    for (const args of [["list", "--principal-id", "p", "--limit", "21"], ["list", "--principal-id", "p", "--input-stdin"],
+      ["set", "--principal-id", "owner", "--input-stdin"], ["set", "--input-stdin", "--actor", "local-admin"]]) {
+      expect(() => parseProviderArguments(["provider", "runtime-access", ...args])).toThrow();
+    }
+  });
+});

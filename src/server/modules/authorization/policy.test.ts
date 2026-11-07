@@ -1,12 +1,29 @@
 import { describe, expect, it } from "vitest";
 import { knowledgePermissions, type KnowledgeRole, type SubjectKind } from "@/shared/contracts/authorization";
-import { effectiveKnowledgePermissions, effectiveRuntimeActions, isAuthorized, type RuntimeAuthority } from "./policy";
+import { effectiveKnowledgePermissions, effectiveRuntimeActions, effectiveHumanRuntimeActions, isAuthorized, type RuntimeAuthority, type HumanRuntimeAuthority } from "./policy";
 
 const subject = { id: "actor", kind: "human" as const, humanSession: true };
 const grant = { principalId: "actor", projectId: "p", permissions: [...knowledgePermissions], revokedAt: null };
 const binding = { principalId: "actor", projectId: "p", role: "reader" as const, revision: 1, revokedAt: null, updatedAt: "now" };
 const context = { grant, binding: null, project: { id: "p", status: "active" as const } };
 describe("shared authorization policy", () => {
+  it("requires the current provider path and an exact explicit runtime reader aggregate", () => {
+    const membership = { principalId: "actor", scope: { kind: "runtime-project" as const, id: "p" }, role: "reader" as const,
+      permissions: ["projects:read"] as ["projects:read"], revision: 1, updatedAt: "now", revokedAt: null };
+    const humanRuntime: HumanRuntimeAuthority = { providerSession: true, project: { id: "p" }, membership };
+    expect(effectiveHumanRuntimeActions(subject, "p", humanRuntime)).toEqual(["projects:read"]);
+    for (const action of ["claims:manage", "runtime:control", "profiles:select", "config:write", "tests:run", "knowledge:read", "env:read"] as const) {
+      expect(isAuthorized(subject, action, { kind: "runtime-project", id: "p" }, { ...context, humanRuntime })).toBe(false);
+    }
+    for (const mutation of [{ role: "operator" }, { role: "manager" }, { permissions: [] }, { permissions: ["tests:run"] },
+      { permissions: ["projects:read", "runtime:control"] }, { principalId: "other" }, { revokedAt: "now" },
+      { revision: 0 }, { scope: { kind: "knowledge-project", id: "p" } }, { scope: { kind: "runtime-project", id: "q" } }]) {
+      expect(effectiveHumanRuntimeActions(subject, "p", { ...humanRuntime, membership: { ...membership, ...mutation } as never })).toEqual([]);
+    }
+    for (const authority of [{ ...humanRuntime, providerSession: false }, { ...humanRuntime, project: null },
+      { ...humanRuntime, membership: null }]) expect(effectiveHumanRuntimeActions(subject, "p", authority)).toEqual([]);
+    for (const kind of ["agent", "worker", "installation"] as const) expect(effectiveHumanRuntimeActions({ ...subject, kind }, "p", humanRuntime)).toEqual([]);
+  });
   it.each<[KnowledgeRole, SubjectKind, string[]]>([
     ["reader", "human", ["knowledge:read", "knowledge:export", "attachments:read"]],
     ["operator", "agent", knowledgePermissions.filter(p => p !== "knowledge:approve")],

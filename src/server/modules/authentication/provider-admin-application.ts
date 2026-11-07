@@ -1,5 +1,5 @@
 import type { DatabaseAdmission } from "../../database-admission";
-import type { HumanAccountService, Principal } from "../identity";
+import type { HumanAccountService, RuntimeMembershipService, Principal } from "../identity";
 import type { AuthenticationService } from "./authentication-service";
 import type { AuthenticationProviderRuntime } from "./provider-runtime";
 import { parseProviderAdminCommand, ProviderAdminError, providerAdminFailure, type ProviderConfigurationInput } from "./provider-admin-commands";
@@ -33,6 +33,7 @@ export class ProviderAdminApplication {
     runtime: ProviderAdministrationRuntime; maintenance(): boolean;
     actor: "local-cli" | "local-admin";
     humans: HumanAccountService;
+    runtimeMemberships: RuntimeMembershipService;
   }) {}
 
   async execute(body: unknown): Promise<unknown> {
@@ -72,6 +73,9 @@ export class ProviderAdminApplication {
       if (request.action === "knowledge-access-list") return await phase(() => d.humans.memberships(request.input));
       if (request.action === "knowledge-access-set") return await phase(() => d.humans.set(request.input));
       if (request.action === "knowledge-access-revoke") return await phase(() => d.humans.revoke(request.input));
+      if (request.action === "runtime-access-list") return await phase(() => d.runtimeMemberships.list(request.input));
+      if (request.action === "runtime-access-set") return await phase(() => d.runtimeMemberships.set(request.input));
+      if (request.action === "runtime-access-revoke") return await phase(() => d.runtimeMemberships.revoke(request.input));
       const material = await phase(() => {
         const current = d.configuration.read();
         if (!current) throw new ProviderAdminError("configuration_missing");

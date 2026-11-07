@@ -153,7 +153,12 @@ restored provenance refuses it without sweeping pending rows. One disposal joins
 accepted administration/preparation and drains the provider before SQLite closes.
 The public browser mount and account-mode selector remain gated. See
 [shared provider composition](authentication.md#shared-controller-provider-composition-p1)
-for explicit engineering limits and the remaining P2/P3 acceptance gates.
+for explicit engineering limits. P2a adds an explicit runtime reader aggregate
+(schema 45), protected local administration and current-provider-session reads
+through the existing scoped projections and controller facade. Discovery yields
+the same connection admission and rechecks before result delivery. Humans have
+no agent lease ownership. P2b mutation/session binding and P3 recovery/restore
+fencing remain activation gates; no public browser mount is enabled.
 
 ## Resource policy
 
@@ -571,7 +576,7 @@ admitted phase. Accepted cleanup uses reserved queue room on the same gate, with
 lock, counter or connection.
 
 Current isolated provider API is contract 5, storage revision 3, implementation
-`0.0.0-proof.5` and core schema 44. Earlier versions evolved as follows.
+`0.0.0-proof.5` and core schema 45. Earlier versions evolved as follows.
 Provider API contract 2 requires durable `signOut`; version 1 fails compatibility
 checks. Contract 3 adds the application-owned `host.protection` port: the provider
 calls it synchronously inside its open transaction, and `AccountProtection` keeps

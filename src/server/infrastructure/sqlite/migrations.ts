@@ -1,3 +1,4 @@
+import { applyRuntimeMembershipMigration } from "./runtime-membership-migration";
 import { applyTestRunRequesterMigration } from "./test-run-requester-migration";
 import { applyHumanPrincipalMigration } from "./human-principal-migration";
 import { applyKnowledgeRoleMigration } from "./knowledge-role-migration";
@@ -377,6 +378,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyHumanPrincipalMigration(database);
       applyGodotWebMigration(database);
       applyTestRunRequesterMigration(database);
+      applyRuntimeMembershipMigration(database);
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();

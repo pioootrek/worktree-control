@@ -1,3 +1,4 @@
+import { RuntimeMembershipQueries } from "./runtime-membership-queries";
 import type { TestRunRequester } from "@/server/state-store";
 import { HumanAccountQueries } from "./human-account-queries";
 import type { KnowledgeRoleBinding, KnowledgePermission } from "@/shared/contracts/authorization";
@@ -859,6 +860,8 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   saveRemotePrincipal(principal: RemotePrincipal, actor: string): void {
     this.identity.savePrincipal(principal, actor);
   }
+
+  runtimeMemberships(): RuntimeMembershipQueries { return new RuntimeMembershipQueries(this.database); }
 
   humanAccounts(): HumanAccountQueries { return new HumanAccountQueries(this.database); }
 

@@ -300,7 +300,7 @@ IdentityService to the controller, MCP, Knowledge, vault and other application
 services. Protected administration and the internal bounded-browser preparation
 method share its single retained load promise, pinned private configuration and
 provider runtime. Repeated browser preparation returns the same adapter and its
-capacity counter; changing its origin, Knowledge service or trusted fixture peer
+capacity counter; changing its origin, Knowledge service, runtime read service or trusted fixture peer
 requires a new owner. The stopped CLI uses the same composition through
 `createAuthenticationAdministration`. Neither path opens another database or
 upgrades a core admission into a provider borrow.
@@ -342,9 +342,88 @@ performs no live enrollment and never uses owner creation to replace that accoun
 `requireSelectable` still rejects `better-auth`, and private status still reports
 `productionAccountModeAvailable:false`. Startup does not mount public login in
 open/token/legacy modes. Provider sessions gain neither owner-session nor
-installation authority, and never replace signed Ed25519 vault proof. P2 human
-roles and transport coverage, and P3 protected recovery/restore fencing, remain
-activation gates.
+installation authority, and never replace signed Ed25519 vault proof. P2a supplies
+the reader workflow below. P2b human mutation/lease/job binding and remaining
+transport enforcement, and P3 protected recovery/restore fencing, remain activation gates.
+
+### Human runtime readers (P2a)
+
+Protected local administration can explicitly assign `reader` plus
+`["projects:read"]` to an active existing owner or ordinary human. The target
+is `{kind:"runtime-project",id:PROJECT_ID}`. There is no default project access,
+including for an owner. Knowledge grants, memberships and runtime links confer
+no runtime access, and runtime membership confers no Knowledge rights.
+
+```sh
+worktree-control auth provider runtime-access list --principal-id HUMAN_ID --limit 20
+worktree-control auth provider runtime-access set --input-file /private/runtime-reader.json
+worktree-control auth provider runtime-access revoke --input-stdin
+```
+
+Set input contains the full aggregate:
+
+```json
+{"principalId":"HUMAN_ID","scope":{"kind":"runtime-project","id":"PROJECT_ID"},"role":"reader","permissions":["projects:read"],"expectedRevision":0}
+```
+
+Revoke takes `principalId`, `scope` and `expectedRevision`. Both changes and their
+audit commit atomically with one revision. Revocation retains a tombstone; a
+restore requires its latest revision and a complete explicit set. Lists use
+`limit` from 1 through 20 and an optional `after` project ID, returning
+`nextAfter`. CLI private file/stdin handling and the private administration
+socket share the same application operation. Membership maintenance does not
+load the provider. No HTTP or MCP membership setter exists.
+
+Migration 45 adds only `runtime_human_memberships` on the existing SQLite
+connection. Migrations 1..44, principal IDs/kinds, grants, credentials and history
+remain intact. Upgrade creates no membership. Recognition, backups and restore
+include the new table; provider contract 5, storage 3 and proof implementation 5
+are unchanged. A disabled principal cannot read even while its membership persists.
+
+The internal `prepareBrowserAuthentication` seam accepts the existing controller
+as its `runtimeReads` port. One closed cookie route, `POST /api/runtime/read`,
+accepts exactly these requests:
+
+```json
+{"operation":"list-projects"}
+{"operation":"project-status","projectId":"PROJECT_ID"}
+{"operation":"list-worktrees","projectId":"PROJECT_ID"}
+```
+
+Responses carry the operation and respectively `projects`, `status` or
+`worktrees`. Lists filter by current effective `projects:read`. Status and
+worktrees reuse the scoped allowlist: identity/name/port, phase and placement,
+claim relation, and discovered path/branch/head/dirty metadata. They expose no
+commands, ENV/TLS/profile values, logs, foreign lease owners/secrets, global
+queue or capacity. A human has no agent lease session: claim is `none` or
+`other`, and `ownClaim` is always null. This slice adds no SSE, waits or cursors.
+
+Authentication uses the real provider cookie outside core admission. Shared
+IdentityService and application policy require the exact runtime-owned actor,
+current session/principal/evidence and explicit membership. Git discovery
+releases admission and checks current authority after readmission. The adapter
+rechecks and emits the response in the final admitted phase. Logout, recovery,
+expiry, disablement, revoked/removed/invalid membership and missing provider
+authority deny retained results. Unknown and forbidden project IDs share a
+fixed 403 `project_access_denied`. Copied actors and actors issued by another
+runtime fail authentication. Identity metadata contains only effective runtime
+actions, never provider subjects or native session identifiers.
+
+The route inherits canonical HTTPS Host/Origin, CSRF/Fetch Metadata, socket-peer,
+cookie sanitation, strict JSON, cancellation, no-store and the existing request
+capacity/lifetime. Its body is capped at 4 KiB (or the smaller configured password
+body limit), with authentication JSON depth/field limits. GETs, query strings,
+extra role/scope fields and mutation operations are refused. Raw runtime routes
+remain closed to provider cookies. Reader membership grants no claims, runtime
+control, profiles/configuration, tests/jobs, administration, delegation or ENV/
+vault access; agent delegation and credential ceilings keep their existing behavior.
+Selected optional TOTP/passkeys and separate Ed25519 vault proof retain their gates.
+
+This is backend source implementation and isolated real-provider verification.
+Production startup still does not mount public login or this cookie workflow;
+`requireSelectable` continues to refuse account-mode selection. P2b/P3 remain
+required before activation. In particular, the P1 restored-provenance refusal
+continues across reboots and is not a completed protected-recovery mechanism.
 
 ### Bounded browser adapter
 
@@ -604,7 +683,7 @@ fencing stay separate gates. See the
 ### Closed factor HTTP API
 
 A3-I20 mounts login and first enrollment through the isolated composition only. It
-uses the same provider, current core schema 44, contract 5, `AccountProtection` and sole
+uses the same provider, current core schema 45, contract 5, `AccountProtection` and sole
 connection as [integrated factor authority](#integrated-factor-authority). Production
 main still has no caller or flag, account mode stays refused, and recovery, removal,
 replacement, additional passkeys and trusted devices stay refused.

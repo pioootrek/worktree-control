@@ -349,7 +349,7 @@ caller session, covering a real delete-hook failure that native sign-out swallow
 The core drops native bodies and arbitrary headers; no bearer token is returned
 in browser JSON. Library logs/router exceptions become fixed events. After-commit
 notification failures remain `committed:true`, without automatic mutation replay.
-The current composition uses core schema 44 and provider storage revision 3. Contract 5
+The current composition uses core schema 45 and provider storage revision 3. Contract 5
 adds durable session issuance and changes no pinned dependency.
 
 Provider-cookie requests to unconverted HTTP operations and the actual separate
@@ -410,7 +410,7 @@ TOTP was an unselected compatibility candidate. The owner has since selected
 both TOTP and passkeys as optional methods; the pinned TOTP implementation still
 needed an accepted replay remedy at that stage. That historical baseline was
 schema 39, provider storage revision 1 and contract 2. Later integrated authority
-uses current core schema 44, storage 3 and contract 5. This experiment changes no
+uses current core schema 45, storage 3 and contract 5. This experiment changes no
 production provider, route, actor, mode or migration. Account mode remains
 unavailable; A4, A5, general delegated roles and GUI remain separate.
 
@@ -887,3 +887,26 @@ In-process faults that need a live runtime, such as unreadable markers and faile
 are in `browser-session-issuance.test.ts`. Migration and tamper cases, including the frozen
 `schema-v40.sql`, are in `authentication-session-issuance-migration.test.ts`. The proof
 covers neither a browser, hardware, TLS, a proxy nor the installed service.
+
+
+## Human runtime reader slice (P2a)
+
+`runtime-reader.test.ts` exercises the actual `createControllerAuthentication`
+composition, real provider cookies for the existing owner
+`69849424-2aba-4fdd-b4fa-a394a77a193c` and an ordinary human, the existing
+ControlService scoped read projections, and private offline/IPC administration.
+Migration 45 stores a separate typed runtime reader aggregate with explicit
+`projects:read`, CAS/tombstones and atomic audit. Knowledge membership and runtime
+membership do not imply each other. A human has no agent lease owner or synthetic
+credential. Current authority is checked after Git discovery/readmission and in
+the admitted HTTP delivery phase. Corrupted role/permissions, missing authority,
+copied/foreign actors, revocation and session invalidation fail closed.
+
+Run `pnpm test:runtime-readers` through the managed verification queue for the
+focused core plus real-provider matrix. Full proof retains its historical native/
+old-bounded TOTP replay and failed-guess rollback negatives; this slice does not
+change or skip them. Provider contract/storage/implementation remain 5/3/5.
+Public login/account-mode selection remains gated. Human mutations, lease/job
+binding (P2b) and protected recovery/external restore fencing (P3) remain open.
+The current restored-provenance refusal remains across boots. These tests neither
+activate the installed service nor certify full RBAC readiness.

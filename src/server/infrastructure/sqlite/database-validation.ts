@@ -19,6 +19,8 @@ export function validateDatabase(database: Database.Database, version: number): 
   if (version >= 42 && database.prepare(`SELECT 1 FROM principal_credentials c JOIN remote_principals p ON p.id=c.principal_id
     WHERE (c.kind='owner_session' AND p.kind<>'owner') OR (c.kind='agent_token' AND p.kind<>'agent')
       OR (c.kind='worker_token' AND p.kind<>'worker') LIMIT 1`).get()) fail("credential principal kind");
+  if (version >= 45 && database.prepare(`SELECT 1 FROM runtime_human_memberships m
+    JOIN remote_principals p ON p.id=m.principal_id WHERE p.kind NOT IN ('owner','human') LIMIT 1`).get()) fail("runtime membership principal");
   // Evidence and trust describe one provider account. Selected-protection flags are
   // checked per account at every decision, so one inconsistent row refuses only itself.
   if (version >= 40 && database.prepare(`SELECT 1 FROM authentication_session_evidence e

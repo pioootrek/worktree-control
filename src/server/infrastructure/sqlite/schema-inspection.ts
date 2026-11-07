@@ -1,3 +1,4 @@
+import { runtimeMembershipMigration, runtimeMembershipChecksum } from "./runtime-membership-migration";
 import { testRunRequesterMigration, testRunRequesterChecksum } from "./test-run-requester-migration";
 import { humanPrincipalMigration, humanPrincipalChecksum } from "./human-principal-migration";
 import { knowledgeRoleMigration, knowledgeRoleChecksum } from "./knowledge-role-migration";
@@ -26,6 +27,7 @@ type ForeignKey = { table: string; from: string; to: string; on_delete: string; 
 // Historical installations may already have tables from the bootstrap DDL. Require
 // them only after their introducing migration, but validate any that are present.
 const tableVersions: Record<string, number> = {
+  runtime_human_memberships: 45,
   test_run_requesters: 44,
   authentication_ba_two_factor: 40, authentication_ba_passkey: 40, authentication_account_policies: 40,
   authentication_totp_steps: 40, authentication_passkey_trust: 40, authentication_passkey_staged: 40,
@@ -154,6 +156,7 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : x.version === 42 ? x.name !== humanPrincipalMigration.name || x.checksum !== humanPrincipalChecksum
       : x.version === 43 ? x.name !== godotWebMigration.name || x.checksum !== godotWebChecksum
       : x.version === 44 ? x.name !== testRunRequesterMigration.name || x.checksum !== testRunRequesterChecksum
+      : x.version === 45 ? x.name !== runtimeMembershipMigration.name || x.checksum !== runtimeMembershipChecksum
       : true)) refuse("migration checksum or name");
   }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));

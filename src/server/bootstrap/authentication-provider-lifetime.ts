@@ -1,13 +1,13 @@
 import { join } from "node:path";
 import { FileProviderConfiguration, validateProviderEntry } from "../authentication-provider-configuration";
-import { IdentityService, IdentityError, HumanAccountService } from "../modules/identity";
+import { IdentityService, IdentityError, HumanAccountService, RuntimeMembershipService } from "../modules/identity";
 import {
   ProviderAdminApplication, ProviderAdminError, AuthenticationProviderError, loadAuthenticationProvider,
   type AuthenticationProviderRuntime, type AuthenticationProviderStorage, type AuthenticationService,
   type ProviderConfiguration, type ProviderMaintenanceState, type ProviderInvalidation,
 } from "../modules/authentication";
 import type { KnowledgeService } from "../modules/knowledge";
-import { ProviderKnowledgeApplication } from "../modules/authentication";
+import { ProviderKnowledgeApplication, ProviderRuntimeReadApplication, type ProviderRuntimeReadPort } from "../modules/authentication";
 import { AuthenticationHttp } from "../transports/authentication-http";
 import type { ProviderSessionAuthority } from "../modules/identity";
 import type { SqliteStateStore } from "../sqlite-store";
@@ -37,7 +37,7 @@ export interface ControllerAuthenticationOptions {
 }
 
 interface BrowserAuthenticationInput {
-  origin: string; knowledge: KnowledgeService;
+  origin: string; knowledge: KnowledgeService; runtimeReads?: ProviderRuntimeReadPort;
   /** Temporary Unix fixtures only. A real listener derives its peer from the socket. */
   trustedFixturePeer?: string;
 }
@@ -82,7 +82,7 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
       } catch { return false; }
     },
   };
-  const identity = new IdentityService(d.store, undefined, undefined, undefined, d.authentication, d.store, authority);
+  const identity = new IdentityService(d.store, undefined, undefined, undefined, d.authentication, d.store, authority, d.store.runtimeMemberships());
   const track = <T>(pending: Promise<T>): Promise<T> => {
     accepted.add(pending);
     const forget = () => { accepted.delete(pending); };
@@ -123,6 +123,7 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
 
   const application = new ProviderAdminApplication({
     humans: new HumanAccountService(d.store.humanAccounts(), d.actor),
+    runtimeMemberships: new RuntimeMembershipService(d.store.runtimeMemberships(), d.actor),
     admission: d.store.admission, authentication: d.authentication, configuration, maintenance, actor: d.actor,
     identity: {
       ownerStatus: () => identity.ownerPrincipalStatus(),
@@ -165,12 +166,13 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
         await d.store.admission.run(guard);
         if (value.disposed || !value.issuanceBounded) throw new AuthenticationProviderError("provider_unavailable", "Authentication provider is unavailable.");
         if (browser) {
-          if (browser.binding.origin !== binding.origin || browser.binding.knowledge !== binding.knowledge
+          if (browser.binding.origin !== binding.origin || browser.binding.knowledge !== binding.knowledge || browser.binding.runtimeReads !== binding.runtimeReads
             || browser.binding.trustedFixturePeer !== binding.trustedFixturePeer) throw new ProviderAdminError("configuration_invalid");
           return browser.adapter;
         }
         const adapter = new AuthenticationHttp({ origin: binding.origin, runtime: value, admission: d.store.admission,
           knowledge: new ProviderKnowledgeApplication(d.store.admission, identity, binding.knowledge),
+          runtimeReads: binding.runtimeReads && new ProviderRuntimeReadApplication(d.store.admission, identity, binding.runtimeReads),
           maintenance, assertAvailable: guard,
           trustedFixturePeer: binding.trustedFixturePeer,
           maxInFlight: CONTROLLER_AUTHENTICATION_POLICY.maxInFlight, limits: CONTROLLER_AUTHENTICATION_POLICY.limits,

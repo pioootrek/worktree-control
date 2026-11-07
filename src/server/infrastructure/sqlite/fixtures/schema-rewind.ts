@@ -23,6 +23,9 @@ export const WITHOUT_AUTHENTICATION_PROVIDER_STORAGE = `DROP TABLE authenticatio
  * every older version (like the other latest constraints these fixtures keep).
  */
 export function rewindGodotWeb(database: Database.Database): void {
+  if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=45").get()) {
+    database.exec("DROP TABLE runtime_human_memberships; DELETE FROM schema_migrations WHERE version=45");
+  }
   if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=44").get()) {
     database.exec("DROP TABLE test_run_requesters; DELETE FROM schema_migrations WHERE version=44");
   }

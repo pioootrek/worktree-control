@@ -120,7 +120,8 @@
     "test:auth-provider-cli-artifact": "node scripts/build-fingerprint.mjs --check && node scripts/auth-provider-cli-artifact.mjs",
     "test:auth-provider-session-restart": "node scripts/auth-provider-session-restart.mjs",
     "test:ui:dev-vault": "playwright test tests/ui/dev-vault.spec.ts",
-    "test:docs": "python3 scripts/docs.py fmt && python3 scripts/docs.py check && git diff --check"
+    "test:docs": "python3 scripts/docs.py fmt && python3 scripts/docs.py check && git diff --check",
+    "test:runtime-readers": "vitest run --maxWorkers 1 src/server/infrastructure/sqlite/runtime-membership-queries.test.ts src/server/infrastructure/sqlite/runtime-membership-migration.test.ts src/server/modules/authorization/policy.test.ts src/cli/auth-provider-input.test.ts && vitest run --config vitest.auth-provider-proof.config.ts runtime-reader"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
