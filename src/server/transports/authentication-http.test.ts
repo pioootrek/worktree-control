@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
-import type { AuthenticationProviderRuntime, BrowserRelease } from "@/server/modules/authentication";
+import { AuthenticationProviderError, type AuthenticationProviderRuntime, type BrowserRelease } from "@/server/modules/authentication";
 import { directAdmission } from "@/server/database-admission";
 import { describe, expect, it, vi } from "vitest";
 import { approvedAuthenticationCookies, AuthenticationHttp } from "./authentication-http";
@@ -46,15 +46,25 @@ function outgoing() {
 }
 const limits = { passwordBodyBytes: 4096, webAuthnBodyBytes: 32_768, knowledgeBodyBytes: 65_536, cookieBytes: 8192, bodyTimeoutMs: 10_000,
   json: { maxDepth: 8, maxFields: 64 }, knowledgeJson: { maxDepth: 16, maxFields: 1024 }, reservedCompletionSlots: 0 };
-function adapter() {
+function adapter(assertAvailable?: () => void) {
   const release = Object.freeze({ operation: "sign-out", outcome: "signed-out" }) as BrowserRelease;
   const browser = vi.fn<AuthenticationProviderRuntime["browser"]>().mockImplementation(() => ({ result: Promise.resolve(release), settled: Promise.resolve() }));
-  const value = new AuthenticationHttp({ origin: "https://controller.test", admission: directAdmission, limits,
+  const value = new AuthenticationHttp({ origin: "https://controller.test", admission: directAdmission, limits, assertAvailable,
     runtime: { browser, browserReleaseHeaders: () => new Headers(), browserReleaseCommitted: () => false, discardBrowserRelease: () => ({ result: Promise.resolve(), settled: Promise.resolve() }),
       finishBrowserRelease: () => ({ authenticated: false }) } as never, knowledge: {} as never, status: () => ({ mode: "open", loginAvailable: true }), maxInFlight: 1 });
   return { value, browser };
 }
 describe("authentication request lifetime and socket peer", () => {
+  it.each(["maintenance", "provider_configuration_restart_required"])("reports unavailable guarded composition without calling the provider: %s", async code => {
+    const f = adapter(() => { throw new AuthenticationProviderError(code, "private configuration detail"); }), response = outgoing();
+    await f.value.handle(incoming("127.0.0.1") as never, response as never);
+    expect(response.status).toBe(503);
+    expect(response.body).toMatchObject({ code: "database_unavailable" });
+    expect(JSON.stringify(response.body)).not.toContain("private configuration detail");
+    expect(f.browser).not.toHaveBeenCalled();
+    response.emit("finish");
+  });
+
   it("closes a partially sent response without attempting a replacement error write", async () => {
     const f = adapter(), response = Object.assign(outgoing(), { headersSent: false, destroy: vi.fn() });
     response.destroy.mockImplementation(() => { response.destroyed = true; response.emit("close"); });

@@ -311,6 +311,7 @@ function failure(error: unknown, knowledge: boolean): { status: number; code: st
       case "rate_limited": return { status: 429, code: "rate_limited" };
       case "capacity": return { status: 503, code: "database_busy" };
       case "provider_failed": return { status: 502, code: "provider_failed" };
+      case "maintenance": case "provider_configuration_restart_required":
       case "provider_unavailable": case "provider_disposed": case "cancelled": return { status: 503, code: "database_unavailable" };
       default: return { status: 500, code: "authentication_failed" };
     }
