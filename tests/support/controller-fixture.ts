@@ -38,7 +38,7 @@ export interface ControllerFixture {
   releaseTestGate(project: FixtureProject, worktreePath?: string): Promise<void>;
   testEvents(project: FixtureProject): Promise<FixtureTestEvent[]>;
   ownedPids(project: FixtureProject, worktreePath?: string): Promise<number[]>;
-  restart(): Promise<void>; recoverRestore():Promise<void>; stop(): Promise<void>; close(): Promise<void>;
+  restart(extraArguments?: string[]): Promise<void>; recoverRestore():Promise<void>; stop(): Promise<void>; close(): Promise<void>;
   diagnostics(): string;
 }
 
@@ -132,18 +132,22 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
     });
     userBackupProjectId = (JSON.parse(created.stdout) as { project: { id: string } }).project.id;
   }
-  const start = async () => {
+  const start = async (extraArguments: string[] = []) => {
     let output = "";
-    child = spawn(process.execPath, [...(options.nodeArguments ?? []), artifactCli, "start", "--service-mode", "--host", "127.0.0.1", "--port", String(controllerPort), "--mcp-port", String(mcpPort), "--no-open", "--data-dir", data, "--state-dir", state, "--browse-root", base, "--web-root", artifactWeb, ...(options.backups ? ["--backup-dir", join(base, "backups"), "--backup-ui-actions", "create,restore"] : []), ...(options.userBackups ? ["--user-backup-enabled", "--user-backup-scopes", "knowledge-discussions", "--user-backup-projects", userBackupProjectId!, "--user-backup-target", `local=${join(base, "user-exports")}`, "--user-backup-min-interval-seconds", "60"] : []), ...(options.startupArguments ?? [])], { cwd: repositoryRoot, env: runtimeEnvironment, stdio: ["ignore", "pipe", "pipe"] });
+    child = spawn(process.execPath, [...(options.nodeArguments ?? []), artifactCli, "start", "--service-mode", "--host", "127.0.0.1", "--port", String(controllerPort), "--mcp-port", String(mcpPort), "--no-open", "--data-dir", data, "--state-dir", state, "--browse-root", base, "--web-root", artifactWeb, ...(options.backups ? ["--backup-dir", join(base, "backups"), "--backup-ui-actions", "create,restore"] : []), ...(options.userBackups ? ["--user-backup-enabled", "--user-backup-scopes", "knowledge-discussions", "--user-backup-projects", userBackupProjectId!, "--user-backup-target", `local=${join(base, "user-exports")}`, "--user-backup-min-interval-seconds", "60"] : []), ...(options.startupArguments ?? []), ...extraArguments], { cwd: repositoryRoot, env: runtimeEnvironment, stdio: ["ignore", "pipe", "pipe"] });
     const starting = child;
     lastProcess = child;
     const capture = (chunk: Buffer) => { output += chunk.toString(); controllerOutput = (controllerOutput + chunk.toString()).slice(-8000); };
     child.stdout?.on("data", capture); child.stderr?.on("data", capture);
-    let access: { accessUrl: string };
+    let access: { accessUrl: string; localDashboardEndpoint?: string };
     try {
       access = await waitFor(async () => {
         if (starting.exitCode !== null || starting.signalCode !== null) throw new Error(`Controller startup failed.\n${output}`);
-        try { return JSON.parse(await readFile(join(state, "service-access.json"), "utf8")) as { accessUrl: string }; } catch { return null; }
+        try {
+          // A restart must not accept the previous run's record; the controller publishes after it listens.
+          const record = JSON.parse(await readFile(join(state, "service-access.json"), "utf8")) as { accessUrl: string; localDashboardEndpoint?: string; pid?: number };
+          return record.pid === starting.pid ? record : null;
+        } catch { return null; }
       }, WAIT_MS, () => `Controller did not publish service access.\n${output}`);
     } catch (error) {
       // Confirm exit even for deliberately failed listener starts before handing paths back.
@@ -152,8 +156,8 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
       if (child === starting) child = undefined;
       throw error;
     }
-    // Token mode publishes no secret; the browser receives the installation token in the fragment.
-    endpoint = new URL(access.accessUrl).origin; accessUrl = `${endpoint}/#token=${encodeURIComponent(token)}`;
+    // With --public-url the advertised access URL is public; fixture transports stay local.
+    endpoint = new URL(access.localDashboardEndpoint ?? access.accessUrl).origin; accessUrl = `${endpoint}/#token=${encodeURIComponent(token)}`;
   };
   const stop = async () => {
     if (!child) return;
@@ -250,7 +254,7 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
         const evidence = await readFile(join(worktreePath, "process-evidence.log"), "utf8").catch(() => "");
         return evidence.split("\n").flatMap((line) => { const pid = Number(line.split(" ")[1]); return Number.isInteger(pid) && pid > 0 ? [pid] : []; });
       },
-      async restart() { await stop(); await start(); fixture.endpoint = endpoint; fixture.accessUrl = accessUrl; },
+      async restart(extraArguments: string[] = []) { await stop(); await start(extraArguments); fixture.endpoint = endpoint; fixture.accessUrl = accessUrl; },
       async recoverRestore() {
         if(child) {
           const restoredOwner=child;
