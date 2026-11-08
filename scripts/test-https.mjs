@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 
-import { resolveCaddyBinary } from "./https-caddy.mjs";
+import { CaddyResolveError, resolveCaddyBinary, resolveVitestEntry } from "./https-caddy.mjs";
 
 /**
  * Managed entry for the HTTPS suite: resolves the pinned Caddy fixture (or the
@@ -10,10 +9,19 @@ import { resolveCaddyBinary } from "./https-caddy.mjs";
  * truthfully instead of silently skipping the real browser proof.
  */
 
-const { binary, origin } = await resolveCaddyBinary();
+let binary;
+let origin;
+let vitest;
+try {
+  ({ binary, origin } = await resolveCaddyBinary());
+  vitest = resolveVitestEntry();
+} catch (cause) {
+  if (!(cause instanceof CaddyResolveError)) throw cause;
+  console.error(`[test:https] ${cause.message}`);
+  process.exit(1);
+}
 console.log(`[test:https] Caddy fixture (${origin}): ${binary}`);
 
-const vitest = fileURLToPath(import.meta.resolve("vitest/vitest.mjs"));
 const child = spawn(process.execPath, [vitest, "run", "--config", "vitest.https.config.ts"], {
   stdio: "inherit",
   env: { ...process.env, CADDY_BIN: binary },
