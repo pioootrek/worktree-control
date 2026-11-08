@@ -1,5 +1,7 @@
+import { runtimeMembershipSetSchema } from "@/shared/contracts/runtime-memberships";
 import { knowledgePermissions, type AuthorizationAction, type AuthorizationResource, type KnowledgePermission, type KnowledgeRole, type KnowledgeRoleBinding, type SubjectKind } from "@/shared/contracts/authorization";
 import { isRuntimeAction, runtimeActions, type RuntimeAction, type RuntimeCredentialScope, type RuntimeDelegation } from "@/shared/contracts/runtime-access";
+import type { RuntimeMembership } from "@/shared/contracts/runtime-memberships";
 
 export interface AuthorizationSubject {
   id: string;
@@ -58,19 +60,37 @@ export function effectiveRuntimeActions(subject: AuthorizationSubject, projectId
   return runtimeActions.filter(action => delegation.actions.includes(action) && scope.actions.includes(action));
 }
 
+export interface HumanRuntimeAuthority {
+  /** Set only after the runtime-owned provider actor passes current-session authentication. */
+  providerSession: boolean;
+  project: { id: string } | null;
+  membership: RuntimeMembership | null;
+}
+export function effectiveHumanRuntimeActions(subject: AuthorizationSubject, projectId: string, authority: HumanRuntimeAuthority): RuntimeAction[] {
+  const { project, membership } = authority;
+  if (subject.kind !== "human" || !authority.providerSession || project?.id !== projectId) return [];
+  if (!membership || membership.principalId !== subject.id || membership.scope.kind !== "runtime-project"
+    || membership.scope.id !== projectId || membership.revokedAt !== null
+    || !Number.isSafeInteger(membership.revision) || membership.revision < 1) return [];
+  const parsed = runtimeMembershipSetSchema.safeParse({ principalId: membership.principalId, scope: membership.scope,
+    role: membership.role, permissions: membership.permissions, expectedRevision: 0 });
+  return parsed.success ? runtimeActions.filter(action => (parsed.data.permissions as readonly string[]).includes(action)) : [];
+}
+
 export function isAuthorized(
   subject: AuthorizationSubject,
   action: AuthorizationAction,
   resource: AuthorizationResource,
-  context: KnowledgeAuthority & { project: { id: string; status: "active" | "archived" } | null; allowArchived?: boolean; runtime?: RuntimeAuthority },
+  context: KnowledgeAuthority & { project: { id: string; status: "active" | "archived" } | null; installationAuthenticated?: boolean; allowArchived?: boolean; runtime?: RuntimeAuthority; humanRuntime?: HumanRuntimeAuthority },
 ): boolean {
   if (resource.kind === "runtime-project") {
+    if (context.humanRuntime) return isRuntimeAction(action) && effectiveHumanRuntimeActions(subject, resource.id, context.humanRuntime).includes(action);
     return isRuntimeAction(action) && !!context.runtime && effectiveRuntimeActions(subject, resource.id, context.runtime).includes(action);
   }
   if (resource.kind !== "knowledge-project" || !knowledgePermissions.includes(action as KnowledgePermission)) return false;
   if (!context.project || context.project.id !== resource.id
     || (context.project.status !== "active" && action !== "knowledge:read" && !context.allowArchived)) return false;
-  // Compatibility for explicit open/token modes. Account mode must remove this in A5.
-  if (subject.kind === "installation") return true;
+  // Only current application authentication in explicit open/token mode supplies this fact.
+  if (subject.kind === "installation") return context.installationAuthenticated === true;
   return effectiveKnowledgePermissions(subject, resource.id, context).includes(action as KnowledgePermission);
 }

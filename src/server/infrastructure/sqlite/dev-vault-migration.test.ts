@@ -1,8 +1,10 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { establishFixtureSecurity } from "./fixtures/protected-security";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it } from "vitest";
 import { SqliteStateStore } from "./sqlite-state-store";
 import { initializeSchema } from "./migrations";
@@ -27,7 +29,7 @@ function fixture() {
 describe("Knowledge 33 and DEV vault 34 integration", () => {
   it.each([32, 33])("upgrades schema %s atomically, preserves records and reopens", version => {
     const f = fixture();
-    const db = new Database(f.path);
+    const db = unmanagedFixtureDatabase(f.path);
     try {
       rewindProviderSessionHistory(db); db.exec(`${WITHOUT_AUTHENTICATION_PROVIDER_STORAGE}
         DROP TABLE dev_environment_vaults;
@@ -48,16 +50,17 @@ describe("Knowledge 33 and DEV vault 34 integration", () => {
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name='dev_environment_vaults'").get()).toBeUndefined();
     } finally { db.close(); }
 
+    establishFixtureSecurity(f.path);
     const upgraded = new SqliteStateStore(f.path);
     try {
-      expect(upgraded.schemaVersion()).toBe(43);
+      expect(upgraded.schemaVersion()).toBe(49);
       expect(upgraded.getProject(f.project.id)).toEqual(f.project);
       expect(upgraded.getAuthenticationPolicy()).toEqual(f.policy);
       expect(upgraded.devVault.load(f.project.id)).toBeNull();
     } finally { upgraded.close(); }
-    const check = new Database(f.path, { readonly: true });
+    const check = unmanagedFixtureDatabase(f.path, { readonly: true });
     try {
-      expect(inspectSchema(check).version).toBe(43);
+      expect(inspectSchema(check).version).toBe(49);
       expect(check.prepare("SELECT version,name,checksum FROM schema_migrations WHERE version BETWEEN 33 AND 34 ORDER BY version").all()).toEqual([
         { version: 33, name: taskCurrentStateMigration.name, checksum: taskCurrentStateChecksum },
         { version: 34, name: devVaultMigration.name, checksum: devVaultChecksum },
@@ -72,7 +75,7 @@ describe("Knowledge 33 and DEV vault 34 integration", () => {
 
   it("refuses the old experimental vault-33 lineage without changing ciphertext or provenance", () => {
     const f = fixture();
-    const db = new Database(f.path);
+    const db = unmanagedFixtureDatabase(f.path);
     const oldChecksum = createHash("sha256").update(`33\0${devVaultMigration.name}\0${devVaultMigration.sql}`).digest("hex");
     try {
       rewindProviderSessionHistory(db); db.exec(WITHOUT_AUTHENTICATION_PROVIDER_STORAGE + "ALTER TABLE knowledge_tasks DROP COLUMN current_state_json; DELETE FROM schema_migrations WHERE version>=33");
@@ -87,7 +90,7 @@ describe("Knowledge 33 and DEV vault 34 integration", () => {
 
   it.each([33, 34])("rejects tampered migration %s before any writes", version => {
     const f = fixture();
-    const db = new Database(f.path);
+    const db = unmanagedFixtureDatabase(f.path);
     try { db.prepare("UPDATE schema_migrations SET checksum='wrong' WHERE version=?").run(version); }
     finally { db.close(); }
     const before = readFileSync(f.path);

@@ -22,6 +22,8 @@ export { knowledgeSourceHref as sourceHref } from "@/shared/contracts/knowledge-
 
 type MemoryPanelProps = {
   token: string; principalId: string; projectId: string; recordId: string; writable: boolean; approvable: boolean; changeVersion: number;
+  /** Token-only attachment routes are hidden when the session cannot authorize them (account mode). */
+  attachments?: boolean;
   onSelect: (tab: KnowledgeTab, id: string, replyId?: string, fromSearch?: boolean) => void;
 };
 
@@ -56,7 +58,7 @@ export function MemoryPanel(props: MemoryPanelProps) {
   return <MemoryPanelContent key={props.recordId} {...props} onSelect={(tab, id, replyId, fromSearch) => { setReaderExpanded(false); props.onSelect(tab, id, replyId, fromSearch); }} search={search} setSearch={setSearch} filtersOpen={filtersOpen} setFiltersOpen={setFiltersOpen} readerExpanded={readerExpanded} setReaderExpanded={setReaderExpanded} listScrollRef={listScrollRef} returnFocusIdRef={returnFocusIdRef} />;
 }
 
-function MemoryPanelContent({ token, principalId, projectId, recordId, writable, approvable, changeVersion, onSelect, search, setSearch, filtersOpen, setFiltersOpen, readerExpanded, setReaderExpanded, listScrollRef, returnFocusIdRef }: MemoryPanelProps & {
+function MemoryPanelContent({ token, principalId, projectId, recordId, writable, approvable, attachments = true, changeVersion, onSelect, search, setSearch, filtersOpen, setFiltersOpen, readerExpanded, setReaderExpanded, listScrollRef, returnFocusIdRef }: MemoryPanelProps & {
   search: MemorySearchState; setSearch: (value: MemorySearchState) => void;
   filtersOpen: boolean; setFiltersOpen: (value: boolean) => void; readerExpanded: boolean; setReaderExpanded: (value: boolean) => void;
   listScrollRef: React.RefObject<number>; returnFocusIdRef: React.RefObject<string>;
@@ -194,7 +196,7 @@ function MemoryPanelContent({ token, principalId, projectId, recordId, writable,
         {!documentOpen && (record.reading?.kind === "imported-note" && record.reading.bodyFormat !== "text"
           ? <p className="max-w-[75ch] whitespace-pre-wrap break-words text-base leading-7">{record.reading.summary || t("knowledge.importedSummaryFallback")}</p>
           : <p className="max-w-[75ch] whitespace-pre-wrap break-words text-base leading-7">{record.body}</p>)}
-        <RecordAttachments key={record.id} token={token} projectId={projectId} recordId={record.id} recordKind="memory" changeVersion={changeVersion} presentation="documents" onDocumentChange={setDocumentOpen} />
+        {attachments && <RecordAttachments key={record.id} token={token} projectId={projectId} recordId={record.id} recordKind="memory" changeVersion={changeVersion} presentation="documents" onDocumentChange={setDocumentOpen} />}
         {!documentOpen && <>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" disabled={!writable || record.status !== "active" || busy || Boolean(pending)} onClick={event => { editorTriggerRef.current = event.currentTarget; setEditor("edit"); }}>{t("knowledge.editMemory")}</Button>

@@ -1,7 +1,9 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { establishFixtureSecurity, resumeFixtureSecurity } from "./fixtures/protected-security";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
 import { finishBackupHandoff } from "@/server/modules/backups";
@@ -35,7 +37,7 @@ function fixture() {
 
 /** Recreates the exact version-35 shape: no runtime tables and no lease binding columns. */
 function downgradeTo35(path: string): void {
-  const db = new Database(path);
+  const db = unmanagedFixtureDatabase(path);
   try {
     db.pragma("foreign_keys = OFF");
     db.transaction(() => {
@@ -57,15 +59,15 @@ describe("runtime access migration 36", () => {
   it("upgrades 35 atomically, backfills no grants and keeps existing leases unbound", () => {
     const f = fixture(); f.store.close();
     downgradeTo35(f.path);
-    const db = new Database(f.path);
+    let db = unmanagedFixtureDatabase(f.path);
     try {
       expect(inspectSchema(db).version).toBe(35);
       const before = db.prepare("SELECT id, owner, token_hash, released_at FROM reservations").all();
       expect(() => initializeSchema(db, false, () => { throw new Error("late failure"); })).toThrow("late failure");
       expect(inspectSchema(db).version).toBe(35);
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'runtime_%'").all()).toEqual([]);
-      initializeSchema(db, false);
-      expect(inspectSchema(db).version).toBe(43);
+      db.close();establishFixtureSecurity(f.path);db=unmanagedFixtureDatabase(f.path);
+      expect(inspectSchema(db).version).toBe(49);
       expect(db.prepare("SELECT id, owner, token_hash, released_at FROM reservations").all()).toEqual(before);
       expect(db.prepare("SELECT principal_id, credential_id, request_fingerprint FROM reservations").all())
         .toEqual([{ principal_id: null, credential_id: null, request_fingerprint: null }]);
@@ -88,12 +90,12 @@ describe("runtime access migration 36", () => {
 
   it("rejects tampered provenance and half-bound leases before writes", () => {
     const f = fixture(); f.store.close();
-    const db = new Database(f.path);
+    const db = unmanagedFixtureDatabase(f.path);
     db.exec("UPDATE schema_migrations SET checksum='wrong' WHERE version=36"); db.close();
     const before = readFileSync(f.path);
     expect(() => new SqliteStateStore(f.path)).toThrow(/migration checksum/);
     expect(readFileSync(f.path)).toEqual(before);
-    const repaired = new Database(f.path);
+    const repaired = unmanagedFixtureDatabase(f.path);
     repaired.prepare("UPDATE schema_migrations SET checksum=? WHERE version=36").run(runtimeAccessChecksum);
     repaired.prepare("UPDATE reservations SET principal_id=?").run(f.agent.id);
     repaired.close();
@@ -111,9 +113,10 @@ describe("runtime access migration 36", () => {
     } finally { f.store.close(); }
     const path = join(f.root, "restored.sqlite3");
     restoreControllerBackup(backup, path);
+    resumeFixtureSecurity(path);
     const restored = new SqliteStateStore(path);
     try {
-      finishBackupHandoff(path, { authentication: restored.getAuthenticationPolicy() } as unknown as Parameters<typeof finishBackupHandoff>[1], restored);
+      expect(()=>finishBackupHandoff(path, { authentication: restored.getAuthenticationPolicy() } as unknown as Parameters<typeof finishBackupHandoff>[1], restored)).toThrow(/security_fence/);
       const identity = new IdentityService(restored, undefined, undefined, undefined, undefined, restored);
       expect(restored.getRuntimeDelegation(f.agent.id, f.project.id)?.actions).toEqual(["projects:read"]);
       expect(() => identity.authenticateBearer(scopedToken)).toThrow();

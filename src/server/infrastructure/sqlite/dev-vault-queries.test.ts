@@ -1,3 +1,5 @@
+import { resumeFixtureSecurity } from "./fixtures/protected-security";
+import { controllerRestoreBoundary } from "../../restore-requests";
 import { join } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
@@ -33,23 +35,31 @@ describe("vault SQLite atomicity and backup", () => {
     const read = f.command({ operation: "read", ...f.imported, grantId: grant.id });
     f.execute(read, f.first.actor);
     const manifest = await createControllerBackup(f.store, backup, { applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") });
-    expect(manifest.database.schemaVersion).toBe(43);
+    expect(manifest.database.schemaVersion).toBe(49);
     expect(readdirSync(backup).sort()).toEqual(["attachments", "manifest.json", "state.sqlite3"]);
     for (const file of ["state.sqlite3", "manifest.json"]) {
       const bytes = readFileSync(join(backup, file));
       for (const value of ["FAKE_DEV_KEY_NAME", "FAKE_DEV_ONLY_VALUE_987654321", f.key.toString("hex")]) expect(bytes.includes(Buffer.from(value))).toBe(false);
     }
     restoreControllerBackup(backup, restoredPath);
+    expect(()=>new SqliteStateStore(restoredPath)).toThrow(/security_fence/);
+    resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
     try {
       expect(restored.devVault.load(f.project.id)).toEqual(f.store.devVault.load(f.project.id));
-      const identity = new IdentityService(restored, () => f.now);
-      const vault = new DevVaultService(restored.devVault, { key: () => f.key }, identity, f.verifier, () => f.now);
+      const now=new Date(Date.now()+1000).toISOString();
+      const identity = new IdentityService(restored, () => now);
+      expect(()=>identity.authenticateBearer(f.ownerToken)).toThrow();
+      const owner=identity.authenticateBearer(identity.recoverOwnerSession().token);
+      const vault = new DevVaultService(restored.devVault, { key: () => f.key }, identity, f.verifier, () => now,undefined,()=>controllerRestoreBoundary(restoredPath).createdAt);
       const cmd = f.command({ operation: "read", ...f.imported });
-      expect(vault.execute({ command: cmd, proof: f.proof(cmd) }, identity.authenticateBearer(f.ownerToken)).result)
+      expect(()=>vault.execute({command:cmd},owner)).toThrow();
+      expect(()=>vault.execute({command:cmd,proof:f.proof(cmd,owner)},owner)).toThrow();
+      expect(()=>vault.execute({command:cmd},f.first.actor)).toThrow();
+      expect(vault.execute({ command: cmd, proof: f.proof(cmd,owner,now) }, owner).result)
         .toMatchObject({ environment: { FAKE_DEV_KEY_NAME: "FAKE_DEV_ONLY_VALUE_987654321" } });
-      const wrong = new DevVaultService(restored.devVault, { key: () => Buffer.alloc(32) }, identity, f.verifier, () => f.now);
-      expect(() => wrong.execute({ command: cmd, proof: f.proof(cmd) }, f.owner)).toThrow("vault_unavailable");
+      const wrong = new DevVaultService(restored.devVault, { key: () => Buffer.alloc(32) }, identity, f.verifier, () => now,undefined,()=>controllerRestoreBoundary(restoredPath).createdAt);
+      expect(() => wrong.execute({ command: cmd, proof: f.proof(cmd,owner,now) }, owner)).toThrow("vault_unavailable");
     } finally { restored.close(); }
   });
 });

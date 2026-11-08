@@ -7,7 +7,7 @@ import type { Principal } from "./contracts";
 
 export class HumanAccountError extends Error {
   constructor(readonly code: "principal_unavailable" | "membership_revision_conflict" | "invalid_input") {
-    super(code === "membership_revision_conflict" ? "Human Knowledge membership revision changed; inspect current state." :
+    super(code === "membership_revision_conflict" ? "Human membership revision changed; inspect current state." :
       code === "principal_unavailable" ? "The requested active human principal is unavailable." : "Invalid human account operation.");
   }
 }

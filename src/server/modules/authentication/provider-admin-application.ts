@@ -1,5 +1,5 @@
 import type { DatabaseAdmission } from "../../database-admission";
-import type { HumanAccountService, Principal } from "../identity";
+import type { HumanAccountService, RuntimeMembershipService, Principal } from "../identity";
 import type { AuthenticationService } from "./authentication-service";
 import type { AuthenticationProviderRuntime } from "./provider-runtime";
 import { parseProviderAdminCommand, ProviderAdminError, providerAdminFailure, type ProviderConfigurationInput } from "./provider-admin-commands";
@@ -15,6 +15,7 @@ export interface ProviderConfigurationPort {
 export type ProviderMaintenanceState = "not_loaded" | "loading" | "ready" | "failed" | "disposing" | "disposal_unconfirmed";
 export interface ProviderAdministrationRuntime {
   state(): ProviderMaintenanceState;
+  factorResetSupport?(): "not_loaded" | "supported" | "unsupported";
   configurationRestartRequired(current: ProviderConfiguration | null): boolean;
   get(current: ProviderConfiguration): Promise<AuthenticationProviderRuntime>;
 }
@@ -33,6 +34,8 @@ export class ProviderAdminApplication {
     runtime: ProviderAdministrationRuntime; maintenance(): boolean;
     actor: "local-cli" | "local-admin";
     humans: HumanAccountService;
+    runtimeMemberships: RuntimeMembershipService;
+    productionAccountModeAvailable?(): boolean;
   }) {}
 
   async execute(body: unknown): Promise<unknown> {
@@ -51,7 +54,8 @@ export class ProviderAdminApplication {
         return { configuration, activeMode: mode.activeMode, configuredMode: mode.configuredMode,
           modeRestartRequired: mode.restartRequired, maintenance: d.runtime.state(),
           configurationRestartRequired: d.runtime.configurationRestartRequired(current),
-          productionAccountModeAvailable: false, owner: d.identity.ownerStatus(), ...(principal ? { principal } : {}) };
+          recovery: { password: "protected-local", factors: "preserve-by-default", reset: d.runtime.factorResetSupport?.() ?? "not_loaded" },
+          productionAccountModeAvailable: d.productionAccountModeAvailable?.() ?? false, owner: d.identity.ownerStatus(), ...(principal ? { principal } : {}) };
       });
       if (request.action === "configure") return await phase(() => {
         d.configuration.configure(request.input, d.identity.hasProviderData());
@@ -72,6 +76,9 @@ export class ProviderAdminApplication {
       if (request.action === "knowledge-access-list") return await phase(() => d.humans.memberships(request.input));
       if (request.action === "knowledge-access-set") return await phase(() => d.humans.set(request.input));
       if (request.action === "knowledge-access-revoke") return await phase(() => d.humans.revoke(request.input));
+      if (request.action === "runtime-access-list") return await phase(() => d.runtimeMemberships.list(request.input));
+      if (request.action === "runtime-access-set") return await phase(() => d.runtimeMemberships.set(request.input));
+      if (request.action === "runtime-access-revoke") return await phase(() => d.runtimeMemberships.revoke(request.input));
       const material = await phase(() => {
         const current = d.configuration.read();
         if (!current) throw new ProviderAdminError("configuration_missing");
@@ -81,8 +88,11 @@ export class ProviderAdminApplication {
       // Import, readiness and account effects must never upgrade a core participant.
       const runtime = await d.runtime.get(material);
       if (request.action === "enroll") await runtime.provisionLocal({ principalId: request.principalId, ...request.input, actor: d.actor });
-      else await runtime.recoverLocal({ principalId: request.principalId, ...request.input, actor: d.actor });
-      return { principalId: request.principalId, ...(request.action === "enroll" ? { enrolled: true } : { recovered: true }) };
+      else {
+        const reset = await runtime.recoverLocal({ principalId: request.principalId, ...request.input, actor: d.actor });
+        return { principalId: request.principalId, recovered: true, ...(reset ? { factors: "reset", removed: reset } : {}) };
+      }
+      return { principalId: request.principalId, enrolled: true };
     } catch (error) { throw providerAdminFailure(error); }
   }
 }

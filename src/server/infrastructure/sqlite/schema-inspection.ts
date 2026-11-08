@@ -1,3 +1,9 @@
+import { securityFenceMigration, securityFenceChecksum, securityTriggers } from "./security-fence-migration";
+import { humanConfigurationMigration, humanConfigurationChecksum } from "./human-configuration-migration";
+import { humanTestRunMigration, humanTestRunChecksum } from "./human-test-run-migration";
+import { humanRuntimeMigration, humanRuntimeChecksum } from "./human-runtime-migration";
+import { runtimeMembershipMigration, runtimeMembershipChecksum } from "./runtime-membership-migration";
+import { testRunRequesterMigration, testRunRequesterChecksum } from "./test-run-requester-migration";
 import { humanPrincipalMigration, humanPrincipalChecksum } from "./human-principal-migration";
 import { knowledgeRoleMigration, knowledgeRoleChecksum } from "./knowledge-role-migration";
 import { runtimeAccessMigration, runtimeAccessChecksum } from "./runtime-access-migration";
@@ -25,6 +31,11 @@ type ForeignKey = { table: string; from: string; to: string; on_delete: string; 
 // Historical installations may already have tables from the bootstrap DDL. Require
 // them only after their introducing migration, but validate any that are present.
 const tableVersions: Record<string, number> = {
+  security_checkpoint: 49,
+  human_test_run_requesters: 47, human_test_run_intents: 47,
+  human_runtime_leases: 46, human_runtime_intents: 46,
+  runtime_human_memberships: 45,
+  test_run_requesters: 44,
   authentication_ba_two_factor: 40, authentication_ba_passkey: 40, authentication_account_policies: 40,
   authentication_totp_steps: 40, authentication_passkey_trust: 40, authentication_passkey_staged: 40,
   authentication_factor_contexts: 40, authentication_factor_budgets: 40, authentication_factor_receipts: 40,
@@ -48,11 +59,15 @@ const tableVersions: Record<string, number> = {
   knowledge_import_batches: 22, knowledge_import_staging: 22, knowledge_import_sources: 22,
 };
 const columnVersions: Record<string, number> = {
+  "human_runtime_intents.configuration_context_json": 48,
+  "human_runtime_intents.configuration_bound": 48,
   "schema_migrations.name": 28, "schema_migrations.checksum": 28,
   "projects.tls_mode": 3, "projects.tls_key_path": 3, "projects.tls_cert_path": 3, "projects.tls_ca_path": 3,
   "reservations.maximum_expires_at": 4, "reservations.token_hash": 4, "reservations.idempotency_key": 4,
   "reservations.principal_id": 36, "reservations.credential_id": 36,
   "reservations.request_fingerprint": 36,
+  "reservations.provider_bound": 46,
+  "test_runs.provider_bound": 47,
   "projects.configuration_revision": 37,
   // Migration 13 explicitly supports the legacy lineage without launch_preset.
   "projects.launch_preset": 15, "projects.environment_json": 8,
@@ -72,6 +87,7 @@ interface TableShape { columns: Column[]; foreignKeys: ForeignKey[]; checks: str
 // Tables from migration 38 on are never in bootstrap DDL; their explicit indexes are part of the contract.
 const STRICT_TABLES_FROM = 38;
 const normalizedSql = (sql: string) => sql.replace(/\s+/g, "").toLowerCase();
+const recognizedSecurityTriggers=new Map(securityTriggers.map(trigger=>[trigger.name,normalizedSql(trigger.sql)]));
 function explicitIndexes(database: Database.Database, table: string): string[] {
   return (database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL").all(table) as Array<{ sql: string }>)
     .map(({ sql }) => normalizedSql(sql)).sort();
@@ -151,16 +167,25 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : x.version === 41 ? x.name !== authenticationSessionIssuanceMigration.name || x.checksum !== authenticationSessionIssuanceChecksum
       : x.version === 42 ? x.name !== humanPrincipalMigration.name || x.checksum !== humanPrincipalChecksum
       : x.version === 43 ? x.name !== godotWebMigration.name || x.checksum !== godotWebChecksum
+      : x.version === 44 ? x.name !== testRunRequesterMigration.name || x.checksum !== testRunRequesterChecksum
+      : x.version === 49 ? x.name !== securityFenceMigration.name || x.checksum !== securityFenceChecksum
+      : x.version === 48 ? x.name !== humanConfigurationMigration.name || x.checksum !== humanConfigurationChecksum
+      : x.version === 47 ? x.name !== humanTestRunMigration.name || x.checksum !== humanTestRunChecksum
+      : x.version === 46 ? x.name !== humanRuntimeMigration.name || x.checksum !== humanRuntimeChecksum
+      : x.version === 45 ? x.name !== runtimeMembershipMigration.name || x.checksum !== runtimeMembershipChecksum
       : true)) refuse("migration checksum or name");
   }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));
-  if (objects.some(x => x.type === "view" || x.type === "trigger") || [...tables].some(x => !(x in tableVersions))) refuse();
+  if (objects.some(x => x.type === "view") || [...tables].some(x => !(x in tableVersions))) refuse();
+
   for (const [table, introduced] of Object.entries(tableVersions)) {
     if (!tables.has(table)) { if (version >= introduced) refuse(); continue; }
     if (introduced >= STRICT_TABLES_FROM && version < introduced) refuse(`${table} precedes its migration`);
     const expected = knownStructure().get(table)!;
     const columns = database.prepare(`PRAGMA table_info("${table}")`).all() as Column[];
     for (const column of columns) {
+      if (table === "reservations" && column.name === "provider_bound" && version < 46) refuse("human lease marker precedes migration 46");
+      if (table === "test_runs" && column.name === "provider_bound" && version < 47) refuse("human test marker precedes migration 47");
       const known = expected.columns.find(x => x.name === column.name);
       if (!known || known.type !== column.type || known.pk !== column.pk || known.notnull !== column.notnull) refuse();
       // A strict column may not appear before the migration that introduces it.
@@ -179,8 +204,14 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
     }
     const historicalLease = table === "reservations" && actualChecks.includes(historicalLeaseCheck);
     // A known historical expression must not hide additional, unknown CHECKs.
-    if (historicalLease && (actualChecks.length !== 2 || !actualChecks.includes("kindin('human','agent')"))) refuse("constraint in reservations: lease");
+    if (historicalLease && (actualChecks.length !== (version >= 46 ? 3 : 2) || !actualChecks.includes("kindin('human','agent')"))) refuse("constraint in reservations: lease");
     for (let check of expected.checks) {
+      if (table === "runtime_human_memberships" && version === 47) check = check.replace("between1and6", "between1and4");
+      if (table === "runtime_human_memberships" && version === 46) check = check.replace("between1and6", "between1and3");
+      if (table === "runtime_human_memberships" && version < 46) {
+        if (check.startsWith("role")) check = "role='reader'";
+        if (check.startsWith("json_valid")) check = "permissions_json='[\"projects:read\"]'";
+      }
       if (table === "projects" && version < 43) check = check.replace(",'godot-web'", "");
       if (table === "projects" && version < 30) check = check.replace(",'none'", "");
       if (table === "test_runs" && version < 30) check = check.replace(",'godot'", "");
@@ -221,6 +252,9 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
   }
   const ownershipIndex = database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='one_active_reservation_per_project'").get() as {sql:string}|undefined;
   if (!ownershipIndex || !/createuniqueindex(?:ifnotexists)?one_active_reservation_per_projectonreservations\(project_id\)wherereleased_atisnull/i.test(ownershipIndex.sql.replace(/\s+/g,""))) refuse();
+  const actualTriggers = database.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger'").all() as Array<{name:string;sql:string}>;
+  if (actualTriggers.length !== (version >= 49 ? securityTriggers.length : 0)
+    || actualTriggers.some(actual => recognizedSecurityTriggers.get(actual.name)!==normalizedSql(actual.sql))) refuse("security triggers");
   return { version, fresh: false };
 }
 

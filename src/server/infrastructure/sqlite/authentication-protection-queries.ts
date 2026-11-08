@@ -29,6 +29,30 @@ const EVIDENCE = `session_id AS sessionId, subject, method, authenticated_at AS 
 export class AuthenticationProtectionQueries implements ProtectionStore {
   constructor(private readonly database: Database.Database, private readonly providerId: string) {}
 
+  /** Joins the native recovery transaction; never opens an independent connection. */
+  resetLocalFactors(subject: string): { totp: boolean; passkeys: number } {
+    if (!this.database.inTransaction || !this.activePrincipal(subject)) throw new Error("Recovery requires an active account transaction.");
+    const policy = this.account(subject);
+    const passkeys = (this.database.prepare('SELECT count(*) n FROM authentication_ba_passkey WHERE "userId"=?').get(subject) as { n: number }).n;
+    const totp = !!this.database.prepare('SELECT 1 FROM authentication_ba_two_factor WHERE "userId"=? LIMIT 1').get(subject);
+    const summary = { totp, passkeys };
+    if (!policy) this.createAccount(subject, new Date().toISOString());
+    const changed = this.database.prepare(`UPDATE authentication_account_policies SET generation=generation+1, policy_revision=policy_revision+1,
+      totp_selected=0, passkey_selected=0, updated_at=? WHERE provider_id=? AND subject=? AND generation < 9007199254740991 AND policy_revision < 9007199254740991`)
+      .run(new Date().toISOString(), this.providerId, subject);
+    if (changed.changes !== 1) throw new Error("Recovery generation unavailable.");
+    // Delete only challenges bound to this subject, never another account's anonymous options.
+    this.database.prepare(`DELETE FROM authentication_ba_verification WHERE id IN
+      (SELECT native_id FROM authentication_factor_contexts WHERE provider_id=? AND subject=?) OR value=?`).run(this.providerId, subject, subject);
+    this.database.prepare("UPDATE authentication_factor_contexts SET used=1 WHERE provider_id=? AND subject=?").run(this.providerId, subject);
+    this.database.prepare("UPDATE authentication_factor_receipts SET state='failed' WHERE provider_id=? AND subject=? AND state='charged'").run(this.providerId, subject);
+    this.database.prepare('DELETE FROM authentication_ba_passkey WHERE "userId"=?').run(subject);
+    this.database.prepare('DELETE FROM authentication_ba_two_factor WHERE "userId"=?').run(subject);
+    this.database.prepare('UPDATE authentication_ba_user SET "twoFactorEnabled"=0 WHERE id=?').run(subject);
+    // Native deletion cascades trust/staging. Steps, budgets, receipts and audit history remain monotonic.
+    return summary;
+  }
+
   activePrincipal(subject: string): string | null {
     const row = this.database.prepare(`SELECT s.principal_id FROM authentication_provider_subjects s
       JOIN remote_principals p ON p.id = s.principal_id

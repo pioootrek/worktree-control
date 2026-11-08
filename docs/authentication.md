@@ -1,6 +1,6 @@
 ---
 audience: "people running Worktree Control and choosing how callers authenticate"
-last_reviewed: "2026-11-02"
+last_reviewed: "2026-11-08"
 source_of_truth: "authentication modes, owner CLI and scoped runtime agent workflow"
 status: "active"
 ---
@@ -10,9 +10,9 @@ status: "active"
 For planned human accounts, project roles, scoped agents and ENV permissions,
 see the [identity and authorization plan](identity-authorization-plan.md).
 A1 Knowledge roles and A2 scoped projects, claims, runtime control, profile
-selection and timeout configuration are implemented below. Protected ordinary
-human accounts and isolated cookie-based Knowledge access are also implemented.
-Production account activation and ENV roles remain gated.
+selection, timeout configuration and finite verification are implemented below.
+Protected ordinary human accounts and isolated cookie-based Knowledge access are also implemented.
+Production account mode is implemented below. General ENV roles remain gated.
 
 One authentication policy applies to the dashboard, the HTTP API, live updates,
 MCP and the online CLI. The controller stores the next-start selection in its
@@ -21,8 +21,7 @@ active mode once per boot, after migration and restore recovery. Only the CLI
 selects a mode; the new selection takes effect at the next service restart.
 Token rotation, credential revocation and current grants still apply immediately.
 The permanent product modes are open access, a shared installation token, and
-individual RBAC. Full RBAC remains gated on account authentication, readiness
-of selected optional methods and A5 work. The current controller refuses `better-auth` selection and startup. `legacy` is
+individual RBAC. Account mode requires validated provider readiness, owner enrollment and the external fence. `legacy` is
 upgrade compatibility and cannot be selected anew.
 
 | Mode | Who uses it | Access |
@@ -30,11 +29,266 @@ upgrade compatibility and cannot be selected anew.
 | `token` | New installations | Installation-wide compatibility authority, including Knowledge; cannot sponsor scoped runtime agents |
 | `open` | Explicit choice | Anonymous installation-wide compatibility authority; cannot sponsor scoped runtime agents |
 | `legacy` | Installations created before modes existed | Browser pairing token, MCP `mcp-token`, owner sessions for knowledge |
-| `better-auth` | Reserved | Not available yet; selecting it fails with `auth_provider_unavailable` |
+| `better-auth` | Explicit protected CLI selection | Individual human sessions and agent credentials; unconverted operations deny |
 
 Scoped agent tokens and owner sessions from `identity` commands keep working in
 `legacy` and `token` modes. A controller whose stored mode is unavailable
 refuses to start; it never falls back to another mode.
+
+## Production account mode (A5)
+
+The controller can select `better-auth` after its protected configuration, actual
+provider capabilities, external security fence and existing owner's enrollment
+pass validation. `auth mode set better-auth` prepares the same provider lifetime
+used by protected administration, then records the next boot's mode. It does not
+change the active mode, grants or running sessions. A controller starting in
+account mode prepares the bounded HTTP adapter before opening either listener.
+Missing configuration, an incompatible or failed provider, a different canonical
+HTTPS origin, an unenrolled owner or a failed fence refuses startup. There is no
+fallback to token or open access.
+
+The current production adapter requires contract 5, storage revision 3, integrated
+adapter `0.0.0-proof.5`, Better Auth 1.7.14 and local factor-reset support. Its
+historical package name does not establish readiness. The loader checks the
+actual instance and its schema-verified capabilities. The separately installed
+provider and controller share the controller's single SQLite connection.
+`auth provider status` derives `productionAccountModeAvailable` from the loaded
+runtime, current configuration, fence and active owner enrollment. It is false
+when capability has not been established in that lifetime. Public status exposes
+only active `mode` and `loginAvailable`; open/token/legacy do not mount login.
+
+Optional TOTP and passkeys are available for account selection. Merely loading
+them does not select protection or grant permissions. Production engineering
+bounds allow five TOTP and ten passkey evaluations per account per minute,
+a 15-second evaluation ticket and a ten-minute enrollment window. Native limits
+may refuse sooner. Anonymous options have per-peer/global limits of 20/120 per
+minute, 128 peers, 4,096 challenge/context rows and 64 completion reservations.
+These are capacity and guessing bounds, not an ASVS compliance claim. Password-only
+accounts remain possible by owner choice. The public closed adapter keeps native
+signup, catch-all handlers and raw-token issuance unreachable.
+
+### Transport contract
+
+| Entry point in active RBAC | Application enforcement |
+| --- | --- |
+| HTTP `/api/auth/*` allowlist | `AuthenticationHttp` and provider runtime validate canonical Host/Origin, strict JSON, bounded bodies, socket peer, secure cookies and committed session evidence |
+| Cookie `/api/knowledge` | `ProviderKnowledgeApplication` rechecks current session and explicit Knowledge membership/grants |
+| Cookie `/api/runtime/read` | `ProviderRuntimeReadApplication` and shared runtime reads require explicit `projects:read` |
+| Cookie `/api/runtime/mutate` | `HumanRuntimeService` requires the original current session, membership revision and exact human lease for each effect/receipt |
+| Cookie `/api/runtime/tests` | `HumanVerificationService` requires independent `tests:run`, original attribution and dispatch/delivery rechecks |
+| Cookie `/api/runtime/configuration` | `HumanConfigurationService` requires explicit profile/timeout permission, original authority and atomic revision checks |
+| Agent HTTP Knowledge and online Knowledge CLI | Individual agent credential, current principal and resource grants in `IdentityService` and `KnowledgeService` |
+| Agent MCP tools/resources | Per-request bearer resolution, session binding and shared Knowledge/runtime/configuration/verification policy; retained results reauthorize |
+| Agent remote verification | Existing submitter/project and worker/project/preset checks remain independent |
+| Agent DEV vault | Existing explicit vault grants and separate Ed25519 owner proof remain required |
+| Public identity bootstrap/admin, broad dashboard/runtime API, directories, ENV, TLS and storage cleanup | Denied before effects; cookies and machine tokens gain no installation authority |
+| Cookie downloads/attachments/exports, SSE, Godot preview, backups/restore and schedules | Unsupported and denied; use converted operations or protected operator workflows |
+| Agent attachments/exports/schedules | Only existing explicit Knowledge permissions and resource checks; no runtime right implies them |
+| Protected Unix admin socket | OS owner channel; provider/mode maintenance and current-owner identity administration on the same store |
+| Protected stopped CLI and recovery | Both singleton locks, current owner credential where required, protected fence preflight and existing recovery operations |
+| Static dashboard assets | Public static export; no private data or controller authority |
+
+Shared installation tokens, legacy pairing links and legacy MCP secrets confer
+no authority in RBAC, including a request carrying both old product-token headers
+and an individual bearer/cookie. Owner-session bearers remain available only to
+protected local administration; they cannot bypass public account sessions.
+Unknown actions/resource substitutions deny. Token rotation and principal,
+credential, session, role and delegation revocation remain immediate. Converted
+operations retain their existing admission, wait, dispatch and delivery checks.
+Selecting the next boot's mode never changes the running boot's authority.
+
+`identity` commands on an active RBAC controller use its private admin socket and
+require a current owner credential. They invoke the same identity application
+operations as offline administration. No second database connection is opened.
+This supports explicit issue/rotate/revoke without a restart or a public owner
+bootstrap route. `identity recover-owner` remains a stopped-controller operation.
+Provider password/factor recovery uses the existing protected provider commands.
+
+### Explicit agent diagnostics
+
+| Permission | MCP operations | Bounds and exclusions |
+| --- | --- | --- |
+| `logs:read` | `get_runtime_logs` | One authorized project; last 1..100 retained lines, 4,000 characters per line, under 16 KiB encoded; no disk read or wait |
+| `logs:read` plus `tests:run` | `get_test_run_logs` | Same log bounds; exact original principal/credential and current run/project authority; no other run's output |
+| `storage:read` | `get_project_storage` | Cached size/status/time plus at most 16 history points for one project/worktree; no scan, arbitrary filesystem read, directory names, content or cleanup |
+| `capacity:read` | `get_server_capacity`, `get_test_queue`, corresponding stable resources | Aggregate availability/counts only; no holder, project, run or owner identities |
+
+Every permission is independently grantable. Effective authority is the current
+owner-sponsored delegation intersected with the immutable credential ceiling.
+Existing credentials receive no backfill; increasing a delegation cannot increase
+an issued credential's ceiling. Rotation may only narrow the previous ceiling.
+Issue a new credential with explicit consent to add diagnostics. Tool discovery
+advertises diagnostic operations allowed at connection time; execution and resource
+reads still check current authority. Reconnect after an explicit new grant.
+
+Logs can contain application secrets. The explicit log grant permits that exposure.
+The projection redacts known controller credential formats, Authorization/Cookie
+fields and controller token environment fields. It does not promise to recognize
+arbitrary secrets written by applications. Reads use existing in-memory tails or
+bounded stored test tails, so they add no filesystem sampler, timer or long wait.
+Capacity uses the existing compact lifecycle projection and queue counters.
+No diagnostic permission grants ENV, process control or cache deletion.
+
+### Separate provider artifact and staged migration
+
+`pnpm build:auth-provider` emits a private local tarball, its checksum and an
+`artifact.json` under `dist/private-auth-provider/`. Install it into a separate
+private prefix. Its compiled JavaScript and pinned runtime dependencies work
+without this source checkout or test loaders. The Community package's dependency
+graph and assets exclude the provider implementation. It remains optional and
+unpublished; this work changes no distribution or licensing decision.
+The tarball includes `npm-shrinkwrap.json`; `artifact.json` records its hash.
+Archive that reviewed tarball for deployment rather than resolving it again.
+
+The following placeholders name operator-selected private paths and existing IDs.
+Passwords/signing material enter through a private file or stdin, never argv,
+chat, Git or Knowledge. Keep every command on the same data/state paths.
+
+```sh
+# Parent/operator first stops the controller and preserves a verified backup.
+NEW_CLI auth fence inspect --data-dir DATA --state-dir STATE
+NEW_CLI auth fence establish --expect PREFLIGHT --data-dir DATA --state-dir STATE
+npm install --prefix PRIVATE_PROVIDER_PREFIX --omit=dev PRIVATE_PROVIDER_TARBALL
+NEW_CLI auth provider configure --input-file PRIVATE_CONFIG_JSON --data-dir DATA --state-dir STATE
+NEW_CLI auth provider status --principal-id EXISTING_OWNER_ID --data-dir DATA --state-dir STATE
+NEW_CLI auth provider enroll --principal-id EXISTING_OWNER_ID --input-file PRIVATE_ENROLLMENT_JSON --data-dir DATA --state-dir STATE
+```
+
+Use `establish` only when inspection explicitly permits adoption of the recognized
+old store. Do not call owner creation on an existing installation. Configuration
+input is `{module:absoluteInstalledEntry,origin:canonicalHttpsOrigin,
+signingSecret:{kind:"generate"}}` for first configuration. Reconfiguration preserves
+existing signing material. Enrollment input is `{email,name,password}`. An enrolled
+account uses protected `recover` rather than a second enrollment. Use the existing
+owner ID, kind, role and Knowledge history throughout.
+
+Before cutover, use protected owner CLI administration to grant each agent only
+its needed runtime-project actions and Knowledge rights, then issue an individual
+credential with the exact project/action ceiling. Runtime, tests, profile selection,
+timeout edits, logs, cached storage and aggregate capacity are separate decisions.
+Remote verification and vault access need their existing separate grants/proofs.
+Prepare the explicit human runtime/Knowledge memberships through provider CLI.
+Store issued values directly in the owner's private credential delivery workflow.
+
+```sh
+NEW_CLI identity set-runtime-delegation --principal-id AGENT_ID --project-id PROJECT_ID --actions EXPLICIT_ACTIONS --expected-revision CURRENT_REVISION --data-dir DATA --state-dir STATE
+NEW_CLI identity issue-runtime-credential --principal-id AGENT_ID --label CLIENT_LABEL --projects-json EXPLICIT_PROJECT_CEILINGS --data-dir DATA --state-dir STATE
+NEW_CLI auth mode set better-auth --data-dir DATA --state-dir STATE
+```
+
+The parent/operator then performs the authorized restart using this release and
+its matching canonical HTTPS `--public-url`. Verify active/configured mode,
+public login/session, human roles, each agent's real MCP/CLI workflows, explicit
+log exposure, denied old shared credentials, immediate revocation and recovery.
+Do not infer successful client migration from a header file or tool listing.
+
+For the llm-worker handoff, the installed legacy
+`agent-mcp-worktree-switcher` launcher reads **only**
+`WORKTREE_SWITCHER_MCP_TOKEN`. A new `WORKTREE_CONTROL_MCP_TOKEN` entry alone does
+not migrate that launcher. The owner must manually update each client's effective
+credential delivery, using the legacy variable with the retained launcher or an
+explicitly installed compatible launcher. Preserve provider accounts and each
+client's other MCP registrations. No client configuration, launcher, header file
+or real secret is changed by these scripts or by artifact acceptance.
+
+For a lost provider, restore its separately protected configuration/artifact or
+explicitly choose token mode through protected CLI and restart. This is an
+operator decision to leave account isolation. For database rollback, use the
+P3b inspect/resume flow; resume quarantines old credentials/grants before P3a
+password recovery. Regrant/reissue explicitly. Never copy an old matching witness
+alongside restored data to suppress the fence.
+
+`test:rbac-artifact` builds the separate provider, installs both tarballs into
+isolated prefixes, seeds a declared immutable old executable using temporary
+data, requires protected fence establishment, and exercises upgrade, public
+HTTP/MCP/CLI, revoke, rollback quarantine and recovery. The explicit input file
+`dist/rbac-acceptance-input.json` supplies `oldPackage` and `oldCliSha256`; optional `legacyLauncher` and
+`legacyLauncherSha256` select a read-only launcher template for an isolated real
+stdio proxy/config-shape test. Only the temporary copy receives the fixture URL,
+fixture secret file and fixture header file. No real
+installation database or credentials are read. Evidence and tarballs stay under
+`dist/rbac-artifacts/`. Tests use finite fixture controller processes and never
+install or restart a service.
+
+### GUI handoff and release classification
+
+The static dashboard now probes the public `GET /api/auth/status` on load.
+Only a definitive, well-formed answer selects a surface: `legacy`, `open` or
+`token` with `loginAvailable:false` renders the legacy dashboard unchanged, and
+`better-auth` with `loginAvailable:true` renders the account flow. Account mode
+with an unavailable provider gets its own retriable notice. A network error, a
+non-200 answer and any other shape render a retriable failure state. None of
+them falls back to the legacy token dashboard. The account flow covers sign-in, the TOTP and passkey challenges,
+self-service TOTP and passkey enrollment on the Security tab, and sign-out.
+The HttpOnly session cookie is the sole browser authority; no password, token
+or CSRF value reaches the URL, web storage or logs. Session loss (revocation,
+recovery, factor enrollment, expiry) returns to sign-in with an explicit
+notice, and a reload resumes a live session. The session probe accepts only
+the server's DTO: the literal `{authenticated:false}` is anonymous, and
+`authenticated:true` needs a principal ID, an `owner` or `human` kind, a
+canonical `expiresAt` instant and a matching method and factor count. A
+failed probe or any other 200, such as an empty or non-JSON proxy page, is not
+an answer: it renders a retriable state with neither account data nor a
+sign-in form, and it never clears a pending sign-out. A late 401 from an
+earlier session view is ignored, so it cannot end or relabel the current
+session. Sign-out is complete only when the server confirms it with
+`{authenticated:false}` or a 401. Each attempt is abandoned after 15 seconds,
+the client retries once, and otherwise blocks account data behind an explicit
+unconfirmed state with a manual retry instead of faking the sign-in screen. A
+non-secret intent marker in web storage (`worktree-control.signOutUnconfirmed`)
+is written before the first request and cleared only by that proof, so a
+reload or a closed tab during a stalled request keeps the intent; it is never
+authority. A reload that finds the marker and a live session
+finishes the sign-out before any account data renders, so an apparent logout
+never silently resumes. If that reload cannot probe the session, the
+unconfirmed state stays. A completed sign-in clears the marker, because the
+new cookie replaced the old one and the new session must not be ended by an
+older intent. Another tab that still shows account data learns of a confirmed
+sign-out only on its next request; it does not watch the marker. Only the
+Projects tab polls (while visible); the Knowledge and Security tabs make no
+automatic request, so their last view stays on screen until the next
+interaction answers 401. If web storage is unavailable, the in-memory state
+still blocks the current page, but a reload cannot recover the intent. The GUI never infers rights from the owner label:
+reader, operator, tests and configuration distinctions come from the backend
+responses, and denials are shown as such. Profile selection and timeout
+overrides are CAS writes against the project's single configuration revision.
+After a save or a `revision_conflict` the panel re-reads both views. A conflict
+stays visible once, in the panel, with the current values replacing the stale
+draft, and a retry is a new intent with a new idempotency key.
+
+Account mode uses only the closed cookie contracts: `/api/knowledge` and
+`/api/runtime/{read,mutate,tests,configuration}`. Knowledge attachments and
+exports stay hidden in account mode because no cookie route exists for them.
+Cookie SSE, downloads, ENV/vault administration, backups, schedules and the
+broad dashboard DTOs remain unsupported and are presented as unavailable, never
+silently retried. The GUI creates no owner and offers no signup or recovery;
+those stay with the protected CLI.
+
+Browser proof runs in `tests/ui/account.spec.ts` against a closure fixture and
+in `tests/https/account-browser.test.ts` against the real controller, provider
+and cookies behind the pinned Caddy 2.11.3 fixture on an isolated secure
+origin. `scripts/test-https.mjs` resolves the fixture through
+`scripts/https-caddy.mjs`. An explicit `CADDY_BIN` (as CI sets after its own
+checksum step) is used once it reports `v2.11.3`. Otherwise the pinned
+linux/x64 archive from `.github/workflows/verify.yml` is downloaded with a
+64 MiB and 180-second bound, and its SHA-512 is verified before extraction.
+Only the `caddy` member is extracted. The binary is installed atomically into
+a private cache under `node_modules/.cache` with its digest recorded. Each
+reuse re-hashes the binary and replaces a mismatched or symlinked entry. Other
+platforms, a missing network and a wrong version fail with an error naming
+`CADDY_BIN`. A unit test keeps the URL and digest identical to the workflow. The proof covers
+password lifecycle, role distinctions, claim and test rights, knowledge over
+the session cookie, TOTP enrollment and challenge, passkey enrollment and
+authentication through a virtual authenticator, and protected recovery with
+old-password denial. Live host migration remains the parent's task.
+
+The full provider proof retains five historical native/old-bounded factor
+negative failures. They must remain visible and unskipped. Public integrated
+TOTP tests establish enrollment-code reuse rejection, independent-challenge
+replay rejection and durable failed-guess charging through the production
+composition. A production-path regression blocks release; a historical native
+failure requires an explicit release classification, never a green full-proof
+claim. The parent owns independent review, live preflight and eventual migration.
 
 ## Optional provider proof (first A3 slice)
 
@@ -44,9 +298,10 @@ executable, isolated proof using Better Auth 1.7.14, `@better-auth/core`
 It exercises real handler requests, cookies, password changes, session
 revocation and local recovery. Startup does not load it. Explicit protected CLI
 maintenance can load a configured module without activating accounts.
-Selecting `better-auth` still fails; this slice adds no login UI,
-production browser authorization or account endpoints. A bounded browser adapter
-is composed only by isolated proof fixtures; see [browser adapter](#bounded-browser-adapter).
+This historical first slice added no login UI,
+public account endpoints. Production startup now owns the shared provider
+composition described below; the bounded browser adapter remains unmounted
+on production listeners. See [browser adapter](#bounded-browser-adapter).
 
 The versioned local loader checks readiness and storage compatibility. Local
 modules execute as trusted controller code, with no sandbox. Each operation
@@ -76,8 +331,8 @@ for database phases. See the [architecture contract](architecture.md#database-ad
 Provider resolution inside a core scope fails as reentrant. The implemented
 [provider authorization handoff](#provider-authorization-handoff) resolves outside
 admission and validates current stored authority inside each Knowledge operation.
-The isolated browser composition below mounts it in a temporary fixture only.
-Production account mode remains unavailable.
+Temporary fixtures mount the browser adapter using either the original isolated
+proof or the shared controller composition. Production account mode remains unavailable.
 
 Disposal rejects new provider work and tracks actual execution, including a
 continuation whose public promise timed out. Late SQL and host notifications
@@ -112,9 +367,9 @@ Schema 41 adds durable session issuance; see [closed factor HTTP API](#closed-fa
 Schema 42 widens only the core principal kind for ordinary humans; provider
 contract 5, storage revision 3 and implementation `0.0.0-proof.5` are unchanged.
 Full controller backups record the current schema and include provider rows.
-Genuine schema-38, schema-39, schema-40 and schema-41 snapshots can be restored and upgraded on open.
-Older binaries reject a newer schema; restoring a backup is not a downgrade procedure. Restoring a snapshot can revive old sessions and
-passwords; the external revocation/recovery fence remains A5 work. Better Auth
+Genuine schema-38, schema-39, schema-40 and schema-41 snapshots can be restored
+and upgraded through protected maintenance; ordinary opening refuses until then.
+Older binaries reject a newer schema; restoring a backup is not a downgrade procedure. P3b fences restored snapshots and quarantines old authentication before protected resume. Better Auth
 stores bearer session tokens, and the proof's native sign-in and password-change
 JSON responses include session tokens. Those responses are not an approved
 browser API design. Password-only evidence is neither MFA nor an ASVS Level 2
@@ -255,15 +510,19 @@ passwords/sessions until A5 provides an external recovery fence.
 with no credential, token, role or grant. Any existing owner, including revoked,
 prevents creation. Status reports none/single/ambiguous; existing installations
 choose an active ID explicitly. Enrollment input is exactly `{email,name,password}`;
-recovery input is `{newPassword}`. The pinned proof requires 12–256-character
+recovery input is `{newPassword,factors?}`, where `factors` is `"preserve"` or
+`"reset"` and omission preserves selected factors. The pinned proof requires 12–256-character
 passwords, which remains experimental policy. Email never selects an identity.
 Principal creation and enrollment are separate transactions. Failed enrollment
 leaves a harmless uncredentialed principal for inspection and explicit retry.
 Any mapping history, including revoked, prevents re-enrollment.
 
-Recovery checks the exact active owner/mapping inside the actual queued borrow,
-then atomically replaces the password, deletes every subject session and audits.
-It preserves principal/provider IDs, grants, bindings and tombstones. Revoked
+Recovery checks the exact active owner or human and mapping inside the actual
+queued borrow and again after hashing and at transaction entry. It atomically
+replaces the password, deletes every subject session and audits. Explicit factor
+loss reset also removes factor bindings and advances generation as described
+[below](#protected-factor-loss-recovery-p3a).
+It preserves principal/provider IDs, authorization grants/bindings and tombstones. Revoked
 principals/mappings are not reactivated. Session revocation is immediate despite
 a pending next-start mode selection.
 
@@ -292,18 +551,382 @@ password/revoke-all effect, including sessions created since the first.
 Same-OS-user agents share operator authority. Host isolation, delegated account
 administration, full A3 acceptance and production RBAC remain separate gates.
 
+### Shared controller provider composition (P1)
+
+`src/cli/index.ts` constructs `createControllerAuthentication` once and passes its
+IdentityService to the controller, MCP, Knowledge, vault and other application
+services. Protected administration and the internal bounded-browser preparation
+method share its single retained load promise, pinned private configuration and
+provider runtime. Repeated browser preparation returns the same adapter and its
+capacity counter; changing its origin, Knowledge service, runtime read service or trusted fixture peer
+requires a new owner. The stopped CLI uses the same composition through
+`createAuthenticationAdministration`. Neither path opens another database or
+upgrades a core admission into a provider borrow.
+
+Loading remains lazy. Enrollment, recovery or internal browser preparation first
+runs the existing store-owned ordinary-restart session recovery, then loads the
+configured module. Restored or unconfirmed provenance refuses recovery before
+loading and leaves pending markers intact. This preserves the restore refusal;
+it does not implement the external P3 recovery/revocation fence.
+
+The shared identity checks the exact runtime-owned actor and current stored
+session, subject mapping, principal and protection evidence on every admitted
+authorization. It also checks that the pinned configuration is still valid and
+unchanged. Expiry, logout, recovery, revocation, account disablement, maintenance
+and disposal deny retained actors without depending on notification delivery.
+The browser adapter repeats the configuration guard after admission and before
+response release. Body reads remain outside admission. Accepted preparation and
+administration drain through one disposal before SQLite closes; uncertain cleanup
+retains ownership and the same rejected disposal promise. Reserved cleanup may
+settle only this runtime's own unpublished sessions after the fence; it cannot
+admit new authentication or sweep restored pending rows.
+
+Internal browser preparation requires a canonical HTTPS origin equal to the
+protected provider configuration. Its explicit controller engineering bounds are
+64 unreleased sessions, 4,096 native session rows across boots, reconciliation in
+batches of 32, and 16 concurrent requests with four slots reserved for completion.
+Bodies are capped at 8 KiB for passwords, 64 KiB for WebAuthn and 128 KiB for
+Knowledge; cookies at 8 KiB; body reads at 10 seconds. JSON bounds are depth 8 /
+128 fields for authentication and depth 16 / 2,048 fields for Knowledge. Loader
+and transport validators enforce these inputs. These capacity choices are
+separate from fixture limits and from account-security policy. They do not
+mandate MFA or enable optional factors without their explicit provider policy.
+
+Existing accounts enroll by principal ID. The production composition test creates
+a temporary pre-existing owner `69849424-2aba-4fdd-b4fa-a394a77a193c`, then configures
+and enrolls it while preserving its kind, credentials, grants and history. It
+performs no live enrollment and never uses owner creation to replace that account.
+
+A5 now validates actual readiness before selecting `better-auth`. Startup does not mount public login in
+open/token/legacy modes. Provider sessions gain neither owner-session nor
+installation authority, and never replace signed Ed25519 vault proof. P2a supplies
+the reader workflow below, and P2b1 adds explicit human runtime leases and control.
+Remaining transport enforcement and A5 acceptance
+fencing remain activation gates.
+
+### Human runtime readers (P2a)
+
+Protected local administration can explicitly assign `reader` plus
+`["projects:read"]` to an active existing owner or ordinary human. The target
+is `{kind:"runtime-project",id:PROJECT_ID}`. There is no default project access,
+including for an owner. Knowledge grants, memberships and runtime links confer
+no runtime access, and runtime membership confers no Knowledge rights.
+
+```sh
+worktree-control auth provider runtime-access list --principal-id HUMAN_ID --limit 20
+worktree-control auth provider runtime-access set --input-file /private/runtime-reader.json
+worktree-control auth provider runtime-access revoke --input-stdin
+```
+
+Set input contains the full aggregate:
+
+```json
+{"principalId":"HUMAN_ID","scope":{"kind":"runtime-project","id":"PROJECT_ID"},"role":"reader","permissions":["projects:read"],"expectedRevision":0}
+```
+
+Revoke takes `principalId`, `scope` and `expectedRevision`. Both changes and their
+audit commit atomically with one revision. Revocation retains a tombstone; a
+restore requires its latest revision and a complete explicit set. Lists use
+`limit` from 1 through 20 and an optional `after` project ID, returning
+`nextAfter`. CLI private file/stdin handling and the private administration
+socket share the same application operation. Membership maintenance does not
+load the provider. No HTTP or MCP membership setter exists.
+
+Migration 45 adds only `runtime_human_memberships` on the existing SQLite
+connection. Migrations 1..44, principal IDs/kinds, grants, credentials and history
+remain intact. Upgrade creates no membership. Recognition, backups and restore
+include the new table; provider contract 5, storage 3 and proof implementation 5
+are unchanged. A disabled principal cannot read even while its membership persists.
+
+The internal `prepareBrowserAuthentication` seam accepts the existing controller
+as its `runtimeReads` port. One closed cookie route, `POST /api/runtime/read`,
+accepts exactly these requests:
+
+```json
+{"operation":"list-projects"}
+{"operation":"project-status","projectId":"PROJECT_ID"}
+{"operation":"list-worktrees","projectId":"PROJECT_ID"}
+```
+
+Responses carry the operation and respectively `projects`, `status` or
+`worktrees`. Lists filter by current effective `projects:read`. Status and
+worktrees reuse the scoped allowlist: identity/name/port, phase and placement,
+claim relation, and discovered path/branch/head/dirty metadata. They expose no
+commands, ENV/TLS/profile values, logs, foreign lease owners/secrets, global
+queue or capacity. Humans cannot own an agent lease. P2b1 additionally recognizes
+`own` only for the exact current provider session and original human lease
+authority; an ordinary reader still sees `none` or `other` with no `ownClaim`.
+This slice adds no SSE, waits or cursors.
+
+Authentication uses the real provider cookie outside core admission. Shared
+IdentityService and application policy require the exact runtime-owned actor,
+current session/principal/evidence and explicit membership. Git discovery
+releases admission and checks current authority after readmission. The adapter
+rechecks and emits the response in the final admitted phase. Logout, recovery,
+expiry, disablement, revoked/removed/invalid membership and missing provider
+authority deny retained results. Unknown and forbidden project IDs share a
+fixed 403 `project_access_denied`. Copied actors and actors issued by another
+runtime fail authentication. Identity metadata contains only effective runtime
+actions, never provider subjects or native session identifiers.
+
+The route inherits canonical HTTPS Host/Origin, CSRF/Fetch Metadata, socket-peer,
+cookie sanitation, strict JSON, cancellation, no-store and the existing request
+capacity/lifetime. Its body is capped at 4 KiB (or the smaller configured password
+body limit), with authentication JSON depth/field limits. GETs, query strings,
+extra role/scope fields and mutation operations are refused. Raw runtime routes
+remain closed to provider cookies. Reader membership grants no claims, runtime
+control, profiles/configuration, tests/jobs, administration, delegation or ENV/
+vault access; agent delegation and credential ceilings keep their existing behavior.
+Selected optional TOTP/passkeys and separate Ed25519 vault proof retain their gates.
+
+This is backend source implementation and isolated real-provider verification.
+Production startup still does not mount public login or this cookie workflow;
+`requireSelectable` continues to refuse account-mode selection. Remaining P2/P3 stay
+required before activation. P3b now fences restored authority before opening the store and supplies protected offline recovery below.
+
+### Human runtime operators and leases (P2b1)
+
+The same protected `runtime-access set/list/revoke` workflow now accepts
+`operator` with a nonempty, unique explicit subset of `projects:read`,
+`claims:manage`, `runtime:control`, independent `tests:run` (P2b2),
+`profiles:select` and timeout-only `config:write` (P2c). A role grants no implicit actions.
+Reader remains exactly `["projects:read"]`. Existing aggregates are copied
+unchanged into schema 46; no existing owner, credential or grant gains rights.
+For example, an operator who can reserve and control but cannot read uses:
+
+```json
+{"principalId":"HUMAN_ID","scope":{"kind":"runtime-project","id":"PROJECT_ID"},"role":"operator","permissions":["claims:manage","runtime:control"],"expectedRevision":0}
+```
+
+The internal composition accepts a `runtimeMutations` controller port. Its
+closed `POST /api/runtime/mutate` route accepts these strict discriminated DTOs:
+
+```json
+{"operation":"claim","projectId":"PROJECT_ID","worktreePath":"DISCOVERED_PATH","reason":"Task","idempotencyKey":"claim-1","ttlSeconds":1800,"start":false}
+{"operation":"renew","projectId":"PROJECT_ID","reservationId":"RESERVATION_ID","idempotencyKey":"renew-1","ttlSeconds":1800}
+{"operation":"release","projectId":"PROJECT_ID","reservationId":"RESERVATION_ID","idempotencyKey":"release-1"}
+{"operation":"start","projectId":"PROJECT_ID","reservationId":"RESERVATION_ID","idempotencyKey":"start-1"}
+{"operation":"restart","projectId":"PROJECT_ID","reservationId":"RESERVATION_ID","idempotencyKey":"restart-1"}
+{"operation":"stop","projectId":"PROJECT_ID","reservationId":"RESERVATION_ID","idempotencyKey":"stop-1"}
+```
+
+Claim, renew and release need `claims:manage`; explicit claim `start:true`
+also needs `runtime:control`. Start/restart/stop need `runtime:control` captured
+at claim and still held now. No operation implicitly grants `projects:read`.
+Claim defaults to `start:false`. TTL defaults to 1800 seconds and accepts
+30..1800; each deadline is capped by the original provider session deadline
+and an eight-hour absolute lease maximum. Less than 30 seconds remaining
+refuses admission/renewal. Stop retains the lease; release retains the running
+process. Expiry and revocation do not automatically stop an already authorized
+process. Inspect current placement before a new intent after uncertainty.
+
+Shared runtime operations resolve only the exact opaque runtime-issued actor
+against current session, principal, mapping and evidence. A server-only digest
+binds the actual provider/session identity, evidence identity, protection
+generation and original principal linkage. Each lease also captures the exact
+membership revision and explicit permissions. Every later decision requires
+both captured and current authority. Revoke/regrant, revision changes, logout,
+recovery, expiry or a different login cannot attach new authority to an old
+lease. The same still-valid cookie resolves the same binding across requests
+and ordinary controller reboots. Restored provenance remains fenced by P1;
+these semantics do not implement the P3 external restore/recovery fence.
+
+Schema 46 uses the existing `reservations` table, a permanent provider-bound
+marker and a typed lease sidecar on the sole SQLite connection. Finite deadlines
+are stored in the sidecar and projected by existing reservation reads. Legacy
+human records and agent credential/session/hash requirements remain unchanged.
+The old unbound owner-string authorization/release path rejects marked leases,
+even after sidecar cleanup. Human operations use a dedicated bound-claim
+verifier and the existing project lock, process ownership and capacity gates.
+Trusted local operator force-release remains separate; this route has no force
+parameter. No machine credential, MCP session or second client lease secret is
+created. Identity/HTTP/log projections contain no session IDs, cookies, binding
+digests or evidence internals.
+
+The application checks current rights at admission, after project-lock/Git/
+provider waits, before external runtime effects and spawn, and in the admitted
+final delivery/replay phase. Only the exact current binding can see `ownClaim`.
+Runtime receipts use an allowlist, omit global capacity/ENV/commands/foreign
+lease details, and contain safe operation results even without project-read
+permission. The closed route inherits the existing Host/Origin/CSRF/cookie/
+socket-peer/lifetime/slot guards and 4 KiB body limit. Only read and mutate are
+claimed as runtime routes without a cookie; unknown cookie routes fail closed.
+Provider authentication stays outside core admission. Cancellation keeps the
+HTTP slot until the actual work settles.
+
+Normalized idempotency intent is durable before effects and scoped to the real
+session/principal/project/operation/claim. Reusing a key for different intent
+conflicts. Concurrent pending retries and interrupted intent after reboot
+return `outcome_unknown`, requiring inspection; they never automatically rerun
+an effect. Completed receipts replay only after current/original authority and
+reservation checks. A disconnect can leave a completed or unknown outcome;
+failed runtime receipts also retain their original intent. Intent retention is
+bounded to 4096 globally, 128 per session, and 8192 bytes per receipt; leases
+have a 4096-sidecar cap. Exhaustion refuses new work. Intent keys expire only
+when their original provider session deadline has passed; sidecars expire only
+after their absolute maximum, while the reservation marker persists.
+
+`pnpm test:runtime-mutations` covers core migration/policy/transport guards and
+real-provider cookies with finite process doubles, including another session,
+principal, agent, revocation races, disconnect/retry and database/provider reopen.
+No development server is needed. P2b2 supplies the independent jobs and bounded
+run-wait workflow below. P2c supplies explicit profile selection and timeout
+configuration. Logs, capacity, delegation, administration and ENV remain denied
+pending their own workflows. Optional factors and separate vault
+signatures retain their existing policy. P3/A5 and public activation remain
+open; this backend workflow does not mount a public login listener.
+
+### Human finite verification (P2b2)
+
+Protected `runtime-access set` accepts `operator` with exactly `["tests:run"]`,
+or an explicit subset including that action. It adds no default grants and
+implies no project read, claim, runtime control, profile, configuration or ENV
+rights. Reader remains exactly `["projects:read"]`. Knowledge memberships and
+owner status supply no test authority.
+
+The internal shared composition accepts the existing controller as its
+`verification` port. Closed `POST /api/runtime/tests` accepts these strict DTOs:
+
+```json
+{"operation":"presets","projectId":"PROJECT_ID"}
+{"operation":"enqueue","projectId":"PROJECT_ID","worktreePath":"DISCOVERED_PATH","presetId":"node:test","idempotencyKey":"test-1"}
+{"operation":"status","runId":"RUN_ID"}
+{"operation":"wait","runId":"RUN_ID","cursor":"CURSOR","timeoutMs":20000}
+{"operation":"cancel","runId":"RUN_ID"}
+```
+
+Enqueue may additionally name `reservationId`; status, wait and cancel may
+add `projectId` to constrain the known run. No request supplies an actor,
+principal, session, command, environment or profile. Discovery is limited to
+64 discovered non-prunable worktrees, 256 presets and 64 KiB. It returns only
+exact paths and clean-profile preset IDs/timeouts. Execution revalidates the
+worktree and trusted shell-free command through the existing resolver. Clean
+profiles retain their declared literals and fixed system allowlist; inherited
+server profiles and vault delivery remain unavailable.
+
+An unclaimed project can enqueue with tests-only rights. If a claim exists,
+its exact original human session, membership revision and worktree must match.
+The run captures either no claim or that claim ID. A later claim, including a
+replacement by the same session, release or expiry blocks dispatch and retry.
+New rights never attach to an accepted run retroactively.
+
+All human own-run reads, waits, cancellation and replay require the exact
+**original provider session** and current original membership revision and
+evidence, including for completed runs. A new login or revoke/regrant cannot
+adopt history. A durable key is scoped to its principal and cannot duplicate
+an old run when retried by another session. A separate durable key ledger
+survives detailed-run retention until the original session deadline. It refuses
+retry when details have been removed and never evicts live keys under pressure.
+The bounds are 4096 keys globally and 128 per original session.
+The original still-valid cookie
+retains this relationship after an ordinary controller reboot. Existing
+interrupted-run recovery remains in force; reopening never reruns stale jobs.
+Read/cancel authority does not depend on continued claim ownership; the claim
+fences execution and enqueue replay. Revocation does not kill an already
+running process. Existing process cancellation/cleanup semantics remain.
+
+Schema 47 adds a permanent `test_runs.provider_bound` marker and an immutable
+human requester sidecar, atomically with run/summary creation on the sole
+connection. It preserves SQL/checksums 1..46 and all old rows without backfill.
+Human attribution uses no fake credential or MCP session. A server-only native
+session row reference permits current provider lookup, contains no cookie or
+token, and stays outside DTOs, logs and audit payloads. The provider validates
+current session/account/mapping/evidence/generation/expiry rows. Persistence
+alone grants no authority. Missing/corrupt marked attribution refuses lookup,
+replay, dispatch and pre-spawn instead of falling through to legacy execution.
+One typed queue dispatcher preserves the existing agent checker alongside the
+human checker; requests cannot replace it.
+
+Shared operations recheck after Git, project-lock and database-admission waits,
+at dispatch and pre-spawn, and before delivery. SQL-free waits release the same
+connection admission. Run envelopes reuse scoped allowlists and `StatusService`
+sampling, cursors and waiter budgets. Cursors bind principal, actual session
+and run; waits accept at most 20 seconds and clean up on disconnect, timeout,
+authority loss and shutdown. Envelopes reveal no logs, commands, ENV, profiles,
+requester/session internals, queue positions or global capacity. Unknown and
+forbidden runs return the same denial. The closed route retains POST-only,
+strict duplicate-key JSON, 4 KiB body, current cookie, Host/Origin/CSRF,
+no-store and slot-until-settlement guards. Authentication remains outside core
+admission. Legacy installation tokens cannot bypass this cookie path.
+
+The agent contract is unchanged: the same credential in a new MCP session may
+read a known run; cancellation requires its original session. Human sessions
+are never represented as agents for ownership, waiter budgets or cursors.
+Optional TOTP/passkeys and separate Ed25519 vault proof retain their policies.
+`pnpm test:human-jobs` exercises real provider composition, temporary native
+sessions, the existing finite queue and migration/transport/policy regressions.
+Remaining transport parity and A5 activation remain open. The public mount
+and `requireSelectable` gate stay closed.
+
+### Human literal profiles and preset timeouts (P2c)
+
+The shared controller composition accepts the opaque actual provider-session
+actor for profile and timeout operations. An operator receives an explicit
+`profiles:select` or `config:write` permission on one runtime project. Either
+permission works alone. Reader remains exactly `projects:read`; claims, runtime
+control and tests grant neither configuration action. Protected CLI/IPC
+`runtime-access set/list/revoke` validates strict JSON and membership CAS before
+loading the provider. No default grant or owner exception is added.
+
+The closed POST `/api/runtime/configuration` adapter offers `profiles`,
+`select_environment_profile`, `configuration` and `set_test_preset_timeout`.
+Profiles expose only existing literal names, current selection and configuration
+revision. A changed selection requires no owned process, including startup,
+shutdown and failed cleanup. An unchanged selection may return a no-op. Selection
+never starts, stops or restarts a process. Timeout reads expose only discovered
+preset IDs, defaults, overrides and revision for the exact discovered worktree.
+Setting or clearing an override affects future enqueues; queued and running jobs
+keep their captured timeout. Existing bounds apply. Neither action exposes ENV
+names/values or vault references, edits profiles, assigns test profiles, accepts
+commands, or changes launch, TLS, identity or global settings. Selecting a literal
+profile supplies no vault-use grant and preserves existing execution guards.
+
+An unclaimed mutation needs no claim permission. With an active claim, it needs
+the exact original human lease, session, evidence, generation, membership revision,
+permission ceiling and pinned worktree. Consuming that lease requires the relevant
+configuration permission in its original ceiling, without another
+`claims:manage` authorization check. A regrant changes revision and cannot attach
+new rights to an older lease. Foreign human, agent and legacy claims refuse access.
+
+Authority is checked before lookup, after the shared project lock, after Git idle
+and database readmission, immediately before the synchronous atomic effect, and
+before delivery. Durable intents freeze the original absence of a claim or the
+exact lease and placement. A later claim, including one created by the same
+session, cannot adopt an intent or release its cached receipt. New logins,
+revocation, expiry and regrants cannot take over earlier authority.
+
+Additive migration 48 preserves migrations/checksums 1 through 47 and copies
+memberships unchanged. Configuration uses the existing human runtime intent ledger
+and its shared limits of 4096 total, 128 per original session and 8 KiB per receipt.
+Live keys are never evicted; retention ends at the original session deadline.
+An immutable typed context and marker distinguish configuration intents. The
+shared agent/human mutation implementation uses one SQLite transaction for the
+change, common configuration revision, safe human audit and completed receipt.
+No-op receipts add no change event or revision. A conflicting CAS or failed receipt
+write leaves no partial configuration effect. Retries require original current
+authority and the original claim contract; changed effective inputs conflict.
+Pending unknown outcomes are refused, never retried automatically after restart.
+Audit identifies the real principal and provider-session method without a fake
+machine credential, session handles, cookies or ENV content.
+
+This backend slice extends the internal composition only. Public browser mounting,
+account-mode selection remain gated. P3b supplies the external restore fence below. Optional TOTP/passkey and
+signed Ed25519 vault policies remain in force. The historical five full-proof
+factor compatibility failures remain visible; these fixtures establish no
+production-readiness claim. Evidence and acceptance belong to Knowledge A3.
+
 ### Bounded browser adapter
 
 `AuthenticationHttp` is an exported core-owned Node HTTP adapter. The isolated
 `composeIsolatedBrowserAuthentication` helper wires the existing immutable
 `AuthenticationService`, loaded runtime, seventh-argument identity authority and
 `ProviderKnowledgeApplication`. `createControllerServer` calls it before blanket
-core admission. The production CLI has no caller, configuration switch or flag
-for that composition. It neither loads the optional package nor makes
-`better-auth` selectable. No login GUI is implemented.
+core admission when an adapter is supplied. The production CLI owns the shared
+provider lifetime above and supplies its browser adapter only in active RBAC.
+No login GUI is implemented.
 
 The public production `GET /api/auth/status` returns only active `mode` and
-`loginAvailable: false`. It exposes no pending selection, token metadata, account
+`loginAvailable` from the active prepared adapter. It is false in open/token/legacy. Status exposes no pending selection, token metadata, account
 existence, provider path, diagnostics or grants. The isolated adapter supports:
 
 | Exact request | Strict input | Sanitized success |
@@ -379,8 +1002,7 @@ The owning shutdown helper disposes the optional provider after accepted
 responses, listeners and external producers settle, before the service closes
 SQLite. Unconfirmed disposal retains both ownership locks and the shared failure.
 The real temporary Unix fixture exercises that order and rejection. Production
-loading, OS restart, full restore/reboot, factors/MFA, roles and A5 transport and
-external restore fences remain separate gates. This is bounded backend evidence,
+loading, OS restart, factors/MFA, roles and A5 transport remain separate acceptance gates. P3b supplies protected restore/reboot fencing below. This is bounded backend evidence,
 not completed A3 or safe production RBAC.
 
 ### Provider authorization handoff
@@ -388,7 +1010,7 @@ not completed A3 or safe production RBAC.
 This server-only API is implemented for the optional pinned proof. Production
 startup still does not load the provider; protected maintenance is explicit.
 Production browser transports remain
-credential-only, and `better-auth` mode remains unavailable.
+credential-only. A5 mounts the converted cookie operations described above.
 
 `runtime.authenticate(headers)` resolves the actual cookie outside core
 admission and returns a frozen `ProviderSessionActor`, or null. The exact object
@@ -526,31 +1148,32 @@ administration, runtime control or vault action.
 
 **Not supported yet, each explicitly denied.** The closed route list refuses recovery
 codes, TOTP or passkey replacement and removal, additional passkeys, reauthentication,
-trusted devices, administrative factor reset and every other native plugin route.
-Recovery therefore has no factor-loss path: `recoverLocal` replaces a password and
+trusted devices, browser administrative factor reset and every other native plugin route.
+Default protected recovery retains selected factors: `recoverLocal` replaces a password and
 revokes sessions and outstanding password-backed TOTP challenges but leaves selected
 protection in place. Native password change/reset and explicit revoke-all share that
 transactional invalidation. The pinned library stores the subject ID as the verification
 value for TOTP login and reset tokens; both are deleted on revoke-all. Factor contexts
 then fail their required native-row check, including a previously charged attempt before
-native entry. WebAuthn challenges use structured values and remain independent. No account
-generation changes, so a completed password replacement keeps its inherited evidence.
+native entry. WebAuthn challenges use structured values and remain independent. Ordinary password replacement does not change account
+generation, so its completed replacement keeps inherited evidence. Explicit protected
+factor-loss reset advances generation and invalidates that evidence.
 Rollback preserves the prior password, sessions and challenges. A clock that ran ahead can
-hold TOTP refused until real time passes the step, and with no other method that
-account waits. These need accepted management decisions, along with final numeric
+hold TOTP refused until real time passes the step. The protected operator can
+explicitly reset lost factors; ordinary password recovery still preserves the step. These need accepted management decisions, along with final numeric
 limits and consecutive-failure accounting.
 
-Backups include this storage, and a restore keeps its rows. Restoring an older snapshot
-reopens older sessions, steps, generations and factors, which remains the A5 external
-fence. Schema 40 has no downgrade: older binaries refuse it and A3-I18 adds no rollback
-path except restoring a backup. A4 vault authority and A5 transport, cutover and restore
-fencing stay separate gates. See the
+Backups include this storage. P3b detects a stale SQLite checkpoint against the
+external witness before opening authentication. Protected resume quarantines
+restored factors, sessions and passwords; it preserves TOTP steps and historical
+records. Schema 40 has no downgrade. Public account activation, optional-method
+readiness and A5 transport/cutover acceptance remain separate gates. See the
 [proof details](../packages/auth-provider-better-auth-proof/README.md#a3-i18-integrated-factor-authority).
 
 ### Closed factor HTTP API
 
 A3-I20 mounts login and first enrollment through the isolated composition only. It
-uses the same provider, current core schema 43, contract 5, `AccountProtection` and sole
+uses the same provider, current core schema 49, contract 5, `AccountProtection` and sole
 connection as [integrated factor authority](#integrated-factor-authority). Production
 main still has no caller or flag, account mode stays refused, and recovery, removal,
 replacement, additional passkeys and trusted devices stay refused.
@@ -712,15 +1335,15 @@ TOTP step, passkey counter, receipts and unrelated sessions do not change. A row
 cannot resolve fails readiness rather than being skipped, and a killed pass resumes from
 current rows. A maintenance-only load without bounds can administer and cannot mint.
 
-**Restored databases.** A `pending` row in a snapshot may have been published after that
-snapshot was taken, so ordinary recovery must not read it as unpublished. The owner reports
-provenance from the existing restore journal. A recognized restore, or a journal it cannot
-read, refuses the sweep and isolated browser readiness and changes no row. There is no
-caller flag, and this path does not clear or reclassify the journal, so a restored
-installation stays refused for browser proof issuance. Community open and token modes and
-maintenance administration are unaffected. A backup holding more than B rows stays
-structurally valid. A manual file rollback leaves no provenance and is outside this
-guarantee, and A5's external restore fence remains unsolved.
+**Restored databases.** A snapshot's pending row may have been published later.
+P3b therefore checks the external security witness before the store enables
+writes, including raw DB-only replacement. An unacknowledged restore never reaches
+this sweep or provider loading. Protected offline resume removes native sessions
+and their issuance/evidence atomically with the rest of the quarantine, then
+publishes a durable external receipt. Only that receipt permits subsequent boot
+recovery. The permanent restore journal and its original provenance stay intact.
+A backup with more than B rows remains structurally valid. See
+[protected restore recovery](#external-security-fence-and-protected-resume-p3b).
 
 **Outcomes.** Refusals use fixed bodies:
 
@@ -848,8 +1471,8 @@ Human commands use the trusted local bootstrap context; request actor/kind/spons
 strength fields confer no authority. Ordinary human cookies cannot administer
 accounts/members, create agents, sponsor credentials, operate runtimes/claims,
 approve Knowledge, access ENV/vault, or administer backups/remote workers.
-Owner recovery stays owner-only. New human recovery, factor reset/removal and
-invitations remain unsupported. Current-session password changes and optional
+Protected recovery supports existing active owners and humans. Explicit local factor-loss
+reset is described below; browser factor removal and invitations remain unsupported. Current-session password changes and optional
 TOTP/passkey protection retain their existing rules.
 
 `human-account-administration.test.ts` uses actual native accounts, separate cookies
@@ -858,8 +1481,7 @@ filtering, ceilings, current authority before queued effects/replay, enrollment
 races and optional methods. Schema 42 tests use a fresh schema-41 SQL dump produced
 by unchanged baseline `7f022fb21069728cf4c9844eec660f367b5680c1`; its populated file upgrade verifies a pre-migration schema-41 backup. Synthetic
 rewinds in older tests are still synthetic. Neither fixture is an old executable binary test.
-Production `better-auth` selection and unconverted cookie HTTP/MCP remain denied,
-including open boot. Full A3, general delegated roles, GUI and A4/A5 stay open.
+Unconverted cookie HTTP/MCP operations remain denied, including open boot. General delegated roles, GUI and A4 remain open; A5 selection requires validated readiness.
 
 ## Knowledge roles (A1)
 
@@ -913,13 +1535,14 @@ require its separate signed proof and exact grants, with `use` unavailable.
 
 Full backups retain bindings, revisions, tombstones and audit. As with existing
 credentials, restoring an older snapshot can restore older authorization state;
-external revocation fences are an A5 gate before account-mode activation.
+P3b now refuses that snapshot until protected quarantine; A5 still owns complete cutover acceptance.
 
 ## Scoped runtime agents (A2)
 
 A scoped agent can discover registered runtime projects, reserve one discovered
 worktree, control its claimed managed server, select an existing literal profile
-and configure preset timeouts. The accepted runtime actions are:
+and configure preset timeouts. Independently delegated finite verification is
+also available. The accepted runtime actions are:
 
 | Action | Operations |
 | --- | --- |
@@ -928,6 +1551,7 @@ and configure preset timeouts. The accepted runtime actions are:
 | `runtime:control` | Start, restart and stop under an active own lease; also required for `claim_project` with `start: true` |
 | `profiles:select` | List literal profile names/selection/revision and select an existing profile while stopped |
 | `config:write` | Read discovered preset IDs/default/override timeouts and change project-wide timeout overrides for future enqueues |
+| `tests:run` | Discover exact worktrees/presets, enqueue finite jobs and read/wait for own credential-bound runs; originating session may cancel |
 
 The owner delegates actions to a stable agent for each registered runtime
 project. Each credential has an exact project/action ceiling. Effective access
@@ -1071,12 +1695,19 @@ lease produces a stale-claim error; revoked authority produces a denial.
 Check `leaseHeld`, `error` and current safe status after an operation. Release
 with `release_project_claim` when finished; release does not stop the server.
 
-These scoped tools omit ENV and profile content editing, local test admission,
-logs, storage, capacity and foreign lease details. Runtime resources,
-`get_project_status_compact` and `wait_for_status_change` are unavailable to
-scoped agents. The HTTP runtime/dashboard API continues to reject their
+These scoped tools omit ENV and profile content editing, logs, storage,
+capacity and foreign lease details. Finite test admission requires the separate
+`tests:run` action. With `projects:read`, agents
+can discover/read filtered project and worktree resources, call
+`get_project_status_compact` and wait for one project's cursor with
+`wait_for_status_change`. The shared waiter budgets apply; sampling, timeout
+and delivery after database re-admission recheck current authority. Revocation
+rejects pending waits without returning retained data. Cursors cover only the
+allowlisted project view and are bound to the credential and MCP session.
+Own-run waits require `tests:run`; there is no global queue/capacity projection.
+The HTTP runtime/dashboard API continues to reject their
 credentials, including existing configuration routes; runtime access is through
-these MCP tools. Test/log/ENV permissions such as `tests:run` cannot be granted.
+these MCP tools. Log and ENV permissions remain unavailable.
 
 ### Independent profile and timeout access
 
@@ -1125,6 +1756,63 @@ own agent claim. Supplying a stale reservation never falls back to unclaimed
 access. A timeout request must target the claim's worktree, even when a claim
 acquired with `start: false` left the selected runtime worktree elsewhere.
 
+### Independently delegated finite verification
+
+Grant `tests:run` explicitly through the protected owner delegation and
+credential commands above. None of the other five actions implies it, and it
+implies none of them. Adding it to a delegation does not change an existing
+credential ceiling; issue a new credential with the intended scope. Agents
+cannot issue credentials or approve their own elevation.
+
+Call `list_test_presets` with `projectId`. This action supplies its own safe
+exact-path discovery even without `projects:read`. Use a returned `worktreePath`
+and preset ID with `run_test`, plus a stable `idempotencyKey`. No command,
+arguments, ENV, profile or requester override is accepted. Both `full` and
+`compact` response modes return the safe compact envelope for scoped callers.
+The existing finite queue executes the job without claiming, starting or moving
+a development server.
+
+An unclaimed project needs no lease. An active reservation requires this
+session's exact own claim and `reservationId`, with its retained secret and
+principal/credential binding. A human lock, foreign claim, stale supplied ID or
+worktree mismatch denies enqueue. The original reservation is rechecked during
+queued dispatch, immediately before spawn and before an identical retry returns.
+Authority is also checked before enqueue, after asynchronous discovery/source
+preparation, at dispatch and before spawn. A revoked/expired agent, credential,
+delegation or disabled sponsor prevents a new process. Revocation does not
+retroactively terminate an already running process.
+
+`tests:run` grants no ENV read or vault use. Human-configured clean test profiles
+keep their declared literal variables and fixed system allowlist. Presets that
+inherit a server profile are denied until separate ENV-use authority exists.
+Nothing reads vault plaintext or changes the signed vault-proof contract.
+
+`get_test_run` and `get_test_run_status` return the same safe envelope. They
+require current `tests:run` on the target project and the run's original
+principal and credential. A missing, foreign or installation/legacy job returns
+the same denial. A new session using the **same credential** may read or wait
+for a retained run. A replacement or rotated credential cannot adopt it, even
+for the same principal. Supply exactly one `runId` or `projectId` to
+`wait_for_status_change`; project waits still require `projects:read`. Run
+cursors bind the run, credential and current session and share the existing
+sampler, waiter budgets, timeout, cancellation and re-admission checks.
+
+Cancellation remains restricted to the originating MCP session as well as the
+original principal/credential and current action. A reconnect that resumes the
+same logical session retains this right; initialization of a new logical session
+does not. `cancel_test_run` requests cancellation and may return `running` while
+owned-process cleanup is pending. Only confirmed cleanup permits a terminal
+running-process result. Closing a session disposes waits but does not cancel jobs.
+Retained enqueue retries remain scoped to the original session and idempotency
+key while detailed records exist; a new session must inspect a known run before
+making a new enqueue decision.
+
+Safe envelopes expose only run/project/preset/worktree IDs, phase, timestamps,
+exit code, a fixed error code and bounded source HEAD/outcome evidence. They
+omit logs, commands, ENV and profile contents/names, actor bindings, foreign IDs,
+queue positions, global counts and capacity. Current authority is rechecked for
+replayed enqueues and every wait result after database re-admission.
+
 ### Rotate and revoke
 
 ```bash
@@ -1159,22 +1847,25 @@ open and legacy compatibility callers retain their previous broad runtime
 authority; scoped credentials do not isolate those callers. Migration 37 adds
 the project configuration revision. Existing compatibility configuration
 writes increment it alongside scoped changes; no old credential gains actions.
+Migration 44 adds immutable test requester attribution on the same connection,
+atomically with initial enqueue. It backfills no jobs or credentials. Retention
+cascades requester rows with their detailed jobs; full backups preserve them.
 
 Opening an older database with this version applies the pending migrations. Plan an
 installation upgrade with a stopped-controller backup and a compatible restore
 version; do not use a live database as a test fixture or open it with an older
 binary after upgrade. Full backups preserve runtime grants, ceilings and lease
 bindings. Restoring an older snapshot can restore older credential/delegation
-state; A5 still owns external revocation fences and cutover acceptance.
+state; P3b fences it before use, and A5 still owns cutover acceptance.
 
 The controller removes its token and keyfile environment variables from managed
 process inheritance. Scoped authorization is not an OS sandbox: repository code
 still executes with the controller's host identity and its permitted filesystem
 access. The original A2 projects/claims/profiles/configuration criteria are
-implemented; completion requires recorded verification. Scoped finite-job
-admission/own-run access (`415205f2-4583-4b13-a508-49a9b618a19e`) and scoped
-resources/compact status/wait (`e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`) remain
-separate followups and are denied. A3 owns account GUI/human administration, A4
+implemented. Scoped finite-job admission/own-run access is implemented under
+`415205f2-4583-4b13-a508-49a9b618a19e`; completion requires recorded verification.
+Scoped resources/compact status/project wait are implemented under
+`e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`. A3 owns account GUI/human administration, A4
 ENV policy and A5 compatibility cutover. This describes source behavior, not a
 live installation upgrade.
 
@@ -1338,17 +2029,193 @@ New installations differ from earlier releases:
 ## Restore and pending mode selection
 
 A token-authorized restore keeps the immutable active execution mode separate
-from the configured policy restored into the next boot. Format-2 durable
-handoffs require `executionMode`; format-1 records retain their historical
-`authentication.mode` interpretation. Missing, unknown or inconsistent new
-records fail closed. The captured token ID remains current, and existing
-credential/revocation fences and ownership locks still apply. A pending open
-selection therefore cannot authorize a restore or invalidate an admitted token
-restore. Recovery writes the captured configured policy before constructing the
-new boot's authentication service. No SQLite migration is needed for this
-behavior.
+from the configured selection. Format-2 durable handoffs retain both; format-1
+records retain their historical execution interpretation. Missing or inconsistent
+records fail closed. A pending open selection cannot authorize a restore or
+invalidate an admitted token restore.
 
-This does not solve A5 provider-session resurrection after restoring older
-password/session data. External restore revocation fencing, account authentication,
-readiness of optional methods and complete transport coverage still gate
-production RBAC activation.
+After replacement, P3b refuses normal startup before constructing authentication
+or listeners. The captured policy and token remain handoff evidence. They are
+never copied back into live authority. Protected resume requires an explicit mode,
+invalidates all restored verifiers and acknowledges a completely verified matching
+handoff before publishing its final receipt. Token mode then needs a fresh token;
+better-auth mode requires the current production readiness checks before selection/startup.
+
+## Protected factor-loss recovery (P3a)
+
+The protected CLI `auth provider recover --principal-id <id>` accepts a private
+JSON input file or stdin containing `newPassword` and optional `factors`.
+Omit `factors`, or choose `"preserve"`, to retain selected protection. Choose
+`"reset"` only when intentionally removing every TOTP and passkey binding for
+that account. The new password is always required. Never put it in argv.
+
+Recovery applies to an existing active human or the single active owner with an
+exact active provider mapping. Disabled accounts, revoked mappings, missing
+enrollment, agents, workers and ambiguous owners refuse. It preserves principal
+ID, kind, memberships, sponsorship and historical audit. It issues no browser
+cookie, bearer, machine credential or additional permission.
+
+The configured real provider advertises readiness `localFactorReset: "v1"` and a
+separate `recoverLocalWithFactorReset` method under contract 5/storage revision 3.
+Both are required before a reset can write. Older password-only implementations
+remain loadable and refuse explicit reset. Status does not load provider code;
+its recovery field reports whether the loaded runtime supports reset.
+
+One transaction on the controller connection replaces the password, deletes old
+sessions and evidence, advances account generation and policy revision, removes
+native TOTP/passkey rows and their trust/staging bindings, and invalidates the
+account's pending contexts and charged receipts. Subject-bound native challenges
+are deleted. Anonymous options cannot authenticate a removed key. TOTP replay
+steps, account budgets, receipt history and audit remain; reset never refunds a
+failed guess. Safe output reports native TOTP and passkey rows removed, including staged passkeys.
+A reset with no factors still advances the generation and succeeds.
+
+Current mapping/principal and maintenance/configuration are checked again after
+hashing and before commit. A rollback retains old state. A notification error
+after commit reports `committed:true`; do not automatically repeat recovery after
+an uncertain or lost response. Fresh login uses the same principal and current
+original grants. Optional enrollment creates a new factor binding.
+
+Only the existing OS-protected Unix administration channel and offline singleton
+owner path authorize this operation. HTTP, MCP, browser sessions, shared tokens
+and agent credentials cannot request it. An agent running as the controller OS
+user remains trusted by that boundary. The independent signed vault proof is
+unchanged. Restored/unconfirmed database provenance still refuses provider load;
+external restore and revocation fencing is implemented in P3b below. Account activation and
+complete transport enforcement remain A5 gates.
+
+## External security fence and protected resume (P3b)
+
+Migration 49 adds one `security_checkpoint` row and fixed triggers over the
+provider, identity, grant, policy, encrypted vault and durable execution authority
+tables. Migrations 1 through 48 and their checksums are unchanged. Each covered
+write changes a 256-bit checkpoint nonce inside its own transaction. The
+installation nonce stays fixed. Trigger definitions, required tables and row
+shape are recognized before writable PRAGMAs or migration effects.
+
+The witness is `<canonical-database-path>.security/witness.json`. This private
+sibling directory is outside the application backup payload, which contains only
+SQLite, its manifest and referenced attachment objects. It is derived from the
+canonical database path even with custom `--data-dir`/`--state-dir`; nesting the
+state directory under data does not move the trust boundary. Restore refuses
+attachment targets overlapping the witness directory. Never include this witness
+in a restore of application data. Copying an installation to a new path needs
+explicit protected resume and quarantine.
+
+The OS owner and the private path ancestry are trusted. This design detects
+DB-only rollback, missing/corrupt/stale/wrong-installation witnesses, and supported
+restore. It cannot detect rollback of the whole host or a manually copied trust
+domain containing both the matching SQLite and witness. There is no off-host
+anchor. Checksums detect corruption; they do not defend against the trusted OS
+owner replacing both sides.
+
+The strict checksummed witness is bounded to 4 KiB. Its directory admits at most
+32 named witness/publication files. Existing files require private ownership and
+permissions, no symlink/hardlink aliases and descriptor identity checks; recovery
+does not repair unsafe permissions into trust. The record binds canonical paths,
+installation/checkpoint, database device/inode, configured mode/generation, owner identity, acknowledged
+restore operation and protected recovery receipt. It contains no tokens, password
+hashes, factor material, vault keys or signing secrets.
+
+### Commit and crash protocol
+
+All SQL execution uses the existing sole connection and core/provider admission.
+Between owned executions, device/inode, size and nanosecond modification/change
+metadata of SQLite and WAL must remain unchanged. This detects live in-place
+rollback before effects even when SQLite has cached the checkpoint. Only an
+owned execution can account for its own WAL writes, checkpointing and rollback.
+Before a covered authority row changes, a fixed BEFORE trigger invokes the
+owner's synchronous filesystem observer. It atomically writes `pending`, fsyncs
+the new file, renames it and fsyncs the private directory. The observer performs
+no SQL. The trigger then updates the checkpoint in the same transaction,
+including native provider changes and FK cascades. Raw connections lacking the
+observer cannot write these tables. Non-authority attachment writes do not stage
+a security publication. SQLite
+uses WAL, FULL synchronous commits and foreign keys. After a completed COMMIT,
+the owner reads the actual checkpoint and policy and durably publishes
+`confirmed` in the same file/rename/directory order. Reads never hash the whole
+database. The explicit offline preflight streams bounded SQLite/WAL hashes once.
+
+A proved rollback confirms the unchanged old checkpoint and returns the original
+failure. A failed or uncertain publication fences the current owner; a confirmed
+DB mutation reports `committed: true`. After process death, a pending or mismatched
+witness requires protected recovery, even if the old transaction probably rolled
+back. A clean confirmed restart preserves valid sessions, factors, credentials and
+grants without installation-wide rotation. A failed final fsync never reports
+success, and the owner attempts to retain a pending witness.
+
+Checkpoint coverage includes account provisioning/disable/recovery, passwords,
+logout/session publication/revocation, factors/challenges/steps, machine
+credential issue/rotate/revoke, human memberships, delegations/credential ceilings,
+Knowledge grants, mode/token policy, encrypted vault changes and durable leases,
+intents and finite/remote job authority. Credential-based offline remote recovery
+inspection also verifies the witness before authentication and on retained reads.
+New authority tables must add migration
+coverage. The nonce is an equality fence, not a wall-clock ordering claim or an
+unbounded revocation log.
+
+### Protected operator workflow
+
+Use the installed compatible CLI with the controller stopped. The commands
+acquire both the state-directory singleton and canonical database-owner lock;
+they have no HTTP, MCP, shared-token or public provider equivalent and never
+start a server. A running owner causes refusal instead of an online fallback.
+For custom paths, pass the same `--data-dir` and `--state-dir` on every command.
+
+```sh
+worktree-control auth fence inspect --data-dir /private/installation
+worktree-control auth fence establish --expect <preflight-hash> --data-dir /private/installation
+```
+
+Establishment is permitted only for a recognized existing pre-fence store without
+external witness or restore evidence. Inspect and preserve a verified application
+backup before this explicit adoption. A fresh database uses its verified creation
+marker; a missing witness on an established database is never first boot.
+
+For restore, stale/missing/corrupt witness or uncertain publication, inspect again,
+then explicitly choose the resumed mode:
+
+```sh
+worktree-control auth fence inspect --data-dir /private/installation
+worktree-control auth fence resume --expect <preflight-hash> --mode token --data-dir /private/installation
+```
+
+Resume first publishes a pending receipt. One sole-connection transaction removes
+all restored provider passwords/tokens, native sessions, TOTP/passkeys and
+challenge authority; revokes principal credentials and all project/role/runtime
+and worker grants; advances account generations and membership revisions; releases
+leases; interrupts pending finite jobs with the existing truthful writer; and
+cancels pending remote work. It retains IDs, kinds, roles, membership rows, audit,
+run/intention attribution, TOTP steps, budgets and encrypted vault content.
+The same existing owner is preserved, and a readable external owner anchor must
+match. No owner, credential, project permission or ENV grant is created.
+
+Only after quarantine and handoff acknowledgement does the owner publish the
+confirmed receipt. Repeated resume on that unchanged confirmed state is a no-op.
+A crash during recovery remains fenced; repeating explicit recovery can only
+quarantine again. The journal and restore-request history are never deleted or
+reclassified. Raw rollback after a successful receipt is fenced again.
+
+In token mode, issue a fresh token through the protected existing command. For
+accounts, restore the separate private provider configuration and use P3a
+`auth provider recover` with a private new-password input for the existing active
+owner or chosen human. Reissue machine credentials and regrant access explicitly.
+Ordinary P3a password recovery still preserves selected factors by default.
+`--mode open` is an explicit loss of account isolation; `--mode better-auth`
+retains the unavailable production account-mode gate and creates no fallback.
+
+The receipt adds a generation/time floor to `controllerRestoreBoundary` for
+schedules and encrypted vault grants/receipts. The existing Ed25519 owner proof,
+strict proof/grant `createdAt` checks, credential binding and encrypted state
+remain required. Recovery neither substitutes a provider session for that proof
+nor revives a previous vault grant. Process cleanup continues through existing
+verified owned-process shutdown; recovery never infers ownership from an occupied
+port and never reauthorizes old pending work.
+
+Neutral fixed errors distinguish `security_fence_establishment_required`,
+`security_fence_recovery_required`, `security_fence_pending` and
+`security_fence_preflight_changed`. A running owner returns `security_fence_owner_running`. Status and errors expose no credential material.
+Tests cover raw/supported rollback, native provider recovery, corrupt/missing
+witnesses, fsync faults, SQL rollback, idle rechecks and real child-process crashes.
+Full provider proof still exposes its five unchanged historical factor negatives;
+A5 public-composition and installed-artifact checks are separate evidence.

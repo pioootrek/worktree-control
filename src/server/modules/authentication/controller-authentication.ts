@@ -38,9 +38,11 @@ export function resolveControllerAuthentication(
     return actor ? { kind: "installation", actor } : null;
   }
   if (mode === "legacy" && credentials.legacySecretValid()) return { kind: "legacy" };
-  if (!bearer || !dependencies.identity || (mode !== "legacy" && mode !== "token")) return null;
+  if (!bearer || !dependencies.identity || !["legacy", "token", "better-auth"].includes(mode)) return null;
   try {
-    return { kind: "principal", actor: dependencies.identity.authenticateBearer(bearer) };
+    const actor = dependencies.identity.authenticateBearer(bearer);
+    if (mode === "better-auth" && (actor.principalKind !== "agent" || actor.authenticationMethod !== "agent_token")) return null;
+    return { kind: "principal", actor };
   } catch (error) {
     // Database contention is not an invalid credential; let the transport report it as such.
     if (databaseAdmissionFailure(error)) throw error;

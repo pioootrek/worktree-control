@@ -1,7 +1,9 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { establishFixtureSecurity, resumeFixtureSecurity } from "./fixtures/protected-security";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
 import { SqliteStateStore } from "./sqlite-state-store";
@@ -26,7 +28,7 @@ function fixture() {
 describe("configuration revision migration 37", () => {
   it("upgrades 36 atomically with revision 0 for every project and keeps configuration", () => {
     const f = fixture(); f.store.close();
-    const db = new Database(f.path);
+    let db = unmanagedFixtureDatabase(f.path);
     try {
       rewindProviderSessionHistory(db); db.exec(WITHOUT_AUTHENTICATION_PROVIDER_STORAGE + "ALTER TABLE projects DROP COLUMN configuration_revision; DELETE FROM schema_migrations WHERE version=37");
       expect(inspectSchema(db).version).toBe(36);
@@ -34,8 +36,8 @@ describe("configuration revision migration 37", () => {
       expect(() => initializeSchema(db, false, () => { throw new Error("late failure"); })).toThrow("late failure");
       expect(inspectSchema(db).version).toBe(36);
       expect(db.prepare("SELECT * FROM projects").all()).toEqual(before);
-      initializeSchema(db, false);
-      expect(inspectSchema(db).version).toBe(43);
+      db.close();establishFixtureSecurity(f.path);db=unmanagedFixtureDatabase(f.path);
+      expect(inspectSchema(db).version).toBe(49);
       expect(db.prepare("SELECT * FROM projects").all()).toEqual((before as object[]).map(row => ({ ...row, configuration_revision: 0, godot_web_json: null })));
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=37").get())
         .toEqual({ name: configurationRevisionMigration.name, checksum: configurationRevisionChecksum });
@@ -52,13 +54,13 @@ describe("configuration revision migration 37", () => {
 
   it("rejects tampered provenance and an invalid revision before writes", () => {
     const f = fixture(); f.store.close();
-    const db = new Database(f.path);
+    const db = unmanagedFixtureDatabase(f.path);
     db.exec("UPDATE schema_migrations SET checksum='wrong' WHERE version=37"); db.close();
     const before = readFileSync(f.path);
     expect(() => new SqliteStateStore(f.path)).toThrow(/migration checksum/);
     expect(readFileSync(f.path)).toEqual(before);
     for (const invalid of ["-1", "'text'", "1.5"]) {
-      const repaired = new Database(f.path);
+      const repaired = unmanagedFixtureDatabase(f.path);
       repaired.prepare("UPDATE schema_migrations SET checksum=? WHERE version=37").run(configurationRevisionChecksum);
       repaired.exec(`UPDATE projects SET configuration_revision=${invalid}`);
       repaired.close();
@@ -75,9 +77,11 @@ describe("configuration revision migration 37", () => {
     } finally { f.store.close(); }
     const path = join(f.root, "restored.sqlite3");
     restoreControllerBackup(backup, path);
+    resumeFixtureSecurity(path);
+    resumeFixtureSecurity(path);
     const restored = new SqliteStateStore(path);
     try {
-      expect(restored.schemaVersion()).toBe(43);
+      expect(restored.schemaVersion()).toBe(49);
       expect(restored.getProjectConfigurationRevision(f.project.id)).toBe(2);
     } finally { restored.close(); }
   });

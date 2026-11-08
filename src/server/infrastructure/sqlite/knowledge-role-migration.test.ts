@@ -1,7 +1,9 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { establishFixtureSecurity, resumeFixtureSecurity } from "./fixtures/protected-security";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
 import { IdentityService } from "@/server/modules/identity";
@@ -27,7 +29,7 @@ function fixture() {
 describe("Knowledge role migration and persistence", () => {
   it("upgrades 34 atomically without widening grants or replacing owner IDs", () => {
     const f = fixture(); f.store.close();
-    const db = new Database(f.path);
+    let db = unmanagedFixtureDatabase(f.path);
     try {
       rewindProviderSessionHistory(db); db.exec(WITHOUT_AUTHENTICATION_PROVIDER_STORAGE + "DROP TABLE knowledge_role_bindings; DELETE FROM schema_migrations WHERE version>=35");
       const before = db.prepare("SELECT * FROM knowledge_project_grants").all();
@@ -35,8 +37,8 @@ describe("Knowledge role migration and persistence", () => {
       expect(() => initializeSchema(db, false, () => { throw new Error("late failure"); })).toThrow("late failure");
       expect(inspectSchema(db).version).toBe(34);
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name='knowledge_role_bindings'").get()).toBeUndefined();
-      initializeSchema(db, false);
-      expect(inspectSchema(db).version).toBe(43);
+      db.close();establishFixtureSecurity(f.path);db=unmanagedFixtureDatabase(f.path);
+      expect(inspectSchema(db).version).toBe(49);
       expect(db.prepare("SELECT * FROM knowledge_project_grants").all()).toEqual(before);
       expect(db.prepare("SELECT * FROM knowledge_role_bindings").all()).toEqual([]);
       expect(db.prepare("SELECT id,kind FROM remote_principals WHERE id=?").get(f.owner.principalId)).toEqual({ id: f.owner.principalId, kind: "owner" });
@@ -48,7 +50,7 @@ describe("Knowledge role migration and persistence", () => {
   });
   it("rejects tampered migration provenance before writes", () => {
     const f = fixture(); f.store.close();
-    const db = new Database(f.path);
+    const db = unmanagedFixtureDatabase(f.path);
     db.exec("UPDATE schema_migrations SET checksum='wrong' WHERE version=35"); db.close();
     const before = readFileSync(f.path);
     expect(() => new SqliteStateStore(f.path)).toThrow(/migration checksum/);
@@ -66,18 +68,21 @@ describe("Knowledge role migration and persistence", () => {
     } finally { f.store.close(); }
     const path = join(f.root, "restored.sqlite3");
     restoreControllerBackup(backup, path);
+    resumeFixtureSecurity(path);
     const restored = new SqliteStateStore(path);
     try {
-      expect(restored.getKnowledgeRoleBinding(target.principalId, target.projectId)).toMatchObject({ role: "reader", revision: 2, revokedAt: expect.any(String) });
+      expect(restored.getKnowledgeRoleBinding(target.principalId, target.projectId)).toMatchObject({ role: "reader", revision: 3, revokedAt: expect.any(String) });
       const identity = new IdentityService(restored);
-      const actor = identity.authenticateBearer(f.token);
+      expect(()=>identity.authenticateBearer(f.token)).toThrow();
+      const actor = identity.authenticateBearer(identity.recoverOwnerSession().token);
       expect(identity.describeIdentity(actor).knowledgeGrants).toEqual([]);
       expect(() => identity.authorizeKnowledge(actor, f.project.id, "knowledge:read")).toThrow();
       // Owner authority can recover an accidentally revoked Knowledge role with a new revision.
-      identity.setKnowledgeRole({ ...target, role: "manager", expectedRevision: 2 }, actor);
+      identity.setKnowledgeGrant({ ...target, permissions:["knowledge:read","knowledge:write","knowledge:approve"] },actor);
+      identity.setKnowledgeRole({ ...target, role: "manager", expectedRevision: 3 }, actor);
       identity.authorizeKnowledge(actor, f.project.id, "knowledge:approve");
     } finally { restored.close(); }
-    const db = new Database(path, { readonly: true });
+    const db = unmanagedFixtureDatabase(path, { readonly: true });
     try {
       const audit = db.prepare("SELECT actor,details_json FROM controller_audit_events WHERE event_type='knowledge.role_saved'").all();
       expect(audit).toHaveLength(3);

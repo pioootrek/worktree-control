@@ -46,6 +46,27 @@ export type TestRunStatusRecord = Pick<TestRun,
   | "source"
 >;
 
+/** Server-only immutable requester attribution; never accepted from a transport. */
+export interface TestRunRequester {
+  principalId: string;
+  credentialId: string;
+  projectId: string;
+  sessionOwner: string;
+  reservationId: string | null;
+  leaseTokenHash: string | null;
+}
+
+export interface HumanTestRunRequester {
+  kind: "human";
+  projectId: string;
+  sessionOwner: string;
+  authority: import("./modules/identity").HumanRuntimeAuthority;
+  reference: import("./modules/identity").RetainedProviderSession;
+  reservationId: string | null;
+  fingerprint: string;
+}
+export type VerificationRequester = TestRunRequester | HumanTestRunRequester;
+
 /** Durable credential binding of a scoped agent lease, in addition to session owner and lease hash. */
 export interface ReservationBinding {
   principalId: string;
@@ -128,6 +149,8 @@ export interface StateStore {
   setProjectTestPresetTimeout(projectId: string, presetId: string, timeoutMs: number | null, actor: string): void;
   /** Incremented by every configuration write; null when the project does not exist. */
   getProjectConfigurationRevision(projectId: string): number | null;
+  beginHumanConfiguration?: import("./modules/environments").HumanConfigurationStore["beginHumanConfiguration"];
+  commitHumanConfiguration?: import("./modules/environments").HumanConfigurationStore["commitHumanConfiguration"];
   commitScopedConfiguration(input: ScopedConfigurationCommit): ScopedConfigurationCommitResult;
   setSelectedWorktree(projectId: string, path: string, actor?: string): void;
   getServerCapacitySettings(): ServerCapacitySettings;
@@ -141,13 +164,17 @@ export interface StateStore {
   getTestRun(id: string): TestRun | null;
   getTestRunStatus(id: string): TestRunStatusRecord | null;
   findTestRunByIdempotency(actor: string, idempotencyKey: string): TestRun | null;
-  saveTestRun(run: TestRun, idempotencyKey?: string): void;
+  getTestRunRequester(id: string): TestRunRequester | null;
+  /** Marked rows with absent/corrupt attribution throw, never become legacy jobs. */
+  getHumanTestRunRequester?(id: string): HumanTestRunRequester | null;
+  saveTestRun(run: TestRun, idempotencyKey?: string, requester?: VerificationRequester): void;
   markInterruptedTestRuns(): void;
   pruneTestSummaryHistory(): number;
   getWorktreeStorage(projectId: string, worktreePath: string): WorktreeStorageSnapshot | null;
   saveWorktreeStorage(sample: WorktreeStorageSample): void;
   recordProjectEvent(projectId: string, eventType: string, actor: string, details: unknown): void;
   listWorktreeLaunches(projectId: string): Record<string, string>;
+  humanRuntime?(): import("@/server/modules/runtime").HumanRuntimeStore;
   getActiveReservation(projectId: string): Reservation | null;
   getEffectiveReservation(projectId: string, observedAt: string): Reservation | null;
   acquireReservation(input: ReservationRequest): Reservation;

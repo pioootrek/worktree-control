@@ -137,7 +137,7 @@ describe("restart-only CLI mode selection across real private/public listeners",
       expect(await cli(f.paths, ["mode", "set", "token"])).toMatchObject({ restartRequired: true, generation: 1 });
       expect(await cli(f.paths, ["mode", "set", "open"])).toMatchObject({ restartRequired: false, generation: 1 });
       await expect(cli(f.paths, ["mode", "set", "legacy"])).rejects.toThrow("Dostępne tryby");
-      await expect(cli(f.paths, ["mode", "set", "better-auth"])).rejects.toThrow("Better Auth");
+      await expect(cli(f.paths, ["mode", "set", "better-auth"])).rejects.toThrow("Account authentication");
       expect((await call(live.httpPath, "/api/metrics")).status).toBe(200);
       expect(live.closeSessions).not.toHaveBeenCalled(); expect(live.disconnect).not.toHaveBeenCalled();
     } finally { await live.shutdown(); }

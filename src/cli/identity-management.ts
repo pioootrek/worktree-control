@@ -5,6 +5,7 @@ import {
 } from "../shared/contracts/runtime-access";
 import type { AppPaths } from "../server/paths";
 import { acquireControllerLock } from "../server/controller-lock";
+import { requestAdminSocket } from "../server/admin-socket";
 import { IdentityService, type KnowledgePermission } from "../server/modules/identity";
 import { SqliteStateStore } from "../server/sqlite-store";
 import { cliCredential, OWNER_CREDENTIAL_REQUIRED, OWNER_CREDENTIAL_VARIABLES } from "./credentials";
@@ -246,6 +247,12 @@ export async function runIdentityCommand(
       return;
     }
     if (action !== "recover-owner") {
+      if (access.authenticationMode === "better-auth") {
+        const token = administratorToken(dependencies);
+        if (!token) throw new Error(OWNER_CREDENTIAL_REQUIRED);
+        const result = await requestAdminSocket(paths.adminSocketPath, { command: "identity-admin", token, input: administrationPayload(args) });
+        write(JSON.stringify(result, null, 2)); return;
+      }
       await runThroughController(args, localDashboardEndpoint(access), dependencies, write);
       return;
     }

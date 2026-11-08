@@ -1,9 +1,11 @@
+import { unmanagedFixtureDatabase, ownedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { establishFixtureSecurity } from "./fixtures/protected-security";
 import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -45,7 +47,7 @@ describe("legacyId search provenance", () => {
     const service = new KnowledgeService(f.store, f.identity);
     const native = service.createThread("legacy", { title: "Imported discussion: A", body: `Historical comments imported from ${sourcePath}` }, { idempotencyKey: "native-thread" }, f.owner).value;
     const nativeTask = service.createTaskFromThread("legacy", threadId, { title: "A", description: "Storage decision A" }, { idempotencyKey: "native-task" }, f.owner).value.task;
-    const db = new Database(join(f.root, "state.sqlite3"));
+    const db = ownedFixtureDatabase(f.store);
     db.prepare(`INSERT INTO knowledge_relations
       SELECT 'native-edge',project_id,type,source_kind,source_id,target_kind,?,revision,created_by,created_at
       FROM knowledge_relations WHERE source_id=?`).run(native.id, taskId);
@@ -73,7 +75,7 @@ describe("legacyId search provenance", () => {
 
   it("returns every colliding source in one project, deduplicates mappings and paginates before returning", () => {
     const f = fixture(), first = importTask(f), second = importTask(f, "legacy", "second"), foreign = importTask(f, "foreign");
-    const db = new Database(join(f.root, "state.sqlite3"));
+    const db = ownedFixtureDatabase(f.store);
     db.exec(`INSERT INTO knowledge_import_sources
       SELECT 'duplicate',project_id,batch_id,'duplicate-source',source_repository,source_commit,source_path,legacy_id,source_sha256,mapping_version,target_kind,target_id,original_payload_json,created_at,target_revision
       FROM knowledge_import_sources WHERE project_id='legacy' AND source_id='fixture' AND target_kind='task'`);
@@ -97,7 +99,7 @@ describe("legacyId search provenance", () => {
 
   it("retains provenance after edits and requires the exact imported parent relation for a generated thread", () => {
     const f = fixture(), { taskId, threadId } = importTask(f);
-    const db = new Database(join(f.root, "state.sqlite3"));
+    const db = ownedFixtureDatabase(f.store);
     db.prepare("UPDATE knowledge_tasks SET title='Changed',revision=revision+1 WHERE id=?").run(taskId);
     db.prepare("UPDATE knowledge_threads SET title='Changed',body='Changed',revision=revision+1 WHERE id=?").run(threadId);
     const ids = () => f.store.searchKnowledge("legacy", 25, 0, { legacyId: "A" }).items.map(hit => hit.id);
@@ -120,7 +122,7 @@ describe("legacyId search provenance", () => {
 
   it("accepts a direct thread source map and keeps target kinds distinct", () => {
     const f = fixture(), { taskId, threadId } = importTask(f);
-    const db = new Database(join(f.root, "state.sqlite3"));
+    const db = ownedFixtureDatabase(f.store);
     db.prepare("UPDATE knowledge_import_sources SET target_kind='thread',target_id=? WHERE project_id='legacy' AND target_kind='task'").run(threadId);
     expect(f.store.searchKnowledge("legacy", 25, 0, { legacyId: "A" }).items.map(hit => hit.id)).toEqual([threadId]);
     db.prepare("UPDATE knowledge_import_sources SET target_kind='historical_comment',target_id=? WHERE project_id='legacy' AND target_kind='thread'").run(taskId);
@@ -129,7 +131,7 @@ describe("legacyId search provenance", () => {
   });
 
   it.each([100, 400, 1600])("bounds provenance reads for missing and existing IDs with %i discussions", count => {
-    const f = fixture(), original = importTask(f), db = new Database(join(f.root, "state.sqlite3"));
+    const f = fixture(), original = importTask(f), db = ownedFixtureDatabase(f.store);
     const queries = new KnowledgeQueries(db);
     try {
       const task = db.prepare(`INSERT INTO knowledge_tasks
@@ -271,9 +273,10 @@ describe("K6b Hub import execution",()=>{
 
   it("upgrades schema 26 preserving the target provenance index",()=>{
     const f=fixture(),path=join(f.root,"state.sqlite3");f.store.close();
-    const legacy=new Database(path);stripMigrationProvenance(legacy); legacy.exec("DROP INDEX knowledge_import_sources_target; DELETE FROM schema_migrations WHERE version >= 27");legacy.close();
-    const reopened=new SqliteStateStore(path),db=new Database(path);
-    expect(reopened.schemaVersion()).toBe(43);
+    const legacy=unmanagedFixtureDatabase(path);stripMigrationProvenance(legacy); legacy.exec("DROP INDEX knowledge_import_sources_target; DELETE FROM schema_migrations WHERE version >= 27");legacy.close();
+    establishFixtureSecurity(path);
+    const reopened=new SqliteStateStore(path),db=unmanagedFixtureDatabase(path);
+    expect(reopened.schemaVersion()).toBe(49);
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='knowledge_import_sources_target'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM schema_migrations WHERE version=27").get()).toBeTruthy();
     db.close();reopened.close();
@@ -290,7 +293,7 @@ describe("K6b Hub import execution",()=>{
     const original=f.store.exportKnowledgeProject("topics")!;
     expect(original.threads[0]).toMatchObject({title:"Imported discussion: A",body:`Historical comments imported from ${sourcePath}`});
     expect(original.threads[0]).not.toHaveProperty("presentation");
-    const db=new Database(join(f.root,"state.sqlite3"));
+    const db=ownedFixtureDatabase(f.store);
     const queries=new KnowledgeQueries(db);
     let topicCalls=0, hashCalls=0;
     db.function("knowledge_import_topic",{deterministic:true},(value:unknown,legacyId:unknown,sourcePath:unknown)=>{
@@ -350,7 +353,7 @@ describe("K6b Hub import execution",()=>{
     const comment=mapping(`${sourcePath}#notes/0`,"task_note","historical_comment",{id:"A:note:0",text:"Historical context"});comment.legacyId="A:note:0";
     execute(f.store,f.identity,f.owner,{plan:plan([task,comment]),targetProjectId:"fallback",targetProjectName:"Fallback"});
     const thread=f.store.listThreads("fallback",25,0).items[0]!;
-    const db=new Database(join(f.root,"state.sqlite3"));
+    const db=ownedFixtureDatabase(f.store);
     const expectRaw=()=>{const actual=f.store.getThread("fallback",thread.id)!;expect(actual.presentation).toMatchObject({displayTitle:actual.title,imported:false});};
     const source=db.prepare("SELECT id FROM knowledge_import_sources WHERE project_id='fallback' AND target_kind='task'").get() as {id:string};
     db.prepare("UPDATE knowledge_import_sources SET target_revision=NULL WHERE id=?").run(source.id);expectRaw();
@@ -434,7 +437,7 @@ describe("K6b Hub import execution",()=>{
     const afterRepeat=f.store.listReplies("timeline",thread.id,40,0).items;
     expect(afterRepeat.map(reply=>reply.body)).toEqual([...Array.from({length:31},(_,index)=>`Source ${index}`),"New answer"]);
     expect(afterRepeat[10]).toMatchObject({id:first.items[10]!.id,revision:2,createdAt:first.items[10]!.createdAt});
-    const db=new Database(join(f.root,"state.sqlite3"));new KnowledgeQueries(db);
+    const db=ownedFixtureDatabase(f.store);new KnowledgeQueries(db);
     const queryPlan=db.prepare(`EXPLAIN QUERY PLAN ${replyReadSql(false)}`).all({projectId:"timeline",threadId:thread.id,limit:26,offset:0}) as Array<{detail:string}>;
     expect(queryPlan.some(step=>step.detail.includes("knowledge_replies_thread"))).toBe(true);
     expect(queryPlan.some(step=>step.detail.includes("knowledge_import_sources_target"))).toBe(true);
@@ -452,11 +455,11 @@ describe("K6b Hub import execution",()=>{
     const comments=[0,1,2,3].map(index=>{const item=mapping(`${path}#notes/${index}`,"task_note","historical_comment",{id:`A:note:${index}`,text:index===0?"\u00a0Source 0\u00a0":`Source ${index}`,author:`Author ${index}`});item.legacyId=`A:note:${index}`;return item;});
     execute(f.store,f.identity,f.owner,{plan:plan([task,...comments]),targetProjectId:"uncertain",targetProjectName:"Uncertain"});
     const thread=f.store.listThreads("uncertain",25,0).items[0]!,original=f.store.listReplies("uncertain",thread.id,25,0).items;
-    const db=new Database(join(f.root,"state.sqlite3"));
+    const db=ownedFixtureDatabase(f.store);
     db.prepare("UPDATE knowledge_import_sources SET mapping_version=1,target_revision=NULL WHERE project_id='uncertain' AND target_kind='historical_comment' AND target_id=?").run(original[0]!.id);
     db.prepare("UPDATE knowledge_import_sources SET source_path='wrong#notes/1' WHERE project_id='uncertain' AND target_kind='historical_comment' AND target_id=?").run(original[1]!.id);
     db.prepare("UPDATE knowledge_import_sources SET original_payload_json='{broken' WHERE project_id='uncertain' AND target_kind='historical_comment' AND target_id=?").run(original[2]!.id);
-    db.prepare("INSERT INTO knowledge_projects(id,name,status,revision,created_at,updated_at) VALUES ('other-project','Other','active',1,?,?)").run(NOW,NOW);
+    (f.store as unknown as {database:import("better-sqlite3").Database}).database.prepare("INSERT INTO knowledge_projects(id,name,status,revision,created_at,updated_at) VALUES ('other-project','Other','active',1,?,?)").run(NOW,NOW);
     db.prepare(`INSERT INTO knowledge_import_sources(id,project_id,source_id,source_repository,source_commit,source_path,legacy_id,source_sha256,mapping_version,target_kind,target_id,original_payload_json,created_at,target_revision)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run("foreign-provenance","other-project","other","/source","d".repeat(40),"foreign/path#notes/0","other:note:0","a".repeat(64),2,"historical_comment",original[0]!.id,"{}",NOW,1);
     db.prepare(`INSERT INTO knowledge_import_sources(id,project_id,source_id,source_repository,source_commit,source_path,legacy_id,source_sha256,mapping_version,target_kind,target_id,original_payload_json,created_at,target_revision)
@@ -523,12 +526,13 @@ describe("K6b Hub import execution",()=>{
     expect(execute(f.store,f.identity,f.owner,publishedInput).status).toBe("published");
     expect(execute(f.store,f.identity,f.owner,stagedInput).status).toBe("staging");
     f.store.close();
-    const old=new Database(path);
+    const old=unmanagedFixtureDatabase(path);
     stripMigrationProvenance(old); old.exec("ALTER TABLE knowledge_import_batches DROP COLUMN authentication_method; DELETE FROM schema_migrations WHERE version >= 26");
     expect((old.prepare("SELECT count(*) AS count FROM knowledge_import_batches").get() as {count:number}).count).toBe(2);
     old.close();
+    establishFixtureSecurity(path);
     const store=new SqliteStateStore(path),identity=new IdentityService(store,()=>NOW);
-    expect(store.schemaVersion()).toBe(43);
+    expect(store.schemaVersion()).toBe(49);
     expect(store.getHubImport(publishedInput.batchId)).toMatchObject({status:"published",authenticationMethod:"legacy_unknown"});
     expect(store.getHubImport(stagedInput.batchId)).toMatchObject({status:"staging",cursor:1,authenticationMethod:"legacy_unknown"});
     expect(execute(store,identity,f.owner,publishedInput).authenticationMethod).toBe("legacy_unknown");
@@ -542,12 +546,13 @@ describe("K6b Hub import execution",()=>{
     execute(f.store,f.identity,f.owner,{plan:source,targetProjectId:"legacy",targetProjectName:"Legacy",batchId:"legacy-batch"});
     expect(current.authenticationMethod).toBe("owner_session");
     f.store.close();
-    const damaged=new Database(path);
+    const damaged=unmanagedFixtureDatabase(path);
     stripMigrationProvenance(damaged); damaged.exec("UPDATE knowledge_import_batches SET authentication_method = 'legacy_unknown' WHERE id = 'legacy-batch'; DELETE FROM schema_migrations WHERE version >= 26");
     damaged.close();
 
+    establishFixtureSecurity(path);
     const repaired=new SqliteStateStore(path);
-    expect(repaired.schemaVersion()).toBe(43);
+    expect(repaired.schemaVersion()).toBe(49);
     expect(repaired.getHubImport("current-batch")).toEqual(current);
     expect(repaired.getHubImport("legacy-batch")).toMatchObject({actorPrincipalId:f.owner.principalId,authenticationMethod:"legacy_unknown"});
     repaired.close();
@@ -641,7 +646,7 @@ describe("K6b Hub import execution",()=>{
     const f=fixture(),report=plan([mapping("docs/backlog/notes/NOTE-one/note.json","note","memory",{id:"NOTE-one",title:"One",body:{description:"Proven"}})]);
     execute(f.store,f.identity,f.owner,{plan:report,targetProjectId:"source",targetProjectName:"Source"});
     const memory=f.store.listMemories("source",10,0,"",true).items[0]!;
-    const db=new Database(join(f.root,"state.sqlite3"));
+    const db=ownedFixtureDatabase(f.store);
     db.prepare("UPDATE knowledge_import_sources SET original_payload_json=? WHERE project_id=? AND target_id=?").run("{bad", "source",memory.id);
     expect(f.store.getMemory("source",memory.id)?.reading).toBeUndefined();
     db.prepare("UPDATE knowledge_import_sources SET original_payload_json=? WHERE project_id=? AND target_id=?").run(JSON.stringify({body:{description:"Proven"}}),"source",memory.id);
@@ -815,7 +820,7 @@ describe("K6b Hub import execution",()=>{
     expect(f.store.getAttachment("paths",planFile.id)?.relativePath).toBe("Assets/Plan_V1.md");
     expect(twoFiles.map(item=>item.relativePath)).toEqual(["assets/proof.txt"]);
     expect(f.store.getAttachment("paths",oneFiles[0]!.id)?.relativePath).toBe(oneFiles[0]!.relativePath);
-    const db=new Database(join(f.root,"state.sqlite3"));
+    const db=ownedFixtureDatabase(f.store);
     db.prepare("UPDATE knowledge_import_sources SET source_commit=? WHERE project_id=? AND target_kind='attachment' AND target_id=?").run("f".repeat(40),"paths",oneFiles[0]!.id);
     expect(f.store.getAttachment("paths",oneFiles[0]!.id)?.relativePath).toBeUndefined();
     db.prepare("UPDATE knowledge_import_sources SET source_sha256=? WHERE project_id=? AND target_kind='attachment' AND target_id=?").run("b".repeat(64),"paths",oneFiles[1]!.id);

@@ -28,15 +28,15 @@ export function parseProviderArguments(args: readonly string[]) {
   }
   if (positional.shift() !== "provider") throw new ProviderAdminError("invalid_input");
   const action = positional.join(" ");
-  if (!["status", "configure", "owner create", "enroll", "recover", "human create", "human list", "human disable", "knowledge-access list", "knowledge-access set", "knowledge-access revoke"].includes(action)) throw new ProviderAdminError("invalid_input");
-  const sensitive = action === "configure" || action === "enroll" || action === "recover" || action === "knowledge-access set" || action === "knowledge-access revoke";
+  if (!["status", "configure", "owner create", "enroll", "recover", "human create", "human list", "human disable", "knowledge-access list", "knowledge-access set", "knowledge-access revoke", "runtime-access list", "runtime-access set", "runtime-access revoke"].includes(action)) throw new ProviderAdminError("invalid_input");
+  const sensitive = action === "configure" || action === "enroll" || action === "recover" || action === "knowledge-access set" || action === "knowledge-access revoke" || action === "runtime-access set" || action === "runtime-access revoke";
   const stdin = values.has("--input-stdin"), file = values.get("--input-file") as string | undefined;
   const principalId = values.get("--principal-id") as string | undefined;
   if (sensitive ? Number(stdin) + Number(Boolean(file)) !== 1 : stdin || file) throw new ProviderAdminError("invalid_input");
-  if ((action === "enroll" || action === "recover" || action === "human disable" || action === "knowledge-access list") ? !principalId : action !== "status" && principalId) throw new ProviderAdminError("invalid_input");
+  if ((action === "enroll" || action === "recover" || action === "human disable" || action === "knowledge-access list" || action === "runtime-access list") ? !principalId : action !== "status" && principalId) throw new ProviderAdminError("invalid_input");
   if (principalId && principalId.length > 1024) throw new ProviderAdminError("invalid_input");
   const limitText = values.get("--limit"), after = values.get("--after") as string | undefined;
-  const page = action === "human list" || action === "knowledge-access list";
+  const page = action === "human list" || action === "knowledge-access list" || action === "runtime-access list";
   if (!page && (limitText !== undefined || after !== undefined)) throw new ProviderAdminError("invalid_input");
   if (limitText !== undefined && (typeof limitText !== "string" || !/^[1-9][0-9]?$/.test(limitText) || Number(limitText) > 20)) throw new ProviderAdminError("invalid_input");
   return { action, principalId, stdin, file, limit: limitText === undefined ? undefined : Number(limitText), after, dataDir: values.get("--data-dir") as string | undefined,
@@ -74,7 +74,7 @@ export async function providerCommandFromArgs(args: string[], input: Readable = 
     catch { throw new ProviderAdminError("invalid_input"); }
   }
   const action = parsed.action.replace(" ", "-");
-  if (action === "human-list" || action === "knowledge-access-list") return parseProviderAdminCommand({ command: "auth-provider", action,
+  if (action === "human-list" || action === "knowledge-access-list" || action === "runtime-access-list") return parseProviderAdminCommand({ command: "auth-provider", action,
     input: { ...(parsed.principalId === undefined ? {} : { principalId: parsed.principalId }),
       ...(parsed.limit === undefined ? {} : { limit: parsed.limit }), ...(parsed.after === undefined ? {} : { after: parsed.after }) } });
   return parseProviderAdminCommand({ command: "auth-provider", action,

@@ -1,6 +1,6 @@
 ---
 audience: "product owner and contributors discussing agent coordination"
-last_reviewed: "2026-10-29"
+last_reviewed: "2026-11-07"
 source_of_truth: "implemented reservation and local MCP integration design"
 status: "active"
 ---
@@ -141,8 +141,26 @@ phase. Explicit start uses the discovered claimed worktree. Claims with only
 only `own` includes the reservation handle and expiry. Unauthorized and missing
 projects return the same denial before Git discovery.
 
-Scoped runtime sessions have no runtime resources, compact status, wait API,
-logs, capacity/storage tools, local test tools, profile editing or ENV
+With `projects:read`, scoped sessions discover only their project status and
+worktree resource URIs, plus `worktree-switcher://projects` with a filtered list.
+Resource reads use the same application policy and allowlists as their tools;
+worktree discovery rechecks authority after Git returns.
+
+`get_project_status_compact` wraps the safe scoped status in a versioned envelope
+with `epoch`, `cursor`, `observedAt` and `retryAfterMs`. It reads no Git, logs,
+global capacity or test queue. Its cursor binds project, principal, credential
+and MCP session, and changes only with the visible projection. A cursor grants
+no authority and cannot be used to read another project.
+
+Scoped `wait_for_status_change` accepts `projectId`, `cursor` and optional
+`timeoutMs` (default 10 seconds, maximum 20); test-run targets are refused.
+It shares the existing 128-global/four-per-session/64-target waiter limits and
+one sampler. Each waiter rechecks credential, delegation, expiry and sponsor at
+registration, sampling, timeout and after database re-admission before delivery.
+Revocation rejects the wait on the next admitted check, even when status has
+not changed. Logical session close, cancellation and shutdown release waiters.
+
+Scoped runtime sessions have no logs, capacity/storage tools, local test tools, profile editing or ENV
 administration. They do not accept `responseMode`. New identity administration
 and credential minting are owner-session CLI/HTTP operations, never MCP tools.
 The HTTP runtime API does not accept a scoped credential.
@@ -265,9 +283,55 @@ entry is lost or the controller restarts; it is not cross-session persistence.
 
 All inputs reject unknown fields. `config:write` assigns no manager role and
 cannot mutate ENV, profiles, commands, launch/TLS/global settings, identities or
-vaults. Scoped finite verification remains denied under followup
-`415205f2-4583-4b13-a508-49a9b618a19e`; scoped resources, compact status and
-bounded wait remain denied under `e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`.
+vaults. Scoped finite verification requires independently delegated `tests:run`
+under `415205f2-4583-4b13-a508-49a9b618a19e`. Scoped resources, compact status and
+bounded project wait are described above (`e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`).
+
+### Scoped finite verification workflow
+
+The independent `tests:run` action exposes `list_test_presets`, `run_test`,
+`get_test_run`, `get_test_run_status` and `cancel_test_run`. The shared
+`wait_for_status_change` also accepts a run target. No other action grants
+finite execution. Owner administration uses the existing strict delegation and
+credential commands; there is no MCP token-minting tool.
+
+Discover with `{ "projectId": "<UUID>" }`. Results contain only exact
+`worktreePath` and preset `{id, timeoutMs}` entries. Discovery is bounded to
+64 worktrees, 256 presets total and 64 KiB. Pass a returned path and preset:
+
+```json
+{
+  "projectId": "<registered project UUID>",
+  "worktreePath": "<exact discovered worktree path>",
+  "presetId": "node:test",
+  "idempotencyKey": "verify-change-1"
+}
+```
+
+If the project has a reservation, also pass the originating session's own
+`reservationId`. The controller proves the retained lease secret and original
+principal/credential binding. A stale claim never falls back to unclaimed
+access. Dispatch and spawn recheck the original reservation and current
+credential, principal, delegation, sponsor and expiry. Clean test profiles keep
+the existing declared policy; inheriting a server profile requires separate
+ENV authority and is denied in this slice. No vault grant is inferred.
+
+Both response modes return the same safe compact envelope. `get_test_run` and
+`get_test_run_status` accept `{runId, projectId?}` and have identical scoped
+output. `cancel_test_run` accepts the same fields but also requires the original
+logical MCP session. Missing, foreign and unbound historical runs are equivalent
+denials. Reconnecting with the same credential in a new logical session permits
+reads/waits, but not cancellation or adoption of the old session's idempotency
+key. Replacing the credential permits neither. See the
+[complete ownership and cancellation contract](authentication.md#independently-delegated-finite-verification).
+
+Wait with `{runId, cursor, timeoutMs?}` or `{projectId, cursor, timeoutMs?}`;
+exactly one target is required. Run results omit queue position, logs, command,
+ENV/profile details, requester bindings and global metadata. Cursors bind the
+visible target, credential and session. Every sampler read and result after
+SQLite re-admission rechecks current authority using the shared StatusService
+budgets. Cancellation of an active process may return `running` until owned
+cleanup is confirmed. Session closure cancels waits, not accepted jobs.
 
 ### Compatibility tools and resources
 

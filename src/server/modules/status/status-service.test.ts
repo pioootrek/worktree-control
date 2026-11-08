@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Project, Reservation } from "@/shared/contracts";
+import type { ScopedProjectStatus } from "@/shared/contracts/runtime-access";
+import { directAdmission } from "@/server/database-admission";
 import { StatusService } from "./status-service";
 
 const project = {
@@ -9,11 +11,16 @@ const project = {
   environment: { SECRET: "do-not-leak" },
 } as unknown as Project;
 
-function fixture(reservation: Reservation | null = null) {
+function fixture(reservation: Reservation | null = null, onResume = () => {}) {
   let phase: "stopped" | "running" = "stopped";
   let globalUsed = 0;
   let globalRunning = 0;
   const store = {
+    admission: { ...directAdmission, idle: async <T>(operation: () => Promise<T>) => {
+      const result = await operation();
+      onResume();
+      return result;
+    } },
     getProject: vi.fn(() => project),
     getEffectiveReservation: vi.fn(() => reservation),
     getTestRunStatus: vi.fn(() => ({
@@ -51,6 +58,57 @@ function fixture(reservation: Reservation | null = null) {
 afterEach(() => vi.useRealTimers());
 
 describe("StatusService", () => {
+  const safeStatus: ScopedProjectStatus = { id: project.id, name: "Web", port: 3000, actions: ["projects:read"],
+    phase: "stopped", worktreePath: null, claim: "none", selectedWorktreePath: null, startedAt: null, managedServer: true, ownClaim: null };
+
+  it.each(["change", "timeout"])("refuses a scoped %s result revoked while completion waits for re-admission", async outcome => {
+    vi.useFakeTimers();
+    let active = true;
+    const { service } = fixture(null, () => { active = false; });
+    const status = { ...safeStatus };
+    const target = { kind: "scoped-project" as const, id: project.id, read: () => {
+      if (!active) throw new Error("revoked");
+      return service.scopedProject(status, "credential-session");
+    } };
+    const cursor = target.read().cursor;
+    const waiting = service.wait(target, cursor, "session", outcome === "change" ? 10_000 : 50);
+    const denied = expect(waiting).rejects.toThrow("revoked");
+    if (outcome === "change") status.phase = "running";
+    await vi.advanceTimersByTimeAsync(outcome === "change" ? 1_000 : 50);
+    await denied;
+    expect(service.diagnostics()).toEqual({ waiters: 0, targets: 0, waiterTimers: 0, samplerTimers: 0 });
+    service.close();
+  });
+
+  it("shares budgets with installation waits but never shares a scoped reader's authority or raw observation", async () => {
+    vi.useFakeTimers();
+    const { service, store, processes } = fixture();
+    let active = true;
+    const one = { kind: "scoped-project" as const, id: project.id, read: () => {
+      if (!active) throw new Error("revoked");
+      return service.scopedProject(safeStatus, "one");
+    } };
+    const two = { kind: "scoped-project" as const, id: project.id, read: () => service.scopedProject(safeStatus, "two") };
+    const waits = [service.wait(one, one.read().cursor, "session"),
+      ...Array.from({ length: 3 }, () => service.wait(two, two.read().cursor, "session"))];
+    const firstDenied = expect(waits[0]).rejects.toThrow("revoked");
+    active = false;
+    await vi.advanceTimersByTimeAsync(1_000);
+    await firstDenied;
+    expect(service.diagnostics().waiters).toBe(3);
+    expect(store.getProject).not.toHaveBeenCalled();
+    expect(store.countTestRuns).not.toHaveBeenCalled();
+    expect(processes.statusSummary).not.toHaveBeenCalled();
+    const installation = service.project(project.id, "session");
+    const final = service.wait({ kind: "project", id: project.id }, installation.cursor, "session");
+    await expect(service.wait(two, two.read().cursor, "session")).resolves.toMatchObject({ errorCode: "status_wait_busy" });
+    const settled = Promise.allSettled([...waits.slice(1), final]);
+    service.cancelSession("session");
+    await settled;
+    expect(vi.getTimerCount()).toBe(0);
+    service.close();
+  });
+
   it("returns an allowlisted stable compact project projection", () => {
     const reservation = {
       id: "reservation", projectId: project.id, worktreePath: "/code/web", kind: "agent",

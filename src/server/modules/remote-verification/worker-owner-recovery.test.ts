@@ -1,8 +1,9 @@
+import { resumeFixtureSecurity } from "../../infrastructure/sqlite/fixtures/protected-security";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, it, vi } from "vitest";
-import Database from "better-sqlite3";
+
 import { LinuxWorkerRecoveryHost } from "@/server/infrastructure/git";
 import { IdentityService, type AuthenticatedPrincipal } from "@/server/modules/identity";
 import { SqliteStateStore } from "@/server/sqlite-store";
@@ -145,10 +146,10 @@ it.each(["legacy", "legacy-reused-pids", "malformed", "tampered-pids", "tampered
     if (kind === "malformed") receipt.recovery = { invalid: true } as never;
     if (kind === "tampered-boot") receipt.recovery!.provenance.boot = originalBoot.replace(/^1/, "3");
     if (kind === "tampered-path") receipt.recovery!.provenance.cache.path = f.human;
-    // Deliberate on-disk corruption; production persistence refuses journal rewriting.
-    const database = new Database(f.databasePath);
-    try { database.prepare("UPDATE remote_worker_receipts SET payload_json=? WHERE attempt_id='attempt'").run(JSON.stringify(receipt)); }
-    finally { database.close(); }
+    // Keep the installation checkpoint current: the independent recovery proof
+    // must still refuse corrupt evidence. Production persistence refuses rewriting.
+    const database=(f.store as unknown as {database:import("better-sqlite3").Database}).database;
+    database.prepare("UPDATE remote_worker_receipts SET payload_json=? WHERE attempt_id='attempt'").run(JSON.stringify(receipt));
   }
   signal.mockClear();
   expect(f.recovery.inspect("attempt", f.owner)).toMatchObject({ blocked: true, recoverable: false });
@@ -161,12 +162,16 @@ it("refuses copied installation state even on the same simulated host and differ
   const f = fixture(); f.start(); f.reboot(); f.store.close();
   const copiedPath = join(f.root, "copy.sqlite3");
   copyFileSync(f.databasePath, copiedPath); copyFileSync(`${f.databasePath}.worker-recovery-key`, `${copiedPath}.worker-recovery-key`);
+  expect(()=>new SqliteStateStore(copiedPath)).toThrow(/security_fence/);
+  resumeFixtureSecurity(copiedPath);
   const copied = new SqliteStateStore(copiedPath);
   try {
     const identity = new IdentityService(copied);
+    expect(()=>identity.describeIdentity(f.owner)).toThrow();
+    const owner=identity.authenticateBearer(identity.recoverOwnerSession().token);
     const recovery = new WorkerRecoveryService(copied.remoteConnection, new LinuxWorkerRecoveryHost(copiedPath, () => ({ host: "a".repeat(64), boot: nextBoot })), identity);
-    expect(recovery.inspect("attempt", f.owner)).toMatchObject({ blocked: true, recoverable: false, code: "recovery_provenance_invalid" });
-    expect(() => recovery.reconcile("attempt", "recover-copy", f.owner)).toThrow();
+    expect(recovery.inspect("attempt", owner)).toMatchObject({ blocked: true, recoverable: false, code: "recovery_provenance_invalid" });
+    expect(() => recovery.reconcile("attempt", "recover-copy", owner)).toThrow();
   } finally { copied.close(); }
 });
 

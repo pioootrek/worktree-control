@@ -38,6 +38,7 @@ export interface ProviderSubjectMapping {
 export type ProviderAuditEvent =
   | "authentication.provider.account_provisioned"
   | "authentication.provider.password_recovered"
+  | "authentication.provider.factors_reset"
   | "authentication.provider.subject_revoked";
 
 /**
@@ -149,6 +150,8 @@ export type ProviderFactorOutcome = "charged" | "succeeded" | "failed";
 export interface ProviderAccountProtection {
   /** False without validated limits. Factor operations then refuse. */
   readonly enabled: boolean;
+  /** Protected recovery only; requires the native password transaction on the sole connection. */
+  resetLocalFactors?(subject: string): LocalFactorResetSummary;
   /** Current evidence that still authorizes, or null. Reads committed state only. */
   currentEvidence(sessionId: string, now: number): ProviderSessionEvidence | null;
   /** False once any method is selected, or when the account's state is inconsistent. */
@@ -229,7 +232,14 @@ export interface VerifiedProviderSession {
 }
 
 export interface LocalProvisionInput { principalId: string; email: string; name: string; password: string; actor: string }
-export interface LocalRecoveryInput { principalId: string; newPassword: string; actor: string }
+export interface LocalRecoveryInput {
+  principalId: string; newPassword: string; actor: string;
+  factors?: "preserve" | "reset";
+  /** Trusted controller callback, rechecked after hashing and inside the native transaction. */
+  assertCurrent?: (phase?: "commit") => void;
+}
+export interface LocalFactorResetSummary { totp: boolean; passkeys: number }
+
 
 export interface AuthenticationProviderReadiness {
   providerId: string;
@@ -237,6 +247,8 @@ export interface AuthenticationProviderReadiness {
   library: { name: string; version: string };
   /** The library's own schema check passed against controller-owned storage. */
   schema: "verified";
+  /** Additive contract-5 capability; older password-only providers remain compatible. */
+  localFactorReset?: "v1";
 }
 
 export interface AuthenticationProviderInstance {
@@ -248,6 +260,7 @@ export interface AuthenticationProviderInstance {
   resolveSession(headers: Headers): Promise<VerifiedProviderSession | null>;
   provisionLocal(input: LocalProvisionInput): Promise<{ subject: string }>;
   recoverLocal(input: LocalRecoveryInput): Promise<void>;
+  recoverLocalWithFactorReset?(input: LocalRecoveryInput): Promise<LocalFactorResetSummary>;
   revokeSession(sessionId: string): Promise<void>;
   revokeSubjectSessions(subject: string): Promise<void>;
   /** Idempotent. Releases provider resources; never closes the controller database. */

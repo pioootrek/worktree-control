@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
@@ -12,6 +13,7 @@ import {
   type AuthenticationProviderReadiness,
   type LocalProvisionInput,
   type LocalRecoveryInput,
+  type LocalFactorResetSummary,
   type ProviderAccountProtection,
   type ProviderAuthenticationEvidence,
   type ProviderFactorLimits,
@@ -30,7 +32,8 @@ import { UnreleasedSessions, type UnreleasedSession } from "./unreleased-session
 import { SessionIssuance, validateSessionRowPolicy, type SessionIssuanceState, type SessionIssuanceStore, type SessionRowPolicy } from "./session-issuance";
 
 export type AuthenticationProviderErrorCode =
-  | "provider_unavailable" | "principal_unavailable" | "subject_conflict" | "not_linked"
+  | "security_fence_owner_running" | "security_fence_establishment_required" | "security_fence_recovery_required" | "security_fence_pending" | "security_fence_preflight_changed"
+  | "recovery_unavailable" | "provider_unavailable" | "principal_unavailable" | "subject_conflict" | "not_linked"
   | "invalid_session" | "invalid_input" | "invalidation_failed" | "provider_disposed" | "provider_failed" | "disposal_unconfirmed"
   | "maintenance" | "provider_configuration_restart_required"
   | "authentication_failed" | "rate_limited" | "capacity" | "cancelled" | "outcome_unconfirmed" | "outcome_committed";
@@ -53,6 +56,8 @@ export class AuthenticationProviderError extends Error {
 
 /** Synchronous controller-owned mapping operations; callers run them inside a borrow. */
 export interface ProviderSubjectStore extends ProviderSubjectRegistry {
+  /** Current native local account, with consistent selected protection. Core admission only. */
+  hasLocalEnrollment(principalId: string): boolean;
   isActiveOwner(principalId: string): boolean;
   activeAccountKind(principalId: string): "owner" | "human" | null;
   hasSubjectHistory(principalId: string): boolean;
@@ -103,6 +108,7 @@ export interface LoadAuthenticationProviderInput {
   sessionReconcileBatch?: number;
   /** Called after commit. A throw is reported as `invalidation_failed` with `committed: true`. */
   onInvalidation?: (event: ProviderInvalidation) => void;
+  assertAvailable?: (phase?: "commit") => void;
   log?: (level: "error" | "warn" | "info" | "debug", message: string) => void;
 }
 
@@ -148,7 +154,7 @@ function guardedProtection(protection: ProviderAccountProtection & ProviderRelea
     if (typeof session === "string") issued(session);
     return result;
   }]));
-  return Object.freeze({ ...methods, enabled: protection.enabled }) as unknown as ProviderAccountProtection;
+  return Object.freeze({ ...methods, ...(protection.resetLocalFactors ? { resetLocalFactors: (subject: string) => controller(() => protection.resetLocalFactors!(subject)) } : {}), enabled: protection.enabled }) as unknown as ProviderAccountProtection;
 }
 
 const REQUIRED_METHODS = ["initialize", "handle", "signOut", "resolveSession", "provisionLocal", "recoverLocal", "revokeSession", "revokeSubjectSessions", "dispose"] as const;
@@ -490,6 +496,41 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     return evidence.method === frozen.method && evidence.authenticatedAt === frozen.authenticatedAt && evidence.originalDeadline === frozen.originalDeadline
       && evidence.generation === frozen.generation && evidence.policyRevision === frozen.policyRevision && evidence.credential === frozen.credential
       && evidence.credentialBinding === frozen.credentialBinding && evidence.attemptId === frozen.attemptId;
+  }
+
+  /** Stable across requests and ordinary reboots only while the original committed session survives.
+   * The original evidence and mapping linkage are hashed, never released to a client or log.
+   */
+  resolveRuntimeSession(actor: ProviderSessionActor, now: string): import("../identity").ProviderRuntimeSession | null {
+    if (!this.isCurrentProviderSession(actor, now)) return null;
+    const original = this.#actors.get(actor)!;
+    const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+    const evidenceKey = digest(["wtc-human-evidence-v1", original.evidence, original.mappingLinkedAt, original.authentication]);
+    return Object.freeze({ principalId: original.principalId,
+      sessionKey: digest(["wtc-human-session-v1", this.#input.providerId, original.sessionId, original.subject,
+        original.principalId, original.principalKind, original.createdAt, original.mappingLinkedAt, evidenceKey]),
+      evidenceKey, generation: original.evidence.generation, deadline: original.expiresAt });
+  }
+
+  /** Capture only from an exact runtime-owned actor; no cookie/token is retained. */
+  captureRuntimeSession(actor: ProviderSessionActor, now: string): import("../identity").RetainedProviderSession | null {
+    const binding = this.resolveRuntimeSession(actor, now);
+    return binding ? Object.freeze({ ...binding, nativeSessionId: this.#actors.get(actor)!.sessionId }) : null;
+  }
+
+  /** Queue authority comes from current native rows, never from a reconstructed actor. */
+  validateRetainedRuntimeSession(reference: import("../identity").RetainedProviderSession, now: string): boolean {
+    if (this.disposed || !this.#supportsSessionAuthority() || !this.#input.storage.available() || !canonicalInstant(now)
+      || typeof reference?.nativeSessionId !== "string" || !reference.nativeSessionId || reference.nativeSessionId.length > 512) return false;
+    const state = this.#input.storage.currentSession(this.#input.providerId, reference.nativeSessionId);
+    const authority = state && evaluateSessionAuthority(state, now);
+    if (!state || !authority) return false;
+    const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+    const evidenceKey = digest(["wtc-human-evidence-v1", authority.evidence, state.mappingLinkedAt, authority.authentication]);
+    const sessionKey = digest(["wtc-human-session-v1", this.#input.providerId, reference.nativeSessionId, state.subject,
+      state.principalId, state.principalKind, state.createdAt, state.mappingLinkedAt, evidenceKey]);
+    return state.principalId === reference.principalId && sessionKey === reference.sessionKey && evidenceKey === reference.evidenceKey
+      && authority.evidence.generation === reference.generation && authority.deadline === reference.deadline;
   }
 
   /**
@@ -834,6 +875,12 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
       && this.readiness.library?.name === "better-auth" && this.readiness.library.version === "1.7.14";
   }
 
+  /** Only the pinned integrated adapter has a verified production session/storage contract. */
+  get supportsProductionAccounts(): boolean {
+    return !this.disposed && this.issuanceBounded && this.factorsEnabled && this.#supportsSessionAuthority()
+      && this.supportsLocalFactorReset;
+  }
+
   /** Protected local bootstrap: creates a password account and its mapping atomically. */
   provisionLocal(input: LocalProvisionInput): Promise<{ subject: string }> {
     for (const value of [input.principalId, input.email, input.name, input.password, input.actor]) {
@@ -851,18 +898,38 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     });
   }
 
+  get supportsLocalFactorReset(): boolean { return this.readiness.localFactorReset === "v1" && typeof this.#instance.recoverLocalWithFactorReset === "function"; }
+
   /** Protected local recovery: replaces the password and revokes the account's sessions atomically. */
-  recoverLocal(input: LocalRecoveryInput): Promise<void> {
+  recoverLocal(input: LocalRecoveryInput): Promise<void | LocalFactorResetSummary> {
     for (const value of [input.principalId, input.newPassword, input.actor]) {
       if (typeof value !== "string" || !value || value.length > 1024) return Promise.reject(new AuthenticationProviderError("invalid_input", "Recovery input is invalid."));
     }
+    if (input.factors !== undefined && input.factors !== "preserve" && input.factors !== "reset") return Promise.reject(new AuthenticationProviderError("invalid_input", "Recovery input is invalid."));
     return this.#run(async () => {
+      if (input.factors === "reset" && !this.supportsLocalFactorReset) {
+        throw new AuthenticationProviderError("recovery_unavailable", "Explicit factor recovery is unavailable.");
+      }
       const linked = this.#input.storage.runControllerOperation(() => this.#subjects.findByPrincipal(input.principalId));
       if (!linked) throw new AuthenticationProviderError("not_linked", "The principal has no provider account.");
-      if (this.#input.storage.runControllerOperation(() => this.#subjects.isActiveOwner(input.principalId) && this.#subjects.resolveActivePrincipal(linked.subject) === input.principalId) !== true) {
-        throw new AuthenticationProviderError("principal_unavailable", "The active owner principal is unavailable.");
+      const assertCurrent = (phase?: "commit") => this.#input.storage.runControllerOperation(() => {
+        this.#input.assertAvailable?.(phase);
+        const kind = this.#subjects.activeAccountKind(input.principalId);
+        if (!kind || (kind === "owner" && !this.#subjects.isActiveOwner(input.principalId)) || this.#subjects.resolveActivePrincipal(linked.subject) !== input.principalId
+          || this.#subjects.findByPrincipal(input.principalId)?.linkedAt !== linked.linkedAt) {
+          throw new AuthenticationProviderError("principal_unavailable", "The active account principal is unavailable.");
+        }
+      });
+      assertCurrent();
+      const request = { ...input, assertCurrent };
+      if (input.factors === "reset") {
+        const summary = await this.#instance.recoverLocalWithFactorReset!(request);
+        if (!summary || typeof summary.totp !== "boolean" || !Number.isSafeInteger(summary.passkeys) || summary.passkeys < 0) {
+          throw new AuthenticationProviderError("outcome_committed", "Recovery committed, but its summary was not confirmed.", true);
+        }
+        return { totp: summary.totp, passkeys: summary.passkeys };
       }
-      await this.#instance.recoverLocal(input);
+      await this.#instance.recoverLocal(request);
     });
   }
 

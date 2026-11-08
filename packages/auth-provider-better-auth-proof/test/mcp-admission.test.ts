@@ -48,11 +48,12 @@ async function protocol(f: StrictProof, scoped = false, expiresAt?: string, inst
   const runtime = new McpRuntime(service, diagnostic, f.identity, undefined, governor);
   const admitted = governor.admit(`principal:${actor.credentialId}`);
   if (!admitted.admitted) throw new Error("fixture session refused");
-  // Use the actual session factory and protocol registration; replace only the wire.
+  // Match HTTP initialization's bounded admission for capability registration;
+  // use the actual session factory and replace only the wire.
   // No admission is added around calls: the production SDK handler wrapper must supply it.
-  const session = (runtime as unknown as { createSession(auth: ControllerAuthentication, governed: GovernedMcpSession): {
+  const session = await f.run(() => (runtime as unknown as { createSession(auth: ControllerAuthentication, governed: GovernedMcpSession): {
     server: McpServer; owner: string; closing: boolean; transport: { close(): Promise<void> }; claims: Map<string, unknown>;
-  } }).createSession({ kind: installation ? "installation" : "principal", actor }, admitted.session);
+  } }).createSession({ kind: installation ? "installation" : "principal", actor }, admitted.session));
   session.owner = "agent:mcp:strict-in-memory-fixture";
   (runtime as unknown as { sessions: Map<string, unknown> }).sessions.set("strict-in-memory-fixture", session);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

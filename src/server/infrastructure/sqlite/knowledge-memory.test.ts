@@ -1,8 +1,10 @@
+import { establishFixtureSecurity } from "./fixtures/protected-security";
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SqliteStateStore } from "./sqlite-state-store";
 import { IdentityService } from "@/server/modules/identity";
@@ -76,7 +78,7 @@ describe("K4 memory and session context", () => {
     const f = setup();
     const memory = f.create();
     f.store.close();
-    const database = new Database(f.path);
+    const database = unmanagedFixtureDatabase(f.path);
     database.prepare("UPDATE knowledge_memories SET approval_json=? WHERE project_id=? AND id=?").run("{", f.project.id, memory.id);
     database.close();
     const reopened = new SqliteStateStore(f.path); cleanups.push(() => reopened.close());
@@ -88,7 +90,7 @@ describe("K4 memory and session context", () => {
     const f = setup();
     const memory = f.create();
     f.store.close();
-    const database = new Database(f.path);
+    const database = unmanagedFixtureDatabase(f.path);
     database.prepare(`INSERT INTO knowledge_history(project_id,record_kind,record_id,operation,previous_json,principal_id,authentication_method,revision,created_at)
       VALUES (?,'memory',?,'updated',?,?,?,3,?)`).run(f.project.id, memory.id, JSON.stringify({ ...memory, revision: 2 }), f.owner.principalId, "owner_session", memory.createdAt);
     database.close();
@@ -386,8 +388,9 @@ describe("K4 memory and session context", () => {
   it("keeps K3 history during migration and rolls back failed memory writes with history/idempotency", () => {
     const f = setup(); const before = f.store.listHistory(f.project.id, "task", f.task.id, 25, 0);
     f.store.close();
-    const old = new Database(f.path);
+    const old = unmanagedFixtureDatabase(f.path);
     stripMigrationProvenance(old); old.exec("DROP TABLE knowledge_memories; DELETE FROM schema_migrations WHERE version >= 20;"); old.close();
+    establishFixtureSecurity(f.path);
     const migrated = new SqliteStateStore(f.path); cleanups.push(() => migrated.close());
     expect(migrated.listHistory(f.project.id, "task", f.task.id, 25, 0)).toEqual(before);
     const service = new KnowledgeService(migrated, new IdentityService(migrated), undefined, () => "collision");

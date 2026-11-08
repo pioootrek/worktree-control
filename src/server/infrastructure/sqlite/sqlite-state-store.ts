@@ -1,3 +1,12 @@
+import { SecurityFence } from "./security-fence";
+import { SCOPED_TEST_PRESET_OVERRIDE_LIMIT } from "@/shared/contracts/scoped-configuration";
+import { HumanConfigurationQueries } from "./human-configuration-queries";
+import type { HumanConfigurationIntent, HumanConfigurationCommit } from "@/server/modules/environments";
+import type { ScopedConfigurationReceipt } from "@/shared/contracts/scoped-configuration";
+import { RuntimeAccessDenied, ScopedRuntimeError } from "@/server/modules/runtime";
+import { HumanRuntimeQueries } from "./human-runtime-queries";
+import { RuntimeMembershipQueries } from "./runtime-membership-queries";
+import type { TestRunRequester, HumanTestRunRequester, VerificationRequester } from "@/server/state-store";
 import { HumanAccountQueries } from "./human-account-queries";
 import type { KnowledgeRoleBinding, KnowledgePermission } from "@/shared/contracts/authorization";
 import { DevVaultQueries } from "./dev-vault-queries";
@@ -47,7 +56,7 @@ import { AuthenticationSessionIssuanceQueries } from "./authentication-session-i
 import { AUTHENTICATION_PROVIDER_STORAGE_REVISION } from "./authentication-provider-migration";
 import type { HubImportBatch, HubImportExecutionStore, HubImportMapping, KnowledgeHistoryEntry, KnowledgeMutationContext, KnowledgeMutationResult, KnowledgePage, KnowledgeProjectSnapshot, KnowledgeRelation, KnowledgeReply, KnowledgeRuntimeLinkResult, KnowledgeStore, KnowledgeTask, KnowledgeThread } from "@/server/modules/knowledge";
 import { KnowledgeError, publishKnowledgeAttachment, DEFAULT_ATTACHMENT_LIMITS, assertAttachmentCapacity } from "@/server/modules/knowledge";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { initializeSchema } from "./migrations";
@@ -80,19 +89,22 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   private readonly ownedDatabase: OwnedSqliteDatabase;
   /** Every query module receives `connection.core`; the raw handle stays here. */
   private readonly connection: ExclusiveSqliteConnection;
+  private readonly securityFence: SecurityFence;
   private sessionRecovery: Promise<void> | undefined;
   private sessionsRecovered = false;
 
   constructor(databasePath: string, inspected?: OwnedSqliteDatabase, connectionOptions?: ExclusiveConnectionOptions) {
     this.ownedDatabase = inspected ?? new OwnedSqliteDatabase(databasePath, true);
     try {
+      SecurityFence.inspect(this.ownedDatabase.canonicalPath, this.ownedDatabase.database, this.ownedDatabase.inspection.fresh);
       const writable = this.ownedDatabase.enableWrites();
       configureDurability(writable);
       initializeSchema(writable, this.ownedDatabase.inspection.fresh, inspectSchema);
       assertDurability(writable);
       this.ownedDatabase.completeInitialization();
       // Query modules register functions while being built; strict admission starts once they exist.
-      this.connection = new ExclusiveSqliteConnection(writable, { ...connectionOptions, admission: "compatible" });
+      this.securityFence=SecurityFence.attach(this.ownedDatabase.canonicalPath, writable, this.ownedDatabase.inspection.fresh);
+      this.connection = new ExclusiveSqliteConnection(writable, { ...connectionOptions, admission: "compatible" }, this.securityFence);
       this.database = this.connection.core;
       this.testRuns = new TestRunQueries(this.database);
       this.storage = new StorageQueries(this.database);
@@ -694,40 +706,82 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       } else if (input.claim.worktreePath !== undefined && row.worktree_path !== input.claim.worktreePath) {
         return { status: "claim_worktree_mismatch" };
       }
-      if (revision !== input.expectedRevision) return { status: "revision_conflict" };
-      const { change } = input;
-      let eventType: string;
-      let changed: Record<string, unknown>;
-      if (change.kind === "select_environment_profile") {
-        const profile = project.environmentProfiles.find(({ name }) => name === change.profileName);
-        if (!profile) return { status: "profile_not_found" };
-        if (project.selectedEnvironmentProfile === profile.name) return { status: "noop", revision };
-        this.database.prepare(`UPDATE projects SET selected_environment_profile = ?, environment_json = ?, updated_at = ?,
-          configuration_revision = configuration_revision + 1 WHERE id = ? AND configuration_revision = ?`)
-          .run(profile.name, JSON.stringify(profile.environment), new Date().toISOString(), input.projectId, revision);
-        eventType = "configuration.environment_profile_selected";
-        changed = { selectedProfile: profile.name };
-      } else {
-        const timeouts = { ...project.testPresetTimeouts };
-        if ((timeouts[change.presetId] ?? null) === change.timeoutMs) return { status: "noop", revision };
-        if (change.timeoutMs === null) delete timeouts[change.presetId];
-        else {
-          if (!(change.presetId in timeouts) && Object.keys(timeouts).length >= change.overrideLimit) return { status: "override_limit" };
-          timeouts[change.presetId] = change.timeoutMs;
-        }
-        this.database.prepare(`UPDATE projects SET test_preset_timeouts_json = ?, updated_at = ?,
-          configuration_revision = configuration_revision + 1 WHERE id = ? AND configuration_revision = ?`)
-          .run(JSON.stringify(timeouts), new Date().toISOString(), input.projectId, revision);
-        eventType = "configuration.test_preset_timeout_set";
-        changed = { presetId: change.presetId, timeoutMs: change.timeoutMs };
+      return this.applyConfigurationChange(input, project, revision);
+    }).immediate();
+  }
+
+  /** Both actor kinds use this one revision/mutation/audit implementation inside their owning transaction. */
+  private applyConfigurationChange(input: Pick<ScopedConfigurationCommit, "projectId" | "expectedRevision" | "change"> & {
+    claim: { reservationId: string } | null;
+    attribution: ScopedConfigurationCommit["attribution"] | { principalId: string; operationId: string };
+  }, project: Project, revision: number): ScopedConfigurationCommitResult {
+    if (revision !== input.expectedRevision) return { status: "revision_conflict" };
+    const { change } = input;
+    let eventType: string;
+    let changed: Record<string, unknown>;
+    if (change.kind === "select_environment_profile") {
+      const profile = project.environmentProfiles.find(({ name }) => name === change.profileName);
+      if (!profile) return { status: "profile_not_found" };
+      if (project.selectedEnvironmentProfile === profile.name) return { status: "noop", revision };
+      this.database.prepare(`UPDATE projects SET selected_environment_profile = ?, environment_json = ?, updated_at = ?,
+        configuration_revision = configuration_revision + 1 WHERE id = ? AND configuration_revision = ?`)
+        .run(profile.name, JSON.stringify(profile.environment), new Date().toISOString(), input.projectId, revision);
+      eventType = "configuration.environment_profile_selected";
+      changed = { selectedProfile: profile.name };
+    } else {
+      const timeouts = { ...project.testPresetTimeouts };
+      if ((timeouts[change.presetId] ?? null) === change.timeoutMs) return { status: "noop", revision };
+      if (change.timeoutMs === null) delete timeouts[change.presetId];
+      else {
+        if (!(change.presetId in timeouts) && Object.keys(timeouts).length >= change.overrideLimit) return { status: "override_limit" };
+        timeouts[change.presetId] = change.timeoutMs;
       }
-      // Attribution only: no ENV names or values, lease secrets or session handles.
-      this.audit(input.projectId, eventType, `principal:${input.attribution.principalId}`, {
-        principalId: input.attribution.principalId, credentialId: input.attribution.credentialId,
-        operationId: input.attribution.operationId, reservationId: input.claim?.reservationId ?? null,
-        previousRevision: revision, revision: revision + 1, outcome: "completed", ...changed,
-      });
-      return { status: "completed", revision: revision + 1 };
+      this.database.prepare(`UPDATE projects SET test_preset_timeouts_json = ?, updated_at = ?,
+        configuration_revision = configuration_revision + 1 WHERE id = ? AND configuration_revision = ?`)
+        .run(JSON.stringify(timeouts), new Date().toISOString(), input.projectId, revision);
+      eventType = "configuration.test_preset_timeout_set";
+      changed = { presetId: change.presetId, timeoutMs: change.timeoutMs };
+    }
+    // Attribution only: no ENV names or values, lease secrets or session handles.
+    this.audit(input.projectId, eventType, `principal:${input.attribution.principalId}`, {
+      principalId: input.attribution.principalId, ...("credentialId" in input.attribution ? { credentialId: input.attribution.credentialId } : { authenticationMethod: "provider_session" }),
+      operationId: input.attribution.operationId, reservationId: input.claim?.reservationId ?? null,
+      previousRevision: revision, revision: revision + 1, outcome: "completed", ...changed,
+    });
+    return { status: "completed", revision: revision + 1 };
+  }
+
+  beginHumanConfiguration(intent: HumanConfigurationIntent): ScopedConfigurationReceipt | null {
+    this.expireReservations(intent.projectId);
+    return new HumanConfigurationQueries(this.database, this.humanRuntime()).begin(intent);
+  }
+
+  commitHumanConfiguration(input: HumanConfigurationCommit): ScopedConfigurationReceipt {
+    return this.database.transaction(() => {
+      const { intent } = input, request = intent.request;
+      const change: ScopedConfigurationCommit["change"] = request.operation === "select_environment_profile"
+        ? { kind: request.operation, profileName: request.name }
+        : { kind: request.operation, presetId: request.presetId, timeoutMs: request.timeoutMs, overrideLimit: SCOPED_TEST_PRESET_OVERRIDE_LIMIT };
+      const queries = new HumanConfigurationQueries(this.database, this.humanRuntime());
+      this.expireReservations(intent.projectId);
+      queries.authorize(intent);
+      if (queries.read(intent).state !== "pending") throw new RuntimeAccessDenied();
+      const action = change.kind === "select_environment_profile" ? "profiles:select" : "config:write";
+      if (!intent.authority.permissions.includes(action)) throw new RuntimeAccessDenied();
+      const project = this.getProject(intent.projectId), revision = this.getProjectConfigurationRevision(intent.projectId);
+      if (!project || revision === null) throw new RuntimeAccessDenied();
+      const result = this.applyConfigurationChange({ projectId: intent.projectId, expectedRevision: request.expectedRevision, change,
+        claim: intent.reservationId ? { reservationId: intent.reservationId } : null,
+        attribution: { principalId: intent.authority.principalId, operationId: input.operationId } }, project, revision);
+      if (result.status !== "completed" && result.status !== "noop") throw new ScopedRuntimeError(result.status, "Configuration change refused.");
+      const base = { schemaVersion: 1 as const, operationId: input.operationId, projectId: intent.projectId,
+        configurationRevision: result.revision, outcome: result.status, replayed: false, observedAt: new Date().toISOString() };
+      const receipt: ScopedConfigurationReceipt = change.kind === "select_environment_profile"
+        ? { ...base, operation: change.kind, selectedProfile: change.profileName }
+        : { ...base, operation: change.kind, presetId: change.presetId, timeoutMs: change.timeoutMs };
+      // Failure here rolls back configuration, revision and audit on this same connection.
+      queries.finish(intent, receipt);
+      return receipt;
     }).immediate();
   }
 
@@ -837,8 +891,12 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     return this.testRuns.findTestRunByIdempotency(actor, idempotencyKey);
   }
 
-  saveTestRun(run: TestRun, idempotencyKey?: string): void {
-    return this.testRuns.saveTestRun(run, idempotencyKey);
+  getTestRunRequester(id: string): TestRunRequester | null { return this.testRuns.getTestRunRequester(id); }
+
+  getHumanTestRunRequester(id: string): HumanTestRunRequester | null { return this.testRuns.getHumanTestRunRequester(id); }
+
+  saveTestRun(run: TestRun, idempotencyKey?: string, requester?: VerificationRequester): void {
+    return this.testRuns.saveTestRun(run, idempotencyKey, requester);
   }
 
   pruneTestSummaryHistory(): number {
@@ -856,6 +914,10 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   saveRemotePrincipal(principal: RemotePrincipal, actor: string): void {
     this.identity.savePrincipal(principal, actor);
   }
+
+  humanRuntime(): HumanRuntimeQueries { return new HumanRuntimeQueries(this.database, projectId => this.expireReservations(projectId)); }
+
+  runtimeMemberships(): RuntimeMembershipQueries { return new RuntimeMembershipQueries(this.database); }
 
   humanAccounts(): HumanAccountQueries { return new HumanAccountQueries(this.database); }
 
@@ -1184,7 +1246,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
              maximum_expires_at, token_hash, idempotency_key, released_at, principal_id, credential_id
       FROM reservations WHERE project_id = ? AND released_at IS NULL
     `).get(projectId) as ReservationRow | undefined;
-    return row ? mapReservation(row) : null;
+    return row ? this.projectReservation(row) : null;
   }
 
   getEffectiveReservation(projectId: string, observedAt: string): Reservation | null {
@@ -1195,7 +1257,16 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       WHERE project_id = ? AND released_at IS NULL
         AND (expires_at IS NULL OR expires_at > ?)
     `).get(projectId, observedAt) as ReservationRow | undefined;
-    return row ? mapReservation(row) : null;
+    const reservation = row ? this.projectReservation(row) : null;
+    return reservation && (reservation.expiresAt === null || reservation.expiresAt > observedAt) ? reservation : null;
+  }
+
+  private projectReservation(row: ReservationRow): Reservation {
+    const human = this.humanRuntime().lease(row.id);
+    return human ? human.reservation : this.providerBound(row.id) ? { ...mapReservation(row), expiresAt: "1970-01-01T00:00:00.000Z", maximumExpiresAt: "1970-01-01T00:00:00.000Z" } : mapReservation(row);
+  }
+  private providerBound(id: string): boolean {
+    return !!this.database.prepare("SELECT 1 FROM reservations WHERE id=? AND provider_bound=1").get(id);
   }
 
   acquireReservation(input: ReservationRequest): Reservation {
@@ -1280,6 +1351,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     const reservation = this.getActiveReservation(projectId);
     if (!reservation) return null;
     const row = this.activeReservationRow(projectId)!;
+    if (this.providerBound(row.id)) throw new ReservationError("claim_stale", "Provider-bound claim requires its original human session.");
     if (reservation.owner !== owner) throw new ReservationError("claim_stale", `Projekt jest zablokowany przez ${reservation.owner}.`);
     if (reservation.kind === "agent" && (!leaseTokenHash || !equalHash(row.token_hash, leaseTokenHash) || !equalBinding(row, binding))) {
       throw new ReservationError("claim_stale", "Nieprawidłowy token dzierżawy agenta.");
@@ -1329,6 +1401,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       this.expireReservations(projectId);
       const active = this.getActiveReservation(projectId);
       if (!active) return;
+      if (!force && this.providerBound(active.id)) throw new ReservationError("claim_stale", "Provider-bound claim requires its original human session.");
       if (!force && active.kind === "agent") throw new Error("Dzierżawę agenta może zdjąć tylko jej właściciel lub człowiek przez force release.");
       if (!force && active.owner !== owner) throw new Error("Tylko właściciel może zdjąć tę blokadę.");
       const row = this.activeReservationRow(projectId)!;
@@ -1365,11 +1438,13 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
    * The ordinary-restart recovery of this owner's lifetime, before any issuer can
    * exist. It runs once however often it is called, so a later runtime can never
    * read another runtime's live `pending` rows as a dead process's leftovers.
-   * Restore provenance comes from this owner, and a refusal changes no row.
+   * The external fence is checked before writes and on every SQL execution. A restored
+   * owner reaches this point only with a durable protected quarantine receipt.
+   * Historical provenance remains unchanged; this is acknowledgement, not erasure.
    */
   recoverIssuedSessions(policy: SessionRowPolicy): Promise<void> {
     const validated = validateSessionRowPolicy(policy);
-    this.sessionRecovery ??= recoverIssuedSessions({ provenance: this.ownedDatabase.provenance, policy: validated, store: new AuthenticationSessionIssuanceQueries(this.database),
+    this.sessionRecovery ??= recoverIssuedSessions({ provenance: this.securityFence.sessionRecoveryProvenance(this.ownedDatabase.provenance), policy: validated, store: new AuthenticationSessionIssuanceQueries(this.database),
       run: operation => this.admission.run(operation), now: () => new Date().toISOString() }).then(() => { this.sessionsRecovered = true; });
     return this.sessionRecovery;
   }
@@ -1385,8 +1460,10 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
         SELECT id, project_id, worktree_path, kind, owner, reason, created_at, expires_at,
                maximum_expires_at, token_hash, idempotency_key, released_at, principal_id, credential_id
         FROM reservations
-        WHERE project_id = ? AND released_at IS NULL AND expires_at IS NOT NULL AND expires_at <= ?
-      `).all(projectId, now) as ReservationRow[];
+        WHERE project_id = ? AND released_at IS NULL AND (
+          (expires_at IS NOT NULL AND expires_at <= ?) OR (provider_bound=1 AND NOT EXISTS
+          (SELECT 1 FROM human_runtime_leases h WHERE h.reservation_id=reservations.id AND h.expires_at>?)))
+      `).all(projectId, now, now) as ReservationRow[];
       for (const row of expired) {
         this.database.prepare(`
           UPDATE reservations SET released_at = ?, released_by = 'system:expiry' WHERE id = ?

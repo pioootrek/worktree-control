@@ -1,4 +1,5 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { scopedWaitSchema } from "@/shared/contracts/scoped-verification";
+import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 
 import type { ClaimedRuntimeAction } from "@/shared/contracts";
@@ -10,6 +11,7 @@ import { RuntimeAccessDenied, ScopedRuntimeError } from "../../modules/runtime";
 
 type ScopedService = Pick<ControlService,
   "scopedProjects" | "scopedProjectStatus" | "scopedWorktrees" | "claimScopedProject" | "renewScopedClaim"
+  | "scopedCompactProjectStatus" | "waitForScopedStatusChange" | "waitForScopedTestChange"
   | "releaseScopedClaim" | "operateScopedRuntime" | "authorizeScopedRuntimeReplay">;
 
 /** Session-held secrets and timers stay in the MCP runtime; tools only reach them through this port. */
@@ -49,6 +51,24 @@ export async function safe<T>(operation: () => T | Promise<T>): Promise<T> {
  */
 export function registerScopedRuntimeTools(server: McpServer, service: ScopedService, actor: AuthenticatedPrincipal, session: ScopedSessionPort): void {
   const scoped = () => ({ owner: session.owner() });
+  const projectList = () => safe(() => service.scopedProjects(actor, scoped()));
+  const resource = (uri: URL, value: unknown) => ({ contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(value) }] });
+  server.registerResource("projects", "worktree-switcher://projects",
+    { description: "Projects this credential may read", mimeType: "application/json" },
+    async uri => resource(uri, await projectList()));
+  for (const kind of ["status", "worktrees"] as const) {
+    server.registerResource(`project-${kind}`, new ResourceTemplate(`worktree-switcher://projects/{projectId}/${kind}`, {
+      list: async () => ({ resources: (await projectList()).map(project => ({
+        uri: `worktree-switcher://projects/${project.id}/${kind}`, name: `${project.name} ${kind}`, mimeType: "application/json",
+      })) }),
+    }), { description: `Authorized project ${kind}`, mimeType: "application/json" }, async (uri, variables) => {
+      const projectId = String(variables.projectId);
+      const value = kind === "status"
+        ? await safe(() => service.scopedProjectStatus(actor, scoped(), projectId))
+        : await safe(() => service.scopedWorktrees(actor, projectId));
+      return resource(uri, value);
+    });
+  }
 
   server.registerTool("list_projects", {
     description: "List registered projects this credential may read, with runtime phase, placement and own-claim relation.",
@@ -60,6 +80,20 @@ export function registerScopedRuntimeTools(server: McpServer, service: ScopedSer
     inputSchema: { projectId: z.string().uuid() },
     annotations: { readOnlyHint: true, idempotentHint: true },
   }, async ({ projectId }) => jsonContent(await safe(() => service.scopedProjectStatus(actor, scoped(), projectId))));
+
+  server.registerTool("get_project_status_compact", {
+    description: "Read bounded status for one project authorized by projects:read, without discovery, logs or global capacity.",
+    inputSchema: { projectId: z.string().uuid() },
+    annotations: { readOnlyHint: true, idempotentHint: true },
+  }, async ({ projectId }) => jsonContent(await safe(() => service.scopedCompactProjectStatus(actor, scoped(), projectId))));
+
+  server.registerTool("wait_for_status_change", {
+    description: "Wait up to 20 seconds for one authorized project or own test run cursor. Current authority is rechecked before delivery.",
+    inputSchema: scopedWaitSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true },
+  }, async ({ projectId, runId, cursor, timeoutMs }, extra) => jsonContent(await safe(() => runId
+    ? service.waitForScopedTestChange(actor, scoped(), { runId, cursor, timeoutMs }, extra.signal, () => session.closing())
+    : service.waitForScopedStatusChange(actor, scoped(), { projectId: projectId!, cursor, timeoutMs }, extra.signal, () => session.closing()))));
 
   server.registerTool("list_worktrees", {
     description: "List Git worktrees discovered for one authorized project.",

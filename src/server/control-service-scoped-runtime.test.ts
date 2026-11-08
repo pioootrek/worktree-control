@@ -60,7 +60,11 @@ function fixture() {
     hooks.duringStop?.();
     Object.assign(runtime(id), { phase: "stopped", pid: null, worktreePath: null, startedAt: null });
   });
-  const processes = { snapshot: (id: string) => ({ ...runtime(id) }), start, stop } as unknown as ProcessManager;
+  const statusSummary = vi.fn((id: string) => {
+    const { phase, worktreePath, startedAt } = runtime(id);
+    return { phase, worktreePath, startedAt, failureCode: null, ownsProcess: phase === "running" };
+  });
+  const processes = { snapshot: (id: string) => ({ ...runtime(id) }), statusSummary, start, stop } as unknown as ProcessManager;
   const resolve = vi.fn<LaunchCommandResolver["resolve"]>(() => ({ preset: "node", executable: "pnpm", args: ["run", "dev"], portMethod: "environment", tls: { mode: "off", keyPath: null, certPath: null, caPath: null } }));
   const service = new ControlService(store, git, processes, undefined,
     { resolve },
@@ -78,10 +82,133 @@ function fixture() {
   const claim = (actor: AuthenticatedPrincipal, extra: { start?: boolean; worktreePath?: string; idempotencyKey?: string; ttlSeconds?: number } = {}) => service.claimScopedProject(actor, session, {
     projectId: project.id, worktreePath: extra.worktreePath ?? "/code/web", reason: "scoped test", idempotencyKey: extra.idempotencyKey ?? "claim", start: extra.start, ttlSeconds: extra.ttlSeconds,
   });
-  return { store, identity, owner, project, foreign, service, git, list, start, stop, resolve, hooks, runtime, grant, credential, revoke, session, claim, agent, spawned: () => spawned };
+  return { store, identity, owner, project, foreign, service, git, list, statusSummary, start, stop, resolve, hooks, runtime, grant, credential, revoke, session, claim, agent, spawned: () => spawned };
 }
 
 describe("scoped agent runtime", () => {
+  it("reauthorizes a sampled result after a real provider borrow and queued revocation on the sole SQLite connection", async () => {
+    const f = fixture();
+    f.grant(["projects:read"]);
+    const actor = f.credential(["projects:read"]);
+    f.store.requireAdmission();
+    const current = await f.store.admission.run(() => f.service.scopedCompactProjectStatus(actor, f.session, f.project.id));
+    const waiting = f.store.admission.run(() => f.service.waitForScopedStatusChange(actor, f.session,
+      { projectId: f.project.id, cursor: current.cursor, timeoutMs: 5000 }));
+    const denied = expect(waiting).rejects.toThrow(RuntimeAccessDenied);
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let borrowed: Promise<unknown> | undefined, revoked: Promise<unknown> | undefined;
+    try {
+      await vi.waitFor(() => {
+        expect(f.service.statusWaitDiagnostics().waiters).toBe(1);
+        expect(f.store.admissionSnapshot().coreActive).toBe(0);
+      });
+      const summary = f.statusSummary.getMockImplementation()!;
+      f.statusSummary.mockImplementationOnce(id => {
+        // Queue the borrow and revocation while the sampler holds admission.
+        // Its valid result is selected before either can acquire the database.
+        borrowed = f.store.admission.outside(() => f.store.authenticationProviderStorage().borrow(async () => { entered(); await held; }));
+        revoked = f.store.admission.detached(() => f.revoke());
+        return summary(id);
+      });
+      f.runtime(f.project.id).phase = "running";
+      await started;
+      expect(f.store.admissionSnapshot().providerActive).toBe(true);
+      expect(f.store.admissionSnapshot().queuedCore).toBeGreaterThanOrEqual(1);
+      release();
+      await borrowed;
+      await revoked;
+      await denied;
+      expect(f.service.statusWaitDiagnostics().waiters).toBe(0);
+      expect(f.store.admissionSnapshot()).toMatchObject({ coreActive: 0, queuedCore: 0, providerActive: false });
+    } finally {
+      release();
+      await borrowed;
+      await revoked;
+      f.store.close();
+    }
+  });
+
+  it("keeps compact cursors local to the visible project, credential and session without discovery", async () => {
+    const f = fixture();
+    f.grant(["projects:read"]);
+    const actor = f.credential(["projects:read"]);
+    const read = (session = f.session) => f.service.scopedCompactProjectStatus(actor, session, f.project.id);
+    const first = read();
+    expect(first.status).toEqual(f.service.scopedProjectStatus(actor, f.session, f.project.id));
+    f.store.setServerCapacitySettings({ enabled: true, limit: 12 });
+    Object.assign(f.runtime(f.foreign.id), { phase: "running" });
+    f.store.acquireReservation({ projectId: f.project.id, worktreePath: "/private/foreign-claim", kind: "human", owner: SENTINEL, reason: SENTINEL });
+    const foreignClaim = read();
+    expect(foreignClaim.status).toMatchObject({ claim: "other", ownClaim: null });
+    expect(JSON.stringify(foreignClaim)).not.toMatch(/private|SENTINEL|capacity|testQueue|logs|environment/);
+    f.store.releaseReservation(f.project.id, "local-user", true);
+    expect(read().cursor).toBe(first.cursor);
+    expect(read({ owner: "agent:mcp:another-session" }).cursor).not.toBe(first.cursor);
+    expect(f.service.scopedCompactProjectStatus(f.credential(["projects:read"]), f.session, f.project.id).cursor).not.toBe(first.cursor);
+    for (const projectId of [f.foreign.id, "missing"]) {
+      expect(() => f.service.scopedCompactProjectStatus(actor, f.session, projectId)).toThrow(RuntimeAccessDenied);
+      await expect(f.service.waitForScopedStatusChange(actor, f.session, { projectId, cursor: first.cursor })).rejects.toThrow(RuntimeAccessDenied);
+    }
+    expect(f.list).not.toHaveBeenCalled();
+    f.store.close();
+  });
+
+  it.each(["credential-revoked", "credential-expired", "delegation-revoked", "delegation-expired", "sponsor-disabled"])("denies an unchanged waiting result after %s and disposes shared budgets", async mode => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.grant(["projects:read"]);
+    const expiresAt = new Date(Date.now() + 500).toISOString();
+    const issued = f.identity.issueRuntimeCredential({ principalId: f.agent.id, label: "waiter",
+      projects: [{ projectId: f.project.id, actions: ["projects:read"] }],
+      ...(mode === "credential-expired" ? { expiresAt } : {}),
+    }, f.owner);
+    const actor = f.identity.authenticateBearer(issued.token);
+    if (mode === "delegation-expired") f.identity.setRuntimeDelegation({ principalId: f.agent.id, projectId: f.project.id,
+      actions: ["projects:read"], expiresAt, expectedRevision: 1 }, f.owner);
+    const current = f.service.scopedCompactProjectStatus(actor, f.session, f.project.id);
+    const waiting = f.service.waitForScopedStatusChange(actor, f.session, { projectId: f.project.id, cursor: current.cursor });
+    const denied = expect(waiting).rejects.toThrow(RuntimeAccessDenied);
+    if (mode === "credential-revoked") f.identity.revokeCredential(issued.credential.id, f.owner);
+    if (mode === "delegation-revoked") f.revoke();
+    if (mode === "sponsor-disabled") f.store.savePrincipal({ ...f.store.getOwnerPrincipal()!, status: "revoked" }, "test");
+    await vi.advanceTimersByTimeAsync(1_000);
+    await denied;
+    expect(f.service.statusWaitDiagnostics()).toEqual({ waiters: 0, waiterTimers: 0, targets: 0, samplerTimers: 0 });
+    expect(f.list).not.toHaveBeenCalled();
+    f.store.close();
+  });
+
+  it("rechecks timeout and already changed cursor replies, and cancels only the closed session", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.grant(["projects:read"]);
+    const actor = f.credential(["projects:read"]);
+    const current = f.service.scopedCompactProjectStatus(actor, f.session, f.project.id);
+    const input = { projectId: f.project.id, cursor: current.cursor, timeoutMs: 50 };
+    const timeout = f.service.waitForScopedStatusChange(actor, f.session, input);
+    const denied = expect(timeout).rejects.toThrow(RuntimeAccessDenied);
+    f.revoke();
+    await vi.advanceTimersByTimeAsync(50);
+    await denied;
+    await expect(f.service.waitForScopedStatusChange(actor, f.session, { ...input, cursor: "stale" })).rejects.toThrow(RuntimeAccessDenied);
+    f.grant(["projects:read"], f.project.id, 2);
+    const other = { owner: "agent:mcp:other" };
+    const otherCursor = f.service.scopedCompactProjectStatus(actor, other, f.project.id).cursor;
+    const one = f.service.waitForScopedStatusChange(actor, f.session, input);
+    const two = f.service.waitForScopedStatusChange(actor, other, { ...input, cursor: otherCursor });
+    const cancelled = expect(one).rejects.toThrow("STATUS_WAIT_CANCELLED");
+    f.service.cancelStatusWaits(f.session.owner);
+    await cancelled;
+    expect(f.service.statusWaitDiagnostics().waiters).toBe(1);
+    await vi.advanceTimersByTimeAsync(50);
+    await expect(two).resolves.toMatchObject({ changed: false });
+    expect(f.service.statusWaitDiagnostics().waiters).toBe(0);
+    f.store.close();
+  });
+
   it("returns allowlisted views and denies foreign and missing projects identically before discovery", async () => {
     const f = fixture();
     f.grant(all);

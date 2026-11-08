@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createControllerRestoreFailure, createControllerShutdown } from "../server/bootstrap/controller-shutdown";
+import { createProtectedIdentityAdministration } from "../server/bootstrap/identity-administration";
 import { createDevVault } from "../server/bootstrap/dev-vault";
 import { runDevVaultCommand } from "./dev-vault";
 import { loadRemoteVerificationConfig, runRemoteVerificationCommand } from "./remote-verification";
@@ -36,7 +37,7 @@ import { writeCliLine } from "./output";
 import { cliInformation } from "./help";
 import { runAuthCommand } from "./auth-management";
 import { isProviderCommandArgs, parseProviderArguments } from "./auth-provider-input";
-import { createAuthenticationAdministration, retainAuthenticationOwnership } from "../server/bootstrap/authentication-administration";
+import { retainAuthenticationOwnership } from "../server/bootstrap/authentication-administration";
 import { ProviderAdminError, providerAdminErrorBody } from "../server/modules/authentication";
 import { bootstrapInstallationToken, bootstrapServiceInstallationToken } from "./first-run-token";
 import { runIdentityCommand } from "./identity-management";
@@ -59,7 +60,7 @@ import { FileLogWriter } from "../server/log-writer";
 import { ProjectLifecycle } from "../server/modules/lifecycle";
 import { AuthenticationService } from "../server/modules/authentication";
 import { authenticationAdminHandler } from "../server/authentication-admin";
-import { IdentityService } from "../server/modules/identity";
+import { createControllerAuthentication } from "../server/bootstrap/authentication";
 import { KnowledgeAttachmentService, loadAttachmentLimits, KnowledgeService, KnowledgeError, knowledgeFailure } from "../server/modules/knowledge";
 import { createMcpControllerServer } from "../server/mcp-http-server";
 import { GitCommandAdmission, SystemGitWorktreeReader } from "../server/git-worktrees";
@@ -95,6 +96,11 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   }
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
+  if (command === "auth" && process.argv[3] === "fence") {
+    const raw=process.argv.slice(3);
+    await runAuthCommand(raw, resolveAppPaths(option("--data-dir",raw), option("--state-dir",raw)), {write:writeCliLine});
+    return;
+  }
   if (command === "auth" && isProviderCommandArgs(process.argv.slice(3))) {
     const raw = process.argv.slice(3), parsed = parseProviderArguments(raw);
     const providerPaths = resolveAppPaths(parsed.dataDir, parsed.stateDir);
@@ -154,7 +160,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     return;
   }
   if (command === "identity") {
-    await runIdentityCommand(process.argv.slice(3), paths, { write: writeCliLine });
+    await runIdentityCommand(withoutPathOptions(process.argv.slice(3)), paths, { write: writeCliLine });
     return;
   }
   if (command === "backup") {
@@ -223,9 +229,9 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   let logs: FileLogWriter;
   try {
     authentication = new AuthenticationService(store);
-    // Only a first start may issue the token; a restore handoff keeps the restored policy as is.
+    // Fresh startup or protected quarantine may issue new material; restored verifiers never return.
     if (!retainedLock) bootstrapInstallationToken(authentication, { terminal: process.stdout, locale, serviceMode });
-    authentication.assertStartupPolicy();
+    if (authentication.mode() !== "better-auth") authentication.assertStartupPolicy();
     logs = new FileLogWriter(paths.logDirectory);
   } catch (error) {
     store.close();
@@ -258,7 +264,10 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     kinds: ["tests", "controller"],
     ...(projectId ? { projectIds: [projectId] } : {}),
   }));
-  const identity = new IdentityService(store, undefined, undefined, undefined, authentication, store);
+  const providerAdministration = createControllerAuthentication({ store, authentication, dataDirectory: paths.dataDirectory,
+    actor: "local-admin", maintenance: () => maintenance,
+    configurationEvent: () => logs.controller("authentication.provider_configuration_written", {}) });
+  const identity = providerAdministration.identity;
   const devVault = createDevVault(store.devVault, identity, paths, lifecycle);
   const recovery = new WorkerRecoveryService(store.remoteConnection, new LinuxWorkerRecoveryHost(paths.databasePath), identity);
   tests.configurePathAdmission(paths => recovery.assertPathsAvailable(paths));
@@ -282,7 +291,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       projectName: projectId => store.getKnowledgeProject(projectId)?.name ?? null,
       exportDiscussions: (projectId, maxBytes) => store.exportUserDiscussions(projectId, maxBytes),
     });
-  } catch (error) { userSchedules?.close(); await backups.close(); await logs.close(); store.close(); controllerLock.release(); throw error; }
+  } catch (error) { userSchedules?.close(); await backups.close(); await providerAdministration.dispose(); await logs.close(); store.close(); controllerLock.release(); throw error; }
   const attachments = new KnowledgeAttachmentService(store, identity, paths.knowledgeAttachmentDirectory, knowledgeLimits);
   const knowledge = new KnowledgeService(store, identity, undefined, undefined, events.publishKnowledge, attachments);
   const gitAdmission = new GitCommandAdmission();
@@ -291,7 +300,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   try {
     remoteVerification = createRemoteVerificationRuntime(remoteVerificationConfig, { store, identity, jobs: tests, lifecycle, git, admission: gitAdmission, recovery });
   } catch (error) {
-    userSchedules?.close(); await backups.close(); await tests.shutdown(); git.close(); await logs.close(); store.close(); controllerLock.release(); throw error;
+    userSchedules?.close(); await backups.close(); await tests.shutdown(); git.close(); await providerAdministration.dispose(); await logs.close(); store.close(); controllerLock.release(); throw error;
   }
   const godotWebRuntime = createGodotWebRuntime(paths.stateDirectory, {
     store, git, processes, jobs: tests, lifecycle, logs,
@@ -301,6 +310,21 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const godotWeb = godotWebRuntime.godotWeb;
   preview.service = godotWeb;
   const service = new ControlService(store, git, processes, logs, commands, storage, undefined, undefined, tests, lifecycle, knowledge, remoteVerification?.controller, identity, godotWeb);
+  let browserAuthentication;
+  try {
+    if (authentication.mode() === "better-auth") {
+      if (!publicOrigin) throw new Error("Account authentication requires a canonical HTTPS --public-url.");
+      await authentication.prepareAccountMode();
+      browserAuthentication = await providerAdministration.prepareBrowserAuthentication({ origin: publicOrigin,
+        knowledge, runtimeReads: service, runtimeMutations: service, verification: service, configuration: service });
+    }
+    await store.admission.run(() => authentication.assertStartupPolicy());
+  } catch (error) {
+    maintenance = true; userSchedules?.close();
+    try { await backups.close(); await remoteVerification?.close(); await providerAdministration.dispose(); await service.shutdown(); controllerLock.release(); }
+    catch { retainAuthenticationOwnership({ store, providerAdministration, service, controllerLock }); throw new ProviderAdminError("disposal_unconfirmed", undefined, false); }
+    throw error;
+  }
   const restores = new RestoreOperations(backups, paths.databasePath, paths.knowledgeAttachmentDirectory, {
     authentication: () => store.getAuthenticationPolicy(),
     executionMode: () => authentication.mode(),
@@ -369,6 +393,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     identity,
     devVault,
     authentication,
+    browserAuthentication,
     publicOrigin,
     backups, restores, userSchedules, maintenance: () => maintenance,
     admission: store.admission,
@@ -382,6 +407,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     await mcp?.close();
     await controller.close();
     await remoteVerification?.close();
+    await providerAdministration.dispose();
     await service.shutdown();
     controllerLock.release();
     throw error;
@@ -412,9 +438,6 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     authenticationMode: authentication.mode(),
   });
   let adminSocket: AdminSocketServer;
-  const providerAdministration = createAuthenticationAdministration({ store, authentication, dataDirectory: paths.dataDirectory,
-    actor: "local-admin", maintenance: () => maintenance,
-    configurationEvent: () => logs.controller("authentication.provider_configuration_written", {}) });
   try {
     const authenticationHandler = authenticationAdminHandler({
       authentication,
@@ -427,9 +450,11 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       },
     });
     const backupHandler = backupAdminHandler(backups, restores, userSchedules);
+    const identityHandler = createProtectedIdentityAdministration(store, () => maintenance);
     const mcpDiagnosticsHandler = mcpDiagnosticsAdminHandler(readMcpDiagnostics);
     adminSocket = await listenAdminSocket(paths.adminSocketPath, body => {
       if (body && typeof body === "object" && "command" in body && body.command === "auth-provider") return providerAdministration.execute(body);
+      if (body && typeof body === "object" && "command" in body && body.command === "identity-admin") return identityHandler(body);
       if (body && typeof body === "object" && "command" in body && (body.command === "backup" || body.command === "backup-remote" || body.command === "backup-monitor" || body.command === "user-export-recovery")) return backupHandler(body);
       if (body && typeof body === "object" && "command" in body && body.command === "mcp-diagnostics") {
         return mcpDiagnosticsHandler(body);
@@ -701,6 +726,9 @@ function findLanAddress(): string | null {
 }
 
 main().catch((error) => {
+  if (process.argv[2] === "auth" && process.argv[3] === "fence") {
+    console.error(JSON.stringify(providerAdminErrorBody(error))); process.exitCode=1; return;
+  }
   if (process.argv[2] === "auth" && isProviderCommandArgs(process.argv.slice(3))) {
     const body = error instanceof AdminRequestError
       ? { code: error.code ?? "admin_outcome_unknown", error: error.message,

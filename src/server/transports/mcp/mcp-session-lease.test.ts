@@ -140,7 +140,7 @@ describe("scoped agent claims", () => {
     const text = (result: Awaited<ReturnType<Client["callTool"]>>) => (result.content as Array<{ text: string }>)[0]!.text;
 
     const tools = (await client.listTools()).tools.map(tool => tool.name);
-    for (const absent of ["get_runtime_logs", "set_project_environment", "get_server_capacity", "run_test", "save_environment_profile",
+    for (const absent of ["get_runtime_logs", "set_project_environment", "get_server_capacity", "save_environment_profile",
       "delete_environment_profile", "save_test_environment_profile", "assign_test_preset_profile", "list_test_environment_profiles", "get_project_storage"]) {
       expect(tools).not.toContain(absent);
     }
@@ -148,6 +148,12 @@ describe("scoped agent claims", () => {
     for (const present of ["list_environment_profiles", "select_environment_profile", "get_project_configuration", "set_test_preset_timeout"]) {
       expect(tools).toContain(present);
     }
+    for (const present of ["list_test_presets", "run_test", "get_test_run", "get_test_run_status", "cancel_test_run"]) expect(tools).toContain(present);
+    const deniedRun = await client.callTool({ name: "run_test", arguments: {
+      projectId: project.id, worktreePath: worktree.path, presetId: "node:test", idempotencyKey: "no-test-action",
+    } });
+    expect(deniedRun.isError).toBe(true);
+    expect(text(deniedRun)).toMatch(/^project_access_denied:/);
     expect(tools.some(name => /issue|grant|delegat|token|rotate/.test(name))).toBe(false);
     const identityView = JSON.parse(text(await client.callTool({ name: "get_identity", arguments: {} })));
     expect(identityView.runtimeAccess).toEqual([{ projectId: project.id, actions: ["projects:read", "claims:manage", "runtime:control"], expiresAt: null }]);

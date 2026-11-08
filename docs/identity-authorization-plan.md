@@ -1,11 +1,26 @@
 ---
 audience: "owner, implementers and reviewers of human, agent and ENV access"
-last_reviewed: "2026-11-02"
+last_reviewed: "2026-11-08"
 source_of_truth: "planned identity, role and environment authorization contracts and acceptance gates"
 status: "active"
 ---
 
 # Identity, roles and environment authorization plan
+
+## Current A5 account integration
+
+Production bootstrap now validates the actual pinned optional provider, canonical
+HTTPS configuration, external fence and existing owner enrollment before account
+mode can be selected or listeners opened. The shared bounded adapter is publicly
+mounted only for the immutable active RBAC boot. Individual agents keep explicit
+credential ceilings; diagnostic logs/storage/capacity have independent grants.
+Unconverted cookie and broad privileged operations deny. The optional provider
+artifact remains separate from Community. See the current
+[production contract and migration runbook](authentication.md#production-account-mode-a5)
+for the transport inventory, protected CLI, installed acceptance and exact GUI gap.
+Older slice descriptions below record their original boundaries; A5 supersedes
+the unconditional mode-refusal and missing-public-mount statements. General ENV
+roles, GUI integration, independent review and live migration remain separate.
 
 ## Status and decision boundary
 
@@ -22,7 +37,7 @@ A1 slice adds shared Knowledge policy and optional role restrictions. The A2
 implementation adds owner-sponsored runtime credentials, filtered MCP discovery,
 credential/session-bound leases and separately authorized configuration tools.
 Protected ordinary-human accounts and reader/operator Knowledge memberships
-are implemented in A3-I24. Production account activation and ENV delivery remain deferred.
+are implemented in A3-I24. Production account integration is documented above; general ENV delivery remains deferred.
 
 The first A3 slice now provides an optional executable provider/SQLite proof.
 It verifies real Better Auth operations through the sole guarded connection,
@@ -33,9 +48,19 @@ Controller migration 39 adds honest provider history attribution, preserving
 old history and migrations 1..38. Migration 40 and A3-I18 add
 [integrated factor authority](authentication.md#integrated-factor-authority):
 recognized optional TOTP and passkey storage, one application-owned protection
-policy and persisted session evidence behind the same handoff. Account mode remains
-unavailable. Closed factor HTTP routes and ordinary-human memberships now work
-inside the isolated composition. Production mounting, factor management/recovery,
+policy and persisted session evidence behind the same handoff. Account mode now requires A5 validated readiness. Closed factor HTTP routes and ordinary-human memberships now work
+inside the isolated composition. P1 implements the production shared lifetime
+and IdentityService. P2a adds explicit runtime-project reader memberships and
+current-session cookie reads through shared policy and existing projections.
+P2b1 adds explicit operator subsets and session/evidence/revision-bound finite
+human runtime leases with durable retry intent and closed HTTP control. No
+operator receives implied tests/profiles/config/ENV/admin rights. P2b2 adds explicit
+independent tests:run through the shared queue, original-session own-run access
+and bounded waits, with schema 47 immutable attribution and current native
+provider authority at dispatch. See [human finite verification](authentication.md#human-finite-verification-p2b2).
+P2c adds explicit literal profile selection and timeout-only configuration.
+Public browser mounting, remaining transport parity, P3 protected
+recovery/restore fencing, factor management/recovery,
 invitations, general delegated roles and GUI remain open.
 Shared core admission, exclusive provider admission and background persistence
 boundaries are implemented as partial infrastructure. Strict integration tests
@@ -44,11 +69,10 @@ handoff. CLI shutdown retains ownership on failed cleanup and joins concurrent
 calls to the same completion. Supported HTTP reservation changes serialize behind
 readiness and revalidate installation authority after waiting; token rotation
 prevents queued effects and successful replies to the old caller.
-Safe live coexistence is not accepted. The A5 external restore fence is also
-unfinished;
-restores can revive old sessions and passwords. Native proof responses expose
+P3b supplies the external restore fence and protected quarantine. Supported restore
+and raw database rollback refuse before provider loading until protected recovery. Native proof responses expose
 session tokens; the existing bounded browser adapter strips them and releases
-cookies only after current authority checks. Production integration remains gated.
+cookies only after current authority checks. A5 supplies the closed production mount; independent release review remains required.
 See [the implemented proof boundary](authentication.md#optional-provider-proof-first-a3-slice).
 
 Knowledge project `k7a-worktree-switcher` holds design task
@@ -75,10 +99,10 @@ the CLI, transport verification and operational docs extend that contract.
 
 | Area | Implemented baseline | Remaining work |
 | --- | --- | --- |
-| Installation authentication | `token`, `open`, `legacy`; rotation and policy invalidation; optional server-free Better Auth/SQLite proof | `better-auth` still rejects activation; no browser account integration |
+| Installation authentication | `token`, `open`, `legacy`; rotation and policy invalidation; optional server-free Better Auth/SQLite proof | A5 validates the optional provider and mounts the closed account API; GUI remains separate |
 | Identity | Owner, ordinary human, agent, worker and installation principals; revocable legacy credentials and isolated human sessions | General delegated role administration |
 | Knowledge | Shared policy, explicit grants and optional Knowledge role ceilings; installation compatibility bypass | Explicit human approval in account mode |
-| MCP | Agent sessions add filtered discovery, explicit-start claims, claimed control, literal profile selection and preset timeout overrides; Knowledge/vault/remote grants stay independent | Scoped finite-job admission/own-run access, runtime resources, compact status and wait API are separate followups |
+| MCP | Agent sessions add filtered discovery/resources, compact project status/wait, explicit-start claims, claimed control, literal profile selection and preset timeout overrides; Knowledge/vault/remote grants stay independent | Scoped finite-job execution and own-run access now require independent tests:run; logs/storage/capacity require independent explicit grants |
 | Remote verification | Separate submitter/project and worker/project/preset grants | Integrate without replacing both checks with a broad project role |
 | DEV vault | Encrypted profiles, signed owner operations, exact agent grants; backend and GUI on main | General role integration; execution delivery remains unavailable |
 
@@ -164,7 +188,8 @@ The role assignments below are proposed. A2 implements its five runtime actions
 through explicit owner-sponsored delegation and credential ceilings, without
 assigning these roles. In particular, an agent can hold timeout-only
 `config:write` without a manager role. Other action groups remain subject to
-their slice's implementation; `tests:run` and scoped logs are still denied.
+their slice's implementation. `tests:run` now uses the same explicit delegation
+and immutable ceilings for finite jobs. Scoped logs remain denied.
 Domain-specific guards apply even when an action is allowed.
 
 | Action group | Default assignment | Additional restriction |
@@ -263,8 +288,12 @@ privileged approval and vault proof substitution. Schema 39 widens only
 Knowledge history audit attribution, and schema 40 adds factor and evidence storage
 with historical provider storage revision 2. Issuance schema 41 uses revision 3;
 schema 42 adds ordinary humans without changing provider contract 5,
-storage 3 or proof implementation 5. Current core schema 43 adds only Godot Web
-project configuration. Earlier migration SQL/checksums remain unchanged.
+storage 3 or proof implementation 5. Core schema 43 adds Godot Web project configuration; schema 44 adds
+immutable scoped-test requester attribution; schema 45 adds an empty human
+runtime membership aggregate. Current schema 46 extends explicit membership to
+operator subsets, with provider-bound reservation sidecars and durable bounded
+runtime intents on the same connection. No grants are backfilled and provider
+contract/storage remain unchanged. Earlier migration SQL/checksums remain unchanged.
 Full/logical backup compatibility
 has focused migration tests. Protected CLI failure/concurrency handling and
 isolated closed HTTP/factor routes are implemented. Safe production integration
@@ -375,9 +404,12 @@ HTTPS/Host/Origin checks, socket-peer native limiting and current-authority
 checks are described in [authentication](authentication.md#bounded-browser-adapter).
 Contract 2 specializes durable logout; password changes recheck authority inside
 the actual provider borrow. No provider cookie gains installation authority on
-unconverted HTTP/MCP operations, even during an open-mode proof boot. Provider
-browser composition has no production CLI caller or enable flag. Protected CLI
-maintenance can explicitly load a configured provider without mounting it.
+unconverted HTTP/MCP operations, even during an open-mode proof boot. The isolated
+browser composition remains fixture-only. Production startup now owns
+one shared provider composition for protected administration and current-session
+identity, with an internal bounded-browser preparation method and no public mount.
+See [P1 composition](authentication.md#shared-controller-provider-composition-p1).
+Protected CLI maintenance can explicitly load a configured provider without mounting it.
 Experimental numbers and strength labels do not establish full RBAC, MFA or ASVS
 Level 2.
 Protected CLI configuration, principal-only creation, enrollment and recovery
@@ -473,9 +505,10 @@ Active reservations require exact own-session/credential/secret/ID proof;
 unclaimed mutations remain useful without claim/runtime rights. See the
 [operational contract](reservations-and-mcp.md#scoped-configuration-workflow).
 
-Scoped finite-job admission and own-run access remain denied under followup
-`415205f2-4583-4b13-a508-49a9b618a19e`. Scoped resources, compact status and
-bounded wait remain denied under `e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`.
+Scoped finite-job admission and own-run access are implemented under
+`415205f2-4583-4b13-a508-49a9b618a19e`. Scoped resources, compact project status
+and bounded project wait are implemented under `e0bfe2b5-d1cf-4f1e-ae67-13ab3a542f21`,
+with current authority checked after waiting and no global capacity or queue data.
 These are separate followups, not delivered A2 behavior or part of A3–A5.
 
 | Slice and Knowledge task | Deliverable | Acceptance gate |
@@ -512,3 +545,59 @@ provider version/SQLite adapter and factor UX in A3; exact credential/session
 bounds in A2/A3; mapping
 human accounts to existing external vault proofs in A4; recovery and host
 isolation contract in A5. None permits weakening current protections by default.
+
+### P2c explicit human configuration scope
+
+The implemented human operator aggregate now accepts explicit `profiles:select`
+and `config:write` alongside its four earlier actions. Each is independently
+usable; reader still permits only `projects:read`, and existing owners receive
+no automatic project grant. Protected CLI/IPC assignment remains strict and uses
+membership CAS before provider loading.
+
+For this slice `config:write` means discovered-preset timeout overrides only.
+It does not implement the broader proposed manager configuration role, grant
+ENV/vault access, allow profile editing or preset-profile assignment, or authorize
+launch/TLS/global administration. Literal profile selection requires stopped
+owned runtime and never restarts it. Actual original provider authority,
+membership revision and original no-claim/exact-claim context govern durable
+receipts, including after reopening the store. See
+[the operational contract](authentication.md#human-literal-profiles-and-preset-timeouts-p2c).
+
+P3a supplies protected account recovery below. P3b supplies the external restore/revocation fence and protected installation resume. Minimum agent diagnostics, complete transport enforcement, public mount,
+activation, release and client migration remain separate acceptance gates.
+
+### Protected recovery boundary (P3a)
+
+The shared production provider now supports password recovery for existing active
+humans and the single active owner. Private CLI input defaults to preserving
+factors; explicit `factors: "reset"` requires a new password and the provider's
+`localFactorReset: "v1"` readiness plus separate reset method. Password, sessions,
+factor bindings, challenge authority and account generation change in one sole
+connection transaction. IDs, roles, grants, audit, TOTP steps and account budgets
+remain. See [authentication](authentication.md#protected-factor-loss-recovery-p3a) for the operator contract.
+P3b now requires an external checkpoint and protected quarantine receipt before restored provider loading. Public account activation and A5 transport enforcement remain separate gates.
+
+### External restore checkpoint and protected resume (P3b)
+
+Migration49 adds a fixed SQLite checkpoint and authority-table triggers, preserving
+migrations1..48. The sole core/provider connection publishes a private external
+pending witness from the BEFORE-trigger observer before authority rows change,
+and a confirmed witness after FULL SQLite COMMIT.
+Normal confirmed restarts preserve current rights. Supported restore and raw
+DB-only rollback fail closed before provider/listeners, including older schemas.
+The bounded witness binds the canonical database path and installation outside
+the application backup payload; custom state-directory nesting does not change
+that boundary. Whole-host rollback including the witness is outside this local
+OS-owner trust model.
+
+Protected offline `auth fence inspect/establish/resume` uses both singleton locks
+and an exact preflight. Resume quarantines restored credentials, sessions, factors,
+passwords, grants, leases and pending work, preserves the same owner and history,
+then acknowledges the existing handoff and publishes a durable receipt. No public
+session or token can perform it. Captured mode/token policy remains historical
+evidence; resumed mode is explicit, and old verifiers stay invalid. Schedules and
+vault use an additional receipt floor while retaining their separate signed proof.
+See [operator flow and crash protocol](authentication.md#external-security-fence-and-protected-resume-p3b).
+Production account-mode selection/public mounting, minimum agent diagnostics,
+complete transport enforcement, independent review and verified release/client
+migration remain A5 gates. The five historical factor negatives remain visible.

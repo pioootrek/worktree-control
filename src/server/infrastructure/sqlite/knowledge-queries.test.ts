@@ -1,7 +1,8 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import { SqliteStateStore } from "./sqlite-state-store";
@@ -222,7 +223,7 @@ describe("knowledge service SQLite flow", () => {
     const second=service.createTask("project-1",{title:"Second",description:"More work"},{idempotencyKey:"second"},actor).value;
     store.saveKnowledgeProject({id:"project-2",name:"Foreign",status:"active",revision:1,createdAt:NOW,updatedAt:NOW},"test");
     store.close();
-    const db=new Database(path);
+    const db=unmanagedFixtureDatabase(path);
     db.pragma("foreign_keys = ON");
     db.prepare("INSERT INTO knowledge_threads VALUES (?,?,?,?,?,?,?,?)").run(task.id,"project-1","Shared-ID discussion","Same ID, different kind",1,"agent-1",NOW,NOW);
     db.prepare("INSERT INTO knowledge_tasks(id,project_id,title,description,status,priority,revision,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run("foreign-task","project-2","Private title","Private body","open","later",1,"agent-1",NOW,NOW);

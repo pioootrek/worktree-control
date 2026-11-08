@@ -1,3 +1,8 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { establishFixtureSecurity, resumeFixtureSecurity } from "./fixtures/protected-security";
+import { initializeSchema } from "./migrations";
+import { configureDurability } from "./database-validation";
+import { inspectSchema } from "./schema-inspection";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -9,7 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createControllerBackup } from "@/server/controller-backup";
 import { OwnedSqliteDatabase, SqliteStateStore } from "./index";
 import { assertDurability } from "./database-validation";
-import { registryChecksum, registryMigration } from "./migration-registry";
+import { registryChecksum, registryMigration, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 
 const roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -18,14 +23,14 @@ function fixture(version?: 12 | 24 | 26) {
   const path = join(root, "data", "state.sqlite3");
   if (version) {
     mkdirSync(join(root, "data"), { mode: 0o700 });
-    const db = new Database(path);
+    const db = unmanagedFixtureDatabase(path);
     try { db.exec(readFileSync(new URL(`./fixtures/schema-v${version}.sql`, import.meta.url), "utf8")); }
     finally { db.close(); }
   }
   return { root, path };
 }
 function raw(path: string, operation: (db: Database.Database) => void) {
-  const db = new Database(path); try { operation(db); } finally { db.close(); }
+  const db = unmanagedFixtureDatabase(path); try { operation(db); } finally { db.close(); }
 }
 function released(path: string) { expect(existsSync(`${path}.owner.lock`)).toBe(false); }
 function historicalLeaseFixture(constraint = "(kind = 'human' AND expires_at IS NULL) OR (kind = 'agent' AND expires_at IS NOT NULL)", additionalCheck = "") {
@@ -56,8 +61,9 @@ describe("durable SQLite initialization and migration", () => {
       INSERT INTO reservations(id,project_id,worktree_path,kind,owner,created_at,expires_at,maximum_expires_at,token_hash,idempotency_key)
         VALUES('active','kept','/code/kept','agent','agent','now','later','maximum',printf('%064d',0),'request');
     `));
+    establishFixtureSecurity(f.path);
     const store = new SqliteStateStore(f.path);
-    try { expect(store.schemaVersion()).toBe(43); expect(store.getProject("kept")?.name).toBe("Kept"); }
+    try { expect(store.schemaVersion()).toBe(49); expect(store.getProject("kept")?.name).toBe("Kept"); }
     finally { store.close(); }
     new SqliteStateStore(f.path).close();
     raw(f.path, db => {
@@ -96,11 +102,12 @@ describe("durable SQLite initialization and migration", () => {
 
   it.each([undefined, 12, 24, 26] as const)("initializes/upgrades %s with verified FULL and honest provenance", version => {
     const f = fixture(version);
+    if(version)establishFixtureSecurity(f.path);
     const owned = new OwnedSqliteDatabase(f.path, true);
     const store = new SqliteStateStore(f.path, owned);
     try {
       assertDurability(owned.database);
-      expect(store.schemaVersion()).toBe(43);
+      expect(store.schemaVersion()).toBe(49);
       expect(store.getAuthenticationPolicy().mode).toBe(version && version < 25 ? "legacy" : "token");
       expect(owned.database.prepare("SELECT name,checksum FROM schema_migrations WHERE version<28").all()).toEqual(Array.from({length:27},()=>({name:null,checksum:null})));
       expect(owned.database.prepare("SELECT name,checksum FROM schema_migrations WHERE version=28").get()).toEqual({name:registryMigration.name,checksum:registryChecksum});
@@ -113,7 +120,7 @@ describe("durable SQLite initialization and migration", () => {
   it.each(["checksum", "name", "gap", "legacy-provenance", "missing-policy", "future"])("rejects inconsistent %s without resetting auth or data", variant => {
     const f=fixture(); new SqliteStateStore(f.path).close();
     raw(f.path,db=>{
-      if(variant==="future") db.exec("INSERT INTO schema_migrations(version,applied_at,name,checksum) VALUES(44,'future','unknown','unknown')");
+      if(variant==="future") db.prepare("INSERT INTO schema_migrations(version,applied_at,name,checksum) VALUES(?,'future','unknown','unknown')").run(SUPPORTED_SCHEMA_VERSION + 1);
       if(variant==="checksum") db.exec("UPDATE schema_migrations SET checksum='wrong' WHERE version=28");
       if(variant==="name") db.exec("UPDATE schema_migrations SET name='wrong' WHERE version=28");
       if(variant==="gap") db.exec("DELETE FROM schema_migrations WHERE version=7");
@@ -139,12 +146,14 @@ describe("durable SQLite initialization and migration", () => {
     const spy=vi.spyOn(Database.prototype,"exec").mockImplementation(function(this: Database.Database, sql){
       const result=original.call(this,sql);if(sql.includes("ADD COLUMN checksum"))throw Error("injected failure after new DDL");return result;
     });
-    expect(()=>new SqliteStateStore(f.path,owned)).toThrow(/injected failure/);
+    const db=owned.enableWrites();configureDurability(db);
+    expect(()=>initializeSchema(db,owned.inspection.fresh,inspectSchema)).toThrow(/injected failure/);owned.close();
     spy.mockRestore();released(f.path);
     raw(f.path,db=>{
       if(fresh) expect(db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").all()).toEqual([]);
       else {expect(db.prepare("SELECT max(version) version FROM schema_migrations").get()).toEqual({version:26});expect(db.prepare("PRAGMA table_info(schema_migrations)").all()).toHaveLength(2);}
     });
+    if(!fresh)establishFixtureSecurity(f.path);
     const retried=new SqliteStateStore(f.path);expect(retried.getAuthenticationPolicy().mode).toBe("token");retried.close();
   });
 
@@ -154,7 +163,8 @@ describe("durable SQLite initialization and migration", () => {
     try {
       const [message]=await once(child,"message",{signal:AbortSignal.timeout(5000)});expect(message).toEqual({interrupted:true});
     } finally { const ended=once(child,"exit");child.kill("SIGKILL");await ended; }
-    const retry=new SqliteStateStore(f.path);try{expect(retry.schemaVersion()).toBe(43);expect(retry.getAuthenticationPolicy().mode).toBe("token");}finally{retry.close();}
+    if(stage!=="fresh")establishFixtureSecurity(f.path);
+    const retry=new SqliteStateStore(f.path);try{expect(retry.schemaVersion()).toBe(49);expect(retry.getAuthenticationPolicy().mode).toBe("token");}finally{retry.close();}
     released(f.path);
   },10000);
 
@@ -168,7 +178,7 @@ describe("durable SQLite initialization and migration", () => {
     });
     const before=readFileSync(f.path);expect(()=>new SqliteStateStore(f.path)).toThrow();expect(readFileSync(f.path)).toEqual(before);released(f.path);
     raw(f.path,db=>{db.exec("DELETE FROM principal_credentials; DELETE FROM knowledge_relations; DELETE FROM knowledge_replies; UPDATE remote_principals SET status='active'; UPDATE controller_settings SET value_json='{\"mode\":\"token\",\"token\":null,\"generation\":0}' WHERE key='authentication'");});
-    new SqliteStateStore(f.path).close();
+    resumeFixtureSecurity(f.path);new SqliteStateStore(f.path).close();
   });
 
   it.each(["foreign-key", "integrity"])("rolls back a %s failure detected after migration DDL", kind => {
@@ -184,16 +194,17 @@ describe("durable SQLite initialization and migration", () => {
       }
       return result;
     });
-    expect(() => new SqliteStateStore(f.path, owned)).toThrow(/check failed/);
+    const writable=owned.enableWrites();configureDurability(writable);
+    expect(() => initializeSchema(writable,false,inspectSchema)).toThrow(/check failed/);owned.close();
     spy.mockRestore();
     expect(owned.database.open).toBe(false);
     released(f.path);
     raw(f.path, db => expect(db.prepare("SELECT max(version) version FROM schema_migrations").get()).toEqual({version:26}));
-    new SqliteStateStore(f.path).close();
+    establishFixtureSecurity(f.path);new SqliteStateStore(f.path).close();
   });
 
   it("refuses mismatched effective PRAGMA settings and closes the connection", () => {
-    const f=fixture(26), owned=new OwnedSqliteDatabase(f.path);
+    const f=fixture(), owned=new OwnedSqliteDatabase(f.path,true);
     const pragma=Database.prototype.pragma;
     vi.spyOn(Database.prototype,"pragma").mockImplementation(function(this: Database.Database, source, options) {
       if(source==="synchronous" && options?.simple) return 1;
@@ -218,6 +229,7 @@ describe("durable SQLite initialization and migration", () => {
     const cleanup=vi.spyOn(OwnedSqliteDatabase.prototype,"completeInitialization").mockImplementation(()=>{throw Error("injected marker cleanup failure");});
     expect(()=>new SqliteStateStore(f.path)).toThrow(/marker cleanup/);released(f.path);
     cleanup.mockRestore();
+    resumeFixtureSecurity(f.path);
     const retry=new SqliteStateStore(f.path);expect(retry.getAuthenticationPolicy().mode).toBe("token");retry.close();
     expect(existsSync(`${f.path}.initializing`)).toBe(false);
   });

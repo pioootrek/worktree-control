@@ -1,7 +1,7 @@
-import type { PendingTestRun, TestRunStatusRecord } from "@/server/state-store";
+import type { PendingTestRun, TestRunStatusRecord, TestRunRequester, HumanTestRunRequester, VerificationRequester } from "@/server/state-store";
 import type { TestEnvironmentMode, TestRun, TestRunPhase } from "@/shared/contracts";
 import Database from "better-sqlite3";
-import { emptyTelemetry, emptyRunResources, resourceReason } from "@/server/modules/verification";
+import { humanTestRequesterSchema, emptyTelemetry, emptyRunResources, resourceReason } from "@/server/modules/verification";
 import { TestSummaryQueries } from "./test-summary-queries";
 import { legacySourceEvidence } from "@/server/test-source-attribution";
 
@@ -142,11 +142,64 @@ export class TestRunQueries {
   findTestRunByIdempotency(actor: string, idempotencyKey: string): TestRun | null {
     const row = this.database.prepare("SELECT * FROM test_runs WHERE actor = ? AND idempotency_key = ?")
       .get(actor, idempotencyKey) as TestRunRow | undefined;
+    if (!row && actor.startsWith("human:test:") && this.database.prepare("SELECT 1 FROM human_test_run_intents WHERE principal_id=? AND idempotency_key=? AND retain_until>?")
+      .get(actor.slice("human:test:".length), idempotencyKey, new Date().toISOString())) throw new Error("Original test intent is retained without run details.");
     return row ? mapTestRun(row) : null;
   }
 
-  saveTestRun(run: TestRun, idempotencyKey?: string): void {
-    this.database.transaction(() => this.saveRunAndSummary(run, idempotencyKey))();
+  getTestRunRequester(id: string): TestRunRequester | null {
+    return this.database.prepare(`SELECT principal_id AS principalId, credential_id AS credentialId,
+      project_id AS projectId, session_owner AS sessionOwner, reservation_id AS reservationId,
+      lease_token_hash AS leaseTokenHash FROM test_run_requesters WHERE run_id=?`).get(id) as TestRunRequester | undefined ?? null;
+  }
+
+  getHumanTestRunRequester(id: string): HumanTestRunRequester | null {
+    const run = this.database.prepare("SELECT provider_bound,actor,project_id,idempotency_key FROM test_runs WHERE id=?").get(id) as {provider_bound:number;actor:string;project_id:string;idempotency_key:string|null} | undefined;
+    const row = this.database.prepare(`SELECT project_id AS projectId,session_owner AS sessionOwner,principal_id AS principalId,
+      authority_json AS authority,reference_json AS reference,reservation_id AS reservationId,fingerprint
+      FROM human_test_run_requesters WHERE run_id=?`).get(id) as {projectId:string;sessionOwner:string;principalId:string;authority:string;reference:string;reservationId:string|null;fingerprint:string} | undefined;
+    if (!row && !run?.provider_bound) return null;
+    try {
+      if (!row || run?.provider_bound !== 1 || run.actor !== row.sessionOwner || run.project_id !== row.projectId
+        || this.getTestRunRequester(id)) throw new Error();
+      const parsed = humanTestRequesterSchema.parse({ kind: "human", projectId: row.projectId, sessionOwner: row.sessionOwner,
+        authority: JSON.parse(row.authority), reference: JSON.parse(row.reference), reservationId: row.reservationId, fingerprint: row.fingerprint });
+      const intent = this.database.prepare("SELECT principal_id,session_key,fingerprint,retain_until,idempotency_key FROM human_test_run_intents WHERE run_id=?").get(id) as {principal_id:string;session_key:string;fingerprint:string;retain_until:string;idempotency_key:string} | undefined;
+      if (parsed.authority.principalId !== row.principalId || (!intent && parsed.authority.deadline > new Date().toISOString())
+        || (intent && (intent.principal_id !== row.principalId || intent.session_key !== parsed.authority.sessionKey
+          || intent.fingerprint !== parsed.fingerprint || intent.retain_until !== parsed.authority.deadline || intent.idempotency_key !== run.idempotency_key))) throw new Error();
+      return parsed;
+    } catch { throw new Error("Human test attribution is unavailable."); }
+  }
+
+  saveTestRun(run: TestRun, idempotencyKey?: string, requester?: VerificationRequester): void {
+    this.database.transaction(() => {
+      // Attribution is insert-only and atomic with the first run write.
+      if (requester && this.hasTestRun(run.id)) throw new Error("Test requester is immutable.");
+      this.saveRunAndSummary(run, idempotencyKey);
+      if (requester && "kind" in requester) {
+        const parsed = humanTestRequesterSchema.parse(requester);
+        if (parsed.projectId !== run.projectId || parsed.sessionOwner !== run.actor) throw new Error("Invalid test requester.");
+        if (!idempotencyKey || idempotencyKey.length > 120) throw new Error("Human test intent requires an idempotency key.");
+        this.database.prepare("DELETE FROM human_test_run_intents WHERE retain_until<=?").run(new Date().toISOString());
+        const total = (this.database.prepare("SELECT count(*) n FROM human_test_run_intents").get() as {n:number}).n;
+        const session = (this.database.prepare("SELECT count(*) n FROM human_test_run_intents WHERE session_key=?").get(parsed.authority.sessionKey) as {n:number}).n;
+        if (total >= 4096 || session >= 128) throw new Error("Human test intent capacity is exhausted.");
+        this.database.prepare(`INSERT INTO human_test_run_intents(principal_id,idempotency_key,session_key,run_id,fingerprint,retain_until) VALUES(?,?,?,?,?,?)`)
+          .run(parsed.authority.principalId,idempotencyKey,parsed.authority.sessionKey,run.id,parsed.fingerprint,parsed.authority.deadline);
+        this.database.prepare("UPDATE test_runs SET provider_bound=1 WHERE id=?").run(run.id);
+        this.database.prepare(`INSERT INTO human_test_run_requesters
+          (run_id,project_id,principal_id,session_owner,authority_json,reference_json,reservation_id,fingerprint)
+          VALUES (?,?,?,?,?,?,?,?)`).run(run.id,parsed.projectId,parsed.authority.principalId,parsed.sessionOwner,
+            JSON.stringify(parsed.authority),JSON.stringify(parsed.reference),parsed.reservationId,parsed.fingerprint);
+      } else if (requester) {
+        if (requester.projectId !== run.projectId || requester.sessionOwner !== run.actor) throw new Error("Invalid test requester.");
+        this.database.prepare(`INSERT INTO test_run_requesters
+          (run_id,principal_id,credential_id,project_id,session_owner,reservation_id,lease_token_hash)
+          VALUES (?,?,?,?,?,?,?)`).run(run.id, requester.principalId, requester.credentialId,
+            requester.projectId, requester.sessionOwner, requester.reservationId, requester.leaseTokenHash);
+      }
+    })();
   }
 
   private saveRunAndSummary(run: TestRun, idempotencyKey?: string): void {

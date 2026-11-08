@@ -126,6 +126,10 @@ export function createMcpControllerServer(options: {
     response.setHeader("Cache-Control", "no-store");
     void (async () => {
       if (request.url !== "/mcp") return jsonError(response, 404, "MCP endpoint not found.");
+      if (options.authentication?.mode() === "better-auth" &&
+        (request.headers["x-worktree-control-token"] !== undefined || request.headers["x-worktree-switcher-token"] !== undefined)) {
+        return jsonError(response, 401, "A valid MCP bearer token is required.");
+      }
       // This transport is not converted to provider sessions. Never promote a cookie in open mode.
       if (containsProviderCookie(request.headers.cookie)) return jsonError(response, 401, "Provider sessions are unavailable on this transport.");
       let authentication;

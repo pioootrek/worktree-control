@@ -30,7 +30,7 @@ const subscribeLocation = (listener: () => void) => { window.addEventListener("p
 const locationSnapshot = () => window.location.search;
 const serverLocationSnapshot = () => "";
 
-export function KnowledgeDashboard({ token, setToken, access, change }: { token: string; setToken: (value: string) => void; access: "installation" | "open" | "scoped"; change: { version: number; projectIds: string[] } }) {
+export function KnowledgeDashboard({ token, setToken, access, change }: { token: string; setToken: (value: string) => void; access: "installation" | "open" | "scoped" | "account"; change: { version: number; projectIds: string[] } }) {
   const { t, locale } = useI18n();
   const [credential, setCredential] = useState("");
   const [loginError, setLoginError] = useState<"auth" | "load" | null>(null);
@@ -127,6 +127,8 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
   }, [selection.recordId, selection.replyId, selection.projectId, selection.tab, detail, model.rows.items, model.loading]);
   const project = model.project?.id === selection.projectId ? model.project : undefined;
   const writable = project?.writable && project.status === "active";
+  // Attachment routes stay token-only in account mode; the panel hides them instead of showing denials.
+  const attachmentsEnabled = access !== "account";
   const close = () => setMode(null);
   const navigate = (tab: KnowledgeTab, recordId = "", projectId = selection.projectId, replyId = "", fromSearch = false) => {
     pendingReplyPageRef.current = null;
@@ -145,7 +147,7 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
   const activeFilterCount = Number(Boolean(model.filters.status)) + Number(Boolean(model.filters.priority));
 
   if (access !== "scoped" && model.sessionError) return <div className="max-w-xl space-y-4">
-    <Alert variant="destructive"><AlertDescription>{t(access === "installation" ? "knowledge.installationAccessRejected" : "knowledge.openAccessRejected")}</AlertDescription></Alert>
+    <Alert variant="destructive"><AlertDescription>{t(access === "installation" ? "knowledge.installationAccessRejected" : access === "account" ? "knowledge.accountAccessRejected" : "knowledge.openAccessRejected")}</AlertDescription></Alert>
     <Button variant="outline" onClick={model.reload}><RefreshCw aria-hidden className="size-4" />{t("knowledge.refresh")}</Button>
   </div>;
 
@@ -177,7 +179,7 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
     {!projects.items.length && !selection.projectId && <p>{t("knowledge.noProjectsHelp")}</p>}
     <div className="flex shrink-0 flex-wrap items-center justify-between gap-3"><Tabs value={selection.tab} onValueChange={value => navigate(value as KnowledgeTab)}><TabsList aria-label={t("knowledge.title")} className="h-auto min-h-10 flex-wrap"><TabsTrigger className="min-h-9" value="backlog">{t("knowledge.backlog")}</TabsTrigger><TabsTrigger className="min-h-9" value="discussions">{t("knowledge.discussions")}</TabsTrigger><TabsTrigger className="min-h-9" value="memory">{t("knowledge.memory")}</TabsTrigger></TabsList></Tabs>{selection.tab !== "memory" && <Button ref={actionRef} disabled={!writable} onClick={event => { editorTriggerRef.current = event.currentTarget; setMode(selection.tab === "discussions" ? "thread" : "task"); setNotice(false); }}><Plus aria-hidden className="size-4" />{t(selection.tab === "backlog" ? "knowledge.addTask" : "knowledge.addDiscussion")}</Button>}</div>
     {notice && <p role="status" className="text-sm">{t("knowledge.saved")}</p>}
-    {selection.tab === "memory" ? (selection.projectId ? <MemoryPanel key={`${identity.principal.id}:${selection.projectId}`} token={token} principalId={identity.principal.id} projectId={selection.projectId} recordId={selection.recordId} writable={Boolean(writable)} approvable={(identity.installationAuthority === true || (identity.principal.kind === "owner" && identity.credential?.kind === "owner_session")) && project?.status === "active"} changeVersion={change.version + model.refreshVersion} onSelect={(tab, id, replyId, fromSearch) => navigate(tab, id, selection.projectId, replyId, fromSearch)} /> : <p>{t("knowledge.noProjectsHelp")}</p>) : selection.projectId && <>
+    {selection.tab === "memory" ? (selection.projectId ? <MemoryPanel key={`${identity.principal.id}:${selection.projectId}`} token={token} principalId={identity.principal.id} projectId={selection.projectId} recordId={selection.recordId} writable={Boolean(writable)} approvable={(identity.installationAuthority === true || (identity.principal.kind === "owner" && identity.credential?.kind === "owner_session")) && project?.status === "active"} attachments={attachmentsEnabled} changeVersion={change.version + model.refreshVersion} onSelect={(tab, id, replyId, fromSearch) => navigate(tab, id, selection.projectId, replyId, fromSearch)} /> : <p>{t("knowledge.noProjectsHelp")}</p>) : selection.projectId && <>
       <div className={`shrink-0 space-y-3 ${selection.recordId ? "hidden lg:block" : ""}`}>
         {!writable && <p className="text-sm text-muted-foreground">{t("knowledge.readOnly")}</p>}
         {selection.tab === "backlog" && <nav className="flex flex-wrap gap-1" aria-label={t("knowledge.taskViews")}>
@@ -205,7 +207,7 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
           </div>}
         </form>
       </div>
-      {selection.projectId && <AttachmentCapacity key={`${identity.principal.id}:${selection.projectId}`} token={token} projectId={selection.projectId} refreshVersion={model.refreshVersion} />}
+      {selection.projectId && attachmentsEnabled && <AttachmentCapacity key={`${identity.principal.id}:${selection.projectId}`} token={token} projectId={selection.projectId} refreshVersion={model.refreshVersion} />}
       {model.error && !editorReady && (!selection.recordId || detail) && <Alert variant="destructive"><AlertDescription>{t("knowledge.loadFailed")}</AlertDescription></Alert>}
       {model.loading && <p role="status">{t("knowledge.loading")}</p>}
       <Dialog open={editorReady} onOpenChange={open => { if (!open) close(); }}>
@@ -251,9 +253,9 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
             </div>)}{(model.replyOffset > 0 || model.replies.nextOffset !== null) && <div className="flex gap-2"><Button variant="outline" disabled={model.replyOffset === 0} onClick={() => changeReplyPage(Math.max(0, model.replyOffset - 25))}>{t("knowledge.previousReplies")}</Button><Button variant="outline" disabled={model.replies.nextOffset === null} onClick={() => changeReplyPage(model.replies.nextOffset!)}>{t("knowledge.nextReplies")}</Button></div>}</section>}
             <div className="flex flex-wrap gap-2">{"description" in detail ? <Button variant="outline" disabled={!writable} onClick={event => { editorTriggerRef.current = event.currentTarget; setMode("edit"); }}>{t("knowledge.edit")}</Button> : <><Button variant="outline" disabled={!writable} onClick={event => { editorTriggerRef.current = event.currentTarget; setMode("reply"); }}>{t("knowledge.reply")}</Button><Button variant="outline" disabled={!writable} onClick={event => { editorTriggerRef.current = event.currentTarget; setMode("from_thread"); }}>{t("knowledge.fromThread")}</Button></>}</div>
             {"description" in detail && <TaskContext key={`${selection.projectId}:${detail.id}`} token={token} projectId={selection.projectId} taskId={detail.id} changeVersion={change.version + detail.revision + model.refreshVersion} />}
-            {"description" in detail && <RecordAttachments key={`${selection.projectId}:${detail.id}`} token={token} projectId={selection.projectId} recordId={detail.id} recordKind="task" changeVersion={change.version + model.refreshVersion} />}
+            {"description" in detail && attachmentsEnabled && <RecordAttachments key={`${selection.projectId}:${detail.id}`} token={token} projectId={selection.projectId} recordId={detail.id} recordKind="task" changeVersion={change.version + model.refreshVersion} />}
             <KnowledgeRelations projectId={selection.projectId} recordKind={selection.tab === "backlog" ? "task" : "thread"} recordId={detail.id} page={model.relations} offset={model.relationOffset} onPage={model.setRelationOffset} onNavigate={(tab, id, replyId) => navigate(tab, id, selection.projectId, replyId)} />
-            <details className="border-t border-border pt-4 text-sm"><summary className="cursor-pointer font-medium">{t("knowledgeLayout.moreDetails")}</summary><div className="space-y-4 pt-3"><p className="break-all text-xs text-muted-foreground">{t("knowledge.recordMetadata", { revision: detail.revision })} · {detail.id}</p>{"body" in detail && detail.presentation?.imported && <div className="space-y-2 text-sm text-muted-foreground"><p>{t("knowledge.attribution", { author: detail.createdBy, revision: detail.revision })}</p><p>{t("knowledge.originalDiscussionTitle")}: {detail.title}</p><p className="break-all">{t("knowledge.originalDiscussionBody")}: {detail.body}</p></div>}{"body" in detail && <RecordAttachments key={`${selection.projectId}:${detail.id}`} token={token} projectId={selection.projectId} recordId={detail.id} recordKind="thread" changeVersion={change.version + model.refreshVersion} />}
+            <details className="border-t border-border pt-4 text-sm"><summary className="cursor-pointer font-medium">{t("knowledgeLayout.moreDetails")}</summary><div className="space-y-4 pt-3"><p className="break-all text-xs text-muted-foreground">{t("knowledge.recordMetadata", { revision: detail.revision })} · {detail.id}</p>{"body" in detail && detail.presentation?.imported && <div className="space-y-2 text-sm text-muted-foreground"><p>{t("knowledge.attribution", { author: detail.createdBy, revision: detail.revision })}</p><p>{t("knowledge.originalDiscussionTitle")}: {detail.title}</p><p className="break-all">{t("knowledge.originalDiscussionBody")}: {detail.body}</p></div>}{"body" in detail && attachmentsEnabled && <RecordAttachments key={`${selection.projectId}:${detail.id}`} token={token} projectId={selection.projectId} recordId={detail.id} recordKind="thread" changeVersion={change.version + model.refreshVersion} />}
             </div></details>
           </article> : selection.recordId ? <div className="space-y-3 p-6">{model.error ? <><p role="alert" className="text-sm text-destructive">{t("knowledge.loadFailed")}</p><Button variant="outline" onClick={model.reload}><RefreshCw aria-hidden className="size-4" />{t("knowledge.refresh")}</Button></> : <p role="status" className="text-sm text-muted-foreground">{t("knowledge.loading")}</p>}</div> : null}
           </div>

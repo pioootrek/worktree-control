@@ -1,3 +1,4 @@
+import { registerScopedVerificationTools } from "./scoped-verification-tools";
 import type { DevVaultOperations } from "@/server/modules/dev-vault";
 import { registerDevVaultTools } from "./dev-vault-tools";
 import { testPresetTimeoutSchema, testHistorySchema, testMetricsSchema, testSummarySchema, testComparisonSchema } from "@/server/modules/verification";
@@ -23,6 +24,7 @@ import type { ClaimedRuntimeAction, ProjectSnapshot } from "@/shared/contracts";
 import { localizeServerMessage } from "../../../i18n/server-errors";
 import type { ControlService } from "../../control-service";
 import type { ControllerAuthentication, IdentityService } from "../../modules/identity";
+import { registerScopedDiagnosticsTools } from "./scoped-diagnostics-tools";
 import { McpSessionGovernor, type GovernedMcpSession, type McpPolicyCloseReason, type McpTimer } from "../../modules/mcp-sessions";
 
 interface ClaimSecret {
@@ -154,7 +156,9 @@ export class McpRuntime {
         return;
       }
       try {
-        session = this.createSession(authentication, admission.session);
+        // Registration reads current diagnostic permissions. Keep this bounded
+        // construction inside the same SQLite admission as other identity reads.
+        session = await admissionOf(this.service).run(() => this.createSession(authentication, admission.session));
         await session.server.connect(session.transport);
         this.observeMessages(session);
         await this.handleTransport(session, request, response, body, true);
@@ -456,6 +460,8 @@ export class McpRuntime {
           const port = this.scopedPort(session, actor);
           registerScopedRuntimeTools(server, this.service, actor, port);
           registerScopedConfigurationTools(server, this.service, actor, port);
+          registerScopedVerificationTools(server, this.service, actor, port);
+          registerScopedDiagnosticsTools(server, this.service, actor);
         }
         return server;
       }
@@ -1042,6 +1048,7 @@ export class McpRuntime {
 
   /** Dispose session-held claim handles and secrets; persisted leases keep their remaining TTL. */
   private clearTimers(session: McpSession): void {
+    if (session.owner) this.service.cancelStatusWaits?.(session.owner);
     for (const claim of session.claims.values()) if (claim.timer) { this.clock.clearTimeout(claim.timer); claim.timer = null; this.diagnostics.change(session.observation, "renewalTimers", -1); }
     this.diagnostics.change(session.observation, "claims", -session.observation.claims);
     session.claims.clear();

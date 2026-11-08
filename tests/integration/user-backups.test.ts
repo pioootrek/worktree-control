@@ -11,6 +11,12 @@ function canonical(value: unknown): unknown {
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)]));
   return value;
 }
+/** Exact unauthenticated S4u answer: 403 with the safe code only, never schedule data (handleUserBackupHttp null actor). */
+async function expectUserBackupsForbidden(f: ControllerFixture, token: string): Promise<void> {
+  const result = await f.requestResult("/api/user-backups", { headers: { Authorization: `Bearer ${token}` } });
+  expect(result.status).toBe(403);
+  expect(result.body).toEqual({ code: "forbidden", error: "forbidden" });
+}
 describe("S4u in built controller", () => {
   let fixture: ControllerFixture | undefined;
   afterEach(async () => { await fixture?.close(); fixture = undefined; });
@@ -52,9 +58,23 @@ describe("S4u in built controller", () => {
     expect((await api<UserScheduleOverview>()).artifacts).toHaveLength(1);
     expect(JSON.stringify(await api({ action: "artifact", executionId: run.executionId }))).toContain("S4u content");
     const restore = { action: "restore", backupId: copy.backupId, idempotencyKey: "rollback-before-schedule", confirmation: "replace-entire-installation" };
-    await f.request("/api/backups", { method: "POST", body: JSON.stringify(restore) });
-    await waitFor(async () => { try { const status = await f.request<RestoreOperation>("/api/backups", { method: "POST", body: JSON.stringify({ action: "status", backupId: copy.backupId, idempotencyKey: restore.idempotencyKey }) }); return status.state === "verified" ? true : null; } catch { return null; } }, 10000, () => "Restore did not finish.");
-    expect((await f.requestResult("/api/user-backups", { headers: { Authorization: `Bearer ${issued.token}` } })).status).toBe(403);
+    const preRestoreInstallationToken = f.installationToken;
+    const accepted = await f.request<RestoreOperation>("/api/backups", { method: "POST", body: JSON.stringify(restore) });
+    // The restore fences the controller; only the protected offline ceremony resumes it.
+    await f.recoverRestore();
+    const handoff = JSON.parse(await readFile(join(f.paths.data, "state.sqlite3.backup-operations", "handoff.json"), "utf8")).payload as RestoreOperation;
+    expect(handoff).toMatchObject({ operationId: accepted.operationId, state: "verified" });
+    // The fenced resume revoked every credential and grant: identity rejects the old token as a credential (401).
+    expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${issued.token}` } })).status).toBe(401);
+    // The S4u route answers every request without an authenticated actor with one uniform safe 403.
+    await expectUserBackupsForbidden(f, issued.token);
+    // The restored installation verifier is quarantined too; only the token generated after the ceremony works.
+    expect(f.installationToken).not.toBe(preRestoreInstallationToken);
+    // /api/identity reads only the bearer; the current installation token is the positive control.
+    expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${f.installationToken}` } })).status).toBe(200);
+    expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${preRestoreInstallationToken}` } })).status).toBe(401);
+    // Regrant and reissue are explicit protected acts after a resume.
+    await admin({ action: "grant-knowledge", principalId: principal.id, projectId, permissions: ["knowledge:read", "knowledge:write", "knowledge:export"] });
     const fresh = await admin<{ token: string }>({ action: "issue-agent-token", principalId: principal.id, label: "post-restore" });
     const after = await api<UserScheduleOverview>(undefined, fresh.token);
     expect(after.schedules[0]).toMatchObject({ id: saved.id, version: 5, reason: "forbidden" });
@@ -69,10 +89,23 @@ describe("S4u in built controller", () => {
     const result: UserExportResult = (await api<UserScheduleOverview>(undefined, fresh.token)).artifacts[0]; expect(result.executionId).toBe(run.executionId);
     await f.stop();
     await f.cli(["backup", "restore", join(dirname(dirname(databasePath)), "backups", copy.backupId), "--idempotency-key", "offline-rollback"]);
-    await f.restart();
-    // Offline restore resurrects the old database credential, but S4u must refuse it.
-    expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${issued.token}` } })).status).toBe(200);
-    expect((await f.requestResult("/api/user-backups", { headers: { Authorization: `Bearer ${issued.token}` } })).status).toBe(403);
+    // The offline restore fences the controller at startup; the protected ceremony resumes it.
+    const postServiceInstallationToken = f.installationToken;
+    await expect(f.restart()).rejects.toThrow(/security_fence_recovery_required/);
+    // Exactly the fail-closed exit of the fenced startup, not a crash or a signal.
+    expect(f.processState()).toMatchObject({ code: 1, signal: null });
+    await f.recoverRestore();
+    // Offline restore resurrected the old database credential, but the fenced resume revoked it again.
+    expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${issued.token}` } })).status).toBe(401);
+    // The post-service-restore token is absent from the rolled-back database; identity proves it, S4u stays uniform.
+    expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${fresh.token}` } })).status).toBe(401);
+    await expectUserBackupsForbidden(f, issued.token);
+    await expectUserBackupsForbidden(f, fresh.token);
+    expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${f.installationToken}` } })).status).toBe(200);
+    for (const stale of [preRestoreInstallationToken, postServiceInstallationToken]) {
+      expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${stale}` } })).status).toBe(401);
+    }
+    await admin({ action: "grant-knowledge", principalId: principal.id, projectId, permissions: ["knowledge:read", "knowledge:write", "knowledge:export"] });
     const postOffline = await admin<{ token: string }>({ action: "issue-agent-token", principalId: principal.id, label: "post-offline-restore" });
     const offlineOverview = await api<UserScheduleOverview>(undefined, postOffline.token);
     expect(offlineOverview.schedules[0]).toMatchObject({ id: saved.id, version: 6, reason: "forbidden" });

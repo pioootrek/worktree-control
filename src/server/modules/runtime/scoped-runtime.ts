@@ -1,6 +1,7 @@
+import { admissionOf, databaseAdmissionFailure } from "@/server/database-admission";
 import type { GitWorktreeReader } from "@/server/git-worktrees";
 import type { LogWriter } from "@/server/log-writer";
-import type { ProcessManager } from "@/server/process-manager";
+import type { ProcessManager, RuntimeStatusSummary } from "@/server/process-manager";
 import { ReservationError, type ReservationBinding, type StateStore } from "@/server/state-store";
 import type { ClaimedRuntimeAction, ClaimedRuntimeReceipt, Project, Reservation } from "@/shared/contracts";
 import type {
@@ -18,7 +19,10 @@ export const AGENT_LEASE_MAX_SECONDS = 8 * 60 * 60;
 
 /** Current-authority port; IdentityService re-reads credential, agent, delegation, ceiling and sponsor. */
 export interface RuntimeAuthorizer {
+  captureHumanVerificationAuthority?: import("../identity").HumanVerificationAuthorizer["captureHumanVerificationAuthority"];
+  validateHumanVerificationAuthority?: import("../identity").HumanVerificationAuthorizer["validateHumanVerificationAuthority"];
   authorizeRuntime(actor: AuthenticatedPrincipal, projectId: string, action: RuntimeAction): void;
+  resolveHumanRuntimeAuthority?: import("./human-runtime").HumanRuntimeAuthorizer["resolveHumanRuntimeAuthority"];
   runtimeAccessFor(actor: AuthenticatedPrincipal): RuntimeAccessEntry[];
 }
 
@@ -46,32 +50,42 @@ export class ScopedRuntimeService {
     private readonly authorizer: RuntimeAuthorizer,
     private readonly store: Pick<StateStore, "getProject" | "getActiveReservation" | "acquireReservation" | "renewAgentReservation" | "releaseAgentReservation">,
     private readonly git: Pick<GitWorktreeReader, "list">,
-    private readonly processes: Pick<ProcessManager, "snapshot">,
+    private readonly processes: Pick<ProcessManager, "snapshot" | "statusSummary">,
     private readonly lifecycle: LifecycleAccess,
     private readonly runtime: Pick<RuntimeService, "operateClaimed" | "placeClaimed">,
     private readonly logs: Pick<LogWriter, "controller">,
   ) {}
 
-  listProjects(actor: AuthenticatedPrincipal, session: ScopedSession): ScopedProjectSummary[] {
+  listProjects(actor: AuthenticatedPrincipal, session: ScopedSession | null): ScopedProjectSummary[] {
     let access: RuntimeAccessEntry[];
     try { access = this.authorizer.runtimeAccessFor(actor); } catch { throw new RuntimeAccessDenied(); }
     return access.filter(entry => entry.actions.includes("projects:read")).flatMap((entry) => {
       const project = this.store.getProject(entry.projectId);
-      return project ? [this.summary(project, entry.actions, session)] : [];
+      return project ? [this.summary(project, entry.actions, actor.authenticationMethod === "provider_session" ? null : session)] : [];
     });
   }
 
-  projectStatus(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string): ScopedProjectStatus {
+  projectStatus(actor: AuthenticatedPrincipal, session: ScopedSession | null, projectId: string): ScopedProjectStatus {
     this.check(actor, projectId, ["projects:read"]);
     return this.status(this.requireProject(projectId), actor, session);
   }
 
-  async worktrees(actor: AuthenticatedPrincipal, projectId: string): Promise<ScopedWorktree[]> {
+  compactProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string): ScopedProjectStatus {
+    this.check(actor, projectId, ["projects:read"]);
+    const project = this.requireProject(projectId);
+    return this.status(project, actor, session, this.processes.statusSummary(projectId));
+  }
+
+  async worktrees(actor: AuthenticatedPrincipal, projectId: string, signal?: AbortSignal): Promise<ScopedWorktree[]> {
     this.check(actor, projectId, ["projects:read"]);
     const project = this.requireProject(projectId);
     let worktrees;
-    try { worktrees = await this.git.list(project.repositoryPath); }
-    catch { throw new ScopedRuntimeError("worktree_unavailable", "Worktree discovery is unavailable."); }
+    try { worktrees = await admissionOf(this.store).idle(() => this.git.list(project.repositoryPath), { signal }); }
+    catch (error) {
+      if (databaseAdmissionFailure(error)) throw error;
+      this.check(actor, projectId, ["projects:read"]);
+      throw new ScopedRuntimeError("worktree_unavailable", "Worktree discovery is unavailable.");
+    }
     this.check(actor, projectId, ["projects:read"]);
     return worktrees.map(worktree => ({
       path: worktree.path, branch: worktree.branch, head: worktree.head, shortHead: worktree.shortHead,
@@ -223,7 +237,7 @@ export class ScopedRuntimeService {
     return project;
   }
 
-  private summary(project: Project, actions: RuntimeAction[], session: ScopedSession): ScopedProjectSummary {
+  private summary(project: Project, actions: RuntimeAction[], session: ScopedSession | null): ScopedProjectSummary {
     const runtime = this.processes.snapshot(project.id);
     return {
       id: project.id, name: project.name, port: project.port, actions: [...actions], phase: runtime.phase,
@@ -232,11 +246,11 @@ export class ScopedRuntimeService {
     };
   }
 
-  private status(project: Project, actor: AuthenticatedPrincipal, session: ScopedSession): ScopedProjectStatus {
+  private status(project: Project, actor: AuthenticatedPrincipal, session: ScopedSession | null,
+    runtime: Pick<RuntimeStatusSummary, "phase" | "worktreePath" | "startedAt"> = this.processes.snapshot(project.id)): ScopedProjectStatus {
     const actions = this.authorizer.runtimeAccessFor(actor).find(entry => entry.projectId === project.id)?.actions ?? [];
-    const runtime = this.processes.snapshot(project.id);
     const reservation = this.store.getActiveReservation(project.id);
-    const claim = this.relation(reservation, session);
+    const claim = this.relation(reservation, actor.authenticationMethod === "provider_session" ? null : session);
     return {
       id: project.id, name: project.name, port: project.port, actions: [...actions], phase: runtime.phase,
       worktreePath: runtime.worktreePath ?? project.selectedWorktreePath ?? null, claim,
@@ -246,9 +260,9 @@ export class ScopedRuntimeService {
     };
   }
 
-  private relation(reservation: Reservation | null, session: ScopedSession): ScopedProjectSummary["claim"] {
+  private relation(reservation: Reservation | null, session: ScopedSession | null): ScopedProjectSummary["claim"] {
     if (!reservation) return "none";
-    return reservation.kind === "agent" && reservation.owner === session.owner ? "own" : "other";
+    return reservation.kind === "agent" && session !== null && reservation.owner === session.owner ? "own" : "other";
   }
 
   private actorRef(owner: string): string {

@@ -1,9 +1,11 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { establishFixtureSecurity } from "./fixtures/protected-security";
 import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthenticationService } from "@/server/modules/authentication";
@@ -21,7 +23,7 @@ function databasePath(): string {
 
 /** Restores the pre-migration-25 table definitions so the upgrade path runs against real rows. */
 function downgradeToMigration24(path: string): void {
-  const database = new Database(path);
+  const database = unmanagedFixtureDatabase(path);
   database.pragma("foreign_keys = OFF");
   const restore = (table: string, from: string, to: string) => {
     const { sql } = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql: string };
@@ -57,14 +59,15 @@ describe("authentication policy SQLite persistence", () => {
     new SqliteStateStore(path).close();
     downgradeToMigration24(path);
 
+    establishFixtureSecurity(path);
     const store = new SqliteStateStore(path);
-    expect(store.schemaVersion()).toBe(43);
+    expect(store.schemaVersion()).toBe(49);
     expect(store.getPrincipal("owner-1")).toEqual({ id: "owner-1", kind: "owner", status: "active" });
     expect(store.getPrincipal("installation")).toEqual({ id: "installation", kind: "installation", status: "active" });
     expect(store.getAuthenticationPolicy()).toEqual({ mode: "legacy", token: null, generation: 0 });
     store.close();
 
-    const database = new Database(path);
+    const database = unmanagedFixtureDatabase(path);
     database.pragma("foreign_keys = ON");
     expect(database.pragma("foreign_key_check")).toEqual([]);
     expect(database.prepare("SELECT principal_id, authentication_method FROM knowledge_history").all())
@@ -101,7 +104,7 @@ describe("authentication policy SQLite persistence", () => {
     expect(auth.status().token?.prefix).toBe(issued.status.token?.prefix);
     reopened.close();
 
-    const database = new Database(path);
+    const database = unmanagedFixtureDatabase(path);
     const secret = issued.token.split("_").at(-1)!;
     const stored = database.prepare("SELECT value_json FROM controller_settings WHERE key = 'authentication'").get() as { value_json: string };
     const audit = database.prepare("SELECT event_type, actor, details_json FROM controller_audit_events WHERE event_type LIKE 'authentication.%'").all();
@@ -118,13 +121,13 @@ describe("authentication policy SQLite persistence", () => {
   it("fails closed on a corrupted or missing policy instead of choosing a weaker mode", () => {
     const path = databasePath();
     new SqliteStateStore(path).close();
-    const database = new Database(path);
+    const database = unmanagedFixtureDatabase(path);
     database.prepare("UPDATE controller_settings SET value_json = ? WHERE key = 'authentication'").run(JSON.stringify({ mode: "anything" }));
     database.close();
 
     expect(() => new SqliteStateStore(path)).toThrow(/authentication policy/);
 
-    const raw = new Database(path);
+    const raw = unmanagedFixtureDatabase(path);
     raw.exec("DELETE FROM controller_settings WHERE key = 'authentication'");
     raw.close();
     expect(() => new SqliteStateStore(path)).toThrow(/authentication policy/);
@@ -133,7 +136,7 @@ describe("authentication policy SQLite persistence", () => {
 
 
 it("rolls back next-start configuration and its audit when the atomic audit write fails", () => {
-  const db = new Database(":memory:");
+  const db = unmanagedFixtureDatabase(":memory:");
   try {
     db.exec(`CREATE TABLE controller_settings(key TEXT PRIMARY KEY, value_json TEXT, updated_at TEXT);
       CREATE TABLE controller_audit_events(event_type TEXT, actor TEXT, details_json TEXT, created_at TEXT);`);

@@ -8,3 +8,5 @@ export { backupMonitorMetadataSchema, type BackupMonitorMetadata } from "./monit
 export { userBackupPolicySchema, UserBackupError, type UserBackupPolicy } from "./user-policy";
 export { UserSchedules } from "./user-schedules";
 export { RestoreOperations, recoverBackupHandoff, finishBackupHandoff, assertBackupHandoffCompleted, BackupHandoffPendingError } from "./restore-operations";
+
+export { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "./restore-operations";

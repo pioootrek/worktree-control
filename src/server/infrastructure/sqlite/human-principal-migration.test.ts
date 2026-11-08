@@ -1,10 +1,11 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { resumeFixtureSecurity, openProtectedUpgradeFixture } from "./fixtures/protected-security";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
-import { openControllerStore } from "@/server/controller-storage";
 import { HumanAccountService } from "@/server/modules/identity";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
@@ -19,7 +20,7 @@ const fixture41 = readFileSync(new URL("./fixtures/schema-v41.sql", import.meta.
 const kept = (db: Database.Database) => Object.fromEntries(["remote_principals", "principal_credentials", "knowledge_project_grants", "knowledge_role_bindings", "knowledge_history", "authentication_provider_subjects",
   "authentication_totp_steps", "authentication_session_evidence", "authentication_session_issuance", "sqlite_sequence"].map(t => [t, db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all()]));
 function baseline() {
-  const db = new Database(":memory:"); db.exec(fixture41);
+  const db = unmanagedFixtureDatabase(":memory:"); db.exec(fixture41);
   db.exec(`INSERT INTO remote_principals VALUES('owner','owner','active'),('old-agent','agent','revoked');
     CREATE INDEX historical_principal_status ON remote_principals(status);
     INSERT INTO principal_credentials VALUES('credential','owner','owner_session','Historical','prefix','${"a".repeat(64)}','revoked',NULL,'2026-11-01T00:00:00.000Z','2026-11-01T01:00:00.000Z',NULL);
@@ -48,7 +49,7 @@ describe("ordinary human principal migration 42", () => {
       expect(() => initializeSchema(db, false, () => { throw Error("after rebuild"); })).toThrow("after rebuild");
       expect(inspectSchema(db).version).toBe(41); expect(kept(db)).toEqual(before);
       initializeSchema(db, false, inspectSchema);
-      expect(inspectSchema(db).version).toBe(43); expect(kept(db)).toEqual(before);
+      expect(inspectSchema(db).version).toBe(49); expect(kept(db)).toEqual(before);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=41 ORDER BY version").all()).toEqual(registry);
       expect(db.prepare("SELECT name,checksum FROM schema_migrations WHERE version=42").get()).toEqual({ name: humanPrincipalMigration.name, checksum: humanPrincipalChecksum });
       expect(db.prepare("SELECT 1 FROM sqlite_master WHERE name='historical_principal_status'").get()).toBeTruthy();
@@ -66,15 +67,15 @@ describe("ordinary human principal migration 42", () => {
     try { await old.backup(path); } finally { old.close(); }
     chmodSync(path, 0o600);
     const backups = join(root, "backups");
-    const store = await openControllerStore(path, { backupBeforeMigration: true, backupDirectory: backups,
+    const store = await openProtectedUpgradeFixture(path, { backupBeforeMigration: true, backupDirectory: backups,
       applicationVersion: "human-upgrade-test", attachmentDirectory: join(root, "attachments") });
-    try { expect(store.schemaVersion()).toBe(43); expect(store.getPrincipal("owner")).toEqual({ id: "owner", kind: "owner", status: "active" }); }
+    try { expect(store.schemaVersion()).toBe(49); expect(store.getPrincipal("owner")).toEqual({ id: "owner", kind: "owner", status: "active" }); }
     finally { await store.closeAfterDrain(); }
     const names = readdirSync(backups); expect(names).toHaveLength(1); expect(names[0]).toMatch(/^pre-migration-v41-/);
     const backup = join(backups, names[0]);
     expect(JSON.parse(readFileSync(join(backup, "manifest.json"), "utf8")).database.schemaVersion).toBe(41);
-    for (const [file, version] of [[path, 43], [join(backup, "state.sqlite3"), 41]] as const) {
-      const db = new Database(file, { readonly: true, fileMustExist: true });
+    for (const [file, version] of [[path, 49], [join(backup, "state.sqlite3"), 41]] as const) {
+      const db = unmanagedFixtureDatabase(file, { readonly: true, fileMustExist: true });
       try {
         expect(inspectSchema(db).version).toBe(version); expect(kept(db)).toEqual(before);
         expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=41 ORDER BY version").all()).toEqual(registry);
@@ -114,7 +115,7 @@ describe("ordinary human principal migration 42", () => {
     const root = mkdtempSync(join(tmpdir(), "human-migration-")); roots.push(root);
     const path = join(root, "data", "state.sqlite3"), store = new SqliteStateStore(path);
     const human = new HumanAccountService(store.humanAccounts(), "local-cli").create();
-    expect(store.schemaVersion()).toBe(43); expect(store.authenticationProviderStorage().storageRevision).toBe(3);
+    expect(store.schemaVersion()).toBe(49); expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     const storage = store.authenticationProviderStorage(), connection = storage.createProviderConnection();
     await storage.borrow(async () => {
       connection.prepare("INSERT INTO authentication_ba_user(id,name,email,emailVerified,createdAt,updatedAt) VALUES('s','Fixture','fixture@invalid.test',0,'2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z')").run([]);
@@ -126,11 +127,12 @@ describe("ordinary human principal migration 42", () => {
     const reopened = new SqliteStateStore(path);
     expect(reopened.getPrincipal(human.id)).toEqual(human); await reopened.closeAfterDrain();
     const restoredPath = join(root, "restored", "state.sqlite3"); restoreControllerBackup(target, restoredPath);
+    resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
     try {
       expect(restored.getPrincipal(human.id)).toEqual(human);
       expect(restored.authenticationProviderStorage().subjects("better-auth").resolveActivePrincipal("s")).toBe(human.id);
-      await expect(restored.recoverIssuedSessions({ sessionRows: 8, sessionReconcileBatch: 2 })).rejects.toThrow();
+      await expect(restored.recoverIssuedSessions({ sessionRows: 8, sessionReconcileBatch: 2 })).resolves.toBeUndefined();
     } finally { await restored.closeAfterDrain(); }
   });
 });

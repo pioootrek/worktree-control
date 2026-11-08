@@ -1,7 +1,9 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { establishFixtureSecurity } from "./fixtures/protected-security";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+
 import { afterEach, expect, it } from "vitest";
 import { SqliteStateStore } from "@/server/sqlite-store";
 import { initializeSchema } from "./migrations";
@@ -20,7 +22,7 @@ it("upgrades schema 30 with empty overrides, preserves policies, rolls back fail
   store.assignProjectTestPresetProfile(project.id, "godot:check", "tooling", "local-user");
   store.setTestQueueSettings({ limit: 2 });
   store.close();
-  const db = new Database(path);
+  let db = unmanagedFixtureDatabase(path);
   try {
     rewindProviderSessionHistory(db); db.exec(WITHOUT_AUTHENTICATION_PROVIDER_STORAGE + "ALTER TABLE projects DROP COLUMN test_preset_timeouts_json; DELETE FROM schema_migrations WHERE version>=31; DROP TABLE remote_verification_reports; DROP TABLE remote_verification_cancellations; DROP TABLE remote_worker_receipts; ALTER TABLE knowledge_tasks DROP COLUMN current_state_json;");
     expect(inspectSchema(db).version).toBe(30);
@@ -28,8 +30,8 @@ it("upgrades schema 30 with empty overrides, preserves policies, rolls back fail
     expect(() => initializeSchema(db, false, () => { throw new Error("injected failure"); })).toThrow("injected failure");
     expect(inspectSchema(db).version).toBe(30);
     expect(db.prepare("SELECT * FROM projects").get()).toEqual(before);
-    initializeSchema(db);
-    expect(inspectSchema(db).version).toBe(43);
+    db.close();establishFixtureSecurity(path);db=unmanagedFixtureDatabase(path);
+    expect(inspectSchema(db).version).toBe(49);
     expect(db.prepare("SELECT * FROM projects").get()).toEqual({ ...before as object, test_preset_timeouts_json: "{}", godot_web_json: null });
     expect(db.prepare("SELECT name,checksum FROM schema_migrations WHERE version=31").get()).toEqual({ name: testPresetTimeoutMigration.name, checksum: testPresetTimeoutChecksum });
     expect(db.pragma("foreign_key_check")).toEqual([]);

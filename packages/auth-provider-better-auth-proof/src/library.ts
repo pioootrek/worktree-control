@@ -32,6 +32,7 @@ export interface ProofFaultInjection {
   beforeSessionDelete?: () => Promise<void>;
   /** Runs after the row is gone, like a stalled listener. */
   afterSessionDelete?: () => Promise<void>;
+  beforeRecoveryHash?: () => Promise<void>;
   beforeRecoveryCommit?: () => Promise<void>;
   /** Runs in the library's account update hook, inside its password transaction. */
   beforePasswordWrite?: () => Promise<void>;

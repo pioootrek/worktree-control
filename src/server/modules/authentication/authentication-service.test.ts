@@ -39,6 +39,14 @@ function code(action: () => unknown): string | undefined {
 }
 
 describe("installation authentication policy", () => {
+  it("retains distinct individual agent and dedicated worker credentials in RBAC while closing owner and shared bearers", () => {
+    const auth = new AuthenticationService(memoryStore({ mode: "better-auth", token: null, generation: 0 }).store);
+    const actor = { principalId: "individual", credentialId: "credential" };
+    expect(auth.permitsCredential({ ...actor, principalKind: "agent", authenticationMethod: "agent_token" })).toBe(true);
+    expect(auth.permitsCredential({ ...actor, principalKind: "worker", authenticationMethod: "worker_token" })).toBe(true);
+    expect(auth.permitsCredential({ ...actor, principalKind: "owner", authenticationMethod: "owner_session" })).toBe(false);
+    expect(auth.permitsCredential({ ...actor, principalKind: "installation", authenticationMethod: "installation_token" })).toBe(false);
+  });
   it("generates the installation token once and persists only its verifier", () => {
     const memory = memoryStore();
     const auth = service(memory.store);
@@ -91,7 +99,7 @@ describe("installation authentication policy", () => {
     })();
 
     expect(failure?.code).toBe("auth_provider_unavailable");
-    expect(failure?.message).toBe("Better Auth: to be implemented soon.");
+    expect(failure?.message).toBe("Account authentication is unavailable.");
     expect(memory.current().mode).toBe("legacy");
     expect(memory.events).toEqual([]);
   });
@@ -191,7 +199,7 @@ describe("configured versus boot authority", () => {
   it("leaves boot mode, selection and audit unchanged when persistence fails", () => {
     const m = memoryStore({ mode: "open", token: null, generation: 0 });
     const auth = new AuthenticationService({ ...m.store, saveAuthenticationPolicy() { throw new Error("write refused"); } });
-    expect(() => auth.setMode("better-auth", "fixture")).toThrow("Better Auth");
+    expect(() => auth.setMode("better-auth", "fixture")).toThrow("Account authentication");
     expect(() => auth.setMode("token", "fixture")).toThrow("auth token generate");
     const config = new AuthenticationService(m.store); config.generateToken("fixture");
     const before = m.current(), audit = [...m.events];

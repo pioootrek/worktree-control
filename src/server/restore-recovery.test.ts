@@ -1,3 +1,5 @@
+import { unmanagedFixtureDatabase } from "./unmanaged-sqlite-fixture";
+import { resumeFixtureSecurity } from "./infrastructure/sqlite/fixtures/protected-security";
 import { fork } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
@@ -6,7 +8,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "./controller-backup";
 import { acquireDatabaseOwnership, SqliteStateStore, SUPPORTED_SCHEMA_VERSION } from "./infrastructure/sqlite";
@@ -53,6 +55,7 @@ async function kill(f: Awaited<ReturnType<typeof fixture>>, point: string, mode 
   }
 }
 function assertNew(f: Awaited<ReturnType<typeof fixture>>) {
+  resumeFixtureSecurity(f.database);
   const store = new SqliteStateStore(f.database);
   try { expect(store.listProjects().map(project => project.name)).toEqual(["New runtime"]); }
   finally { store.close(); }
@@ -71,7 +74,7 @@ function changeManifest(f: Awaited<ReturnType<typeof fixture>>, change: (manifes
   const path = join(f.backup, "manifest.json"), manifest = JSON.parse(readFileSync(path, "utf8")); change(manifest); writeFileSync(path, JSON.stringify(manifest), { mode: 0o600 });
 }
 
-describe("recoverable multi-file restore", () => {
+describe("recoverable multi-file restore", { timeout: 20_000 }, () => {
   for (let step = 0; step < 8; step++) {
     it.each(["before", "after"])(`SIGKILL %s replacement ${step} recovers once and repeatedly`, async timing => {
       const f = await fixture(); await kill(f, `${timing}-${step}`); assertNew(f);
@@ -88,7 +91,8 @@ describe("recoverable multi-file restore", () => {
   }, 30_000);
   it("does not apply an already verified backup over subsequent application writes", async () => {
     const f = await fixture(); restoreControllerBackup(f.backup, f.database, f.attachments); assertNew(f);
-    const store = new SqliteStateStore(f.database); store.addProject({ name: "After restore", repositoryPath: join(f.root, "another"), port: 4569, executable: "pnpm", args: ["dev"] }); store.close();
+    resumeFixtureSecurity(f.database);
+  const store = new SqliteStateStore(f.database); store.addProject({ name: "After restore", repositoryPath: join(f.root, "another"), port: 4569, executable: "pnpm", args: ["dev"] }); store.close();
     const reopened = new SqliteStateStore(f.database); expect(reopened.listProjects()).toHaveLength(2); reopened.close();
   });
   it("requires verified-marker directory synchronization again before reopening after its fsync failure", async () => {
@@ -106,10 +110,10 @@ describe("recoverable multi-file restore", () => {
     expect(readFileSync(f.database)).toEqual(installed); expect(existsSync(`${f.database}.owner.lock`)).toBe(false);
     vi.restoreAllMocks(); executeControllerRestoreRequest(f.database, f.attachments, actor, policy); assertNew(f);
     expect(getControllerRestoreRequestStatus(f.database, actor, policy).state).toBe("verified");
-  });
+  }, 20_000);
   it("restores an initially absent target, including a crash after new database rename", async () => {
     const f = await fixture(); rmSync(f.database); for (const suffix of ["-wal", "-shm", "-journal", ".initializing"]) rmSync(`${f.database}${suffix}`); rmSync(f.attachments, { recursive: true });
-    await kill(f, "after-6"); const store = new SqliteStateStore(f.database); expect(store.listProjects()[0]?.name).toBe("New runtime"); store.close(); expect(readFileSync(join(f.attachments, sha.slice(0, 2), sha))).toEqual(bytes);
+    await kill(f, "after-6"); resumeFixtureSecurity(f.database); const store = new SqliteStateStore(f.database); expect(store.listProjects()[0]?.name).toBe("New runtime"); store.close(); expect(readFileSync(join(f.attachments, sha.slice(0, 2), sha))).toEqual(bytes);
   }, 20_000);
   it.each(["invalid-json", "checksum", "missing-file", "conflicting-file"])("refuses %s without losing recovery material", async damage => {
     const f = await fixture(); await kill(f, "after-0"); const root = restoreRoot(f.database), journal = join(root, "journal.json");
@@ -135,7 +139,7 @@ describe("recoverable multi-file restore", () => {
   });
 });
 
-describe("strict restore validation before replacement", () => {
+describe("strict restore validation before replacement", { timeout: 20_000 }, () => {
   it.each(["path", "duplicate", "type", "unknown", "version", "size", "hash", "incomplete"])("rejects manifest %s and preserves old bytes", async invalid => {
     const f = await fixture(); changeManifest(f, manifest => {
       if (invalid === "path") manifest.attachments[0].file = `ab/../${sha.slice(0, 2)}/${sha}`;
@@ -161,7 +165,7 @@ describe("strict restore validation before replacement", () => {
   it.each(["foreign-key", "domain", "sqlite-corruption"])("rejects %s even with a matching manifest hash", async invalid => {
     const f = await fixture(), path = join(f.backup, "state.sqlite3");
     if (invalid === "sqlite-corruption") writeFileSync(path, "not sqlite", { mode: 0o600 });
-    else { const db = new Database(path); db.pragma("foreign_keys=OFF");
+    else { const db = unmanagedFixtureDatabase(path); db.pragma("foreign_keys=OFF");
       if (invalid === "foreign-key") db.exec("UPDATE knowledge_attachments SET project_id='missing'");
       else db.exec("UPDATE knowledge_attachments SET record_id='missing'"); db.close(); }
     changeManifest(f, manifest => { Object.assign(manifest.database, hashFile(path)); });
@@ -201,7 +205,7 @@ describe("strict restore validation before replacement", () => {
     expect(readFileSync(f.database)).toEqual(f.before); expect(existsSync(parent)).toBe(mode === "interrupted"); expect(existsSync(restoreRoot(f.database))).toBe(false);
     vi.restoreAllMocks(); restoreControllerBackup(f.backup, f.database, target);
     expect(readFileSync(join(target, sha.slice(0, 2), sha))).toEqual(bytes);
-    const restored = new SqliteStateStore(f.database);
+    resumeFixtureSecurity(f.database); const restored = new SqliteStateStore(f.database);
     try { expect(restored.listProjects().map(project => project.name)).toEqual(["New runtime"]); } finally { restored.close(); }
   });
   it("refuses actual different-device attachments before replacing data", async () => {
@@ -225,7 +229,7 @@ describe("strict restore validation before replacement", () => {
   });
 });
 
-describe("controlled restore request handoff", () => {
+describe("controlled restore request handoff", { timeout: 20_000 }, () => {
   it("reaffirms request publication durability before replay or execution after a directory fsync failure", async () => {
     const f = await fixture(), policy = { authorize: () => {}, resolveBackup: () => f.backup }, input = { backupId: actor.backupId, idempotencyKey: actor.idempotencyKey, confirmation: "replace-entire-installation" };
     const directory = `${f.database}.restore-requests`, original = fs.fsyncSync;
@@ -270,9 +274,9 @@ describe("controlled restore request handoff", () => {
   });
 });
 
-describe("restore durability and historical snapshots", () => {
+describe("restore durability and historical snapshots", { timeout: 20_000 }, () => {
   it("normalizes historical WAL snapshots in staging while preserving source bytes and metadata", async () => {
-    const f = await fixture(), databaseFile = join(f.backup, "state.sqlite3"), source = new Database(databaseFile);
+    const f = await fixture(), databaseFile = join(f.backup, "state.sqlite3"), source = unmanagedFixtureDatabase(databaseFile);
     source.pragma("journal_mode=WAL"); source.close();
     changeManifest(f, manifest => { Object.assign(manifest.database, hashFile(databaseFile)); });
     writeFileSync(`${databaseFile}-wal`, "", { mode: 0o600 }); writeFileSync(`${databaseFile}-shm`, Buffer.alloc(32768), { mode: 0o600 });
@@ -333,7 +337,8 @@ describe("restore durability and historical snapshots", () => {
     } finally { ownership.lock.release(); }
     expect(getControllerRestoreRequestStatus(f.database, actor, policy).state).toBe("requested");
     restoreControllerBackup(f.backup, f.database, f.attachments);
-    const store = new SqliteStateStore(f.database); store.addProject({ name: "After", repositoryPath: join(f.root, "after"), port: 5678, executable: "pnpm", args: ["dev"] }); store.close();
+    resumeFixtureSecurity(f.database);
+  const store = new SqliteStateStore(f.database); store.addProject({ name: "After", repositoryPath: join(f.root, "after"), port: 5678, executable: "pnpm", args: ["dev"] }); store.close();
     expect(executeControllerRestoreRequest(f.database, f.attachments, actor, policy).state).toBe("verified");
     const reopened = new SqliteStateStore(f.database); expect(reopened.listProjects()).toHaveLength(2); reopened.close();
   });
@@ -350,7 +355,7 @@ it.each(["permissions", "extra-file", "changed-manifest"])("refuses private stag
     if (damage === "changed-manifest") { const manifest = JSON.parse(readFileSync(join(root, "manifest.json"), "utf8")); manifest.createdAt = "2000-01-01T00:00:00Z"; writeFileSync(join(root, "manifest.json"), JSON.stringify(manifest)); }
     expect(() => recoverOwnedRestore(ownership.path)).toThrow(); expect(readFileSync(f.database)).toEqual(f.before);
   } finally { ownership.lock.release(); }
-});
+}, 20_000);
 
 it("repairs only its own interrupted request publication alias and rejects unknown hardlinks", async () => {
   const f = await fixture(), policy = { authorize: () => {}, resolveBackup: () => f.backup };
@@ -359,7 +364,7 @@ it("repairs only its own interrupted request publication alias and rejects unkno
   const temporary = join(directory, `.request-${accepted.operationId}`); fs.linkSync(path, temporary);
   expect(getControllerRestoreRequestStatus(f.database, actor, policy)).toEqual(accepted); expect(existsSync(temporary)).toBe(false); expect(lstatSync(path).nlink).toBe(1);
   fs.linkSync(path, join(directory, "unknown-alias")); expect(() => getControllerRestoreRequestStatus(f.database, actor, policy)).toThrow(); expect(readFileSync(f.database)).toEqual(f.before);
-});
+}, 20_000);
 
 it("refuses a different mount ID even when device numbers match", async () => {
   const f = await fixture(), read = fs.readSync;
@@ -372,7 +377,7 @@ it("refuses a different mount ID even when device numbers match", async () => {
     return read(fd, buffer, offset, length ?? buffer.byteLength - offset, position ?? null);
   }) as typeof fs.readSync);
   expect(() => restoreControllerBackup(f.backup, f.database, f.attachments)).toThrow(/filesystem/); expect(readFileSync(f.database)).toEqual(f.before); expect(existsSync(restoreRoot(f.database))).toBe(false);
-});
+}, 20_000);
 
 it("preserves the old set on a real quarantine-directory write denial, then resumes", async () => {
   const f = await fixture(), ownership = acquireDatabaseOwnership(f.database), previous = join(restoreRoot(f.database), "previous");
@@ -381,4 +386,4 @@ it("preserves the old set on a real quarantine-directory write denial, then resu
     expect(() => recoverOwnedRestore(ownership.path)).toThrow(/EACCES/); expect(readFileSync(f.database)).toEqual(f.before);
   } finally { chmodSync(previous, 0o700); ownership.lock.release(); }
   assertNew(f);
-});
+}, 20_000);

@@ -1,7 +1,8 @@
+import { unmanagedFixtureDatabase } from "../../../unmanaged-sqlite-fixture";
 // Isolated writer fixture. Its parent kills it before SQLite can checkpoint on close.
-import Database from "better-sqlite3";
 
-const database = new Database(process.argv[2]!);
+
+const database = unmanagedFixtureDatabase(process.argv[2]!);
 database.pragma("journal_mode = WAL");
 database.pragma("wal_autocheckpoint = 0");
 database.prepare("UPDATE projects SET name = 'Committed in WAL' WHERE id = 'kept'").run();

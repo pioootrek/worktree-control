@@ -1,3 +1,4 @@
+import { unmanagedFixtureDatabase } from "./unmanaged-sqlite-fixture";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
@@ -6,13 +7,14 @@ import { join } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { RuntimeSnapshot, TestPreset, TestRun, Worktree } from "@/shared/contracts";
 import type { RuntimeAction } from "@/shared/contracts/runtime-access";
 import { runIdentityCommand } from "../cli/identity-management";
 import { writeServiceAccess } from "../cli/service-access";
+import { nullLogWriter } from "./log-writer";
 import { ControlService } from "./control-service";
 import { acquireControllerLock } from "./controller-lock";
 import type { DirectoryBrowser } from "./directory-browser";
@@ -28,7 +30,7 @@ import { resolveAppPaths } from "./paths";
 import type { ProcessManager } from "./process-manager";
 import { SqliteStateStore } from "./sqlite-store";
 import type { ProjectTestCommandResolver } from "./test-command";
-import type { TestJobManager } from "./test-job-manager";
+import { TestJobManager } from "./test-job-manager";
 
 const all: RuntimeAction[] = ["projects:read", "claims:manage", "runtime:control"];
 const configurationActions: RuntimeAction[] = [...all, "profiles:select", "config:write"];
@@ -41,7 +43,7 @@ afterEach(async () => {
 
 // Own loopback listeners and temporary SQLite. No installed service, real Git,
 // managed process, or configuration from the host participates in this fixture.
-async function fixture(clock?: ManualMcpClock, verificationOnly = false) {
+async function fixture(clock?: ManualMcpClock, verificationOnly = false, realTests = false) {
   const directory = mkdtempSync(join(tmpdir(), "scoped-runtime-transports-"));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   const paths = resolveAppPaths(join(directory, "data"), join(directory, "state"));
@@ -68,6 +70,10 @@ async function fixture(clock?: ManualMcpClock, verificationOnly = false) {
   }]));
   const processes = {
     snapshot: (id: string) => ({ ...runtimes.get(id)! }),
+    statusSummary: vi.fn((id: string) => {
+      const { phase, worktreePath, startedAt } = runtimes.get(id)!;
+      return { phase, worktreePath, startedAt, ownsProcess: phase === "running", failureCode: null };
+    }),
     start: vi.fn(async (project: { id: string }, path: string, beforeSpawn?: () => void) => {
       beforeSpawn?.();
       Object.assign(runtimes.get(project.id)!, { phase: "running", pid: 500, worktreePath: path, startedAt: new Date().toISOString() });
@@ -78,12 +84,18 @@ async function fixture(clock?: ManualMcpClock, verificationOnly = false) {
   // Capture the external queue admission boundary without spawning finite jobs.
   const enqueue = vi.fn((input: EnqueueTestInput) => ({ id: randomUUID(), ...input }) as unknown as TestRun);
   const queueStatus = () => ({ limit: 1, running: 0, queued: 0 });
-  const jobs: VerificationJobs = { enqueue, status: queueStatus, setLimit: queueStatus, cancel: vi.fn() };
+  const jobs: VerificationJobs = realTests ? new TestJobManager(store, nullLogWriter) : { enqueue, status: queueStatus, setLimit: queueStatus, cancel: vi.fn() };
+  if (jobs instanceof TestJobManager) cleanups.push(() => jobs.shutdown());
   const service = new ControlService(store, git as unknown as GitWorktreeReader, processes as unknown as ProcessManager, undefined,
     { resolve: () => ({ preset: "node", executable: "pnpm", args: ["run", "dev"], portMethod: "environment", tls: { mode: "off", keyPath: null, certPath: null, caPath: null } }) },
     undefined, undefined, {
       discover: () => presets,
-      resolve: (path: string) => ({ preset: presets[0], executable: "pnpm", args: ["run", "test"], cwd: path }),
+      resolve: (path: string, presetId: string) => {
+        const preset = presets.find(entry => entry.id === presetId);
+        if (!preset) throw new Error(SENTINEL);
+        return realTests ? { preset, executable: process.execPath, args: ["-e", `console.log('${SENTINEL}');setTimeout(()=>{},200)`], cwd: directory }
+          : { preset, executable: "pnpm", args: ["run", "test"], cwd: path };
+      },
     } as unknown as ProjectTestCommandResolver,
     jobs as unknown as TestJobManager, undefined, undefined, undefined, identity);
   const agents = projects.map(() => identity.createAgent(owner));
@@ -126,7 +138,7 @@ async function fixture(clock?: ManualMcpClock, verificationOnly = false) {
     return { client: await connect(credential.token), credential };
   };
   const audits = () => {
-    const db = new Database(paths.databasePath, { readonly: true });
+    const db = unmanagedFixtureDatabase(paths.databasePath, { readonly: true });
     try { return db.prepare("SELECT actor, event_type, details_json FROM audit_events WHERE event_type LIKE 'configuration.%' ORDER BY id").all() as Array<{ actor: string; event_type: string; details_json: string }>; }
     finally { db.close(); }
   };
@@ -134,6 +146,54 @@ async function fixture(clock?: ManualMcpClock, verificationOnly = false) {
 }
 
 describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
+  it("executes tests:run through actual MCP with safe own-run results, strict fields, reconnect and HTTP denials", async () => {
+    const f = await fixture(undefined, true, true);
+    for (const index of [0, 1]) f.grant(index, ["tests:run"], undefined, 1);
+    const first = f.issue(0, ["tests:run"]);
+    const client = await f.connect(first.token);
+    const foreign = await f.connect(f.issue(1, ["tests:run"]).token);
+    const replacement = await f.connect(f.issue(0, ["tests:run"]).token);
+    const projectId = f.projects[0].id;
+    const discovery = await f.call(client, "list_test_presets", { projectId });
+    expect(discovery.value).toEqual([{ worktreePath: f.projects[0].repositoryPath, presets: [{ id: "node:test", timeoutMs: 900000 }] }]);
+    const input = { projectId, worktreePath: discovery.value[0].worktreePath, presetId: "node:test", idempotencyKey: "mcp-test" };
+    for (const field of ["actor", "requester", "principalId", "credentialId", "command", "args", "environment", "profile", "leaseToken"]) {
+      expect((await f.call(client, "run_test", { ...input, [field]: "injected" })).error).toBe(true);
+    }
+    expect(f.store.listTestRuns()).toHaveLength(0);
+    const run = await f.call(client, "run_test", input);
+    expect(run.error).toBe(false);
+    const runId = run.value.status.runId;
+    expect((await f.call(client, "run_test", input)).value.status.runId).toBe(runId);
+    expect((await f.call(client, "run_test", { ...input, worktreePath: "/foreign" })).error).toBe(true);
+    const denied: string[] = [];
+    for (const other of [foreign, replacement]) for (const id of [runId, randomUUID()]) {
+      const result = await f.call(other, "get_test_run", { runId: id });
+      expect(result.error).toBe(true); denied.push(result.output);
+    }
+    expect(new Set(denied).size).toBe(1);
+    const reconnect = await f.connect(first.token);
+    expect((await f.call(reconnect, "get_test_run_status", { runId })).error).toBe(false);
+    expect((await f.call(reconnect, "cancel_test_run", { runId })).error).toBe(true);
+    for (const result of [run, await f.call(client, "get_test_run", { runId }),
+      await f.call(client, "wait_for_status_change", { runId, cursor: run.value.cursor, timeoutMs: 10 }),
+      await f.call(client, "cancel_test_run", { runId })]) {
+      expect(result.output).not.toMatch(/queuePosition|variableNames|environment|logs|executable|args|credentialId|principalId|capacity|profile/);
+    }
+    for (const path of [`/api/projects/${projectId}`, `/api/projects/${projectId}/test-presets`, `/api/test-runs/${runId}`, "/api/tests/queue"]) {
+      expect([401, 403]).toContain((await fetch(`${f.base}${path}`, { headers: { Authorization: `Bearer ${first.token}` } })).status);
+    }
+    for (const [path, body] of [[`/api/projects/${projectId}/tests`, input], [`/api/test-runs/${runId}/cancel`, {}]] as const) {
+      expect([401, 403]).toContain((await fetch(`${f.base}${path}`, { method: "POST", headers: {
+        Authorization: `Bearer ${first.token}`, "Content-Type": "application/json", Origin: f.base,
+      }, body: JSON.stringify(body) })).status);
+    }
+    f.identity.revokeCredential(first.credential.id, f.owner);
+    await expect(f.call(client, "run_test", input)).rejects.toThrow();
+    expect(f.store.listTestRuns()).toHaveLength(1);
+    expect(f.processes.start).not.toHaveBeenCalled(); expect(f.processes.stop).not.toHaveBeenCalled();
+  });
+
   it("does not let denied configuration requests consume the shared runtime retry ledger", async () => {
     const f = await fixture();
     const readonly = f.issue(1, ["projects:read"]);
@@ -183,9 +243,23 @@ describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
       expect(f.git.list).not.toHaveBeenCalled();
       const names = (await client.listTools()).tools.map(tool => tool.name);
       expect(names).toEqual(expect.arrayContaining(["get_identity", "claim_project", "start_project", "restart_project", "stop_project"]));
-      for (const name of ["get_project_status_compact", "wait_for_status_change", "get_runtime_logs", "get_server_capacity", "run_test", "list_test_presets", "set_project_environment", "save_environment_profile", "issue_runtime_credential", "set_runtime_delegation"]) expect(names).not.toContain(name);
-      await expect(client.listResources()).rejects.toThrow();
-      await expect(client.readResource({ uri: "worktree-switcher://projects" })).rejects.toThrow();
+      expect(names).toEqual(expect.arrayContaining(["get_project_status_compact", "wait_for_status_change"]));
+      for (const name of ["get_runtime_logs", "get_server_capacity", "set_project_environment", "save_environment_profile", "issue_runtime_credential", "set_runtime_delegation"]) expect(names).not.toContain(name);
+      const resources = await client.listResources();
+      expect(resources.resources.map(resource => resource.uri).sort()).toEqual([
+        "worktree-switcher://projects", `worktree-switcher://projects/${project.id}/status`, `worktree-switcher://projects/${project.id}/worktrees`,
+      ].sort());
+      for (const resource of resources.resources) {
+        const result = JSON.stringify(await client.readResource({ uri: resource.uri }));
+        for (const forbidden of [foreign.id, foreign.name, SENTINEL, "PRIVATE_API_KEY", "pnpm", "environment", "logs", "capacity", "tls"]) expect(result).not.toContain(forbidden);
+      }
+      for (const kind of ["status", "worktrees"]) {
+        const denied = await client.readResource({ uri: `worktree-switcher://projects/${foreign.id}/${kind}` }).catch(error => error);
+        const missing = await client.readResource({ uri: `worktree-switcher://projects/${randomUUID()}/${kind}` }).catch(error => error);
+        expect(denied.message).toContain("project_access_denied");
+        expect(denied.message).toBe(missing.message);
+      }
+      for (const uri of ["worktree-switcher://capacity", "worktree-switcher://tests/queue"]) await expect(client.readResource({ uri })).rejects.toThrow();
       for (const path of ["/api/projects", `/api/projects/${project.id}/worktrees`, `/api/projects/${project.id}/start`]) {
         const response = await fetch(`${f.base}${path}`, { headers: { Authorization: `Bearer ${f.issued[index].token}` } });
         expect(response.status).toBe(401);
@@ -194,6 +268,38 @@ describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
       expect((await f.call(client, "get_identity")).value.runtimeAccess).toEqual([{ projectId: project.id, actions: all, expiresAt: null }]);
     }
     expect(f.processes.start).not.toHaveBeenCalled();
+  });
+
+  it("delivers only authorized compact changes over MCP, then denies revoked waits and resource discovery", async () => {
+    const f = await fixture();
+    const client = f.clients[0], projectId = f.projects[0].id;
+    const current = (await f.call(client, "get_project_status_compact", { projectId })).value;
+    const waitInput = { projectId, cursor: current.cursor, timeoutMs: 3000 };
+    const waiting = f.call(client, "wait_for_status_change", waitInput);
+    await vi.waitFor(() => expect(f.service.statusWaitDiagnostics().waiters).toBe(1));
+    f.runtimes.get(projectId)!.phase = "running";
+    const changed = await waiting;
+    expect(changed.value).toMatchObject({ changed: true, result: { status: { id: projectId, phase: "running" } } });
+    expect(changed.output).not.toMatch(/capacity|testQueue|logs|environment/);
+    const denied = f.call(client, "wait_for_status_change", { ...waitInput, cursor: changed.value.cursor });
+    await vi.waitFor(() => expect(f.service.statusWaitDiagnostics().waiters).toBe(1));
+    f.identity.revokeRuntimeDelegation({ principalId: f.agents[0].id, projectId, expectedRevision: 1 }, f.owner);
+    expect((await denied).output).toMatch(/^project_access_denied:/);
+    expect(f.service.statusWaitDiagnostics().waiters).toBe(0);
+    expect((await client.listResources()).resources.map(resource => resource.uri)).toEqual(["worktree-switcher://projects"]);
+    await expect(client.readResource({ uri: `worktree-switcher://projects/${projectId}/status` })).rejects.toThrow("project_access_denied");
+    expect(f.git.list).not.toHaveBeenCalled();
+    expect((await f.call(client, "wait_for_status_change", { ...waitInput, runId: randomUUID() })).error).toBe(true);
+  });
+
+  it("rechecks worktree resource authority after asynchronous discovery", async () => {
+    const f = await fixture();
+    const projectId = f.projects[0].id;
+    f.git.list.mockImplementationOnce(async () => {
+      f.identity.revokeRuntimeDelegation({ principalId: f.agents[0].id, projectId, expectedRevision: 1 }, f.owner);
+      return f.worktrees.get(f.projects[0].repositoryPath)!;
+    });
+    await expect(f.clients[0].readResource({ uri: `worktree-switcher://projects/${projectId}/worktrees` })).rejects.toThrow("project_access_denied");
   });
 
   it("preserves delegation expiry when HTTP updates omit it and clears it only explicitly", async () => {
@@ -217,7 +323,7 @@ describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
     const workerToken = f.identity.issueWorkerToken({ principalId: worker.id, label: "worker" }, f.owner).token;
     for (const token of [f.installationToken, f.issued[0].token, workerToken]) expect((await f.admin(input, token)).status).toBe(403);
     expect((await f.admin(input, null)).status).toBe(401);
-    for (const body of [{ ...input, sponsorId: f.owner.principalId }, { ...input, actions: ["logs:read"] }, { ...input, actions: ["env:read"] }, { ...input, actions: ["tests:run"] }]) expect((await f.admin(body)).status).toBe(400);
+    for (const body of [{ ...input, sponsorId: f.owner.principalId }, { ...input, actions: ["logs:write"] }, { ...input, actions: ["env:read"] }, { ...input, actions: ["tests:launch"] }]) expect((await f.admin(body)).status).toBe(400);
     expect((await f.admin(input)).status).toBe(200);
     expect((await f.admin(input)).status).toBe(409);
     const badIssue = { action: "issue-runtime-credential", principalId: f.agents[0].id, label: "duplicate", projects: Array(2).fill({ projectId: f.projects[0].id, actions: all }) };
@@ -245,7 +351,7 @@ describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
       await runIdentityCommand(["revoke-runtime-delegation", "--principal-id", f.agents[0].id, "--project-id", f.projects[0].id, "--expected-revision", "3"], onlinePaths, cli);
       expect(JSON.parse(lines.pop()!).delegation.revokedAt).toEqual(expect.any(String));
       expect(existsSync(onlinePaths.databasePath)).toBe(false);
-      const db = new Database(f.paths.databasePath, { readonly: true });
+      const db = unmanagedFixtureDatabase(f.paths.databasePath, { readonly: true });
       try {
         const persisted = JSON.stringify(db.prepare("SELECT * FROM principal_credentials").all()) + JSON.stringify(db.prepare("SELECT * FROM controller_audit_events").all());
         expect(persisted).not.toContain(issued.token);
@@ -479,12 +585,15 @@ describe("independent scoped configuration transport boundaries", () => {
     expect((await f.call(client, "set_test_preset_timeout", { ...timeout, presetId: "node:undiscovered" })).output).toMatch(/^preset_not_found:/);
     expect((await f.call(client, "get_project_configuration", { projectId, worktreePath: `${worktreePath}/../Alpha` })).output).toMatch(/^worktree_unavailable:/);
     const names = (await client.listTools()).tools.map(tool => tool.name);
-    for (const name of ["set_project_environment", "save_environment_profile", "delete_environment_profile", "save_test_environment_profile", "assign_test_preset_profile", "run_test", "get_test_run", "get_project_status_compact", "wait_for_status_change", "set_runtime_delegation"]) {
+    for (const name of ["set_project_environment", "save_environment_profile", "delete_environment_profile", "save_test_environment_profile", "assign_test_preset_profile", "set_runtime_delegation"]) {
       expect(names).not.toContain(name);
       expect((await f.call(client, name, { projectId })).error).toBe(true);
     }
-    await expect(client.listResources()).rejects.toThrow();
-    await expect(client.readResource({ uri: `worktree-switcher://projects/${projectId}/status` })).rejects.toThrow();
+    const configOnly = await f.connect(f.issue(0, ["config:write"]).token);
+    expect((await configOnly.listResources()).resources.map(resource => resource.uri)).toEqual(["worktree-switcher://projects"]);
+    await expect(configOnly.readResource({ uri: `worktree-switcher://projects/${projectId}/status` })).rejects.toThrow("project_access_denied");
+    expect((await f.call(configOnly, "get_project_status_compact", { projectId })).output).toMatch(/^project_access_denied:/);
+    expect((await f.call(configOnly, "wait_for_status_change", { projectId, cursor: "stale" })).output).toMatch(/^project_access_denied:/);
     for (const [suffix, body] of [
       ["environment", { environment: { INJECTED: SENTINEL } }],
       ["environment-profiles", { name: "new", environment: {} }],

@@ -1,3 +1,4 @@
+import { resumeFixtureSecurity } from "../../infrastructure/sqlite/fixtures/protected-security";
 import { afterEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -285,16 +286,19 @@ describe("independent user export schedules", () => {
     const snapshot = join(f.root, "before.sqlite3"); await f.store.backup(snapshot);
     const laterProject = f.identity.createKnowledgeProject({ name: "After snapshot" }, f.owner);
     f.save(first); for (let version = 1; version <= 5; version++) f.save(f.input(first.id, version)); f.schedules.close();
+    resumeFixtureSecurity(snapshot);
     const restoredStore = new SqliteStateStore(snapshot); cleanup.push(() => restoredStore.close());
     expect(restoredStore.getKnowledgeProject(laterProject.id)).toBeNull();
     const restoredIdentity = new IdentityService(restoredStore);
+    expect(()=>restoredIdentity.describeIdentity(f.owner)).toThrow();
+    const recoveredOwner=restoredIdentity.authenticateBearer(restoredIdentity.recoverOwnerSession().token);
     const deps = { ...f.deps, authorize: (actor: AuthenticatedPrincipal, projectId?: string) => { restoredIdentity.describeIdentity(actor); if (projectId) { restoredIdentity.authorizeKnowledge(actor, projectId, "knowledge:read"); restoredIdentity.authorizeKnowledge(actor, projectId, "knowledge:export"); } }, projectName: (id: string) => restoredStore.getKnowledgeProject(id)?.name ?? null, restoreGeneration: () => "sqlite-rollback" };
     const restarted = new UserSchedules(f.policy, f.backups, deps); cleanup.push(() => restarted.close());
-    expect(restarted.overview(f.owner).mutationGeneration).toBe(f.schedules.overview(f.owner).mutationGeneration);
-    expect(restarted.overview(f.owner).schedules[0].version).toBe(6);
+    expect(restarted.overview(recoveredOwner).mutationGeneration).toBe(f.schedules.overview(f.owner).mutationGeneration);
+    expect(restarted.overview(recoveredOwner).schedules[0].version).toBe(6);
     const path = join(f.backups.recordDirectory, "user-schedules.json"), before = readFileSync(path);
-    expect(() => restarted.command(f.owner, first)).toThrow("expired");
-    expect(() => restarted.command(f.owner, { ...first, version: 6 })).toThrow("changed");
+    expect(() => restarted.command(recoveredOwner, first)).toThrow("expired");
+    expect(() => restarted.command(recoveredOwner, { ...first, version: 6 })).toThrow("changed");
     expect(readFileSync(path).equals(before)).toBe(true);
   });
   it("fails closed if eviction and configuration cannot be durably committed", () => {
