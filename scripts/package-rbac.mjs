@@ -143,15 +143,21 @@ try {
   const connect = async token => { const client = new Client({ name: "installed-rbac", version: "1" }); clients.push(client); await client.connect(new StreamableHTTPClientTransport(new URL(mcpURL), { requestInit: { headers: { Authorization: `Bearer ${token}` } } })); return client; };
   const artifact = await providerArtifact(argument("--provider-dir"));
   assert.equal(digest(await readFile(artifact.path)), artifact.sha256);
-  const providerPrefix = join(root, "provider");
-  await step("separate-optional-provider-install", () => bounded("npm", ["install", "--prefix", providerPrefix, "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", artifact.path], { env: installEnv }));
-  const providerRoot = join(providerPrefix, "node_modules/@worktree-control/auth-provider-better-auth-proof"), entry = join(providerRoot, "dist/index.js");
+  // `npm install <tarball>` ignores a dependency's shrinkwrap and re-resolves; the
+  // provider is extracted into its own directory and `npm ci` installs its lock.
+  const providerRoot = join(root, "provider"), entry = join(providerRoot, "dist/index.js");
+  await step("separate-optional-provider-install", async () => {
+    await mkdir(providerRoot, { mode: 0o700 });
+    await bounded("tar", ["-xzf", artifact.path, "-C", providerRoot, "--strip-components=1", "--no-same-owner"]);
+    await bounded("npm", ["ci", "--prefix", providerRoot, "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], { env: installEnv });
+  });
   const shippedLock = await readFile(join(providerRoot, "npm-shrinkwrap.json"));
   assert.equal(digest(shippedLock), artifact.dependencyLockSha256);
   await step("provider-installed-closure-matches-shipped-lock", async () => {
-    const tree = JSON.parse((await bounded("npm", ["ls", "--prefix", providerPrefix, "--all", "--omit=dev", "--json"], { env: installEnv })).stdout);
-    const installed = new Set(), walk = node => { for (const [name, child] of Object.entries(node.dependencies ?? {})) { installed.add(`${name}@${child.version}`); walk(child); } };
-    walk(tree.dependencies["@worktree-control/auth-provider-better-auth-proof"]);
+    const tree = JSON.parse((await bounded("npm", ["ls", "--prefix", providerRoot, "--all", "--omit=dev", "--json"], { env: installEnv })).stdout);
+    // Unmet optional framework peers have no version and are not installed.
+    const installed = new Set(), walk = node => { for (const [name, child] of Object.entries(node.dependencies ?? {})) { if (!child.version) continue; installed.add(`${name}@${child.version}`); walk(child); } };
+    walk(tree);
     assert.deepEqual([...installed].sort(), [...shrinkwrapClosure(JSON.parse(shippedLock))].sort(), "Installed provider closure must equal the shipped lock.");
   });
   assert(!(await readFile(entry, "utf8")).includes("/test/"));

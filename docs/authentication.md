@@ -139,6 +139,9 @@ graph and assets exclude the provider implementation. It remains optional and
 unpublished; this work changes no distribution or licensing decision.
 The tarball includes `npm-shrinkwrap.json`; `artifact.json` records its hash.
 Archive that reviewed tarball for deployment rather than resolving it again.
+Install it with `npm ci` in an extracted directory, as below: `npm install` of
+the tarball ignores its shrinkwrap. The configured module is
+`PRIVATE_PROVIDER_DIR/dist/index.js`. See [release packaging](release-packaging.md).
 
 The following placeholders name operator-selected private paths and existing IDs.
 Passwords/signing material enter through a private file or stdin, never argv,
@@ -148,7 +151,8 @@ chat, Git or Knowledge. Keep every command on the same data/state paths.
 # Parent/operator first stops the controller and preserves a verified backup.
 NEW_CLI auth fence inspect --data-dir DATA --state-dir STATE
 NEW_CLI auth fence establish --expect PREFLIGHT --data-dir DATA --state-dir STATE
-npm install --prefix PRIVATE_PROVIDER_PREFIX --omit=dev PRIVATE_PROVIDER_TARBALL
+tar -xzf PRIVATE_PROVIDER_TARBALL -C PRIVATE_PROVIDER_DIR --strip-components=1 --no-same-owner
+npm ci --prefix PRIVATE_PROVIDER_DIR --omit=dev --ignore-scripts
 NEW_CLI auth provider configure --input-file PRIVATE_CONFIG_JSON --data-dir DATA --state-dir STATE
 NEW_CLI auth provider status --principal-id EXISTING_OWNER_ID --data-dir DATA --state-dir STATE
 NEW_CLI auth provider enroll --principal-id EXISTING_OWNER_ID --input-file PRIVATE_ENROLLMENT_JSON --data-dir DATA --state-dir STATE

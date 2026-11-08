@@ -54,16 +54,21 @@ and requires `THIRD_PARTY_NOTICES.md` to list exactly the shipped closure. After
 changing provider dependencies, run `pnpm install`, then
 `node scripts/provider-lock.mjs --write`, and update the notices.
 
-Install and verify the provider without a source checkout:
+Install and verify the provider without a source checkout. Extract it into its
+own private directory and let `npm ci` install the shipped lock:
 
 ```bash
 sha256sum --check SHA256SUMS
-npm install --prefix "$PROVIDER_PREFIX" --omit=dev --ignore-scripts \
-  ./worktree-control-auth-provider-better-auth-proof-0.0.0.tgz
+mkdir -m 700 "$PROVIDER_DIR"
+tar -xzf worktree-control-auth-provider-better-auth-proof-0.0.0.tgz \
+  -C "$PROVIDER_DIR" --strip-components=1 --no-same-owner
+npm ci --prefix "$PROVIDER_DIR" --omit=dev --ignore-scripts
 ```
 
-The module path for `auth provider configure` is
-`$PROVIDER_PREFIX/node_modules/@worktree-control/auth-provider-better-auth-proof/dist/index.js`.
+Do not use `npm install <tarball>`: npm ignores a dependency's
+`npm-shrinkwrap.json` there and resolves newer transitive versions than the
+tested lock. The module path for `auth provider configure` is
+`$PROVIDER_DIR/dist/index.js`.
 Follow the staged account-mode procedure in
 [authentication](authentication.md#separate-provider-artifact-and-staged-migration).
 

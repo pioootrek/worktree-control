@@ -987,7 +987,8 @@ package. Community root dependencies and assets contain no provider engine.
 The tarball carries its complete npm shrinkwrap and the artifact metadata records
 the lock hash; deployment uses the reviewed tarball rather than rebuilding it.
 The shrinkwrap is the committed `release/npm-shrinkwrap.json`, pinned to the
-versions tested through `pnpm-lock.yaml`; the build never re-resolves it. See
+versions tested through `pnpm-lock.yaml`; the build never re-resolves it.
+Install with `npm ci` in the extracted package, never `npm install <tarball>`. See
 [release packaging](../../docs/release-packaging.md) for the release artifact.
 The installed-artifact acceptance uses a separate prefix without source links
 or test loader hooks, and exercises public login/session plus machine MCP/CLI,
