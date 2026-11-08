@@ -160,7 +160,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     return;
   }
   if (command === "identity") {
-    await runIdentityCommand(process.argv.slice(3), paths, { write: writeCliLine });
+    await runIdentityCommand(withoutPathOptions(process.argv.slice(3)), paths, { write: writeCliLine });
     return;
   }
   if (command === "backup") {
