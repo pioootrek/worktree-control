@@ -4,6 +4,7 @@ import { execFile, spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -75,15 +76,25 @@ async function start(cli = currentCli, assets = currentRoot) {
 const cookieJar = () => {
   const cookies = new Map();
   return { cookies, async call(path, body, headers = {}, method = body === undefined ? "GET" : "POST") {
-    const response = await fetch(endpoint + path, { method, headers: { Host: "controller.test", Origin: origin, "Content-Type": "application/json",
-      ...(cookies.size ? { Cookie: [...cookies].map(([key, value]) => `${key}=${value}`).join("; ") } : {}), ...headers }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
-    for (const line of response.headers.getSetCookie()) {
+    // Node's HTTP client sends the canonical Host used by the real TLS proxy.
+    // fetch may discard a caller-supplied Host and is unsuitable for this fixture.
+    const response = await new Promise((accept, reject) => {
+      const request = httpRequest(endpoint + path, { method, headers: { Host: "controller.test", Origin: origin, "Content-Type": "application/json",
+        ...(cookies.size ? { Cookie: [...cookies].map(([key, value]) => `${key}=${value}`).join("; ") } : {}), ...headers } }, response => {
+        const chunks = []; let bytes = 0;
+        response.on("data", chunk => { bytes += chunk.length; if (bytes > 131_072) request.destroy(new Error("Fixture response bound")); else chunks.push(chunk); });
+        response.once("error", reject); response.once("end", () => { try { accept({ status: response.statusCode, headers: response.headers, body: JSON.parse(Buffer.concat(chunks).toString("utf8")) }); } catch { reject(new Error("Fixture JSON response")); } });
+      });
+      request.setTimeout(15_000, () => request.destroy(new Error("Fixture request deadline"))); request.once("error", reject);
+      request.end(body === undefined ? undefined : JSON.stringify(body));
+    });
+    for (const line of response.headers["set-cookie"] ?? []) {
       assert(/;\s*Secure/i.test(line) && /;\s*HttpOnly/i.test(line) && /SameSite=Strict/i.test(line));
       const pair = line.split(";")[0], index = pair.indexOf("=");
       if (/Max-Age=0/i.test(line)) cookies.delete(pair.slice(0, index)); else { cookies.set(pair.slice(0, index), pair.slice(index + 1)); secretValues.add(pair.slice(index + 1)); }
     }
-    assert.equal(response.headers.get("cache-control"), "no-store");
-    return { status: response.status, body: await response.json() };
+    assert.equal(response.headers["cache-control"], "no-store");
+    return { status: response.status, body: response.body };
   } };
 };
 let report;
