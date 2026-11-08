@@ -32,13 +32,11 @@ export type SessionLostNotice = "account.sessionLost" | "account.totpEnrolled" |
  * no SSE in account mode; panels poll with bounded intervals and mutations
  * refresh their own target.
  */
-export function AccountDashboard({ session, onSignOut, onSessionLost, notice, dismissNotice }: {
+export function AccountDashboard({ session, onSignOut, onSessionLost }: {
   session: AccountSession;
   onSignOut: () => void;
   /** Session is gone; the optional key is a notice shown on the sign-in screen (e.g. a finished enrollment). */
   onSessionLost: (noticeKey?: SessionLostNotice) => void;
-  notice: string | null;
-  dismissNotice: () => void;
 }) {
   const { t, locale, setLocale } = useI18n();
   const { dark, toggle: toggleTheme } = useTheme();
@@ -68,12 +66,6 @@ export function AccountDashboard({ session, onSignOut, onSessionLost, notice, di
           <Button variant="ghost" size="sm" onClick={onSignOut}><LogOut aria-hidden className="size-4" />{t("access.signOut")}</Button>
         </div>
       </header>
-      {notice && (
-        <Alert variant="success" className="mx-auto mt-4 max-w-3xl">
-          <AlertDescription>{t(notice as Parameters<typeof t>[0])}</AlertDescription>
-          <Button variant="ghost" size="sm" className="ml-auto" onClick={dismissNotice}>{t("common.close")}</Button>
-        </Alert>
-      )}
       <main className="mx-auto max-w-5xl px-3 py-5 sm:px-5">
         {tab === "projects" && <ProjectsPanel onSessionLost={onSessionLost} />}
         {tab === "knowledge" && (
@@ -178,11 +170,16 @@ function ProjectDetail({ summary, onSessionLost }: { summary: ScopedProjectSumma
   const canProfiles = summary.actions.includes("profiles:select");
   const canConfig = summary.actions.includes("config:write");
 
+  /** True when the failure was a session loss that already left the account view; panels then show nothing. */
+  const sessionLoss = useCallback((cause: unknown) => {
+    if (!isRuntimeSessionLoss(cause)) return false;
+    onSessionLost();
+    return true;
+  }, [onSessionLost]);
+  /** Failures of this section's own reads and mutations; child panels report theirs in place. */
   const fail = useCallback((cause: unknown) => {
-    if (isRuntimeSessionLoss(cause)) { onSessionLost(); return true; }
-    setError(describeError(t, cause));
-    return false;
-  }, [onSessionLost, t]);
+    if (!sessionLoss(cause)) setError(describeError(t, cause));
+  }, [sessionLoss, t]);
 
   const refresh = useCallback((signal?: AbortSignal) => {
     return runtimeRead({ operation: "project-status", projectId: summary.id }, signal)
@@ -260,7 +257,7 @@ function ProjectDetail({ summary, onSessionLost }: { summary: ScopedProjectSumma
           </div>
         )}
       </section>
-      {canTest && <TestsPanel projectId={summary.id} reservationId={own?.reservationId} onFailure={fail} />}
+      {canTest && <TestsPanel projectId={summary.id} reservationId={own?.reservationId} onSessionLoss={sessionLoss} />}
       {(canProfiles || canConfig) && (
         <ConfigurationPanel
           projectId={summary.id}
@@ -268,7 +265,7 @@ function ProjectDetail({ summary, onSessionLost }: { summary: ScopedProjectSumma
           reservationId={own?.reservationId}
           canProfiles={canProfiles}
           canConfig={canConfig}
-          onFailure={fail}
+          onSessionLoss={sessionLoss}
         />
       )}
       {!canClaim && !canControl && !canTest && !canProfiles && !canConfig && <p className="text-sm text-muted-foreground">{t("account.readOnlyProject")}</p>}
@@ -323,10 +320,10 @@ function ClaimControls({ worktrees, own, busyLabel, onClaim, onRenew, onRelease 
   );
 }
 
-function TestsPanel({ projectId, reservationId, onFailure }: {
+function TestsPanel({ projectId, reservationId, onSessionLoss }: {
   projectId: string;
   reservationId: string | undefined;
-  onFailure: (cause: unknown) => boolean;
+  onSessionLoss: (cause: unknown) => boolean;
 }) {
   const { t } = useI18n();
   const [presets, setPresets] = useState<ScopedTestPresets | null>(null);
@@ -337,9 +334,9 @@ function TestsPanel({ projectId, reservationId, onFailure }: {
     const abort = new AbortController();
     testPresets(projectId, abort.signal)
       .then(result => { if (!abort.signal.aborted) setPresets(result); })
-      .catch(cause => { if (!abort.signal.aborted && !onFailure(cause)) setError(describeError(t, cause)); });
+      .catch(cause => { if (!abort.signal.aborted && !onSessionLoss(cause)) setError(describeError(t, cause)); });
     return () => abort.abort();
-  }, [projectId, onFailure, t]);
+  }, [projectId, onSessionLoss, t]);
 
   // Poll the runs this session enqueued; there is no list operation by design.
   useEffect(() => {
@@ -361,14 +358,14 @@ function TestsPanel({ projectId, reservationId, onFailure }: {
     try {
       const result = await enqueueTest({ projectId, worktreePath, presetId, idempotencyKey: idempotencyKey(), ...(reservationId ? { reservationId } : {}) });
       setRuns(current => new Map(current).set(result.status.runId, result));
-    } catch (cause) { if (!onFailure(cause)) setError(describeError(t, cause)); }
+    } catch (cause) { if (!onSessionLoss(cause)) setError(describeError(t, cause)); }
   };
   const cancel = async (runId: string) => {
     setError(null);
     try {
       const result = await cancelTestRun(runId, projectId);
       setRuns(current => new Map(current).set(result.status.runId, result));
-    } catch (cause) { if (!onFailure(cause)) setError(describeError(t, cause)); }
+    } catch (cause) { if (!onSessionLoss(cause)) setError(describeError(t, cause)); }
   };
 
   const entries = useMemo(() => [...runs.values()].sort((a, b) => a.status.queuedAt < b.status.queuedAt ? 1 : -1), [runs]);
@@ -407,13 +404,13 @@ function TestsPanel({ projectId, reservationId, onFailure }: {
   );
 }
 
-function ConfigurationPanel({ projectId, worktreePath, reservationId, canProfiles, canConfig, onFailure }: {
+function ConfigurationPanel({ projectId, worktreePath, reservationId, canProfiles, canConfig, onSessionLoss }: {
   projectId: string;
   worktreePath: string | null;
   reservationId: string | undefined;
   canProfiles: boolean;
   canConfig: boolean;
-  onFailure: (cause: unknown) => boolean;
+  onSessionLoss: (cause: unknown) => boolean;
 }) {
   const { t } = useI18n();
   const [profiles, setProfiles] = useState<ScopedEnvironmentProfiles | null>(null);
@@ -423,30 +420,52 @@ function ConfigurationPanel({ projectId, worktreePath, reservationId, canProfile
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const loadProfiles = useCallback(async (signal?: AbortSignal) => {
+    const value = await runtimeConfiguration({ operation: "profiles", projectId }, signal);
+    if (signal?.aborted) return;
+    setProfiles(value); setProfileName(value.selectedProfile);
+  }, [projectId]);
+  const loadConfiguration = useCallback(async (path: string, signal?: AbortSignal) => {
+    const value = await runtimeConfiguration({ operation: "configuration", projectId, worktreePath: path }, signal);
+    if (signal?.aborted) return;
+    setConfiguration(value);
+    setTimeouts(Object.fromEntries(value.presets.map(preset => [preset.id, preset.overrideTimeoutMs === null ? "" : String(preset.overrideTimeoutMs)])));
+  }, [projectId]);
+  const report = useCallback((cause: unknown) => { if (!onSessionLoss(cause)) setError(describeError(t, cause)); }, [onSessionLoss, t]);
+
   useEffect(() => {
     if (!canProfiles) return;
     const abort = new AbortController();
-    runtimeConfiguration({ operation: "profiles", projectId }, abort.signal)
-      .then(value => {
-        if (abort.signal.aborted) return;
-        setProfiles(value); setProfileName(value.selectedProfile);
-      })
-      .catch(cause => { if (!abort.signal.aborted && !onFailure(cause)) setError(describeError(t, cause)); });
+    loadProfiles(abort.signal).catch(cause => { if (!abort.signal.aborted) report(cause); });
     return () => abort.abort();
-  }, [canProfiles, onFailure, projectId, t]);
+  }, [canProfiles, loadProfiles, report]);
 
   useEffect(() => {
     if (!canConfig || !worktreePath) return;
     const abort = new AbortController();
-    runtimeConfiguration({ operation: "configuration", projectId, worktreePath }, abort.signal)
-      .then(value => {
-        if (abort.signal.aborted) return;
-        setConfiguration(value);
-        setTimeouts(Object.fromEntries(value.presets.map(preset => [preset.id, preset.overrideTimeoutMs === null ? "" : String(preset.overrideTimeoutMs)])));
-      })
-      .catch(cause => { if (!abort.signal.aborted && !onFailure(cause)) setError(describeError(t, cause)); });
+    loadConfiguration(worktreePath, abort.signal).catch(cause => { if (!abort.signal.aborted) report(cause); });
     return () => abort.abort();
-  }, [canConfig, onFailure, projectId, t, worktreePath]);
+  }, [canConfig, loadConfiguration, report, worktreePath]);
+
+  /**
+   * Every save is a CAS write against the project's single configuration
+   * revision, which profile selection and timeout overrides share. Success
+   * and a `revision_conflict` both re-read every view this panel shows: a
+   * conflict keeps its error visible and replaces the stale draft with the
+   * current values, so the next attempt carries the fresh revision.
+   */
+  const reloadAll = async () => {
+    try {
+      await Promise.all([
+        canProfiles ? loadProfiles() : undefined,
+        canConfig && worktreePath ? loadConfiguration(worktreePath) : undefined,
+      ]);
+    } catch (cause) { report(cause); }
+  };
+  const settle = async (cause: unknown) => {
+    report(cause);
+    if (cause instanceof RuntimeApiError && cause.code === "revision_conflict") await reloadAll();
+  };
 
   const saveProfile = async () => {
     if (!profiles || !profileName) return;
@@ -456,10 +475,9 @@ function ConfigurationPanel({ projectId, worktreePath, reservationId, canProfile
         operation: "select_environment_profile", projectId, name: profileName, expectedRevision: profiles.configurationRevision,
         idempotencyKey: idempotencyKey(), ...(reservationId ? { reservationId } : {}),
       });
-      setNotice(t("account.profileSaved"));
-      const fresh = await runtimeConfiguration({ operation: "profiles", projectId });
-      setProfiles(fresh); setProfileName(fresh.selectedProfile);
-    } catch (cause) { if (!onFailure(cause)) setError(describeError(t, cause)); }
+    } catch (cause) { await settle(cause); return; }
+    setNotice(t("account.profileSaved"));
+    await reloadAll();
   };
 
   const saveTimeout = async (presetId: string) => {
@@ -473,11 +491,9 @@ function ConfigurationPanel({ projectId, worktreePath, reservationId, canProfile
         operation: "set_test_preset_timeout", projectId, worktreePath, presetId, timeoutMs, expectedRevision: configuration.configurationRevision,
         idempotencyKey: idempotencyKey(), ...(reservationId ? { reservationId } : {}),
       });
-      setNotice(t("account.timeoutSaved"));
-      const fresh = await runtimeConfiguration({ operation: "configuration", projectId, worktreePath });
-      setConfiguration(fresh);
-      setTimeouts(Object.fromEntries(fresh.presets.map(preset => [preset.id, preset.overrideTimeoutMs === null ? "" : String(preset.overrideTimeoutMs)])));
-    } catch (cause) { if (!onFailure(cause)) setError(describeError(t, cause)); }
+    } catch (cause) { await settle(cause); return; }
+    setNotice(t("account.timeoutSaved"));
+    await reloadAll();
   };
 
   return (

@@ -10,7 +10,9 @@ export type AccountSessionState =
   | { phase: "anonymous" }
   | { phase: "authenticated"; session: AccountSession; generation: number }
   | { phase: "signingOut" }
-  | { phase: "signOutUnconfirmed"; generation: number };
+  | { phase: "signOutUnconfirmed"; generation: number }
+  /** The session probe itself failed; nothing is known, so neither account data nor a sign-in form renders. */
+  | { phase: "unavailable" };
 
 /**
  * Non-secret intent marker recording that the user asked to sign out but the
@@ -61,7 +63,9 @@ async function requestConfirmedSignOut(signal?: AbortSignal): Promise<boolean> {
  * remounts session-scoped UI so no stale data survives a user switch.
  * Sign-out is only treated as done when the server confirms it; otherwise a
  * blocking unconfirmed phase (plus the intent marker) keeps account data
- * hidden instead of faking an anonymous state.
+ * hidden instead of faking an anonymous state. A failed session probe is
+ * not an answer either: it never renders a sign-in form that would imply
+ * the browser holds no session.
  */
 export function useAccountSession() {
   const [state, setState] = useState<AccountSessionState>({ phase: "loading" });
@@ -94,7 +98,14 @@ export function useAccountSession() {
       generation.current += 1;
       setState({ phase: "authenticated", session, generation: generation.current });
     } catch {
-      if (!signal?.aborted) setState({ phase: "anonymous" });
+      if (signal?.aborted) return;
+      if (readSignOutMarker()) {
+        // The pending sign-out stays unconfirmed; the user may retry it from there.
+        generation.current += 1;
+        setState({ phase: "signOutUnconfirmed", generation: generation.current });
+      } else {
+        setState({ phase: "unavailable" });
+      }
     }
   }, []);
 
@@ -105,13 +116,28 @@ export function useAccountSession() {
     return () => abort.abort();
   }, [probe]);
 
-  /** A completed sign-in ceremony minted the cookie; re-prove it before rendering account data. */
-  const established = useCallback(() => probe(), [probe]);
-  /** Any child that saw a 401 invalidates the local view; the cookie is already gone server-side. */
-  const lost = useCallback(() => {
+  /**
+   * A completed sign-in ceremony minted the cookie; re-prove it before
+   * rendering account data. A fresh sign-in is a new explicit intent that
+   * supersedes an older unconfirmed sign-out (its cookie was replaced), so the
+   * marker must not end the session the user just established.
+   */
+  const established = useCallback(() => {
+    writeSignOutMarker(false);
+    return probe();
+  }, [probe]);
+  /**
+   * A child of the given session generation saw a 401: the cookie is already
+   * gone server-side. A late answer from an earlier generation (a previous
+   * user, or a view already left for sign-out) is ignored so it can neither end
+   * nor relabel the current state. Returns whether the loss was applied.
+   */
+  const lost = useCallback((ofGeneration: number) => {
+    if (ofGeneration !== generation.current) return false;
     writeSignOutMarker(false);
     generation.current += 1;
     setState({ phase: "anonymous" });
+    return true;
   }, []);
   /** Sign out with a bounded retry; on final failure show the honest unconfirmed state instead of faking anonymous. */
   const end = useCallback(async () => {
@@ -135,5 +161,11 @@ export function useAccountSession() {
     void probe();
   }, [probe]);
 
-  return { state, established, lost, end, returnToAccount };
+  /** Re-run a session probe that failed; any pending sign-out marker is still honored. */
+  const retry = useCallback(() => {
+    setState({ phase: "loading" });
+    void probe();
+  }, [probe]);
+
+  return { state, established, lost, end, returnToAccount, retry };
 }

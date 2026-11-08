@@ -120,6 +120,10 @@ export async function mountDashboard(
     if (url.origin !== origin) return route.abort();
     if (url.pathname.startsWith("/api/")) {
       const request = route.request();
+      // The public mode probe mirrors the real open/token server answer: legacy only on a definitive 200.
+      if (url.pathname === "/api/auth/status") {
+        return route.fulfill({ json: { mode: openMode ? "open" : "token", loginAvailable: false } });
+      }
       if (!openMode && request.headers()["x-worktree-control-token"] !== accessToken) {
         return route.fulfill({ status: 401, json: { error: "Missing fixture session" } });
       }

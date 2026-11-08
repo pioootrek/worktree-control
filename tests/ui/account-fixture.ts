@@ -19,7 +19,8 @@ import { runtimeReadSchema } from "../../src/shared/contracts/runtime-read";
  * Scoped runtime bodies are validated against the real server zod schemas, so
  * a drift between the GUI and the backend contract fails the test instead of
  * passing against a stale mock. The default claim and configuration handlers
- * are stateful (CAS revisions included) to exercise re-fetch flows.
+ * are stateful to exercise re-fetch flows; like the server, profile selection
+ * and timeout overrides share one per-project configuration revision.
  */
 
 export interface AccountFixtureOptions {
@@ -35,9 +36,17 @@ export interface AccountFixtureOptions {
   loginAvailable?: boolean;
   /** Fail the mode probe with a 503 until `fixture.authStatusFails` is cleared. */
   authStatusFails?: boolean;
+  /** Replace the mode probe answer: a raw 200 body, or a dropped connection. */
+  authStatusAnswer?: "network" | { status?: number; json: unknown };
+  /** Fail this many session probes with a 503 before answering. */
+  getSessionFailures?: number;
   /** Fail this many sign-out requests with a 503 before confirming; the session stays alive meanwhile. */
   signOutFailures?: number;
-  /** Answer the first configuration mutation with a CAS `revision_conflict`. */
+  /**
+   * Before the first configuration mutation, simulate a concurrent writer: it
+   * bumps the shared revision and overrides the preset timeout to 90000 ms, so
+   * that mutation answers a CAS `revision_conflict`.
+   */
   configurationConflictOnce?: boolean;
   runtimeRead?: (body: Record<string, unknown>) => { status?: number; json: unknown };
   runtimeMutate?: (body: Record<string, unknown>) => { status?: number; json: unknown };
@@ -59,6 +68,8 @@ export interface AccountFixture {
   signOutFailures: number;
   /** While true the mode probe answers 503, as during a provider outage. */
   authStatusFails: boolean;
+  /** Remaining session-probe failures. */
+  getSessionFailures: number;
   establish(): void;
 }
 
@@ -86,9 +97,9 @@ const defaultWorktrees = [{ path: worktreePath, branch: "main", head: "abcdef123
 /** Mutable fixture-side controller state; the default handlers read and write it like the real server would. */
 interface FixtureState {
   ownClaim: FixtureClaim | null;
-  profilesRevision: number;
+  /** The project's single configuration revision, as `scoped-configuration` reports it for both views. */
+  revision: number;
   selectedProfile: string;
-  configurationRevision: number;
   presets: Array<{ id: string; timeoutMs: number; overrideTimeoutMs: number | null }>;
   conflictOnce: boolean;
 }
@@ -139,37 +150,40 @@ function defaultRuntimeConfiguration(state: FixtureState, body: Record<string, u
     schemaVersion: 1, operationId: "33333333-3333-4333-8333-333333333333", projectId,
     outcome: "completed", replayed: false, observedAt: "2030-01-01T00:00:00.000Z", ...extra,
   });
-  const conflicted = () => {
-    if (!state.conflictOnce) return false;
+  const concurrentWrite = () => {
+    if (!state.conflictOnce) return;
     state.conflictOnce = false;
-    return true;
+    state.revision += 1;
+    for (const preset of state.presets) preset.overrideTimeoutMs = 90_000;
   };
   if (body.operation === "profiles") {
     return { json: {
-      schemaVersion: 1, projectId, configurationRevision: state.profilesRevision,
+      schemaVersion: 1, projectId, configurationRevision: state.revision,
       selectedProfile: state.selectedProfile, profiles: [{ name: "dev" }, { name: "ci" }],
     } };
   }
   if (body.operation === "select_environment_profile") {
-    if (conflicted() || body.expectedRevision !== state.profilesRevision) {
+    concurrentWrite();
+    if (body.expectedRevision !== state.revision) {
       return { status: 409, json: { code: "revision_conflict", error: "The configuration changed" } };
     }
     state.selectedProfile = String(body.name);
-    state.profilesRevision += 1;
-    return { json: receipt({ operation: "select_environment_profile", configurationRevision: state.profilesRevision, selectedProfile: state.selectedProfile }) };
+    state.revision += 1;
+    return { json: receipt({ operation: "select_environment_profile", configurationRevision: state.revision, selectedProfile: state.selectedProfile }) };
   }
   if (body.operation === "configuration") {
-    return { json: { schemaVersion: 1, projectId, configurationRevision: state.configurationRevision, presets: state.presets } };
+    return { json: { schemaVersion: 1, projectId, configurationRevision: state.revision, presets: state.presets } };
   }
   if (body.operation === "set_test_preset_timeout") {
-    if (conflicted() || body.expectedRevision !== state.configurationRevision) {
+    concurrentWrite();
+    if (body.expectedRevision !== state.revision) {
       return { status: 409, json: { code: "revision_conflict", error: "The configuration changed" } };
     }
     const preset = state.presets.find(entry => entry.id === body.presetId);
     if (!preset) return { status: 400, json: { code: "invalid_request", error: "Unknown fixture preset" } };
     preset.overrideTimeoutMs = body.timeoutMs === null ? null : Number(body.timeoutMs);
-    state.configurationRevision += 1;
-    return { json: receipt({ operation: "set_test_preset_timeout", configurationRevision: state.configurationRevision, presetId: preset.id, timeoutMs: preset.overrideTimeoutMs }) };
+    state.revision += 1;
+    return { json: receipt({ operation: "set_test_preset_timeout", configurationRevision: state.revision, presetId: preset.id, timeoutMs: preset.overrideTimeoutMs }) };
   }
   return { status: 400, json: { code: "invalid_request", error: "Unknown fixture configuration operation" } };
 }
@@ -190,9 +204,8 @@ export async function mountAccount(page: Page, options: AccountFixtureOptions = 
   const password = options.password ?? "fixture-password";
   const state: FixtureState = {
     ownClaim: null,
-    profilesRevision: 3,
+    revision: 3,
     selectedProfile: "dev",
-    configurationRevision: 5,
     presets: [{ id: "node:test", timeoutMs: 60_000, overrideTimeoutMs: null }],
     conflictOnce: options.configurationConflictOnce ?? false,
   };
@@ -202,6 +215,7 @@ export async function mountAccount(page: Page, options: AccountFixtureOptions = 
     session: null,
     signOutFailures: options.signOutFailures ?? 0,
     authStatusFails: options.authStatusFails ?? false,
+    getSessionFailures: options.getSessionFailures ?? 0,
     establish() {
       fixture.session = {
         principal: { id: "acct-1", kind: "human" },
@@ -243,8 +257,11 @@ export async function mountAccount(page: Page, options: AccountFixtureOptions = 
       switch (url.pathname) {
         case "/api/auth/status":
           if (fixture.authStatusFails) return fail(503, "service_unavailable");
+          if (options.authStatusAnswer === "network") return route.abort("connectionreset");
+          if (options.authStatusAnswer) return route.fulfill({ status: options.authStatusAnswer.status ?? 200, json: options.authStatusAnswer.json });
           return route.fulfill({ json: { mode: options.loginAvailable === false ? "open" : "better-auth", loginAvailable: options.loginAvailable !== false } });
         case "/api/auth/get-session":
+          if (fixture.getSessionFailures > 0) { fixture.getSessionFailures -= 1; return fail(503, "service_unavailable"); }
           return route.fulfill({ json: fixture.session ? { authenticated: true, ...fixture.session } : { authenticated: false } });
         case "/api/auth/sign-in/email": {
           if (body?.email !== email || body?.password !== password) return fail(401, "invalid_credential");

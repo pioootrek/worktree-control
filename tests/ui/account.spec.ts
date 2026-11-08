@@ -156,6 +156,39 @@ test("a failed mode probe shows a retriable error instead of the legacy dashboar
   await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
 });
 
+for (const [name, answer] of [
+  ["a dropped connection", "network"],
+  ["a 200 without a usable body", { json: {} }],
+  ["a 200 with an unknown mode", { json: { mode: "kerberos", loginAvailable: false } }],
+  ["a 200 claiming a token mode with a login surface", { json: { mode: "token", loginAvailable: true } }],
+] as const) {
+  test(`${name} from the mode probe never selects the legacy token dashboard`, async ({ page }) => {
+    await mountAccount(page, { authStatusAnswer: answer });
+    await expect(page.getByText("Could not determine the sign-in mode")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sign in to Worktree Control" })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Account sign-in" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+  });
+}
+
+test("account mode with an unavailable provider shows a retriable notice, not the legacy dashboard", async ({ page }) => {
+  await mountAccount(page, { authStatusAnswer: { json: { mode: "better-auth", loginAvailable: false } } });
+  await expect(page.getByText("Account sign-in is temporarily unavailable")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in to Worktree Control" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Account sign-in" })).toHaveCount(0);
+});
+
+test("a failed session probe hides account data and the sign-in form until a retry answers", async ({ page }) => {
+  const fixture = await mountAccount(page, { preAuthenticated: true, getSessionFailures: 1 });
+  await expect(page.getByText("Could not check the session")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Account sign-in" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+  expect(fixture.requests.filter(request => request.path === "/api/auth/get-session")).toHaveLength(2);
+});
+
 test("sign-out retries once after a failure and then confirms", async ({ page }) => {
   const fixture = await mountAccount(page, { preAuthenticated: true, signOutFailures: 1 });
   await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
@@ -203,6 +236,39 @@ test("a reload with an unconfirmed sign-out marker finishes the sign-out instead
   expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
 });
 
+test("a reload whose session probe fails keeps a pending sign-out unconfirmed instead of offering sign-in", async ({ page }) => {
+  const fixture = await mountAccount(page, { preAuthenticated: true, signOutFailures: 2 });
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page.getByText("Sign-out was not confirmed")).toBeVisible();
+
+  fixture.getSessionFailures = 1;
+  await page.reload();
+  await expect(page.getByText("Sign-out was not confirmed")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Account sign-in" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toHaveCount(0);
+  expect(fixture.session).not.toBeNull();
+
+  await page.getByRole("button", { name: "Retry sign-out" }).click();
+  await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
+  expect(fixture.session).toBeNull();
+  expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+});
+
+test("a fresh sign-in supersedes a stale sign-out marker from another tab instead of ending the new session", async ({ page }) => {
+  const fixture = await mountAccount(page);
+  await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
+  // Another tab of the same origin recorded an unconfirmed sign-out meanwhile.
+  await page.evaluate(key => localStorage.setItem(key, "1"), SIGN_OUT_UNCONFIRMED_KEY);
+
+  await page.getByLabel("Email address").fill("user@example.com");
+  await page.getByLabel("Password", { exact: true }).fill("fixture-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+  expect(fixture.requests.filter(request => request.path === "/api/auth/sign-out")).toHaveLength(0);
+  expect(fixture.session).not.toBeNull();
+  expect(await page.evaluate(key => localStorage.getItem(key), SIGN_OUT_UNCONFIRMED_KEY)).toBeNull();
+});
+
 test("a reload that cannot confirm the sign-out stays on the unconfirmed screen until the user chooses", async ({ page }) => {
   const fixture = await mountAccount(page, { preAuthenticated: true, signOutFailures: 99 });
   await page.getByRole("button", { name: "Sign out" }).click();
@@ -246,9 +312,10 @@ test("selects an environment profile and saves a preset timeout with CAS and a r
   await expect(page.getByText("Timeout saved.")).toBeVisible();
   const timeout = fixture.requests.find(request => request.path === "/api/runtime/configuration"
     && (request.body as { operation?: string } | null)?.operation === "set_test_preset_timeout");
+  // Profile selection and timeouts share the project revision: the save after a select carries the re-read one.
   expect(timeout?.body).toMatchObject({
     operation: "set_test_preset_timeout", projectId: FIXTURE_PROJECT_ID,
-    worktreePath: "/fixture/web", presetId: "node:test", timeoutMs: 120000, expectedRevision: 5,
+    worktreePath: "/fixture/web", presetId: "node:test", timeoutMs: 120000, expectedRevision: 4,
   });
 
   // Both saves re-fetched the fresh state instead of trusting their own write.
@@ -261,14 +328,52 @@ test("selects an environment profile and saves a preset timeout with CAS and a r
   expect(fixture.errors).toEqual([]);
 });
 
-test("shows a revision conflict from the server instead of hiding it", async ({ page }) => {
-  await mountAccount(page, { preAuthenticated: true, configurationConflictOnce: true });
+const conflictMessage = "The configuration changed meanwhile. The current values were reloaded; review them and try again.";
+const configurationBodies = (fixture: { requests: Array<{ path: string; body: unknown }> }, operation: string) =>
+  fixture.requests
+    .filter(request => request.path === "/api/runtime/configuration" && (request.body as { operation?: string } | null)?.operation === operation)
+    .map(request => request.body as { expectedRevision?: number; idempotencyKey?: string });
+
+test("a profile revision conflict is shown once, reloads the current values and lets a retry succeed", async ({ page }) => {
+  const fixture = await mountAccount(page, { preAuthenticated: true, configurationConflictOnce: true });
   await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
 
   await page.getByLabel("Environment profile").selectOption("ci");
   await page.getByRole("button", { name: "Select profile" }).click();
-  await expect(page.getByText("The configuration changed meanwhile. Refresh and try again.")).toBeVisible();
+  // Exactly one alert: the panel owns the message, the project section does not repeat it.
+  await expect(page.getByText(conflictMessage)).toHaveCount(1);
   await expect(page.getByText("Profile selected.")).toHaveCount(0);
+  // The concurrent writer's values replaced the stale draft.
+  await expect(page.getByLabel("Timeout (ms)")).toHaveValue("90000");
+  await expect(page.getByLabel("Environment profile")).toHaveValue("dev");
+
+  await page.getByLabel("Environment profile").selectOption("ci");
+  await page.getByRole("button", { name: "Select profile" }).click();
+  await expect(page.getByText("Profile selected.")).toBeVisible();
+  await expect(page.getByText(conflictMessage)).toHaveCount(0);
+  const selects = configurationBodies(fixture, "select_environment_profile");
+  expect(selects.map(body => body.expectedRevision)).toEqual([3, 4]);
+  // A retry after a reported conflict is a new intent with a new idempotency key.
+  expect(new Set(selects.map(body => body.idempotencyKey)).size).toBe(2);
+  expect(fixture.errors).toEqual([]);
+});
+
+test("a timeout revision conflict reloads the current override and a retry carries the fresh revision", async ({ page }) => {
+  const fixture = await mountAccount(page, { preAuthenticated: true, configurationConflictOnce: true });
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+
+  await page.getByLabel("Timeout (ms)").fill("120000");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText(conflictMessage)).toHaveCount(1);
+  await expect(page.getByText("Timeout saved.")).toHaveCount(0);
+  await expect(page.getByLabel("Timeout (ms)")).toHaveValue("90000");
+
+  await page.getByLabel("Timeout (ms)").fill("120000");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText("Timeout saved.")).toBeVisible();
+  await expect(page.getByLabel("Timeout (ms)")).toHaveValue("120000");
+  expect(configurationBodies(fixture, "set_test_preset_timeout").map(body => body.expectedRevision)).toEqual([3, 4]);
+  expect(fixture.errors).toEqual([]);
 });
 
 test("renews an own claim from the claim controls", async ({ page }) => {
