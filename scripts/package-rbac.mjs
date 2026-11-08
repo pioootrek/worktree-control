@@ -29,7 +29,7 @@ const data = join(root, "data"), state = join(root, "state"), origin = "https://
 const directoryArgs = ["--data-dir", data, "--state-dir", state];
 const env = { PATH: process.env.PATH, LANG: "C.UTF-8", NODE_ENV: "production" };
 const bounded = (file, args, options = {}) => exec(file, args, { cwd: root, env, timeout: 120_000, maxBuffer: 2 * 1024 * 1024, ...options });
-const step = async (name, action) => { failureStep = name; const value = await action(); steps.push({ name, ok: true }); return value; };
+const step = async (name, action) => { failureStep = name; process.stderr.write(`rbac acceptance: ${name}\n`); const value = await action(); steps.push({ name, ok: true }); return value; };
 async function command(cli, args, extra = {}, body) {
   const child = spawn(process.execPath, [cli, ...args, ...directoryArgs], { cwd: root, env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] }); children.add(child);
   let stdout = "", stderr = "", forced = false;
@@ -55,7 +55,7 @@ async function wait(read, milliseconds = 20_000) {
   throw new Error("Finite fixture condition timed out.");
 }
 async function stop() {
-  for (const client of clients.splice(0)) await client.close();
+  await Promise.allSettled(clients.splice(0).map(client => client.close()));
   if (!controller) return;
   const child = controller; controller = undefined;
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
@@ -186,9 +186,10 @@ try {
     assert(!JSON.stringify(await call("get_server_capacity")).includes("holders")); await call("get_test_queue");
     const presets = await call("list_test_presets", { projectId: project.id }); assert(presets[0].presets.some(preset => preset.id === "node:test"));
     const run = await call("run_test", { projectId: project.id, worktreePath: repo, presetId: "node:test", idempotencyKey: randomUUID() });
-    const terminal = await wait(async () => { const result = await call("get_test_run", { runId: run.runId }); return ["failed", "passed"].includes(result.status?.phase ?? result.phase) ? result : null; });
+    const runId = run.status?.runId ?? run.runId; assert.equal(typeof runId, "string");
+    const terminal = await wait(async () => { const result = await call("get_test_run", { runId }); return ["failed", "passed"].includes(result.status?.phase ?? result.phase) ? result : null; });
     assert.equal(terminal.status?.phase ?? terminal.phase, "failed");
-    assert(JSON.stringify(await call("get_test_run_logs", { runId: run.runId })).includes("finite test failure evidence"));
+    assert(JSON.stringify(await call("get_test_run_logs", { runId })).includes("finite test failure evidence"));
   });
   if (input.legacyLauncher) await step("real-legacy-stdio-proxy-and-client-config-shapes", async () => {
     const launcher = await readFile(input.legacyLauncher, "utf8"); assert.equal(digest(launcher), input.legacyLauncherSha256);
@@ -199,7 +200,7 @@ try {
     const { StdioClientTransport } = await import(pathToFileURL(join(sdk, "client/stdio.js")));
     const proxy = new Client({ name: "legacy-stdio-client", version: "1" }); clients.push(proxy);
     const transport = new StdioClientTransport({ command: "sh", args: [fixtureLauncher], env: { ...env,
-      AGENT_MCP_SECRETS_FILE: secrets, WORKTREE_SWITCHER_MCP_HEADER_FILE: headers,
+      AGENT_MCP_SECRETS_FILE: secrets, WORKTREE_SWITCHER_MCP_HEADER_FILE: headers, BROWSER: "false",
       npm_config_cache: join(root, "proxy-npm-cache"), npm_config_userconfig: join(root, "empty-npmrc"), npm_config_globalconfig: join(root, "empty-global-npmrc") }, stderr: "pipe" });
     await proxy.connect(transport);
     const result = await proxy.callTool({ name: "get_test_queue", arguments: {} }); assert(!result.isError);
@@ -275,9 +276,17 @@ try {
   for (const secret of secretValues) report.error = report.error.replaceAll(secret, "[redacted]");
   process.exitCode = 1;
 } finally {
-  try { await stop(); for (const child of children) { child.kill("SIGKILL"); await new Promise(accept => child.once("close", accept)); } children.clear(); cleanupConfirmed = true; }
-  catch { cleanupConfirmed = false; process.exitCode = 1; }
-  await rm(root, { recursive: true, force: true });
+  let forced = false, graceful = true;
+  try { await stop(); } catch { graceful = false; }
+  for (const child of [...children]) {
+    if (child.exitCode === null && child.signalCode === null) { forced = true; child.kill("SIGKILL"); }
+    try { await wait(() => child.exitCode !== null || child.signalCode !== null, 5_000); children.delete(child); }
+    catch { graceful = false; }
+  }
+  cleanupConfirmed = children.size === 0;
+  if (!graceful || forced || !cleanupConfirmed) { report.result = "failed"; report.cleanupFailure = true; process.exitCode = 1; }
+  // Keep private fixture state if ownership could not be confirmed as ended.
+  if (cleanupConfirmed) await rm(root, { recursive: true, force: true });
   report.cleanupConfirmed = cleanupConfirmed;
   await mkdir(join(repository, "dist/rbac-artifacts"), { recursive: true });
   await writeFile(join(repository, "dist/rbac-artifacts/acceptance.json"), JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });
