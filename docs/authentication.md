@@ -223,21 +223,32 @@ self-service TOTP and passkey enrollment on the Security tab, and sign-out.
 The HttpOnly session cookie is the sole browser authority; no password, token
 or CSRF value reaches the URL, web storage or logs. Session loss (revocation,
 recovery, factor enrollment, expiry) returns to sign-in with an explicit
-notice, and a reload resumes a live session. A failed session probe is not an
-answer either: it renders a retriable state with neither account data nor a
-sign-in form. A late 401 from an earlier session view is ignored, so it cannot
-end or relabel the current session. Sign-out is complete only when
-the server confirms it: the client retries a failed sign-out once and
-otherwise blocks account data behind an explicit unconfirmed state with a
-manual retry instead of faking the sign-in screen. A non-secret intent marker
-in web storage (`worktree-control.signOutUnconfirmed`) records that request;
-it is never authority. A reload that finds the marker and a live session
+notice, and a reload resumes a live session. The session probe accepts only
+the server's DTO: the literal `{authenticated:false}` is anonymous, and
+`authenticated:true` needs a principal ID, an `owner` or `human` kind, a
+canonical `expiresAt` instant and a matching method and factor count. A
+failed probe or any other 200, such as an empty or non-JSON proxy page, is not
+an answer: it renders a retriable state with neither account data nor a
+sign-in form, and it never clears a pending sign-out. A late 401 from an
+earlier session view is ignored, so it cannot end or relabel the current
+session. Sign-out is complete only when the server confirms it with
+`{authenticated:false}` or a 401. Each attempt is abandoned after 15 seconds,
+the client retries once, and otherwise blocks account data behind an explicit
+unconfirmed state with a manual retry instead of faking the sign-in screen. A
+non-secret intent marker in web storage (`worktree-control.signOutUnconfirmed`)
+is written before the first request and cleared only by that proof, so a
+reload or a closed tab during a stalled request keeps the intent; it is never
+authority. A reload that finds the marker and a live session
 finishes the sign-out before any account data renders, so an apparent logout
 never silently resumes. If that reload cannot probe the session, the
 unconfirmed state stays. A completed sign-in clears the marker, because the
 new cookie replaced the old one and the new session must not be ended by an
 older intent. Another tab that still shows account data learns of a confirmed
-sign-out only on its next request; it does not watch the marker. The GUI never infers rights from the owner label:
+sign-out only on its next request; it does not watch the marker. Only the
+Projects tab polls (while visible); the Knowledge and Security tabs make no
+automatic request, so their last view stays on screen until the next
+interaction answers 401. If web storage is unavailable, the in-memory state
+still blocks the current page, but a reload cannot recover the intent. The GUI never infers rights from the owner label:
 reader, operator, tests and configuration distinctions come from the backend
 responses, and denials are shown as such. Profile selection and timeout
 overrides are CAS writes against the project's single configuration revision.

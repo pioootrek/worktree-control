@@ -15,11 +15,13 @@ export type AccountSessionState =
   | { phase: "unavailable" };
 
 /**
- * Non-secret intent marker recording that the user asked to sign out but the
- * server never confirmed it. It is never authority: the HttpOnly cookie and
- * the server's answers remain the sole proof of session state. A reload that
- * finds both the marker and a live session finishes the sign-out before any
- * account data renders, so an apparent logout never silently resumes.
+ * Non-secret intent marker recording that the user asked to sign out and the
+ * server has not confirmed it yet. It is written before the first sign-out
+ * request and cleared only on the server's proof, so a reload or a closed tab
+ * during a stalled request keeps the intent. It is never authority: the
+ * HttpOnly cookie and the server's answers remain the sole proof of session
+ * state. A reload that finds both the marker and a live session finishes the
+ * sign-out before any account data renders, so a logout never silently resumes.
  */
 export const SIGN_OUT_UNCONFIRMED_KEY = "worktree-control.signOutUnconfirmed";
 
@@ -42,16 +44,34 @@ function writeSignOutMarker(unconfirmed: boolean): void {
 
 /** One user intent gets a bounded retry; a 401 means the session was already gone server-side, which is a confirmed sign-out. */
 const SIGN_OUT_ATTEMPTS = 2;
+/** Each attempt is abandoned after this long, so a stalled server reaches the unconfirmed state in bounded time. */
+export const SIGN_OUT_ATTEMPT_TIMEOUT_MS = 15_000;
+
+/** One bounded attempt. A timer (not `AbortSignal.timeout`) bounds it so the page clock governs it in tests. */
+async function attemptSignOut(outer?: AbortSignal): Promise<"confirmed" | "failed" | "aborted"> {
+  if (outer?.aborted) return "aborted";
+  const attempt = new AbortController();
+  const timer = window.setTimeout(() => attempt.abort(), SIGN_OUT_ATTEMPT_TIMEOUT_MS);
+  const forward = () => attempt.abort();
+  outer?.addEventListener("abort", forward, { once: true });
+  try {
+    await signOutRequest(attempt.signal);
+    return "confirmed";
+  } catch (cause) {
+    if (outer?.aborted) return "aborted";
+    // A timeout, a network error, a 5xx or a body without the sign-out proof are all unconfirmed.
+    return cause instanceof AccountApiError && cause.status === 401 ? "confirmed" : "failed";
+  } finally {
+    window.clearTimeout(timer);
+    outer?.removeEventListener("abort", forward);
+  }
+}
 
 async function requestConfirmedSignOut(signal?: AbortSignal): Promise<boolean> {
   for (let attempt = 0; attempt < SIGN_OUT_ATTEMPTS; attempt += 1) {
-    try {
-      await signOutRequest(signal);
-      return true;
-    } catch (cause) {
-      if (signal?.aborted) return false;
-      if (cause instanceof AccountApiError && cause.status === 401) return true;
-    }
+    const outcome = await attemptSignOut(signal);
+    if (outcome === "confirmed") return true;
+    if (outcome === "aborted") return false;
   }
   return false;
 }
@@ -73,10 +93,11 @@ export function useAccountSession() {
 
   const probe = useCallback(async (signal?: AbortSignal) => {
     try {
+      // getSession throws on anything but the contract DTO, so a malformed 200 never clears the marker.
       const session = await getSession(signal);
       if (signal?.aborted) return;
       if (!session.authenticated) {
-        // The server proves there is nothing left to sign out; any marker is resolved.
+        // The literal {authenticated:false} proves there is nothing left to sign out; any marker is resolved.
         writeSignOutMarker(false);
         setState({ phase: "anonymous" });
         return;
@@ -139,20 +160,20 @@ export function useAccountSession() {
     setState({ phase: "anonymous" });
     return true;
   }, []);
-  /** Sign out with a bounded retry; on final failure show the honest unconfirmed state instead of faking anonymous. */
+  /**
+   * Sign out with bounded attempts. The intent is recorded before the first
+   * request and survives until the server proves the sign-out; on final
+   * failure the honest unconfirmed state replaces any fake anonymous view.
+   */
   const end = useCallback(async () => {
     generation.current += 1;
     const current = generation.current;
+    writeSignOutMarker(true);
     setState({ phase: "signingOut" });
     const confirmed = await requestConfirmedSignOut();
+    if (confirmed) writeSignOutMarker(false);
     if (generation.current !== current) return;
-    if (confirmed) {
-      writeSignOutMarker(false);
-      setState({ phase: "anonymous" });
-    } else {
-      writeSignOutMarker(true);
-      setState({ phase: "signOutUnconfirmed", generation: current });
-    }
+    setState(confirmed ? { phase: "anonymous" } : { phase: "signOutUnconfirmed", generation: current });
   }, []);
   /** The user explicitly keeps the session: clear the intent marker and re-prove it. */
   const returnToAccount = useCallback(() => {

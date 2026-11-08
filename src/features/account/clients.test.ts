@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AccountApiError, authStatus, getSession, isSessionLoss, signIn } from "./account-client";
+import { AccountApiError, authStatus, getSession, isSessionLoss, parseBrowserSession, signIn, signOut } from "./account-client";
 import { isRuntimeSessionLoss, RuntimeApiError, runtimeMutate, runtimeRead } from "./runtime-client";
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -49,6 +49,48 @@ describe("account client", () => {
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({ email: "user@example.com", password: "secret" });
     expect(init.headers).toEqual({ "Content-Type": "application/json" });
+  });
+
+  it("accepts only the literal false as anonymous and the full contract DTO as a session", () => {
+    const live = {
+      authenticated: true, principal: { id: "acct-1", kind: "owner" }, expiresAt: "2030-01-01T00:00:00.000Z",
+      authentication: { method: "password_totp", factors: 2 },
+    };
+    expect(parseBrowserSession({ authenticated: false })).toEqual({ authenticated: false });
+    expect(parseBrowserSession(live)).toEqual(live);
+    // Extra fields never pass through.
+    expect(parseBrowserSession({ ...live, token: "x" })).toEqual(live);
+    for (const malformed of [
+      null, "<html>", {}, { authenticated: "false" }, { authenticated: 0 }, { authenticated: true },
+      { ...live, principal: { id: "", kind: "owner" } },
+      { ...live, principal: { id: "acct-1", kind: "agent" } },
+      { ...live, principal: null },
+      { ...live, expiresAt: 1893456000000 },
+      { ...live, expiresAt: "2030-01-01T00:00:00Z" },
+      { ...live, expiresAt: "2030-02-30T00:00:00.000Z" },
+      { ...live, authentication: { method: "password", factors: 2 } },
+      { ...live, authentication: { method: "toString", factors: 1 } },
+      { ...live, authentication: undefined },
+    ]) {
+      expect(() => parseBrowserSession(malformed), JSON.stringify(malformed)).toThrow(AccountApiError);
+    }
+  });
+
+  it("maps a non-JSON 200 get-session page to a malformed answer, never anonymous", async () => {
+    stubFetch(new Response("<html>proxy</html>", { status: 200, headers: { "Content-Type": "text/html" } }));
+    const cause = await getSession().catch(error => error);
+    expect(cause).toBeInstanceOf(AccountApiError);
+    expect(cause.code).toBe("malformed_response");
+    expect(isSessionLoss(cause)).toBe(false);
+  });
+
+  it("resolves sign-out only on the server's sign-out proof", async () => {
+    stubFetch(jsonResponse(200, { authenticated: false }));
+    await expect(signOut()).resolves.toBeUndefined();
+    for (const body of [{}, { authenticated: true }, "ok"]) {
+      stubFetch(jsonResponse(200, body));
+      await expect(signOut()).rejects.toMatchObject({ code: "malformed_response" });
+    }
   });
 
   it("treats only a 401 as session loss, never a 403 denial", () => {

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve, sep } from "node:path";
 
-import type { Page } from "@playwright/test";
+import type { Page, Route } from "@playwright/test";
 
 import { humanConfigurationSchema } from "../../src/shared/contracts/human-configuration";
 import { humanVerificationSchema } from "../../src/shared/contracts/human-verification";
@@ -40,6 +40,8 @@ export interface AccountFixtureOptions {
   authStatusAnswer?: "network" | { status?: number; json: unknown };
   /** Fail this many session probes with a 503 before answering. */
   getSessionFailures?: number;
+  /** Initial raw `get-session` answer (the first probe runs during navigation); see `fixture.getSessionAnswer`. */
+  getSessionAnswer?: FixtureRawAnswer;
   /** Fail this many sign-out requests with a 503 before confirming; the session stays alive meanwhile. */
   signOutFailures?: number;
   /**
@@ -70,7 +72,24 @@ export interface AccountFixture {
   authStatusFails: boolean;
   /** Remaining session-probe failures. */
   getSessionFailures: number;
+  /** While set, `get-session` answers this raw 200 (or a non-JSON page) instead of the contract DTO. */
+  getSessionAnswer: FixtureRawAnswer | null;
+  /** While set, `sign-out` answers this raw 200 without ending the session (no sign-out proof). */
+  signOutAnswer: FixtureRawAnswer | null;
+  /** API paths whose requests are recorded and then held unanswered, as by a stalled server. */
+  holds: Set<string>;
+  /** Answer (or, without an answer, abort) every held request for a path, or for all paths. Settles once delivered. */
+  releaseHeld(path?: string, answer?: { status: number; json: unknown }): Promise<void>;
   establish(): void;
+}
+
+/** A raw answer that bypasses the contract DTO: JSON, or a body with its own content type. */
+export type FixtureRawAnswer = { status?: number; json: unknown } | { status?: number; body: string; contentType: string };
+
+function fulfillRaw(route: Route, answer: FixtureRawAnswer) {
+  return "json" in answer
+    ? route.fulfill({ status: answer.status ?? 200, json: answer.json })
+    : route.fulfill({ status: answer.status ?? 200, body: answer.body, contentType: answer.contentType });
 }
 
 /** Real contracts demand UUID identifiers for configuration and test routes. */
@@ -209,6 +228,7 @@ export async function mountAccount(page: Page, options: AccountFixtureOptions = 
     presets: [{ id: "node:test", timeoutMs: 60_000, overrideTimeoutMs: null }],
     conflictOnce: options.configurationConflictOnce ?? false,
   };
+  const held: Array<{ path: string; route: Route }> = [];
   const fixture: AccountFixture = {
     requests: [],
     errors: [],
@@ -216,6 +236,15 @@ export async function mountAccount(page: Page, options: AccountFixtureOptions = 
     signOutFailures: options.signOutFailures ?? 0,
     authStatusFails: options.authStatusFails ?? false,
     getSessionFailures: options.getSessionFailures ?? 0,
+    getSessionAnswer: options.getSessionAnswer ?? null,
+    signOutAnswer: null,
+    holds: new Set(),
+    async releaseHeld(path, answer) {
+      const matching = held.filter(entry => path === undefined || entry.path === path);
+      for (const entry of matching) held.splice(held.indexOf(entry), 1);
+      // A request the page already abandoned (reload, abort) cannot be answered; that is expected.
+      await Promise.all(matching.map(({ route }) => (answer ? route.fulfill({ status: answer.status, json: answer.json }) : route.abort()).catch(() => undefined)));
+    },
     establish() {
       fixture.session = {
         principal: { id: "acct-1", kind: "human" },
@@ -235,6 +264,7 @@ export async function mountAccount(page: Page, options: AccountFixtureOptions = 
       const request = route.request();
       const body = request.method() === "POST" ? request.postDataJSON() : null;
       fixture.requests.push({ path: url.pathname, method: request.method(), body, authorization: request.headers()["authorization"] ?? null });
+      if (fixture.holds.has(url.pathname)) { held.push({ path: url.pathname, route }); return; }
       const fail = (status: number, code: string) => route.fulfill({ status, json: { code, error: `Fixture ${code}` } });
       const requireSession = () => {
         if (fixture.session) return false;
@@ -262,6 +292,7 @@ export async function mountAccount(page: Page, options: AccountFixtureOptions = 
           return route.fulfill({ json: { mode: options.loginAvailable === false ? "open" : "better-auth", loginAvailable: options.loginAvailable !== false } });
         case "/api/auth/get-session":
           if (fixture.getSessionFailures > 0) { fixture.getSessionFailures -= 1; return fail(503, "service_unavailable"); }
+          if (fixture.getSessionAnswer) return fulfillRaw(route, fixture.getSessionAnswer);
           return route.fulfill({ json: fixture.session ? { authenticated: true, ...fixture.session } : { authenticated: false } });
         case "/api/auth/sign-in/email": {
           if (body?.email !== email || body?.password !== password) return fail(401, "invalid_credential");
@@ -285,6 +316,7 @@ export async function mountAccount(page: Page, options: AccountFixtureOptions = 
           if (body?.currentPassword !== password) return fail(401, "invalid_credential");
           return route.fulfill({ json: { changed: true } });
         case "/api/auth/sign-out":
+          if (fixture.signOutAnswer) return fulfillRaw(route, fixture.signOutAnswer);
           if (fixture.signOutFailures > 0) {
             // The session stays alive server-side; only the client gave up early.
             fixture.signOutFailures -= 1;

@@ -27,11 +27,56 @@ async function call<T>(path: string, init: { method?: "GET" | "POST"; body?: unk
   return value as T;
 }
 
+/** The provider's canonical instant (`canonicalInstant` on the server): exact millisecond ISO-8601 UTC that round-trips. */
+function canonicalInstant(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && new Date(time).toISOString() === value;
+}
+
+const SESSION_FACTORS = { password: 1, password_totp: 2, passkey_uv: 2 } as const;
+
+/**
+ * Strict reading of the `get-session` DTO the server emits (`browserSession`
+ * or `{authenticated:false}`). Only the literal `false` is anonymous; only
+ * `true` with every required field in its contract form is a session. Any
+ * other 200 (an empty or non-JSON proxy page, a missing flag, a foreign
+ * principal kind, a non-canonical expiry, a method/factor mismatch) is not an
+ * answer and throws, so callers keep their unavailable or unconfirmed state.
+ */
+export function parseBrowserSession(value: unknown): BrowserSession {
+  const malformed = new AccountApiError(200, "malformed_response");
+  if (typeof value !== "object" || value === null) throw malformed;
+  const session = value as Record<string, unknown>;
+  if (session.authenticated === false) return { authenticated: false };
+  if (session.authenticated !== true) throw malformed;
+  const principal = session.principal as Record<string, unknown> | null | undefined;
+  const authentication = session.authentication as Record<string, unknown> | null | undefined;
+  if (typeof principal !== "object" || principal === null || typeof principal.id !== "string" || principal.id === ""
+    || (principal.kind !== "owner" && principal.kind !== "human")) throw malformed;
+  if (!canonicalInstant(session.expiresAt)) throw malformed;
+  if (typeof authentication !== "object" || authentication === null || typeof authentication.method !== "string"
+    || !Object.hasOwn(SESSION_FACTORS, authentication.method)
+    || authentication.factors !== SESSION_FACTORS[authentication.method as keyof typeof SESSION_FACTORS]) throw malformed;
+  return {
+    authenticated: true,
+    principal: { id: principal.id, kind: principal.kind },
+    expiresAt: session.expiresAt,
+    authentication: { method: authentication.method, factors: authentication.factors } as Extract<BrowserSession, { authenticated: true }>["authentication"],
+  };
+}
+
 export const authStatus = (signal?: AbortSignal) => call<BrowserAuthenticationStatus>("/api/auth/status", { signal });
-export const getSession = (signal?: AbortSignal) => call<BrowserSession>("/api/auth/get-session", { signal });
+export const getSession = async (signal?: AbortSignal) => parseBrowserSession(await call<unknown>("/api/auth/get-session", { signal }));
 export const signIn = (email: string, password: string, signal?: AbortSignal) =>
   call<BrowserFactorResult>("/api/auth/sign-in/email", { body: { email, password }, signal });
-export const signOut = (signal?: AbortSignal) => call<BrowserSession>("/api/auth/sign-out", { body: {}, signal });
+/** Resolves only on the server's sign-out proof (`{authenticated:false}`); any other 200 body is not a confirmation. */
+export const signOut = async (signal?: AbortSignal): Promise<void> => {
+  const value = await call<unknown>("/api/auth/sign-out", { body: {}, signal });
+  if (typeof value !== "object" || value === null || (value as { authenticated?: unknown }).authenticated !== false) {
+    throw new AccountApiError(200, "malformed_response");
+  }
+};
 export const changePassword = (currentPassword: string, newPassword: string, signal?: AbortSignal) =>
   call<{ changed: true }>("/api/auth/change-password", { body: { currentPassword, newPassword }, signal });
 export const totpEnable = (password: string, signal?: AbortSignal) =>
