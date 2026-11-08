@@ -21,9 +21,12 @@ Linux x64 is verified; macOS and Windows remain unverified.
   installation token, owner and agent principals, agent tokens, Knowledge
   grants and history are preserved; existing tokens gain no permissions.
 - There is no downgrade. `0.1.1` refuses a schema-49 database.
-- After any restore or raw database rollback, the next start refuses until a
+- After an application restore or a raw database rollback with the current
+  witness retained, the next start refuses until a
   protected `auth fence resume` quarantines restored credentials, sessions and
-  grants.
+  grants. Never replace the entire data directory with a pre-upgrade copy:
+  without its witness, that copy cannot be distinguished from a never-upgraded
+  installation and can revive old credentials.
 
 ### Added
 
@@ -92,9 +95,10 @@ Linux x64 is verified; macOS and Windows remain unverified.
 
 ### Known limitations
 
-- The full provider proof suite is not green: five historical native
-  `factor-compatibility` failures remain (1,107 of 1,112 pass). The installed
-  acceptance and the production-composition suite pass on the candidate.
+- The full provider proof suite is not green: the candidate run reproduced
+  exactly five historical native/older bounded `factor-compatibility` failures
+  (1,107 of 1,112 pass, zero skips). Those fixtures are not shipped. The installed
+  acceptance and production-composition tests of the integrated route pass.
 - Account dashboard: Knowledge and Security views do not re-check the session
   on their own; other tabs learn of a sign-out on their next request; the
   configuration panel's reload is not bound to the latest request. No hardware

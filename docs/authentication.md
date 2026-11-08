@@ -1304,7 +1304,10 @@ Release-candidate evidence, Linux x64 only:
   establishment, then checks token and open modes without a provider, provider
   enrollment of the existing owner, account sign-in, the transport denial
   matrix, scoped MCP, revocation, TOTP replay rejection with a durable guessing
-  budget, raw database rollback, protected resume and recovery. The `fresh`
+  budget, raw database rollback, protected resume and recovery. It also restores
+  a backup created by the public `0.1.1` CLI into existing and empty directories:
+  snapshot data is retained, later writes are absent, old credentials are
+  refused, and explicitly reissued credentials and grants work. The `fresh`
   baseline runs the same account flow on a new installation. Both passed on the
   candidate. See [release packaging](release-packaging.md).
 - **Production composition and browser.** The production-composition suite
@@ -1315,9 +1318,14 @@ Release-candidate evidence, Linux x64 only:
   five known failures out of 1,112 cases (1,107 pass), all in
   `factor-compatibility`. They characterize native and older bounded factor
   behaviour that the integrated production route replaces, and they are kept
-  unmodified and unskipped. They were not rerun for the candidate. This release
-  makes no claim that the full proof passes; whether they matter for a given
-  deployment is a review decision, not settled by this guide.
+  unmodified and unskipped. The full run on `370bac2` on 2026-11-08 reproduced
+  exactly those five failures, with zero skipped tests and no additional
+  failures. They cover TOTP reuse in the native and older bounded fixtures and
+  a failed-guess counter lost by the bounded fixture after SQL rollback.
+  These fixtures are not shipped. The integrated route uses a durable,
+  monotonically increasing accepted TOTP step and commits each guessing charge
+  before native verification. Its production-composition tests passed on the
+  same commit. This classification does not make the full proof suite green.
 
 Not claimed: ASVS or other compliance, MFA hardware coverage, macOS or Windows
 operation, protection against a trusted OS user or a whole-host rollback,

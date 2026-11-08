@@ -33,7 +33,12 @@ The installed acceptance (`pnpm test:rbac-artifact` and
 the integrated production route. The full proof suite below is not green: it
 keeps five historical failures in `factor-compatibility.test.ts`, which
 characterize native and older bounded factor behaviour. They stay unmodified
-and unskipped. This package makes no ASVS, compliance or hardware MFA claim;
+and unskipped. The full run on `370bac2` on 2026-11-08 finished with exactly
+those five failures, 1,107 passes and zero skips; the separate production RBAC
+preset passed all 78 tests on the same commit. See the
+[current verification evidence](../../docs/authentication.md#verification-status-and-known-limitations)
+for the production mechanisms and fixture distinction.
+This package makes no ASVS, compliance or hardware MFA claim;
 numeric limits are engineering bounds.
 
 Run its real-library tests from the repository root:
