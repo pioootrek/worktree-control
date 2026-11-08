@@ -2,6 +2,7 @@ import { WorkerRecoveryService } from "./index";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ControlService } from "@/server/control-service";
+import { acquireControllerLock, ControllerAlreadyRunningError } from "@/server/controller-lock";
 import { createMcpControllerServer } from "@/server/mcp-http-server";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
@@ -156,7 +157,10 @@ describe("connected remote verification (isolated fixtures, not real-worker acce
     expect(f.workerStore.listTestRuns()).toHaveLength(2);
   }, 40_000);
 
-  it("quarantines real worker process death and restart without replaying the accepted command", async () => {
+  it.each([
+    { edge: "confirmed", name: "quarantines real worker process death and restart without replaying the accepted command" },
+    { edge: "pending", name: "requires protected fence recovery after real worker death during an authority transaction" },
+  ] as const)("$name", async ({ edge }) => {
     const f = await fixture(true);
     const startedFile = join(f.root, "executions"), finishedFile = join(f.root, "process-finished"), descendantFile = join(f.root, "descendant-alive"), launcherFile = join(f.root, "launcher-finished");
     const releaseLauncher = join(f.root, "release-launcher"), releaseDescendant = join(f.root, "release-descendant");
@@ -175,11 +179,13 @@ describe("connected remote verification (isolated fixtures, not real-worker acce
     const launch = async () => {
       const child = fork(fileURLToPath(new URL("./fixtures/remote-worker-process.ts", import.meta.url)), [join(f.root, "worker.sqlite3"), join(f.root, "worker.lock"), configFile], { execArgv: ["--import", "tsx"], stdio: ["ignore", "ignore", "pipe", "ipc"] });
       const exited = once(child, "exit");
+      let crashRequested = false;
       let stderr = "";
       child.stderr?.on("data", chunk => { stderr = (stderr + String(chunk)).slice(-2000); });
       cleanup.push(async () => {
         if (child.exitCode !== null || child.signalCode !== null) return;
-        child.send("close");
+        if (crashRequested) child.kill("SIGKILL");
+        else child.send("close");
         await exited;
       });
       const ready = await Promise.race([
@@ -187,13 +193,28 @@ describe("connected remote verification (isolated fixtures, not real-worker acce
         exited.then(() => { throw new Error(`Worker fixture exited before ready: ${stderr}`); }),
       ]);
       expect(ready.ready).toBe(true);
-      return { child, exited, ready };
+      const freeze = async (edge: "confirmed" | "pending") => {
+        const boundary = once(child, "message");
+        crashRequested = true;
+        child.send(`crash-${edge}`);
+        return Promise.race([
+          boundary.then(([message]) => message),
+          exited.then(() => { throw new Error(`Worker fixture exited before crash boundary: ${stderr}`); }),
+        ]);
+      };
+      return { child, exited, ready, freeze };
     };
     const request = f.submit(sha);
     const first = await launch();
     await vi.waitFor(() => expect(f.controller.status(request.id, f.owner).attempt?.phase).toBe("running"), { timeout: 10_000 });
     await vi.waitFor(() => expect(existsSync(descendantFile)).toBe(true), { timeout: 10_000 });
-    first.child.kill("SIGKILL"); await first.exited;
+    expect(await first.freeze(edge)).toEqual({ crash: `crash-${edge}`, fenceState: edge,
+      attemptId: f.controller.status(request.id, f.owner).attempt!.id });
+    // Both singleton owners remain held at the crash boundary.
+    expect(() => acquireControllerLock(join(f.root, "worker.lock"))).toThrow(ControllerAlreadyRunningError);
+    expect(() => new SqliteStateStore(join(f.root, "worker.sqlite3"))).toThrow(ControllerAlreadyRunningError);
+    first.child.kill("SIGKILL");
+    expect(await first.exited).toEqual([null, "SIGKILL"]);
     workerCrashed = true;
     // A real descendant outlives both the killed worker and its finite launcher.
     // Hold the launcher until after the crash so ordinary owned cleanup cannot
@@ -203,15 +224,32 @@ describe("connected remote verification (isolated fixtures, not real-worker acce
     const heartbeat = readFileSync(descendantFile, "utf8");
     await vi.waitFor(() => expect(readFileSync(descendantFile, "utf8")).not.toBe(heartbeat), { timeout: 10_000 });
     expect(existsSync(finishedFile)).toBe(false);
-    const inspectionStore = new SqliteStateStore(join(f.root, "worker.sqlite3"));
-    const localIdentity = new IdentityService(inspectionStore);
-    const localOwner = localIdentity.authenticateBearer(localIdentity.bootstrapOwnerSession().token);
-    const recovery = new WorkerRecoveryService(inspectionStore.remoteConnection, new LinuxWorkerRecoveryHost(join(f.root, "worker.sqlite3")), localIdentity);
+    if (edge === "pending") {
+      // A crash during an authority write is fenced before worker recovery can
+      // inspect receipts. Never adopt or erase this witness to reach that layer.
+      // security-fence.test.ts covers protected resume at real commit/crash edges.
+      const witnessPath = join(f.root, "worker.sqlite3.security", "witness.json");
+      const witness = readFileSync(witnessPath);
+      expect(JSON.parse(witness.toString()).payload.state).toBe("pending");
+      expect(() => new SqliteStateStore(join(f.root, "worker.sqlite3"))).toThrowError(
+        expect.objectContaining({ code: "security_fence_recovery_required" }));
+      await expect(launch()).rejects.toThrow("security_fence_recovery_required");
+      expect(readFileSync(witnessPath)).toEqual(witness);
+      expect(readFileSync(startedFile, "utf8")).toBe("run\n");
+      return; // The registered cleanup releases and confirms the surviving descendant.
+    }
+    const inspectionLock = acquireControllerLock(join(f.root, "worker.lock"));
     try {
-      const attemptId = inspectionStore.remoteConnection.receipts()[0].assignment.attemptId;
-      expect(recovery.inspect(attemptId, localOwner)).toMatchObject({ blocked: true, recoverable: false, code: "recovery_same_boot_unconfirmed" });
-      expect(() => recovery.reconcile(attemptId, "same-boot-refused", localOwner)).toThrow("recovery_same_boot_unconfirmed");
-    } finally { inspectionStore.close(); }
+      const inspectionStore = new SqliteStateStore(join(f.root, "worker.sqlite3"));
+      const localIdentity = new IdentityService(inspectionStore);
+      const localOwner = localIdentity.authenticateBearer(localIdentity.bootstrapOwnerSession().token);
+      const recovery = new WorkerRecoveryService(inspectionStore.remoteConnection, new LinuxWorkerRecoveryHost(join(f.root, "worker.sqlite3")), localIdentity);
+      try {
+        const attemptId = inspectionStore.remoteConnection.receipts()[0].assignment.attemptId;
+        expect(recovery.inspect(attemptId, localOwner)).toMatchObject({ blocked: true, recoverable: false, code: "recovery_same_boot_unconfirmed" });
+        expect(() => recovery.reconcile(attemptId, "same-boot-refused", localOwner)).toThrow("recovery_same_boot_unconfirmed");
+      } finally { inspectionStore.close(); }
+    } finally { inspectionLock.release(); }
     const second = await launch();
     expect(second.ready.admissionBlockReason).toBe("remote_execution_cleanup_unconfirmed");
     await vi.waitFor(() => expect(f.controller.status(request.id, f.owner).attempt?.phase).toBe("uncertain"), { timeout: 10_000 });
