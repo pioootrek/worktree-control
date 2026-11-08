@@ -12,14 +12,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SqliteStateStore } from "./sqlite-state-store";
 import { resolveAppPaths } from "../../paths";
 import { maintainSecurityFence } from "../../bootstrap/security-maintenance";
-import { securityFenceRoot } from "./security-fence";
+import { SecurityFence, securityFenceRoot } from "./security-fence";
+import * as validation from "./database-validation";
 import { AuthenticationService } from "../../modules/authentication";
 import { IdentityService } from "../../modules/identity";
 import { createControllerBackup, restoreControllerBackup } from "../../controller-backup";
 import { securityTriggers } from "./security-fence-migration";
 import { inspectSchema } from "./schema-inspection";
+import { applyRegistryMigration } from "./migration-registry";
 
 vi.mock("node:fs", async original=>({...await original<typeof import("node:fs")>()}));
+vi.mock("./database-validation", async original=>({...await original<typeof import("./database-validation")>()}));
 const roots:string[]=[];
 afterEach(()=>{ vi.restoreAllMocks(); for(const root of roots.splice(0)) rmSync(root,{recursive:true,force:true}); });
 function fixture() {
@@ -35,6 +38,61 @@ const resume=(paths:ReturnType<typeof resolveAppPaths>)=>maintainSecurityFence(p
 const sql=async(store:SqliteStateStore,source:string)=>{const s=store.authenticationProviderStorage(); await s.borrow(async()=>{const c=s.createProviderConnection();try{c.prepare(source).run([]);}finally{c.close();}});};
 
 describe("external security checkpoint",()=>{
+  it.each(["migration-rollback", "migration-return", "durability", "validation", "receipt"] as const)("reports durable establishment changes at %s and keeps recovery fenced",stage=>{
+    const root=mkdtempSync(join(tmpdir(),"security-establish-fault-"));roots.push(root);
+    const paths=resolveAppPaths(join(root,"data"));mkdirSync(paths.dataDirectory,{mode:0o700});
+    const db=unmanagedFixtureDatabase(paths.databasePath);
+    // Frozen schema26 plus the unchanged index (27) and provenance registry (28).
+    db.exec(readFileSync(new URL("./fixtures/schema-v26.sql",import.meta.url),"utf8"));
+    db.exec(`CREATE INDEX IF NOT EXISTS knowledge_import_sources_target ON knowledge_import_sources(project_id,target_kind,target_id);
+      INSERT INTO schema_migrations(version,applied_at) VALUES(27,'2026-11-01T00:00:00.000Z')`);
+    applyRegistryMigration(db);
+    // Seed historical authority directly, without opening/migrating the old database.
+    db.exec("INSERT INTO remote_principals VALUES('historical-owner','owner','active')");
+    db.prepare(`INSERT INTO principal_credentials(id,principal_id,kind,label,token_prefix,verifier_hash,status,created_at)
+      VALUES('historical-credential','historical-owner','owner_session','fixture','fixture',?,'active','2026-11-01T00:00:00.000Z')`).run("a".repeat(64));
+    const before=db.prepare("SELECT * FROM schema_migrations").all();db.close();chmodSync(paths.databasePath,0o600);
+    const status=inspect(paths);let injected=false;
+    const validate=validation.validateDatabase;
+    vi.spyOn(validation,"validateDatabase").mockImplementation((database,version)=>{
+      validate(database,version);
+      if(version===49 && ((stage==="migration-rollback" && database.inTransaction) || (stage==="validation" && !database.inTransaction))){injected=true;throw new Error("fixture validation fault");}
+    });
+    const durability=validation.assertDurability;
+    vi.spyOn(validation,"assertDurability").mockImplementation(database=>{
+      durability(database);
+      if(stage==="durability" && (database.prepare("SELECT max(version) version FROM schema_migrations").get() as {version:number}).version===49){injected=true;throw new Error("fixture durability fault");}
+    });
+    const pragma=Database.prototype.pragma;
+    vi.spyOn(Database.prototype,"pragma").mockImplementation(function(this:Database.Database,source,options){
+      const result=pragma.call(this,source,options);
+      // initializeSchema's finally can fail AFTER the outer transaction committed.
+      if(stage==="migration-return" && source==="foreign_keys = ON" && !this.inTransaction
+        && (this.prepare("SELECT max(version) version FROM schema_migrations").get() as {version:number}).version===49){injected=true;throw new Error("fixture post-commit pragma fault");}
+      return result;
+    });
+    if(stage==="receipt")vi.spyOn(SecurityFence,"maintenanceReceipt").mockImplementation(()=>{injected=true;throw new Error("fixture receipt fault");});
+    expect(()=>maintainSecurityFence(paths,{action:"establish",expect:status.preflight})).toThrowError(expect.objectContaining({code:"security_fence_pending",committed:stage!=="migration-rollback"}));
+    expect(injected).toBe(true);vi.restoreAllMocks();
+    const after=unmanagedFixtureDatabase(paths.databasePath,{readonly:true});
+    try{
+      expect(inspectSchema(after).version).toBe(stage==="migration-rollback"?28:49);
+      expect(after.prepare("SELECT * FROM schema_migrations WHERE version<=28").all()).toEqual(before);
+      expect(after.prepare("SELECT status FROM principal_credentials WHERE id='historical-credential'").get()).toEqual({status:"active"});
+    }finally{after.close();}
+    expect(JSON.parse(readFileSync(witness(paths.databasePath),"utf8")).payload.state).toBe("pending");
+    expect(inspect(paths)).toMatchObject({trusted:false,establishmentAllowed:false});
+    expect(()=>new SqliteStateStore(paths.databasePath)).toThrow(/security_fence_recovery_required/);
+    expect(()=>maintainSecurityFence(paths,{action:"establish",expect:inspect(paths).preflight})).toThrow(/security_fence_recovery_required/);
+    expect(resume(paths)).toMatchObject({trusted:true,quarantined:true});
+    const recovered=new SqliteStateStore(paths.databasePath);
+    try{
+      expect(recovered.getPrincipal("historical-owner")).toEqual({id:"historical-owner",kind:"owner",status:"active"});
+      const raw=unmanagedFixtureDatabase(paths.databasePath,{readonly:true});
+      try{expect(raw.prepare("SELECT status FROM principal_credentials WHERE id='historical-credential'").get()).toEqual({status:"revoked"});}finally{raw.close();}
+    }finally{recovered.close();}
+  });
+
   it("makes bounded recovery progress through more than one batch of abandoned publications",()=>{
     const f=fixture();f.store.close();
     const abandoned=Array.from({length:40},()=>join(securityFenceRoot(f.paths.databasePath),`.journal-${randomUUID()}`));

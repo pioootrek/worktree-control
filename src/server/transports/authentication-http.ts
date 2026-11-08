@@ -270,8 +270,8 @@ export class AuthenticationHttp {
     // Never carry that credential into the replacement error response.
     response.removeHeader("Set-Cookie");
     const known = committed ? new AuthenticationProviderError("outcome_committed", "The change committed.", true) : error;
-    const { status, code, committed: proven } = failure(known, knowledge);
-    if (status === 429 || status === 503) response.setHeader("Retry-After", status === 429 ? "60" : "1");
+    const { status, code, committed: proven, retryAfter } = failure(known, knowledge);
+    if (retryAfter !== false && (status === 429 || status === 503)) response.setHeader("Retry-After", status === 429 ? "60" : "1");
     response.setHeader("Connection", "close");
     authenticationJson(response, status, { code, ...(proven ? { committed: true } : {}) });
   }
@@ -302,10 +302,14 @@ export class AuthenticationHttp {
 }
 
 /** One fixed public failure. No branch distinguishes account, mapping, generation or SQL detail. */
-function failure(error: unknown, knowledge: boolean): { status: number; code: string; committed?: boolean } {
+function failure(error: unknown, knowledge: boolean): { status: number; code: string; committed?: boolean; retryAfter?: false } {
   if (error instanceof RuntimeAccessDenied || (error instanceof IdentityError && error.code === "runtime_forbidden")) return { status: 403, code: "project_access_denied" };
   if (error instanceof ScopedRuntimeError) {
     if (error.code === "invalid_request") return { status: 400, code: "invalid_request" };
+    if (error.code === "test_environment_denied") return { status: 403, code: error.code };
+    if (["no_managed_server", "discovery_limit", "capacity"].includes(error.code)) return { status: 409, code: error.code };
+    // Dispatch is absent from this composition; a timed retry cannot enable it.
+    if (error.code === "test_queue_unavailable") return { status: 503, code: error.code, retryAfter: false };
     if (["idempotency_conflict", "claim_conflict", "claim_stale", "revision_conflict", "runtime_active", "override_limit", "claim_worktree_mismatch"].includes(error.code)) return { status: 409, code: error.code };
     if (["profile_not_found", "preset_not_found", "worktree_unavailable"].includes(error.code)) return { status: 400, code: error.code };
     if (error.code === "outcome_unknown") return { status: 409, code: "outcome_unknown" };

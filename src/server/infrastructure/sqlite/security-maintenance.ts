@@ -102,6 +102,16 @@ export function maintainSqliteSecurityFence(paths: AppPaths, command: SecurityMa
     owner.completeInitialization();
     return {...SecurityFence.preflight(databasePath,database,49),changed:true,receipt,quarantined:command.action === "resume"};
   } catch (error) {
+    // Initialization owns one outer transaction. Prove a committed migration from
+    // its durable version marker, even if its post-commit/finally work threw.
+    // Rolled-back migration statements and the external pending witness alone
+    // do not prove a committed database change. Use only the still-owned connection.
+    if (!committed && owner?.database.open && !owner.database.inTransaction) {
+      try {
+        const row = owner.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number };
+        committed = row.version > owner.inspection.version;
+      } catch { /* Preserve the original failure when commit evidence cannot be read. */ }
+    }
     if (error instanceof SecurityFenceError) throw committed && !error.committed ? new SecurityFenceError(error.code as ConstructorParameters<typeof SecurityFenceError>[0],true) : error;
     if(error instanceof ControllerAlreadyRunningError)throw new SecurityFenceError("security_fence_owner_running");
     throw new SecurityFenceError("security_fence_pending", committed ? true : undefined);

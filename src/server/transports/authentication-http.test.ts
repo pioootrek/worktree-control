@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 import { AuthenticationProviderError, type AuthenticationProviderRuntime, type BrowserRelease } from "@/server/modules/authentication";
 import { directAdmission } from "@/server/database-admission";
+import { ScopedRuntimeError } from "@/server/modules/runtime";
 import { describe, expect, it, vi } from "vitest";
 import { approvedAuthenticationCookies, AuthenticationHttp } from "./authentication-http";
 import { BoundaryError, COOKIE_POLICY, parseStrictJson, readBoundedBody, requestCookies, validateTransportLimits } from "./authentication-http-boundary";
@@ -55,6 +56,36 @@ function adapter(assertAvailable?: () => void) {
   return { value, browser };
 }
 describe("authentication request lifetime and socket peer", () => {
+  it.each([
+    ["mutate", "no_managed_server", 409, "no_managed_server", undefined],
+    ["tests", "test_environment_denied", 403, "test_environment_denied", undefined],
+    ["tests", "discovery_limit", 409, "discovery_limit", undefined],
+    ["tests", "test_queue_unavailable", 503, "test_queue_unavailable", undefined],
+    ["mutate", "capacity", 409, "capacity", undefined],
+    ["configuration", "capacity", 409, "capacity", undefined],
+    ["tests", "preset_discovery_unavailable", 503, "runtime_read_unavailable", "1"],
+    ["mutate", "runtime_operation_failed", 503, "runtime_read_unavailable", "1"],
+    ["read", "private_unknown_code", 503, "runtime_read_unavailable", "1"],
+  ] as const)("classifies authenticated %s refusal %s without disclosing details", async (route, code, status, publicCode, retry) => {
+    const execute = vi.fn().mockRejectedValue(new ScopedRuntimeError(code, "private project, profile and capacity-holder details"));
+    const authenticateRequest = vi.fn().mockReturnValue({ result: Promise.resolve({ principalId: "fixture" }), settled: Promise.resolve() });
+    const application = { execute };
+    const value = new AuthenticationHttp({ origin: "https://controller.test", admission: directAdmission, limits,
+      runtime: { authenticateRequest } as never, knowledge: {} as never,
+      runtimeReads: application as never, runtimeMutations: application as never, verification: application as never, configuration: application as never,
+      status: () => ({ mode: "better-auth", loginAvailable: true }) });
+    const request = incoming("127.0.0.1"), response = outgoing();
+    request.url = `/api/runtime/${route}`;
+    Object.assign(request.headers, { cookie: "__Secure-wtc.session_token=fixture" });
+    expect(await value.handle(request as never, response as never)).toBe(true);
+    expect(authenticateRequest).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(response.status).toBe(status);
+    expect(response.body).toEqual({ code: publicCode });
+    expect(response.headers.get("retry-after")).toBe(retry);
+    response.emit("finish");
+  });
+
   it("claims only the explicit runtime routes without a cookie and refuses unknown cookie routes", async () => {
     const f = adapter();
     for (const path of ["/api/runtime/read", "/api/runtime/mutate", "/api/runtime/unknown"]) {
