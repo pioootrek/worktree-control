@@ -7,8 +7,10 @@ Queue builds and tests, see which code they checked, and keep the tasks,
 discussions and decisions that the next session will need.
 
 Worktree Control runs on your machine with a browser dashboard, CLI and MCP
-server. It supports Node.js and Django servers and verification-only projects such as Godot, stores state in SQLite, and
-needs no hosted account. It is MIT licensed.
+server. It supports Node.js and Django servers, verification-only projects such as Godot and
+Godot Web previews, stores state in SQLite, and needs no hosted account. Optional
+individual accounts with per-project permissions run on the same machine. It is
+MIT licensed.
 
 [Website](https://pioootrek.github.io/worktree-control/) · [Why I built it](https://pioootrek.github.io/worktree-control/blog/managing-the-agents/) · [Try it locally](#quick-start) · [Connect your agent](#mcp-for-coding-agents) · [Project knowledge](#keep-project-context-between-sessions) · [Documentation](#documentation)
 
@@ -75,7 +77,8 @@ writes belong. See the [knowledge delivery plan](https://github.com/pioootrek/wo
 
 ## Quick start
 
-**Status:** pre-1.0 (`0.1.1`). The local controller is in daily use by its
+**Status:** pre-1.0. `0.1.1` is the published npm release; `0.2.0` is a release
+candidate until npm lists it. The local controller is in daily use by its
 author. Linux x64 is verified; macOS and Windows are unverified. The CLI and
 data model may change; see the [changelog](CHANGELOG.md).
 
@@ -144,8 +147,11 @@ The command above binds the dashboard to loopback on port `47831`. MCP uses
 loopback port `47832`. Without `--host`, the dashboard defaults to `0.0.0.0`.
 For another device, use the [HTTPS setup](#self-hosting-and-https).
 
-Existing installations keep legacy authentication until explicitly migrated.
-Read the [upgrade notes](docs/authentication.md#upgrade-notes-and-breaking-changes)
+Upgrading `0.1.1` to `0.2.0` needs one protected offline step before the first
+start; follow [Upgrade from 0.1.1 to 0.2.0](docs/package-trial.md#upgrade-from-011-to-020).
+Installations created before authentication modes keep legacy authentication
+until explicitly migrated; read the
+[upgrade notes](docs/authentication.md#upgrade-notes-and-breaking-changes)
 before changing modes or credentials.
 
 ### Run it in the background
@@ -375,6 +381,9 @@ clients; process ownership and preset validation are not a sandbox.
 
 - `token` mode requires the installation token for browser, API, MCP and online CLI access.
 - `open` mode removes authentication and is intended for trusted loopback use.
+- Optional `better-auth` account mode gives each person and agent individual,
+  revocable per-project permissions. It needs a separately installed provider and
+  this HTTPS setup; see [account mode](docs/authentication.md#account-mode-better-auth).
 - The controller stops only process trees it owns, never an unknown process on an occupied port.
 - Literal environment values are stored in SQLite. Keep secrets out of those profiles; worker-side secret references remain planned.
 
@@ -761,17 +770,18 @@ result in your existing client. Authorization, persistence and workspace
 foundations are merged; connected-worker dispatch and the complete remote
 workflow are not yet available. See the [remote verification plan](https://github.com/pioootrek/worktree-control/blob/main/docs/remote-verification-plan.md).
 
-Optional account login, agent-fleet coordination and maintainer-operated hosting
-are planned. There is no hosted signup or pricing offer today. Self-hosting is
+Optional local account login is available from `0.2.0`. Agent-fleet
+coordination and maintainer-operated hosting are planned. There is no hosted
+signup or pricing offer today. Self-hosting is
 intended to remain complete and independent. Read Knowledge memory `570757852db162a0d3c6d2c252b26e7e` and its `implementation-plan.md` attachment through the [knowledge workflow](https://github.com/pioootrek/worktree-control/blob/main/docs/knowledge/AGENTS.md).
 
 ## Documentation
 
 | Guide | What it covers |
 | --- | --- |
-| [Authentication](docs/authentication.md) | Tokens, open mode, rotation and upgrades |
+| [Authentication](docs/authentication.md) | Tokens, open mode, agent credentials, optional accounts, security fence and recovery |
 | [User service](docs/user-service.md) | Installation, lifecycle, logs and removal |
-| [Installation](docs/package-trial.md) | npm install, verified tarball, checksums and user-prefix installation |
+| [Installation](docs/package-trial.md) | npm install, verified tarball, checksums, user-prefix installation and the 0.1.1 → 0.2.0 upgrade |
 | [Changelog](CHANGELOG.md) | Release notes, the rename from worktree-switcher, platform status and known limitations |
 | [Controller HTTPS](docs/controller-https.md) | Caddy, certificates and access from another device |
 | [Reservations and MCP](docs/reservations-and-mcp.md) | Claims, locks, client integration and permissions |

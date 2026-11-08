@@ -1,6 +1,6 @@
 ---
 audience: "contributors and coding agents"
-last_reviewed: "2026-10-20"
+last_reviewed: "2026-11-08"
 source_of_truth: "product intent and initial architecture of Worktree Control"
 status: "active"
 ---
@@ -123,9 +123,13 @@ depend on interfaces such as `StateStore`, `GitWorktreeReader`, and
 future remote implementation can replace that adapter without changing use
 cases or API contracts.
 
-User accounts are not part of the local MVP. Adding them later requires an
-authentication and authorization boundary plus ownership and concurrency
-rules; changing the persistence adapter alone would not be sufficient.
+User accounts were not part of the local MVP. Since `0.2.0`, optional local
+accounts (`better-auth` mode) add that authentication and authorization
+boundary through a separately installed provider on the same SQLite owner, with
+explicit per-project permissions and session-bound ownership. `token` and
+`open` modes remain complete without it. Hosted accounts are not provided; a
+future remote persistence adapter would still need its own ownership and
+concurrency rules. See [authentication](authentication.md#account-mode-better-auth).
 
 ## Configuration contract
 
@@ -197,7 +201,8 @@ alias for the same executable. The product was called Worktree Switcher until
 2026-10-05, when it was renamed because the npm name `worktree-switcher` had
 been taken that day by an unrelated Windows-only project; `worktree-switcher`
 on npm is not this product. A global user-level installation registered as an operating-system user service is the
-recommended daily-use path. Version `0.1.1` is published on npm; verified
+recommended daily-use path. Version `0.1.1` is published on npm and `0.2.0` is a
+release candidate until npm lists it; verified
 tarballs and source builds also support foreground evaluation and diagnostics.
 Running `worktree-control` or `worktree-control start`
 starts one foreground controller, opens the browser, and owns its managed child

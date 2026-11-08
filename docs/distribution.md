@@ -1,6 +1,6 @@
 ---
 audience: "maintainers publishing Worktree Control to MCP directories"
-last_reviewed: "2026-10-18"
+last_reviewed: "2026-11-08"
 source_of_truth: "official MCP Registry manifest, directory submission steps and listing copy"
 status: "active"
 ---
@@ -25,7 +25,8 @@ transport:
   the fixed `--host` keeps the dashboard off the CLI default `0.0.0.0`;
 - endpoint: `http://127.0.0.1:{--mcp-port}/mcp`, always on loopback;
 - header: `Authorization: Bearer <token>`, using the installation token or a
-  scoped agent token. Open mode needs no header.
+  scoped agent token. Open mode needs no header. In the optional account mode
+  only individual agent credentials work; the installation token is refused.
 
 `worktree-control config mcp` prints the same URL and header. Two limits apply
 to clients that launch the package themselves:
@@ -46,19 +47,19 @@ The registry checks the `mcpName` field of the published npm version.
 `package.json` has carried it since this guide was added, but
 `worktree-control@0.1.1` was published without it. A registry publish of
 `0.1.1` fails ownership verification. The registry guide offers no other route
-for an npm package, so publish the next npm release first.
+for an npm package, so the first registry publish waits for `0.2.0` on npm.
+`server.json` already names `0.2.0` in `version` and `packages[0].version`.
 
-1. Release the next version through the usual release PR and
-   [publish the CI tarball](package-trial.md#publish-a-release). Confirm that
-   npm has the field:
+1. [Publish the `0.2.0` CI tarball](package-trial.md#publish-a-release). Confirm
+   that npm has the field:
 
    ```bash
-   npm view worktree-control@<version> mcpName
+   npm view worktree-control@0.2.0 mcpName
    ```
 
    The command should print `io.github.pioootrek/worktree-control`.
-2. In `server.json`, set both `version` and `packages[0].version` to that
-   release and merge the change.
+2. For later releases, set both `version` and `packages[0].version` in
+   `server.json` to the release before publishing it, and merge the change.
 3. Install `mcp-publisher` as described in the registry's
    [quickstart](https://github.com/modelcontextprotocol/registry/blob/main/docs/modelcontextprotocol-io/quickstart.mdx).
    On Linux or macOS, either run `brew install mcp-publisher` or download the binary:

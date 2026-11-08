@@ -16,11 +16,12 @@ mounted only for the immutable active RBAC boot. Individual agents keep explicit
 credential ceilings; diagnostic logs/storage/capacity have independent grants.
 Unconverted cookie and broad privileged operations deny. The optional provider
 artifact remains separate from Community. See the current
-[production contract and migration runbook](authentication.md#production-account-mode-a5)
-for the transport inventory, protected CLI, installed acceptance and exact GUI gap.
-Older slice descriptions below record their original boundaries; A5 supersedes
-the unconditional mode-refusal and missing-public-mount statements. General ENV
-roles, GUI integration, independent review and live migration remain separate.
+[operator contract](authentication.md#account-mode-better-auth) for the transport
+inventory, protected CLI, account dashboard and installed acceptance. Older slice
+descriptions below record their original boundaries; A5 supersedes the
+unconditional mode-refusal, missing-public-mount and missing-GUI statements.
+Account mode ships as an optional part of `0.2.0`. General ENV roles,
+invitations and delegated account administration remain unimplemented.
 
 ## Status and decision boundary
 
@@ -46,7 +47,7 @@ now issues opaque runtime-owned provider actors and validates current stored
 session/mapping/principal state inside grant-limited Knowledge operations.
 Controller migration 39 adds honest provider history attribution, preserving
 old history and migrations 1..38. Migration 40 and A3-I18 add
-[integrated factor authority](authentication.md#integrated-factor-authority):
+[integrated factor authority](authentication-reference.md#integrated-factor-authority):
 recognized optional TOTP and passkey storage, one application-owned protection
 policy and persisted session evidence behind the same handoff. Account mode now requires A5 validated readiness. Closed factor HTTP routes and ordinary-human memberships now work
 inside the isolated composition. P1 implements the production shared lifetime
@@ -57,7 +58,7 @@ human runtime leases with durable retry intent and closed HTTP control. No
 operator receives implied tests/profiles/config/ENV/admin rights. P2b2 adds explicit
 independent tests:run through the shared queue, original-session own-run access
 and bounded waits, with schema 47 immutable attribution and current native
-provider authority at dispatch. See [human finite verification](authentication.md#human-finite-verification-p2b2).
+provider authority at dispatch. See [human finite verification](authentication-reference.md#human-finite-verification-p2b2).
 P2c adds explicit literal profile selection and timeout-only configuration.
 Public browser mounting, remaining transport parity, P3 protected
 recovery/restore fencing, factor management/recovery,
@@ -73,7 +74,7 @@ P3b supplies the external restore fence and protected quarantine. Supported rest
 and raw database rollback refuse before provider loading until protected recovery. Native proof responses expose
 session tokens; the existing bounded browser adapter strips them and releases
 cookies only after current authority checks. A5 supplies the closed production mount; independent release review remains required.
-See [the implemented proof boundary](authentication.md#optional-provider-proof-first-a3-slice).
+See [the implemented proof boundary](authentication-reference.md#optional-provider-proof-first-a3-slice).
 
 Knowledge project `k7a-worktree-switcher` holds design task
 `e3e2e52e-7b95-4088-8234-0e6d35c39f86` and direction memory
@@ -280,7 +281,7 @@ or revoke a credential at its external provider.
 Better Auth remains an optional identity/session provider mapped to stable
 principals. The first proof exercises adapter transactions/disposal against the
 sole SQLite connection; migration 38 and controller backups include its data.
-The [implemented handoff](authentication.md#provider-authorization-handoff)
+The [implemented handoff](authentication-reference.md#provider-authorization-handoff)
 uses an instance-bound frozen actor and synchronous current-state checks, with
 original expiry, ordinary grants/role ceilings and safe `credential: null`
 metadata. It denies owner administration, runtime sponsorship/control,
@@ -315,7 +316,7 @@ means alternatives, not two mandatory sequential checks. Optional enrollment
 cannot bypass a protection the account has chosen or enrolled. Method and
 strength need verified session evidence; enabled flags grant no role or privilege.
 Existing current-identity hard guards remain until separately implemented policy.
-See [the owner decision and current proof](authentication.md#owner-selected-optional-methods).
+See [the owner decision and current proof](authentication-reference.md#owner-selected-optional-methods).
 
 A3-I14 proves passkey feasibility only in the private temporary fixture, using
 supported callbacks in `@better-auth/passkey` 1.7.14. A3-I15 adds untrusted
@@ -401,14 +402,14 @@ behavior and explicit third-mode refusal, not positive production RBAC support.
 A3-I9 adds an isolated core browser adapter and actual HTTP-cookie-to-Knowledge
 fixture with explicit grants. Its exact allowlist, secure cookies, canonical
 HTTPS/Host/Origin checks, socket-peer native limiting and current-authority
-checks are described in [authentication](authentication.md#bounded-browser-adapter).
+checks are described in [authentication](authentication-reference.md#bounded-browser-adapter).
 Contract 2 specializes durable logout; password changes recheck authority inside
 the actual provider borrow. No provider cookie gains installation authority on
 unconverted HTTP/MCP operations, even during an open-mode proof boot. The isolated
 browser composition remains fixture-only. Production startup now owns
 one shared provider composition for protected administration and current-session
 identity, with an internal bounded-browser preparation method and no public mount.
-See [P1 composition](authentication.md#shared-controller-provider-composition-p1).
+See [P1 composition](authentication-reference.md#shared-controller-provider-composition-p1).
 Protected CLI maintenance can explicitly load a configured provider without mounting it.
 Experimental numbers and strength labels do not establish full RBAC, MFA or ASVS
 Level 2.
@@ -561,7 +562,7 @@ launch/TLS/global administration. Literal profile selection requires stopped
 owned runtime and never restarts it. Actual original provider authority,
 membership revision and original no-claim/exact-claim context govern durable
 receipts, including after reopening the store. See
-[the operational contract](authentication.md#human-literal-profiles-and-preset-timeouts-p2c).
+[the operational contract](authentication-reference.md#human-literal-profiles-and-preset-timeouts-p2c).
 
 P3a supplies protected account recovery below. P3b supplies the external restore/revocation fence and protected installation resume. Minimum agent diagnostics, complete transport enforcement, public mount,
 activation, release and client migration remain separate acceptance gates.

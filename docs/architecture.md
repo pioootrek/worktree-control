@@ -16,11 +16,12 @@ mounted only for the immutable active RBAC boot. Individual agents keep explicit
 credential ceilings; diagnostic logs/storage/capacity have independent grants.
 Unconverted cookie and broad privileged operations deny. The optional provider
 artifact remains separate from Community. See the current
-[production contract and migration runbook](authentication.md#production-account-mode-a5)
-for the transport inventory, protected CLI, installed acceptance and exact GUI gap.
-Older slice descriptions below record their original boundaries; A5 supersedes
-the unconditional mode-refusal and missing-public-mount statements. General ENV
-roles, GUI integration, independent review and live migration remain separate.
+[operator contract](authentication.md#account-mode-better-auth) for the transport
+inventory, protected CLI, account dashboard and installed acceptance. The static
+dashboard selects the separate account dashboard only for an active
+`better-auth` boot. Older slice descriptions below record their original
+boundaries; A5 supersedes the unconditional mode-refusal, missing-public-mount
+and missing-GUI statements. General ENV roles remain unimplemented.
 
 ## Runtime shape
 
@@ -172,7 +173,7 @@ Ordinary-restart issuance recovery runs once on the existing store before load;
 P3b refuses unacknowledged restore before opening the store; its protected quarantine receipt permits subsequent recovery without erasing provenance. One disposal joins
 accepted administration/preparation and drains the provider before SQLite closes.
 A5 validates account readiness before mode selection and public browser mounting. See
-[shared provider composition](authentication.md#shared-controller-provider-composition-p1)
+[shared provider composition](authentication-reference.md#shared-controller-provider-composition-p1)
 for explicit engineering limits. P2a adds an explicit runtime reader aggregate
 (schema 45), protected local administration and current-provider-session reads
 through the existing scoped projections and controller facade. Discovery yields
@@ -184,7 +185,7 @@ permanent bound marker, finite-deadline/evidence sidecar and bounded durable
 intent ledger. The existing lifecycle locks, capacity and process verifier are
 reused; pending/interrupted intent never reruns automatically. Exact original
 membership/session authority fences mutation and delivery, including replays.
-See [human runtime leases](authentication.md#human-runtime-operators-and-leases-p2b1).
+See [human runtime leases](authentication-reference.md#human-runtime-operators-and-leases-p2b1).
 P2b2 adds human tests-only discovery/enqueue/own-run status/wait/cancel on the
 existing finite queue and shared status budgets. Schema 47 keeps a durable
 provider-bound run marker and separate immutable requester attribution. A
@@ -210,7 +211,7 @@ SqliteStateStore shares the agent configuration mutation/revision/audit fragment
 the human transaction also completes the durable receipt on the sole connection.
 No new lifecycle, queue, lock map, capacity counter or provider connection is added.
 Selection never controls processes; queued timeout snapshots remain unchanged.
-See [the bounded contract](authentication.md#human-literal-profiles-and-preset-timeouts-p2c).
+See [the bounded contract](authentication-reference.md#human-literal-profiles-and-preset-timeouts-p2c).
 
 ## Resource policy
 
@@ -618,10 +619,10 @@ Unconverted HTTP and separate MCP requests carrying provider cookies are denied
 before compatible installation authority, including open mode. Production main
 has no browser-composition caller. Provider maintenance is reached only through
 the protected CLI/private Unix socket. See the
-[browser contract](authentication.md#bounded-browser-adapter).
+[browser contract](authentication-reference.md#bounded-browser-adapter).
 
 The isolated adapter also serves
-[closed factor routes](authentication.md#closed-factor-http-api). The runtime dispatches
+[closed factor routes](authentication-reference.md#closed-factor-http-api). The runtime dispatches
 a closed operation table and returns an opaque release plus a separate settlement
 promise, so a response slot outlives a timed-out borrow until its callback really ends.
 A final check against current rows, the durable publication marker and header emission form one synchronous
@@ -640,7 +641,7 @@ at the bound. Schema 41 keeps session issuance durable: each new session commits
 `pending` marker, `may_publish` commits before any cookie leaves, and the owner's one
 ordinary-restart recovery removes `pending` rows before an issuer can load. Installation-wide
 row and batch bounds are required inputs. An unacknowledged restore refuses that recovery before store opening; a protected quarantine receipt permits subsequent boot recovery. See
-[durable issuance](authentication.md#closed-factor-http-api).
+[durable issuance](authentication-reference.md#closed-factor-http-api).
 The owning shutdown helper disposes the optional provider after external
 producers/listeners/accepted responses drain and before service/SQLite close.
 A rejected disposal reports unconfirmed cleanup and retains both owner locks;
@@ -648,7 +649,7 @@ concurrent calls share completion or failure. Partial-load disposal failure is
 also reported honestly. Raw library logs/router errors are replaced with fixed
 events, including errors that the native router would otherwise print directly.
 Local provider modules are trusted code, not sandboxed plugins. See the
-[proof contract and limitations](authentication.md#optional-provider-proof-first-a3-slice).
+[proof contract and limitations](authentication-reference.md#optional-provider-proof-first-a3-slice).
 
 Protected provider administration shares one server-only application across
 offline CLI and the private socket. Short config/status/principal phases use
@@ -762,7 +763,7 @@ Current session/mapping/principal state and original expiry are checked before
 ordinary grants/role ceilings and replay. Safe identity metadata has no A2
 credential. No provider reentry or notification-only cache authorizes work.
 Owner/runtime/vault privileges remain denied. See the
-[implemented API](authentication.md#provider-authorization-handoff).
+[implemented API](authentication-reference.md#provider-authorization-handoff).
 Production browser loading/account mode and broader callback coverage remain
 separate acceptance gates. The bounded isolated browser API already exists. The [proof coverage table](../packages/auth-provider-better-auth-proof/README.md#live-admission-coverage)
 records what the strict integration tests exercise and what remains open.

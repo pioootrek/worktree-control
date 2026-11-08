@@ -1,17 +1,40 @@
-# Better Auth provider proof
+# Optional account provider (Better Auth)
 
-Private, unpublished proof that Better Auth 1.7.14 with Kysely 0.28.17 can run
-against the Worktree Control controller's single SQLite connection. It is not
-part of the Community package. A5 can load its separate installed artifact at
-account-mode startup after configuration, owner enrollment and fence validation.
-The historical proof package name is retained; production readiness depends on
-the actual pinned capabilities. See the [A5 contract and staged runbook](../../docs/authentication.md#production-account-mode-a5).
+This package is the optional provider for Worktree Control account mode
+(`better-auth`). It runs Better Auth 1.7.14 with Kysely 0.28.17 against the
+controller's single SQLite connection. It is MIT licensed, `private: true` and
+not part of the Community package: the controller loads its separately
+installed, compiled artifact at account-mode startup, after protected
+configuration, owner enrollment and the security fence are validated.
 
-The proof harness loads it from an explicit local path through the server-only
-`loadAuthenticationProvider` API and borrows the controller-owned connection
-one operation at a time. Storage comes from controller migrations 38, 40 and 41; the
-provider never runs library migrations. Provider modules are trusted local
-code, not sandboxed code.
+For `0.2.0` the built artifact is attached to the GitHub Release beside the
+Community package; it is never published to npm. The package keeps its
+historical proof name and version `0.0.0`, and its implementation reports
+`0.0.0-proof.5` (provider contract `5`, storage revision `3`). The controller
+checks those capabilities, not the name. Identify a release's provider by its
+`provenance.json` (`compatibleCore.version`, source commit, tarball sha256).
+
+Install it from the verified artifact by extracting it into a private directory
+and running `npm ci --prefix <dir> --omit=dev --ignore-scripts`; never
+`npm install <tarball>`, which ignores the shipped lock. See
+[release packaging](../../docs/release-packaging.md) and
+[turn on account mode](../../docs/authentication.md#turn-on-account-mode).
+
+Provider modules are trusted local code, not sandboxed code. The provider
+borrows the controller-owned connection one operation at a time. Storage comes
+from controller migrations 38, 40 and 41; the provider never runs library
+migrations. Upstream licenses are reproduced in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Verification status
+
+The installed acceptance (`pnpm test:rbac-artifact` and
+`pnpm test:rbac-artifact:fresh`) and the production-composition suite exercise
+the integrated production route. The full proof suite below is not green: it
+keeps five historical failures in `factor-compatibility.test.ts`, which
+characterize native and older bounded factor behaviour. They stay unmodified
+and unskipped. This package makes no ASVS, compliance or hardware MFA claim;
+numeric limits are engineering bounds.
 
 Run its real-library tests from the repository root:
 
@@ -49,22 +72,14 @@ TOTP login challenges and reset tokens. Their controller contexts then fail the 
 check. Selected factors and independent WebAuthn challenges remain intact; a password
 replacement keeps its inherited session evidence.
 
-This proof does not establish ASVS Level 2, and its numeric limits are experimental
-settings. Standard Better Auth stores
-bearer session tokens and includes native session tokens in sign-in and
-password-change JSON. The bounded isolated browser API strips those fields;
-production mounting/cutover remains open. Admitted core phases now wait on the
-same gate while a provider borrows the connection. Strict proof fixtures reject
-unadmitted SQL even when idle; production without a provider retains compatible
-synchronous store access. Live coexistence remains unaccepted while broader
-coverage and design gates are open. Restoring backups can restore old
-sessions and passwords until A5 adds an external revocation fence. A2 credentials
-remain unchanged; A4 vault authorization still requires its separate proof.
-Closed factor HTTP routes and protected ordinary-human reader/operator membership
-now work in the isolated composition. Production mounting, factor management,
-invitations, delegated role administration, GUI and account activation remain gated. Protected CLI enrollment/recovery is
-described below. See the
-[authentication contract](../../docs/authentication.md#optional-provider-proof-first-a3-slice).
+## Historical proof notes
+
+The sections below record each proof slice as it landed. Statements that
+account mode, public login, the browser mount or a dashboard were unavailable
+or gated describe that slice; account mode in `0.2.0` supersedes them. The
+current operator contract is [authentication](../../docs/authentication.md),
+and the slice-by-slice internals are in the
+[authentication reference](../../docs/authentication-reference.md).
 
 ## Ordinary human membership proof
 
@@ -229,7 +244,7 @@ The bounded acceptance checklist is:
   grants/role ceilings; mapping alone grants nothing. Safe identity metadata
   uses `credential: null`. Owner administration, token mint/renew, runtime,
   privileged approval and vault access remain denied. See the
-  [implemented API](../../docs/authentication.md#provider-authorization-handoff).
+  [implemented API](../../docs/authentication-reference.md#provider-authorization-handoff).
 - **Migration evidence:** seven existing
   `src/server/infrastructure/sqlite/provider-session-history-migration.test.ts`
   cases cover genuine 38-to-39 upgrade/late rollback, old registry rows and
@@ -296,9 +311,6 @@ check/docs run evidence belongs in the owning Knowledge task and handoff.
 A failed strict regression blocks live-coexistence acceptance. Keep it failing
 until production code is fixed; do not weaken it or use build/package success
 as a substitute for admission acceptance.
-
-Upstream licenses are reproduced in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
 
 ## Restart-only mode selection
 
@@ -368,7 +380,7 @@ The injected fault runs after real Kysely destruction solely to permit isolated
 fixture cleanup; production must treat unconfirmed cleanup as failure.
 
 Experimental bounds and proxy limitations are documented in the
-[browser API contract](../../docs/authentication.md#bounded-browser-adapter).
+[browser API contract](../../docs/authentication-reference.md#bounded-browser-adapter).
 The native limiter is in-memory and per peer/path, not per account. Behind a
 proxy all remote clients share its peer until explicit trusted-proxy design.
 No production security defaults, MFA/ASVS Level 2, full transport cutover,
@@ -693,7 +705,7 @@ controller's `host.protection` port. It runs on recognized migration 40 storage,
 closes and reopens through `SqliteStateStore`, and issues real provider actors through
 `runtime.authenticate` into `ProviderKnowledgeApplication`.
 `test/integrated-factor-authority.test.ts` is its acceptance suite. See the
-[contract and limits](../../docs/authentication.md#integrated-factor-authority).
+[contract and limits](../../docs/authentication-reference.md#integrated-factor-authority).
 
 Routes outside the list return 404, including every native route not listed in
 `FACTOR_ROUTES` or `NATIVE_ROUTES`. Sign-in strips all cookies, so a trust cookie cannot
@@ -747,7 +759,7 @@ enrollment can use a password; enrolled/selected protection cannot be bypassed
 through an unprotected password path. Methods are alternatives, not mandatory
 sequential TOTP plus passkey checks. Enabled flags grant no roles or privileges.
 Current production identity hard guards remain. See the
-[policy record](../../docs/authentication.md#owner-selected-optional-methods).
+[policy record](../../docs/authentication-reference.md#owner-selected-optional-methods).
 
 The new `test/passkey-*` files are a separate, nonauthorizing backend experiment.
 The default provider is unchanged. Only this private package adds exact
@@ -999,5 +1011,4 @@ Earlier sections describe the boundaries of their original slices. A5 replaces
 the unconditional account-mode refusal and absent public mount. The five
 historical native/old-bounded factor negatives remain unmodified and unskipped;
 they do not describe the closed production route, whose integrated replay and
-durable guessing-budget tests run separately. No full-proof green claim, GUI
-readiness or live deployment is implied.
+durable guessing-budget tests run separately. No full-proof green claim is made.

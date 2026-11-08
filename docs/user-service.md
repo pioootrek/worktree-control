@@ -393,7 +393,7 @@ Until 2026-10-05 this product was distributed as `worktree-switcher`. The rename
 changes no database schema, backup format, or MCP tool name, but the new build
 can still contain newer migrations than your installed one. Treat the move like
 any package upgrade and prepare it as described in
-[upgrade and recover](package-trial.md#upgrade-and-recover) first.
+[earlier upgrades](package-trial.md#earlier-upgrades) first.
 
 1. Install the `worktree-control` package into its own user-owned prefix, for
    example `$HOME/.local/worktree-control`, as in the

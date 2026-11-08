@@ -3,30 +3,106 @@
 All notable changes to `worktree-control` are recorded here. The project is
 pre-1.0: the CLI, configuration and data model may change between minor versions.
 
-## Unreleased
+## 0.2.0 - unreleased
+
+Release candidate. Optional individual accounts with per-project permissions,
+scoped agent credentials, an external security fence, Godot support and
+verification history. Schema 28 → 49. Upgrading a `0.1.1` installation needs one
+protected offline step before the first start; follow
+[Upgrade from 0.1.1 to 0.2.0](docs/package-trial.md#upgrade-from-011-to-020).
+Linux x64 is verified; macOS and Windows remain unverified.
+
+### Upgrade notes
+
+- The first `0.2.0` start on a `0.1.1` database refuses until
+  `auth fence inspect` and `auth fence establish --expect <preflight>` have run
+  with the controller stopped. Establishment applies migrations 29–49, so take
+  a `backup create` with `0.1.1` first. Existing `token` and `open` modes, the
+  installation token, owner and agent principals, agent tokens, Knowledge
+  grants and history are preserved; existing tokens gain no permissions.
+- There is no downgrade. `0.1.1` refuses a schema-49 database.
+- After any restore or raw database rollback, the next start refuses until a
+  protected `auth fence resume` quarantines restored credentials, sessions and
+  grants.
 
 ### Added
 
-- Godot projects can declare additional finite verification presets in
-  `scripts/worktree-control-presets.json`. Names run through the existing public
-  project script, with strict bounded validation and unchanged timeout/profile
-  policy.
-
-- Opt-in `godot-web` launch preset: a bundled static server serves only
-  complete, immutable Web export generations on the project port, watches the
-  selected worktree while running, exports through the shared test queue
-  (standard Godot preset or a project-owned command) and reloads the page over
-  server-sent events. Live reload restarts the game; it is not stateful HMR.
-  Available in the dashboard, CLI (`project add --preset godot-web`,
-  `project godot-web`, `project rebuild-web`), HTTP and MCP
-  (`configure_godot_web`, `rebuild_web_export`, `get_web_export_status`).
-  Automatic detection still registers Godot projects as verification-only.
-  See [Godot Web preview](docs/godot-web.md).
+- **Account mode (`better-auth`), optional.** Individual sign-in for the owner
+  and for ordinary human accounts created with the protected CLI, optional TOTP
+  and passkeys, explicit per-project Knowledge memberships and runtime
+  permissions (`projects:read`, `claims:manage`, `runtime:control`,
+  `tests:run`, `profiles:select`, `config:write`), session-bound human claims
+  and test runs, protected password and factor-loss recovery, and a separate
+  account dashboard (Projects, Knowledge, Security). Selected only through
+  `auth mode set better-auth` and a restart; requires a canonical HTTPS
+  `--public-url`, the owner's enrollment and a current fence; never falls back
+  to token or open access. The installation token confers no authority in this
+  mode. See [authentication](docs/authentication.md#account-mode-better-auth).
+- **Optional provider artifact.** Account mode needs the separately installed
+  provider `@worktree-control/auth-provider-better-auth-proof` (historical name,
+  package version `0.0.0`, implementation `0.0.0-proof.5`), MIT licensed with
+  bundled notices. It is attached to the GitHub Release, not published to npm,
+  ships a pinned `npm-shrinkwrap.json`, and is installed with `npm ci` into its
+  own directory. It is built twice and refused unless both builds match. See
+  [release packaging](docs/release-packaging.md).
+- **Scoped runtime agents.** Owner-sponsored delegations and per-credential
+  project/action ceilings for MCP: filtered project discovery, own claims,
+  start/restart/stop under an own claim, literal profile selection, preset
+  timeout configuration and finite tests, plus compact status and bounded
+  status waits. Explicit diagnostic permissions `logs:read`, `storage:read` and
+  `capacity:read` expose bounded runtime and own-run logs, cached storage and
+  aggregate capacity. Existing credentials receive no backfill.
+- **Knowledge roles.** Optional project-scoped `reader`, `operator` and
+  `manager` role ceilings over existing Knowledge grants, enforced by one
+  shared policy across HTTP, MCP and CLI.
+- **External security fence** (migration 49): a private witness outside the
+  application backup detects supported restores and raw database rollback, and
+  `auth fence inspect|establish|resume` provides the protected offline
+  workflow.
+- **Godot.** Verification-only projects with `godot:check` and
+  `godot:export-macos` presets; project-defined presets in
+  `scripts/worktree-control-presets.json`; and the opt-in `godot-web` launch
+  preset, which serves complete Web export generations on the project port,
+  exports through the test queue and reloads the page after each build
+  (`project add --preset godot-web`, `project godot-web`,
+  `project rebuild-web`, MCP `configure_godot_web`, `rebuild_web_export`,
+  `get_web_export_status`). Live reload restarts the game. See
+  [Godot Web preview](docs/godot-web.md).
+- **Verification history.** Bounded run phase telemetry, passive per-run RSS
+  and CPU observations, history, metrics and run comparison over HTTP and MCP
+  (`list_test_runs`, `get_test_run_summary`, `get_test_metrics`,
+  `compare_test_runs`), and dashboard test history.
+- **Per-project test timeouts** for each preset.
+- **Knowledge.** A task's recorded current state shown before its history;
+  bounded supersession history in context exports; filtering imported tasks and
+  threads by legacy ID.
+- **Encrypted DEV vault** for DEV environment profiles; agent requests need
+  explicit owner approval with a signed owner proof. Execution use is not
+  available.
+- **Remote verification worker (experimental, opt-in).** Foundations for
+  customer-owned workers that check an exact commit; the complete remote
+  workflow is not available yet.
+- `server.json` for the official MCP Registry.
 
 ### Changed
 
-- Schema migration 43 adds the `godot-web` preset and its project
-  configuration. Existing projects keep their preset and an empty configuration.
+- `service install` inspects systemd type-wide and prefix drop-ins and
+  preserves migration policy.
+- Backup limit refusals keep their specific diagnostic evidence.
+
+### Known limitations
+
+- The full provider proof suite is not green: five historical native
+  `factor-compatibility` failures remain (1,107 of 1,112 pass). The installed
+  acceptance and the production-composition suite pass on the candidate.
+- Account dashboard: Knowledge and Security views do not re-check the session
+  on their own; other tabs learn of a sign-out on their next request; the
+  configuration panel's reload is not bound to the latest request. No hardware
+  passkey or manual visual QA was done.
+- Not provided: ENV roles, invitations, signup, browser account recovery,
+  delegated account administration, recovery codes, and Knowledge attachments,
+  exports, live updates, backups, schedules and project settings in the
+  account dashboard.
 
 ## 0.1.1 - 2026-10-08
 
@@ -159,7 +235,7 @@ definition; on failure it restores the legacy service. Then update `PATH`,
 symlinks, environment variables and scripts. Full steps:
 [Upgrading an existing installation](docs/user-service.md#upgrading-an-existing-installation).
 Treat it as a package upgrade and rehearse with a copy of your data first
-([upgrade and recover](docs/package-trial.md#upgrade-and-recover)).
+([upgrade and recover](docs/package-trial.md#earlier-upgrades)).
 
 ### Platform status
 

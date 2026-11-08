@@ -89,7 +89,7 @@
         <ul class="facts" aria-label="At a glance">
           <li>Runs on your machine</li>
           <li>Browser dashboard, CLI and MCP server</li>
-          <li>Node.js and Django projects</li>
+          <li>Node.js, Django and Godot projects</li>
           <li>SQLite state, no hosted account</li>
           <li>MIT licensed</li>
         </ul>
@@ -198,7 +198,7 @@
           </div>
           <div class="status-item">
             <dt>Scope</dt>
-            <dd>Local-first and single-user: one controller on your machine, state in SQLite, no hosted account.</dd>
+            <dd>Local-first: one controller on your machine, state in SQLite, no hosted account. A shared token by default; optional individual accounts with per-project permissions from 0.2.0.</dd>
           </div>
         </dl>
         <p class="note">
@@ -213,10 +213,12 @@
       <div class="wrap">
         <h2 id="install-title">Install</h2>
         <p class="release-note" role="note">
-          <strong>The first public npm release is in preparation.</strong>
-          Until it is published, follow the
-          <a href="https://github.com/pioootrek/worktree-control#quick-start">source build quick start</a>
-          or the <a href="https://github.com/pioootrek/worktree-control/blob/main/docs/package-trial.md">verified tarball trial guide</a>.
+          <strong>Version 0.1.1 is on npm. Version 0.2.0 is in preparation.</strong>
+          It adds optional individual accounts, scoped agent credentials, Godot Web previews and
+          verification history. Until npm lists 0.2.0, the command below installs 0.1.1. Upgrading
+          an existing installation to 0.2.0 needs one offline step; see the
+          <a href="https://github.com/pioootrek/worktree-control/blob/main/docs/package-trial.md#upgrade-from-011-to-020">upgrade guide</a>
+          and the <a href="https://github.com/pioootrek/worktree-control/blob/main/CHANGELOG.md">changelog</a>.
         </p>
         <p>
           Requires <a href="https://nodejs.org/">Node.js 22 or newer</a> and Git. Install the
@@ -260,7 +262,7 @@
           <li><a href="https://github.com/pioootrek/worktree-control#mcp-for-coding-agents">MCP setup in the README</a></li>
           <li><a href="https://github.com/pioootrek/worktree-control/blob/main/docs/reservations-and-mcp.md">Reservations and MCP reference</a></li>
           <li><a href="https://github.com/pioootrek/worktree-control/blob/main/skills/worktree-control/SKILL.md">Bundled agent skill</a></li>
-          <li><a href="https://github.com/pioootrek/worktree-control/blob/main/docs/authentication.md">Authentication modes</a></li>
+          <li><a href="https://github.com/pioootrek/worktree-control/blob/main/docs/authentication.md">Authentication and optional accounts</a></li>
         </ul>
       </div>
     </section>

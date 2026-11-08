@@ -1,6 +1,6 @@
 ---
 audience: "people installing Worktree Control from the npm registry or a verified tarball"
-last_reviewed: "2026-10-08"
+last_reviewed: "2026-11-08"
 source_of_truth: "trial artifact installation, first run, upgrade, and removal"
 status: "active"
 ---
@@ -10,10 +10,17 @@ status: "active"
 The `0.2.0` package installs the complete local Worktree Control controller:
 CLI, browser dashboard, MCP endpoint, SQLite state, user-service commands, and
 the bundled agent skill. It is not a remote worker and does not need a hosted
-account. The same bytes are available as a CI-built tarball with checksums and
+account. Optional individual accounts need a separate provider artifact; see
+[authentication](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/authentication.md#account-mode-better-auth).
+Upgrading from `0.1.1` needs one protected offline step; follow
+[Upgrade from 0.1.1 to 0.2.0](#upgrade-from-011-to-020).
+
+The same bytes are available as a CI-built tarball with checksums and
 provenance, which is the path to use when you want to verify the artifact before
 installing, or before the registry copy exists. Publication to the npm registry
 is a separate owner action; the registry copy is the CI tarball, not a rebuild.
+Until `npm view worktree-control version` reports `0.2.0`, the registry still
+serves `0.1.1`.
 
 ## Install from the npm registry
 
@@ -96,7 +103,7 @@ the controller with `Ctrl-C` before installing the background service.
 
 The token is printed only to an interactive terminal. In a script or CI job,
 run `worktree-control auth token generate` first and store its output
-privately. See [authentication modes](authentication.md).
+privately. See [authentication modes](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/authentication.md).
 
 ## Install the user service
 
@@ -111,14 +118,171 @@ worktree-control service open
 If you skipped `start`, `service install` prints the installation token once
 before it starts the service; save it as described above. `service open` opens
 the dashboard sign-in page. For custom ports, directories, or a
-public HTTPS origin, follow the bundled [user-service guide](user-service.md)
-and [HTTPS guide](controller-https.md).
+public HTTPS origin, follow the bundled [user-service guide](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/user-service.md)
+and [HTTPS guide](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/controller-https.md).
 
-## Upgrade and recover
+## Upgrade from 0.1.1 to 0.2.0
+
+`0.2.0` migrates the database from schema 28 to schema 49 and adds an
+[external security fence](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/authentication.md#external-security-fence-and-protected-resume-p3b).
+The first `0.2.0` start on a `0.1.1` database refuses until you establish the
+fence with a protected offline command; establishment performs the migration.
+Your existing mode keeps working: a `token` installation keeps its installation
+token, an `open` installation stays open. Owner and agent principals, agent
+tokens, Knowledge grants, projects and Knowledge history are preserved.
+Existing agent tokens gain no new permissions. Individual accounts are optional
+and need a separate provider; you can add them later.
+
+This procedure was verified on Linux x64 by the installed acceptance, which
+upgrades the registry `worktree-control@0.1.1` with the `0.2.0` candidate in
+separate prefixes. macOS and Windows are unverified. Rehearse on a copy first
+if your installation matters, and keep every command on the same data and state
+directories: add `--data-dir <path> --state-dir <path>` to each command if you
+use custom paths. `worktree-control service install --print` shows the
+installed service options without changing anything.
+
+Stopping the controller ends MCP sessions and stops the development servers it
+manages. Ask agents to finish their work and release their claims first.
+
+### 1. Check the current installation
+
+```bash
+worktree-control --version          # 0.1.1
+worktree-control auth status        # note mode and configuredMode
+```
+
+### 2. Stop the controller
+
+```bash
+worktree-control service stop
+worktree-control service status     # must report the service as stopped
+```
+
+For a foreground controller, stop it with `Ctrl-C`. Every later step until
+step 7 needs the controller stopped.
+
+### 3. Back up with 0.1.1
+
+While `0.1.1` is still installed, create an application backup in a new private
+directory (the path below is an example):
+
+```bash
+umask 077
+worktree-control backup create "$HOME/worktree-control-backup-0.1.1"
+```
+
+The command prints the backup manifest. Keep the directory private and outside
+any Git working tree. The fence establishment in step 6 performs the migration
+itself, so `--backup-before-migration` does not run for it: this backup is your
+recovery point. Do not rely on a plain copy of the data directory instead; see
+[Recovery](#recovery).
+
+### 4. Install 0.2.0 into the same prefix
+
+```bash
+npm install --global worktree-control@0.2.0
+worktree-control --version          # 0.2.0
+```
+
+Use the same `--prefix` you installed `0.1.1` with, or install the verified
+`worktree-control-0.2.0.tgz` as described above. A service installed from that
+prefix starts the new executable without a definition change. If you install
+into a different prefix, refresh the service definition afterwards as
+described in the
+[user-service guide](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/user-service.md).
+
+Do not start the controller yet. Until step 6, `0.2.0` refuses to start and
+`worktree-control auth status` exits with a security-fence error. That refusal
+is expected.
+
+### 5. Inspect the fence
+
+```bash
+worktree-control auth fence inspect
+```
+
+For a `0.1.1` database the result reports `code:
+"security_fence_establishment_required"`, `establishmentAllowed: true`,
+`schemaVersion: 28` and a `preflight` hash. Continue only with that result. If
+it reports `security_fence_recovery_required` or `establishmentAllowed: false`,
+the database is not a plain `0.1.1` store (for example a restore is pending or a
+witness already exists); stop and read [Recovery](#recovery).
+
+### 6. Establish the fence
+
+```bash
+worktree-control auth fence establish --expect <preflight-from-step-5>
+```
+
+Establishment migrates the database to schema 49, writes the private witness
+directory `state.sqlite3.security/` next to the database in the data directory
+and reports `code: "security_fence_current"` with `changed: true`. The witness
+is deliberately not part of application backups. Never delete, move or copy it,
+and never place an older copy beside a database.
+
+| Refusal | Meaning | What to do |
+| --- | --- | --- |
+| `security_fence_preflight_changed` | The database or witness changed after inspection | Repeat step 5 and use the new hash |
+| `security_fence_owner_running` | A controller still owns the data directory | Stop it, then repeat step 5 |
+| `security_fence_recovery_required` | Establishment is not allowed for this store | See [Recovery](#recovery) |
+| `security_fence_pending` | Establishment did not finish | See [Recovery](#recovery) |
+
+### 7. Start and verify
+
+```bash
+worktree-control auth status        # works again; mode unchanged
+worktree-control service start
+worktree-control service status     # version 0.2.0
+```
+
+Sign in to the dashboard with the same installation token. Reconnect MCP
+clients; they use the same token, but their sessions ended with the restart.
+Agent tokens keep their Knowledge grants. To grant agents runtime access or to
+add individual accounts, follow
+[authentication](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/authentication.md).
+
+### Recovery
+
+There is no supported downgrade. `0.1.1` refuses a schema-49 database, and an
+older executable is never a rollback. Recovery happens with `0.2.0`:
+
+- **Refused before establishment.** If `establish` was refused with
+  `security_fence_preflight_changed`, `security_fence_owner_running` or a
+  refused preflight, nothing was migrated; `auth fence inspect` still reports
+  schema 28. Fix the cause and repeat from step 5.
+- **Establishment did not finish, or inspection reports
+  `security_fence_recovery_required`.** Do not delete the witness or edit the
+  database. Run `auth fence inspect` again and, only as a deliberate decision,
+  `auth fence resume --expect <preflight> --mode token`. Resume keeps
+  principals, projects and Knowledge history but revokes every credential,
+  session and grant and clears the installation token. Afterwards generate a
+  new token with `auth token generate`, then reissue agent credentials and
+  grants explicitly. See
+  [protected resume](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/authentication.md#protected-operator-workflow).
+- **Restoring the pre-upgrade backup** into this installation uses `0.2.0`
+  `backup restore` and is then fenced like any restore: the next start refuses
+  until a protected resume quarantines the restored credentials. Restoring a
+  `0.1.1` snapshot with `0.2.0` is not covered by the release acceptance;
+  rehearse it on a copy first. Writes made after the upgrade are not in the
+  backup.
+- **Never** replace the data directory with an older plain copy, remove the
+  witness directory, or copy an old witness next to restored data to avoid the
+  quarantine. Revoked credentials and sessions would become valid again.
+
+If you decide to run `0.1.1` again anyway, do it as a separate installation:
+restore the pre-upgrade backup with a separately installed `0.1.1` into new,
+separate data and state directories, never on the migrated database. That copy
+carries every credential as of the backup, including any you revoked later, so
+rotate its installation token and revoke stale agent tokens before exposing it.
+This is a separate recovery copy, not a rollback of the upgraded installation.
+
+## Earlier upgrades
+
+These notes cover older packages and the restic recovery trial.
 
 Moving from a pre-rename `worktree-switcher` trial package to `worktree-control`
 also renames the executable, user service, and environment variables. Follow
-[upgrading an existing installation](user-service.md#upgrading-an-existing-installation).
+[upgrading an existing installation](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/user-service.md#upgrading-an-existing-installation).
 
 The controller provides full SQLite/attachment backup and recoverable restore.
 The installed-artifact acceptance uses an exact historical schema-24 package
@@ -145,10 +309,9 @@ artifact. Never run old code against the migrated database. After new writes,
 preserve and account for those changes before considering an older snapshot;
 recover old code with its matching snapshot in a separate directory.
 
-Offline full restore preserves snapshot credentials. Inspect and revoke stale
-sessions, agent tokens and grants before exposing the recovered installation.
-Online/catalog restore applies its separate credential invalidation fence.
-A real destination, recoverable keys, operator trial and rollout remain separate
+In `0.2.0` every restore, offline or online, is refused at the next start until
+a protected `auth fence resume` quarantines the restored credentials, sessions
+and grants. A real destination, recoverable keys, operator trial and rollout remain separate
 acceptance steps. The imported storage-safety plan and dated evidence in Knowledge record the
 isolated checks and the later operational and project-cutover procedure.
 
@@ -163,7 +326,7 @@ npm uninstall --global --prefix "$HOME/.local/worktree-control" worktree-control
 
 This preserves repositories, the SQLite database, MCP credential, configuration,
 and logs. Full data deletion is a separate, explicit operation. See
-[reservations and MCP](reservations-and-mcp.md) before connecting an MCP client.
+[reservations and MCP](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/reservations-and-mcp.md) before connecting an MCP client.
 
 ## Publish a release
 
@@ -176,6 +339,13 @@ package, version, full commit, `"dirty": false` and tarball digest, then run:
 npm publish ./worktree-control-<version>.tgz --access public
 npm view worktree-control version
 ```
+
+The optional account provider is not published to npm. Attach the files of the
+`optional-auth-provider` artifact from the same `Verify` run to the GitHub
+Release for that version, after checking its `SHA256SUMS` and that its
+`provenance.json` names the same commit, `"dirty": false` and the matching
+`compatibleCore`. See
+[release packaging](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/release-packaging.md).
 
 `package.json` has a `prepublishOnly` script that always fails. It stops
 `npm publish` run from a checkout, which would pack unverified local `dist/` and

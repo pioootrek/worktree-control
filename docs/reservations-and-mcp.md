@@ -152,16 +152,20 @@ global capacity or test queue. Its cursor binds project, principal, credential
 and MCP session, and changes only with the visible projection. A cursor grants
 no authority and cannot be used to read another project.
 
-Scoped `wait_for_status_change` accepts `projectId`, `cursor` and optional
-`timeoutMs` (default 10 seconds, maximum 20); test-run targets are refused.
+Scoped `wait_for_status_change` accepts exactly one of `projectId` or `runId`,
+plus `cursor` and optional `timeoutMs` (default 10 seconds, maximum 20). A run
+target needs `tests:run` and the run's original principal and credential.
 It shares the existing 128-global/four-per-session/64-target waiter limits and
 one sampler. Each waiter rechecks credential, delegation, expiry and sponsor at
 registration, sampling, timeout and after database re-admission before delivery.
 Revocation rejects the wait on the next admitted check, even when status has
 not changed. Logical session close, cancellation and shutdown release waiters.
 
-Scoped runtime sessions have no logs, capacity/storage tools, local test tools, profile editing or ENV
-administration. They do not accept `responseMode`. New identity administration
+Scoped runtime sessions reach logs, cached storage and aggregate capacity only
+through the separate `logs:read`, `storage:read` and `capacity:read` grants, and
+finite tests only through `tests:run`; see
+[explicit agent diagnostics](authentication.md#explicit-agent-diagnostics). They
+have no profile editing or ENV administration. New identity administration
 and credential minting are owner-session CLI/HTTP operations, never MCP tools.
 The HTTP runtime API does not accept a scoped credential.
 
