@@ -39,6 +39,15 @@ describe("built SQLite safety CLI",()=>{
     writeFileSync(`${target.database}-journal`, Buffer.alloc(512), {mode:0o600});
     expect((await run(target, ["backup", "restore", source.backup])).stdout).toContain("Backup restored.");
     for (const suffix of [".initializing", "-journal", ".owner.lock"]) expect(existsSync(`${target.database}${suffix}`)).toBe(false);
+    // The restored store is fenced: nothing resumes it except the protected offline ceremony.
+    await expect(run(target, ["auth", "status"])).rejects.toMatchObject({ stderr: expect.stringContaining("security_fence_recovery_required") });
+    const inspection = JSON.parse((await run(target, ["auth", "fence", "inspect"])).stdout) as { code: string; trusted: boolean; preflight: string; establishmentAllowed: boolean };
+    expect(inspection).toMatchObject({ code: "security_fence_recovery_required", trusted: false, establishmentAllowed: false });
+    expect(inspection.preflight).toMatch(/^[0-9a-f]{64}$/);
+    // Establishment is not a recovery path; it is refused on a restored store.
+    await expect(run(target, ["auth", "fence", "establish", "--expect", inspection.preflight])).rejects.toMatchObject({ stderr: expect.stringContaining("security_fence_recovery_required") });
+    const receipt = JSON.parse((await run(target, ["auth", "fence", "resume", "--expect", inspection.preflight, "--mode", "token"])).stdout) as { trusted: boolean; quarantined: boolean };
+    expect(receipt).toMatchObject({ trusted: true, quarantined: true });
     expect((await run(target, ["auth", "status"])).stdout).toContain('"mode": "token"');
   });
   it("offline CLI creates private data and copies under umask 000",async()=>{
@@ -69,15 +78,28 @@ describe("built SQLite safety CLI",()=>{
     expect(existsSync(join(f.state,"controller.lock"))).toBe(false);expect(existsSync(`${f.database}.owner.lock`)).toBe(false);
     expect(existsSync(join(f.state,"service-access.json"))).toBe(false);
   });
-  it.each([false,true])("starts and stops an isolated migrated controller with pre-migration backup enabled=%s",async enabled=>{
-    const f=fixture();const httpPort=await port();
-    const child=spawn(process.execPath,[cli,"start","--service-mode","--no-open","--no-mcp","--host","127.0.0.1","--port",String(httpPort),...f.args,...(enabled?["--backup-before-migration","--backup-dir",f.backup]:[])],{env:f.env,stdio:"ignore"});
+  it("fences an old store until the protected establishment ceremony, preserving a schema-12 offline backup",async()=>{
+    const f=fixture();
+    // An old store is fenced: no transport may adopt it before the explicit protected act.
+    await expect(run(f,["auth","status"])).rejects.toMatchObject({stderr:expect.stringContaining("security_fence_establishment_required")});
+    // The offline backup captures the untouched old schema before any migration runs.
+    await run(f,["backup","create",f.backup]);
+    expect(JSON.parse(readFileSync(join(f.backup,"manifest.json"),"utf8")).database.schemaVersion).toBe(12);
+    const inspection=JSON.parse((await run(f,["auth","fence","inspect"])).stdout) as {code:string;trusted:boolean;preflight:string;establishmentAllowed:boolean};
+    expect(inspection).toMatchObject({code:"security_fence_establishment_required",trusted:false,establishmentAllowed:true});
+    expect(inspection.preflight).toMatch(/^[0-9a-f]{64}$/);
+    // The explicit establishment migrates the old store to the supported schema.
+    const established=JSON.parse((await run(f,["auth","fence","establish","--expect",inspection.preflight])).stdout) as {trusted:boolean;quarantined:boolean};
+    expect(established).toMatchObject({trusted:true,quarantined:false});
+    const httpPort=await port();
+    const child=spawn(process.execPath,[cli,"start","--service-mode","--no-open","--no-mcp","--host","127.0.0.1","--port",String(httpPort),...f.args],{env:f.env,stdio:"ignore"});
     try {
       const deadline=Date.now()+15000;
       while(!existsSync(join(f.state,"service-access.json"))){if(child.exitCode!==null)throw Error(`Fixture exited: ${child.exitCode}`);if(Date.now()>deadline)throw Error("Fixture startup timed out");await new Promise(accept=>setTimeout(accept,30));}
       expect((await fetch(`http://127.0.0.1:${httpPort}/`)).status).toBe(200);
       const access=JSON.parse(readFileSync(join(f.state,"service-access.json"),"utf8"));expect(access.authenticationMode).toBe("legacy");
-      if(enabled){const [copy]=readdirSync(f.backup);expect(JSON.parse(readFileSync(join(f.backup,copy,"manifest.json"),"utf8")).database.schemaVersion).toBe(12);}else expect(existsSync(f.backup)).toBe(false);
+      // The pre-establishment offline backup still proves the old schema.
+      expect(JSON.parse(readFileSync(join(f.backup,"manifest.json"),"utf8")).database.schemaVersion).toBe(12);
     } finally {await stop(child);}
     const db=new Database(f.database,{readonly:true});try{expect(db.prepare("SELECT max(version) version FROM schema_migrations").get()).toEqual({version:SUPPORTED_SCHEMA_VERSION});}finally{db.close();}
     expect(existsSync(join(f.state,"controller.lock"))).toBe(false);expect(existsSync(`${f.database}.owner.lock`)).toBe(false);
