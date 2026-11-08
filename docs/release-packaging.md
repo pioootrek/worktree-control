@@ -26,8 +26,9 @@ follows [Publish a release](package-trial.md#publish-a-release).
 
 ## Optional provider artifact
 
-`node scripts/package-provider.mjs --output <empty-directory>` builds the
-provider twice, refuses a release if the two tarballs differ and writes:
+`pnpm test:package:provider` (or `node scripts/package-provider.mjs --output
+<empty-directory>`) builds the provider twice, refuses a release if the two
+tarballs differ and writes, by default to `dist/provider-release/`:
 
 ```text
 worktree-control-auth-provider-better-auth-proof-0.0.0.tgz
@@ -77,8 +78,9 @@ separate temporary prefixes and drives only installed executables:
 | `fresh` | `pnpm test:rbac-artifact:fresh` | The same account-mode flow on a new candidate installation, whose fence is current without establishment |
 | historical installed | `node scripts/package-rbac.mjs <input.json>` | An explicitly fingerprinted installed old package, such as the earlier schema-43 trial |
 
-Pass `--community <tgz> --community-sha256 <hex> --provider-dir <directory>`
-to test exact CI artifacts instead of packing the checkout. Each run writes
+Both package scripts test the exact `dist/provider-release/` directory. Pass
+`--community <tgz> --community-sha256 <hex> --provider-dir <directory>` to test
+exact CI artifacts instead of packing the checkout. Each run writes
 `dist/rbac-artifacts/acceptance-<baseline>.json` unless `--report` is given. A
 schema-43 result does not prove an upgrade from the public `0.1.1` release.
 

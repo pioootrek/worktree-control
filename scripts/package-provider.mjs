@@ -21,7 +21,9 @@ const dirty = (await run("git", ["status", "--porcelain", "--untracked-files=all
 const head = (await run("git", ["rev-parse", "HEAD"])).stdout.trim();
 const commit = argument("--commit") ?? head;
 if (commit !== head) throw new Error("The requested source commit does not match the checked-out build.");
+// The default directory is this script's own ignored build output and is replaced.
 const output = resolve(root, argument("--output") ?? "dist/provider-release");
+if (!argument("--output")) await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 if ((await readdir(output)).length !== 0) throw new Error(`Provider output directory must be empty: ${output}`);
 
