@@ -391,7 +391,9 @@ for (const operation of independentOperations) for (const status of [401, 403]) 
         await expect(page.getByRole("heading", { name: memory ? linkedMemory.title : linkedTask.title, exact: true })).toBeVisible();
         if (operation === "task_context" || operation === "export_context" || operation === "history") {
           await triggerIndependentKnowledge(page, operation);
-          await expect(page.getByText(operation === "history" ? "No recorded changes." : "Private exported task scope", { exact: true })).toBeVisible();
+          const recovered = operation === "history" ? page.getByText("No recorded changes.", { exact: true })
+            : page.getByRole("paragraph").filter({ hasText: /^Private exported task scope$/ });
+          await expect(recovered).toBeVisible();
         }
         if (operation === "task_state") await expect(page.getByText("No current state recorded", { exact: true })).toBeVisible();
         expect(fixture.requests.some(request => request.path === "/api/auth/sign-in/email" || request.path === "/api/auth/sign-out")).toBe(false);
