@@ -1,6 +1,6 @@
 import { openRemoteRecoveryInspection } from "./remote-connection-inspection";
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync, linkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,6 +35,26 @@ const resume=(paths:ReturnType<typeof resolveAppPaths>)=>maintainSecurityFence(p
 const sql=async(store:SqliteStateStore,source:string)=>{const s=store.authenticationProviderStorage(); await s.borrow(async()=>{const c=s.createProviderConnection();try{c.prepare(source).run([]);}finally{c.close();}});};
 
 describe("external security checkpoint",()=>{
+  it("makes bounded recovery progress through more than one batch of abandoned publications",()=>{
+    const f=fixture();f.store.close();
+    const abandoned=Array.from({length:40},()=>join(securityFenceRoot(f.paths.databasePath),`.journal-${randomUUID()}`));
+    for(const path of abandoned)writeFileSync(path,"",{mode:0o600});
+    rmSync(witness(f.paths.databasePath));
+    expect(()=>resume(f.paths)).toThrow(/security_fence/);
+    expect(abandoned.filter(path=>fs.existsSync(path)).length).toBeLessThan(40);
+    expect(resume(f.paths).trusted).toBe(true);
+    expect(abandoned.some(path=>fs.existsSync(path))).toBe(false);
+    const reopened=new SqliteStateStore(f.paths.databasePath);
+    try{expect(new AuthenticationService(reopened).verifyInstallationToken(f.token)).toBe(false);}finally{reopened.close();}
+  });
+  it("refuses an aliased publication remnant without removing its target",()=>{
+    const f=fixture();f.store.close();
+    const target=join(f.root,"preserve");writeFileSync(target,"preserve",{mode:0o600});
+    const alias=join(securityFenceRoot(f.paths.databasePath),`.journal-${randomUUID()}`);symlinkSync(target,alias);
+    rmSync(witness(f.paths.databasePath));
+    expect(()=>resume(f.paths)).toThrow(/security_fence/);
+    expect(readFileSync(target,"utf8")).toBe("preserve");expect(fs.lstatSync(alias).isSymbolicLink()).toBe(true);
+  });
   it.each(["pending-file","pending-directory","confirmed-file","confirmed-directory"])("fails truthfully at %s fsync and never silently resumes uncertainty",stage=>{
     const f=fixture(), before=readFileSync(witness(f.paths.databasePath));
     const sync=fs.fsyncSync, rename=fs.renameSync;let published:string|undefined, failed=false;

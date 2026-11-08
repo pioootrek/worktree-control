@@ -2,11 +2,11 @@ import { assertDurability } from "./database-validation";
 import { hashFile, BACKUP_LIMITS } from "./backup-validation";
 import { AuthenticationProviderError, parseStrictProviderJson } from "../../modules/authentication";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, opendirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, opendirSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import { durableJson, privateDirectory, privateBoundedFileReader, readPrivateBoundedFile, validateSensitivePath } from "../../private-storage";
+import { durableJson, privateDirectory, privateBoundedFileReader, readPrivateBoundedFile, syncDirectory, validateSensitivePath } from "../../private-storage";
 import { getOwnedRestoreStatus } from "./restore-recovery";
 
 const hex = z.string().regex(/^[0-9a-f]{64}$/);
@@ -65,12 +65,21 @@ function publish(database: string, payload: Record): void {
   validateSensitivePath(witnessPath(database), [], true);
   privateDirectory(root);
   const directory=opendirSync(root);
+  let removed=false;
   try {
     for(let count=0;;count++) {
       const entry=directory.readSync(); if(!entry)break;
       if(count>=32 || (entry.name!=="witness.json" && !/^\.journal-[0-9a-f-]{36}$/.test(entry.name))) throw new SecurityFenceError("security_fence_recovery_required");
+      if(entry.name!=="witness.json") {
+        // The sole database owner publishes synchronously: recognized private
+        // temporaries cannot belong to a concurrent publication. Reap at most
+        // one bounded batch; a retry progresses even after many crashed writes.
+        const temporary=join(root,entry.name);
+        readPrivateBoundedFile(temporary,4096,[],true);
+        unlinkSync(temporary);removed=true;
+      }
     }
-  } finally { directory.closeSync(); }
+  } finally { try { directory.closeSync(); } finally { if(removed)syncDirectory(root); } }
   // Existing material is validated, never chmod'ed into trust. Missing is allowed
   // here only after fresh creation or an explicit protected maintenance decision.
   if (existsSync(witnessPath(database))) readPrivateBoundedFile(witnessPath(database), 4096, [], true);
@@ -204,8 +213,10 @@ export class SecurityFence implements SqliteExecutionBoundary {
     // No SQLite re-entry from a scalar function. All ordinary execution was
     // admitted and checked before reaching the statement; verify external state
     // again at the actual security row boundary.
-    const stat=lstatSync(this.path),current=this.readCurrent();
-    if(stat.dev!==this.inode.dev || stat.ino!==this.inode.ino || hash(current)!==hash(this.record)) {
+    try {
+      const stat=lstatSync(this.path),current=this.readCurrent();
+      if(stat.dev!==this.inode.dev || stat.ino!==this.inode.ino || hash(current)!==hash(this.record)) throw new Error();
+    } catch {
       this.failed=true;throw new SecurityFenceError("security_fence_recovery_required");
     }
     this.pending = true;
