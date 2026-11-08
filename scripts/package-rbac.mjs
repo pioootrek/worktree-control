@@ -177,6 +177,13 @@ try {
   const { StreamableHTTPClientTransport } = await import(pathToFileURL(join(sdk, "client/streamableHttp.js")));
   const connect = async token => { const client = new Client({ name: "installed-rbac", version: "1" }); clients.push(client); await client.connect(new StreamableHTTPClientTransport(new URL(mcpURL), { requestInit: { headers: { Authorization: `Bearer ${token}` } } })); return client; };
   const client = await connect(credential.token);
+  await step("old-credential-ceiling-does-not-gain-new-delegation", async () => {
+    const old = await connect(oldAgentCredential.token);
+    const projects = await old.callTool({ name: "list_projects", arguments: {} }); assert(!projects.isError); assert.deepEqual(JSON.parse(projects.content[0].text), []);
+    const names = (await old.listTools()).tools.map(tool => tool.name);
+    for (const name of ["get_runtime_logs", "get_project_storage", "get_server_capacity", "get_test_queue"]) assert(!names.includes(name));
+    await old.close(); clients.splice(clients.indexOf(old), 1);
+  });
   const call = async (name, args = {}) => { const result = await client.callTool({ name, arguments: args }); assert(!result.isError, `MCP ${name} denied`); return JSON.parse(result.content[0].text); };
   await step("real-mcp-runtime-verification-config-and-diagnostics", async () => {
     assert.equal((await call("list_projects"))[0].id, project.id);
@@ -257,12 +264,17 @@ try {
     assert.notEqual((await command(currentCli, ["auth", "status"])).code, 0);
     const inspected = await json(currentCli, ["auth", "fence", "inspect"]);
     await json(currentCli, ["auth", "fence", "resume", "--expect", inspected.preflight, "--mode", "better-auth"]);
+    observe(db => {
+      assert.equal(db.prepare("SELECT count(*) n FROM principal_credentials WHERE status='active'").get().n, 0);
+      for (const table of ["knowledge_project_grants", "runtime_delegations", "runtime_human_memberships"]) assert.equal(db.prepare(`SELECT count(*) n FROM ${table} WHERE revoked_at IS NULL`).get().n, 0);
+    });
     await json(currentCli, ["auth", "provider", "recover", "--principal-id", oldOwner.principalId, "--input-stdin"], {}, { newPassword: replacement });
     await start(); const recovered = cookieJar();
     assert.equal((await recovered.call("/api/auth/sign-in/email", { email: "owner@fixture.invalid", password })).status, 401);
     const login = await recovered.call("/api/auth/sign-in/email", { email: "owner@fixture.invalid", password: replacement }); assert.equal(login.status, 200);
     assert.equal((await recovered.call("/api/auth/get-session")).body.principal.id, oldOwner.principalId);
-    assert.equal((await recovered.call("/api/runtime/read", { operation: "list-projects" })).status, 200);
+    const empty = await recovered.call("/api/runtime/read", { operation: "list-projects" }); assert.equal(empty.status, 200); assert.deepEqual(empty.body.projects, []);
+    const rejected = await cookieJar().call("/api/knowledge", { operation: "tasks", input: { projectId: knowledge.id } }, { Authorization: `Bearer ${oldAgentCredential.token}` }); assert.equal(rejected.status, 401);
     await stop();
     const principals = observe(db => db.prepare("SELECT id,kind,status FROM remote_principals WHERE kind='owner'").all()); assert.deepEqual(principals, [before.principal]);
     assert.equal(observe(db => db.prepare("SELECT title FROM knowledge_tasks WHERE id=?").get(task.value.id).title), "Old history");

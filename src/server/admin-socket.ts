@@ -3,7 +3,7 @@ import { chmodSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { dirname } from "node:path";
 import { createHttpServerCloser } from "./http-server-lifecycle";
-import { ProviderAdminError, providerAdminErrorBody } from "./modules/authentication";
+import { ProviderAdminError, providerAdminErrorBody, parseStrictProviderJson } from "./modules/authentication";
 
 const BODY_LIMIT = 16 * 1024;
 
@@ -54,7 +54,14 @@ export async function listenAdminSocket(
         try { body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))); }
         catch { throw new ProviderAdminError("invalid_input"); }
         provider = typeof body === "object" && body !== null && "command" in body && body.command === "auth-provider";
-        if (provider || (typeof body === "object" && body !== null && "command" in body && body.command === "identity-admin")) body = decodeProviderJson(Buffer.concat(chunks));
+        if (provider) body = decodeProviderJson(Buffer.concat(chunks));
+        else if (typeof body === "object" && body !== null && "command" in body && body.command === "identity-admin") {
+          // Identity ceilings can contain 64 project scopes. Keep the socket's
+          // 16KiB body bound and strict duplicate-key parsing without imposing
+          // the provider configuration's smaller 8KiB/128-field envelope.
+          try { body = parseStrictProviderJson(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)), { maxDepth: 8, maxFields: 1024 }); }
+          catch { throw new ProviderAdminError("invalid_input"); }
+        }
         const result = await execute(body);
         if (provider && Buffer.byteLength(JSON.stringify(result)) > BODY_LIMIT) throw new ProviderAdminError("provider_failed");
         reply(200, { result });
