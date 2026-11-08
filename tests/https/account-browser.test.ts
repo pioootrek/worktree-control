@@ -333,6 +333,9 @@ describe("account GUI against the real controller over HTTPS", () => {
       await pwExpect(page.getByRole("heading", { name: "Verification code" })).toBeVisible();
       await fillFreshTotp(page, secret!);
       await page.getByRole("button", { name: "Verify" }).click();
+      // Reauthentication preserves the URL-selected Security tab.
+      await pwExpect(page.getByRole("tab", { name: "Security" })).toHaveAttribute("aria-selected", "true");
+      await page.getByRole("tab", { name: "Projects" }).click();
       await pwExpect(page.getByRole("heading", { name: "project-a" })).toBeVisible();
       // The operator subset has no configuration rights; the panel stays absent.
       await pwExpect(page.getByRole("heading", { name: "Configuration" })).toHaveCount(0);
@@ -355,6 +358,8 @@ describe("account GUI against the real controller over HTTPS", () => {
       await pwExpect(page.getByText("The passkey was registered. Sign in again.")).toBeVisible();
 
       await page.getByRole("button", { name: "Sign in with a passkey" }).click();
+      await pwExpect(page.getByRole("tab", { name: "Security" })).toHaveAttribute("aria-selected", "true", { timeout: 20_000 });
+      await page.getByRole("tab", { name: "Projects" }).click();
       await pwExpect(page.getByRole("heading", { name: "project-a" })).toBeVisible({ timeout: 20_000 });
       await cdp.send("WebAuthn.removeVirtualAuthenticator", { authenticatorId });
 
