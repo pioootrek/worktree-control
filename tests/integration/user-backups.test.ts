@@ -11,6 +11,12 @@ function canonical(value: unknown): unknown {
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)]));
   return value;
 }
+/** Exact unauthenticated S4u answer: 403 with the safe code only, never schedule data (handleUserBackupHttp null actor). */
+async function expectUserBackupsForbidden(f: ControllerFixture, token: string): Promise<void> {
+  const result = await f.requestResult("/api/user-backups", { headers: { Authorization: `Bearer ${token}` } });
+  expect(result.status).toBe(403);
+  expect(result.body).toEqual({ code: "forbidden", error: "forbidden" });
+}
 describe("S4u in built controller", () => {
   let fixture: ControllerFixture | undefined;
   afterEach(async () => { await fixture?.close(); fixture = undefined; });
@@ -58,13 +64,15 @@ describe("S4u in built controller", () => {
     await f.recoverRestore();
     const handoff = JSON.parse(await readFile(join(f.paths.data, "state.sqlite3.backup-operations", "handoff.json"), "utf8")).payload as RestoreOperation;
     expect(handoff).toMatchObject({ operationId: accepted.operationId, state: "verified" });
-    // The fenced resume revoked every credential and grant: the old token is denied outright, not merely forbidden.
+    // The fenced resume revoked every credential and grant: identity rejects the old token as a credential (401).
     expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${issued.token}` } })).status).toBe(401);
-    expect((await f.requestResult("/api/user-backups", { headers: { Authorization: `Bearer ${issued.token}` } })).status).toBe(401);
+    // The S4u route answers every request without an authenticated actor with one uniform safe 403.
+    await expectUserBackupsForbidden(f, issued.token);
     // The restored installation verifier is quarantined too; only the token generated after the ceremony works.
     expect(f.installationToken).not.toBe(preRestoreInstallationToken);
-    expect((await f.requestResult("/api/identity")).status).toBe(200);
-    expect((await f.requestResult("/api/identity", { headers: { "x-worktree-control-token": preRestoreInstallationToken } })).status).toBe(401);
+    // /api/identity reads only the bearer; the current installation token is the positive control.
+    expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${f.installationToken}` } })).status).toBe(200);
+    expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${preRestoreInstallationToken}` } })).status).toBe(401);
     // Regrant and reissue are explicit protected acts after a resume.
     await admin({ action: "grant-knowledge", principalId: principal.id, projectId, permissions: ["knowledge:read", "knowledge:write", "knowledge:export"] });
     const fresh = await admin<{ token: string }>({ action: "issue-agent-token", principalId: principal.id, label: "post-restore" });
@@ -89,11 +97,13 @@ describe("S4u in built controller", () => {
     await f.recoverRestore();
     // Offline restore resurrected the old database credential, but the fenced resume revoked it again.
     expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${issued.token}` } })).status).toBe(401);
-    expect((await f.requestResult("/api/user-backups", { headers: { Authorization: `Bearer ${issued.token}` } })).status).toBe(401);
-    expect((await f.requestResult("/api/user-backups", { headers: { Authorization: `Bearer ${fresh.token}` } })).status).toBe(401);
-    expect((await f.requestResult("/api/identity")).status).toBe(200);
+    // The post-service-restore token is absent from the rolled-back database; identity proves it, S4u stays uniform.
+    expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${fresh.token}` } })).status).toBe(401);
+    await expectUserBackupsForbidden(f, issued.token);
+    await expectUserBackupsForbidden(f, fresh.token);
+    expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${f.installationToken}` } })).status).toBe(200);
     for (const stale of [preRestoreInstallationToken, postServiceInstallationToken]) {
-      expect((await f.requestResult("/api/identity", { headers: { "x-worktree-control-token": stale } })).status).toBe(401);
+      expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${stale}` } })).status).toBe(401);
     }
     await admin({ action: "grant-knowledge", principalId: principal.id, projectId, permissions: ["knowledge:read", "knowledge:write", "knowledge:export"] });
     const postOffline = await admin<{ token: string }>({ action: "issue-agent-token", principalId: principal.id, label: "post-offline-restore" });
