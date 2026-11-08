@@ -212,14 +212,32 @@ install or restart a service.
 
 ### GUI handoff and release classification
 
-The static dashboard still uses the older broad dashboard/runtime endpoints.
-Those endpoints are closed to account cookies. A separate GUI implementation
-must use `/api/auth/status`, the exact closed authentication routes, cookie
-`/api/knowledge`, and `/api/runtime/{read,mutate,tests,configuration}` contracts.
-It must handle current-authority denials and reauthenticate after session loss.
-Cookie downloads, SSE, ENV/vault administration and broad dashboard DTOs are
-unsupported. This backend work includes no login UI, dashboard adaptation or
-browser QA and does not claim GUI readiness.
+The static dashboard now probes the public `GET /api/auth/status` on load.
+Open and token modes render the legacy dashboard unchanged. Account mode renders
+the account flow: sign-in, the TOTP and passkey challenges, self-service TOTP
+and passkey enrollment on the Security tab, and sign-out. The HttpOnly session
+cookie is the sole browser authority; no password, token or CSRF value reaches
+the URL, web storage or logs. Session loss (revocation, recovery, factor
+enrollment, expiry) returns to sign-in with an explicit notice, and a reload
+resumes a live session. The GUI never infers rights from the owner label:
+reader, operator, tests and configuration distinctions come from the backend
+responses, and denials are shown as such.
+
+Account mode uses only the closed cookie contracts: `/api/knowledge` and
+`/api/runtime/{read,mutate,tests,configuration}`. Knowledge attachments and
+exports stay hidden in account mode because no cookie route exists for them.
+Cookie SSE, downloads, ENV/vault administration, backups, schedules and the
+broad dashboard DTOs remain unsupported and are presented as unavailable, never
+silently retried. The GUI creates no owner and offers no signup or recovery;
+those stay with the protected CLI.
+
+Browser proof runs in `tests/ui/account.spec.ts` against a closure fixture and
+in `tests/https/account-browser.test.ts` against the real controller, provider
+and cookies behind the fixture Caddy on an isolated secure origin, including
+password lifecycle, role distinctions, claim and test rights, knowledge over
+the session cookie, TOTP enrollment and challenge, passkey enrollment and
+authentication through a virtual authenticator, and protected recovery with
+old-password denial. Live host migration remains the parent's task.
 
 The full provider proof retains five historical native/old-bounded factor
 negative failures. They must remain visible and unskipped. Public integrated
