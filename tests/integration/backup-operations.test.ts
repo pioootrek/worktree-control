@@ -84,7 +84,7 @@ describe("operational backups in the packaged controller", () => {
     const scoped = await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${scopedCredential.token}`, "x-worktree-control-token": scopedCredential.token } }); expect(scoped.status).toBe(401);
     const policy = await f.request<BackupOverview>("/api/backups"); expect(policy.policy.uiActions).toEqual(["create", "restore"]); expect(policy.policy.intervalSeconds).toBeNull();
     await f.request("/api/settings/capacity", { method: "POST", body: JSON.stringify({ enabled: true, limit: 2 }) });
-    const repeated=await f.requestResult("/api/backups",{method:"POST",headers:{Authorization:`Bearer ${previousToken}`,"x-worktree-control-token":previousToken},body:JSON.stringify(input)});expect(repeated.status).toBe(401);
+    const repeated=await f.requestResult("/api/backups",{method:"POST",headers:{Authorization:`Bearer ${previousToken}`,"x-worktree-control-token":previousToken},body:JSON.stringify(input)});expect(repeated.status).toBe(403);expect(repeated.body).toMatchObject({code:"backup_forbidden"});
     expect((await f.request<ControllerDashboardResponse>("/api/dashboard")).capacity.enabled).toBe(true);
     await mcp.close();
   });

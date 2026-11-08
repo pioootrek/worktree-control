@@ -7,9 +7,9 @@ import { createControllerBackup, restoreControllerBackup } from "@/server/contro
 import { SqliteStateStore } from "@/server/infrastructure/sqlite";
 import { maintainSecurityFence } from "@/server/bootstrap/security-maintenance";
 import { resolveAppPaths } from "@/server/paths";
-import { AuthenticationProviderError, AuthenticationService, loadAuthenticationProvider, resolveControllerAuthentication } from "@/server/modules/authentication";
+import { AuthenticationProviderError, AuthenticationService, resolveControllerAuthentication } from "@/server/modules/authentication";
 import type { ProofFaultInjection } from "../src/index";
-import { cleanupRoots, Client, count, loadProof, ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, proofFixture, PROVIDER_ENTRY, readCommitted, SESSION_POLICY, storeFixture } from "./fixture";
+import { cleanupRoots, Client, count, loadProof, ORIGIN, OWNER_EMAIL, OWNER_PASSWORD, proofFixture, readCommitted, SESSION_POLICY, storeFixture } from "./fixture";
 
 afterEach(() => { vi.useRealTimers(); cleanupRoots(); });
 
