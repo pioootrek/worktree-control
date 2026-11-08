@@ -984,6 +984,8 @@ migration remain A5 gates. The five historical factor negatives remain visible.
 `pnpm build:auth-provider` emits a compiled JavaScript tarball and checksum under
 `dist/private-auth-provider/`. Its runtime dependencies stay in that optional
 package. Community root dependencies and assets contain no provider engine.
+The tarball carries its complete npm shrinkwrap and the artifact metadata records
+the lock hash; deployment uses the reviewed tarball rather than rebuilding it.
 The installed-artifact acceptance uses a separate prefix without source links
 or test loader hooks, and exercises public login/session plus machine MCP/CLI,
 protected revocation, an old-release upgrade requiring fence establishment,

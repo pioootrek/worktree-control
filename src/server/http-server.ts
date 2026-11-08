@@ -403,7 +403,13 @@ export function createControllerServer(options: {
   };
   const server = createServer((request, response) => {
     void (async () => {
+      if (!(request.url ?? "/").startsWith("/")) {
+        authenticationJson(response, 400, { code: "invalid_request" }); return;
+      }
       const api = (request.url ?? "").startsWith("/api/");
+      if ((request.url ?? "").startsWith("/mcp") && hasProviderCookie(request)) {
+        authenticationJson(response, 401, { code: "invalid_credential" }); return;
+      }
       if (api && options.authentication?.mode() === "better-auth"
         && (request.headers[CONTROLLER_TOKEN_HEADER.toLowerCase()] !== undefined || request.headers[LEGACY_CONTROLLER_TOKEN_HEADER.toLowerCase()] !== undefined
           || bearerToken(request)?.startsWith("wsi_") || (hasProviderCookie(request) && request.headers.authorization !== undefined))) {

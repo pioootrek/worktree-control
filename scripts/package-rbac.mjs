@@ -111,6 +111,7 @@ try {
   const providerPrefix = join(root, "provider");
   await step("separate-optional-provider-install", () => bounded("npm", ["install", "--prefix", providerPrefix, "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", artifact.path], { env: installEnv }));
   const entry = join(providerPrefix, "node_modules/@worktree-control/auth-provider-better-auth-proof/dist/index.js");
+  assert.equal(digest(await readFile(join(providerPrefix, "node_modules/@worktree-control/auth-provider-better-auth-proof/npm-shrinkwrap.json"))), artifact.dependencyLockSha256);
   assert(!(await readFile(entry, "utf8")).includes("/test/"));
   const oldOwner = await step("old-release-owner-and-history", () => json(oldCli, ["identity", "bootstrap-owner"]));
   const ownerEnv = { WORKTREE_CONTROL_OWNER_TOKEN: oldOwner.token };

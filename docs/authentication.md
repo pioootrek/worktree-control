@@ -137,6 +137,8 @@ private prefix. Its compiled JavaScript and pinned runtime dependencies work
 without this source checkout or test loaders. The Community package's dependency
 graph and assets exclude the provider implementation. It remains optional and
 unpublished; this work changes no distribution or licensing decision.
+The tarball includes `npm-shrinkwrap.json`; `artifact.json` records its hash.
+Archive that reviewed tarball for deployment rather than resolving it again.
 
 The following placeholders name operator-selected private paths and existing IDs.
 Passwords/signing material enter through a private file or stdin, never argv,

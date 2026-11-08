@@ -156,7 +156,9 @@ export class McpRuntime {
         return;
       }
       try {
-        session = this.createSession(authentication, admission.session);
+        // Registration reads current diagnostic permissions. Keep this bounded
+        // construction inside the same SQLite admission as other identity reads.
+        session = await admissionOf(this.service).run(() => this.createSession(authentication, admission.session));
         await session.server.connect(session.transport);
         this.observeMessages(session);
         await this.handleTransport(session, request, response, body, true);

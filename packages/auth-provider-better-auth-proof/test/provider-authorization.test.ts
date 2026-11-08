@@ -146,9 +146,9 @@ describe("runtime-issued provider-session Knowledge application", () => {
       const vault = new DevVaultService(f.store.devVault, { key: () => Buffer.alloc(32) }, f.identity, { verify: () => "valid" });
       await expect(f.run(() => vault.execute({ command }, f.actor))).rejects.toMatchObject({ code: "vault_denied" });
       // Account mode and compatibility transports gain no session-cookie path.
-      expect(resolveControllerAuthentication({ authentication: { mode: () => "better-auth",
+      expect(await f.run(() => resolveControllerAuthentication({ authentication: { mode: () => "better-auth",
         authenticateInstallation: () => null, anonymousInstallation: () => null }, identity: f.identity },
-      { bearer: f.owner.token, legacySecretValid: () => true })).toBeNull();
+      { bearer: f.owner.token, legacySecretValid: () => true }))).toBeNull();
     } finally { await closeStrictProof(f); }
   });
 
