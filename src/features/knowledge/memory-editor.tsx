@@ -7,14 +7,14 @@ import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n/provider";
 import type { KnowledgeMemory, KnowledgeSource } from "@/shared/contracts/knowledge-memory";
 import type { KnowledgeFailure } from "@/shared/contracts/knowledge";
-import { knowledgeRequest, KnowledgeClientError } from "./knowledge-client";
+import { knowledgeRequest, KnowledgeClientError, type KnowledgeCredential } from "./knowledge-client";
 import { fieldClass } from "./knowledge-editor";
 
 export const knowledgeRetryKey = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), byte => byte.toString(16).padStart(2, "0")).join("");
 type Draft = { title: string; body: string; category: KnowledgeMemory["category"]; tags: string; legacyId: string; sources: KnowledgeSource[]; revision: number; key: string; error: KnowledgeFailure | null };
 
 export function MemoryEditor({ token, principalId, projectId, record, onSaved, onClose, onConflict }: {
-  token: string; principalId: string; projectId: string; record?: KnowledgeMemory;
+  token: KnowledgeCredential; principalId: string; projectId: string; record?: KnowledgeMemory;
   onSaved: (id: string) => void; onClose: () => void; onConflict: () => void;
 }) {
   const { t } = useI18n();

@@ -316,6 +316,127 @@ test("a Knowledge record-read 401 ends the account session while the identity pr
   }
 });
 
+const linkedMemory = { id: "linked-memory", projectId: linkedProject.id, title: "Private account memory", body: "Private memory body", category: "decision", status: "active", revision: 1, tags: [], sources: [], createdBy: "acct-1", createdAt: "2026-01-01", updatedAt: "2026-01-01" };
+const memorySearch = knowledgeSourceHref(linkedProject.id, { kind: "memory", id: linkedMemory.id, revision: 1 });
+const independentOperations = ["task_context", "export_context", "search", "memory", "history", "task_state", "archive_memory"] as const;
+type IndependentOperation = typeof independentOperations[number];
+
+function independentKnowledge(body: Record<string, unknown>): { status?: number; json: unknown } {
+  if (body.operation === "memory") return { json: linkedMemory };
+  if (body.operation === "search") return { json: { items: [{ kind: "memory", id: linkedMemory.id, projectId: linkedProject.id, title: linkedMemory.title, excerpt: linkedMemory.body, revision: 1, status: "active", accessible: true }], nextOffset: null } };
+  if (body.operation === "history") return { json: { items: [], nextOffset: null } };
+  if (body.operation === "task_context") return { json: { scope: "Private exported task scope", decisions: [], proposals: [], openQuestions: [], nextOffset: null, fingerprint: "fixture-context" } };
+  if (body.operation === "export_context") return { json: { content: "Private exported task scope", fingerprint: "fixture-context" } };
+  return accountKnowledge(body);
+}
+
+function holdOtherKnowledge(fixture: AccountFixture, operation: IndependentOperation) {
+  fixture.holds.add("/api/auth/get-session");
+  for (const other of ["projects", "project", "tasks", "task", "threads", "thread", "replies", "relations", ...independentOperations]) {
+    if (other !== operation) fixture.holds.add(`/api/knowledge:${other}`);
+  }
+}
+
+async function triggerIndependentKnowledge(page: Page, operation: IndependentOperation) {
+  if (operation === "task_context") await page.getByRole("button", { name: "Next session context", exact: true }).click();
+  else if (operation === "export_context") await page.getByRole("button", { name: "Copy context for agent", exact: true }).click();
+  else if (operation === "archive_memory") await page.getByRole("button", { name: "Archive memory", exact: true }).click();
+  else if (operation === "history") await page.locator("[data-memory-detail] summary").filter({ hasText: "Revision history" }).click();
+  else if (operation === "task_state") await page.locator("section").filter({ has: page.getByRole("heading", { name: "Current state", exact: true }) }).getByRole("button", { name: "Refresh", exact: true }).click();
+  else {
+    await page.getByLabel("Search titles, content and memory", { exact: true }).fill("Private");
+    await page.getByRole("button", { name: "Filter", exact: true }).click();
+  }
+}
+
+for (const operation of independentOperations) for (const status of [401, 403]) {
+  test(`independent Knowledge ${operation} ${status} ${status === 401 ? "clears privileged content" : "retains the session and recovers"}`, async ({ page }) => {
+    const memory = ["search", "memory", "history", "archive_memory"].includes(operation);
+    let denied = false;
+    let stateUnavailable = operation === "task_state";
+    const fixture = await mountAccount(page, {
+      preAuthenticated: true, search: memory ? memorySearch : linkedSearch,
+      knowledge: body => body.operation === operation && (denied || stateUnavailable)
+        ? { status: denied ? status : 503, json: { code: status === 401 ? "invalid_credential" : "forbidden", error: "Independent request denied" } }
+        : independentKnowledge(body),
+    });
+    try {
+      await expect(page.getByRole("heading", { name: memory ? linkedMemory.title : linkedTask.title, exact: true })).toBeVisible();
+      if (operation === "task_state") await expect(page.getByText("The current state could not be loaded.")).toBeVisible();
+      holdOtherKnowledge(fixture, operation);
+      stateUnavailable = false;
+      denied = true;
+      if (status === 401) fixture.session = null;
+      const [answer] = await Promise.all([
+        page.waitForResponse(response => response.url().endsWith("/api/knowledge") && response.status() === status && response.request().postDataJSON()?.operation === operation),
+        triggerIndependentKnowledge(page, operation),
+      ]);
+      await answer.finished();
+      if (status === 401) {
+        await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
+        await expect(page.getByText("The session expired or was revoked. Sign in again.")).toBeVisible();
+        await expect(page.locator("[data-knowledge-workspace]")).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "Sign out" })).toHaveCount(0);
+        await expect(page.getByText(memory ? linkedMemory.body : linkedTask.description, { exact: true })).toHaveCount(0);
+      } else {
+        if (operation === "task_state") await expect(page.getByText("The current state could not be loaded.")).toBeVisible();
+        else await expect(page.getByRole("alert").filter({ hasText: /Could not|Saving failed/i }).first()).toBeVisible();
+        await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Account sign-in" })).toHaveCount(0);
+        expect(fixture.session).not.toBeNull();
+        // Recovery remounts Knowledge without another login, after removing the denial.
+        fixture.holds.clear(); await fixture.releaseHeld(); denied = false;
+        await page.getByRole("tab", { name: "Security", exact: true }).click();
+        await page.getByRole("tab", { name: "Knowledge", exact: true }).click();
+        await expect(page.getByRole("heading", { name: memory ? linkedMemory.title : linkedTask.title, exact: true })).toBeVisible();
+        if (operation === "task_context" || operation === "export_context" || operation === "history") {
+          await triggerIndependentKnowledge(page, operation);
+          await expect(page.getByText(operation === "history" ? "No recorded changes." : "Private exported task scope", { exact: true })).toBeVisible();
+        }
+        if (operation === "task_state") await expect(page.getByText("No current state recorded", { exact: true })).toBeVisible();
+        expect(fixture.requests.some(request => request.path === "/api/auth/sign-in/email" || request.path === "/api/auth/sign-out")).toBe(false);
+      }
+      expect(fixture.errors).toEqual([]);
+    } finally { fixture.holds.clear(); await fixture.releaseHeld(); }
+  });
+}
+
+for (const operation of ["task_context", "export_context"] as const) {
+  test(`obsolete independent Knowledge ${operation} 401 cannot end a newer session`, async ({ page }) => {
+    const fixture = await mountAccount(page, { preAuthenticated: true, search: linkedSearch, knowledge: independentKnowledge });
+    try {
+      await expectLinkedTask(page);
+      fixture.holds.add(`/api/knowledge:${operation}`);
+      const before = fixture.requests.length;
+      await triggerIndependentKnowledge(page, operation);
+      await expect.poll(() => fixture.requests.slice(before).some(request => (request.body as { operation?: string })?.operation === operation)).toBe(true);
+      await page.getByRole("button", { name: "Sign out" }).click();
+      await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
+      fixture.holds.clear();
+      await page.getByLabel("Email address").fill("user@example.com");
+      await page.getByLabel("Password", { exact: true }).fill("fixture-password");
+      await page.getByRole("button", { name: "Sign in", exact: true }).click();
+      await expectLinkedTask(page);
+      // task_context is cancelled on unmount; export_context has no AbortSignal and really arrives late.
+      const late = operation === "export_context" ? page.waitForResponse(response => response.url().endsWith("/api/knowledge") && response.status() === 401 && response.request().postDataJSON()?.operation === operation) : null;
+      await fixture.releaseHeld(`/api/knowledge:${operation}`, { status: 401, json: { code: "invalid_credential", error: "Obsolete session" } });
+      if (late) await (await late).finished();
+      // A fresh context response acts as a processing barrier, without sleeps.
+      const [fresh] = await Promise.all([
+        page.waitForResponse(response => response.url().endsWith("/api/knowledge") && response.status() === 200 && response.request().postDataJSON()?.operation === "task_context"),
+        triggerIndependentKnowledge(page, "task_context"),
+      ]);
+      await fresh.finished();
+      await expect(page.getByText("Private exported task scope", { exact: true })).toBeVisible();
+      await expectLinkedTask(page);
+      await expect(page.getByRole("heading", { name: "Account sign-in" })).toHaveCount(0);
+      await expect(page.getByText("The session expired or was revoked. Sign in again.")).toHaveCount(0);
+      expect(fixture.session).not.toBeNull();
+      expect(fixture.errors).toEqual([]);
+    } finally { fixture.holds.clear(); await fixture.releaseHeld(); }
+  });
+}
+
 test("claims a worktree with one idempotent mutation", async ({ page }) => {
   const fixture = await mountAccount(page, {
     preAuthenticated: true,

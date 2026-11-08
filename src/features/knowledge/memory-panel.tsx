@@ -11,7 +11,7 @@ import { useI18n } from "@/i18n/provider";
 import { knowledgeSourceHref as sourceHref } from "@/shared/contracts/knowledge-links";
 import type { KnowledgeMemory, KnowledgeSearchHit } from "@/shared/contracts/knowledge-memory";
 import type { KnowledgePage, KnowledgeInput, KnowledgeOperation } from "@/shared/contracts/knowledge";
-import { knowledgeRequest, KnowledgeClientError } from "./knowledge-client";
+import { knowledgeRequest, KnowledgeClientError, type KnowledgeCredential } from "./knowledge-client";
 import { MemoryEditor, knowledgeRetryKey } from "./memory-editor";
 import { fieldClass } from "./knowledge-editor";
 import type { KnowledgeTab } from "./use-knowledge";
@@ -21,7 +21,7 @@ import { MemoryHistory } from "./memory-history";
 export { knowledgeSourceHref as sourceHref } from "@/shared/contracts/knowledge-links";
 
 type MemoryPanelProps = {
-  token: string; principalId: string; projectId: string; recordId: string; writable: boolean; approvable: boolean; changeVersion: number;
+  token: KnowledgeCredential; principalId: string; projectId: string; recordId: string; writable: boolean; approvable: boolean; changeVersion: number;
   /** Token-only attachment routes are hidden when the session cannot authorize them (account mode). */
   attachments?: boolean;
   onSelect: (tab: KnowledgeTab, id: string, replyId?: string, fromSearch?: boolean) => void;

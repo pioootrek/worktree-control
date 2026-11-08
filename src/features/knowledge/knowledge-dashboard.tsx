@@ -20,6 +20,7 @@ import { KnowledgeRelations } from "./knowledge-relations";
 import { clearMemorySearch, memoryReturnHref } from "./memory-navigation";
 import { TaskContext } from "./task-context";
 import { TaskCurrentState } from "./task-current-state";
+import { useKnowledgeSession } from "./use-knowledge-session";
 import { useKnowledge, type KnowledgeTab } from "./use-knowledge";
 
 function replyTime(value: string, locale: string, fallback: string): string {
@@ -30,7 +31,7 @@ const subscribeLocation = (listener: () => void) => { window.addEventListener("p
 const locationSnapshot = () => window.location.search;
 const serverLocationSnapshot = () => "";
 
-export function KnowledgeDashboard({ token, setToken, access, change, onSessionLost }: { token: string; setToken: (value: string) => void; access: "installation" | "open" | "scoped" | "account"; change: { version: number; projectIds: string[] }; onSessionLost?: () => void }) {
+export function KnowledgeDashboard({ token: transportToken, setToken, access, change, onSessionLost }: { token: string; setToken: (value: string) => void; access: "installation" | "open" | "scoped" | "account"; change: { version: number; projectIds: string[] }; onSessionLost?: () => void }) {
   const { t, locale } = useI18n();
   const [credential, setCredential] = useState("");
   const [loginError, setLoginError] = useState<"auth" | "load" | null>(null);
@@ -62,7 +63,8 @@ export function KnowledgeDashboard({ token, setToken, access, change, onSessionL
   const editorTriggerRef = useRef<HTMLButtonElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const detailRef = useRef<HTMLDivElement>(null);
-  const model = useKnowledge(token, change, access === "account" ? onSessionLost : undefined);
+  const token = useKnowledgeSession(transportToken, access === "account" ? onSessionLost : undefined);
+  const model = useKnowledge(token, change);
   const { selection, identity, projects } = model;
   const locationSearch = useSyncExternalStore(subscribeLocation, locationSnapshot, serverLocationSnapshot);
   const returnSearchHref = identity && selection.tab !== "memory"

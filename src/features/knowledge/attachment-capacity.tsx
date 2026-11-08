@@ -4,9 +4,9 @@ import { useEffect, useState } from "react";
 import type { KnowledgeAttachmentPolicy } from "@/shared/contracts/knowledge-attachments";
 import { useI18n } from "@/i18n/provider";
 import { Button } from "@/components/ui/button";
-import { knowledgeRequest, isKnowledgeAccessError } from "./knowledge-client";
+import { knowledgeRequest, isKnowledgeAccessError, type KnowledgeCredential } from "./knowledge-client";
 
-export function AttachmentCapacity({ token, projectId, refreshVersion }: { token: string; projectId: string; refreshVersion: number }) {
+export function AttachmentCapacity({ token, projectId, refreshVersion }: { token: KnowledgeCredential; projectId: string; refreshVersion: number }) {
   const { t, locale } = useI18n();
   const [open, setOpen] = useState(false);
   const [retry, setRetry] = useState(0);

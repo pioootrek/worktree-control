@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useI18n } from "@/i18n/provider";
 import type { KnowledgeFailure, KnowledgeTask, KnowledgeTaskPriority, KnowledgeTaskStatus, KnowledgeThread } from "@/shared/contracts/knowledge";
-import { KnowledgeClientError, knowledgeRequest } from "./knowledge-client";
+import { KnowledgeClientError, knowledgeRequest, type KnowledgeCredential } from "./knowledge-client";
 
 function retryKey(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(24)), byte => byte.toString(16).padStart(2, "0")).join("");
@@ -18,7 +18,7 @@ export type EditorMode = "thread" | "task" | "reply" | "from_thread" | "edit";
 interface Draft { title: string; body: string; priority: KnowledgeTaskPriority; status: KnowledgeTaskStatus; expectedRevision: number; idempotencyKey: string; error: KnowledgeFailure | null }
 
 export function KnowledgeEditor({ token, principalId, projectId, mode, record, onSaved, onCancel, onConflict }: {
-  token: string; principalId: string; projectId: string; mode: EditorMode;
+  token: KnowledgeCredential; principalId: string; projectId: string; mode: EditorMode;
   record?: KnowledgeTask | KnowledgeThread;
   onSaved: (recordId?: string, tab?: "backlog" | "discussions") => void;
   onCancel: () => void; onConflict: () => void;

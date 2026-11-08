@@ -76,6 +76,7 @@
     "test:knowledge": "vitest run src/server/infrastructure/sqlite/hub-import-execution.test.ts src/server/infrastructure/sqlite/knowledge-memory.test.ts src/server/infrastructure/sqlite/knowledge-project-transfer.test.ts src/server/knowledge-transports.test.ts src/server/infrastructure/sqlite/knowledge-task-state.test.ts",
     "test:ui": "playwright test",
     "test:ui:accounts": "playwright test tests/ui/account.spec.ts",
+    "test:knowledge-client": "vitest run src/features/knowledge/knowledge-client.test.ts",
     "test:ui:knowledge": "playwright test tests/ui/knowledge.spec.ts tests/ui/knowledge-navigation.spec.ts tests/ui/knowledge-reading.spec.ts tests/ui/knowledge-documents.spec.ts",
     "test:ui:detail-focus": "playwright test tests/ui/detail-focus.spec.ts",
     "test:integration": "node scripts/build-fingerprint.mjs --check && vitest run --config vitest.integration.config.ts",

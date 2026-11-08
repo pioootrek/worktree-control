@@ -78,7 +78,7 @@ export interface AccountFixture {
   getSessionAnswer: FixtureRawAnswer | null;
   /** While set, `sign-out` answers this raw 200 without ending the session (no sign-out proof). */
   signOutAnswer: FixtureRawAnswer | null;
-  /** API paths whose requests are recorded and then held unanswered, as by a stalled server. */
+  /** API paths (or `/api/knowledge:operation`) recorded and held unanswered. */
   holds: Set<string>;
   /** Answer (or, without an answer, abort) every held request for a path, or for all paths. Settles once delivered. */
   releaseHeld(path?: string, answer?: { status: number; json: unknown }): Promise<void>;
@@ -266,7 +266,9 @@ export async function mountAccount(page: Page, options: AccountFixtureOptions = 
       const request = route.request();
       const body = request.method() === "POST" ? request.postDataJSON() : null;
       fixture.requests.push({ path: url.pathname, method: request.method(), body, authorization: request.headers()["authorization"] ?? null });
-      if (fixture.holds.has(url.pathname)) { held.push({ path: url.pathname, route }); return; }
+      const holdKey = url.pathname === "/api/knowledge" && fixture.holds.has(`${url.pathname}:${body?.operation}`)
+        ? `${url.pathname}:${body?.operation}` : url.pathname;
+      if (fixture.holds.has(holdKey)) { held.push({ path: holdKey, route }); return; }
       const fail = (status: number, code: string) => route.fulfill({ status, json: { code, error: `Fixture ${code}` } });
       const requireSession = () => {
         if (fixture.session) return false;

@@ -2,13 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KnowledgeTaskCounts, KnowledgeTaskPage, KnowledgeFilters, KnowledgeRelationView, KnowledgePage, KnowledgeProjectSummary, KnowledgeReplyPage, KnowledgeTask, KnowledgeTaskSummary, KnowledgeThread, KnowledgeThreadSummary } from "@/shared/contracts/knowledge";
-import { isKnowledgeAccessError, isKnowledgeSessionLoss, knowledgeIdentity, knowledgeRequest, type KnowledgeIdentity } from "./knowledge-client";
+import { isKnowledgeAccessError, knowledgeIdentity, knowledgeRequest, type KnowledgeIdentity, type KnowledgeCredential } from "./knowledge-client";
 
 export type KnowledgeTab = "backlog" | "discussions" | "memory";
 export interface KnowledgeSelection { projectId: string; tab: KnowledgeTab; recordId: string; replyId?: string }
 const emptyPage = <T,>(): KnowledgePage<T> => ({ items: [], nextOffset: null });
 
-export function useKnowledge(token: string, change: { version: number; projectIds: string[] }, onSessionLost?: () => void) {
+export function useKnowledge(token: KnowledgeCredential, change: { version: number; projectIds: string[] }) {
   const [identity, setIdentity] = useState<KnowledgeIdentity | null>(null);
   const [project, setProject] = useState<KnowledgeProjectSummary | null>(null);
   const [projects, setProjects] = useState(emptyPage<KnowledgeProjectSummary>);
@@ -31,11 +31,14 @@ export function useKnowledge(token: string, change: { version: number; projectId
   const [sessionError, setSessionError] = useState(false);
   const [revision, setRevision] = useState(0);
   const selectionRef = useRef(selection);
+  const selectionReadRef = useRef<AbortController | null>(null);
   const reload = useCallback(() => setRevision(value => value + 1), []);
 
   const changeSelection = useCallback((next: KnowledgeSelection) => {
     const previous = selectionRef.current;
     if (next.projectId === previous.projectId && next.tab === previous.tab && next.recordId === previous.recordId && (next.replyId ?? "") === (previous.replyId ?? "")) return;
+    // Invalidate the old transport immediately, alongside the selection guard.
+    selectionReadRef.current?.abort();
     selectionRef.current = next;
     setSelection(next); setReplyOffset(0); setRelationOffset(0);
     setRelations(emptyPage()); setDetail(null); setReplies({ ...emptyPage(), offset: 0 }); setError(false);
@@ -97,15 +100,15 @@ export function useKnowledge(token: string, change: { version: number; projectId
       if (abort.signal.aborted) return;
       if (isKnowledgeAccessError(error)) {
         setIdentity(null); setProjects(emptyPage()); setProject(null); setDetail(null); setRows(emptyPage()); setReplies({ ...emptyPage(), offset: 0 }); setRelations(emptyPage()); setSessionError(true);
-        if (isKnowledgeSessionLoss(error)) onSessionLost?.();
       } else setDiscoveryError(true);
     });
     return () => abort.abort();
-  }, [token, ready, projectOffset, revision, changeSelection, onSessionLost]);
+  }, [token, ready, projectOffset, revision, changeSelection]);
 
   useEffect(() => {
     if (!token || !identity || !selection.projectId) return;
     const abort = new AbortController();
+    selectionReadRef.current = abort;
     const timer = setTimeout(() => setLoading(true), 0);
     void (async () => {
       try {
@@ -121,18 +124,18 @@ export function useKnowledge(token: string, change: { version: number; projectId
         setRelations(relationPage); setProject(selectedProject); setRows(page); setDetail(record); setReplies(responsePage); setError(false);
         setCounts("counts" in page ? (page as KnowledgeTaskPage).counts : null);
         setTotal("total" in page ? (page as KnowledgeTaskPage).total : null);
-      } catch (cause) {
+      } catch {
         if (!abort.signal.aborted && selectionRef.current === selection) {
           setRelations(emptyPage()); setProject(null); setRows(emptyPage()); setDetail(null); setReplies({ ...emptyPage(), offset: 0 }); setCounts(null); setTotal(null); setError(true);
-          if (isKnowledgeSessionLoss(cause)) onSessionLost?.();
         }
       } finally { if (!abort.signal.aborted && selectionRef.current === selection) { clearTimeout(timer); setLoading(false); } }
     })();
-    return () => { clearTimeout(timer); abort.abort(); };
-  }, [token, identity, selection, filters, offset, replyOffset, relationOffset, revision, onSessionLost]);
+    return () => { clearTimeout(timer); abort.abort(); if (selectionReadRef.current === abort) selectionReadRef.current = null; };
+  }, [token, identity, selection, filters, offset, replyOffset, relationOffset, revision]);
 
   const changeReplyPage = (nextOffset: number) => {
     if (selectionRef.current.replyId) {
+      selectionReadRef.current?.abort();
       const next = { ...selectionRef.current, replyId: "" };
       selectionRef.current = next;
       setSelection(next);
