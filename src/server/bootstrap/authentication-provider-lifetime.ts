@@ -24,6 +24,16 @@ export const CONTROLLER_AUTHENTICATION_POLICY = Object.freeze({
     knowledgeJson: Object.freeze({ maxDepth: 16, maxFields: 2048 }), reservedCompletionSlots: 4 }),
 });
 
+/** Deployment resource/guess bounds; enabling a ceremony does not select it for an account. */
+const FACTOR_LIMITS = Object.freeze({
+  totp: { attempts: 5, windowMs: 60_000 }, passkey: { attempts: 10, windowMs: 60_000 },
+  ticketMs: 15_000, stagingMs: 600_000, capacity: 4096, pruneBatch: 32,
+  issuance: { perPeer: { attempts: 20, windowMs: 60_000 }, global: { attempts: 120, windowMs: 60_000 },
+    peers: 128, nativeChallenges: 4096, reservedContexts: 64 },
+  webauthn: { credentialIdBytes: 2048, clientDataBytes: 2048, attestationBytes: 16_384, authenticatorDataBytes: 8192,
+    publicKeyBytes: 2048, signatureBytes: 2048, userHandleBytes: 64, challengeBytes: 64, transports: 8, credentials: 16, responseBytes: 65_536 },
+});
+
 export interface ControllerAuthenticationOptions {
   store: SqliteStateStore; dataDirectory: string; authentication: AuthenticationService;
   actor: "local-cli" | "local-admin"; maintenance?(): boolean;
@@ -121,7 +131,8 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
             unreleasedSessions: CONTROLLER_AUTHENTICATION_POLICY.unreleasedSessions,
             sessionRows: CONTROLLER_AUTHENTICATION_POLICY.sessionRows,
             sessionReconcileBatch: CONTROLLER_AUTHENTICATION_POLICY.sessionReconcileBatch,
-            options: { baseURL: current.baseURL, secret: current.secret, clientIpHeader: "x-worktree-control-client-ip" },
+            options: { baseURL: current.baseURL, secret: current.secret, clientIpHeader: "x-worktree-control-client-ip",
+              factors: { rpId: new URL(current.baseURL).hostname, rpName: "Worktree Control", limits: FACTOR_LIMITS } },
             // Maintenance fences transaction entry. Once writing, shutdown drains
             // accepted recovery; changed configuration still fences its commit.
             assertAvailable: phase => {
@@ -137,6 +148,27 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
       return loaded;
     },
   };
+
+  const assertAccountReady = () => {
+    guard();
+    const current = configuration.read();
+    const owner = identity.ownerPrincipalStatus();
+    if (!current || changed(current) || !storage.available() || state !== "ready" || !runtime?.supportsProductionAccounts
+      || owner.state !== "single" || owner.principal?.status !== "active"
+      || !storage.subjects("better-auth").hasLocalEnrollment(owner.principal.id)) {
+      throw new AuthenticationProviderError("provider_unavailable", "Account authentication is unavailable.");
+    }
+  };
+  const prepareAccountMode = async () => {
+    const current = await d.store.admission.run(() => {
+      guard(); const value = configuration.read();
+      if (!value) throw new ProviderAdminError("configuration_missing");
+      return value;
+    });
+    await providerRuntime.get(current);
+    await d.store.admission.run(assertAccountReady);
+  };
+  d.authentication.bindAccountMode({ prepare: () => track(d.store.admission.idle(prepareAccountMode)), assertReady: assertAccountReady });
 
   const application = new ProviderAdminApplication({
     humans: new HumanAccountService(d.store.humanAccounts(), d.actor),
@@ -160,10 +192,11 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
       hasProviderData: () => d.store.hasAuthenticationProviderData(),
     },
     runtime: providerRuntime,
+    productionAccountModeAvailable: () => { try { assertAccountReady(); return true; } catch { return false; } },
   });
   return {
     identity,
-    /** Internal server seam for converted browser workflows. Production does not mount it yet.
+    /** Server-owned adapter for converted browser workflows.
      * Uses this exact runtime and identity; an HTTPS deployment origin must match pinned config.
      * The caller owns listener drain before dispose(), as in createControllerShutdown.
      */

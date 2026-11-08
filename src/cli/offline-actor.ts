@@ -10,6 +10,9 @@ import type { SqliteStateStore } from "../server/sqlite-store";
 export function authenticateOfflineActor(store: SqliteStateStore, token: string | undefined, missingCredential?: string): { identity: IdentityService; actor: AuthenticatedPrincipal } {
   const authentication = new AuthenticationService(store, undefined, undefined, undefined, undefined, "offline");
   const identity = new IdentityService(store, undefined, undefined, undefined, authentication, store);
+  // This entrypoint is reached only under the protected stopped-controller singleton lock.
+  // Its owner credential never crosses the online account-mode transport resolver.
+  if (authentication.mode() === "better-auth" && token) return { identity, actor: identity.authenticateBearer(token) };
   const result = resolveControllerAuthentication({ authentication, identity }, { bearer: token ?? null, legacySecretValid: () => false });
   if (!result || result.kind === "legacy") {
     if (!token && missingCredential) throw new Error(missingCredential);

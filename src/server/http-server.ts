@@ -24,7 +24,7 @@ import { DirectoryBrowser } from "./directory-browser";
 import { EventStream } from "./events";
 import { resolveControllerAuthentication, type ControllerAuthenticationDependencies } from "./modules/authentication";
 import { databaseAdmissionFailure, directAdmission, type DatabaseAdmission } from "./database-admission";
-import { IdentityError, type AuthenticatedPrincipal, type ControllerAuthentication, type IdentityService, type KnowledgePermission } from "./modules/identity";
+import { identityAdministration, IdentityError, type AuthenticatedPrincipal, type ControllerAuthentication, type IdentityService } from "./modules/identity";
 
 const JSON_LIMIT = 64 * 1024;
 const MIME_TYPES: Record<string, string> = {
@@ -333,81 +333,6 @@ function bearerToken(request: IncomingMessage): string | null {
   return header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : null;
 }
 
-function identityAdministration(
-  service: IdentityService,
-  actor: AuthenticatedPrincipal,
-  value: unknown,
-): unknown {
-  const record = strictRecord(value, ["action", "principalId", "credentialId", "projectId", "label", "expiresAt", "name", "permissions", "sessionLifetimeSeconds", "role", "expectedRevision", "actions", "projects"]);
-  const action = requiredString(record, "action", 80);
-  // Runtime administration validates its own strict schemas and requires a current owner session.
-  const runtimeInput = () => Object.fromEntries(Object.entries(record).filter(([key]) => key !== "action"));
-  switch (action) {
-    case "set-runtime-delegation":
-      return { delegation: service.setRuntimeDelegation(runtimeInput(), actor) };
-    case "revoke-runtime-delegation":
-      return { delegation: service.revokeRuntimeDelegation(runtimeInput(), actor) };
-    case "list-runtime-access":
-      return service.listRuntimeAccess(runtimeInput(), actor);
-    case "issue-runtime-credential":
-      return service.issueRuntimeCredential(runtimeInput(), actor);
-    case "rotate-runtime-credential":
-      return service.rotateRuntimeCredential(runtimeInput(), actor);
-    case "set-knowledge-role":
-    case "revoke-knowledge-role":
-    case "list-knowledge-roles": {
-      const input = Object.fromEntries(Object.entries(record).filter(([key]) => key !== "action"));
-      if (action === "list-knowledge-roles") return { roles: service.listKnowledgeRoles(input, actor) };
-      return { binding: action === "set-knowledge-role" ? service.setKnowledgeRole(input, actor) : service.revokeKnowledgeRole(input, actor) };
-    }
-    case "renew-owner": {
-      const lifetime = record.sessionLifetimeSeconds;
-      if (lifetime !== undefined && typeof lifetime !== "number") throw new Error("Nieprawidłowe pole sessionLifetimeSeconds.");
-      return service.renewOwnerSession({
-        label: optionalString(record, "label", 120),
-        sessionLifetimeSeconds: lifetime,
-      }, actor);
-    }
-    case "create-agent":
-      return { principal: service.createAgent(actor) };
-    case "list-agents":
-      return { principals: service.listAgents(actor) };
-    case "revoke-agent":
-      return { principal: service.revokeAgent(requiredString(record, "principalId", 160), actor) };
-    case "issue-agent-token":
-      return service.issueAgentToken({
-        principalId: requiredString(record, "principalId", 160),
-        label: requiredString(record, "label", 120),
-        expiresAt: optionalString(record, "expiresAt", 40),
-      }, actor);
-    case "list-agent-tokens":
-      return { credentials: service.listAgentCredentials(requiredString(record, "principalId", 160), actor) };
-    case "revoke-token":
-      service.revokeCredential(requiredString(record, "credentialId", 160), actor);
-      return { revoked: true };
-    case "create-knowledge-project":
-      return { project: service.createKnowledgeProject({ name: requiredString(record, "name", 120) }, actor) };
-    case "grant-knowledge": {
-      if (!Array.isArray(record.permissions) || record.permissions.some((permission) => typeof permission !== "string")) {
-        throw new Error("Nieprawidłowe pole permissions.");
-      }
-      return { grant: service.setKnowledgeGrant({
-        principalId: requiredString(record, "principalId", 160),
-        projectId: requiredString(record, "projectId", 160),
-        permissions: record.permissions as KnowledgePermission[],
-      }, actor) };
-    }
-    case "list-knowledge-grants":
-      return { grants: service.listKnowledgeGrants(requiredString(record, "principalId", 160), actor) };
-    case "revoke-knowledge-grant":
-      return { grant: service.revokeKnowledgeGrant(
-        requiredString(record, "principalId", 160), requiredString(record, "projectId", 160), actor,
-      ) };
-    default:
-      throw new Error("Nieobsługiwana operacja zarządzania tożsamością.");
-  }
-}
-
 function hasValidOrigin(request: IncomingMessage, publicOrigin?: string): boolean {
   const origin = request.headers.origin;
   if (!origin) return true;
@@ -434,7 +359,7 @@ export function createControllerServer(options: {
   devVault?: DevVaultOperations;
   authentication?: ControllerAuthenticationDependencies["authentication"];
   publicOrigin?: string;
-  /** Explicit isolated composition seam; production does not load or mount a provider. */
+  /** Prepared by the controller-owned provider lifetime before account-mode listeners open. */
   browserAuthentication?: AuthenticationHttp;
   backups?: BackupOperations;
   restores?: RestoreOperations;
@@ -478,11 +403,17 @@ export function createControllerServer(options: {
   };
   const server = createServer((request, response) => {
     void (async () => {
-      if (options.browserAuthentication && await options.browserAuthentication.handle(request, response)) return;
+      const api = (request.url ?? "").startsWith("/api/");
+      if (api && options.authentication?.mode() === "better-auth"
+        && (request.headers[CONTROLLER_TOKEN_HEADER.toLowerCase()] !== undefined || request.headers[LEGACY_CONTROLLER_TOKEN_HEADER.toLowerCase()] !== undefined
+          || bearerToken(request)?.startsWith("wsi_") || (hasProviderCookie(request) && request.headers.authorization !== undefined))) {
+        authenticationJson(response, 401, { code: "invalid_credential" }); return;
+      }
+      if (api && options.browserAuthentication && await options.browserAuthentication.handle(request, response)) return;
       if (request.url === "/api/auth/status" && request.method === "GET") {
         authenticationJson(response, 200, { mode: options.authentication?.mode() ?? "legacy", loginAvailable: false }); return;
       }
-      if (hasProviderCookie(request) || (request.url ?? "").startsWith("/api/auth")) {
+      if ((api && hasProviderCookie(request)) || (request.url ?? "").startsWith("/api/auth")) {
         authenticationJson(response, 401, { code: "invalid_credential" }); return;
       }
       await admission.run(() => handleRequest(request, response));

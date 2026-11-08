@@ -53,11 +53,11 @@ describe("controller credential resolution", () => {
     }
   });
 
-  it("never falls back for a provider without enforcement", () => {
+  it("accepts only individual agent credentials in account mode, with no legacy fallback", () => {
     for (const mode of ["better-auth"] as const) {
       expect(resolve(mode, null, true)).toBeNull();
       expect(resolve(mode, INSTALLATION)).toBeNull();
-      expect(resolve(mode, SCOPED)).toBeNull();
+      expect(resolve(mode, SCOPED)).toEqual({ kind: "principal", actor: agentActor });
       expect(resolve(mode, null)).toBeNull();
     }
   });

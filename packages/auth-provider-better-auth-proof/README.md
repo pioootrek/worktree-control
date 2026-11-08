@@ -2,8 +2,10 @@
 
 Private, unpublished proof that Better Auth 1.7.14 with Kysely 0.28.17 can run
 against the Worktree Control controller's single SQLite connection. It is not
-part of the Community package, is not loaded at controller startup, and does not
-make the `better-auth` authentication mode selectable.
+part of the Community package. A5 can load its separate installed artifact at
+account-mode startup after configuration, owner enrollment and fence validation.
+The historical proof package name is retained; production readiness depends on
+the actual pinned capabilities. See the [A5 contract and staged runbook](../../docs/authentication.md#production-account-mode-a5).
 
 The proof harness loads it from an explicit local path through the server-only
 `loadAuthenticationProvider` API and borrows the controller-owned connection
@@ -976,3 +978,20 @@ See [operator flow and crash protocol](../../docs/authentication.md#external-sec
 Production account-mode selection/public mounting, minimum agent diagnostics,
 complete transport enforcement, independent review and verified release/client
 migration remain A5 gates. The five historical factor negatives remain visible.
+
+## A5 local optional artifact
+
+`pnpm build:auth-provider` emits a compiled JavaScript tarball and checksum under
+`dist/private-auth-provider/`. Its runtime dependencies stay in that optional
+package. Community root dependencies and assets contain no provider engine.
+The installed-artifact acceptance uses a separate prefix without source links
+or test loader hooks, and exercises public login/session plus machine MCP/CLI,
+protected revocation, an old-release upgrade requiring fence establishment,
+rollback quarantine and recovery. It never changes an installed service.
+
+Earlier sections describe the boundaries of their original slices. A5 replaces
+the unconditional account-mode refusal and absent public mount. The five
+historical native/old-bounded factor negatives remain unmodified and unskipped;
+they do not describe the closed production route, whose integrated replay and
+durable guessing-budget tests run separately. No full-proof green claim, GUI
+readiness or live deployment is implied.

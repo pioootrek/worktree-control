@@ -56,6 +56,8 @@ export class AuthenticationProviderError extends Error {
 
 /** Synchronous controller-owned mapping operations; callers run them inside a borrow. */
 export interface ProviderSubjectStore extends ProviderSubjectRegistry {
+  /** Current native local account, with consistent selected protection. Core admission only. */
+  hasLocalEnrollment(principalId: string): boolean;
   isActiveOwner(principalId: string): boolean;
   activeAccountKind(principalId: string): "owner" | "human" | null;
   hasSubjectHistory(principalId: string): boolean;
@@ -871,6 +873,12 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
     return this.#input.providerId === "better-auth" && this.#input.storage.storageRevision === 3
       && this.implementationVersion === "0.0.0-proof.5"
       && this.readiness.library?.name === "better-auth" && this.readiness.library.version === "1.7.14";
+  }
+
+  /** Only the pinned integrated adapter has a verified production session/storage contract. */
+  get supportsProductionAccounts(): boolean {
+    return !this.disposed && this.issuanceBounded && this.factorsEnabled && this.#supportsSessionAuthority()
+      && this.supportsLocalFactorReset;
   }
 
   /** Protected local bootstrap: creates a password account and its mapping atomically. */

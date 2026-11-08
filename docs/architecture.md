@@ -1,11 +1,26 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-11-07"
+last_reviewed: "2026-11-08"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
 
 # Architecture decisions
+
+## Current A5 account integration
+
+Production bootstrap now validates the actual pinned optional provider, canonical
+HTTPS configuration, external fence and existing owner enrollment before account
+mode can be selected or listeners opened. The shared bounded adapter is publicly
+mounted only for the immutable active RBAC boot. Individual agents keep explicit
+credential ceilings; diagnostic logs/storage/capacity have independent grants.
+Unconverted cookie and broad privileged operations deny. The optional provider
+artifact remains separate from Community. See the current
+[production contract and migration runbook](authentication.md#production-account-mode-a5)
+for the transport inventory, protected CLI, installed acceptance and exact GUI gap.
+Older slice descriptions below record their original boundaries; A5 supersedes
+the unconditional mode-refusal and missing-public-mount statements. General ENV
+roles, GUI integration, independent review and live migration remain separate.
 
 ## Runtime shape
 
@@ -151,7 +166,7 @@ runtime, configuration pin, current-session authority and IdentityService.
 Ordinary-restart issuance recovery runs once on the existing store before load;
 P3b refuses unacknowledged restore before opening the store; its protected quarantine receipt permits subsequent recovery without erasing provenance. One disposal joins
 accepted administration/preparation and drains the provider before SQLite closes.
-The public browser mount and account-mode selector remain gated. See
+A5 validates account readiness before mode selection and public browser mounting. See
 [shared provider composition](authentication.md#shared-controller-provider-composition-p1)
 for explicit engineering limits. P2a adds an explicit runtime reader aggregate
 (schema 45), protected local administration and current-provider-session reads
@@ -173,8 +188,7 @@ membership without constructing an agent or trusting persistence as authority.
 Missing attribution fails closed. Original no-claim/exact-claim fences govern
 dispatch and replay; all human own-run access retains its original session and
 membership revision, including completed history. P2c supplies explicit literal
-profile selection and timeout-only configuration below. Remaining transport parity and A5 remain activation
-gates; no public browser mount is enabled.
+profile selection and timeout-only configuration below. A5 mounts the converted public workflows and denies the remaining unsupported operations.
 
 ### Human configuration operations
 
@@ -559,7 +573,7 @@ remains open.
 
 New databases default to `token` and cannot
 start until a token has been generated. Existing databases migrate to `legacy`;
-`open` is explicit and `better-auth` is an unavailable provider. Installation
+`open` is explicit and `better-auth` requires the configured optional provider. Installation
 tokens are stored as verifiers, and rotation invalidates active sessions.
 Local administration uses an owner-only Unix socket while running or the
 singleton lock while stopped. Scoped knowledge credentials keep their grants;
@@ -571,8 +585,8 @@ the active policy when no token variable is present, including open mode.
 
 The first A3 slice adds a versioned server-only provider contract and explicit
 local loader, exercised by a private Better Auth workspace proof. Startup
-does not load it and account mode stays unavailable. Explicit protected CLI
-maintenance uses a single lazy runtime without mounting browser login. Controller
+loads it only for an active RBAC boot after validated readiness. Protected CLI
+maintenance shares that same lazy lifetime. Controller
 migration 38 owns the empty namespaced provider tables and explicit subject-to-owner
 mapping. Controller migration 39 adds only the `provider_session` Knowledge
 history method, preserving rows, IDs, timestamps, indexes and deleted-ID
@@ -872,6 +886,6 @@ session or token can perform it. Captured mode/token policy remains historical
 evidence; resumed mode is explicit, and old verifiers stay invalid. Schedules and
 vault use an additional receipt floor while retaining their separate signed proof.
 See [operator flow and crash protocol](authentication.md#external-security-fence-and-protected-resume-p3b).
-Production account-mode selection/public mounting, minimum agent diagnostics,
-complete transport enforcement, independent review and verified release/client
-migration remain A5 gates. The five historical factor negatives remain visible.
+A5 implements validated account selection/public mounting, explicit agent diagnostics
+and the transport deny inventory. Independent review and verified live/client
+migration remain release gates. The five historical factor negatives remain visible.

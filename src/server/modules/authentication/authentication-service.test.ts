@@ -91,7 +91,7 @@ describe("installation authentication policy", () => {
     })();
 
     expect(failure?.code).toBe("auth_provider_unavailable");
-    expect(failure?.message).toBe("Better Auth: to be implemented soon.");
+    expect(failure?.message).toBe("Account authentication is unavailable.");
     expect(memory.current().mode).toBe("legacy");
     expect(memory.events).toEqual([]);
   });
@@ -191,7 +191,7 @@ describe("configured versus boot authority", () => {
   it("leaves boot mode, selection and audit unchanged when persistence fails", () => {
     const m = memoryStore({ mode: "open", token: null, generation: 0 });
     const auth = new AuthenticationService({ ...m.store, saveAuthenticationPolicy() { throw new Error("write refused"); } });
-    expect(() => auth.setMode("better-auth", "fixture")).toThrow("Better Auth");
+    expect(() => auth.setMode("better-auth", "fixture")).toThrow("Account authentication");
     expect(() => auth.setMode("token", "fixture")).toThrow("auth token generate");
     const config = new AuthenticationService(m.store); config.generateToken("fixture");
     const before = m.current(), audit = [...m.events];

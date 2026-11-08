@@ -57,7 +57,8 @@ describe("shared authorization policy", () => {
   });
   it("denies unknown actions, resource namespace substitution and all ENV actions even for installation authority", () => {
     const installation = { ...subject, kind: "installation" as const };
-    expect(isAuthorized(installation, "knowledge:read", { kind: "knowledge-project", id: "p" }, context)).toBe(true);
+    expect(isAuthorized(installation, "knowledge:read", { kind: "knowledge-project", id: "p" }, context)).toBe(false);
+    expect(isAuthorized(installation, "knowledge:read", { kind: "knowledge-project", id: "p" }, { ...context, installationAuthenticated: true })).toBe(true);
     for (const kind of ["runtime-project", "dev-vault"] as const) {
       expect(isAuthorized(installation, "knowledge:read", { kind, id: "p" }, context)).toBe(false);
     }

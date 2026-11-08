@@ -12,6 +12,10 @@ export function authenticationAdminHandler(dependencies: {
   return async (body) => {
     if (dependencies.maintenance?.()) throw new Error("Controller is in maintenance.");
     const request = parseAuthenticationCommand(body);
+    if (request.command === "mode set" && request.value === "better-auth") {
+      await dependencies.authentication.prepareAccountMode();
+      if (dependencies.maintenance?.()) throw new Error("Controller is in maintenance.");
+    }
     const { result, credentialsInvalidated } = executeAuthenticationCommand(dependencies.authentication, request, "local-admin");
     if (credentialsInvalidated) {
       // Rotation is already committed; per-operation checks reject the old token immediately.

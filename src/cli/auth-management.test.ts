@@ -57,11 +57,11 @@ describe("auth administration CLI", () => {
 
   it("keeps the active mode when Better Auth or an unknown mode is requested", async () => {
     const appPaths = paths();
-    await expect(runAuthCommand(["mode", "set", "better-auth"], appPaths)).rejects.toThrow("Better Auth: to be implemented soon.");
+    await expect(runAuthCommand(["mode", "set", "better-auth"], appPaths)).rejects.toThrow("Protected provider configuration is missing.");
     await expect(runAuthCommand(["mode", "set", "legacy"], appPaths)).rejects.toThrow("Dostępne tryby");
     expect((await run(["status"], appPaths)).mode).toBe("token");
     expect((await run(["mode", "set", "open"], appPaths)).mode).toBe("open");
-    await expect(runAuthCommand(["mode", "set", "better-auth"], appPaths)).rejects.toThrow("Better Auth: to be implemented soon.");
+    await expect(runAuthCommand(["mode", "set", "better-auth"], appPaths)).rejects.toThrow("Protected provider configuration is missing.");
     expect((await run(["status"], appPaths)).mode).toBe("open");
   });
 

@@ -24,6 +24,7 @@ import type { ClaimedRuntimeAction, ProjectSnapshot } from "@/shared/contracts";
 import { localizeServerMessage } from "../../../i18n/server-errors";
 import type { ControlService } from "../../control-service";
 import type { ControllerAuthentication, IdentityService } from "../../modules/identity";
+import { registerScopedDiagnosticsTools } from "./scoped-diagnostics-tools";
 import { McpSessionGovernor, type GovernedMcpSession, type McpPolicyCloseReason, type McpTimer } from "../../modules/mcp-sessions";
 
 interface ClaimSecret {
@@ -458,6 +459,7 @@ export class McpRuntime {
           registerScopedRuntimeTools(server, this.service, actor, port);
           registerScopedConfigurationTools(server, this.service, actor, port);
           registerScopedVerificationTools(server, this.service, actor, port);
+          registerScopedDiagnosticsTools(server, this.service, actor);
         }
         return server;
       }

@@ -110,14 +110,13 @@ describe("actual built CLI provider administration (isolated controller, zero ma
     const after = inspect(f, database => database.prepare("SELECT * FROM authentication_ba_account").get()) as typeof before;
     expect(after.id).toBe(before.id); expect(after.userId).toBe(before.userId); expect(after.password).not.toBe(before.password);
     expect(await provider(f, ["status", "--principal-id", id])).toMatchObject({ activeMode: mode, configuredMode: policy.configuredMode,
-      modeRestartRequired: true, maintenance: "ready", productionAccountModeAvailable: false,
+      modeRestartRequired: true, maintenance: "ready", productionAccountModeAvailable: true,
       principal: { id, kind: "owner", status: "active", enrollment: "active" } });
     expect(await provider(f, ["enroll", "--principal-id", id, "--input-stdin"], { email: "owner@fixture.invalid", name: "Owner", password }, 1))
       .toEqual({ code: "subject_conflict", error: "The principal has provider enrollment history; enrollment is refused." });
     expect(await provider(f, ["owner", "create"], undefined, 1)).toEqual({ code: "owner_already_initialized", error: "An owner principal already exists. Inspect private provider status." });
-    const deniedMode = await f.cliResult(["auth", "mode", "set", "better-auth"]);
-    expect(deniedMode.code).toBe(1); expect(deniedMode.stderr).toContain("Better Auth");
-    expect(body(await f.cliResult(["auth", "status"]))).toEqual(policy);
+    expect(body(await f.cliResult(["auth", "mode", "set", "better-auth"]))).toMatchObject({ activeMode: mode, configuredMode: "better-auth", restartRequired: true });
+    expect(body(await f.cliResult(["auth", "status"]))).toMatchObject({ activeMode: mode, configuredMode: "better-auth", generation: policy.generation });
     expect(createHash("sha256").update(await readFile(join(f.paths.data, "authentication-provider.json"))).digest("hex"))
       .toBe(createHash("sha256").update(configuration).digest("hex"));
     expect(authorityRows(f)).toEqual(authority);

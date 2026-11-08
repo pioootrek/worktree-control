@@ -86,6 +86,7 @@ export type ControllerAuthentication =
 /** Confirms that an installation actor still matches the active authentication policy. */
 export interface InstallationAuthority {
   isCurrentInstallationActor(actor: AuthenticatedPrincipal): boolean;
+  permitsCredential?(actor: AuthenticatedPrincipal): boolean;
 }
 
 export type { KnowledgePermission } from "@/shared/contracts/authorization";

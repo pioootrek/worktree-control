@@ -81,7 +81,7 @@ export function isAuthorized(
   subject: AuthorizationSubject,
   action: AuthorizationAction,
   resource: AuthorizationResource,
-  context: KnowledgeAuthority & { project: { id: string; status: "active" | "archived" } | null; allowArchived?: boolean; runtime?: RuntimeAuthority; humanRuntime?: HumanRuntimeAuthority },
+  context: KnowledgeAuthority & { project: { id: string; status: "active" | "archived" } | null; installationAuthenticated?: boolean; allowArchived?: boolean; runtime?: RuntimeAuthority; humanRuntime?: HumanRuntimeAuthority },
 ): boolean {
   if (resource.kind === "runtime-project") {
     if (context.humanRuntime) return isRuntimeAction(action) && effectiveHumanRuntimeActions(subject, resource.id, context.humanRuntime).includes(action);
@@ -90,7 +90,7 @@ export function isAuthorized(
   if (resource.kind !== "knowledge-project" || !knowledgePermissions.includes(action as KnowledgePermission)) return false;
   if (!context.project || context.project.id !== resource.id
     || (context.project.status !== "active" && action !== "knowledge:read" && !context.allowArchived)) return false;
-  // Compatibility for explicit open/token modes. Account mode must remove this in A5.
-  if (subject.kind === "installation") return true;
+  // Only current application authentication in explicit open/token mode supplies this fact.
+  if (subject.kind === "installation") return context.installationAuthenticated === true;
   return effectiveKnowledgePermissions(subject, resource.id, context).includes(action as KnowledgePermission);
 }

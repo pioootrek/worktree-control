@@ -1,4 +1,5 @@
 import { HumanVerificationService } from "./modules/verification";
+import { ScopedDiagnostics } from "./modules/status";
 import { HumanRuntimeService } from "./modules/runtime";
 import type { ProviderSessionActor } from "./modules/identity";
 import type { DatabaseAdmissionOptions } from "./database-admission";
@@ -79,6 +80,7 @@ export class ControlService {
   private readonly humanRuntime?: HumanRuntimeService;
   private readonly scopedRuntime?: ScopedRuntimeService;
   private readonly scopedConfiguration?: ScopedConfigurationService;
+  private readonly diagnostics?: ScopedDiagnostics;
 
   constructor(
     private readonly store: StateStore,
@@ -136,6 +138,11 @@ export class ControlService {
       this.scopedRuntime = new ScopedRuntimeService(runtimeAuthorizer, store, git, processes, this.lifecycle, this.runtime, logs);
       this.scopedConfiguration = new ScopedConfigurationService(runtimeAuthorizer, store, git, processes, this.lifecycle,
         worktreePath => testCommands.discover(worktreePath), logs);
+      this.diagnostics = new ScopedDiagnostics(runtimeAuthorizer, store, {
+        logs: (id, limit) => this.statusQueries.logs(id, limit),
+        ownRun: (actor, input) => this.requireScopedVerification().status(actor, input),
+        capacity: () => this.lifecycle.capacityStatusCompact(), queue: () => this.testQueueStatus(),
+      });
     }
   }
 
@@ -144,6 +151,13 @@ export class ControlService {
 
   /** Scoped agent runtime access; enforcement and safe views live in the runtime module. */
   scopedRuntimeEnabled(): boolean { return !!this.scopedRuntime; }
+  scopedDiagnosticActions(actor: AuthenticatedPrincipal) { return this.requireDiagnostics().actions(actor); }
+  scopedRuntimeLogs(actor: AuthenticatedPrincipal, input: unknown) { return this.requireDiagnostics().runtimeLogs(actor, input); }
+  scopedTestLogs(actor: AuthenticatedPrincipal, input: unknown) { return this.requireDiagnostics().testLogs(actor, input); }
+  scopedProjectStorage(actor: AuthenticatedPrincipal, input: unknown) { return this.requireDiagnostics().projectStorage(actor, input); }
+  scopedServerCapacity(actor: AuthenticatedPrincipal) { return this.requireDiagnostics().capacity(actor); }
+  scopedTestQueue(actor: AuthenticatedPrincipal) { return this.requireDiagnostics().queue(actor); }
+  private requireDiagnostics() { if (!this.diagnostics) throw new RuntimeAccessDenied(); return this.diagnostics; }
   scopedProjects(actor: AuthenticatedPrincipal, session: ScopedSession | null) { return this.requireScopedRuntime().listProjects(actor, session).map(project => actor.authenticationMethod === "provider_session"
     && this.humanRuntime?.ownClaim(actor, project.id) ? { ...project, claim: "own" as const } : project); }
   scopedProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession | null, projectId: string) { const status = this.requireScopedRuntime().projectStatus(actor, session, projectId);

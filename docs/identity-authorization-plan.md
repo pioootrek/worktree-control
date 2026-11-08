@@ -1,11 +1,26 @@
 ---
 audience: "owner, implementers and reviewers of human, agent and ENV access"
-last_reviewed: "2026-11-07"
+last_reviewed: "2026-11-08"
 source_of_truth: "planned identity, role and environment authorization contracts and acceptance gates"
 status: "active"
 ---
 
 # Identity, roles and environment authorization plan
+
+## Current A5 account integration
+
+Production bootstrap now validates the actual pinned optional provider, canonical
+HTTPS configuration, external fence and existing owner enrollment before account
+mode can be selected or listeners opened. The shared bounded adapter is publicly
+mounted only for the immutable active RBAC boot. Individual agents keep explicit
+credential ceilings; diagnostic logs/storage/capacity have independent grants.
+Unconverted cookie and broad privileged operations deny. The optional provider
+artifact remains separate from Community. See the current
+[production contract and migration runbook](authentication.md#production-account-mode-a5)
+for the transport inventory, protected CLI, installed acceptance and exact GUI gap.
+Older slice descriptions below record their original boundaries; A5 supersedes
+the unconditional mode-refusal and missing-public-mount statements. General ENV
+roles, GUI integration, independent review and live migration remain separate.
 
 ## Status and decision boundary
 
@@ -22,7 +37,7 @@ A1 slice adds shared Knowledge policy and optional role restrictions. The A2
 implementation adds owner-sponsored runtime credentials, filtered MCP discovery,
 credential/session-bound leases and separately authorized configuration tools.
 Protected ordinary-human accounts and reader/operator Knowledge memberships
-are implemented in A3-I24. Production account activation and ENV delivery remain deferred.
+are implemented in A3-I24. Production account integration is documented above; general ENV delivery remains deferred.
 
 The first A3 slice now provides an optional executable provider/SQLite proof.
 It verifies real Better Auth operations through the sole guarded connection,
@@ -33,8 +48,7 @@ Controller migration 39 adds honest provider history attribution, preserving
 old history and migrations 1..38. Migration 40 and A3-I18 add
 [integrated factor authority](authentication.md#integrated-factor-authority):
 recognized optional TOTP and passkey storage, one application-owned protection
-policy and persisted session evidence behind the same handoff. Account mode remains
-unavailable. Closed factor HTTP routes and ordinary-human memberships now work
+policy and persisted session evidence behind the same handoff. Account mode now requires A5 validated readiness. Closed factor HTTP routes and ordinary-human memberships now work
 inside the isolated composition. P1 implements the production shared lifetime
 and IdentityService. P2a adds explicit runtime-project reader memberships and
 current-session cookie reads through shared policy and existing projections.
@@ -55,11 +69,10 @@ handoff. CLI shutdown retains ownership on failed cleanup and joins concurrent
 calls to the same completion. Supported HTTP reservation changes serialize behind
 readiness and revalidate installation authority after waiting; token rotation
 prevents queued effects and successful replies to the old caller.
-Safe live coexistence is not accepted. The A5 external restore fence is also
-unfinished;
-restores can revive old sessions and passwords. Native proof responses expose
+P3b supplies the external restore fence and protected quarantine. Supported restore
+and raw database rollback refuse before provider loading until protected recovery. Native proof responses expose
 session tokens; the existing bounded browser adapter strips them and releases
-cookies only after current authority checks. Production integration remains gated.
+cookies only after current authority checks. A5 supplies the closed production mount; independent release review remains required.
 See [the implemented proof boundary](authentication.md#optional-provider-proof-first-a3-slice).
 
 Knowledge project `k7a-worktree-switcher` holds design task
@@ -86,10 +99,10 @@ the CLI, transport verification and operational docs extend that contract.
 
 | Area | Implemented baseline | Remaining work |
 | --- | --- | --- |
-| Installation authentication | `token`, `open`, `legacy`; rotation and policy invalidation; optional server-free Better Auth/SQLite proof | `better-auth` still rejects activation; no browser account integration |
+| Installation authentication | `token`, `open`, `legacy`; rotation and policy invalidation; optional server-free Better Auth/SQLite proof | A5 validates the optional provider and mounts the closed account API; GUI remains separate |
 | Identity | Owner, ordinary human, agent, worker and installation principals; revocable legacy credentials and isolated human sessions | General delegated role administration |
 | Knowledge | Shared policy, explicit grants and optional Knowledge role ceilings; installation compatibility bypass | Explicit human approval in account mode |
-| MCP | Agent sessions add filtered discovery/resources, compact project status/wait, explicit-start claims, claimed control, literal profile selection and preset timeout overrides; Knowledge/vault/remote grants stay independent | Scoped finite-job execution and own-run access now require independent tests:run; general logs/capacity remain gated |
+| MCP | Agent sessions add filtered discovery/resources, compact project status/wait, explicit-start claims, claimed control, literal profile selection and preset timeout overrides; Knowledge/vault/remote grants stay independent | Scoped finite-job execution and own-run access now require independent tests:run; logs/storage/capacity require independent explicit grants |
 | Remote verification | Separate submitter/project and worker/project/preset grants | Integrate without replacing both checks with a broad project role |
 | DEV vault | Encrypted profiles, signed owner operations, exact agent grants; backend and GUI on main | General role integration; execution delivery remains unavailable |
 

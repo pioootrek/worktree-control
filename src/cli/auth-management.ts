@@ -56,13 +56,19 @@ export async function runAuthCommand(
     return;
   }
   let store: SqliteStateStore | null = null;
+  let administration: ReturnType<typeof createAuthenticationAdministration> | undefined;
   try {
     store = new SqliteStateStore(paths.databasePath);
-    const { result } = executeAuthenticationCommand(new AuthenticationService(store, undefined, undefined, undefined, undefined, "offline"), request, AUTH_CLI_ACTOR);
+    const authentication = new AuthenticationService(store, undefined, undefined, undefined, undefined, "offline");
+    if (request.command === "mode set" && request.value === "better-auth") {
+      administration = createAuthenticationAdministration({ store, authentication, dataDirectory: paths.dataDirectory, actor: AUTH_CLI_ACTOR });
+      await authentication.prepareAccountMode();
+    }
+    const { result } = executeAuthenticationCommand(authentication, request, AUTH_CLI_ACTOR);
     write(JSON.stringify(result, null, 2));
   } finally {
-    store?.close();
-    lock.release();
+    try { await administration?.dispose(); await store?.closeAfterDrain(); lock.release(); }
+    catch { retainAuthenticationOwnership({ store, administration, lock }); throw new ProviderAdminError("disposal_unconfirmed", undefined, false); }
   }
 }
 

@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { AuthenticationProviderError, type ProviderAuditEvent, type ProviderSubjectMapping, type ProviderSubjectStore } from "@/server/modules/authentication";
+import { AuthenticationProtectionQueries } from "./authentication-protection-queries";
 
 type SubjectRow = { provider_id: string; subject: string; principal_id: string; status: "active" | "revoked"; linked_at: string; revoked_at: string | null };
 const map = (row: SubjectRow): ProviderSubjectMapping => ({
@@ -55,6 +56,20 @@ export class AuthenticationProviderQueries implements ProviderSubjectStore {
   findByPrincipal(principalId: string): ProviderSubjectMapping | null {
     const row = this.database.prepare("SELECT * FROM authentication_provider_subjects WHERE provider_id = ? AND principal_id = ? AND status = 'active' AND revoked_at IS NULL").get(this.providerId, principalId) as SubjectRow | undefined;
     return row ? map(row) : null;
+  }
+
+  hasLocalEnrollment(principalId: string): boolean {
+    const mapping = this.findByPrincipal(principalId);
+    if (!mapping || !this.database.prepare(`SELECT 1 FROM authentication_ba_user u
+      JOIN authentication_ba_account a ON a."userId"=u.id AND a."providerId"='credential'
+      WHERE u.id=? AND typeof(a.password)='text' AND length(a.password)>0 LIMIT 1`).get(mapping.subject)) return false;
+    const protection = new AuthenticationProtectionQueries(this.database, this.providerId);
+    const policy = protection.account(mapping.subject);
+    // A newly provisioned password account establishes its policy on first login.
+    if (!policy) return true;
+    const native = protection.native(mapping.subject);
+    return policy.totpSelected === (native.twoFactorEnabled && native.totp?.verified === true)
+      && policy.passkeySelected === (native.trusted > 0);
   }
 
   resolveActivePrincipal(subject: string): string | null {

@@ -1,6 +1,6 @@
 ---
 audience: "people running Worktree Control and choosing how callers authenticate"
-last_reviewed: "2026-11-07"
+last_reviewed: "2026-11-08"
 source_of_truth: "authentication modes, owner CLI and scoped runtime agent workflow"
 status: "active"
 ---
@@ -12,7 +12,7 @@ see the [identity and authorization plan](identity-authorization-plan.md).
 A1 Knowledge roles and A2 scoped projects, claims, runtime control, profile
 selection, timeout configuration and finite verification are implemented below.
 Protected ordinary human accounts and isolated cookie-based Knowledge access are also implemented.
-Production account activation and ENV roles remain gated.
+Production account mode is implemented below. General ENV roles remain gated.
 
 One authentication policy applies to the dashboard, the HTTP API, live updates,
 MCP and the online CLI. The controller stores the next-start selection in its
@@ -21,8 +21,7 @@ active mode once per boot, after migration and restore recovery. Only the CLI
 selects a mode; the new selection takes effect at the next service restart.
 Token rotation, credential revocation and current grants still apply immediately.
 The permanent product modes are open access, a shared installation token, and
-individual RBAC. Full RBAC remains gated on account authentication, readiness
-of selected optional methods and A5 work. The current controller refuses `better-auth` selection and startup. `legacy` is
+individual RBAC. Account mode requires validated provider readiness, owner enrollment and the external fence. `legacy` is
 upgrade compatibility and cannot be selected anew.
 
 | Mode | Who uses it | Access |
@@ -30,11 +29,203 @@ upgrade compatibility and cannot be selected anew.
 | `token` | New installations | Installation-wide compatibility authority, including Knowledge; cannot sponsor scoped runtime agents |
 | `open` | Explicit choice | Anonymous installation-wide compatibility authority; cannot sponsor scoped runtime agents |
 | `legacy` | Installations created before modes existed | Browser pairing token, MCP `mcp-token`, owner sessions for knowledge |
-| `better-auth` | Reserved | Not available yet; selecting it fails with `auth_provider_unavailable` |
+| `better-auth` | Explicit protected CLI selection | Individual human sessions and agent credentials; unconverted operations deny |
 
 Scoped agent tokens and owner sessions from `identity` commands keep working in
 `legacy` and `token` modes. A controller whose stored mode is unavailable
 refuses to start; it never falls back to another mode.
+
+## Production account mode (A5)
+
+The controller can select `better-auth` after its protected configuration, actual
+provider capabilities, external security fence and existing owner's enrollment
+pass validation. `auth mode set better-auth` prepares the same provider lifetime
+used by protected administration, then records the next boot's mode. It does not
+change the active mode, grants or running sessions. A controller starting in
+account mode prepares the bounded HTTP adapter before opening either listener.
+Missing configuration, an incompatible or failed provider, a different canonical
+HTTPS origin, an unenrolled owner or a failed fence refuses startup. There is no
+fallback to token or open access.
+
+The current production adapter requires contract 5, storage revision 3, integrated
+adapter `0.0.0-proof.5`, Better Auth 1.7.14 and local factor-reset support. Its
+historical package name does not establish readiness. The loader checks the
+actual instance and its schema-verified capabilities. The separately installed
+provider and controller share the controller's single SQLite connection.
+`auth provider status` derives `productionAccountModeAvailable` from the loaded
+runtime, current configuration, fence and active owner enrollment. It is false
+when capability has not been established in that lifetime. Public status exposes
+only active `mode` and `loginAvailable`; open/token/legacy do not mount login.
+
+Optional TOTP and passkeys are available for account selection. Merely loading
+them does not select protection or grant permissions. Production engineering
+bounds allow five TOTP and ten passkey evaluations per account per minute,
+a 15-second evaluation ticket and a ten-minute enrollment window. Native limits
+may refuse sooner. Anonymous options have per-peer/global limits of 20/120 per
+minute, 128 peers, 4,096 challenge/context rows and 64 completion reservations.
+These are capacity and guessing bounds, not an ASVS compliance claim. Password-only
+accounts remain possible by owner choice. The public closed adapter keeps native
+signup, catch-all handlers and raw-token issuance unreachable.
+
+### Transport contract
+
+| Entry point in active RBAC | Application enforcement |
+| --- | --- |
+| HTTP `/api/auth/*` allowlist | `AuthenticationHttp` and provider runtime validate canonical Host/Origin, strict JSON, bounded bodies, socket peer, secure cookies and committed session evidence |
+| Cookie `/api/knowledge` | `ProviderKnowledgeApplication` rechecks current session and explicit Knowledge membership/grants |
+| Cookie `/api/runtime/read` | `ProviderRuntimeReadApplication` and shared runtime reads require explicit `projects:read` |
+| Cookie `/api/runtime/mutate` | `HumanRuntimeService` requires the original current session, membership revision and exact human lease for each effect/receipt |
+| Cookie `/api/runtime/tests` | `HumanVerificationService` requires independent `tests:run`, original attribution and dispatch/delivery rechecks |
+| Cookie `/api/runtime/configuration` | `HumanConfigurationService` requires explicit profile/timeout permission, original authority and atomic revision checks |
+| Agent HTTP Knowledge and online Knowledge CLI | Individual agent credential, current principal and resource grants in `IdentityService` and `KnowledgeService` |
+| Agent MCP tools/resources | Per-request bearer resolution, session binding and shared Knowledge/runtime/configuration/verification policy; retained results reauthorize |
+| Agent remote verification | Existing submitter/project and worker/project/preset checks remain independent |
+| Agent DEV vault | Existing explicit vault grants and separate Ed25519 owner proof remain required |
+| Public identity bootstrap/admin, broad dashboard/runtime API, directories, ENV, TLS and storage cleanup | Denied before effects; cookies and machine tokens gain no installation authority |
+| Cookie downloads/attachments/exports, SSE, Godot preview, backups/restore and schedules | Unsupported and denied; use converted operations or protected operator workflows |
+| Agent attachments/exports/schedules | Only existing explicit Knowledge permissions and resource checks; no runtime right implies them |
+| Protected Unix admin socket | OS owner channel; provider/mode maintenance and current-owner identity administration on the same store |
+| Protected stopped CLI and recovery | Both singleton locks, current owner credential where required, protected fence preflight and existing recovery operations |
+| Static dashboard assets | Public static export; no private data or controller authority |
+
+Shared installation tokens, legacy pairing links and legacy MCP secrets confer
+no authority in RBAC, including a request carrying both old product-token headers
+and an individual bearer/cookie. Owner-session bearers remain available only to
+protected local administration; they cannot bypass public account sessions.
+Unknown actions/resource substitutions deny. Token rotation and principal,
+credential, session, role and delegation revocation remain immediate. Converted
+operations retain their existing admission, wait, dispatch and delivery checks.
+Selecting the next boot's mode never changes the running boot's authority.
+
+`identity` commands on an active RBAC controller use its private admin socket and
+require a current owner credential. They invoke the same identity application
+operations as offline administration. No second database connection is opened.
+This supports explicit issue/rotate/revoke without a restart or a public owner
+bootstrap route. `identity recover-owner` remains a stopped-controller operation.
+Provider password/factor recovery uses the existing protected provider commands.
+
+### Explicit agent diagnostics
+
+| Permission | MCP operations | Bounds and exclusions |
+| --- | --- | --- |
+| `logs:read` | `get_runtime_logs` | One authorized project; last 1..100 retained lines, 4,000 characters per line, under 16 KiB encoded; no disk read or wait |
+| `logs:read` plus `tests:run` | `get_test_run_logs` | Same log bounds; exact original principal/credential and current run/project authority; no other run's output |
+| `storage:read` | `get_project_storage` | Cached size/status/time plus at most 16 history points for one project/worktree; no scan, arbitrary filesystem read, directory names, content or cleanup |
+| `capacity:read` | `get_server_capacity`, `get_test_queue`, corresponding stable resources | Aggregate availability/counts only; no holder, project, run or owner identities |
+
+Every permission is independently grantable. Effective authority is the current
+owner-sponsored delegation intersected with the immutable credential ceiling.
+Existing credentials receive no backfill; increasing a delegation cannot increase
+an issued credential's ceiling. Rotation may only narrow the previous ceiling.
+Issue a new credential with explicit consent to add diagnostics. Tool discovery
+advertises diagnostic operations allowed at connection time; execution and resource
+reads still check current authority. Reconnect after an explicit new grant.
+
+Logs can contain application secrets. The explicit log grant permits that exposure.
+The projection redacts known controller credential formats, Authorization/Cookie
+fields and controller token environment fields. It does not promise to recognize
+arbitrary secrets written by applications. Reads use existing in-memory tails or
+bounded stored test tails, so they add no filesystem sampler, timer or long wait.
+Capacity uses the existing compact lifecycle projection and queue counters.
+No diagnostic permission grants ENV, process control or cache deletion.
+
+### Separate provider artifact and staged migration
+
+`pnpm build:auth-provider` emits a private local tarball, its checksum and an
+`artifact.json` under `dist/private-auth-provider/`. Install it into a separate
+private prefix. Its compiled JavaScript and pinned runtime dependencies work
+without this source checkout or test loaders. The Community package's dependency
+graph and assets exclude the provider implementation. It remains optional and
+unpublished; this work changes no distribution or licensing decision.
+
+The following placeholders name operator-selected private paths and existing IDs.
+Passwords/signing material enter through a private file or stdin, never argv,
+chat, Git or Knowledge. Keep every command on the same data/state paths.
+
+```sh
+# Parent/operator first stops the controller and preserves a verified backup.
+NEW_CLI auth fence inspect --data-dir DATA --state-dir STATE
+NEW_CLI auth fence establish --expect PREFLIGHT --data-dir DATA --state-dir STATE
+npm install --prefix PRIVATE_PROVIDER_PREFIX --omit=dev PRIVATE_PROVIDER_TARBALL
+NEW_CLI auth provider configure --input-file PRIVATE_CONFIG_JSON --data-dir DATA --state-dir STATE
+NEW_CLI auth provider status --principal-id EXISTING_OWNER_ID --data-dir DATA --state-dir STATE
+NEW_CLI auth provider enroll --principal-id EXISTING_OWNER_ID --input-file PRIVATE_ENROLLMENT_JSON --data-dir DATA --state-dir STATE
+```
+
+Use `establish` only when inspection explicitly permits adoption of the recognized
+old store. Do not call owner creation on an existing installation. Configuration
+input is `{module:absoluteInstalledEntry,origin:canonicalHttpsOrigin,
+signingSecret:{kind:"generate"}}` for first configuration. Reconfiguration preserves
+existing signing material. Enrollment input is `{email,name,password}`. An enrolled
+account uses protected `recover` rather than a second enrollment. Use the existing
+owner ID, kind, role and Knowledge history throughout.
+
+Before cutover, use protected owner CLI administration to grant each agent only
+its needed runtime-project actions and Knowledge rights, then issue an individual
+credential with the exact project/action ceiling. Runtime, tests, profile selection,
+timeout edits, logs, cached storage and aggregate capacity are separate decisions.
+Remote verification and vault access need their existing separate grants/proofs.
+Prepare the explicit human runtime/Knowledge memberships through provider CLI.
+Store issued values directly in the owner's private credential delivery workflow.
+
+```sh
+NEW_CLI identity set-runtime-delegation --principal-id AGENT_ID --project-id PROJECT_ID --actions EXPLICIT_ACTIONS --expected-revision CURRENT_REVISION --data-dir DATA --state-dir STATE
+NEW_CLI identity issue-runtime-credential --principal-id AGENT_ID --label CLIENT_LABEL --projects-json EXPLICIT_PROJECT_CEILINGS --data-dir DATA --state-dir STATE
+NEW_CLI auth mode set better-auth --data-dir DATA --state-dir STATE
+```
+
+The parent/operator then performs the authorized restart using this release and
+its matching canonical HTTPS `--public-url`. Verify active/configured mode,
+public login/session, human roles, each agent's real MCP/CLI workflows, explicit
+log exposure, denied old shared credentials, immediate revocation and recovery.
+Do not infer successful client migration from a header file or tool listing.
+
+For the llm-worker handoff, the installed legacy
+`agent-mcp-worktree-switcher` launcher reads **only**
+`WORKTREE_SWITCHER_MCP_TOKEN`. A new `WORKTREE_CONTROL_MCP_TOKEN` entry alone does
+not migrate that launcher. The owner must manually update each client's effective
+credential delivery, using the legacy variable with the retained launcher or an
+explicitly installed compatible launcher. Preserve provider accounts and each
+client's other MCP registrations. No client configuration, launcher, header file
+or real secret is changed by these scripts or by artifact acceptance.
+
+For a lost provider, restore its separately protected configuration/artifact or
+explicitly choose token mode through protected CLI and restart. This is an
+operator decision to leave account isolation. For database rollback, use the
+P3b inspect/resume flow; resume quarantines old credentials/grants before P3a
+password recovery. Regrant/reissue explicitly. Never copy an old matching witness
+alongside restored data to suppress the fence.
+
+`test:rbac-artifact` builds the separate provider, installs both tarballs into
+isolated prefixes, seeds a declared immutable old executable using temporary
+data, requires protected fence establishment, and exercises upgrade, public
+HTTP/MCP/CLI, revoke, rollback quarantine and recovery. The explicit input file
+`dist/rbac-acceptance-input.json` supplies `oldPackage` and `oldCliSha256`; optional `legacyLauncher` and
+`legacyLauncherSha256` select a read-only launcher template for an isolated real
+stdio proxy/config-shape test. Only the temporary copy receives the fixture URL,
+fixture secret file and fixture header file. No real
+installation database or credentials are read. Evidence and tarballs stay under
+`dist/rbac-artifacts/`. Tests use finite fixture controller processes and never
+install or restart a service.
+
+### GUI handoff and release classification
+
+The static dashboard still uses the older broad dashboard/runtime endpoints.
+Those endpoints are closed to account cookies. A separate GUI implementation
+must use `/api/auth/status`, the exact closed authentication routes, cookie
+`/api/knowledge`, and `/api/runtime/{read,mutate,tests,configuration}` contracts.
+It must handle current-authority denials and reauthenticate after session loss.
+Cookie downloads, SSE, ENV/vault administration and broad dashboard DTOs are
+unsupported. This backend work includes no login UI, dashboard adaptation or
+browser QA and does not claim GUI readiness.
+
+The full provider proof retains five historical native/old-bounded factor
+negative failures. They must remain visible and unskipped. Public integrated
+TOTP tests establish enrollment-code reuse rejection, independent-challenge
+replay rejection and durable failed-guess charging through the production
+composition. A production-path regression blocks release; a historical native
+failure requires an explicit release classification, never a green full-proof
+claim. The parent owns independent review, live preflight and eventual migration.
 
 ## Optional provider proof (first A3 slice)
 
@@ -44,7 +235,7 @@ executable, isolated proof using Better Auth 1.7.14, `@better-auth/core`
 It exercises real handler requests, cookies, password changes, session
 revocation and local recovery. Startup does not load it. Explicit protected CLI
 maintenance can load a configured module without activating accounts.
-Selecting `better-auth` still fails; this slice adds no login UI,
+This historical first slice added no login UI,
 public account endpoints. Production startup now owns the shared provider
 composition described below; the bounded browser adapter remains unmounted
 on production listeners. See [browser adapter](#bounded-browser-adapter).
@@ -343,8 +534,7 @@ a temporary pre-existing owner `69849424-2aba-4fdd-b4fa-a394a77a193c`, then conf
 and enrolls it while preserving its kind, credentials, grants and history. It
 performs no live enrollment and never uses owner creation to replace that account.
 
-`requireSelectable` still rejects `better-auth`, and private status still reports
-`productionAccountModeAvailable:false`. Startup does not mount public login in
+A5 now validates actual readiness before selecting `better-auth`. Startup does not mount public login in
 open/token/legacy modes. Provider sessions gain neither owner-session nor
 installation authority, and never replace signed Ed25519 vault proof. P2a supplies
 the reader workflow below, and P2b1 adds explicit human runtime leases and control.
@@ -669,11 +859,11 @@ production-readiness claim. Evidence and acceptance belong to Knowledge A3.
 `AuthenticationService`, loaded runtime, seventh-argument identity authority and
 `ProviderKnowledgeApplication`. `createControllerServer` calls it before blanket
 core admission when an adapter is supplied. The production CLI owns the shared
-provider lifetime above, but supplies no browser adapter to the public listener.
-Neither composition makes `better-auth` selectable. No login GUI is implemented.
+provider lifetime above and supplies its browser adapter only in active RBAC.
+No login GUI is implemented.
 
 The public production `GET /api/auth/status` returns only active `mode` and
-`loginAvailable: false`. It exposes no pending selection, token metadata, account
+`loginAvailable` from the active prepared adapter. It is false in open/token/legacy. Status exposes no pending selection, token metadata, account
 existence, provider path, diagnostics or grants. The isolated adapter supports:
 
 | Exact request | Strict input | Sanitized success |
@@ -757,7 +947,7 @@ not completed A3 or safe production RBAC.
 This server-only API is implemented for the optional pinned proof. Production
 startup still does not load the provider; protected maintenance is explicit.
 Production browser transports remain
-credential-only, and `better-auth` mode remains unavailable.
+credential-only. A5 mounts the converted cookie operations described above.
 
 `runtime.authenticate(headers)` resolves the actual cookie outside core
 admission and returns a frozen `ProviderSessionActor`, or null. The exact object
@@ -1228,8 +1418,7 @@ filtering, ceilings, current authority before queued effects/replay, enrollment
 races and optional methods. Schema 42 tests use a fresh schema-41 SQL dump produced
 by unchanged baseline `7f022fb21069728cf4c9844eec660f367b5680c1`; its populated file upgrade verifies a pre-migration schema-41 backup. Synthetic
 rewinds in older tests are still synthetic. Neither fixture is an old executable binary test.
-Production `better-auth` selection and unconverted cookie HTTP/MCP remain denied,
-including open boot. Full A3, general delegated roles, GUI and A4/A5 stay open.
+Unconverted cookie HTTP/MCP operations remain denied, including open boot. General delegated roles, GUI and A4 remain open; A5 selection requires validated readiness.
 
 ## Knowledge roles (A1)
 
@@ -1787,7 +1976,7 @@ or listeners. The captured policy and token remain handoff evidence. They are
 never copied back into live authority. Protected resume requires an explicit mode,
 invalidates all restored verifiers and acknowledges a completely verified matching
 handoff before publishing its final receipt. Token mode then needs a fresh token;
-better-auth mode still fails the existing production selection/startup gate.
+better-auth mode requires the current production readiness checks before selection/startup.
 
 ## Protected factor-loss recovery (P3a)
 
@@ -1966,4 +2155,4 @@ Neutral fixed errors distinguish `security_fence_establishment_required`,
 Tests cover raw/supported rollback, native provider recovery, corrupt/missing
 witnesses, fsync faults, SQL rollback, idle rechecks and real child-process crashes.
 Full provider proof still exposes its five unchanged historical factor negatives;
-P3b does not claim public account-mode or A5 production readiness.
+A5 public-composition and installed-artifact checks are separate evidence.

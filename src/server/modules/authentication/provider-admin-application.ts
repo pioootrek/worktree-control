@@ -35,6 +35,7 @@ export class ProviderAdminApplication {
     actor: "local-cli" | "local-admin";
     humans: HumanAccountService;
     runtimeMemberships: RuntimeMembershipService;
+    productionAccountModeAvailable?(): boolean;
   }) {}
 
   async execute(body: unknown): Promise<unknown> {
@@ -54,7 +55,7 @@ export class ProviderAdminApplication {
           modeRestartRequired: mode.restartRequired, maintenance: d.runtime.state(),
           configurationRestartRequired: d.runtime.configurationRestartRequired(current),
           recovery: { password: "protected-local", factors: "preserve-by-default", reset: d.runtime.factorResetSupport?.() ?? "not_loaded" },
-          productionAccountModeAvailable: false, owner: d.identity.ownerStatus(), ...(principal ? { principal } : {}) };
+          productionAccountModeAvailable: d.productionAccountModeAvailable?.() ?? false, owner: d.identity.ownerStatus(), ...(principal ? { principal } : {}) };
       });
       if (request.action === "configure") return await phase(() => {
         d.configuration.configure(request.input, d.identity.hasProviderData());

@@ -3,9 +3,9 @@ import { z } from "zod";
 /**
  * Scoped agent runtime actions delivered by A2. Each is granted only explicitly;
  * none implies another and no role bundle grants profiles, configuration or
- * finite test execution. Logs and ENV access remain separate and unsupported.
+ * finite test execution. Diagnostics require their own explicit grants; ENV stays separate.
  */
-export const runtimeActions = ["projects:read", "claims:manage", "runtime:control", "profiles:select", "config:write", "tests:run"] as const;
+export const runtimeActions = ["projects:read", "claims:manage", "runtime:control", "profiles:select", "config:write", "tests:run", "logs:read", "storage:read", "capacity:read"] as const;
 export type RuntimeAction = typeof runtimeActions[number];
 
 export function isRuntimeAction(value: unknown): value is RuntimeAction {

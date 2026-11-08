@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createControllerRestoreFailure, createControllerShutdown } from "../server/bootstrap/controller-shutdown";
+import { createProtectedIdentityAdministration } from "../server/bootstrap/identity-administration";
 import { createDevVault } from "../server/bootstrap/dev-vault";
 import { runDevVaultCommand } from "./dev-vault";
 import { loadRemoteVerificationConfig, runRemoteVerificationCommand } from "./remote-verification";
@@ -230,7 +231,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     authentication = new AuthenticationService(store);
     // Fresh startup or protected quarantine may issue new material; restored verifiers never return.
     if (!retainedLock) bootstrapInstallationToken(authentication, { terminal: process.stdout, locale, serviceMode });
-    authentication.assertStartupPolicy();
+    if (authentication.mode() !== "better-auth") authentication.assertStartupPolicy();
     logs = new FileLogWriter(paths.logDirectory);
   } catch (error) {
     store.close();
@@ -309,6 +310,21 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const godotWeb = godotWebRuntime.godotWeb;
   preview.service = godotWeb;
   const service = new ControlService(store, git, processes, logs, commands, storage, undefined, undefined, tests, lifecycle, knowledge, remoteVerification?.controller, identity, godotWeb);
+  let browserAuthentication;
+  try {
+    if (authentication.mode() === "better-auth") {
+      if (!publicOrigin) throw new Error("Account authentication requires a canonical HTTPS --public-url.");
+      await authentication.prepareAccountMode();
+      browserAuthentication = await providerAdministration.prepareBrowserAuthentication({ origin: publicOrigin,
+        knowledge, runtimeReads: service, runtimeMutations: service, verification: service, configuration: service });
+    }
+    await store.admission.run(() => authentication.assertStartupPolicy());
+  } catch (error) {
+    maintenance = true; userSchedules?.close();
+    try { await backups.close(); await remoteVerification?.close(); await providerAdministration.dispose(); await service.shutdown(); controllerLock.release(); }
+    catch { retainAuthenticationOwnership({ store, providerAdministration, service, controllerLock }); throw new ProviderAdminError("disposal_unconfirmed", undefined, false); }
+    throw error;
+  }
   const restores = new RestoreOperations(backups, paths.databasePath, paths.knowledgeAttachmentDirectory, {
     authentication: () => store.getAuthenticationPolicy(),
     executionMode: () => authentication.mode(),
@@ -377,6 +393,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     identity,
     devVault,
     authentication,
+    browserAuthentication,
     publicOrigin,
     backups, restores, userSchedules, maintenance: () => maintenance,
     admission: store.admission,
@@ -433,9 +450,11 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       },
     });
     const backupHandler = backupAdminHandler(backups, restores, userSchedules);
+    const identityHandler = createProtectedIdentityAdministration(store, () => maintenance);
     const mcpDiagnosticsHandler = mcpDiagnosticsAdminHandler(readMcpDiagnostics);
     adminSocket = await listenAdminSocket(paths.adminSocketPath, body => {
       if (body && typeof body === "object" && "command" in body && body.command === "auth-provider") return providerAdministration.execute(body);
+      if (body && typeof body === "object" && "command" in body && body.command === "identity-admin") return identityHandler(body);
       if (body && typeof body === "object" && "command" in body && (body.command === "backup" || body.command === "backup-remote" || body.command === "backup-monitor" || body.command === "user-export-recovery")) return backupHandler(body);
       if (body && typeof body === "object" && "command" in body && body.command === "mcp-diagnostics") {
         return mcpDiagnosticsHandler(body);

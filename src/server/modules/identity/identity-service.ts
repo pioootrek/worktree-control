@@ -412,6 +412,7 @@ export class IdentityService {
       grant: knowledge ? this.store.getKnowledgeProjectGrant(actor.principalId, resource.id) : null,
       binding: knowledge ? this.store.getKnowledgeRoleBinding(actor.principalId, resource.id) : null,
       ordinaryHuman: this.store.getPrincipal(actor.principalId)?.kind === "human",
+      installationAuthenticated: actor.principalKind === "installation" && this.installationAuthority?.isCurrentInstallationActor(actor) === true,
       allowArchived: context.allowArchived,
     })) throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
   }
@@ -722,6 +723,9 @@ export class IdentityService {
         throw new IdentityError("invalid_credential", "Nieprawidłowe lub nieaktywne poświadczenie.");
       }
       return;
+    }
+    if (this.installationAuthority?.permitsCredential?.(actor) === false) {
+      throw new IdentityError("invalid_credential", "Nieprawidłowe lub nieaktywne poświadczenie.");
     }
     const principal = this.store.getPrincipal(actor.principalId);
     if (actor.principalKind === "installation") {
