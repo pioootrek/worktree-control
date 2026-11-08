@@ -168,10 +168,14 @@ directory (the path below is an example):
 
 ```bash
 umask 077
-worktree-control backup create "$HOME/worktree-control-backup-0.1.1"
+worktree-control backup create "$HOME/worktree-control-backups/0.1.1-before-0.2.0"
 ```
 
-The command prints the backup manifest. Keep the directory private and outside
+The destination parent must be private (mode `0700`) or not exist yet; the
+command creates a missing parent privately. Do not use the home directory
+itself as the parent: homes accessible to a group or other users are refused.
+A `backup_failed` result can indicate unsafe destination permissions; do not
+skip the backup. The command prints the backup manifest. Keep it outside
 any Git working tree. The fence establishment in step 6 performs the migration
 itself, so `--backup-before-migration` does not run for it: this backup is your
 recovery point. Do not rely on a plain copy of the data directory instead; see
@@ -193,7 +197,9 @@ described in the
 
 Do not start the controller yet. Until step 6, `0.2.0` refuses to start and
 `worktree-control auth status` exits with a security-fence error. That refusal
-is expected.
+is expected. With `--backup-before-migration`, a refused start can still
+create a full backup before refusing; repeated service retries can create
+several copies. Keep the service stopped until establishment completes.
 
 ### 5. Inspect the fence
 
@@ -203,7 +209,9 @@ worktree-control auth fence inspect
 
 For a `0.1.1` database the result reports `code:
 "security_fence_establishment_required"`, `establishmentAllowed: true`,
-`schemaVersion: 28` and a `preflight` hash. Continue only with that result. If
+`schemaVersion: 28` and a `preflight` hash. Continue only with that result **and only if this installation has never
+already been upgraded**. A plain pre-upgrade copy without its witness cannot
+be distinguished from a never-upgraded store and must not be adopted. If
 it reports `security_fence_recovery_required` or `establishmentAllowed: false`,
 the database is not a plain `0.1.1` store (for example a restore is pending or a
 witness already exists); stop and read [Recovery](#recovery).
@@ -262,9 +270,20 @@ older executable is never a rollback. Recovery happens with `0.2.0`:
 - **Restoring the pre-upgrade backup** into this installation uses `0.2.0`
   `backup restore` and is then fenced like any restore: the next start refuses
   until a protected resume quarantines the restored credentials. Restoring a
-  `0.1.1` snapshot with `0.2.0` is not covered by the release acceptance;
-  rehearse it on a copy first. Writes made after the upgrade are not in the
-  backup.
+  `0.1.1` snapshot with `0.2.0` is covered by the public-baseline installed
+  acceptance, in both existing and empty directories. With the service stopped:
+
+  ```bash
+  worktree-control backup restore "$HOME/worktree-control-backups/0.1.1-before-0.2.0"
+  worktree-control auth fence inspect
+  worktree-control auth fence resume --expect <new-preflight> --mode token
+  worktree-control auth token generate
+  ```
+
+  Resume preserves the backup's principal IDs, projects and Knowledge history
+  but revokes all credentials and grants. Reissue agent credentials and grants
+  explicitly, then start the service. Old tokens, including tokens revoked
+  after the backup, remain invalid. Writes made after the backup are lost.
 - **Never** replace the data directory with an older plain copy, remove the
   witness directory, or copy an old witness next to restored data to avoid the
   quarantine. Revoked credentials and sessions would become valid again.
@@ -284,13 +303,13 @@ Moving from a pre-rename `worktree-switcher` trial package to `worktree-control`
 also renames the executable, user service, and environment variables. Follow
 [upgrading an existing installation](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/user-service.md#upgrading-an-existing-installation).
 
-The controller provides full SQLite/attachment backup and recoverable restore.
-The installed-artifact acceptance uses an exact historical schema-24 package
-(`a727fd8ff01e141c6494615531e27e72a23f6320`) and the current package in separate
-production prefixes. It exercises migration to schema 28, representative process
-interruptions and recovery from disposable HTTPS storage after deleting the local
-fixture copies. This is isolated evidence; it does not identify your deployed
-version or establish off-host recovery targets for your data.
+The former schema-24 → schema-28 restic trial is historical evidence only.
+Its `test:package:upgrade` and `test:package:upgrade:driver` presets have been
+retired: they predate the security fence and must not be used as 0.2.0 evidence.
+Their source remains for reference. Current installed upgrade and recovery
+acceptance is `test:rbac-artifact` with the public 0.1.1 baseline, plus
+`test:rbac-artifact:fresh`. Neither replaces an operator's off-host recovery
+rehearsal or establishes off-host recovery targets.
 
 Before changing a real installation, identify its actual artifact and schema,
 verify private ownership/permissions, and rehearse with an isolated consistent
@@ -333,7 +352,9 @@ and logs. Full data deletion is a separate, explicit operation. See
 Maintainers publish the CI-built tarball, not a checkout. Download the
 `portable-package` artifact of the `Verify` run on the release commit on `main`,
 run `sha256sum --check SHA256SUMS`, confirm `provenance.json` names the expected
-package, version, full commit, `"dirty": false` and tarball digest, then run:
+package, version, full commit, `"dirty": false` and tarball digest. Create the
+matching `v<version>` tag on that commit before publication so versioned links
+in the shipped installation guides resolve, then run:
 
 ```bash
 npm publish ./worktree-control-<version>.tgz --access public
@@ -342,8 +363,9 @@ npm view worktree-control version
 
 The optional account provider is not published to npm. Attach the files of the
 `optional-auth-provider` artifact from the same `Verify` run to the GitHub
-Release for that version, after checking its `SHA256SUMS` and that its
-`provenance.json` names the same commit, `"dirty": false` and the matching
+Release for that version, after checking its
+`worktree-control-provider-SHA256SUMS` and that its
+`worktree-control-provider-provenance.json` names the same commit, `"dirty": false` and the matching
 `compatibleCore`. See
 [release packaging](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/release-packaging.md).
 

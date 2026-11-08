@@ -691,23 +691,24 @@ Community package:
 
 ```text
 worktree-control-auth-provider-better-auth-proof-0.0.0.tgz
-npm-shrinkwrap.json
-THIRD_PARTY_NOTICES.md
-LICENSE
-INSTALL.md
-SHA256SUMS
-provenance.json
+worktree-control-provider-npm-shrinkwrap.json
+worktree-control-provider-THIRD_PARTY_NOTICES.md
+worktree-control-provider-LICENSE
+worktree-control-provider-INSTALL.md
+worktree-control-provider-SHA256SUMS
+worktree-control-provider-provenance.json
 ```
 
 The package keeps its historical name
 `@worktree-control/auth-provider-better-auth-proof` and package version `0.0.0`,
 because the controller and existing configurations reference that module and
 its implementation `0.0.0-proof.5`. The name does not describe its status.
-Identify the exact artifact by `provenance.json`: `compatibleCore.version` must
+Identify the exact artifact by `worktree-control-provider-provenance.json`: `compatibleCore.version` must
 be `0.2.0`, `source.commit` must be the release commit with `source.dirty:
 false`, `provider.implementationVersion` must be `0.0.0-proof.5`, and
-`artifact.sha256` must match `SHA256SUMS`.
+`artifact.sha256` must match `worktree-control-provider-SHA256SUMS`.
 
+Download all seven provider assets into one directory for checksum verification.
 Install it into its own private directory. `npm ci` installs exactly the
 shipped lock; do not use `npm install <tarball>`, which ignores the shipped
 `npm-shrinkwrap.json` and resolves newer transitive versions than the ones
@@ -715,9 +716,10 @@ tested. Use a private umask: the controller refuses a module that other users
 can modify.
 
 ```bash
-sha256sum --check SHA256SUMS
+sha256sum --check worktree-control-provider-SHA256SUMS
 umask 077
 PROVIDER_DIR="$HOME/.local/lib/worktree-control-provider-0.2.0"
+mkdir -p "$(dirname "$PROVIDER_DIR")"
 mkdir "$PROVIDER_DIR"
 tar -xzf worktree-control-auth-provider-better-auth-proof-0.0.0.tgz \
   -C "$PROVIDER_DIR" --strip-components=1 --no-same-owner
@@ -1208,7 +1210,11 @@ The OS owner and the private path ancestry are trusted. This design detects
 DB-only rollback, missing/corrupt/stale/wrong-installation witnesses, and supported
 restore. It cannot detect rollback of the whole host or a manually copied trust
 domain containing both the matching SQLite and witness. There is no off-host
-anchor. Checksums detect corruption; they do not defend against the trusted OS
+anchor. A pre-upgrade database copied without its witness is indistinguishable
+from a store that was never upgraded: establishing it could revive credentials
+revoked since that copy. Establish only an installation you have never already
+upgraded. Recover with `backup restore` and protected resume; never replace the
+data directory with a pre-upgrade plain copy. Checksums detect corruption; they do not defend against the trusted OS
 owner replacing both sides.
 
 The strict checksummed witness is bounded to 4 KiB. Its directory admits at most
@@ -1283,6 +1289,9 @@ Neutral fixed errors distinguish `security_fence_establishment_required`,
 `security_fence_recovery_required`, `security_fence_pending` and
 `security_fence_preflight_changed`. A running owner returns `security_fence_owner_running`. Status and errors expose no credential material.
 Tests cover raw/supported rollback, native provider recovery, corrupt/missing
+witnesses, filesystem synchronization faults, SQL rollback, idle rechecks and
+real child-process crashes. See the historical implementation reference for
+the detailed test boundaries.
 
 ## Verification status and known limitations
 

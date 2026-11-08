@@ -1,3 +1,4 @@
+// Retired historical schema-24→28 trial. Use test:rbac-artifact for 0.2.0.
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import { promisify } from "node:util";
 import { installProductionPrefix, productionInstallEnvironment, scriptEnvironment, verifyInstalledDriver } from "./package-install.mjs";
 import { verifyHistoricalArtifact, verifyTrialFiles } from "./package-artifact.mjs";
 const exec = promisify(execFile);
+throw new Error("The pre-fence schema-24 trial is retired. Use pnpm test:rbac-artifact and test:rbac-artifact:fresh.");
 const oldArtifact = scriptEnvironment("WORKTREE_CONTROL_TEST_OLD_ARTIFACT"), oldProvenance = scriptEnvironment("WORKTREE_CONTROL_TEST_OLD_PROVENANCE");
 const historical = await verifyHistoricalArtifact(oldArtifact, oldProvenance);
 const root = await mkdtemp(join(tmpdir(), "wts-upgrade-trial-"));

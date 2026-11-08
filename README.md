@@ -813,58 +813,20 @@ queue when this repository is registered in Worktree Control.
 
 ## Installed upgrade and recovery acceptance
 
-`pnpm test:package:upgrade` uses the existing trial packer and production-prefix
-installer to exercise exact historical `a727fd8ff01e141c6494615531e27e72a23f6320`
-(schema 24) and the clean current commit. The historical reference does not
-identify the version currently deployed. Build both clean checkouts with their
-original frozen lockfiles and use the historical checkout's `package:trial` to
-produce its tarball and `provenance.json`. Configure these explicit local inputs
-in the registered project's clean test environment profile:
+`pnpm test:rbac-artifact` tests the actual public npm 0.1.1 package (schema 28)
+against the candidate in isolated installed prefixes, including backup creation,
+fence establishment, data and credential continuity, and supported restore with
+protected quarantine into existing and empty directories. The
+`test:rbac-artifact:fresh` preset covers a new installation. Both test the
+separately packaged provider with its locked dependencies. Use the managed
+queue and see [release packaging](docs/release-packaging.md).
 
-```text
-WORKTREE_CONTROL_TEST_OLD_ARTIFACT=<historical-tarball>
-WORKTREE_CONTROL_TEST_OLD_PROVENANCE=<historical-provenance.json>
-WORKTREE_CONTROL_TEST_RESTIC=<local-restic-executable>
-WORKTREE_CONTROL_TEST_REST_SERVER=<local-rest-server-executable>
-WORKTREE_CONTROL_TEST_UPGRADE_REPORT=<new-local-report-file>  # optional
-```
-
-Run the discovered build and `test:package:upgrade` presets sequentially through
-the managed queue. The optional report file must not already exist. The driver
-verifies both artifact digests, installs separate production prefixes, checks
-historical business content/history/audit/attachments and tenant authorization,
-and exercises default-off and enabled pre-migration policy, controlled process
-crashes, replacement of an existing generation and source-deleted recovery from
-a disposable authenticated HTTPS repository. All local derivative copies are
-removed before remote recovery. The repository script supplies fixture
-supervision and syscall interception; application CLI, HTTP, dashboard assets
-and native dependencies come from the installed packages. This supplements the
-existing crash matrices and separate CI service-lifecycle tests.
-
-The historical positive fixture uses the documented service umask `0077`.
-Foreground `0022` is tested separately: current startup refuses unsafe data
-permissions before migration and preserves database bytes, schema and modes.
-Inspect the owner and permissions of your own directories before rollout;
-permission changes require an explicit operator decision. The historical API
-supports `derived_from` through `task_from_thread`, with owner-only approval
-permission; arbitrary `create_relation` is outside its capabilities. Historical
-backup commands use `WORKTREE_SWITCHER_DATA_DIR` and
-`WORKTREE_SWITCHER_STATE_DIR`, since that release predates the rename and does
-not strip path flags from strict backup arguments; it ignores the
-`WORKTREE_CONTROL_*` names.
-
-Account for writes made after upgrade before historical recovery. Restore the
-old snapshot into a separate private directory and run old code there; never
-open a migrated database with old code. This offline full recovery preserves
-historical owner/agent credentials and checks scoped grants again; the existing
-online restore security fence has separate acceptance coverage. Record actual
-loss windows and end-to-end recovery time during an operator rehearsal. The
-fixture does not establish physical power-loss durability or real-host/offsite
-RPO/RTO, provision a destination or keys, or change host services.
-
-`test:package:upgrade:driver` is a finite diagnostic preset using the same packer,
-installer and driver, without the normal package smoke. Its evidence is labelled
-as debug evidence; final acceptance requires `test:package:upgrade`.
+The former schema-24 → schema-28 restic trial and its `test:package:upgrade`
+and `test:package:upgrade:driver` presets are retired. The historical scripts
+remain for reference; they predate the fence and are not 0.2.0 acceptance.
+The current tests do not establish real-host/offsite RPO/RTO or physical
+power-loss durability. Rehearse recovery for the actual installation and
+account for writes made after its backup.
 
 ## License
 

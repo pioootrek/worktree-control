@@ -12,7 +12,7 @@ Community package; it is never published to npm. The package keeps its
 historical proof name and version `0.0.0`, and its implementation reports
 `0.0.0-proof.5` (provider contract `5`, storage revision `3`). The controller
 checks those capabilities, not the name. Identify a release's provider by its
-`provenance.json` (`compatibleCore.version`, source commit, tarball sha256).
+`worktree-control-provider-provenance.json` (`compatibleCore.version`, source commit, tarball sha256).
 
 Install it from the verified artifact by extracting it into a private directory
 and running `npm ci --prefix <dir> --omit=dev --ignore-scripts`; never

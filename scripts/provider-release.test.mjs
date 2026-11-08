@@ -3,7 +3,21 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PROVIDER_LOCK, PROVIDER_NOTICES, checkProviderLock, noticeEntries, pnpmLockedPackages, providerLockProblems, releaseDependencies, shrinkwrapClosure } from "./provider-release.mjs";
+import { PROVIDER_LOCK, PROVIDER_NOTICES, assertReleasePair, checkProviderLock, noticeEntries, pnpmLockedPackages, providerLockProblems, releaseDependencies, shrinkwrapClosure } from "./provider-release.mjs";
+
+test("release acceptance rejects mixed commits, versions, dirty trees and CI attempts", () => {
+  const community = { package: { name: "worktree-control", version: "0.2.0" }, source: { commit: "a".repeat(40), dirty: false }, ci: { repository: "owner/repo", runId: "1", runAttempt: "1" } };
+  const provider = { compatibleCore: { ...community.package }, source: { ...community.source }, ci: { ...community.ci } };
+  assert.doesNotThrow(() => assertReleasePair(community, provider));
+  for (const patch of [
+    { source: { ...provider.source, dirty: true } },
+    { source: { ...provider.source, commit: "b".repeat(40) } },
+    { compatibleCore: { ...provider.compatibleCore, version: "0.1.1" } },
+    { ci: { ...provider.ci, runAttempt: "2" } },
+    { ci: null },
+  ]) assert.throws(() => assertReleasePair(community, { ...provider, ...patch }));
+  assert.throws(() => assertReleasePair({ ...community, source: { ...community.source, dirty: true } }, provider));
+});
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 async function committed() {

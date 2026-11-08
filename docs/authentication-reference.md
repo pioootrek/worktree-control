@@ -1173,4 +1173,3 @@ inspection also verifies the witness before authentication and on retained reads
 New authority tables must add migration
 coverage. The nonce is an equality fence, not a wall-clock ordering claim or an
 unbounded revocation log.
-

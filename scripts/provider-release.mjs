@@ -2,6 +2,31 @@
 // provider artifact. The Community package never imports this module.
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import assert from "node:assert/strict";
+
+// GitHub Release asset names share one namespace with the Community companions.
+export const PROVIDER_RELEASE_FILES = Object.freeze({
+  lock: "worktree-control-provider-npm-shrinkwrap.json",
+  notices: "worktree-control-provider-THIRD_PARTY_NOTICES.md",
+  license: "worktree-control-provider-LICENSE",
+  guide: "worktree-control-provider-INSTALL.md",
+  checksums: "worktree-control-provider-SHA256SUMS",
+  provenance: "worktree-control-provider-provenance.json",
+});
+
+export function assertReleasePair(community, provider) {
+  assert.equal(community.source?.dirty, false, "Community source must be clean.");
+  assert.equal(provider.source?.dirty, false, "Provider source must be clean.");
+  assert.match(community.source?.commit ?? "", /^[0-9a-f]{40}$/);
+  assert.equal(provider.source?.commit, community.source.commit, "Release artifacts must use the same commit.");
+  assert.deepEqual(provider.compatibleCore, { name: community.package.name, version: community.package.version }, "Provider must match the Community package.");
+  if (community.ci || provider.ci) {
+    for (const key of ["repository", "runId", "runAttempt"]) {
+      assert.equal(typeof community.ci?.[key], "string", "CI provenance must identify the build run.");
+      assert.equal(provider.ci?.[key], community.ci[key], "Release artifacts must use the same CI run and attempt.");
+    }
+  }
+}
 
 export const PROVIDER_SOURCE = "packages/auth-provider-better-auth-proof";
 /** Committed npm lock shipped inside the provider tarball; generated only by `provider-lock.mjs --write`. */

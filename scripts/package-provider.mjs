@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { PROVIDER_CONTRACT, PROVIDER_IMPLEMENTATION } from "./provider-release.mjs";
+import { PROVIDER_CONTRACT, PROVIDER_IMPLEMENTATION, PROVIDER_RELEASE_FILES } from "./provider-release.mjs";
 
 const exec = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -41,7 +41,8 @@ try {
   const built = join(work, "first"), artifact = builds[0];
   const core = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
   const manifest = JSON.parse(await readFile(join(built, "package.json"), "utf8"));
-  const files = { tarball: artifact.filename, lock: "npm-shrinkwrap.json", notices: "THIRD_PARTY_NOTICES.md", license: "LICENSE", guide: "INSTALL.md" };
+  const { checksums, provenance: provenanceName, ...companions } = PROVIDER_RELEASE_FILES;
+  const files = { tarball: artifact.filename, ...companions };
   await Promise.all([
     copyFile(join(built, artifact.filename), join(output, files.tarball)),
     copyFile(join(built, "npm-shrinkwrap.json"), join(output, files.lock)),
@@ -63,12 +64,11 @@ try {
     build: { node: process.version, npm: (await run("npm", ["--version"])).stdout.trim() },
     ci: process.env.GITHUB_RUN_ID ? { repository: process.env.GITHUB_REPOSITORY, runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
       runUrl: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` } : null,
-    // Not an npm package: `private: true` refuses registry publication. Where it
-    // is published, if at all, is a separate owner decision.
+    // A separate GitHub Release asset; private:true still refuses npm publication.
     distribution: "separate-optional-artifact",
     files,
   };
-  await writeFile(join(output, "SHA256SUMS"), sums.map(([file, hash]) => `${hash}  ${file}`).join("\n") + "\n", { mode: 0o600 });
-  await writeFile(join(output, "provenance.json"), JSON.stringify(provenance, null, 2) + "\n", { mode: 0o600 });
+  await writeFile(join(output, checksums), sums.map(([file, hash]) => `${hash}  ${file}`).join("\n") + "\n", { mode: 0o600 });
+  await writeFile(join(output, provenanceName), JSON.stringify(provenance, null, 2) + "\n", { mode: 0o600 });
   console.log(JSON.stringify({ output, provenance }, null, 2));
 } finally { await rm(work, { recursive: true, force: true }); }

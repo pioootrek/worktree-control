@@ -7,7 +7,7 @@ status: "active"
 
 # Release packaging
 
-This page is also shipped as `INSTALL.md` inside the optional provider
+This page is also shipped as `worktree-control-provider-INSTALL.md` inside the optional provider
 download, so its links point to the versioned documentation. Replace `v0.2.0`
 in a link with your release tag when you read it for another version.
 
@@ -39,24 +39,24 @@ The provider package keeps its historical name
 `@worktree-control/auth-provider-better-auth-proof` and package version `0.0.0`.
 It began as the account-mode proof, and the controller checks the loaded
 module's capabilities, not its name: provider contract `5`, storage revision
-`3`, implementation `0.0.0-proof.5` and Better Auth `1.7.14`. Renaming it would
-change the module path that existing account-mode configurations reference, so
-the name stays for compatibility. Because the package version never changes,
-identify a release's provider by its `provenance.json`, not by its file name.
+`3`, implementation `0.0.0-proof.5` and Better Auth `1.7.14`. The historical identity is retained for continuity. With the extracted-package
+installation below, the module path is the operator-chosen `DIR/dist/index.js`;
+renaming the npm package alone does not change that path. Because the package version never changes,
+identify a release's provider by its `worktree-control-provider-provenance.json`, not by its file name.
 
 The download contains:
 
 ```text
 worktree-control-auth-provider-better-auth-proof-0.0.0.tgz
-npm-shrinkwrap.json
-THIRD_PARTY_NOTICES.md
-LICENSE
-INSTALL.md
-SHA256SUMS
-provenance.json
+worktree-control-provider-npm-shrinkwrap.json
+worktree-control-provider-THIRD_PARTY_NOTICES.md
+worktree-control-provider-LICENSE
+worktree-control-provider-INSTALL.md
+worktree-control-provider-SHA256SUMS
+worktree-control-provider-provenance.json
 ```
 
-`provenance.json` records:
+`worktree-control-provider-provenance.json` records:
 
 - `compatibleCore.version`: the Community version this provider is for, `0.2.0`
   for this release;
@@ -71,13 +71,15 @@ provenance.json
 ### Install
 
 Install without a source checkout, on the same machine and OS user as the
-controller. You need Node.js 22 or newer, npm, `tar` and registry access for
+controller. Download all seven provider assets listed above into one directory
+so the checksum command can verify every listed companion. You need Node.js 22 or newer, npm, `tar` and registry access for
 `npm ci`.
 
 ```bash
-sha256sum --check SHA256SUMS
+sha256sum --check worktree-control-provider-SHA256SUMS
 umask 077
 PROVIDER_DIR="$HOME/.local/lib/worktree-control-provider-0.2.0"
+mkdir -p "$(dirname "$PROVIDER_DIR")"
 mkdir "$PROVIDER_DIR"
 tar -xzf worktree-control-auth-provider-better-auth-proof-0.0.0.tgz \
   -C "$PROVIDER_DIR" --strip-components=1 --no-same-owner
@@ -85,9 +87,9 @@ npm ci --prefix "$PROVIDER_DIR" --omit=dev --ignore-scripts
 ls "$PROVIDER_DIR/dist/index.js"
 ```
 
-Before installing, confirm that `provenance.json` names the expected
+Before installing, confirm that `worktree-control-provider-provenance.json` names the expected
 `compatibleCore.version`, commit and `"dirty": false`, and that
-`artifact.sha256` equals the tarball line in `SHA256SUMS`.
+`artifact.sha256` equals the tarball line in `worktree-control-provider-SHA256SUMS`.
 
 Do not use `npm install <tarball>`: npm ignores a dependency's
 `npm-shrinkwrap.json` there and resolves newer transitive versions than the
@@ -154,14 +156,17 @@ schema-43 result does not prove an upgrade from the public `0.1.1` release.
 
 For `0.2.0`:
 
-1. Publish the Community tarball from the `portable-package` CI artifact to npm,
-   as in
+1. Use both artifacts from the same CI run and attempt, within the seven-day
+   retention. Verify their checksums and that both provenances are clean, name
+   the same commit/run/attempt and identify Community version `0.2.0`.
+2. Create tag `v0.2.0` on that commit, then publish the Community tarball from
+   `portable-package` to npm as described in
    [Publish a release](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/package-trial.md#publish-a-release).
-2. Attach every file of the `optional-auth-provider` artifact from the same CI
-   run to the GitHub Release `v0.2.0`, unchanged: the provider tarball,
-   `npm-shrinkwrap.json`, `THIRD_PARTY_NOTICES.md`, `LICENSE`, `INSTALL.md`,
-   `SHA256SUMS` and `provenance.json`.
-3. In the release notes, identify the provider by its source commit,
+   The tag makes the versioned installation links resolve.
+3. Attach every file of `optional-auth-provider` to the GitHub Release,
+   unchanged: the provider tarball and all `worktree-control-provider-*`
+   companions. Community companions keep their unprefixed names; none collide.
+4. In the release notes, identify the provider by its source commit,
    `compatibleCore.version` and tarball sha256, and link the account-mode guide.
 
 Release notes for account mode state the verification boundary: the installed

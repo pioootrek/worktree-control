@@ -134,7 +134,7 @@ jobs:
         shell: bash
         run: |
           (cd portable-artifact && sha256sum --check SHA256SUMS)
-          (cd provider-artifact && sha256sum --check SHA256SUMS)
+          (cd provider-artifact && sha256sum --check worktree-control-provider-SHA256SUMS)
           TARBALL=$(node -p 'require("./portable-artifact/provenance.json").artifact.filename')
           SHA256=$(node -p 'require("./portable-artifact/provenance.json").artifact.sha256')
           for BASELINE in public-0.1.1 fresh; do
