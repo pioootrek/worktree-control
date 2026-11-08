@@ -148,7 +148,10 @@ describe("actual built CLI provider administration (isolated controller, zero ma
     expect(await provider(f, ["status"])).toMatchObject({ maintenance: "not_loaded" });
     expect(await provider(f, ["configure", "--input-stdin"], { module: entry, origin: "https://controller.test", signingSecret: { kind: "generate" } })).toMatchObject({ configured: true });
     expect(await provider(f, ["enroll", "--principal-id", principal.id, "--input-stdin"], { email: "human@fixture.invalid", name: "Human", password })).toMatchObject({ enrolled: true });
-    expect(await provider(f, ["recover", "--principal-id", principal.id, "--input-stdin"], { newPassword: replacement }, 1)).toMatchObject({ code: "principal_unavailable" });
+    const beforeRecovery = authorityRows(f);
+    expect(await provider(f, ["recover", "--principal-id", principal.id, "--input-stdin"], { newPassword: replacement }))
+      .toEqual({ principalId: principal.id, recovered: true });
+    expect(authorityRows(f)).toEqual(beforeRecovery);
     expect(await provider(f, ["knowledge-access", "revoke", "--input-stdin"], { principalId: principal.id, scope: input.scope, expectedRevision: 1 })).toMatchObject({ revision: 2, grant: { revokedAt: expect.any(String) } });
     expect(await provider(f, ["human", "disable", "--principal-id", principal.id])).toMatchObject({ changed: true });
     expect(await provider(f, ["human", "disable", "--principal-id", principal.id])).toMatchObject({ changed: false });
