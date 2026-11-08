@@ -16,6 +16,23 @@ export async function verifyHistoricalArtifact(tarball, provenancePath) {
     throw new Error("Historical artifact checksum or exact-source provenance mismatch.");
   return { source: provenance.source, artifact: provenance.artifact, build: provenance.build };
 }
+/** The published npm release that installed upgrades start from. Registry metadata
+ * (2026-11-08) names its integrity; release commit c5c4eee carries schema 28. */
+export const PUBLIC_BASELINE = Object.freeze({
+  name: "worktree-control", version: "0.1.1", bytes: 906781, schema: 28,
+  sha256: "f6ddd1216a285d083055c15cafc117a7d2a621c5c0414491596180f152cb5c48",
+  integrity: "sha512-+e66ZAHyuAM6284tHw9JLeNx9OsdepUGeBGhPKwxMBSfEQIDUQwfUCBKkoW+cbBRoJdEATjtyzELqEsB3J+GEg==",
+  sourceCommit: "c5c4eee232cbd225bd3c84d8c0c9c265a31ec851",
+});
+/** A registry download is untrusted until both pinned digests match. */
+export async function verifyPublicBaseline(tarball) {
+  const archive = await lstat(tarball);
+  if (!archive.isFile() || archive.size !== PUBLIC_BASELINE.bytes) throw new Error("Public baseline size mismatch.");
+  const bytes = await readFile(tarball);
+  const integrity = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
+  if (createHash("sha256").update(bytes).digest("hex") !== PUBLIC_BASELINE.sha256 || integrity !== PUBLIC_BASELINE.integrity) throw new Error("Public baseline checksum mismatch.");
+  return { ...PUBLIC_BASELINE, filename: basename(tarball) };
+}
 /** Check every executable companion before starting a checkout-free smoke. */
 export async function verifyTrialFiles(directory, provenance) {
   const entries = [[provenance.artifact.filename, provenance.artifact.sha256], [provenance.files.smoke, provenance.files.smokeSha256], [provenance.files.installer, provenance.files.installerSha256], [provenance.files.lifecycle, provenance.files.lifecycleSha256]];

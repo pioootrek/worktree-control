@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { HISTORICAL_COMMIT, verifyHistoricalArtifact, verifyTrialFiles } from "./package-artifact.mjs";
+import { HISTORICAL_COMMIT, PUBLIC_BASELINE, verifyHistoricalArtifact, verifyPublicBaseline, verifyTrialFiles } from "./package-artifact.mjs";
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 async function fixture(fn) {
   const root = await mkdtemp(join(tmpdir(), "wts-artifact-input-"));
@@ -100,4 +100,16 @@ test("fresh Community CLI and dashboard assets contain no optional provider impl
   };
   await scan(join(root, "dist", "cli"));
   await scan(join(root, "out"));
+});
+test("pins the public npm baseline by size, sha256 and registry sha512 and refuses substituted bytes", async () => {
+  assert.equal(PUBLIC_BASELINE.version, "0.1.1"); assert.equal(PUBLIC_BASELINE.schema, 28);
+  assert.match(PUBLIC_BASELINE.sha256, /^[a-f0-9]{64}$/); assert.match(PUBLIC_BASELINE.integrity, /^sha512-[A-Za-z0-9+/]{86}==$/);
+  const root = await mkdtemp(join(tmpdir(), "wtc-public-baseline-"));
+  try {
+    const short = join(root, "short.tgz"); await writeFile(short, "not the release");
+    await assert.rejects(verifyPublicBaseline(short), /size mismatch/);
+    const substituted = join(root, "worktree-control-0.1.1.tgz"); await writeFile(substituted, Buffer.alloc(PUBLIC_BASELINE.bytes));
+    await assert.rejects(verifyPublicBaseline(substituted), /checksum mismatch/);
+    await assert.rejects(verifyPublicBaseline(root), /size mismatch/);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

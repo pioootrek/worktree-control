@@ -6,18 +6,31 @@ import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/p
 import { createServer } from "node:net";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { installProductionPrefix, installedSqlite, productionInstallEnvironment } from "./package-install.mjs";
+import { PUBLIC_BASELINE, verifyPublicBaseline } from "./package-artifact.mjs";
+import { shrinkwrapClosure } from "./provider-release.mjs";
 const exec = promisify(execFile);
 const repository = resolve(import.meta.dirname, "..");
-const inputPath = process.argv[2] ?? join(repository, "dist/rbac-acceptance-input.json");
-const input = JSON.parse(await readFile(inputPath, "utf8"));
-assert.equal(typeof input.oldPackage, "string");
-const oldRoot = await realpath(input.oldPackage), oldCli = join(oldRoot, "dist/cli/index.js");
+// Baselines: `public-0.1.1` (default) fetches the exact registry release and checks
+// its pinned digests; `fresh` installs only the candidate; a positional JSON file
+// selects an explicitly fingerprinted installed historical package.
+const argument = name => { const index = process.argv.indexOf(name); return index < 0 ? undefined : process.argv[index + 1]; };
+const legacyInput = process.argv[2] && !process.argv[2].startsWith("--") ? process.argv[2] : undefined;
+const input = legacyInput ? JSON.parse(await readFile(legacyInput, "utf8")) : {};
+const baseline = legacyInput ? "historical-installed" : argument("--baseline") ?? `public-${PUBLIC_BASELINE.version}`;
+assert(["historical-installed", `public-${PUBLIC_BASELINE.version}`, "fresh"].includes(baseline), "Unsupported baseline.");
+const CURRENT_SCHEMA = 49;
+const reportPath = resolve(argument("--report") ?? join(repository, "dist/rbac-artifacts", `acceptance-${baseline}.json`));
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
-assert.equal(digest(await readFile(oldCli)), input.oldCliSha256, "Explicit old executable fingerprint must match.");
+let oldRoot, oldCli;
+if (baseline === "historical-installed") {
+  assert.equal(typeof input.oldPackage, "string");
+  oldRoot = await realpath(input.oldPackage); oldCli = join(oldRoot, "dist/cli/index.js");
+  assert.equal(digest(await readFile(oldCli)), input.oldCliSha256, "Explicit old executable fingerprint must match.");
+}
 const root = await mkdtemp(join(tmpdir(), "wtc-rbac-installed-"));
 const children = new Set(), steps = [], clients = [];
 let controller, failureStep, cleanupConfirmed = false;
@@ -97,48 +110,111 @@ const cookieJar = () => {
     return { status: response.status, body: response.body };
   } };
 };
+/** A release directory from package-provider.mjs, or the local build's artifact.json. */
+async function providerArtifact(directory) {
+  if (!directory) return JSON.parse(await readFile(join(repository, "dist/private-auth-provider/artifact.json"), "utf8"));
+  const provenance = JSON.parse(await readFile(join(directory, "provenance.json"), "utf8"));
+  assert.equal(provenance.kind, "optional-authentication-provider");
+  const sums = (await readFile(join(directory, "SHA256SUMS"), "utf8")).trim().split("\n").map(line => line.split(/\s+/));
+  for (const [hash, file] of sums) assert.equal(digest(await readFile(join(directory, file))), hash, `Provider release checksum mismatch: ${file}`);
+  assert(sums.some(([hash, file]) => file === provenance.artifact.filename && hash === provenance.artifact.sha256));
+  return { path: join(directory, provenance.artifact.filename), sha256: provenance.artifact.sha256, dependencyLockSha256: provenance.dependencyLock.sha256,
+    providerId: provenance.provider.id, contract: provenance.provider.contract, implementationVersion: provenance.provider.implementationVersion, source: provenance.source };
+}
 let report;
 try {
   await mkdir(data, { mode: 0o700 }); await mkdir(state, { mode: 0o700 });
   const output = join(repository, "dist/rbac-artifacts"); await mkdir(output, { recursive: true, mode: 0o700 });
-  const packed = await step("community-pack", async () => JSON.parse((await bounded("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", output], { cwd: repository })).stdout)[0]);
-  const tarball = join(output, packed.filename), communitySha256 = digest(await readFile(tarball));
   const installEnv = await productionInstallEnvironment(root);
+  // A supplied CI tarball is the exact release candidate; otherwise pack this checkout.
+  const tarball = argument("--community") ? resolve(argument("--community"))
+    : join(output, (await step("community-pack", async () => JSON.parse((await bounded("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", output], { cwd: repository })).stdout)[0])).filename);
+  const communitySha256 = digest(await readFile(tarball));
+  if (argument("--community-sha256")) assert.equal(communitySha256, argument("--community-sha256"), "Community tarball digest must match its provenance.");
   currentRoot = await step("clean-prefix-community-install", () => installProductionPrefix(tarball, join(root, "current"), root, installEnv, bounded));
   currentCli = join(currentRoot, "dist/cli/index.js"); native = await installedSqlite(currentRoot);
-  const artifact = JSON.parse(await readFile(join(repository, "dist/private-auth-provider/artifact.json"), "utf8"));
+  assert(!currentRoot.startsWith(repository + "/"), "Installed package must not run from the source checkout.");
+  // MCP clients come from the installed package, not the checkout.
+  const sdk = join(currentRoot, "node_modules/@modelcontextprotocol/sdk/dist/esm");
+  const { Client } = await import(pathToFileURL(join(sdk, "client/index.js")));
+  const { StreamableHTTPClientTransport } = await import(pathToFileURL(join(sdk, "client/streamableHttp.js")));
+  const connect = async token => { const client = new Client({ name: "installed-rbac", version: "1" }); clients.push(client); await client.connect(new StreamableHTTPClientTransport(new URL(mcpURL), { requestInit: { headers: { Authorization: `Bearer ${token}` } } })); return client; };
+  const artifact = await providerArtifact(argument("--provider-dir"));
   assert.equal(digest(await readFile(artifact.path)), artifact.sha256);
   const providerPrefix = join(root, "provider");
   await step("separate-optional-provider-install", () => bounded("npm", ["install", "--prefix", providerPrefix, "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", artifact.path], { env: installEnv }));
-  const entry = join(providerPrefix, "node_modules/@worktree-control/auth-provider-better-auth-proof/dist/index.js");
-  assert.equal(digest(await readFile(join(providerPrefix, "node_modules/@worktree-control/auth-provider-better-auth-proof/npm-shrinkwrap.json"))), artifact.dependencyLockSha256);
+  const providerRoot = join(providerPrefix, "node_modules/@worktree-control/auth-provider-better-auth-proof"), entry = join(providerRoot, "dist/index.js");
+  const shippedLock = await readFile(join(providerRoot, "npm-shrinkwrap.json"));
+  assert.equal(digest(shippedLock), artifact.dependencyLockSha256);
+  await step("provider-installed-closure-matches-shipped-lock", async () => {
+    const tree = JSON.parse((await bounded("npm", ["ls", "--prefix", providerPrefix, "--all", "--omit=dev", "--json"], { env: installEnv })).stdout);
+    const installed = new Set(), walk = node => { for (const [name, child] of Object.entries(node.dependencies ?? {})) { installed.add(`${name}@${child.version}`); walk(child); } };
+    walk(tree.dependencies["@worktree-control/auth-provider-better-auth-proof"]);
+    assert.deepEqual([...installed].sort(), [...shrinkwrapClosure(JSON.parse(shippedLock))].sort(), "Installed provider closure must equal the shipped lock.");
+  });
   assert(!(await readFile(entry, "utf8")).includes("/test/"));
-  const oldOwner = await step("old-release-owner-and-history", () => json(oldCli, ["identity", "bootstrap-owner"]));
+  let baselineArtifact = null;
+  if (baseline === `public-${PUBLIC_BASELINE.version}`) {
+    const directory = join(root, "baseline"); await mkdir(directory, { mode: 0o700 });
+    const fetched = await step("public-baseline-fetch", async () => JSON.parse((await bounded("npm", ["pack", `${PUBLIC_BASELINE.name}@${PUBLIC_BASELINE.version}`, "--json", "--ignore-scripts", "--pack-destination", directory], { env: installEnv })).stdout)[0]);
+    baselineArtifact = await verifyPublicBaseline(join(directory, fetched.filename));
+    oldRoot = await step("public-baseline-install", () => installProductionPrefix(join(directory, fetched.filename), join(root, "old"), root, installEnv, bounded));
+    oldCli = join(oldRoot, "dist/cli/index.js");
+    assert.equal(JSON.parse(await readFile(join(oldRoot, "package.json"), "utf8")).version, PUBLIC_BASELINE.version);
+  }
+  const fresh = baseline === "fresh";
+  // Fresh installs seed through the candidate itself; upgrades through the old release.
+  const seedCli = fresh ? currentCli : oldCli, seedRoot = fresh ? currentRoot : oldRoot;
+  const oldCliSha256 = digest(await readFile(seedCli));
+  const oldOwner = await step(fresh ? "fresh-owner-and-history" : "old-release-owner-and-history", () => json(seedCli, ["identity", "bootstrap-owner"]));
   const ownerEnv = { WORKTREE_CONTROL_OWNER_TOKEN: oldOwner.token };
-  const knowledge = (await json(oldCli, ["identity", "create-knowledge-project", "--name", "Preserved knowledge"], ownerEnv)).project;
-  const oldAgent = (await json(oldCli, ["identity", "create-agent"], ownerEnv)).principal;
-  await json(oldCli, ["identity", "grant-knowledge", "--principal-id", oldAgent.id, "--project-id", knowledge.id, "--permissions", "knowledge:read,knowledge:write"], ownerEnv);
-  const oldAgentCredential = await json(oldCli, ["identity", "issue-agent-token", "--principal-id", oldAgent.id, "--label", "old narrow client"], ownerEnv);
-  const installation = await json(oldCli, ["auth", "token", "generate"]);
-  await start(oldCli, oldRoot);
-  const task = await json(oldCli, ["knowledge", "create_task", "--json", JSON.stringify({ projectId: knowledge.id, title: "Old history", description: "Preserved", idempotencyKey: "seed" })], { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: oldAgentCredential.token });
+  const knowledge = (await json(seedCli, ["identity", "create-knowledge-project", "--name", "Preserved knowledge"], ownerEnv)).project;
+  const oldAgent = (await json(seedCli, ["identity", "create-agent"], ownerEnv)).principal;
+  await json(seedCli, ["identity", "grant-knowledge", "--principal-id", oldAgent.id, "--project-id", knowledge.id, "--permissions", "knowledge:read,knowledge:write"], ownerEnv);
+  const oldAgentCredential = await json(seedCli, ["identity", "issue-agent-token", "--principal-id", oldAgent.id, "--label", "old narrow client"], ownerEnv);
+  const installation = await json(seedCli, ["auth", "token", "generate"]);
+  await start(seedCli, seedRoot);
+  const task = await json(seedCli, ["knowledge", "create_task", "--json", JSON.stringify({ projectId: knowledge.id, title: "Old history", description: "Preserved", idempotencyKey: "seed" })], { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: oldAgentCredential.token });
   await stop();
-  const before = observe(db => ({ schema: db.prepare("SELECT max(version) n FROM schema_migrations").get().n,
+  const continuity = () => observe(db => ({ schema: db.prepare("SELECT max(version) n FROM schema_migrations").get().n,
     principal: db.prepare("SELECT id,kind,status FROM remote_principals WHERE id=?").get(oldOwner.principalId),
     grants: db.prepare("SELECT * FROM knowledge_project_grants ORDER BY principal_id,project_id").all(),
     audit: db.prepare("SELECT * FROM controller_audit_events ORDER BY id").all() }));
-  assert(before.schema < 49);
-  await step("pre-fence-upgrade-refusal", async () => assert.notEqual((await command(currentCli, ["auth", "status"])).code, 0));
-  const preflight = await json(currentCli, ["auth", "fence", "inspect"]); assert.equal(preflight.establishmentAllowed, true);
-  await step("protected-fence-establish", () => json(currentCli, ["auth", "fence", "establish", "--expect", preflight.preflight]));
+  const before = continuity();
+  if (fresh) assert.equal(before.schema, CURRENT_SCHEMA); else assert(before.schema < CURRENT_SCHEMA);
+  if (fresh) {
+    await step("fresh-install-fence-current", async () => { const status = await json(currentCli, ["auth", "fence", "inspect"]); assert.equal(status.code, "security_fence_current"); assert.equal(status.establishmentAllowed, false); });
+  } else {
+    await step("pre-fence-upgrade-refusal", async () => assert.notEqual((await command(currentCli, ["auth", "status"])).code, 0));
+    const preflight = await json(currentCli, ["auth", "fence", "inspect"]); assert.equal(preflight.establishmentAllowed, true);
+    await step("protected-fence-establish", () => json(currentCli, ["auth", "fence", "establish", "--expect", preflight.preflight]));
+  }
   await step("upgrade-preserves-owner-grants-and-history", async () => {
-    const after = observe(db => ({ schema: db.prepare("SELECT max(version) n FROM schema_migrations").get().n,
-      principal: db.prepare("SELECT id,kind,status FROM remote_principals WHERE id=?").get(oldOwner.principalId),
-      grants: db.prepare("SELECT * FROM knowledge_project_grants ORDER BY principal_id,project_id").all(),
-      audit: db.prepare("SELECT * FROM controller_audit_events ORDER BY id").all() }));
-    assert.equal(after.schema, 49); assert.deepEqual(after.principal, before.principal); assert.deepEqual(after.grants, before.grants);
-    assert.deepEqual(after.audit.slice(0, before.audit.length), before.audit);
+    const after = continuity();
+    // Later migrations may add columns; compare every value that existed before.
+    const columns = rows => rows.length ? Object.keys(rows[0]) : [];
+    const projected = (rows, names) => rows.map(row => Object.fromEntries(names.map(name => [name, row[name]])));
+    assert.equal(after.schema, CURRENT_SCHEMA); assert.deepEqual(after.principal, before.principal);
+    assert.deepEqual(projected(after.grants, columns(before.grants)), before.grants);
+    assert.deepEqual(projected(after.audit.slice(0, before.audit.length), columns(before.audit)), before.audit);
     assert.equal(observe(db => db.prepare("SELECT title FROM knowledge_tasks WHERE id=?").get(task.value.id).title), "Old history");
+  });
+  await step("community-token-mode-without-provider", async () => {
+    assert.equal((await json(currentCli, ["auth", "status"])).mode, "token");
+    await start();
+    const authorized = await fetch(endpoint + "/api/dashboard", { headers: { Authorization: `Bearer ${installation.token}` } }); await authorized.arrayBuffer();
+    assert.equal(authorized.status, 200, "Installation token must keep working without a provider.");
+    const anonymous = await fetch(endpoint + "/api/dashboard"); await anonymous.arrayBuffer(); assert.equal(anonymous.status, 401);
+    const installationClient = await connect(installation.token);
+    assert(!(await installationClient.callTool({ name: "list_projects", arguments: {} })).isError);
+    const agent = await connect(oldAgentCredential.token);
+    assert(!(await agent.callTool({ name: "knowledge_task", arguments: { projectId: knowledge.id, taskId: task.value.id } })).isError, "Pre-upgrade agent token keeps its Knowledge grant.");
+    await stop();
+  });
+  await step("community-open-mode-without-provider", async () => {
+    await json(currentCli, ["auth", "mode", "set", "open"]); await start();
+    const anonymous = await fetch(endpoint + "/api/dashboard"); await anonymous.arrayBuffer(); assert.equal(anonymous.status, 200);
+    await stop(); await json(currentCli, ["auth", "mode", "set", "token"]);
   });
   await step("real-provider-configure-enroll-existing-owner", async () => {
     await json(currentCli, ["auth", "provider", "configure", "--input-stdin"], {}, { module: entry, origin, signingSecret: { kind: "generate" } });
@@ -173,10 +249,6 @@ try {
     for (const path of ["/api/dashboard", "/api/events", "/api/backups", "/api/identity/bootstrap", "/api/dev-vault", "/api/auth/sign-up/email", "/api/auth/revoke-sessions"]) assert.equal((await browser.call(path, {})).status, 401);
     assert.equal((await browser.call("/api/auth/get-session", undefined, { Authorization: `Bearer ${installation.token}`, "X-Worktree-Switcher-Token": installation.token })).status, 401);
   });
-  const sdk = join(currentRoot, "node_modules/@modelcontextprotocol/sdk/dist/esm");
-  const { Client } = await import(pathToFileURL(join(sdk, "client/index.js")));
-  const { StreamableHTTPClientTransport } = await import(pathToFileURL(join(sdk, "client/streamableHttp.js")));
-  const connect = async token => { const client = new Client({ name: "installed-rbac", version: "1" }); clients.push(client); await client.connect(new StreamableHTTPClientTransport(new URL(mcpURL), { requestInit: { headers: { Authorization: `Bearer ${token}` } } })); return client; };
   const client = await connect(credential.token);
   await step("old-credential-ceiling-does-not-gain-new-delegation", async () => {
     const old = await connect(oldAgentCredential.token);
@@ -283,11 +355,12 @@ try {
     const principals = observe(db => db.prepare("SELECT id,kind,status FROM remote_principals WHERE kind='owner'").all()); assert.deepEqual(principals, [before.principal]);
     assert.equal(observe(db => db.prepare("SELECT title FROM knowledge_tasks WHERE id=?").get(task.value.id).title), "Old history");
   });
-  const snapshot = { oldSchema: before.schema, currentSchema: 49, ownerContinuity: true, grantsBeforeCutoverPreserved: true, oldCredentialsNotWidened: true, restorationQuarantinesAuthority: true };
+  const snapshot = { baseline, oldSchema: before.schema, currentSchema: CURRENT_SCHEMA, communityWithoutProvider: ["token", "open"], ownerContinuity: true, grantsBeforeCutoverPreserved: true, oldCredentialsNotWidened: true, restorationQuarantinesAuthority: true };
   report = { result: "passed", steps, source: (await bounded("git", ["rev-parse", "HEAD"], { cwd: repository })).stdout.trim(),
-    community: { path: tarball, sha256: communitySha256 }, provider: artifact, oldCliSha256: input.oldCliSha256, evidence: snapshot };
+    community: { path: tarball, sha256: communitySha256 }, provider: artifact,
+    baseline: { kind: baseline, artifact: baselineArtifact, cliSha256: oldCliSha256 }, evidence: snapshot };
 } catch (error) {
-  report = { result: "failed", failureStep, steps, error: error instanceof assert.AssertionError ? error.message.slice(0, 300) : "Finite installed acceptance failed" };
+  report = { result: "failed", baseline, failureStep, steps, error: error instanceof assert.AssertionError ? error.message.slice(0, 300) : "Finite installed acceptance failed" };
   // Never forward arbitrary application/CLI error bodies, tokens or provider details.
   for (const secret of secretValues) report.error = report.error.replaceAll(secret, "[redacted]");
   process.exitCode = 1;
@@ -304,7 +377,7 @@ try {
   // Keep private fixture state if ownership could not be confirmed as ended.
   if (cleanupConfirmed) await rm(root, { recursive: true, force: true });
   report.cleanupConfirmed = cleanupConfirmed;
-  await mkdir(join(repository, "dist/rbac-artifacts"), { recursive: true });
-  await writeFile(join(repository, "dist/rbac-artifacts/acceptance.json"), JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });
+  await mkdir(dirname(reportPath), { recursive: true });
+  await writeFile(reportPath, JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });
   console.log(JSON.stringify(report));
 }

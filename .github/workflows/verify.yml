@@ -85,6 +85,16 @@ jobs:
           path: test-results/
           retention-days: 7
           if-no-files-found: ignore
+      # A separate artifact, never part of portable-package. Written outside the
+      # workspace and before the Community pack, so both clean-tree checks hold.
+      - name: Pack optional account provider
+        run: node scripts/package-provider.mjs --output "$RUNNER_TEMP/provider-artifact" --commit "$GITHUB_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: optional-auth-provider
+          path: ${{ runner.temp }}/provider-artifact/
+          retention-days: 7
+          if-no-files-found: error
       - name: Pack verified application
         shell: bash
         run: |
@@ -99,6 +109,46 @@ jobs:
           path: portable-artifact/
           retention-days: 7
           if-no-files-found: error
+
+  package-rbac-acceptance:
+    # Exact CI artifacts in fresh prefixes; the checkout supplies only the harness.
+    needs: check-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.23.2
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: portable-package
+          path: portable-artifact
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: optional-auth-provider
+          path: provider-artifact
+      - name: Upgrade public 0.1.1 and install fresh with the separate provider
+        shell: bash
+        run: |
+          (cd portable-artifact && sha256sum --check SHA256SUMS)
+          (cd provider-artifact && sha256sum --check SHA256SUMS)
+          TARBALL=$(node -p 'require("./portable-artifact/provenance.json").artifact.filename')
+          SHA256=$(node -p 'require("./portable-artifact/provenance.json").artifact.sha256')
+          for BASELINE in public-0.1.1 fresh; do
+            node scripts/package-rbac.mjs --baseline "$BASELINE" \
+              --community "portable-artifact/$TARBALL" --community-sha256 "$SHA256" \
+              --provider-dir provider-artifact --report "rbac-acceptance-$BASELINE.json"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: rbac-acceptance-reports
+          path: rbac-acceptance-*.json
+          retention-days: 7
+          if-no-files-found: ignore
 
   systemd-drop-in-acceptance:
     # This job mutates service scopes and must stay on its own disposable hosted VM.
