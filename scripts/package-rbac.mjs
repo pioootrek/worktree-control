@@ -111,7 +111,9 @@ const cookieJar = () => {
   } };
 };
 /** A release directory from package-provider.mjs, or the local build's artifact.json. */
-async function providerArtifact(directory) {
+async function providerArtifact(argumentDirectory) {
+  // Child npm commands run in the fixture root, so never pass a relative path on.
+  const directory = argumentDirectory && resolve(argumentDirectory);
   if (!directory) return JSON.parse(await readFile(join(repository, "dist/private-auth-provider/artifact.json"), "utf8"));
   const provenance = JSON.parse(await readFile(join(directory, "provenance.json"), "utf8"));
   assert.equal(provenance.kind, "optional-authentication-provider");
@@ -361,6 +363,9 @@ try {
     baseline: { kind: baseline, artifact: baselineArtifact, cliSha256: oldCliSha256 }, evidence: snapshot };
 } catch (error) {
   report = { result: "failed", baseline, failureStep, steps, error: error instanceof assert.AssertionError ? error.message.slice(0, 300) : "Finite installed acceptance failed" };
+  // npm's own error code is a fixed token, safe to report without its message.
+  const npmCode = /npm error code ([A-Z0-9_]{2,40})/.exec(String(error?.stderr ?? ""))?.[1];
+  if (npmCode) report.npmErrorCode = npmCode;
   // Never forward arbitrary application/CLI error bodies, tokens or provider details.
   for (const secret of secretValues) report.error = report.error.replaceAll(secret, "[redacted]");
   process.exitCode = 1;
