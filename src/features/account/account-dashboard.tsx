@@ -420,32 +420,32 @@ function ConfigurationPanel({ projectId, worktreePath, reservationId, canProfile
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const loadProfiles = useCallback(async (signal?: AbortSignal) => {
-    const value = await runtimeConfiguration({ operation: "profiles", projectId }, signal);
-    if (signal?.aborted) return;
+  const showProfiles = useCallback((value: ScopedEnvironmentProfiles) => {
     setProfiles(value); setProfileName(value.selectedProfile);
-  }, [projectId]);
-  const loadConfiguration = useCallback(async (path: string, signal?: AbortSignal) => {
-    const value = await runtimeConfiguration({ operation: "configuration", projectId, worktreePath: path }, signal);
-    if (signal?.aborted) return;
+  }, []);
+  const showConfiguration = useCallback((value: ScopedProjectConfiguration) => {
     setConfiguration(value);
     setTimeouts(Object.fromEntries(value.presets.map(preset => [preset.id, preset.overrideTimeoutMs === null ? "" : String(preset.overrideTimeoutMs)])));
-  }, [projectId]);
+  }, []);
   const report = useCallback((cause: unknown) => { if (!onSessionLoss(cause)) setError(describeError(t, cause)); }, [onSessionLoss, t]);
 
   useEffect(() => {
     if (!canProfiles) return;
     const abort = new AbortController();
-    loadProfiles(abort.signal).catch(cause => { if (!abort.signal.aborted) report(cause); });
+    runtimeConfiguration({ operation: "profiles", projectId }, abort.signal)
+      .then(value => { if (!abort.signal.aborted) showProfiles(value); })
+      .catch(cause => { if (!abort.signal.aborted) report(cause); });
     return () => abort.abort();
-  }, [canProfiles, loadProfiles, report]);
+  }, [canProfiles, projectId, report, showProfiles]);
 
   useEffect(() => {
     if (!canConfig || !worktreePath) return;
     const abort = new AbortController();
-    loadConfiguration(worktreePath, abort.signal).catch(cause => { if (!abort.signal.aborted) report(cause); });
+    runtimeConfiguration({ operation: "configuration", projectId, worktreePath }, abort.signal)
+      .then(value => { if (!abort.signal.aborted) showConfiguration(value); })
+      .catch(cause => { if (!abort.signal.aborted) report(cause); });
     return () => abort.abort();
-  }, [canConfig, loadConfiguration, report, worktreePath]);
+  }, [canConfig, projectId, report, showConfiguration, worktreePath]);
 
   /**
    * Every save is a CAS write against the project's single configuration
@@ -457,8 +457,8 @@ function ConfigurationPanel({ projectId, worktreePath, reservationId, canProfile
   const reloadAll = async () => {
     try {
       await Promise.all([
-        canProfiles ? loadProfiles() : undefined,
-        canConfig && worktreePath ? loadConfiguration(worktreePath) : undefined,
+        canProfiles ? runtimeConfiguration({ operation: "profiles", projectId }).then(showProfiles) : undefined,
+        canConfig && worktreePath ? runtimeConfiguration({ operation: "configuration", projectId, worktreePath }).then(showConfiguration) : undefined,
       ]);
     } catch (cause) { report(cause); }
   };
