@@ -243,16 +243,19 @@ try {
     const used = code(), enrolledStep = Math.floor(Date.now()/30_000);
     assert.equal((await enrollment.call("/api/auth/two-factor/verify-totp", { code: used })).status, 200);
     const one = cookieJar(); assert.equal((await one.call("/api/auth/sign-in/email", { email: "owner@fixture.invalid", password })).body.outcome, "challenge");
-    assert.equal((await one.call("/api/auth/two-factor/verify-totp", { code: used })).status, 401);
-    await wait(() => Math.floor(Date.now()/30_000) > enrolledStep, 35_000);
-    const next = code(); assert.equal((await one.call("/api/auth/two-factor/verify-totp", { code: next })).status, 200);
+    assert.equal((await one.call("/api/auth/two-factor/verify-totp", { code: used })).status, 401, "Enrollment-code replay must be rejected.");
+    // Better Auth also limits this native endpoint to three requests per 10 seconds.
+    // A nearby TOTP step boundary alone may leave that independent window full.
+    const nativeWindowEnds = Date.now() + 11_000;
+    await wait(() => Math.floor(Date.now()/30_000) > enrolledStep && Date.now() >= nativeWindowEnds, 35_000);
+    const next = code(); assert.equal((await one.call("/api/auth/two-factor/verify-totp", { code: next })).status, 200, "A fresh TOTP step must authenticate.");
     const two = cookieJar(); await two.call("/api/auth/sign-in/email", { email: "owner@fixture.invalid", password });
-    assert.equal((await two.call("/api/auth/two-factor/verify-totp", { code: next })).status, 401);
+    assert.equal((await two.call("/api/auth/two-factor/verify-totp", { code: next })).status, 401, "Independent-challenge replay must be rejected.");
     const freshWindow = Date.now() + 61_000; await wait(() => Date.now() >= freshWindow, 65_000);
     const invalid = cookieJar(); await invalid.call("/api/auth/sign-in/email", { email: "owner@fixture.invalid", password });
     const accepted = new Set([-1,0,1].map(code)); let wrong = 0; while (accepted.has(String(wrong).padStart(6,"0"))) wrong++;
     const charged = () => observe(db => db.prepare("SELECT coalesce(sum(charged),0) n FROM authentication_factor_budgets WHERE scope='totp' AND epoch=?").get(Math.floor(Date.now()/60_000)).n);
-    const before = charged(); assert.equal((await invalid.call("/api/auth/two-factor/verify-totp", { code: String(wrong).padStart(6,"0") })).status, 401);
+    const before = charged(); assert.equal((await invalid.call("/api/auth/two-factor/verify-totp", { code: String(wrong).padStart(6,"0") })).status, 401, "A fresh-window invalid guess must fail authentication.");
     assert.equal(charged(), before+1);
     for (let i=0;i<5;i++) assert([401,429].includes((await invalid.call("/api/auth/two-factor/verify-totp", { code: String(wrong).padStart(6,"0") })).status));
     assert.equal((await invalid.call("/api/auth/two-factor/verify-totp", { code: code() })).status, 429);
