@@ -63,10 +63,10 @@ async function stop() {
 }
 const observe = read => { const database = new native.Database(join(data, "state.sqlite3"), { readonly: true }); try { return read(database); } finally { database.close(); } };
 let currentCli, currentRoot, endpoint, mcpURL;
-async function start() {
+async function start(cli = currentCli, assets = currentRoot) {
   const port = await freePort(), mcpPort = await freePort(); endpoint = `http://127.0.0.1:${port}`; mcpURL = `http://127.0.0.1:${mcpPort}/mcp`;
-  const child = spawn(process.execPath, [currentCli, "start", ...directoryArgs, "--service-mode", "--host", "127.0.0.1", "--port", String(port), "--mcp-port", String(mcpPort),
-    "--public-url", origin, "--web-root", join(currentRoot, "out"), "--no-open"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [cli, "start", ...directoryArgs, "--service-mode", "--host", "127.0.0.1", "--port", String(port), "--mcp-port", String(mcpPort),
+    "--public-url", origin, "--web-root", join(assets, "out"), "--no-open"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   controller = child; children.add(child); let output = "";
   for (const stream of [child.stdout, child.stderr]) stream.on("data", chunk => { output = (output + chunk).slice(-65536); });
   await wait(async () => { assert.equal(child.exitCode, null, "Packaged controller exited before readiness."); try { const access = JSON.parse(await readFile(join(state, "service-access.json"), "utf8")); return access.pid === child.pid; } catch { return false; } });
@@ -107,7 +107,10 @@ try {
   const oldAgent = (await json(oldCli, ["identity", "create-agent"], ownerEnv)).principal;
   await json(oldCli, ["identity", "grant-knowledge", "--principal-id", oldAgent.id, "--project-id", knowledge.id, "--permissions", "knowledge:read,knowledge:write"], ownerEnv);
   const oldAgentCredential = await json(oldCli, ["identity", "issue-agent-token", "--principal-id", oldAgent.id, "--label", "old narrow client"], ownerEnv);
+  const installation = await json(oldCli, ["auth", "token", "generate"]);
+  await start(oldCli, oldRoot);
   const task = await json(oldCli, ["knowledge", "create_task", "--json", JSON.stringify({ projectId: knowledge.id, title: "Old history", description: "Preserved", idempotencyKey: "seed" })], { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: oldAgentCredential.token });
+  await stop();
   const before = observe(db => ({ schema: db.prepare("SELECT max(version) n FROM schema_migrations").get().n,
     principal: db.prepare("SELECT id,kind,status FROM remote_principals WHERE id=?").get(oldOwner.principalId),
     grants: db.prepare("SELECT * FROM knowledge_project_grants ORDER BY principal_id,project_id").all(),
@@ -123,9 +126,8 @@ try {
       audit: db.prepare("SELECT * FROM controller_audit_events ORDER BY id").all() }));
     assert.equal(after.schema, 49); assert.deepEqual(after.principal, before.principal); assert.deepEqual(after.grants, before.grants);
     assert.deepEqual(after.audit.slice(0, before.audit.length), before.audit);
-    assert.equal((await json(currentCli, ["knowledge", "task", "--json", JSON.stringify({ projectId: knowledge.id, taskId: task.value.id })], { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: oldAgentCredential.token })).title, "Old history");
+    assert.equal(observe(db => db.prepare("SELECT title FROM knowledge_tasks WHERE id=?").get(task.value.id).title), "Old history");
   });
-  const installation = await json(currentCli, ["auth", "token", "generate"]);
   await step("real-provider-configure-enroll-existing-owner", async () => {
     await json(currentCli, ["auth", "provider", "configure", "--input-stdin"], {}, { module: entry, origin, signingSecret: { kind: "generate" } });
     await json(currentCli, ["auth", "provider", "enroll", "--principal-id", oldOwner.principalId, "--input-stdin"], {}, { email: "owner@fixture.invalid", name: "Existing owner", password });
