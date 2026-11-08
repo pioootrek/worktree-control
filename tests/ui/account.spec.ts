@@ -50,12 +50,55 @@ test("resumes a live session after a reload and drops to sign-in when it is gone
   const fixture = await mountAccount(page, { preAuthenticated: true });
   await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
 
-  // Simulate server-side expiry or revocation; the next read must return to sign-in.
-  fixture.session = null;
-  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+  const sessionProbes = fixture.requests.filter(request => request.path === "/api/auth/get-session").length;
+  const [resumed] = await Promise.all([
+    page.waitForResponse(response => response.url().endsWith("/api/auth/get-session") && response.status() === 200),
+    page.reload(),
+  ]);
+  expect(await resumed.json()).toMatchObject({ authenticated: true, principal: { id: "acct-1", kind: "human" } });
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+  expect(fixture.requests.filter(request => request.path === "/api/auth/get-session")).toHaveLength(sessionProbes + 1);
+  expect(fixture.requests.some(request => request.path === "/api/auth/sign-in/email")).toBe(false);
+  expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+
+  await expireSessionOnRefresh(page, fixture);
   await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Fixture Web" })).toHaveCount(0);
+  expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+  expect(fixture.requests.every(request => request.authorization === null)).toBe(true);
+  expect(fixture.errors).toEqual([]);
 });
+
+/** Keep background reads from ending the session before the user can refresh. */
+async function expireSessionOnRefresh(page: Page, fixture: AccountFixture): Promise<void> {
+  const runtimeRead = "/api/runtime/read";
+  const projectReads = () => fixture.requests.filter(request => request.path === runtimeRead
+    && (request.body as { operation?: string } | null)?.operation === "list-projects").length;
+  const before = projectReads();
+  // The trace's losing request was a background configuration read. Hold all
+  // scoped read paths while the session is live, including the manual refresh.
+  for (const path of [runtimeRead, "/api/runtime/configuration", "/api/runtime/tests"]) fixture.holds.add(path);
+  try {
+    await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+    await expect.poll(projectReads).toBeGreaterThan(before);
+    await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+
+    // Match requireSession's expired-session contract, but deliver it only
+    // after the click and its list-projects request have both happened.
+    fixture.session = null;
+    const [expired] = await Promise.all([
+      page.waitForResponse(response => response.url().endsWith(runtimeRead) && response.status() === 401
+        && response.request().postDataJSON()?.operation === "list-projects", { timeout: 10_000 }),
+      fixture.releaseHeld(runtimeRead, { status: 401, json: { code: "invalid_credential", error: "Fixture invalid_credential" } }),
+    ]);
+    expect(await expired.json()).toEqual({ code: "invalid_credential", error: "Fixture invalid_credential" });
+    await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Fixture Web" })).toHaveCount(0);
+  } finally {
+    fixture.holds.clear();
+    await fixture.releaseHeld();
+  }
+}
 
 test("sign-out ends the session and leaves no stale project data", async ({ page }) => {
   const fixture = await mountAccount(page, { preAuthenticated: true });
@@ -289,9 +332,7 @@ test("losing the session mid-work returns to sign-in with a session-lost notice"
   const fixture = await mountAccount(page, { preAuthenticated: true });
   await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
 
-  // Server-side expiry or revocation; the next read proves the session is gone.
-  fixture.session = null;
-  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+  await expireSessionOnRefresh(page, fixture);
   await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
   await expect(page.getByText("The session expired or was revoked. Sign in again.")).toBeVisible();
 });
