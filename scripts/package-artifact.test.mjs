@@ -51,8 +51,14 @@ test("current manifest is a publishable pre-1.0 worktree-control package whose f
   const { stdout } = await promisify(execFile)("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: root, maxBuffer: 8 * 1024 * 1024 });
   const files = JSON.parse(stdout)[0].files.map(file => file.path);
   for (const required of ["package.json", "CHANGELOG.md", "LICENSE", "README.md", "skills/worktree-control/SKILL.md", "docs/dev-environment-vault.md", "docs/environment-runtime-plan.md", "docs/godot-web.md"]) assert(files.includes(required), `missing ${required}`);
-  const allowed = /^(?:package\.json|CHANGELOG\.md|LICENSE|README\.md|THIRD_PARTY_NOTICES\.md|dist\/cli\/|out\/|skills\/|docs\/(?:authentication|controller-https|dependency-licenses|dev-environment-vault|environment-runtime-plan|package-trial|user-service|reservations-and-mcp|knowledge-evidence|godot-web)\.md$)/;
+  const allowed = /^(?:package\.json|CHANGELOG\.md|LICENSE|README\.md|THIRD_PARTY_NOTICES\.md|dist\/cli\/|out\/|skills\/|docs\/(?:authentication|controller-https|dependency-licenses|dev-environment-vault|environment-runtime-plan|package-trial|release-packaging|user-service|reservations-and-mcp|knowledge-evidence|godot-web)\.md$)/;
   assert.deepEqual(files.filter(file => !allowed.test(file)), []);
+  const readme = await readFile(join(root, "README.md"), "utf8");
+  for (const [, link] of readme.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+    if (/^(?:https?:|mailto:|#)/.test(link)) continue;
+    const target = decodeURIComponent(link.split(/[?#]/, 1)[0]).replace(/^\.\//, "");
+    assert(files.includes(target), `README link is missing from the npm archive: ${link}`);
+  }
   assert.deepEqual(files.filter(file => /(?:^|\/)(?:site|tests?|\.claude|\.github|src|scripts|measurements|node_modules|\.env[^/]*|state\.sqlite3[^/]*|[^/]*\.log)(?:\/|$)/.test(file)), []);
 });
 test("the optional Better Auth provider stays outside the Community manifest and root dependency graph", async () => {
