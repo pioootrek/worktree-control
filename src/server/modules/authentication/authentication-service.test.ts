@@ -39,6 +39,14 @@ function code(action: () => unknown): string | undefined {
 }
 
 describe("installation authentication policy", () => {
+  it("retains distinct individual agent and dedicated worker credentials in RBAC while closing owner and shared bearers", () => {
+    const auth = new AuthenticationService(memoryStore({ mode: "better-auth", token: null, generation: 0 }).store);
+    const actor = { principalId: "individual", credentialId: "credential" };
+    expect(auth.permitsCredential({ ...actor, principalKind: "agent", authenticationMethod: "agent_token" })).toBe(true);
+    expect(auth.permitsCredential({ ...actor, principalKind: "worker", authenticationMethod: "worker_token" })).toBe(true);
+    expect(auth.permitsCredential({ ...actor, principalKind: "owner", authenticationMethod: "owner_session" })).toBe(false);
+    expect(auth.permitsCredential({ ...actor, principalKind: "installation", authenticationMethod: "installation_token" })).toBe(false);
+  });
   it("generates the installation token once and persists only its verifier", () => {
     const memory = memoryStore();
     const auth = service(memory.store);

@@ -81,7 +81,8 @@ export class AuthenticationService implements InstallationAuthority {
   permitsCredential(actor: AuthenticatedPrincipal): boolean {
     this.readPolicy();
     return this.context === "offline" || this.mode() !== "better-auth"
-      || (actor.principalKind === "agent" && actor.authenticationMethod === "agent_token");
+      || (actor.principalKind === "agent" && actor.authenticationMethod === "agent_token")
+      || (actor.principalKind === "worker" && actor.authenticationMethod === "worker_token");
   }
 
   /** Returns the installation actor only while token mode is active and the token is current. */
