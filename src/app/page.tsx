@@ -1,5 +1,5 @@
-import { Dashboard } from "@/features/dashboard/dashboard";
+import { AccountRoot } from "@/features/account/account-root";
 
 export default function Home() {
-  return <Dashboard />;
+  return <AccountRoot />;
 }
