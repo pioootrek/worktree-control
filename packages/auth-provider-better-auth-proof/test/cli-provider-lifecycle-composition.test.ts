@@ -110,7 +110,8 @@ describe("production shared provider composition", () => {
       expect(await http.client.session()).toMatchObject({ status: 200, body: { authenticated: false } });
       expect(f.load).toHaveBeenCalledOnce();
       expect(await f.run(() => f.authentication.status())).toMatchObject({ activeMode: "token", configuredMode: "token", restartRequired: false });
-      await expect(f.run(() => f.authentication.setMode("better-auth", "local-cli"))).rejects.toThrow("to be implemented");
+      expect(await f.run(() => f.authentication.setMode("better-auth", "local-cli"))).toMatchObject({ activeMode: "token", configuredMode: "better-auth", restartRequired: true });
+      expect(await f.run(() => f.authentication.authenticateInstallation(f.token))).not.toBeNull();
     } finally { await http?.close(); await f.cleanup(); }
   });
 
