@@ -430,48 +430,58 @@ const marker = (page: Page) => page.evaluate(key => localStorage.getItem(key), S
 
 test("the sign-out intent is recorded before the request, so a reload during a stalled sign-out finishes it", async ({ page }) => {
   const fixture = await mountAccount(page, { preAuthenticated: true });
-  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
-  fixture.holds.add("/api/auth/sign-out");
+  try {
+    await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+    fixture.holds.add("/api/auth/sign-out");
 
-  await page.getByRole("button", { name: "Sign out" }).click();
-  await expect(page.getByText("Signing out…")).toBeVisible();
-  await expect.poll(() => signOutRequests(fixture)).toBe(1);
-  // No answer exists yet, but the intent is already durable and the session is still live.
-  expect(await marker(page)).toBe("1");
-  expect(fixture.session).not.toBeNull();
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await expect(page.getByText("Signing out…")).toBeVisible();
+    await expect.poll(() => signOutRequests(fixture)).toBe(1);
+    // No answer exists yet, but the intent is already durable and the session is still live.
+    expect(await marker(page)).toBe("1");
+    expect(fixture.session).not.toBeNull();
 
-  fixture.holds.clear();
-  await page.reload();
-  await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Fixture Web" })).toHaveCount(0);
-  expect(fixture.session).toBeNull();
-  expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
-  await fixture.releaseHeld();
+    fixture.holds.clear();
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Fixture Web" })).toHaveCount(0);
+    expect(fixture.session).toBeNull();
+    expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+    await fixture.releaseHeld();
+  } finally {
+    fixture.holds.clear();
+    await fixture.releaseHeld();
+  }
 });
 
 test("a sign-out that never answers becomes unconfirmed in bounded time and keeps the intent", async ({ page }) => {
   await page.clock.install();
   const fixture = await mountAccount(page, { preAuthenticated: true });
-  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
-  fixture.holds.add("/api/auth/sign-out");
+  try {
+    await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+    fixture.holds.add("/api/auth/sign-out");
 
-  await page.getByRole("button", { name: "Sign out" }).click();
-  await expect.poll(() => signOutRequests(fixture)).toBe(1);
-  await page.clock.fastForward(SIGN_OUT_ATTEMPT_TIMEOUT_MS);
-  await expect.poll(() => signOutRequests(fixture)).toBe(2);
-  await expect(page.getByText("Signing out…")).toBeVisible();
-  await page.clock.fastForward(SIGN_OUT_ATTEMPT_TIMEOUT_MS);
-  await expect(page.getByText("Sign-out was not confirmed")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Fixture Web" })).toHaveCount(0);
-  expect(await marker(page)).toBe("1");
-  expect(fixture.session).not.toBeNull();
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await expect.poll(() => signOutRequests(fixture)).toBe(1);
+    await page.clock.fastForward(SIGN_OUT_ATTEMPT_TIMEOUT_MS);
+    await expect.poll(() => signOutRequests(fixture)).toBe(2);
+    await expect(page.getByText("Signing out…")).toBeVisible();
+    await page.clock.fastForward(SIGN_OUT_ATTEMPT_TIMEOUT_MS);
+    await expect(page.getByText("Sign-out was not confirmed")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Fixture Web" })).toHaveCount(0);
+    expect(await marker(page)).toBe("1");
+    expect(fixture.session).not.toBeNull();
 
-  fixture.holds.clear();
-  await fixture.releaseHeld();
-  await page.getByRole("button", { name: "Retry sign-out" }).click();
-  await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
-  expect(fixture.session).toBeNull();
-  expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+    fixture.holds.clear();
+    await fixture.releaseHeld();
+    await page.getByRole("button", { name: "Retry sign-out" }).click();
+    await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
+    expect(fixture.session).toBeNull();
+    expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+  } finally {
+    fixture.holds.clear();
+    await fixture.releaseHeld();
+  }
 });
 
 test("a 200 sign-out without the server's sign-out proof is not a confirmation", async ({ page }) => {
@@ -533,30 +543,36 @@ test("a malformed get-session answer keeps a pending sign-out unconfirmed and it
 
 test("a late 401 from the previous session's view cannot end the next session", async ({ page }) => {
   const fixture = await mountAccount(page, { preAuthenticated: true });
-  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
-  const reads = () => fixture.requests.filter(request => request.path === "/api/runtime/read").length;
-  const before = reads();
+  try {
+    await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+    const reads = () => fixture.requests.filter(request => request.path === "/api/runtime/read").length;
+    const before = reads();
 
-  // A manual refresh has no abort signal; hold its answer across a whole session change.
-  fixture.holds.add("/api/runtime/read");
-  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
-  await expect.poll(reads).toBeGreaterThan(before);
-  await page.getByRole("button", { name: "Sign out" }).click();
-  await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
-  fixture.holds.delete("/api/runtime/read");
+    // A manual refresh has no abort signal; hold its answer across a whole session change.
+    fixture.holds.add("/api/runtime/read");
+    await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+    await expect.poll(reads).toBeGreaterThan(before);
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
+    fixture.holds.delete("/api/runtime/read");
 
-  await page.getByLabel("Email address").fill("user@example.com");
-  await page.getByLabel("Password", { exact: true }).fill("fixture-password");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+    await page.getByLabel("Email address").fill("user@example.com");
+    await page.getByLabel("Password", { exact: true }).fill("fixture-password");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
 
-  const late = page.waitForResponse(response => response.url().endsWith("/api/runtime/read") && response.status() === 401);
-  await fixture.releaseHeld("/api/runtime/read", { status: 401, json: { code: "invalid_credential", error: "Fixture invalid_credential" } });
-  await late;
-  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 50)));
-  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Account sign-in" })).toHaveCount(0);
-  await expect(page.getByText("The session expired or was revoked. Sign in again.")).toHaveCount(0);
-  expect(fixture.session).not.toBeNull();
-  expect(fixture.errors).toEqual([]);
+    const late = page.waitForResponse(response => response.url().endsWith("/api/runtime/read") && response.status() === 401, { timeout: 10_000 });
+    await fixture.releaseHeld("/api/runtime/read", { status: 401, json: { code: "invalid_credential", error: "Fixture invalid_credential" } });
+    await late;
+    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 50)));
+    await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Account sign-in" })).toHaveCount(0);
+    await expect(page.getByText("The session expired or was revoked. Sign in again.")).toHaveCount(0);
+    expect(fixture.session).not.toBeNull();
+    expect(fixture.errors).toEqual([]);
+  } finally {
+    // Never leave a held request behind a failure; it would stall context teardown.
+    fixture.holds.clear();
+    await fixture.releaseHeld();
+  }
 });
