@@ -22,6 +22,9 @@ import type { AccountSession } from "./use-account-session";
 
 type AccountTab = "projects" | "knowledge" | "security";
 
+/** Notice shown on the sign-in screen after the session ends: an enrollment that ended every session, or a plain session loss. */
+export type SessionLostNotice = "account.sessionLost" | "account.totpEnrolled" | "account.passkeyEnrolled";
+
 /**
  * The account-mode work area. Every right comes from the backend: project
  * `actions` decide which panels render, and every denial is shown as a
@@ -33,7 +36,7 @@ export function AccountDashboard({ session, onSignOut, onSessionLost, notice, di
   session: AccountSession;
   onSignOut: () => void;
   /** Session is gone; the optional key is a notice shown on the sign-in screen (e.g. a finished enrollment). */
-  onSessionLost: (noticeKey?: "account.totpEnrolled" | "account.passkeyEnrolled") => void;
+  onSessionLost: (noticeKey?: SessionLostNotice) => void;
   notice: string | null;
   dismissNotice: () => void;
 }) {
@@ -95,7 +98,7 @@ export function AccountDashboard({ session, onSignOut, onSessionLost, notice, di
 
 function describeError(t: (key: never, values?: Record<string, string | number>) => string, cause: unknown): string {
   if (cause instanceof RuntimeApiError) {
-    if (cause.status === 401) return t("account.sessionLost" as never);
+    // No 401 branch: every caller intercepts session loss via isRuntimeSessionLoss first.
     if (cause.status === 403) return t("account.denied" as never);
     if (cause.status === 429) return t("account.rateLimited" as never);
     if (cause.code === "claim_conflict" || cause.code === "claim_stale" || cause.code === "claim_worktree_mismatch") return t("account.claimConflict" as never);
@@ -106,7 +109,7 @@ function describeError(t: (key: never, values?: Record<string, string | number>)
   return t("account.unavailable" as never);
 }
 
-function ProjectsPanel({ onSessionLost }: { onSessionLost: (noticeKey?: "account.totpEnrolled" | "account.passkeyEnrolled") => void }) {
+function ProjectsPanel({ onSessionLost }: { onSessionLost: (noticeKey?: SessionLostNotice) => void }) {
   const { t } = useI18n();
   const [projects, setProjects] = useState<ScopedProjectSummary[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -163,7 +166,7 @@ function ProjectsPanel({ onSessionLost }: { onSessionLost: (noticeKey?: "account
   );
 }
 
-function ProjectDetail({ summary, onSessionLost }: { summary: ScopedProjectSummary; onSessionLost: (noticeKey?: "account.totpEnrolled" | "account.passkeyEnrolled") => void }) {
+function ProjectDetail({ summary, onSessionLost }: { summary: ScopedProjectSummary; onSessionLost: (noticeKey?: SessionLostNotice) => void }) {
   const { t } = useI18n();
   const [status, setStatus] = useState<ScopedProjectStatus | null>(null);
   const [worktrees, setWorktrees] = useState<ScopedWorktree[]>([]);
@@ -424,9 +427,8 @@ function ConfigurationPanel({ projectId, worktreePath, reservationId, canProfile
     if (!canProfiles) return;
     const abort = new AbortController();
     runtimeConfiguration({ operation: "profiles", projectId }, abort.signal)
-      .then(result => {
+      .then(value => {
         if (abort.signal.aborted) return;
-        const value = result as ScopedEnvironmentProfiles;
         setProfiles(value); setProfileName(value.selectedProfile);
       })
       .catch(cause => { if (!abort.signal.aborted && !onFailure(cause)) setError(describeError(t, cause)); });
@@ -437,9 +439,8 @@ function ConfigurationPanel({ projectId, worktreePath, reservationId, canProfile
     if (!canConfig || !worktreePath) return;
     const abort = new AbortController();
     runtimeConfiguration({ operation: "configuration", projectId, worktreePath }, abort.signal)
-      .then(result => {
+      .then(value => {
         if (abort.signal.aborted) return;
-        const value = result as ScopedProjectConfiguration;
         setConfiguration(value);
         setTimeouts(Object.fromEntries(value.presets.map(preset => [preset.id, preset.overrideTimeoutMs === null ? "" : String(preset.overrideTimeoutMs)])));
       })
@@ -456,7 +457,7 @@ function ConfigurationPanel({ projectId, worktreePath, reservationId, canProfile
         idempotencyKey: idempotencyKey(), ...(reservationId ? { reservationId } : {}),
       });
       setNotice(t("account.profileSaved"));
-      const fresh = await runtimeConfiguration({ operation: "profiles", projectId }) as ScopedEnvironmentProfiles;
+      const fresh = await runtimeConfiguration({ operation: "profiles", projectId });
       setProfiles(fresh); setProfileName(fresh.selectedProfile);
     } catch (cause) { if (!onFailure(cause)) setError(describeError(t, cause)); }
   };
@@ -473,7 +474,7 @@ function ConfigurationPanel({ projectId, worktreePath, reservationId, canProfile
         idempotencyKey: idempotencyKey(), ...(reservationId ? { reservationId } : {}),
       });
       setNotice(t("account.timeoutSaved"));
-      const fresh = await runtimeConfiguration({ operation: "configuration", projectId, worktreePath }) as ScopedProjectConfiguration;
+      const fresh = await runtimeConfiguration({ operation: "configuration", projectId, worktreePath });
       setConfiguration(fresh);
       setTimeouts(Object.fromEntries(fresh.presets.map(preset => [preset.id, preset.overrideTimeoutMs === null ? "" : String(preset.overrideTimeoutMs)])));
     } catch (cause) { if (!onFailure(cause)) setError(describeError(t, cause)); }

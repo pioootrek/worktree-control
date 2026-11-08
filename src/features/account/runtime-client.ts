@@ -2,6 +2,11 @@ import type { RuntimeReadRequest, RuntimeReadResult } from "@/shared/contracts/r
 import type { RuntimeMutateRequest, RuntimeMutateResult } from "@/shared/contracts/runtime-mutate";
 import type { HumanVerificationRequest } from "@/shared/contracts/human-verification";
 import type { HumanConfigurationRequest } from "@/shared/contracts/human-configuration";
+import type {
+  ScopedConfigurationReceipt,
+  ScopedEnvironmentProfiles,
+  ScopedProjectConfiguration,
+} from "@/shared/contracts/scoped-configuration";
 import type { ScopedTestRunStatus } from "@/shared/contracts/scoped-verification";
 
 /**
@@ -48,7 +53,14 @@ export function runtimeRead<R extends RuntimeReadRequest>(request: R, signal?: A
 export function runtimeMutate(request: RuntimeMutateRequest, signal?: AbortSignal): Promise<RuntimeMutateResult> {
   return call("/api/runtime/mutate", request, signal);
 }
-export function runtimeConfiguration(request: HumanConfigurationRequest, signal?: AbortSignal): Promise<unknown> {
+/** Server response per configuration operation; keeps panels free of casts so a shape drift fails typecheck. */
+export interface HumanConfigurationResultMap {
+  profiles: ScopedEnvironmentProfiles;
+  select_environment_profile: ScopedConfigurationReceipt;
+  configuration: ScopedProjectConfiguration;
+  set_test_preset_timeout: ScopedConfigurationReceipt;
+}
+export function runtimeConfiguration<R extends HumanConfigurationRequest>(request: R, signal?: AbortSignal): Promise<HumanConfigurationResultMap[R["operation"]]> {
   return call("/api/runtime/configuration", request, signal);
 }
 
@@ -63,9 +75,6 @@ export function testRunStatus(runId: string, projectId: string, signal?: AbortSi
 }
 export function cancelTestRun(runId: string, projectId: string, signal?: AbortSignal): Promise<ScopedTestRunEnvelope> {
   return call("/api/runtime/tests", { operation: "cancel", runId, projectId } satisfies HumanVerificationRequest, signal);
-}
-export function waitTestRun(runId: string, cursor: string, timeoutMs: number, signal?: AbortSignal): Promise<ScopedTestRunEnvelope> {
-  return call("/api/runtime/tests", { operation: "wait", runId, cursor, timeoutMs } satisfies HumanVerificationRequest, signal);
 }
 
 /** A 401 means the session cookie stopped being the authority; the app returns to sign-in. */

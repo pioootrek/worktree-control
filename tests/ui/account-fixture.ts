@@ -3,6 +3,11 @@ import { resolve, sep } from "node:path";
 
 import type { Page } from "@playwright/test";
 
+import { humanConfigurationSchema } from "../../src/shared/contracts/human-configuration";
+import { humanVerificationSchema } from "../../src/shared/contracts/human-verification";
+import { runtimeMutateSchema } from "../../src/shared/contracts/runtime-mutate";
+import { runtimeReadSchema } from "../../src/shared/contracts/runtime-read";
+
 /**
  * Static-export fixture for the closed account mode. It stubs the closed
  * `/api/auth/*`, scoped `/api/runtime/*` and cookie `/api/knowledge` routes in
@@ -10,6 +15,11 @@ import type { Page } from "@playwright/test";
  * session is simulated fixture-side, so the spec asserts what the GUI sends
  * (never a bearer, token or CSRF value) and how it renders each answer. Real
  * cookie semantics are covered by the HTTPS browser test with the controller.
+ *
+ * Scoped runtime bodies are validated against the real server zod schemas, so
+ * a drift between the GUI and the backend contract fails the test instead of
+ * passing against a stale mock. The default claim and configuration handlers
+ * are stateful (CAS revisions included) to exercise re-fetch flows.
  */
 
 export interface AccountFixtureOptions {
@@ -23,6 +33,12 @@ export interface AccountFixtureOptions {
   passkey?: boolean;
   /** Report no login surface, as in open/token mode; the legacy dashboard renders. */
   loginAvailable?: boolean;
+  /** Fail the mode probe with a 503 until `fixture.authStatusFails` is cleared. */
+  authStatusFails?: boolean;
+  /** Fail this many sign-out requests with a 503 before confirming; the session stays alive meanwhile. */
+  signOutFailures?: number;
+  /** Answer the first configuration mutation with a CAS `revision_conflict`. */
+  configurationConflictOnce?: boolean;
   runtimeRead?: (body: Record<string, unknown>) => { status?: number; json: unknown };
   runtimeMutate?: (body: Record<string, unknown>) => { status?: number; json: unknown };
   runtimeTests?: (body: Record<string, unknown>) => { status?: number; json: unknown };
@@ -39,26 +55,123 @@ export interface AccountFixture {
     expiresAt: string;
     authentication: { method: "password"; factors: 1 } | { method: "password_totp"; factors: 2 } | { method: "passkey_uv"; factors: 2 };
   };
+  /** Remaining sign-out failures; the simulated session survives each one. */
+  signOutFailures: number;
+  /** While true the mode probe answers 503, as during a provider outage. */
+  authStatusFails: boolean;
   establish(): void;
 }
 
+/** Real contracts demand UUID identifiers for configuration and test routes. */
+export const FIXTURE_PROJECT_ID = "11111111-1111-4111-8111-111111111111";
+export const FIXTURE_RESERVATION_ID = "22222222-2222-4222-8222-222222222222";
+const projectId = FIXTURE_PROJECT_ID;
+const reservationId = FIXTURE_RESERVATION_ID;
 const worktreePath = "/fixture/web";
 
+interface FixtureClaim {
+  reservationId: string;
+  worktreePath: string;
+  expiresAt: string | null;
+  maximumExpiresAt: string | null;
+}
+
 const defaultSummary = {
-  id: "web", name: "Fixture Web", port: 3000, phase: "stopped" as const,
+  id: projectId, name: "Fixture Web", port: 3000, phase: "stopped" as const,
   actions: ["projects:read", "claims:manage", "runtime:control", "tests:run", "profiles:select", "config:write"],
   worktreePath: null, claim: "none" as const,
 };
-const defaultStatus = {
-  ...defaultSummary, selectedWorktreePath: worktreePath, startedAt: null, managedServer: true, ownClaim: null,
-};
 const defaultWorktrees = [{ path: worktreePath, branch: "main", head: "abcdef123456", shortHead: "abcdef1", detached: false, locked: false, prunable: false, dirty: false }];
 
-function defaultRuntimeRead(body: Record<string, unknown>): { status?: number; json: unknown } {
-  if (body.operation === "list-projects") return { json: { operation: "list-projects", projects: [defaultSummary] } };
-  if (body.operation === "project-status") return { json: { operation: "project-status", status: defaultStatus } };
+/** Mutable fixture-side controller state; the default handlers read and write it like the real server would. */
+interface FixtureState {
+  ownClaim: FixtureClaim | null;
+  profilesRevision: number;
+  selectedProfile: string;
+  configurationRevision: number;
+  presets: Array<{ id: string; timeoutMs: number; overrideTimeoutMs: number | null }>;
+  conflictOnce: boolean;
+}
+
+function defaultRuntimeRead(state: FixtureState, body: Record<string, unknown>): { status?: number; json: unknown } {
+  if (body.operation === "list-projects") {
+    return { json: { operation: "list-projects", projects: [{ ...defaultSummary, claim: state.ownClaim ? "own" : "none" }] } };
+  }
+  if (body.operation === "project-status") {
+    return { json: { operation: "project-status", status: {
+      ...defaultSummary, claim: state.ownClaim ? "own" : "none",
+      selectedWorktreePath: worktreePath, startedAt: null, managedServer: true, ownClaim: state.ownClaim,
+    } } };
+  }
   if (body.operation === "list-worktrees") return { json: { operation: "list-worktrees", worktrees: defaultWorktrees } };
   return { status: 400, json: { code: "invalid_request", error: "Unknown fixture operation" } };
+}
+
+function defaultRuntimeMutate(state: FixtureState, body: Record<string, unknown>): { status?: number; json: unknown } {
+  if (body.operation === "claim") {
+    state.ownClaim = {
+      reservationId,
+      worktreePath: String(body.worktreePath),
+      expiresAt: "2030-01-01T00:30:00.000Z",
+      maximumExpiresAt: null,
+    };
+    return { json: { operation: "claim", projectId, claim: state.ownClaim, startRequested: body.start === true, error: null, replayed: false } };
+  }
+  if (body.operation === "renew") {
+    if (!state.ownClaim || state.ownClaim.reservationId !== body.reservationId) {
+      return { status: 409, json: { code: "claim_conflict", error: "The claim changed" } };
+    }
+    state.ownClaim = { ...state.ownClaim, expiresAt: "2030-01-01T01:00:00.000Z" };
+    return { json: { operation: "renew", projectId, claim: state.ownClaim, replayed: false } };
+  }
+  if (body.operation === "release") {
+    if (!state.ownClaim || state.ownClaim.reservationId !== body.reservationId) {
+      return { status: 409, json: { code: "claim_conflict", error: "The claim changed" } };
+    }
+    state.ownClaim = null;
+    return { json: { operation: "release", projectId, reservationId: String(body.reservationId), released: true, replayed: false } };
+  }
+  return { status: 400, json: { code: "invalid_request", error: "Unconfigured fixture mutation" } };
+}
+
+function defaultRuntimeConfiguration(state: FixtureState, body: Record<string, unknown>): { status?: number; json: unknown } {
+  const receipt = (extra: Record<string, unknown>) => ({
+    schemaVersion: 1, operationId: "33333333-3333-4333-8333-333333333333", projectId,
+    outcome: "completed", replayed: false, observedAt: "2030-01-01T00:00:00.000Z", ...extra,
+  });
+  const conflicted = () => {
+    if (!state.conflictOnce) return false;
+    state.conflictOnce = false;
+    return true;
+  };
+  if (body.operation === "profiles") {
+    return { json: {
+      schemaVersion: 1, projectId, configurationRevision: state.profilesRevision,
+      selectedProfile: state.selectedProfile, profiles: [{ name: "dev" }, { name: "ci" }],
+    } };
+  }
+  if (body.operation === "select_environment_profile") {
+    if (conflicted() || body.expectedRevision !== state.profilesRevision) {
+      return { status: 409, json: { code: "revision_conflict", error: "The configuration changed" } };
+    }
+    state.selectedProfile = String(body.name);
+    state.profilesRevision += 1;
+    return { json: receipt({ operation: "select_environment_profile", configurationRevision: state.profilesRevision, selectedProfile: state.selectedProfile }) };
+  }
+  if (body.operation === "configuration") {
+    return { json: { schemaVersion: 1, projectId, configurationRevision: state.configurationRevision, presets: state.presets } };
+  }
+  if (body.operation === "set_test_preset_timeout") {
+    if (conflicted() || body.expectedRevision !== state.configurationRevision) {
+      return { status: 409, json: { code: "revision_conflict", error: "The configuration changed" } };
+    }
+    const preset = state.presets.find(entry => entry.id === body.presetId);
+    if (!preset) return { status: 400, json: { code: "invalid_request", error: "Unknown fixture preset" } };
+    preset.overrideTimeoutMs = body.timeoutMs === null ? null : Number(body.timeoutMs);
+    state.configurationRevision += 1;
+    return { json: receipt({ operation: "set_test_preset_timeout", configurationRevision: state.configurationRevision, presetId: preset.id, timeoutMs: preset.overrideTimeoutMs }) };
+  }
+  return { status: 400, json: { code: "invalid_request", error: "Unknown fixture configuration operation" } };
 }
 
 function defaultKnowledge(body: Record<string, unknown>): { status?: number; json: unknown } {
@@ -75,10 +188,20 @@ export async function mountAccount(page: Page, options: AccountFixtureOptions = 
   if (!existsSync(resolve(webRoot, "index.html"))) throw new Error("Run pnpm build before pnpm test:ui.");
   const email = options.email ?? "user@example.com";
   const password = options.password ?? "fixture-password";
+  const state: FixtureState = {
+    ownClaim: null,
+    profilesRevision: 3,
+    selectedProfile: "dev",
+    configurationRevision: 5,
+    presets: [{ id: "node:test", timeoutMs: 60_000, overrideTimeoutMs: null }],
+    conflictOnce: options.configurationConflictOnce ?? false,
+  };
   const fixture: AccountFixture = {
     requests: [],
     errors: [],
     session: null,
+    signOutFailures: options.signOutFailures ?? 0,
+    authStatusFails: options.authStatusFails ?? false,
     establish() {
       fixture.session = {
         principal: { id: "acct-1", kind: "human" },
@@ -104,8 +227,22 @@ export async function mountAccount(page: Page, options: AccountFixtureOptions = 
         void fail(401, "invalid_credential");
         return true;
       };
+      /** Validate a scoped runtime body against the real server schema; a drift fails loudly. */
+      const dispatch = (
+        schema: { safeParse: (input: unknown) => { success: boolean; error?: { message: string } } },
+        handler: (body: Record<string, unknown>) => { status?: number; json: unknown },
+      ) => {
+        const parsed = schema.safeParse(body);
+        if (!parsed.success) {
+          fixture.errors.push(`Fixture schema rejection: ${parsed.error?.message ?? "unknown"}`);
+          return fail(400, "invalid_request");
+        }
+        const answer = handler(body ?? {});
+        return route.fulfill({ status: answer.status ?? 200, json: answer.json });
+      };
       switch (url.pathname) {
         case "/api/auth/status":
+          if (fixture.authStatusFails) return fail(503, "service_unavailable");
           return route.fulfill({ json: { mode: options.loginAvailable === false ? "open" : "better-auth", loginAvailable: options.loginAvailable !== false } });
         case "/api/auth/get-session":
           return route.fulfill({ json: fixture.session ? { authenticated: true, ...fixture.session } : { authenticated: false } });
@@ -131,6 +268,11 @@ export async function mountAccount(page: Page, options: AccountFixtureOptions = 
           if (body?.currentPassword !== password) return fail(401, "invalid_credential");
           return route.fulfill({ json: { changed: true } });
         case "/api/auth/sign-out":
+          if (fixture.signOutFailures > 0) {
+            // The session stays alive server-side; only the client gave up early.
+            fixture.signOutFailures -= 1;
+            return fail(503, "service_unavailable");
+          }
           fixture.session = null;
           return route.fulfill({ json: { authenticated: false } });
         case "/api/auth/passkey/generate-authenticate-options":
@@ -162,23 +304,19 @@ export async function mountAccount(page: Page, options: AccountFixtureOptions = 
           return route.fulfill({ json: { outcome: "enrolled", authorizing: false } });
         case "/api/runtime/read": {
           if (requireSession()) return;
-          const answer = (options.runtimeRead ?? defaultRuntimeRead)(body ?? {});
-          return route.fulfill({ status: answer.status ?? 200, json: answer.json });
+          return dispatch(runtimeReadSchema, value => (options.runtimeRead ?? defaultRuntimeRead.bind(null, state))(value));
         }
         case "/api/runtime/mutate": {
           if (requireSession()) return;
-          const answer = options.runtimeMutate ? options.runtimeMutate(body ?? {}) : { status: 400, json: { code: "invalid_request", error: "Unconfigured fixture mutation" } };
-          return route.fulfill({ status: answer.status ?? 200, json: answer.json });
+          return dispatch(runtimeMutateSchema, value => (options.runtimeMutate ?? defaultRuntimeMutate.bind(null, state))(value));
         }
         case "/api/runtime/tests": {
           if (requireSession()) return;
-          const answer = options.runtimeTests ? options.runtimeTests(body ?? {}) : { status: 400, json: { code: "invalid_request", error: "Unconfigured fixture test operation" } };
-          return route.fulfill({ status: answer.status ?? 200, json: answer.json });
+          return dispatch(humanVerificationSchema, options.runtimeTests ?? (() => ({ status: 400, json: { code: "invalid_request", error: "Unconfigured fixture test operation" } })));
         }
         case "/api/runtime/configuration": {
           if (requireSession()) return;
-          const answer = options.runtimeConfiguration ? options.runtimeConfiguration(body ?? {}) : { status: 400, json: { code: "invalid_request", error: "Unconfigured fixture configuration" } };
-          return route.fulfill({ status: answer.status ?? 200, json: answer.json });
+          return dispatch(humanConfigurationSchema, options.runtimeConfiguration ?? defaultRuntimeConfiguration.bind(null, state));
         }
         case "/api/knowledge": {
           if (requireSession()) return;

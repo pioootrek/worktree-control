@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
-import { mockWebAuthn, mountAccount } from "./account-fixture";
+import { SIGN_OUT_UNCONFIRMED_KEY } from "../../src/features/account/use-account-session";
+import { FIXTURE_PROJECT_ID, FIXTURE_RESERVATION_ID, mockWebAuthn, mountAccount } from "./account-fixture";
 
 test("rejects a wrong password and signs in with the right one without storing any credential", async ({ page }) => {
   const fixture = await mountAccount(page);
@@ -94,7 +95,7 @@ test("claims a worktree with one idempotent mutation", async ({ page }) => {
   await page.getByRole("button", { name: "Claim", exact: true }).click();
 
   const mutation = fixture.requests.find(request => request.path === "/api/runtime/mutate");
-  expect(mutation?.body).toMatchObject({ operation: "claim", projectId: "web", worktreePath: "/fixture/web", reason: "GUI proof", ttlSeconds: 1800 });
+  expect(mutation?.body).toMatchObject({ operation: "claim", projectId: FIXTURE_PROJECT_ID, worktreePath: "/fixture/web", reason: "GUI proof", ttlSeconds: 1800 });
   expect(String((mutation?.body as { idempotencyKey?: string })?.idempotencyKey)).toMatch(/^[0-9a-f-]{36}$/);
   expect(fixture.errors).toEqual([]);
 });
@@ -141,4 +142,180 @@ test("open and token modes keep the legacy dashboard untouched", async ({ page }
   // The legacy surface asks for the installation token; no account form renders.
   await expect(page.getByRole("heading", { name: "Sign in to Worktree Control" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Account sign-in" })).toHaveCount(0);
+});
+
+test("a failed mode probe shows a retriable error instead of the legacy dashboard", async ({ page }) => {
+  const fixture = await mountAccount(page, { authStatusFails: true });
+  // A probe error is not a definitive answer: neither surface renders.
+  await expect(page.getByText("Could not determine the sign-in mode")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in to Worktree Control" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Account sign-in" })).toHaveCount(0);
+
+  fixture.authStatusFails = false;
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
+});
+
+test("sign-out retries once after a failure and then confirms", async ({ page }) => {
+  const fixture = await mountAccount(page, { preAuthenticated: true, signOutFailures: 1 });
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
+  // The first attempt failed with a 503; the bounded retry confirmed the sign-out.
+  expect(fixture.requests.filter(request => request.path === "/api/auth/sign-out")).toHaveLength(2);
+  expect(fixture.session).toBeNull();
+  expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+  expect(fixture.errors).toEqual([]);
+});
+
+test("an unconfirmed sign-out blocks the account UI until a manual retry confirms it", async ({ page }) => {
+  const fixture = await mountAccount(page, { preAuthenticated: true, signOutFailures: 2 });
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Sign out" }).click();
+  // Both bounded attempts failed: the honest unconfirmed state, never a fake sign-in screen.
+  await expect(page.getByText("Sign-out was not confirmed")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Account sign-in" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toHaveCount(0);
+  expect(fixture.session).not.toBeNull();
+  expect(await page.evaluate(key => localStorage.getItem(key), SIGN_OUT_UNCONFIRMED_KEY)).not.toBeNull();
+
+  fixture.signOutFailures = 0;
+  await page.getByRole("button", { name: "Retry sign-out" }).click();
+  await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
+  expect(fixture.session).toBeNull();
+  expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+});
+
+test("a reload with an unconfirmed sign-out marker finishes the sign-out instead of resuming the session", async ({ page }) => {
+  const fixture = await mountAccount(page, { preAuthenticated: true, signOutFailures: 2 });
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page.getByText("Sign-out was not confirmed")).toBeVisible();
+
+  // The session survived server-side and the marker remembers the intent: a reload
+  // must complete the sign-out, never silently resume the account.
+  fixture.signOutFailures = 0;
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toHaveCount(0);
+  expect(fixture.session).toBeNull();
+  expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+});
+
+test("a reload that cannot confirm the sign-out stays on the unconfirmed screen until the user chooses", async ({ page }) => {
+  const fixture = await mountAccount(page, { preAuthenticated: true, signOutFailures: 99 });
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page.getByText("Sign-out was not confirmed")).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByText("Sign-out was not confirmed")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toHaveCount(0);
+
+  // An explicit user choice returns to the account and clears the intent marker.
+  await page.getByRole("button", { name: "Return to account" }).click();
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+  expect(await page.evaluate(key => localStorage.getItem(key), SIGN_OUT_UNCONFIRMED_KEY)).toBeNull();
+  fixture.signOutFailures = 0;
+});
+
+test("losing the session mid-work returns to sign-in with a session-lost notice", async ({ page }) => {
+  const fixture = await mountAccount(page, { preAuthenticated: true });
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+
+  // Server-side expiry or revocation; the next read proves the session is gone.
+  fixture.session = null;
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+  await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
+  await expect(page.getByText("The session expired or was revoked. Sign in again.")).toBeVisible();
+});
+
+test("selects an environment profile and saves a preset timeout with CAS and a re-fetch", async ({ page }) => {
+  const fixture = await mountAccount(page, { preAuthenticated: true });
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+
+  await page.getByLabel("Environment profile").selectOption("ci");
+  await page.getByRole("button", { name: "Select profile" }).click();
+  await expect(page.getByText("Profile selected.")).toBeVisible();
+  const select = fixture.requests.find(request => request.path === "/api/runtime/configuration"
+    && (request.body as { operation?: string } | null)?.operation === "select_environment_profile");
+  expect(select?.body).toMatchObject({ operation: "select_environment_profile", projectId: FIXTURE_PROJECT_ID, name: "ci", expectedRevision: 3 });
+
+  await page.getByLabel("Timeout (ms)").fill("120000");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText("Timeout saved.")).toBeVisible();
+  const timeout = fixture.requests.find(request => request.path === "/api/runtime/configuration"
+    && (request.body as { operation?: string } | null)?.operation === "set_test_preset_timeout");
+  expect(timeout?.body).toMatchObject({
+    operation: "set_test_preset_timeout", projectId: FIXTURE_PROJECT_ID,
+    worktreePath: "/fixture/web", presetId: "node:test", timeoutMs: 120000, expectedRevision: 5,
+  });
+
+  // Both saves re-fetched the fresh state instead of trusting their own write.
+  const reads = fixture.requests.filter(request => request.path === "/api/runtime/configuration"
+    && (request.body as { operation?: string } | null)?.operation === "profiles");
+  expect(reads.length).toBeGreaterThanOrEqual(2);
+  const configurations = fixture.requests.filter(request => request.path === "/api/runtime/configuration"
+    && (request.body as { operation?: string } | null)?.operation === "configuration");
+  expect(configurations.length).toBeGreaterThanOrEqual(2);
+  expect(fixture.errors).toEqual([]);
+});
+
+test("shows a revision conflict from the server instead of hiding it", async ({ page }) => {
+  await mountAccount(page, { preAuthenticated: true, configurationConflictOnce: true });
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+
+  await page.getByLabel("Environment profile").selectOption("ci");
+  await page.getByRole("button", { name: "Select profile" }).click();
+  await expect(page.getByText("The configuration changed meanwhile. Refresh and try again.")).toBeVisible();
+  await expect(page.getByText("Profile selected.")).toHaveCount(0);
+});
+
+test("renews an own claim from the claim controls", async ({ page }) => {
+  const fixture = await mountAccount(page, { preAuthenticated: true });
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+
+  await page.getByLabel("Claim reason").fill("GUI proof");
+  await page.getByRole("button", { name: "Claim", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Renew" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Renew" }).click();
+  const renew = fixture.requests.find(request => request.path === "/api/runtime/mutate"
+    && (request.body as { operation?: string } | null)?.operation === "renew");
+  expect(renew?.body).toMatchObject({ operation: "renew", projectId: FIXTURE_PROJECT_ID, reservationId: FIXTURE_RESERVATION_ID, ttlSeconds: 1800 });
+  expect(fixture.errors).toEqual([]);
+});
+
+test("cancels a queued test run", async ({ page }) => {
+  const runId = "44444444-4444-4444-8444-444444444444";
+  const state = { phase: "queued" };
+  const envelope = (phase: string) => ({
+    schemaVersion: 1, epoch: "epoch-1", cursor: "cursor-1", observedAt: "2030-01-01T00:00:00.000Z", retryAfterMs: null,
+    status: {
+      runId, projectId: FIXTURE_PROJECT_ID, presetId: "node:test", worktreePath: "/fixture/web", phase,
+      queuedAt: "2030-01-01T00:00:00.000Z", startedAt: null, finishedAt: null, exitCode: null, errorCode: null,
+      source: { queuedHead: null, preflightHead: null, finishHead: null, attribution: "pending", processOutcome: null },
+    },
+  });
+  const fixture = await mountAccount(page, {
+    preAuthenticated: true,
+    runtimeTests: body => {
+      if (body.operation === "presets") return { json: [{ worktreePath: "/fixture/web", presets: [{ id: "node:test", timeoutMs: 60_000 }] }] };
+      if (body.operation === "enqueue") return { json: envelope(state.phase) };
+      if (body.operation === "status") return { json: envelope(state.phase) };
+      if (body.operation === "cancel") { state.phase = "cancelled"; return { json: envelope(state.phase) }; }
+      return { status: 400, json: { code: "invalid_request", error: "Unknown fixture test operation" } };
+    },
+  });
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Run", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Cancel" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByText("Cancelled")).toBeVisible();
+
+  const cancel = fixture.requests.find(request => request.path === "/api/runtime/tests"
+    && (request.body as { operation?: string } | null)?.operation === "cancel");
+  expect(cancel?.body).toMatchObject({ operation: "cancel", runId, projectId: FIXTURE_PROJECT_ID });
+  expect(fixture.errors).toEqual([]);
 });

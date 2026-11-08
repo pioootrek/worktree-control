@@ -213,13 +213,22 @@ install or restart a service.
 ### GUI handoff and release classification
 
 The static dashboard now probes the public `GET /api/auth/status` on load.
-Open and token modes render the legacy dashboard unchanged. Account mode renders
-the account flow: sign-in, the TOTP and passkey challenges, self-service TOTP
-and passkey enrollment on the Security tab, and sign-out. The HttpOnly session
-cookie is the sole browser authority; no password, token or CSRF value reaches
-the URL, web storage or logs. Session loss (revocation, recovery, factor
-enrollment, expiry) returns to sign-in with an explicit notice, and a reload
-resumes a live session. The GUI never infers rights from the owner label:
+Only a definitive answer selects a surface: open and token modes render the
+legacy dashboard unchanged, account mode renders the account flow, and a probe
+error renders a retriable failure state instead of a misleading legacy
+dashboard. The account flow covers sign-in, the TOTP and passkey challenges,
+self-service TOTP and passkey enrollment on the Security tab, and sign-out.
+The HttpOnly session cookie is the sole browser authority; no password, token
+or CSRF value reaches the URL, web storage or logs. Session loss (revocation,
+recovery, factor enrollment, expiry) returns to sign-in with an explicit
+notice, and a reload resumes a live session. Sign-out is complete only when
+the server confirms it: the client retries a failed sign-out once and
+otherwise blocks account data behind an explicit unconfirmed state with a
+manual retry instead of faking the sign-in screen. A non-secret intent marker
+in web storage (`worktree-control.signOutUnconfirmed`) records that request;
+it is never authority. A reload that finds the marker and a live session
+finishes the sign-out before any account data renders, so an apparent logout
+never silently resumes. The GUI never infers rights from the owner label:
 reader, operator, tests and configuration distinctions come from the backend
 responses, and denials are shown as such.
 
@@ -233,7 +242,12 @@ those stay with the protected CLI.
 
 Browser proof runs in `tests/ui/account.spec.ts` against a closure fixture and
 in `tests/https/account-browser.test.ts` against the real controller, provider
-and cookies behind the fixture Caddy on an isolated secure origin, including
+and cookies behind the pinned Caddy 2.11.3 fixture on an isolated secure
+origin. `scripts/test-https.mjs` resolves the fixture through
+`scripts/https-caddy.mjs`: an explicit `CADDY_BIN` (as CI sets) is honored
+untouched, otherwise the pinned linux/x64 archive from
+`.github/workflows/verify.yml` is downloaded once, its SHA-512 verified before
+extraction, and cached under `node_modules/.cache`. The proof covers
 password lifecycle, role distinctions, claim and test rights, knowledge over
 the session cookie, TOTP enrollment and challenge, passkey enrollment and
 authentication through a virtual authenticator, and protected recovery with
