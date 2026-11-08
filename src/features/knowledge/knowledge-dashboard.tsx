@@ -30,7 +30,7 @@ const subscribeLocation = (listener: () => void) => { window.addEventListener("p
 const locationSnapshot = () => window.location.search;
 const serverLocationSnapshot = () => "";
 
-export function KnowledgeDashboard({ token, setToken, access, change }: { token: string; setToken: (value: string) => void; access: "installation" | "open" | "scoped" | "account"; change: { version: number; projectIds: string[] } }) {
+export function KnowledgeDashboard({ token, setToken, access, change, onSessionLost }: { token: string; setToken: (value: string) => void; access: "installation" | "open" | "scoped" | "account"; change: { version: number; projectIds: string[] }; onSessionLost?: () => void }) {
   const { t, locale } = useI18n();
   const [credential, setCredential] = useState("");
   const [loginError, setLoginError] = useState<"auth" | "load" | null>(null);
@@ -62,7 +62,7 @@ export function KnowledgeDashboard({ token, setToken, access, change }: { token:
   const editorTriggerRef = useRef<HTMLButtonElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const detailRef = useRef<HTMLDivElement>(null);
-  const model = useKnowledge(token, change);
+  const model = useKnowledge(token, change, access === "account" ? onSessionLost : undefined);
   const { selection, identity, projects } = model;
   const locationSearch = useSyncExternalStore(subscribeLocation, locationSnapshot, serverLocationSnapshot);
   const returnSearchHref = identity && selection.tab !== "memory"

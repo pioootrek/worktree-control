@@ -24,6 +24,8 @@ import { runtimeReadSchema } from "../../src/shared/contracts/runtime-read";
  */
 
 export interface AccountFixtureOptions {
+  /** Initial URL query/hash, including the leading ?; served by the real static export. */
+  search?: string;
   email?: string;
   password?: string;
   /** A TOTP enrolment on the account turns password sign-in into a challenge. */
@@ -380,7 +382,7 @@ export async function mountAccount(page: Page, options: AccountFixtureOptions = 
     if (!file.startsWith(webRoot + sep) || !existsSync(file)) return route.fulfill({ status: 404, body: "Missing static asset" });
     return route.fulfill({ path: file });
   });
-  await page.goto(`${origin}/`);
+  await page.goto(`${origin}/${options.search ?? ""}`);
   return fixture;
 }
 

@@ -2,13 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KnowledgeTaskCounts, KnowledgeTaskPage, KnowledgeFilters, KnowledgeRelationView, KnowledgePage, KnowledgeProjectSummary, KnowledgeReplyPage, KnowledgeTask, KnowledgeTaskSummary, KnowledgeThread, KnowledgeThreadSummary } from "@/shared/contracts/knowledge";
-import { isKnowledgeAccessError, knowledgeIdentity, knowledgeRequest, type KnowledgeIdentity } from "./knowledge-client";
+import { isKnowledgeAccessError, isKnowledgeSessionLoss, knowledgeIdentity, knowledgeRequest, type KnowledgeIdentity } from "./knowledge-client";
 
 export type KnowledgeTab = "backlog" | "discussions" | "memory";
 export interface KnowledgeSelection { projectId: string; tab: KnowledgeTab; recordId: string; replyId?: string }
 const emptyPage = <T,>(): KnowledgePage<T> => ({ items: [], nextOffset: null });
 
-export function useKnowledge(token: string, change: { version: number; projectIds: string[] }) {
+export function useKnowledge(token: string, change: { version: number; projectIds: string[] }, onSessionLost?: () => void) {
   const [identity, setIdentity] = useState<KnowledgeIdentity | null>(null);
   const [project, setProject] = useState<KnowledgeProjectSummary | null>(null);
   const [projects, setProjects] = useState(emptyPage<KnowledgeProjectSummary>);
@@ -97,10 +97,11 @@ export function useKnowledge(token: string, change: { version: number; projectId
       if (abort.signal.aborted) return;
       if (isKnowledgeAccessError(error)) {
         setIdentity(null); setProjects(emptyPage()); setProject(null); setDetail(null); setRows(emptyPage()); setReplies({ ...emptyPage(), offset: 0 }); setRelations(emptyPage()); setSessionError(true);
+        if (isKnowledgeSessionLoss(error)) onSessionLost?.();
       } else setDiscoveryError(true);
     });
     return () => abort.abort();
-  }, [token, ready, projectOffset, revision, changeSelection]);
+  }, [token, ready, projectOffset, revision, changeSelection, onSessionLost]);
 
   useEffect(() => {
     if (!token || !identity || !selection.projectId) return;
@@ -120,12 +121,15 @@ export function useKnowledge(token: string, change: { version: number; projectId
         setRelations(relationPage); setProject(selectedProject); setRows(page); setDetail(record); setReplies(responsePage); setError(false);
         setCounts("counts" in page ? (page as KnowledgeTaskPage).counts : null);
         setTotal("total" in page ? (page as KnowledgeTaskPage).total : null);
-      } catch {
-        if (!abort.signal.aborted && selectionRef.current === selection) { setRelations(emptyPage()); setProject(null); setRows(emptyPage()); setDetail(null); setReplies({ ...emptyPage(), offset: 0 }); setCounts(null); setTotal(null); setError(true); }
+      } catch (cause) {
+        if (!abort.signal.aborted && selectionRef.current === selection) {
+          setRelations(emptyPage()); setProject(null); setRows(emptyPage()); setDetail(null); setReplies({ ...emptyPage(), offset: 0 }); setCounts(null); setTotal(null); setError(true);
+          if (isKnowledgeSessionLoss(cause)) onSessionLost?.();
+        }
       } finally { if (!abort.signal.aborted && selectionRef.current === selection) { clearTimeout(timer); setLoading(false); } }
     })();
     return () => { clearTimeout(timer); abort.abort(); };
-  }, [token, identity, selection, filters, offset, replyOffset, relationOffset, revision]);
+  }, [token, identity, selection, filters, offset, replyOffset, relationOffset, revision, onSessionLost]);
 
   const changeReplyPage = (nextOffset: number) => {
     if (selectionRef.current.replyId) {

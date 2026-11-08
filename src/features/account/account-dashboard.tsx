@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +21,13 @@ import {
 import type { AccountSession } from "./use-account-session";
 
 type AccountTab = "projects" | "knowledge" | "security";
+const subscribeLocation = (listener: () => void) => { window.addEventListener("popstate", listener); return () => window.removeEventListener("popstate", listener); };
+const accountTabSnapshot = (): AccountTab => {
+  const view = new URLSearchParams(window.location.search).get("view");
+  return view === "knowledge" || view === "security" ? view : "projects";
+};
+// Wait for the browser URL before mounting a privileged panel during hydration.
+const serverAccountTabSnapshot = () => null;
 
 /** Notice shown on the sign-in screen after the session ends: an enrollment that ended every session, or a plain session loss. */
 export type SessionLostNotice = "account.sessionLost" | "account.totpEnrolled" | "account.passkeyEnrolled";
@@ -40,13 +47,21 @@ export function AccountDashboard({ session, onSignOut, onSessionLost }: {
 }) {
   const { t, locale, setLocale } = useI18n();
   const { dark, toggle: toggleTheme } = useTheme();
-  const [tab, setTab] = useState<AccountTab>("projects");
+  const tab = useSyncExternalStore(subscribeLocation, accountTabSnapshot, serverAccountTabSnapshot);
+  const navigate = (next: AccountTab) => {
+    const url = new URL(window.location.href);
+    if (next === "projects") url.searchParams.delete("view");
+    else url.searchParams.set("view", next);
+    if (url.href === window.location.href) return;
+    window.history.pushState(null, "", url);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  };
 
   return (
     <div className="min-h-dvh">
       <header className="sticky top-0 z-30 flex min-h-14 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-background/95 px-3 py-1 backdrop-blur-xl sm:px-5">
         <h1 className="text-base font-semibold">Worktree Control</h1>
-        <Tabs value={tab} onValueChange={value => setTab(value as AccountTab)}>
+        <Tabs value={tab ?? "projects"} onValueChange={value => navigate(value as AccountTab)}>
           <TabsList aria-label={t("account.navigation")} className="h-auto min-h-10 flex-wrap">
             <TabsTrigger className="min-h-9" value="projects">{t("account.tab.projects")}</TabsTrigger>
             <TabsTrigger className="min-h-9" value="knowledge">{t("knowledge.title")}</TabsTrigger>
@@ -74,6 +89,7 @@ export function AccountDashboard({ session, onSignOut, onSessionLost }: {
             token={ACCOUNT_SESSION}
             setToken={() => undefined}
             access="account"
+            onSessionLost={onSessionLost}
             change={{ version: 0, projectIds: [] }}
           />
         )}

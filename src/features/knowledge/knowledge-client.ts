@@ -51,3 +51,7 @@ export async function knowledgeIdentity(token: string, signal?: AbortSignal): Pr
 export function isKnowledgeAccessError(error: unknown): boolean {
   return error instanceof KnowledgeClientError && (error.status === 401 || error.status === 403);
 }
+
+export function isKnowledgeSessionLoss(error: unknown): boolean {
+  return error instanceof KnowledgeClientError && error.status === 401;
+}

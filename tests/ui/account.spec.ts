@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { SIGN_OUT_ATTEMPT_TIMEOUT_MS, SIGN_OUT_UNCONFIRMED_KEY } from "../../src/features/account/use-account-session";
+import { knowledgeSourceHref } from "../../src/shared/contracts/knowledge-links";
 import { FIXTURE_PROJECT_ID, FIXTURE_RESERVATION_ID, mockWebAuthn, mountAccount, type AccountFixture, type FixtureRawAnswer } from "./account-fixture";
 
 test("rejects a wrong password and signs in with the right one without storing any credential", async ({ page }) => {
@@ -120,6 +121,199 @@ test("knowledge reads ride the session cookie and never send a bearer", async ({
   const knowledgeRequests = fixture.requests.filter(request => request.path === "/api/knowledge");
   expect(knowledgeRequests.length).toBeGreaterThan(0);
   expect(knowledgeRequests.every(request => request.authorization === null)).toBe(true);
+});
+
+const linkedProject = { id: "linked-project", name: "Linked knowledge", status: "active", writable: true, revision: 1, createdAt: "2026-01-01", updatedAt: "2026-01-01" };
+const linkedTask = { id: "linked-task", projectId: linkedProject.id, title: "Linked account task", description: "Private task context", status: "open", priority: "next", revision: 1, createdBy: "acct-1", createdAt: "2026-01-01", updatedAt: "2026-01-01" };
+const secondLinkedTask = { ...linkedTask, id: "second-linked-task", title: "Second account task" };
+const linkedSearch = knowledgeSourceHref(linkedProject.id, { kind: "task", id: linkedTask.id, revision: linkedTask.revision }) + "&unrelated=kept";
+
+function accountKnowledge(body: Record<string, unknown>): { status?: number; json: unknown } {
+  const { operation } = body;
+  const input = body.input as Record<string, unknown>;
+  const tasks = [linkedTask, secondLinkedTask];
+  const empty = { items: [], nextOffset: null };
+  if (operation === "projects") return { json: { ...empty, items: [{ ...linkedProject, id: "other-project", name: "Other knowledge" }, linkedProject] } };
+  if (operation === "project") return { json: linkedProject };
+  if (operation === "tasks") return { json: { ...empty, items: tasks, total: tasks.length, counts: { active: 2, now: 0, next: 2, blocked: 0, done: 0, all: 2 } } };
+  if (operation === "task") return { json: tasks.find(task => task.id === input.taskId) };
+  if (operation === "task_state") return { json: { state: null, assessment: {}, systemFacts: { approvedDecisions: 0, proposals: 0, openQuestions: 0, attachments: 0 } } };
+  if (operation === "relations") return { json: empty };
+  return { status: 400, json: { code: "invalid_request", error: `Unexpected fixture operation ${operation}` } };
+}
+
+async function expectLinkedTask(page: Page, task = linkedTask) {
+  await expect(page.getByRole("tab", { name: "Knowledge", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Backlog", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByLabel("Knowledge project", { exact: true })).toHaveValue(linkedProject.id);
+  await expect(page.getByRole("heading", { name: task.title, exact: true })).toBeVisible();
+  const params = new URL(page.url()).searchParams;
+  expect(params.get("view")).toBe("knowledge");
+  expect(params.get("knowledgeProject")).toBe(linkedProject.id);
+  expect(params.get("knowledgeTab")).toBe("backlog");
+  expect(params.get("record")).toBe(task.id);
+}
+
+for (const knowledgeOnly of [false, true]) {
+  test(`account Knowledge deep link survives an actual reload${knowledgeOnly ? " with Knowledge-only access" : ""}`, async ({ page }) => {
+    const fixture = await mountAccount(page, {
+      preAuthenticated: true, search: linkedSearch, knowledge: accountKnowledge,
+      ...(knowledgeOnly ? { runtimeRead: () => ({ status: 403, json: { code: "forbidden", error: "No runtime access" } }) } : {}),
+    });
+    await expectLinkedTask(page);
+    expect(new URL(page.url()).search).toBe(linkedSearch);
+    const probes = fixture.requests.filter(request => request.path === "/api/auth/get-session").length;
+    await page.reload();
+    await expectLinkedTask(page);
+    expect(new URL(page.url()).search).toBe(linkedSearch);
+    expect(fixture.requests.filter(request => request.path === "/api/auth/get-session").length).toBeGreaterThan(probes);
+    // Opening and reloading a Knowledge link must never mount the runtime panel.
+    expect(fixture.requests.filter(request => request.path.startsWith("/api/runtime/"))).toEqual([]);
+    expect(fixture.requests.every(request => request.authorization === null)).toBe(true);
+    expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+    expect(fixture.errors).toEqual([]);
+  });
+}
+
+test("sign-in preserves the account Knowledge deep-link destination", async ({ page }) => {
+  const fixture = await mountAccount(page, { search: linkedSearch, knowledge: accountKnowledge });
+  await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
+  await page.getByLabel("Email address").fill("user@example.com");
+  await page.getByLabel("Password", { exact: true }).fill("fixture-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expectLinkedTask(page);
+  expect(new URL(page.url()).search).toBe(linkedSearch);
+  expect(fixture.requests.filter(request => request.path.startsWith("/api/runtime/"))).toEqual([]);
+  expect(fixture.errors).toEqual([]);
+});
+
+test("account tabs and Knowledge record links follow browser Back and Forward", async ({ page }) => {
+  const fixture = await mountAccount(page, { preAuthenticated: true, knowledge: accountKnowledge });
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+  await page.getByRole("tab", { name: "Knowledge", exact: true }).click();
+  await page.getByLabel("Knowledge project", { exact: true }).selectOption(linkedProject.id);
+  await page.getByRole("link", { name: linkedTask.title, exact: true }).click();
+  await expectLinkedTask(page);
+  await page.getByRole("link", { name: secondLinkedTask.title, exact: true }).click();
+  await expectLinkedTask(page, secondLinkedTask);
+  await page.getByRole("tab", { name: "Security", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Enable TOTP" })).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("record")).toBe(secondLinkedTask.id);
+  await page.getByRole("tab", { name: "Projects", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+
+  await page.goBack();
+  await expect(page.getByRole("tab", { name: "Security", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.goBack();
+  await expectLinkedTask(page, secondLinkedTask);
+  await page.goBack();
+  await expectLinkedTask(page);
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: linkedTask.title, exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: linkedTask.title, exact: true })).toBeVisible();
+  await page.goForward();
+  await expectLinkedTask(page);
+  await page.goForward();
+  await expectLinkedTask(page, secondLinkedTask);
+  await page.goForward();
+  await expect(page.getByRole("tab", { name: "Security", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.goForward();
+  await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+  expect(fixture.errors).toEqual([]);
+});
+
+for (const source of ["/api/auth/get-session", "/api/knowledge"]) {
+  test(`Knowledge refresh 401 from ${source} clears the account view and permits sign-in`, async ({ page }) => {
+    const fixture = await mountAccount(page, { preAuthenticated: true, search: linkedSearch, knowledge: accountKnowledge });
+    try {
+      await expectLinkedTask(page);
+      const reads = (path: string) => fixture.requests.filter(request => request.path === path).length;
+      const before = reads(source);
+      fixture.holds.add("/api/auth/get-session");
+      fixture.holds.add("/api/knowledge");
+      await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+      await expect.poll(() => reads(source)).toBeGreaterThan(before);
+      fixture.session = null;
+      const [expired] = await Promise.all([
+        page.waitForResponse(response => response.url().endsWith(source) && response.status() === 401),
+        fixture.releaseHeld(source, { status: 401, json: { code: "invalid_credential", error: "Fixture invalid_credential" } }),
+      ]);
+      expect(await expired.json()).toMatchObject({ code: "invalid_credential" });
+      await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
+      await expect(page.getByText("The session expired or was revoked. Sign in again.")).toBeVisible();
+      await expect(page.locator("[data-knowledge-workspace]")).toHaveCount(0);
+      await expect(page.getByRole("heading", { name: linkedTask.title, exact: true })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Sign out" })).toHaveCount(0);
+      fixture.holds.clear();
+      await fixture.releaseHeld();
+
+      await page.getByLabel("Email address").fill("user@example.com");
+      await page.getByLabel("Password", { exact: true }).fill("fixture-password");
+      await page.getByRole("button", { name: "Sign in", exact: true }).click();
+      await expectLinkedTask(page);
+      expect(new URL(page.url()).search).toBe(linkedSearch);
+      expect(fixture.requests.every(request => request.authorization === null)).toBe(true);
+      expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+      expect(fixture.errors).toEqual([]);
+    } finally {
+      fixture.holds.clear();
+      await fixture.releaseHeld();
+    }
+  });
+}
+
+for (const operation of ["projects", "tasks"]) {
+  test(`Knowledge ${operation} 403 retains the account session and can recover`, async ({ page }) => {
+    let denied = false;
+    const fixture = await mountAccount(page, {
+      preAuthenticated: true, search: linkedSearch,
+      knowledge: body => denied && body.operation === operation
+        ? { status: 403, json: { code: "forbidden", error: "No knowledge access" } } : accountKnowledge(body),
+    });
+    await expectLinkedTask(page);
+    denied = true;
+    await page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+    await expect(page.getByRole("alert").first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: linkedTask.title, exact: true })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Account sign-in" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
+    expect(fixture.session).not.toBeNull();
+    // Another authorized account panel remains usable after the denial.
+    await page.getByRole("tab", { name: "Projects", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Fixture Web" })).toBeVisible();
+    denied = false;
+    await page.getByRole("tab", { name: "Knowledge", exact: true }).click();
+    await expectLinkedTask(page);
+    expect(fixture.requests.some(request => request.path === "/api/auth/sign-in/email" || request.path === "/api/auth/sign-out")).toBe(false);
+    expect(fixture.errors).toEqual([]);
+  });
+}
+
+test("a Knowledge record-read 401 ends the account session while the identity probe is held", async ({ page }) => {
+  let denied = false;
+  const fixture = await mountAccount(page, {
+    preAuthenticated: true, search: linkedSearch,
+    knowledge: body => denied && body.operation === "task"
+      ? { status: 401, json: { code: "invalid_credential", error: "Fixture invalid_credential" } } : accountKnowledge(body),
+  });
+  try {
+    await expectLinkedTask(page);
+    fixture.holds.add("/api/auth/get-session");
+    denied = true;
+    const [expired] = await Promise.all([
+      page.waitForResponse(response => response.url().endsWith("/api/knowledge") && response.status() === 401
+        && response.request().postDataJSON()?.operation === "task"),
+      page.getByRole("button", { name: "Refresh", exact: true }).first().click(),
+    ]);
+    expect(await expired.json()).toMatchObject({ code: "invalid_credential" });
+    await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
+    await expect(page.getByText("The session expired or was revoked. Sign in again.")).toBeVisible();
+    await expect(page.locator("[data-knowledge-workspace]")).toHaveCount(0);
+    expect(fixture.errors).toEqual([]);
+  } finally {
+    fixture.holds.clear();
+    await fixture.releaseHeld();
+  }
 });
 
 test("claims a worktree with one idempotent mutation", async ({ page }) => {
