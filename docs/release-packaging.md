@@ -1,11 +1,16 @@
 ---
 audience: "maintainers building, verifying and handing over Worktree Control release artifacts, and operators installing the optional account provider"
-last_reviewed: "2026-11-08"
+last_reviewed: "2026-11-09"
 source_of_truth: "release artifact contract for the Community package and the optional account provider"
 status: "active"
 ---
 
 # Release packaging
+
+This guide describes `0.2.0`, dated 2026-11-09. Confirm Community package
+availability in the [npm version listing](https://www.npmjs.com/package/worktree-control?activeTab=versions)
+or with `npm view worktree-control@0.2.0 version`. The optional provider is
+delivered separately as described below.
 
 This page is also shipped as `worktree-control-provider-INSTALL.md` inside the optional provider
 download, so its links point to the versioned documentation. Replace `v0.2.0`
@@ -156,9 +161,11 @@ schema-43 result does not prove an upgrade from the public `0.1.1` release.
 
 For `0.2.0`:
 
-1. Use both artifacts from the same CI run and attempt, within the seven-day
-   retention. Verify their checksums and that both provenances are clean, name
-   the same commit/run/attempt and identify Community version `0.2.0`.
+1. Use both artifacts from the same successful CI run and attempt on the final
+   merged release commit on `main`, within the seven-day retention. Documentation
+   changes alter the shipped guides, so earlier artifacts cannot be reused as
+   final release bytes. Verify their checksums and that both provenances are
+   clean, name the same commit/run/attempt and identify Community version `0.2.0`.
 2. Create tag `v0.2.0` on that commit, then publish the Community tarball from
    `portable-package` to npm as described in
    [Publish a release](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/package-trial.md#publish-a-release).
@@ -170,7 +177,10 @@ For `0.2.0`:
    `compatibleCore.version` and tarball sha256, and link the account-mode guide.
 
 Release notes for account mode state the verification boundary: the installed
-acceptance and production composition pass, while the full provider proof
-keeps five historical native `factor-compatibility` failures and is not green.
+acceptance and production composition pass, while the full provider proof run
+on `370bac2` on 2026-11-08 finished with 1,107 passes, five historical
+native/older bounded `factor-compatibility` failures and zero skips. These
+fixtures are not shipped; the full suite is not green. No hardware passkey or
+manual visual QA was performed.
 See
 [Verification status and known limitations](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/authentication.md#verification-status-and-known-limitations).

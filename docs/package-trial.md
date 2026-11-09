@@ -1,13 +1,14 @@
 ---
 audience: "people installing Worktree Control from the npm registry or a verified tarball"
-last_reviewed: "2026-11-08"
-source_of_truth: "trial artifact installation, first run, upgrade, and removal"
+last_reviewed: "2026-11-09"
+source_of_truth: "release artifact installation, first run, upgrade, and removal"
 status: "active"
 ---
 
 # Install the local controller
 
-The `0.2.0` package installs the complete local Worktree Control controller:
+This guide describes `0.2.0`, dated 2026-11-09. The package installs the
+complete local Worktree Control controller:
 CLI, browser dashboard, MCP endpoint, SQLite state, user-service commands, and
 the bundled agent skill. It is not a remote worker and does not need a hosted
 account. Optional individual accounts need a separate provider artifact; see
@@ -15,23 +16,23 @@ account. Optional individual accounts need a separate provider artifact; see
 Upgrading from `0.1.1` needs one protected offline step; follow
 [Upgrade from 0.1.1 to 0.2.0](#upgrade-from-011-to-020).
 
-The same bytes are available as a CI-built tarball with checksums and
-provenance, which is the path to use when you want to verify the artifact before
-installing, or before the registry copy exists. Publication to the npm registry
-is a separate owner action; the registry copy is the CI tarball, not a rebuild.
-Until `npm view worktree-control version` reports `0.2.0`, the registry still
-serves `0.1.1`.
+Release artifacts are CI-built tarballs with checksums and provenance. Use a
+verified tarball to inspect the artifact before installing. Publication to the
+npm registry is a separate owner action using those same bytes. Confirm that
+`0.2.0` is available in the [npm version listing](https://www.npmjs.com/package/worktree-control?activeTab=versions)
+or with `npm view worktree-control@0.2.0 version`; the instructions below select
+that exact version.
 
 ## Install from the npm registry
 
 ```bash
-npm install --global worktree-control
+npm install --global worktree-control@0.2.0
 worktree-control doctor
 ```
 
 A global install into the system prefix may need elevated rights. To stay
 without `sudo`, use the user-owned prefix shown below with `npm install --global
---prefix "$HOME/.local/worktree-control" worktree-control`. Then continue with
+--prefix "$HOME/.local/worktree-control" worktree-control@0.2.0`. Then continue with
 the first-run steps under [Install without sudo](#install-without-sudo).
 The registry package is named `worktree-control`; the unrelated `worktree-switcher`
 package on npm is a different project.
@@ -45,7 +46,7 @@ package on npm is a different project.
   `better-sqlite3` dependency may need a compatible prebuilt binary or local
   compilation tools; the installer never installs operating-system tools.
 - Managed repositories keep their own runtime and dependency requirements.
-- macOS arm64 and Windows remain unverified for this tarball trial.
+- macOS arm64 and Windows remain unverified for this release.
 
 The download set contains:
 
@@ -85,8 +86,8 @@ worktree-control doctor
 
 Persist the `PATH` addition in the startup file for your shell. Installation
 resolves production dependencies at that time; the tarball checksum does not
-freeze their transitive versions. Keep the smoke report supplied with a release
-candidate when exact resolved dependencies matter for diagnosis.
+freeze their transitive versions. Keep the smoke report for the release artifact
+when exact resolved dependencies matter for diagnosis.
 
 A new installation runs in `token` mode. Its first start creates the
 installation token. To run without a service manager:
@@ -134,7 +135,7 @@ Existing agent tokens gain no new permissions. Individual accounts are optional
 and need a separate provider; you can add them later.
 
 This procedure was verified on Linux x64 by the installed acceptance, which
-upgrades the registry `worktree-control@0.1.1` with the `0.2.0` candidate in
+upgrades the registry `worktree-control@0.1.1` with a `0.2.0` release artifact in
 separate prefixes. macOS and Windows are unverified. Rehearse on a copy first
 if your installation matters, and keep every command on the same data and state
 directories: add `--data-dir <path> --state-dir <path>` to each command if you
@@ -349,16 +350,20 @@ and logs. Full data deletion is a separate, explicit operation. See
 
 ## Publish a release
 
-Maintainers publish the CI-built tarball, not a checkout. Download the
-`portable-package` artifact of the `Verify` run on the release commit on `main`,
-run `sha256sum --check SHA256SUMS`, confirm `provenance.json` names the expected
-package, version, full commit, `"dirty": false` and tarball digest. Create the
-matching `v<version>` tag on that commit before publication so versioned links
+For `0.2.0` (2026-11-09), maintainers publish the CI-built tarball. Download
+`portable-package` and `optional-auth-provider` from the same successful `Verify`
+run and attempt on the final merged release commit on `main`, within artifact
+retention. Documentation changes alter the shipped installation guides, so
+artifacts from an earlier commit do not represent the final release. Verify
+both checksum manifests and confirm both provenances name the same full commit,
+CI run/attempt, `"dirty": false`, Community version `0.2.0` and matching tarball
+digests. Create tag `v0.2.0` on that commit before publication so versioned links
 in the shipped installation guides resolve, then run:
 
 ```bash
-npm publish ./worktree-control-<version>.tgz --access public
-npm view worktree-control version
+npm publish ./worktree-control-0.2.0.tgz --access public
+npm view worktree-control@0.2.0 version dist.integrity
+npm view worktree-control dist-tags.latest
 ```
 
 The optional account provider is not published to npm. Attach the files of the

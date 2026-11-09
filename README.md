@@ -77,16 +77,17 @@ writes belong. See the [knowledge delivery plan](https://github.com/pioootrek/wo
 
 ## Quick start
 
-**Status:** pre-1.0. `0.1.1` is the published npm release; `0.2.0` is a release
-candidate until npm lists it. The local controller is in daily use by its
-author. Linux x64 is verified; macOS and Windows are unverified. The CLI and
-data model may change; see the [changelog](CHANGELOG.md).
+**Status:** pre-1.0. This README describes `0.2.0`, dated 2026-11-09; see the
+[changelog](CHANGELOG.md). Check the [npm version listing](https://www.npmjs.com/package/worktree-control?activeTab=versions)
+or run `npm view worktree-control@0.2.0 version` to confirm registry availability.
+The local controller is in daily use by its author. Linux x64 is verified;
+macOS and Windows are unverified. The CLI and data model may change.
 
 Install [Node.js 22 or newer](https://nodejs.org/) and Git, then install and
 start the controller:
 
 ```bash
-npm install --global worktree-control
+npm install --global worktree-control@0.2.0
 worktree-control start --host 127.0.0.1
 ```
 
@@ -814,8 +815,8 @@ queue when this repository is registered in Worktree Control.
 ## Installed upgrade and recovery acceptance
 
 `pnpm test:rbac-artifact` tests the actual public npm 0.1.1 package (schema 28)
-against the candidate in isolated installed prefixes, including backup creation,
-fence establishment, data and credential continuity, and supported restore with
+against the release artifact in isolated installed prefixes, including backup
+creation, fence establishment, data and credential continuity, and supported restore with
 protected quarantine into existing and empty directories. The
 `test:rbac-artifact:fresh` preset covers a new installation. Both test the
 separately packaged provider with its locked dependencies. Use the managed

@@ -3,9 +3,9 @@
 All notable changes to `worktree-control` are recorded here. The project is
 pre-1.0: the CLI, configuration and data model may change between minor versions.
 
-## 0.2.0 - unreleased
+## 0.2.0 - 2026-11-09
 
-Release candidate. Optional individual accounts with per-project permissions,
+Optional individual accounts with per-project permissions,
 scoped agent credentials, an external security fence, Godot support and
 verification history. Schema 28 → 49. Upgrading a `0.1.1` installation needs one
 protected offline step before the first start; follow
@@ -95,10 +95,11 @@ Linux x64 is verified; macOS and Windows remain unverified.
 
 ### Known limitations
 
-- The full provider proof suite is not green: the candidate run reproduced
-  exactly five historical native/older bounded `factor-compatibility` failures
-  (1,107 of 1,112 pass, zero skips). Those fixtures are not shipped. The installed
-  acceptance and production-composition tests of the integrated route pass.
+- The full provider proof suite is not green: the 2026-11-08 run on `370bac2`
+  reproduced exactly five historical native/older bounded
+  `factor-compatibility` failures (1,107 of 1,112 pass, zero skips). Those
+  fixtures are not shipped. The installed acceptance and production-composition
+  tests of the integrated route pass; these are separate results.
 - Account dashboard: Knowledge and Security views do not re-check the session
   on their own; other tabs learn of a sign-out on their next request; the
   configuration panel's reload is not bound to the latest request. No hardware
