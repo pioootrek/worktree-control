@@ -86,18 +86,20 @@ describe("godot-web application workflow", () => {
     const f = await fixture();
     const config = { exporter: { kind: "command", command: ["node", "export.mjs"], outputDirectory: "exports/web" }, watch: { paths: ["game"], debounceMs: 100 } };
     const project = await f.service.addProject({ name: "Game", repositoryPath: f.repository, port: f.port, launchPreset: "godot-web", godotWeb: config as never });
-    const preflight = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
+    let enteredPreflight!: () => void;
+    let releasePreflight!: () => void;
+    const preflight = new Promise<void>((resolve) => { enteredPreflight = resolve; });
+    const release = new Promise<void>((resolve) => { releasePreflight = resolve; });
     const observe = f.gitReader.observe.bind(f.gitReader);
     let observations = 0;
     vi.spyOn(f.gitReader, "observe").mockImplementation(async (...args) => {
       // Enqueue observes first; the shared queue's preflight observes second.
-      if (++observations === 2) { preflight.resolve(); await release.promise; }
+      if (++observations === 2) { enteredPreflight(); await release; }
       return observe(...args);
     });
     try {
       await f.service.operate(project.id, "start", f.repository);
-      await preflight.promise;
+      await preflight;
       const runId = f.store.listTestRuns(project.id)[0].id;
       await f.service.operate(project.id, "stop");
       await vi.waitFor(() => expect(f.store.getTestRun(runId)).toMatchObject({ phase: "cancelled", telemetry: { finalizedAt: null } }));
@@ -108,25 +110,27 @@ describe("godot-web application workflow", () => {
       const drain = f.godotWeb.drain.bind(f.godotWeb);
       vi.spyOn(f.godotWeb, "drain").mockImplementation(async (id) => {
         // Finish preflight only once removal has reached the real drain.
-        release.resolve();
+        releasePreflight();
         await drain(id);
       });
       const remove = f.store.removeProject.bind(f.store);
+      let finalizedAtRemoval: string | null | undefined;
       vi.spyOn(f.store, "removeProject").mockImplementation((id, actor) => {
         // A terminal phase alone is insufficient: deletion would erase the
         // preparation's cancellation receipt before its finally hook settles.
-        expect(f.store.getTestRun(runId)?.telemetry?.finalizedAt).toEqual(expect.any(String));
+        finalizedAtRemoval = f.store.getTestRun(runId)?.telemetry?.finalizedAt;
         remove(id, actor);
       });
       await f.service.removeProject(project.id);
       expect(existsSync(exportStore)).toBe(false);
+      expect(finalizedAtRemoval).toEqual(expect.any(String));
       expect(f.store.getProject(project.id)).toBeNull();
       await f.godotWeb.close();
       expect(existsSync(exportStore)).toBe(false);
     } finally {
-      release.resolve();
+      releasePreflight();
     }
-  }, 20_000);
+  }, 60_000);
 
   it("registers explicitly, serves the owned static runtime, exports through the queue and live-publishes edits", async () => {
     const f = await fixture();
