@@ -36,7 +36,8 @@ function fixture() {
   directories.push(directory);
   const store = new SqliteStateStore(join(directory, "state.sqlite3"));
   const project = store.addProject({ name: "App", repositoryPath: directory, port: 3210, executable: "node", args: [] });
-  const manager = new TestJobManager(store, nullLogWriter);
+  const logs = { ...nullLogWriter };
+  const manager = new TestJobManager(store, logs);
   managers.push(manager);
   const worktree = (path: string): Worktree => ({
     path, head: "abcdef123456", shortHead: "abcdef1", branch: "main", detached: false, locked: false, prunable: false, dirty: false,
@@ -47,20 +48,22 @@ function fixture() {
     args: ["-e", `setTimeout(() => process.exit(0), ${delay})`],
     cwd: directory,
   });
-  return { store, project, manager, worktree, command };
+  return { store, project, manager, worktree, command, logs };
 }
 
 describe("TestJobManager", () => {
   it("stops only its verified owned group after witness loss and refuses to report completed persistence",async()=>{
     const {store,project,manager,worktree,command}=fixture();
     const cmd=command(60_000);cmd.args=["-e","console.log('owned-pid:'+process.pid);setInterval(()=>{},1000)"];cmd.preset.timeoutMs=60_000;
-    const run=manager.enqueue({projectId:project.id,worktree:worktree(project.repositoryPath),command:cmd,environment:resolved(),actor:"local-user"});
+    const finalized=vi.fn();
+    const run=manager.enqueue({projectId:project.id,worktree:worktree(project.repositoryPath),command:cmd,environment:resolved(),actor:"local-user",finalized});
     let pid=0;
     await vi.waitFor(()=>{const line=store.getTestRun(run.id)?.logs.find(value=>value.startsWith("owned-pid:"));expect(line).toBeTruthy();pid=Number(line!.slice(10));});
     rmSync(join(project.repositoryPath,"state.sqlite3.security","witness.json"));
     try {
       await expect(manager.shutdown()).rejects.toMatchObject({code:"security_fence_recovery_required"});
       await vi.waitFor(()=>expect(()=>process.kill(pid,0)).toThrow());
+      expect(finalized).not.toHaveBeenCalled();
       expect(()=>manager.enqueue({projectId:project.id,worktree:worktree(project.repositoryPath),command:cmd,environment:resolved(),actor:"local-user"})).toThrow();
     } finally {
       managers.splice(managers.indexOf(manager),1);
@@ -450,6 +453,34 @@ describe("TestJobManager", () => {
 });
 
 describe("TestJobManager trusted settle hook", () => {
+  it("notifies finalization only after log close and durable persistence, isolating observer failures", async () => {
+    const { store, project, manager, worktree, command, logs } = fixture();
+    let entered!: () => void, release!: () => void;
+    const closing = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(logs, "finishTest").mockImplementation(async () => { entered(); await gate; });
+    const receipts: Array<{ finalizedAt: string | null | undefined; savedAt: string | null | undefined }> = [];
+    const finalized = vi.fn((run) => {
+      receipts.push({ finalizedAt: run.telemetry?.finalizedAt, savedAt: store.getTestRun(run.id)?.telemetry?.finalizedAt });
+      throw new Error("observer failed");
+    });
+    const controllerLog = vi.spyOn(logs, "controller");
+    const run = manager.enqueue({ projectId: project.id, worktree: worktree("/tmp/finalized"), command: command(5),
+      environment: resolved(), actor: "local-user", finalized });
+    try {
+      await closing;
+      expect(finalized).not.toHaveBeenCalled();
+      expect(store.getTestRun(run.id)?.telemetry?.finalizedAt).toBeNull();
+    } finally { release(); }
+    await vi.waitFor(() => expect(finalized).toHaveBeenCalledTimes(1));
+    expect(receipts).toEqual([{ finalizedAt: expect.any(String), savedAt: expect.any(String) }]);
+    expect(receipts[0].savedAt).toBe(receipts[0].finalizedAt);
+    expect(store.getTestRun(run.id)?.phase).toBe("passed");
+    expect(controllerLog).toHaveBeenCalledWith("test_run.finalized_observer_failed", expect.objectContaining({ runId: run.id }));
+    await manager.shutdown();
+    expect(finalized).toHaveBeenCalledTimes(1);
+  });
+
   it("settles with the final run before releasing the worktree slot and uses the run's own observer", async () => {
     const { store, project, manager, worktree, command } = fixture();
     manager.setLimit(4);

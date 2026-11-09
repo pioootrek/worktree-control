@@ -57,7 +57,8 @@ function fixture(options: { delayMs?: number; queueLimit?: number } = {}) {
   const observation = (): TestSourceObservation => ({ observedAt: new Date().toISOString(), head: "abc", branch: "main", dirty: true, statusDigest: "same", statusEntries: 1, complete: true, errorCode: null });
   const worktrees = [worktree];
   const git = { list: async () => worktrees, observe: async () => observation() };
-  const jobs = new TestJobManager(store, nullLogWriter);
+  const logs = { ...nullLogWriter };
+  const jobs = new TestJobManager(store, logs);
   cleanup.push(() => jobs.shutdown());
   const lifecycle = new ProjectLifecycle(store, processes);
   const holder: { service?: GodotWebService } = {};
@@ -73,10 +74,84 @@ function fixture(options: { delayMs?: number; queueLimit?: number } = {}) {
   const state = () => JSON.parse(readFileSync(join(root, "store", project.id, "public", "state.json"), "utf8"));
   const served = (generation: string) => readFileSync(join(root, "store", project.id, "public", "generations", generation, "index.html"), "utf8");
   const runs = () => store.listTestRuns(project.id).filter((run) => run.presetId === "godot:web-export");
-  return { root, worktreePath, store, project, service, jobs, control, setRuntime, state, served, runs, notify, worktrees };
+  return { root, worktreePath, store, project, service, jobs, control, setRuntime, state, served, runs, notify, worktrees, git, logs };
 }
 
 describe("GodotWebService", () => {
+  it("drains a finalized cancelled export after normal history retention removes its details", async () => {
+    const f = fixture();
+    let entered!: () => void, release!: () => void;
+    const preflight = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const observe = f.git.observe;
+    let observations = 0;
+    vi.spyOn(f.git, "observe").mockImplementation(async () => {
+      if (++observations === 2) { entered(); await gate; }
+      return observe();
+    });
+    try {
+      f.setRuntime("running");
+      await preflight;
+      const runId = f.runs()[0].id;
+      f.setRuntime("stopped");
+      await vi.waitFor(() => expect(f.store.getTestRun(runId)?.phase).toBe("cancelled"));
+      release();
+      await vi.waitFor(() => expect(f.store.getTestRun(runId)?.telemetry?.finalizedAt).toEqual(expect.any(String)));
+      const completed = f.store.getTestRun(runId)!;
+      // Exercise real detail retention with 50 newer completed test receipts.
+      for (let i = 0; i < 50; i++) {
+        f.store.saveTestRun({ ...completed, id: `retention-${i}`, presetId: "node:test", actor: "local-user",
+          queuedAt: new Date(Date.parse(completed.queuedAt) + i + 1).toISOString() });
+      }
+      expect(f.store.getTestRun(runId)).toBeNull();
+      await expect(f.service.drain(f.project.id)).resolves.toBeUndefined();
+      await f.service.forget(f.project.id);
+      expect(existsSync(join(f.root, "store", f.project.id))).toBe(false);
+      f.setRuntime("running");
+      await vi.waitFor(() => expect(f.service.status(f.project.id)?.state).toBe("ready"));
+    } finally {
+      release();
+    }
+  }, 20_000);
+
+  it("keeps drain pending until a cancelled preflight's log and final receipt are durable", async () => {
+    const f = fixture();
+    let enteredPreflight!: () => void, releasePreflight!: () => void;
+    let enteredLogClose!: () => void, releaseLogClose!: () => void;
+    const preflight = new Promise<void>((resolve) => { enteredPreflight = resolve; });
+    const preflightRelease = new Promise<void>((resolve) => { releasePreflight = resolve; });
+    const logClose = new Promise<void>((resolve) => { enteredLogClose = resolve; });
+    const logCloseRelease = new Promise<void>((resolve) => { releaseLogClose = resolve; });
+    const observe = f.git.observe;
+    let observations = 0;
+    vi.spyOn(f.git, "observe").mockImplementation(async () => {
+      if (++observations === 2) { enteredPreflight(); await preflightRelease; }
+      return observe();
+    });
+    vi.spyOn(f.logs, "finishTest").mockImplementation(async () => { enteredLogClose(); await logCloseRelease; });
+    let draining: Promise<void> | undefined;
+    let drained = false;
+    try {
+      f.setRuntime("running");
+      await preflight;
+      f.setRuntime("stopping");
+      await vi.waitFor(() => expect(f.runs()[0]).toMatchObject({ phase: "cancelled", telemetry: { finalizedAt: null } }));
+      draining = f.service.drain(f.project.id).then(() => { drained = true; });
+      releasePreflight();
+      await logClose;
+      // A turn boundary flushes drain's runnable continuations while log close
+      // remains blocked by our barrier; no elapsed-time delay releases it.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(drained).toBe(false);
+      expect(f.runs()[0].telemetry?.finalizedAt).toBeNull();
+    } finally {
+      releasePreflight();
+      releaseLogClose();
+      await draining;
+    }
+    expect(f.runs()[0].telemetry?.finalizedAt).toEqual(expect.any(String));
+  });
+
   it.each([false, true])("drains the old exporter before restarting or switching (switch=%s)", async (switchWorktree) => {
     const f = fixture({ queueLimit: 2 });
     const other = join(f.root, "other");

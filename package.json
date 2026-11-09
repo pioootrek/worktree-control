@@ -69,6 +69,7 @@
     "smoke:package": "node scripts/package-smoke.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:godot-web-cleanup": "vitest run --maxWorkers 1 src/server/godot-web.test.ts src/server/modules/godot-web src/server/modules/lifecycle/project-lifecycle.test.ts src/server/test-job-manager.test.ts",
     "typecheck": "tsc --noEmit",
     "test:modules": "vitest run src/server/modules src/server/infrastructure src/architecture.test.ts",
     "test:scoped-verification": "vitest run src/server/control-service-scoped-verification.test.ts src/server/transports/mcp/mcp-session-lease.test.ts src/server/mcp-http-server.test.ts src/server/scoped-runtime-transports.test.ts src/server/modules/status/status-service.test.ts src/server/infrastructure/sqlite/test-run-requester-migration.test.ts src/server/infrastructure/sqlite/runtime-access-policy.test.ts src/cli/identity-management.test.ts src/server/test-job-manager.test.ts",

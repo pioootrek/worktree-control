@@ -57,6 +57,7 @@ export class TestJobManager {
   private readonly preparationSessions = new Map<string, PreparationSession>();
   private readonly observers = new Map<string, TestSourceObserver>();
   private readonly settlements = new Map<string, NonNullable<EnqueueTestInput["settle"]>>();
+  private readonly finalizationObservers = new Map<string, NonNullable<EnqueueTestInput["finalized"]>>();
   private pathAdmission: (paths: string[]) => void = () => undefined;
   private requesterAuthorizer: ((run: TestRun, requester: VerificationRequester) => void) | null = null;
   private sourceObserver: TestSourceObserver | null = null;
@@ -198,6 +199,7 @@ export class TestJobManager {
     if (input.preparation) this.preparations.set(run.id, input.preparation);
     if (input.observe) this.observers.set(run.id, input.observe);
     if (input.settle) this.settlements.set(run.id, input.settle);
+    if (input.finalized) this.finalizationObservers.set(run.id, input.finalized);
     this.timeouts.set(run.id, input.command.preset.timeoutMs);
     this.logs.openTest(run.id);
     this.write(run, `$ ${run.executable} ${run.args.join(" ")}`);
@@ -441,6 +443,7 @@ export class TestJobManager {
         run.source.reasonCodes = [...new Set([...run.source.reasonCodes, "preparation_cleanup_unconfirmed"])];
         this.telemetry.mark(run, "finalizedAt");
         await this.persist(run);
+        this.finalizationObservers.delete(run.id);
         this.blockAdmission("remote_execution_cleanup_unconfirmed");
         this.onChange(run.projectId);
         return;
@@ -640,6 +643,7 @@ export class TestJobManager {
               run.telemetry!.cleanup = "failed";
               this.telemetry.mark(run, "finalizedAt");
               await this.persist(run);
+              this.finalizationObservers.delete(run.id);
               this.blockAdmission("remote_execution_cleanup_unconfirmed");
               return;
             }
@@ -771,12 +775,19 @@ export class TestJobManager {
       }
       // Terminal barrier: the final state is durable before the slot is released or success reported.
       await this.persist(run);
+      const finalized = this.finalizationObservers.get(run.id);
+      this.finalizationObservers.delete(run.id);
+      if (finalized) {
+        try { finalized(run); }
+        catch (error) { this.logs.controller("test_run.finalized_observer_failed", { runId: run.id, error: String(error) }); }
+      }
       this.telemetry.forget(run.id);
       this.active.delete(run.id);
       if (!this.preparationPromises.has(run.id)) this.preparing.delete(run.id);
       this.logs.controller("test_run.finished", { runId: run.id, projectId: run.projectId, phase: run.phase, exitCode: run.exitCode });
       void this.pruneLogs();
     })()).finally(() => {
+      this.finalizationObservers.delete(run.id);
       this.finalizations.delete(run.id);
       this.pump();
       this.onChange(run.projectId);
@@ -788,6 +799,7 @@ export class TestJobManager {
   private recordPersistenceFailure(run: TestRun, error: unknown): void {
     this.persistenceFailure ??= error;
     this.closed = true;
+    this.finalizationObservers.clear();
     this.logs.controller("test_run.persistence_failed", { runId: run.id, error: String(error) });
   }
 

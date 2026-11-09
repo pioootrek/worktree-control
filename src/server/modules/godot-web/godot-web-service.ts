@@ -41,6 +41,11 @@ function safeMessage(error: unknown, fallback: string): string {
   return error instanceof GodotWebConfigurationError || error instanceof GenerationOutputError ? error.message : fallback;
 }
 
+function cleanupFinalized(run: Readonly<TestRun> | null): boolean {
+  return !!run?.telemetry?.finalizedAt && run.phase !== "queued" && run.phase !== "running"
+    && (run.telemetry.cleanup === "confirmed" || run.telemetry.cleanup === "not_required");
+}
+
 /**
  * Managed Godot Web previews. A session exists only while the project's owned
  * static-server runtime is running; exports are finite jobs in the shared queue.
@@ -54,7 +59,7 @@ function safeMessage(error: unknown, fallback: string): string {
 export class GodotWebService {
   private readonly sessions = new Map<string, { session: WebExportSession; watcher: SourceWatcher | null }>();
   /** Ended sessions whose export may still be finishing in the queue; drained by removal and shutdown. */
-  private readonly ending = new Map<string, { session: WebExportSession; runId: string }>();
+  private readonly ending = new Map<string, { session: WebExportSession; runId: string; cleanupFinalized?: boolean }>();
   /** Last status after a session ends, so the dashboard keeps the served generation. */
   private readonly stopped = new Map<string, WebExportStatus>();
   /** Runtime keys already known not to be Godot Web, avoiding a store read per log line. */
@@ -165,16 +170,16 @@ export class GodotWebService {
     // Never hold database admission while waiting: the queue needs it to settle this very run.
     await this.admission.idle(() => session.settled(DRAIN_TIMEOUT_MS));
     const read = () => this.admission.run(() => this.options.store.getTestRun(runId), { reserved: true });
-    // Settlement precedes the queue's final write; wait (bounded) until the run is terminal.
+    // Cancellation may persist a terminal phase before preflight settles.
+    // Wait for the queue's durable finalization receipt as well as its phase.
     const deadline = Date.now() + DRAIN_TIMEOUT_MS;
-    while (runId && Date.now() < deadline) {
-      const phase = (await read())?.phase;
-      if (phase !== "queued" && phase !== "running") break;
+    while (!ended.cleanupFinalized && Date.now() < deadline) {
+      const run = await read();
+      if (!run || (run.phase !== "queued" && run.phase !== "running" && run.telemetry?.finalizedAt)) break;
       await this.admission.idle(() => new Promise((resolve) => setTimeout(resolve, 50)));
     }
     const run = await read();
-    if (session.activeRunId || run?.phase === "queued" || run?.phase === "running"
-      || (run && run.telemetry?.cleanup !== "confirmed" && run.telemetry?.cleanup !== "not_required")) {
+    if (session.activeRunId || !(ended.cleanupFinalized || cleanupFinalized(run))) {
       throw new Error("The previous Web export has not confirmed process cleanup; retry after it finishes.");
     }
     if (this.ending.get(projectId)?.session === session) this.ending.delete(projectId);
@@ -315,6 +320,13 @@ export class GodotWebService {
           // Plain Git observation without the project lock: stop/drain may hold it while this run finishes.
           observe: (target) => this.options.git.observe(target.worktreePath),
           settle: (settled, log) => this.settle(session, resolved, worktree.path, settled, log),
+          finalized: (completed) => {
+            const ended = this.ending.get(projectId);
+            // Keep only the pending session's receipt, independent of bounded test history.
+            if (ended?.session === session && ended.runId === completed.id && cleanupFinalized(completed)) {
+              ended.cleanupFinalized = true;
+            }
+          },
         });
         session.activeRunId = run.id;
         session.lastRunId = run.id;
