@@ -78,6 +78,42 @@ function fixture(options: { delayMs?: number; queueLimit?: number } = {}) {
 }
 
 describe("GodotWebService", () => {
+  it("drains a finalized cancelled export after normal history retention removes its details", async () => {
+    const f = fixture();
+    let entered!: () => void, release!: () => void;
+    const preflight = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const observe = f.git.observe;
+    let observations = 0;
+    vi.spyOn(f.git, "observe").mockImplementation(async () => {
+      if (++observations === 2) { entered(); await gate; }
+      return observe();
+    });
+    try {
+      f.setRuntime("running");
+      await preflight;
+      const runId = f.runs()[0].id;
+      f.setRuntime("stopped");
+      await vi.waitFor(() => expect(f.store.getTestRun(runId)?.phase).toBe("cancelled"));
+      release();
+      await vi.waitFor(() => expect(f.store.getTestRun(runId)?.telemetry?.finalizedAt).toEqual(expect.any(String)));
+      const completed = f.store.getTestRun(runId)!;
+      // Exercise real detail retention with 50 newer completed test receipts.
+      for (let i = 0; i < 50; i++) {
+        f.store.saveTestRun({ ...completed, id: `retention-${i}`, presetId: "node:test", actor: "local-user",
+          queuedAt: new Date(Date.parse(completed.queuedAt) + i + 1).toISOString() });
+      }
+      expect(f.store.getTestRun(runId)).toBeNull();
+      await expect(f.service.drain(f.project.id)).resolves.toBeUndefined();
+      await f.service.forget(f.project.id);
+      expect(existsSync(join(f.root, "store", f.project.id))).toBe(false);
+      f.setRuntime("running");
+      await vi.waitFor(() => expect(f.service.status(f.project.id)?.state).toBe("ready"));
+    } finally {
+      release();
+    }
+  }, 20_000);
+
   it("keeps drain pending until a cancelled preflight's log and final receipt are durable", async () => {
     const f = fixture();
     let enteredPreflight!: () => void, releasePreflight!: () => void;
