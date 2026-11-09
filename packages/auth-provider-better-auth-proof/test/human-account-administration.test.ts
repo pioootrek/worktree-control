@@ -250,11 +250,16 @@ describe("protected ordinary humans and real isolated Knowledge cookies", () => 
     } finally { await other.close(); await f.close(); }
   });
 
-  it("denies human recovery and all administrative/runtime/vault/unconverted entry points in open boot", async () => {
+  it("denies browser recovery and all administrative/runtime/vault/unconverted entry points in open boot", async () => {
     const f = await setup();
     try {
       await set(f, membership(f.h1, f.k1)); const actor = await f.actor(f.a);
-      await expect(f.run(["recover", "--principal-id", f.h1, ...f.input({ newPassword: "fixture-reset-denied-123" })])).rejects.toMatchObject({ code: "principal_unavailable" });
+      // Protected OS recovery is supported by P3a. An active human cookie still
+      // cannot invoke that operator workflow through a remote route.
+      for (const path of ["/api/identity/admin", "/api/auth/recover"]) {
+        expect((await f.a.call(path, { body: { command: "auth-provider", action: "recover", principalId: f.h1,
+          input: { newPassword: "fixture-reset-denied-123", factors: "reset" } } })).status).not.toBe(200);
+      }
       for (const action of runtimeActions) await expect(f.runCore(() => f.identity.authorizeRuntime(actor, f.k1, action))).rejects.toMatchObject({ code: "runtime_forbidden" });
       for (const effect of [() => f.identity.createAgent(actor), () => f.identity.issueAgentToken({ principalId: "agent", label: "denied" }, actor),
         () => f.identity.createWorker(actor), () => f.identity.requireOwnerSession(actor)]) await expect(f.runCore(effect)).rejects.toMatchObject({ code: "owner_authentication_required" });
@@ -264,6 +269,25 @@ describe("protected ordinary humans and real isolated Knowledge cookies", () => 
       const password = "fixture-human-self-changed-123";
       expect(await f.a.call("/api/auth/change-password", { body: { currentPassword: OWNER_PASSWORD, newPassword: password } })).toMatchObject({ status: 200 });
       expect(await new BrowserClient(f.a.socketPath).login(password, email(1))).toMatchObject({ status: 200 });
+    } finally { await f.close(); }
+  });
+
+  it("allows protected human recovery while retaining the original reader role and denying old authority", async () => {
+    const f = await setup();
+    try {
+      await set(f, membership(f.h1, f.k1, 0, "reader", ["knowledge:read"]));
+      const prior = await f.run(["knowledge-access", "list", "--principal-id", f.h1]);
+      const actor = await f.actor(f.a), password = "fixture-recovered-human-reader-123";
+      expect(await f.run(["recover", "--principal-id", f.h1, ...f.input({ newPassword: password })])).toMatchObject({ principalId: f.h1, recovered: true });
+      await expect(f.providerKnowledge.describeIdentity(actor)).rejects.toMatchObject({ code: "invalid_credential" });
+      expect(await content(f.a, "tasks", { projectId: f.k1 })).toMatchObject({ status: 401 });
+      const fresh = new BrowserClient(f.a.socketPath);
+      expect(await fresh.login(password, email(1))).toMatchObject({ status: 200, body: { authenticated: true } });
+      expect(await fresh.session()).toMatchObject({ status: 200, body: { principal: { id: f.h1, kind: "human" } } });
+      expect(await content(fresh, "tasks", { projectId: f.k1 })).toMatchObject({ status: 200 });
+      expect(await content(fresh, "create_task", task(f.k1))).toMatchObject({ status: 403 });
+      expect(await f.run(["knowledge-access", "list", "--principal-id", f.h1])).toEqual(prior);
+      expect((await new BrowserClient(f.a.socketPath).login(OWNER_PASSWORD, email(1))).status).toBe(401);
     } finally { await f.close(); }
   });
 

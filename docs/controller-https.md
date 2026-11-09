@@ -1,6 +1,6 @@
 ---
 audience: "self-hosters exposing the dashboard through HTTPS"
-last_reviewed: "2026-10-05"
+last_reviewed: "2026-11-08"
 source_of_truth: "supported Caddy reverse-proxy transport for the local controller"
 status: "active"
 ---
@@ -132,9 +132,13 @@ node dist/cli/index.js service install \
 ```
 
 Public TLS protects transport; the installation token (or the `legacy` pairing
-URL) is still an owner credential.
-This setup is not a multi-user account system and does not authorize publishing
-the dashboard to arbitrary users.
+URL) is still an owner credential. In `token` mode this setup is not a
+multi-user account system and does not authorize publishing the dashboard to
+arbitrary users. Optional individual accounts (`better-auth`) require this HTTPS
+origin, configured identically in the provider and in `--public-url`; see
+[authentication](authentication.md#account-mode-better-auth). Keep Caddy's
+default redaction of `Cookie` and `Authorization` headers in logs; do not
+enable `log_credentials`.
 
 ## Upgrade, certificate replacement, and rollback
 

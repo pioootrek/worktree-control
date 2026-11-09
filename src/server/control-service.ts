@@ -1,12 +1,19 @@
+import { HumanVerificationService } from "./modules/verification";
+import { ScopedDiagnostics } from "./modules/status";
+import { HumanRuntimeService } from "./modules/runtime";
+import type { ProviderSessionActor } from "./modules/identity";
+import type { DatabaseAdmissionOptions } from "./database-admission";
+import type { RuntimeMutateResult } from "@/shared/contracts/runtime-mutate";
+import { scopedWaitSchema } from "@/shared/contracts/scoped-verification";
 import { randomBytes } from "node:crypto";
 import { DashboardQueryService } from "./modules/dashboard";
-import { EnvironmentService, redactProject, ScopedConfigurationService, type ScopedConfigurationSession } from "./modules/environments";
+import { EnvironmentService, HumanConfigurationService, redactProject, ScopedConfigurationService, type ScopedConfigurationSession } from "./modules/environments";
 import type { AuthenticatedPrincipal } from "./modules/identity";
 import { KnowledgeService, type KnowledgeHistoryEntry, type KnowledgeHistoryOptions, type KnowledgePageOptions, type KnowledgeRecordKind, type KnowledgeTaskPriority, type KnowledgeTaskStatus, type KnowledgeWriteOptions } from "./modules/knowledge";
 import { leaseTokenHash, type OperationActor, ProjectLifecycle } from "./modules/lifecycle";
-import { AGENT_LEASE_DEFAULT_SECONDS, AGENT_LEASE_MAX_SECONDS, RuntimeService, ScopedRuntimeService, type RuntimeAuthorizer, type ScopedClaimRequest, type ScopedSession } from "./modules/runtime";
+import { AGENT_LEASE_DEFAULT_SECONDS, AGENT_LEASE_MAX_SECONDS, RuntimeService, ScopedRuntimeService, ScopedRuntimeError, RuntimeAccessDenied, type RuntimeAuthorizer, type ScopedClaimRequest, type ScopedSession } from "./modules/runtime";
 import { StatusService, type CompactProjectStatus, type CompactTestStatus, type CompactEnvelope } from "./modules/status";
-import { VerificationService, VerificationHistoryService } from "./modules/verification";
+import { VerificationService, VerificationHistoryService, ScopedVerificationService } from "./modules/verification";
 import type { RemoteVerificationController } from "./modules/remote-verification";
 import type { GodotWebService } from "./modules/godot-web";
 import { DEFAULT_GODOT_WEB_CONFIG, parseGodotWebConfig, type WebExportStatus } from "@/shared/contracts/godot-web";
@@ -67,8 +74,13 @@ export class ControlService {
   private readonly verificationHistory: VerificationHistoryService;
   private readonly dashboardQueries: DashboardQueryService;
   private readonly statusQueries: StatusService;
+  private readonly scopedVerification?: ScopedVerificationService;
+  private readonly humanVerification?: HumanVerificationService;
+  private readonly humanConfiguration?: HumanConfigurationService;
+  private readonly humanRuntime?: HumanRuntimeService;
   private readonly scopedRuntime?: ScopedRuntimeService;
   private readonly scopedConfiguration?: ScopedConfigurationService;
+  private readonly diagnostics?: ScopedDiagnostics;
 
   constructor(
     private readonly store: StateStore,
@@ -104,10 +116,33 @@ export class ControlService {
     });
     this.statusQueries = new StatusService(store, processes,
       () => this.lifecycle.capacityStatusCompact(), () => this.testQueueStatus());
+    if (runtimeAuthorizer?.resolveHumanRuntimeAuthority && store.humanRuntime) {
+      this.humanRuntime = new HumanRuntimeService({ resolveHumanRuntimeAuthority: runtimeAuthorizer.resolveHumanRuntimeAuthority.bind(runtimeAuthorizer) },
+        store, store.humanRuntime(), git, this.lifecycle, this.runtime);
+    }
+    if (runtimeAuthorizer?.resolveHumanRuntimeAuthority && store.humanRuntime && store.beginHumanConfiguration && store.commitHumanConfiguration) {
+      this.humanConfiguration = new HumanConfigurationService({ resolveHumanRuntimeAuthority: runtimeAuthorizer.resolveHumanRuntimeAuthority.bind(runtimeAuthorizer) },
+        { admission: admissionOf(store), getProject: store.getProject.bind(store), getActiveReservation: store.getActiveReservation.bind(store),
+          getProjectConfigurationRevision: store.getProjectConfigurationRevision.bind(store), beginHumanConfiguration: store.beginHumanConfiguration.bind(store), commitHumanConfiguration: store.commitHumanConfiguration.bind(store) },
+        store.humanRuntime(), git, processes, this.lifecycle, path => testCommands.discover(path));
+    }
+    if (runtimeAuthorizer?.captureHumanVerificationAuthority && runtimeAuthorizer.validateHumanVerificationAuthority && store.humanRuntime) {
+      this.humanVerification = new HumanVerificationService({
+        captureHumanVerificationAuthority: runtimeAuthorizer.captureHumanVerificationAuthority.bind(runtimeAuthorizer),
+        validateHumanVerificationAuthority: runtimeAuthorizer.validateHumanVerificationAuthority.bind(runtimeAuthorizer),
+      }, store, store.humanRuntime(), git, testCommands, this.verification, this.statusQueries, !!tests?.configureRequesterAuthorizer);
+    }
     if (runtimeAuthorizer) {
+      this.scopedVerification = new ScopedVerificationService(runtimeAuthorizer, store, git, testCommands, this.verification, tests,
+        this.humanVerification && ((run, requester) => this.humanVerification!.authorizeDispatch(run, requester)));
       this.scopedRuntime = new ScopedRuntimeService(runtimeAuthorizer, store, git, processes, this.lifecycle, this.runtime, logs);
       this.scopedConfiguration = new ScopedConfigurationService(runtimeAuthorizer, store, git, processes, this.lifecycle,
         worktreePath => testCommands.discover(worktreePath), logs);
+      this.diagnostics = new ScopedDiagnostics(runtimeAuthorizer, store, {
+        logs: (id, limit) => this.statusQueries.logs(id, limit),
+        ownRun: (actor, input) => this.requireScopedVerification().status(actor, input),
+        capacity: () => this.lifecycle.capacityStatusCompact(), queue: () => this.testQueueStatus(),
+      });
     }
   }
 
@@ -116,9 +151,49 @@ export class ControlService {
 
   /** Scoped agent runtime access; enforcement and safe views live in the runtime module. */
   scopedRuntimeEnabled(): boolean { return !!this.scopedRuntime; }
-  scopedProjects(actor: AuthenticatedPrincipal, session: ScopedSession) { return this.requireScopedRuntime().listProjects(actor, session); }
-  scopedProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string) { return this.requireScopedRuntime().projectStatus(actor, session, projectId); }
-  scopedWorktrees(actor: AuthenticatedPrincipal, projectId: string) { return this.requireScopedRuntime().worktrees(actor, projectId); }
+  scopedDiagnosticActions(actor: AuthenticatedPrincipal) { return this.requireDiagnostics().actions(actor); }
+  scopedRuntimeLogs(actor: AuthenticatedPrincipal, input: unknown) { return this.requireDiagnostics().runtimeLogs(actor, input); }
+  scopedTestLogs(actor: AuthenticatedPrincipal, input: unknown) { return this.requireDiagnostics().testLogs(actor, input); }
+  scopedProjectStorage(actor: AuthenticatedPrincipal, input: unknown) { return this.requireDiagnostics().projectStorage(actor, input); }
+  scopedServerCapacity(actor: AuthenticatedPrincipal) { return this.requireDiagnostics().capacity(actor); }
+  scopedTestQueue(actor: AuthenticatedPrincipal) { return this.requireDiagnostics().queue(actor); }
+  private requireDiagnostics() { if (!this.diagnostics) throw new RuntimeAccessDenied(); return this.diagnostics; }
+  scopedProjects(actor: AuthenticatedPrincipal, session: ScopedSession | null) { return this.requireScopedRuntime().listProjects(actor, session).map(project => actor.authenticationMethod === "provider_session"
+    && this.humanRuntime?.ownClaim(actor, project.id) ? { ...project, claim: "own" as const } : project); }
+  scopedProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession | null, projectId: string) { const status = this.requireScopedRuntime().projectStatus(actor, session, projectId);
+    const ownClaim = actor.authenticationMethod === "provider_session" ? this.humanRuntime?.ownClaim(actor, projectId) : null;
+    return ownClaim ? { ...status, claim: "own" as const, ownClaim } : status; }
+  humanConfigurationOperation(actor: ProviderSessionActor, value: unknown, options?: DatabaseAdmissionOptions, deliver?: (result: unknown) => void): Promise<unknown> {
+    if (!this.humanConfiguration) return Promise.reject(new RuntimeAccessDenied());
+    return this.humanConfiguration.execute(value, actor, options, result => {
+      const receipt = result as { outcome?: string; replayed?: boolean; projectId?: string };
+      if (receipt.outcome === "completed" && !receipt.replayed && receipt.projectId) this.invalidateDashboardMetadata(receipt.projectId);
+      deliver?.(result);
+    });
+  }
+  humanVerificationOperation(actor: ProviderSessionActor, value: unknown, options?: DatabaseAdmissionOptions, deliver?: (result: unknown) => void): Promise<unknown> {
+    if (!this.humanVerification) return Promise.reject(new RuntimeAccessDenied());
+    return this.humanVerification.execute(value, actor, options, deliver);
+  }
+  mutateHumanRuntime(actor: ProviderSessionActor, value: unknown, options?: DatabaseAdmissionOptions, deliver?: (result: RuntimeMutateResult) => void): Promise<RuntimeMutateResult> {
+    if (!this.humanRuntime) return Promise.reject(new RuntimeAccessDenied());
+    return this.humanRuntime.execute(value, actor, options, deliver);
+  }
+  scopedCompactProjectStatus(actor: AuthenticatedPrincipal, session: ScopedSession, projectId: string) {
+    // Cursor/wait binding remains the established machine session contract.
+    if (actor.authenticationMethod === "provider_session") throw new RuntimeAccessDenied();
+    const status = this.requireScopedRuntime().compactProjectStatus(actor, session, projectId);
+    return this.statusQueries.scopedProject(status, JSON.stringify([actor.principalId, actor.credentialId, session.owner]));
+  }
+  waitForScopedStatusChange(actor: AuthenticatedPrincipal, session: ScopedSession,
+    input: { projectId: string; cursor: string; timeoutMs?: number }, signal?: AbortSignal, sessionClosed?: () => boolean) {
+    if (actor.authenticationMethod === "provider_session") throw new RuntimeAccessDenied();
+    return this.statusQueries.wait({ kind: "scoped-project", id: input.projectId, read: () => {
+      if (sessionClosed?.()) throw new Error("STATUS_CLOSED");
+      return this.scopedCompactProjectStatus(actor, session, input.projectId);
+    } }, input.cursor, session.owner, input.timeoutMs, signal);
+  }
+  scopedWorktrees(actor: AuthenticatedPrincipal, projectId: string, signal?: AbortSignal) { return this.requireScopedRuntime().worktrees(actor, projectId, signal); }
   claimScopedProject(actor: AuthenticatedPrincipal, session: ScopedSession, input: ScopedClaimRequest, existingLeaseToken?: string) {
     return this.requireScopedRuntime().claim(actor, session, input, existingLeaseToken);
   }
@@ -134,6 +209,33 @@ export class ControlService {
   authorizeScopedRuntimeReplay(...args: Parameters<ScopedRuntimeService["authorizeReplay"]>): void {
     this.requireScopedRuntime().authorizeReplay(...args);
   }
+  scopedTestPresets(actor: AuthenticatedPrincipal, input: unknown) { return this.requireScopedVerification().presets(actor, input); }
+  enqueueScopedTest(actor: AuthenticatedPrincipal, session: ScopedConfigurationSession, input: unknown) {
+    return this.requireScopedVerification().enqueue(actor, session, input);
+  }
+  scopedTestRun(actor: AuthenticatedPrincipal, session: ScopedSession, input: unknown) {
+    const status = this.requireScopedVerification().status(actor, input);
+    return this.statusQueries.scopedTest(status, JSON.stringify([actor.principalId, actor.credentialId, session.owner]));
+  }
+  async cancelScopedTest(actor: AuthenticatedPrincipal, session: ScopedSession, input: unknown) {
+    await this.requireScopedVerification().cancel(actor, session, input);
+    return this.scopedTestRun(actor, session, input);
+  }
+  waitForScopedTestChange(actor: AuthenticatedPrincipal, session: ScopedSession,
+    value: unknown, signal?: AbortSignal, sessionClosed?: () => boolean) {
+    const parsed = scopedWaitSchema.safeParse(value);
+    if (!parsed.success || !parsed.data.runId) throw new ScopedRuntimeError("invalid_request", "Exactly one run status target is required.");
+    const input = { ...parsed.data, runId: parsed.data.runId };
+    return this.statusQueries.wait({ kind: "scoped-run", id: input.runId, read: () => {
+      if (sessionClosed?.()) throw new Error("STATUS_CLOSED");
+      return this.scopedTestRun(actor, session, { runId: input.runId });
+    } }, input.cursor, session.owner, input.timeoutMs, signal);
+  }
+  private requireScopedVerification(): ScopedVerificationService {
+    if (!this.scopedVerification) throw new Error("Scoped verification is unavailable.");
+    return this.scopedVerification;
+  }
+
   /** Scoped profile selection and configuration; enforcement, revision CAS and safe views live in the environments module. */
   scopedEnvironmentProfiles(actor: AuthenticatedPrincipal, input: unknown) { return this.requireScopedConfiguration().listEnvironmentProfiles(actor, input); }
   selectScopedEnvironmentProfile(actor: AuthenticatedPrincipal, session: ScopedConfigurationSession, input: unknown) {
@@ -312,6 +414,7 @@ export class ControlService {
   }
 
   statusWaitDiagnostics(owner?: string) { return this.statusQueries.diagnostics(owner); }
+  cancelStatusWaits(owner: string) { this.statusQueries.cancelSession(owner); }
 
   waitForStatusChange(input: { projectId?: string; runId?: string; cursor: string; timeoutMs?: number }, owner: string, signal?: AbortSignal) {
     const target = input.projectId ? { kind: "project" as const, id: input.projectId } : { kind: "run" as const, id: input.runId! };

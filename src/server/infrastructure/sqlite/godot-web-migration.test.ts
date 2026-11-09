@@ -1,8 +1,10 @@
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { establishFixtureSecurity } from "./fixtures/protected-security";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_GODOT_WEB_CONFIG } from "@/shared/contracts/godot-web";
@@ -23,7 +25,7 @@ const projectChildren = ["reservations", "runtime_delegations", "runtime_credent
 function v42() {
   const root = mkdtempSync(join(tmpdir(), "wtc-godot-web-migration-")); roots.push(root);
   const path = join(root, "state.sqlite3");
-  const db = new Database(path);
+  const db = unmanagedFixtureDatabase(path);
   try {
     db.exec(fixture42);
     db.exec(`
@@ -45,7 +47,7 @@ const rows = (db: Database.Database, table: string) => db.prepare(`SELECT * FROM
 describe("Godot Web migration 43", () => {
   it("upgrades genuine schema 42 atomically, keeps rows, revision and child foreign keys, and records provenance", () => {
     const path = v42();
-    const db = new Database(path);
+    const db = unmanagedFixtureDatabase(path);
     try {
       expect(inspectSchema(db)).toEqual({ version: 42, fresh: false });
       const before = rows(db, "projects");
@@ -58,7 +60,7 @@ describe("Godot Web migration 43", () => {
       expect(inspectSchema(db).version).toBe(42);
       expect(rows(db, "projects")).toEqual(before);
       initializeSchema(db, false, inspectSchema);
-      expect(inspectSchema(db)).toEqual({ version: 43, fresh: false });
+      expect(inspectSchema(db)).toEqual({ version: 49, fresh: false });
       expect(rows(db, "projects")).toEqual((before as object[]).map((row) => ({ ...row, godot_web_json: null })));
       expect(rows(db, "audit_events")).toEqual(audit);
       expect(rows(db, "runtime_delegations")).toEqual(delegations);
@@ -78,9 +80,10 @@ describe("Godot Web migration 43", () => {
 
   it("opens schema 42 through the store and counts Godot Web configuration as a configuration revision", () => {
     const path = v42();
+    establishFixtureSecurity(path);
     const store = new SqliteStateStore(path);
     try {
-      expect(store.schemaVersion()).toBe(43);
+      expect(store.schemaVersion()).toBe(49);
       expect(store.getProject("kept")).toMatchObject({ launchPreset: "none", godotWeb: null });
       expect(store.getProjectConfigurationRevision("kept")).toBe(7);
       store.setProjectGodotWeb("kept", { launchPreset: "godot-web", godotWeb: DEFAULT_GODOT_WEB_CONFIG, executable: "node", args: ["server.js"] }, "local-user");
@@ -90,7 +93,7 @@ describe("Godot Web migration 43", () => {
       expect(() => store.setProjectGodotWeb("kept", { launchPreset: "none", godotWeb: DEFAULT_GODOT_WEB_CONFIG, executable: "", args: [] }, "local-user")).toThrow("requires the godot-web preset");
       expect(store.getProjectConfigurationRevision("kept")).toBe(8);
     } finally { store.close(); }
-    const check = new Database(path, { readonly: true });
+    const check = unmanagedFixtureDatabase(path, { readonly: true });
     try {
       const events = check.prepare("SELECT event_type, actor FROM audit_events WHERE event_type='project.godot_web_configured'").all();
       expect(events).toEqual([{ event_type: "project.godot_web_configured", actor: "local-user" }]);
@@ -99,8 +102,9 @@ describe("Godot Web migration 43", () => {
 
   it("refuses an unknown preset and a tampered migration record", () => {
     const path = v42();
+    establishFixtureSecurity(path);
     new SqliteStateStore(path).close();
-    const db = new Database(path);
+    const db = unmanagedFixtureDatabase(path);
     try {
       expect(() => db.prepare("UPDATE projects SET launch_preset='unity'").run()).toThrow(/CHECK constraint/);
       db.prepare("UPDATE schema_migrations SET checksum='tampered' WHERE version=43").run();
@@ -116,7 +120,7 @@ describe("Godot Web migration 43", () => {
     const sql = godotWebMigration.sql;
     const name = "godot-web-runtime-preset";
     const legacyChecksum = createHash("sha256").update(`35\0${name}\0${sql}`).digest("hex");
-    const db = new Database(path);
+    const db = unmanagedFixtureDatabase(path);
     try { db.prepare("UPDATE schema_migrations SET name=?, checksum=? WHERE version=35").run(name, legacyChecksum); }
     finally { db.close(); }
     const before = readFileSync(path);

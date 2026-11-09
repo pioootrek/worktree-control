@@ -1,9 +1,10 @@
+import { AuthenticationProviderError } from "./modules/authentication";
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 
 import type { TestQueueStatus, TestRun } from "@/shared/contracts";
 import type { LogWriter } from "./log-writer";
-import type { StateStore } from "./state-store";
+import type { StateStore, VerificationRequester } from "./state-store";
 import { admissionOf, admitWithRetry, type DatabaseAdmission } from "./database-admission";
 
 import { OwnedProcessGroup } from "./owned-process-group";
@@ -57,6 +58,7 @@ export class TestJobManager {
   private readonly observers = new Map<string, TestSourceObserver>();
   private readonly settlements = new Map<string, NonNullable<EnqueueTestInput["settle"]>>();
   private pathAdmission: (paths: string[]) => void = () => undefined;
+  private requesterAuthorizer: ((run: TestRun, requester: VerificationRequester) => void) | null = null;
   private sourceObserver: TestSourceObserver | null = null;
   private logMaintenance: Promise<void> = Promise.resolve();
   private pruneOperation: Promise<void> | null = null;
@@ -95,6 +97,23 @@ export class TestJobManager {
   /** Installation recovery exclusions apply at enqueue and again before work. */
   configurePathAdmission(check: (paths: string[]) => void): void { this.pathAdmission = check; }
 
+  configureRequesterAuthorizer(authorize: (run: TestRun, requester: VerificationRequester) => void): void {
+    if (this.requesterAuthorizer) throw new Error("Test requester authorizer is already configured.");
+    this.requesterAuthorizer = authorize;
+  }
+
+  revalidateRequester(runId: string): void { this.authorizeRequester(this.requireRun(runId)); }
+
+  private authorizeRequester(run: TestRun): void {
+    const requester = this.store.getHumanTestRunRequester?.(run.id) ?? this.store.getTestRunRequester(run.id);
+    if (!requester) {
+      if (run.actor.startsWith("human:test:")) throw new Error("Human test attribution is unavailable.");
+      return; // Historical/installation and remote execution retain their existing policy.
+    }
+    if (!this.requesterAuthorizer) throw new Error("Scoped test authorization is unavailable.");
+    this.requesterAuthorizer(run, requester);
+  }
+
   configureSourceObserver(observer: TestSourceObserver): void {
     this.sourceObserver = observer;
   }
@@ -105,6 +124,7 @@ export class TestJobManager {
     if (repeated.projectId !== projectId || repeated.worktreePath !== worktreePath || repeated.presetId !== presetId) {
       throw new Error("Klucz idempotencji jest już używany przez inne uruchomienie testu.");
     }
+    this.authorizeRequester(repeated);
     return repeated;
   }
 
@@ -172,7 +192,7 @@ export class TestJobManager {
       source: input.sourceObservation ? pendingSourceEvidence(input.sourceObservation) : legacySourceEvidence(),
     };
     this.telemetry.mark(run, "queuedAt");
-    try { this.store.saveTestRun(run, input.idempotencyKey); }
+    try { this.store.saveTestRun(run, input.idempotencyKey, input.requester); }
     catch (error) { this.telemetry.forget(run.id); throw error; }
     this.environments.set(run.id, input.environment.environment);
     if (input.preparation) this.preparations.set(run.id, input.preparation);
@@ -188,8 +208,8 @@ export class TestJobManager {
   }
 
   /** Admitted as one operation; waits for other finalization without holding admission. */
-  cancel(runId: string, actor: string): Promise<TestRun> {
-    return this.admission.run(() => this.cancelAdmitted(runId, actor));
+  cancel(runId: string, actor: string, revalidate?: () => void): Promise<TestRun> {
+    return this.admission.run(() => { revalidate?.(); return this.cancelAdmitted(runId, actor); });
   }
 
   private async cancelAdmitted(runId: string, actor: string): Promise<TestRun> {
@@ -252,6 +272,23 @@ export class TestJobManager {
       const failures = cancellations.filter((result) => result.status === "rejected").map((result) => result.reason);
       if (failures.length) throw new AggregateError(failures, "Nie zakończono poprawnie anulowania zadań testowych.");
       if (this.persistenceFailure) throw this.persistenceFailure;
+    } catch (error) {
+      const isFence=(failure:unknown,depth=0):boolean=>depth<4 && (failure instanceof AuthenticationProviderError
+        ? failure.code.startsWith("security_fence_") : failure instanceof AggregateError && failure.errors.slice(0,128).some(value=>isFence(value,depth+1)));
+      if(!isFence(error))throw error;
+      // Loss of SQLite/fence authority must never prevent termination of process
+      // groups already verified and owned by this manager. No requester is
+      // reauthenticated and no new job is adopted from the restored database.
+      for (const session of this.preparationSessions.values()) session.cancel();
+      const stopped=await Promise.allSettled([...this.active.values()].map(async active=>{
+        active.cancellationRequested=true;
+        clearTimeout(active.timeout);
+        await this.stopWithRetries(active.group);
+        active.resources?.stop();
+      }));
+      const failures=stopped.filter(result=>result.status==="rejected").map(result=>result.reason);
+      if(failures.length)throw new AggregateError([error,...failures],`${error instanceof Error?error.message:"Security fence refusal"}; owned process cleanup remains unconfirmed.`);
+      throw error;
     } finally {
       // Even failed shutdown closes observation before ControlService closes the
       // store. Process ownership/occupied slots remain intact for cleanup retry.
@@ -341,7 +378,7 @@ export class TestJobManager {
     };
     session?.signal.addEventListener("abort", preparationStopped, { once: true });
     try {
-      await this.admission.run(() => this.pathAdmission([run.worktreePath, run.cwd]));
+      await this.admission.run(() => { this.authorizeRequester(run); this.pathAdmission([run.worktreePath, run.cwd]); });
       if (preparation) {
         const input = await preparation.prepare(session!);
         session!.throwIfAborted();
@@ -445,6 +482,7 @@ export class TestJobManager {
   /** Must run admitted: `starting` provenance and the running state are durable before spawn. */
   private start(run: TestRun): void {
     if (this.closed || this.read(run.id)?.phase !== "queued") return;
+    this.authorizeRequester(run);
     this.pathAdmission([run.worktreePath, run.cwd]);
     this.preparationSessions.get(run.id)?.throwIfAborted();
     this.preparations.get(run.id)?.starting?.();

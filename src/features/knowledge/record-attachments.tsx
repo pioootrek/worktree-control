@@ -9,10 +9,10 @@ import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/provider";
 import type { KnowledgePage } from "@/shared/contracts/knowledge";
 import type { KnowledgeAttachment, KnowledgeAttachmentRecordKind } from "@/shared/contracts/knowledge-attachments";
-import { knowledgeRequest } from "./knowledge-client";
+import { knowledgeRequest, type KnowledgeCredential } from "./knowledge-client";
 import { ATTACHMENT_DISCOVERY_LIMIT, IMAGE_PREVIEW_LIMIT, attachmentMatchesScope, decodePreviewText, documentUrl, previewKind, resolveDocumentLink } from "./document-reader-policy";
 
-type Props = { token: string; projectId: string; recordId: string; recordKind: KnowledgeAttachmentRecordKind; changeVersion: number; presentation?: "attachments" | "documents"; onDocumentChange?: (open: boolean) => void };
+type Props = { token: KnowledgeCredential; projectId: string; recordId: string; recordKind: KnowledgeAttachmentRecordKind; changeVersion: number; presentation?: "attachments" | "documents"; onDocumentChange?: (open: boolean) => void };
 type DownloadResponse = { attachment: KnowledgeAttachment; dataBase64: string };
 type Preview = { id: string; kind: "markdown" | "text" | "image"; text?: string; url?: string };
 

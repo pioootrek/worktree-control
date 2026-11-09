@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { HISTORICAL_COMMIT, verifyHistoricalArtifact, verifyTrialFiles } from "./package-artifact.mjs";
+import { HISTORICAL_COMMIT, PUBLIC_BASELINE, verifyHistoricalArtifact, verifyPublicBaseline, verifyTrialFiles } from "./package-artifact.mjs";
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 async function fixture(fn) {
   const root = await mkdtemp(join(tmpdir(), "wts-artifact-input-"));
@@ -51,8 +51,14 @@ test("current manifest is a publishable pre-1.0 worktree-control package whose f
   const { stdout } = await promisify(execFile)("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: root, maxBuffer: 8 * 1024 * 1024 });
   const files = JSON.parse(stdout)[0].files.map(file => file.path);
   for (const required of ["package.json", "CHANGELOG.md", "LICENSE", "README.md", "skills/worktree-control/SKILL.md", "docs/dev-environment-vault.md", "docs/environment-runtime-plan.md", "docs/godot-web.md"]) assert(files.includes(required), `missing ${required}`);
-  const allowed = /^(?:package\.json|CHANGELOG\.md|LICENSE|README\.md|THIRD_PARTY_NOTICES\.md|dist\/cli\/|out\/|skills\/|docs\/(?:authentication|controller-https|dependency-licenses|dev-environment-vault|environment-runtime-plan|package-trial|user-service|reservations-and-mcp|knowledge-evidence|godot-web)\.md$)/;
+  const allowed = /^(?:package\.json|CHANGELOG\.md|LICENSE|README\.md|THIRD_PARTY_NOTICES\.md|dist\/cli\/|out\/|skills\/|docs\/(?:authentication|controller-https|dependency-licenses|dev-environment-vault|environment-runtime-plan|package-trial|release-packaging|user-service|reservations-and-mcp|knowledge-evidence|godot-web)\.md$)/;
   assert.deepEqual(files.filter(file => !allowed.test(file)), []);
+  const readme = await readFile(join(root, "README.md"), "utf8");
+  for (const [, link] of readme.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+    if (/^(?:https?:|mailto:|#)/.test(link)) continue;
+    const target = decodeURIComponent(link.split(/[?#]/, 1)[0]).replace(/^\.\//, "");
+    assert(files.includes(target), `README link is missing from the npm archive: ${link}`);
+  }
   assert.deepEqual(files.filter(file => /(?:^|\/)(?:site|tests?|\.claude|\.github|src|scripts|measurements|node_modules|\.env[^/]*|state\.sqlite3[^/]*|[^/]*\.log)(?:\/|$)/.test(file)), []);
 });
 test("the optional Better Auth provider stays outside the Community manifest and root dependency graph", async () => {
@@ -100,4 +106,16 @@ test("fresh Community CLI and dashboard assets contain no optional provider impl
   };
   await scan(join(root, "dist", "cli"));
   await scan(join(root, "out"));
+});
+test("pins the public npm baseline by size, sha256 and registry sha512 and refuses substituted bytes", async () => {
+  assert.equal(PUBLIC_BASELINE.version, "0.1.1"); assert.equal(PUBLIC_BASELINE.schema, 28);
+  assert.match(PUBLIC_BASELINE.sha256, /^[a-f0-9]{64}$/); assert.match(PUBLIC_BASELINE.integrity, /^sha512-[A-Za-z0-9+/]{86}==$/);
+  const root = await mkdtemp(join(tmpdir(), "wtc-public-baseline-"));
+  try {
+    const short = join(root, "short.tgz"); await writeFile(short, "not the release");
+    await assert.rejects(verifyPublicBaseline(short), /size mismatch/);
+    const substituted = join(root, "worktree-control-0.1.1.tgz"); await writeFile(substituted, Buffer.alloc(PUBLIC_BASELINE.bytes));
+    await assert.rejects(verifyPublicBaseline(substituted), /checksum mismatch/);
+    await assert.rejects(verifyPublicBaseline(root), /size mismatch/);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

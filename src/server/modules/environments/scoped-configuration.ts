@@ -204,6 +204,7 @@ export class ScopedConfigurationService {
   }
 
   private check(actor: AuthenticatedPrincipal, projectId: string, action: RuntimeAction): void {
+    if (actor.authenticationMethod === "provider_session") throw new RuntimeAccessDenied();
     try { this.authorizer.authorizeRuntime(actor, projectId, action); }
     catch { throw new RuntimeAccessDenied(); }
   }

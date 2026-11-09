@@ -1,6 +1,6 @@
 import type { KnowledgePermission, KnowledgeRoleBinding } from "@/shared/contracts/authorization";
 import type { KnowledgeProject } from "@/shared/contracts/knowledge";
-import type { RuntimeAccessEntry, RuntimeCredentialScope, RuntimeDelegation } from "@/shared/contracts/runtime-access";
+import type { RuntimeAccessEntry, RuntimeAction, RuntimeCredentialScope, RuntimeDelegation } from "@/shared/contracts/runtime-access";
 /** `installation` is the single installation-wide authority; it never holds credentials or grants. */
 export type PrincipalKind = "owner" | "human" | "agent" | "worker" | "installation";
 export type IdentityStatus = "active" | "revoked";
@@ -51,9 +51,31 @@ export interface ProviderSessionActor {
 }
 export type AuthenticatedPrincipal = CredentialAuthenticatedPrincipal | ProviderSessionActor;
 
-/** Synchronous current-state check on the admitted controller connection; never borrows the provider. */
+/** Server-only non-secret identity digest. Never part of an identity/HTTP projection. */
+export interface ProviderRuntimeSession {
+  readonly principalId: string;
+  readonly sessionKey: string;
+  readonly evidenceKey: string;
+  readonly generation: number;
+  readonly deadline: string;
+}
+export interface RetainedProviderSession extends ProviderRuntimeSession {
+  readonly nativeSessionId: string;
+}
+export interface HumanRuntimeAuthority extends ProviderRuntimeSession {
+  readonly membershipRevision: number;
+  readonly permissions: readonly RuntimeAction[];
+}
+export interface HumanVerificationAuthorizer {
+  captureHumanVerificationAuthority(actor: ProviderSessionActor, projectId: string): { authority: HumanRuntimeAuthority; reference: RetainedProviderSession };
+  validateHumanVerificationAuthority(authority: HumanRuntimeAuthority, reference: RetainedProviderSession, projectId: string): void;
+}
+/** Synchronous current-state checks on the admitted connection; never borrows the provider. */
 export interface ProviderSessionAuthority {
   isCurrentProviderSession(actor: ProviderSessionActor, now: string): boolean;
+  resolveRuntimeSession?(actor: ProviderSessionActor, now: string): ProviderRuntimeSession | null;
+  captureRuntimeSession?(actor: ProviderSessionActor, now: string): RetainedProviderSession | null;
+  validateRetainedRuntimeSession?(reference: RetainedProviderSession, now: string): boolean;
 }
 
 export type ControllerAuthentication =
@@ -64,6 +86,7 @@ export type ControllerAuthentication =
 /** Confirms that an installation actor still matches the active authentication policy. */
 export interface InstallationAuthority {
   isCurrentInstallationActor(actor: AuthenticatedPrincipal): boolean;
+  permitsCredential?(actor: AuthenticatedPrincipal): boolean;
 }
 
 export type { KnowledgePermission } from "@/shared/contracts/authorization";
@@ -81,7 +104,7 @@ export interface AuthenticatedIdentity {
   /** Null for installation authority and provider sessions; neither has a stored A2 credential. */
   credential: PrincipalCredential | null;
   knowledgeGrants: Array<Pick<KnowledgeProjectGrant, "projectId" | "permissions">>;
-  /** Present for agents: the credential's current effective runtime scope. */
+  /** Current effective scope for scoped agents and provider-session humans. */
   runtimeAccess?: RuntimeAccessEntry[];
   installationAuthority?: true;
 }

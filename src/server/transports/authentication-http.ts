@@ -2,9 +2,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { containsProviderCookie, browserChangePasswordSchema, browserFactorSchemas, browserSignInSchema, browserSignOutSchema, browserTotpEnableSchema, browserTotpVerifySchema, type BrowserAuthenticationStatus } from "@/shared/contracts/authentication";
 import { IdentityError, type ProviderSessionActor } from "@/server/modules/identity";
+import { RuntimeAccessDenied, ScopedRuntimeError } from "@/server/modules/runtime";
 import { knowledgeFailure } from "@/server/modules/knowledge";
 import { admitWithRetry, databaseAdmissionFailure, type DatabaseAdmission } from "@/server/database-admission";
-import { AuthenticationProviderError, BROWSER_OPERATIONS, browserOperationRequires, type AuthenticationProviderRuntime, type BrowserOperation, type BrowserRelease, type ProviderKnowledgeApplication } from "@/server/modules/authentication";
+import { AuthenticationProviderError, BROWSER_OPERATIONS, browserOperationRequires, type AuthenticationProviderRuntime, type BrowserOperation, type BrowserRelease, type ProviderKnowledgeApplication, type ProviderRuntimeReadApplication, type ProviderRuntimeMutateApplication, type ProviderVerificationApplication, type ProviderConfigurationApplication } from "@/server/modules/authentication";
 import {
   approvedAuthenticationCookies, BoundaryError, CHALLENGE_COOKIE, COOKIE_POLICY, deletionCookie, fail, parseStrictJson, PASSKEY_COOKIE, readBoundedBody, requestCookies, SESSION_COOKIE,
   validateTransportLimits, type AuthenticationTransportLimits,
@@ -12,6 +13,7 @@ import {
 
 export { approvedAuthenticationCookies, type AuthenticationTransportLimits } from "./authentication-http-boundary";
 
+const RUNTIME_ROUTES = new Set(["/api/runtime/read", "/api/runtime/mutate", "/api/runtime/tests", "/api/runtime/configuration"]);
 const ROUTES = new Map(Object.entries(BROWSER_OPERATIONS).map(([operation, definition]) => [`/api/auth${definition.path}`, operation as BrowserOperation]));
 /** The headers whose repetition could otherwise change what a single value means. */
 const SINGLE_HEADERS = ["host", "origin", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "content-type", "content-length", "content-encoding", "transfer-encoding"] as const;
@@ -64,8 +66,14 @@ export class AuthenticationHttp {
     runtime: AuthenticationProviderRuntime;
     admission: DatabaseAdmission;
     knowledge: ProviderKnowledgeApplication;
+    runtimeReads?: ProviderRuntimeReadApplication;
+    runtimeMutations?: ProviderRuntimeMutateApplication;
+    verification?: ProviderVerificationApplication;
+    configuration?: ProviderConfigurationApplication;
     status(): BrowserAuthenticationStatus;
     maintenance?(): boolean;
+    /** Controller composition guard, invoked only inside fresh core admission. */
+    assertAvailable?(): void;
     /** Finite proof fixtures only; production derives peer exclusively from socket.remoteAddress. */
     trustedFixturePeer?: string;
     maxInFlight?: number;
@@ -104,7 +112,7 @@ export class AuthenticationHttp {
   async handle(request: IncomingMessage, response: ServerResponse): Promise<boolean> {
     const path = request.url ?? "";
     const cookie = hasProviderCookie(request);
-    if (!path.includes("auth") && !cookie) return false;
+    if (!path.includes("auth") && !RUNTIME_ROUTES.has(path) && !cookie) return false;
     // The slot is held until the response closed AND real provider work ended.
     let counted = false, operationFinished = false, responseFinished = response.writableFinished || response.destroyed;
     const release = () => {
@@ -112,19 +120,24 @@ export class AuthenticationHttp {
     };
     const lifetime = new RequestLifetime(request, response, () => { responseFinished = true; release(); });
     const started: Array<Promise<void>> = [];
-    let unreleased: BrowserRelease | null = null, knowledge = false;
+    let unreleased: BrowserRelease | null = null, knowledge = false, runtimeRead = false, runtimeMutation = false, verification = false, configuration = false;
     try {
       this.boundary(request);
       if (this.deps.maintenance?.()) fail(503, "database_unavailable");
+      if (this.deps.assertAvailable) await this.deps.admission.run(this.deps.assertAvailable, { signal: lifetime.signal });
       if (path === "/api/auth/status" && request.method === "GET") {
         authenticationJson(response, 200, this.deps.status()); return true;
       }
       knowledge = path === "/api/knowledge" && cookie;
+      runtimeRead = path === "/api/runtime/read" && cookie && !!this.deps.runtimeReads;
+      runtimeMutation = path === "/api/runtime/mutate" && cookie && !!this.deps.runtimeMutations;
+      configuration = path === "/api/runtime/configuration" && cookie && !!this.deps.configuration;
+      verification = path === "/api/runtime/tests" && cookie && !!this.deps.verification;
       const routed = ROUTES.get(path);
       // A closed factor route is the same generic denial as an unknown one.
       const operation = routed && (!browserOperationRequires(routed, "factor") || this.deps.runtime.factorsEnabled) ? routed : undefined;
-      if (!operation && !knowledge) fail(401, "invalid_credential");
-      if (request.method !== (knowledge ? "POST" : BROWSER_OPERATIONS[operation!].method)) fail(405, "method_not_allowed");
+      if (!operation && !knowledge && !runtimeRead && !runtimeMutation && !verification && !configuration) fail(401, "invalid_credential");
+      if (request.method !== (knowledge || runtimeRead || runtimeMutation || verification || configuration ? "POST" : BROWSER_OPERATIONS[operation!].method)) fail(405, "method_not_allowed");
       const reserved = operation && browserOperationRequires(operation, "initiating") ? this.#limits.reservedCompletionSlots : 0;
       if (this.#active >= this.#maxInFlight - reserved) fail(503, "database_busy");
       this.#active++; counted = true;
@@ -140,21 +153,31 @@ export class AuthenticationHttp {
       let input: unknown;
       if (request.method === "POST") {
         if (request.headers["content-type"] !== "application/json") fail(400, "invalid_request");
-        const limit = knowledge ? this.#limits.knowledgeBodyBytes : operation!.startsWith("passkey-") ? this.#limits.webAuthnBodyBytes : this.#limits.passwordBodyBytes;
+        const limit = runtimeRead || runtimeMutation || verification || configuration ? Math.min(4096, this.#limits.passwordBodyBytes) : knowledge ? this.#limits.knowledgeBodyBytes : operation!.startsWith("passkey-") ? this.#limits.webAuthnBodyBytes : this.#limits.passwordBodyBytes;
         const text = await readBoundedBody(request, { limit, timeoutMs: this.#limits.bodyTimeoutMs, signal: lifetime.signal });
         input = parseStrictJson(text, knowledge ? this.#limits.knowledgeJson : this.#limits.json);
       }
       lifetime.detachRequest();
       if (this.deps.maintenance?.()) fail(503, "database_unavailable");
-      if (knowledge) {
+      if (knowledge || runtimeRead || runtimeMutation || verification || configuration) {
         const cookieHeader = cookies.get(SESSION_COOKIE);
         if (cookieHeader !== undefined) nativeHeaders.set("cookie", `${SESSION_COOKIE}=${cookieHeader}`);
         const authenticated = this.deps.runtime.authenticateRequest(nativeHeaders, { signal: lifetime.signal });
         started.push(authenticated.settled);
         const actor = await authenticated.result;
         if (!actor) fail(401, "invalid_credential");
+        if (runtimeRead || runtimeMutation || verification || configuration) {
+          const application = configuration ? this.deps.configuration! : verification ? this.deps.verification! : runtimeMutation ? this.deps.runtimeMutations! : this.deps.runtimeReads!;
+          await application.execute(input, actor, { signal: lifetime.signal }, result => {
+            if (this.deps.maintenance?.()) fail(503, "database_unavailable");
+            this.deps.assertAvailable?.();
+            if (lifetime.open) authenticationJson(response, 200, result);
+          });
+          return true;
+        }
         await this.deps.admission.run(() => {
           if (this.deps.maintenance?.()) fail(503, "database_unavailable");
+          this.deps.assertAvailable?.();
           if (!lifetime.open) return;
           let result: unknown;
           try { result = this.deps.knowledge.executeAdmitted(input, actor); }
@@ -198,13 +221,14 @@ export class AuthenticationHttp {
       // whatever happens to this response. No client acknowledgment exists or is implied.
       await admitWithRetry(this.deps.admission, () => {
         if (this.deps.maintenance?.()) fail(503, "database_unavailable");
+        this.deps.assertAvailable?.();
         if (!lifetime.open) fail(499, "client_closed");
         const safe = this.deps.runtime.finishBrowserRelease(result);
         authenticationJson(response, 200, safe, lines);
         unreleased = null;
       }, { signal: lifetime.signal, reserved: true });
     } catch (error) {
-      await this.failed(error, unreleased, knowledge, response, lifetime, started);
+      await this.failed(error, unreleased, knowledge || runtimeRead || runtimeMutation || verification || configuration, response, lifetime, started);
     } finally {
       lifetime.detachRequest();
       // No Promise.race: a timed-out borrow's execution keeps this slot until it really ends.
@@ -246,8 +270,8 @@ export class AuthenticationHttp {
     // Never carry that credential into the replacement error response.
     response.removeHeader("Set-Cookie");
     const known = committed ? new AuthenticationProviderError("outcome_committed", "The change committed.", true) : error;
-    const { status, code, committed: proven } = failure(known, knowledge);
-    if (status === 429 || status === 503) response.setHeader("Retry-After", status === 429 ? "60" : "1");
+    const { status, code, committed: proven, retryAfter } = failure(known, knowledge);
+    if (retryAfter !== false && (status === 429 || status === 503)) response.setHeader("Retry-After", status === 429 ? "60" : "1");
     response.setHeader("Connection", "close");
     authenticationJson(response, status, { code, ...(proven ? { committed: true } : {}) });
   }
@@ -278,7 +302,19 @@ export class AuthenticationHttp {
 }
 
 /** One fixed public failure. No branch distinguishes account, mapping, generation or SQL detail. */
-function failure(error: unknown, knowledge: boolean): { status: number; code: string; committed?: boolean } {
+function failure(error: unknown, knowledge: boolean): { status: number; code: string; committed?: boolean; retryAfter?: false } {
+  if (error instanceof RuntimeAccessDenied || (error instanceof IdentityError && error.code === "runtime_forbidden")) return { status: 403, code: "project_access_denied" };
+  if (error instanceof ScopedRuntimeError) {
+    if (error.code === "invalid_request") return { status: 400, code: "invalid_request" };
+    if (error.code === "test_environment_denied") return { status: 403, code: error.code };
+    if (["no_managed_server", "discovery_limit", "capacity"].includes(error.code)) return { status: 409, code: error.code };
+    // Dispatch is absent from this composition; a timed retry cannot enable it.
+    if (error.code === "test_queue_unavailable") return { status: 503, code: error.code, retryAfter: false };
+    if (["idempotency_conflict", "claim_conflict", "claim_stale", "revision_conflict", "runtime_active", "override_limit", "claim_worktree_mismatch"].includes(error.code)) return { status: 409, code: error.code };
+    if (["profile_not_found", "preset_not_found", "worktree_unavailable"].includes(error.code)) return { status: 400, code: error.code };
+    if (error.code === "outcome_unknown") return { status: 409, code: "outcome_unknown" };
+    return { status: 503, code: "runtime_read_unavailable" };
+  }
   if (error instanceof BoundaryError) return { status: error.status, code: error.code };
   const admission = databaseAdmissionFailure(error);
   if (admission) return { status: admission.status, code: admission.code };
@@ -292,6 +328,7 @@ function failure(error: unknown, knowledge: boolean): { status: number; code: st
       case "rate_limited": return { status: 429, code: "rate_limited" };
       case "capacity": return { status: 503, code: "database_busy" };
       case "provider_failed": return { status: 502, code: "provider_failed" };
+      case "maintenance": case "provider_configuration_restart_required":
       case "provider_unavailable": case "provider_disposed": case "cancelled": return { status: 503, code: "database_unavailable" };
       default: return { status: 500, code: "authentication_failed" };
     }

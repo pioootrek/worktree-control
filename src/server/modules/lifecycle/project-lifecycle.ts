@@ -9,6 +9,9 @@ export interface OperationActor {
   owner: string;
   /** Current transport authority, checked in admitted phases after asynchronous waits. */
   revalidate?: () => void;
+  /** Only a shared human operation creates this verifier from the opaque actor and durable lease. */
+  humanClaim?: (projectId: string, reservationId: string) => import("@/shared/contracts").Reservation;
+  humanTestReservation?: (projectId: string, worktreePath: string | null) => void;
   leaseToken?: string;
   /** Scoped agent leases also bind the authenticated principal and credential. */
   binding?: ReservationBinding;
@@ -43,6 +46,11 @@ export class ProjectLifecycle {
   }
 
   assertReservationAllows(projectId: string, worktreePath: string | null, actor: OperationActor): void {
+    if (actor.humanTestReservation) {
+      if (actor.binding || actor.leaseToken || actor.owner.startsWith("agent:")) throw new ReservationError("claim_stale", "Invalid human test authority.");
+      actor.humanTestReservation(projectId, worktreePath);
+      return;
+    }
     const reservation = this.store.authorizeReservation(
       projectId,
       actor.owner,
@@ -52,6 +60,14 @@ export class ProjectLifecycle {
     if (reservation && reservation.worktreePath !== worktreePath) {
       throw new Error(`Projekt jest zablokowany na ${basename(reservation.worktreePath)} przez ${reservation.owner}.`);
     }
+  }
+
+  requireBoundClaim(projectId: string, reservationId: string, actor: OperationActor): import("@/shared/contracts").Reservation {
+    if (!actor.humanClaim) return this.requireAgentClaim(projectId, reservationId, actor);
+    if (actor.binding || actor.leaseToken || actor.owner.startsWith("agent:")) throw new ReservationError("claim_stale", "Invalid human claim authority.");
+    const claim = actor.humanClaim(projectId, reservationId);
+    if (claim.kind !== "human" || claim.id !== reservationId || claim.projectId !== projectId) throw new ReservationError("claim_stale", "Stale human claim.");
+    return claim;
   }
 
   requireAgentClaim(projectId: string, reservationId: string, actor: OperationActor): import("@/shared/contracts").Reservation {
@@ -198,6 +214,6 @@ export class ProjectLifecycle {
   }
 }
 
-export type LifecycleAccess = Pick<ProjectLifecycle, "serialized" | "requireProject" | "resolveWorktree" | "assertReservationAllows" | "requireAgentClaim">;
+export type LifecycleAccess = Pick<ProjectLifecycle, "serialized" | "requireProject" | "resolveWorktree" | "assertReservationAllows" | "requireAgentClaim"> & Partial<Pick<ProjectLifecycle, "requireBoundClaim">>;
 export type RuntimeCapacity = Pick<ProjectLifecycle, "acquireCapacity" | "releaseCapacity" | "capacityStatus" | "isProjectActive">;
 export type WorktreeMaintenanceAccess = Pick<ProjectLifecycle, "acquireMaintenance" | "acquireScan">;

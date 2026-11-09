@@ -1,8 +1,9 @@
+import { unmanagedFixtureDatabase } from "../server/unmanaged-sqlite-fixture";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { acquireControllerLock } from "../server/controller-lock";
@@ -38,7 +39,7 @@ function withStore<T>(databasePath: string, operation: (authentication: Authenti
 }
 
 function persisted(databasePath: string): { settings: string; audit: Array<{ event_type: string; actor: string }> } {
-  const database = new Database(databasePath, { readonly: true });
+  const database = unmanagedFixtureDatabase(databasePath, { readonly: true });
   try {
     return {
       settings: JSON.stringify(database.prepare("SELECT * FROM controller_settings").all()),
@@ -202,11 +203,11 @@ describe("service install first-run token", () => {
 
     const pending = paths();
     mkdirSync(pending.dataDirectory, { recursive: true, mode: 0o700 });
-    const database = new Database(pending.databasePath);
+    const database = unmanagedFixtureDatabase(pending.databasePath);
     database.exec(readFileSync(new URL("../server/infrastructure/sqlite/fixtures/schema-v26.sql", import.meta.url), "utf8"));
     database.close();
     expect(bootstrapServiceInstallationToken(pending, { terminal: tty, locale: "en" })).toBe(false);
-    const inspected = new Database(pending.databasePath, { readonly: true });
+    const inspected = unmanagedFixtureDatabase(pending.databasePath, { readonly: true });
     try {
       expect((inspected.prepare("SELECT max(version) version FROM schema_migrations").get() as { version: number }).version).toBe(26);
     } finally {

@@ -10,6 +10,7 @@ import type {
   AuthenticationProviderReadiness,
   LocalProvisionInput,
   LocalRecoveryInput,
+  LocalFactorResetSummary,
   ProviderInvalidation,
   ProviderSqliteConnection,
   VerifiedProviderSession,
@@ -132,7 +133,7 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
       await deleteUserSessions(subject);
       await this.#invalidatePasswordProofs(context.adapter, subject);
     });
-    return { providerId: PROVIDER_ID, implementationVersion: IMPLEMENTATION_VERSION, library: { name: "better-auth", version: BETTER_AUTH_VERSION }, schema: "verified" };
+    return { providerId: PROVIDER_ID, implementationVersion: IMPLEMENTATION_VERSION, library: { name: "better-auth", version: BETTER_AUTH_VERSION }, schema: "verified", ...(this.#host.protection.resetLocalFactors ? { localFactorReset: "v1" as const } : {}) };
   }
 
   /**
@@ -348,18 +349,37 @@ class BetterAuthProofProvider implements AuthenticationProviderInstance {
   }
 
   async recoverLocal(input: LocalRecoveryInput): Promise<void> {
+    if (input.factors === "reset") throw new Error("Explicit reset requires the reset capability.");
+    await this.#recover(input, false);
+  }
+
+  async recoverLocalWithFactorReset(input: LocalRecoveryInput): Promise<LocalFactorResetSummary> {
+    if (input.factors !== "reset" || !this.#host.protection.resetLocalFactors || !input.assertCurrent) throw new Error("Recovery unavailable.");
+    return (await this.#recover(input, true))!;
+  }
+
+  async #recover(input: LocalRecoveryInput, reset: boolean): Promise<LocalFactorResetSummary | undefined> {
     const context = await this.#ready().$context;
     const mapping = this.#host.subjects.findByPrincipal(input.principalId);
     if (!mapping) throw new Error("Principal has no provider account.");
     this.#assertPassword(context.password.config, input.newPassword);
+    await this.#options.faultInjection?.beforeRecoveryHash?.();
     const hash = await context.password.hash(input.newPassword);
+    input.assertCurrent?.();
     const subject = mapping.subject;
-    await runWithTransaction(context.adapter, async () => {
+    return runWithTransaction(context.adapter, async () => {
+      input.assertCurrent?.();
+      const current = this.#host.subjects.findByPrincipal(input.principalId);
+      if (current?.subject !== subject || current.linkedAt !== mapping.linkedAt) throw new Error("Recovery mapping changed.");
       await context.internalAdapter.deleteUserSessions(subject);
       if (await context.internalAdapter.findCredentialAccount(subject)) await context.internalAdapter.updatePassword(subject, hash);
       else await context.internalAdapter.linkAccount({ userId: subject, providerId: "credential", accountId: subject, password: hash });
+      const summary = reset ? this.#host.protection.resetLocalFactors!(subject) : undefined;
       this.#host.subjects.record("authentication.provider.password_recovered", { subject, principalId: input.principalId, actor: input.actor });
+      if (reset) this.#host.subjects.record("authentication.provider.factors_reset", { subject, principalId: input.principalId, actor: input.actor });
       await this.#options.faultInjection?.beforeRecoveryCommit?.();
+      input.assertCurrent?.("commit");
+      return summary;
     });
   }
 

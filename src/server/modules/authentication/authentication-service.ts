@@ -34,7 +34,13 @@ const TOKEN_PREFIX = "wsi";
 const OPEN_CREDENTIAL_ID = "open";
 const MODES = new Set<AuthenticationMode>(["legacy", "open", "token", "better-auth"]);
 /** Modes whose enforcement exists in every transport. Selecting any other mode is refused. */
-const ENFORCED_MODES: ReadonlySet<AuthenticationMode> = new Set(["legacy", "token", "open"]);
+const ENFORCED_MODES: ReadonlySet<AuthenticationMode> = new Set(["legacy", "token", "open", "better-auth"]);
+
+/** Bound once by the controller-owned provider lifetime, never by a transport request. */
+export interface AccountModeAuthority {
+  prepare(): Promise<void>;
+  assertReady(): void;
+}
 
 function hashToken(token: string): Buffer {
   return createHash("sha256").update(token, "utf8").digest();
@@ -42,6 +48,7 @@ function hashToken(token: string): Buffer {
 
 export class AuthenticationService implements InstallationAuthority {
   private readonly bootMode: AuthenticationMode;
+  private accountMode?: AccountModeAuthority;
   constructor(
     private readonly store: AuthenticationStore,
     private readonly clock: () => string = () => new Date().toISOString(),
@@ -61,6 +68,23 @@ export class AuthenticationService implements InstallationAuthority {
     return this.context === "controller" ? this.bootMode : this.readPolicy().mode;
   }
 
+  bindAccountMode(authority: AccountModeAuthority): void {
+    if (this.accountMode) throw new Error("Authentication provider lifetime is already bound.");
+    this.accountMode = authority;
+  }
+
+  async prepareAccountMode(): Promise<void> {
+    if (!this.accountMode) throw new AuthenticationError("auth_provider_unavailable", "Account authentication is unavailable.");
+    await this.accountMode.prepare();
+  }
+
+  permitsCredential(actor: AuthenticatedPrincipal): boolean {
+    this.readPolicy();
+    return this.context === "offline" || this.mode() !== "better-auth"
+      || (actor.principalKind === "agent" && actor.authenticationMethod === "agent_token")
+      || (actor.principalKind === "worker" && actor.authenticationMethod === "worker_token");
+  }
+
   /** Returns the installation actor only while token mode is active and the token is current. */
   authenticateInstallation(token: string): CredentialAuthenticatedPrincipal | null {
     const policy = this.readPolicy();
@@ -75,6 +99,7 @@ export class AuthenticationService implements InstallationAuthority {
 
   /** Open mode: every caller acts as the anonymous installation authority, recorded as `none`. */
   anonymousInstallation(): CredentialAuthenticatedPrincipal | null {
+    this.readPolicy(); // Recheck external security fence even in immutable open boot mode.
     if (this.mode() !== "open") return null;
     return {
       principalId: INSTALLATION_PRINCIPAL_ID,
@@ -158,7 +183,8 @@ export class AuthenticationService implements InstallationAuthority {
 
   private requireSelectable(mode: AuthenticationMode, policy: AuthenticationPolicy): void {
     if (mode === "better-auth") {
-      throw new AuthenticationError("auth_provider_unavailable", "Better Auth: to be implemented soon.");
+      if (!this.accountMode) throw new AuthenticationError("auth_provider_unavailable", "Account authentication is unavailable.");
+      this.accountMode.assertReady();
     }
     if (!this.enforcedModes.has(mode)) {
       throw new AuthenticationError("auth_mode_unavailable", `Tryb ${mode} nie jest jeszcze egzekwowany przez ten kontroler.`);

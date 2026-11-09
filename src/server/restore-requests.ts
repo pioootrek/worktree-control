@@ -1,3 +1,4 @@
+import { securityRecoveryBoundary } from "./infrastructure/sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fsyncSync, linkSync, lstatSync, mkdtempSync, openSync, opendirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -140,10 +141,11 @@ export function getControllerRestoreRequestStatus(databasePath: string, actor: R
 
 /** Retention protection from durable S3b receipts, including interrupted requests. */
 export function controllerRestoreBoundary(databasePath: string): { generation: string; createdAt: string | null } {
+  const recovery = securityRecoveryBoundary(resolve(databasePath));
   const directory = `${resolve(databasePath)}.restore-requests`;
   let entries;
-  try { entries = opendirSync(directory); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { generation: checksum([]), createdAt: null }; throw error; }
-  const ids: string[] = []; let createdAt: string | null = null, visited = 0;
+  try { entries = opendirSync(directory); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { generation: checksum(recovery ? [recovery.receipt] : []), createdAt: recovery?.createdAt ?? null }; throw error; }
+  const ids: string[] = recovery ? [recovery.receipt] : []; let createdAt: string | null = recovery?.createdAt ?? null, visited = 0;
   try { for (;;) {
     const entry = entries.readSync(); if (!entry) break;
     if (++visited > 1024) throw new Error("Restore request history exceeds its bound.");
@@ -176,6 +178,18 @@ export function finishControllerRestoreRequest(databasePath: string, actor: Rest
   if (record.operationId !== operationId) return; // A newer authorized retry supersedes this handoff.
   if (record.state === "verified" || record.state === state) return;
   record.state = state; durableJson(path, { payload: record, sha256: checksum(record) });
+}
+
+/** Protected recovery acknowledges actual verified moves, never token authority.
+ * The permanent journal and original request/actor are preserved. */
+export function acknowledgeVerifiedControllerRestoreRequest(databasePath:string,actor:RestoreActor,operationId:string):void {
+  const path=join(`${resolve(databasePath)}.restore-requests`,`${keyFor(actor)}.json`),record=readRecord(path);
+  sameRequest(record,actor);
+  const journal=getOwnedRestoreStatus(databasePath,operationId);
+  if(record.operationId!==operationId || !journal || journal.state!=="verified" || journal.operationId!==operationId
+    || (journal.actor.actorId!==actor.actorId || journal.actor.backupId!==actor.backupId || journal.actor.idempotencyKey!==actor.idempotencyKey))throw new Error("Restore receipt does not match its verified move.");
+  if(record.state==="verified")return;
+  record.state="verified";durableJson(path,{payload:record,sha256:checksum(record)});
 }
 
 /** Offline inspection must not acknowledge or resume any admitted replacement. */

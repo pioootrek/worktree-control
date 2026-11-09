@@ -1,12 +1,42 @@
 import { describe, expect, it } from "vitest";
 import { knowledgePermissions, type KnowledgeRole, type SubjectKind } from "@/shared/contracts/authorization";
-import { effectiveKnowledgePermissions, effectiveRuntimeActions, isAuthorized, type RuntimeAuthority } from "./policy";
+import { effectiveKnowledgePermissions, effectiveRuntimeActions, effectiveHumanRuntimeActions, isAuthorized, type RuntimeAuthority, type HumanRuntimeAuthority } from "./policy";
 
 const subject = { id: "actor", kind: "human" as const, humanSession: true };
 const grant = { principalId: "actor", projectId: "p", permissions: [...knowledgePermissions], revokedAt: null };
 const binding = { principalId: "actor", projectId: "p", role: "reader" as const, revision: 1, revokedAt: null, updatedAt: "now" };
 const context = { grant, binding: null, project: { id: "p", status: "active" as const } };
 describe("shared authorization policy", () => {
+  it("requires the current provider path and an exact explicit runtime reader aggregate", () => {
+    const membership = { principalId: "actor", scope: { kind: "runtime-project" as const, id: "p" }, role: "reader" as const,
+      permissions: ["projects:read"] as ["projects:read"], revision: 1, updatedAt: "now", revokedAt: null };
+    const humanRuntime: HumanRuntimeAuthority = { providerSession: true, project: { id: "p" }, membership };
+    expect(effectiveHumanRuntimeActions(subject, "p", humanRuntime)).toEqual(["projects:read"]);
+    for (const action of ["claims:manage", "runtime:control", "profiles:select", "config:write", "tests:run", "knowledge:read", "env:read"] as const) {
+      expect(isAuthorized(subject, action, { kind: "runtime-project", id: "p" }, { ...context, humanRuntime })).toBe(false);
+    }
+    for (const mutation of [{ role: "manager" }, { permissions: [] }, { permissions: null }, { permissions: ["tests:run"] },
+      { permissions: ["projects:read", "runtime:control"] }, { principalId: "other" }, { revokedAt: "now" },
+      { revision: 0 }, { scope: { kind: "knowledge-project", id: "p" } }, { scope: { kind: "runtime-project", id: "q" } }]) {
+      expect(effectiveHumanRuntimeActions(subject, "p", { ...humanRuntime, membership: { ...membership, ...mutation } as never })).toEqual([]);
+    }
+    for (const authority of [{ ...humanRuntime, providerSession: false }, { ...humanRuntime, project: null },
+      { ...humanRuntime, membership: null }]) expect(effectiveHumanRuntimeActions(subject, "p", authority)).toEqual([]);
+    for (const kind of ["agent", "worker", "installation"] as const) expect(effectiveHumanRuntimeActions({ ...subject, kind }, "p", humanRuntime)).toEqual([]);
+  });
+  it("requires explicit operator actions without granting read, jobs, configuration or ENV", () => {
+    const membership = { principalId: "actor", scope: { kind: "runtime-project" as const, id: "p" }, role: "operator" as const,
+      permissions: ["runtime:control" as const], revision: 1, updatedAt: "now", revokedAt: null };
+    expect(effectiveHumanRuntimeActions(subject, "p", { providerSession: true, project: {id:"p"}, membership })).toEqual(["runtime:control"]);
+    for (const permissions of [[], ["profiles:edit"], ["config:admin"], ["env:use"], ["claims:manage","claims:manage"]]) {
+      expect(effectiveHumanRuntimeActions(subject, "p", {providerSession:true,project:{id:"p"},membership:{...membership,permissions} as never})).toEqual([]);
+    }
+  });
+  it("allows tests-only operator with no implied project/control/claim permissions", () => {
+    const membership = { principalId: "actor", scope: { kind: "runtime-project" as const, id: "p" }, role: "operator" as const,
+      permissions: ["tests:run" as const], revision: 1, updatedAt: "now", revokedAt: null };
+    expect(effectiveHumanRuntimeActions(subject, "p", {providerSession:true,project:{id:"p"},membership})).toEqual(["tests:run"]);
+  });
   it.each<[KnowledgeRole, SubjectKind, string[]]>([
     ["reader", "human", ["knowledge:read", "knowledge:export", "attachments:read"]],
     ["operator", "agent", knowledgePermissions.filter(p => p !== "knowledge:approve")],
@@ -27,7 +57,8 @@ describe("shared authorization policy", () => {
   });
   it("denies unknown actions, resource namespace substitution and all ENV actions even for installation authority", () => {
     const installation = { ...subject, kind: "installation" as const };
-    expect(isAuthorized(installation, "knowledge:read", { kind: "knowledge-project", id: "p" }, context)).toBe(true);
+    expect(isAuthorized(installation, "knowledge:read", { kind: "knowledge-project", id: "p" }, context)).toBe(false);
+    expect(isAuthorized(installation, "knowledge:read", { kind: "knowledge-project", id: "p" }, { ...context, installationAuthenticated: true })).toBe(true);
     for (const kind of ["runtime-project", "dev-vault"] as const) {
       expect(isAuthorized(installation, "knowledge:read", { kind, id: "p" }, context)).toBe(false);
     }

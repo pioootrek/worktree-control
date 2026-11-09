@@ -104,7 +104,7 @@ function layout(databasePath: string, attachmentDirectory: string, roots: string
     }
   }
   const attachment = resolve(attachmentDirectory), root = restoreRoot(databasePath);
-  const reserved = [...targets(databasePath, attachmentDirectory).slice(0, 5), `${databasePath}.owner.lock`, root];
+  const reserved = [...targets(databasePath, attachmentDirectory).slice(0, 5), `${databasePath}.owner.lock`, `${databasePath}.security`, root];
   if (attachment === parent || parent.startsWith(attachment + sep) || reserved.some(path => path === attachment || path.startsWith(attachment + sep) || attachment.startsWith(path + sep))) throw new Error("Unsupported restore path overlap.");
   for (const path of targets(databasePath, attachmentDirectory)) { const stat = info(path); if (stat && (stat.dev !== device || mountId(path) !== mount)) throw new Error("Unsupported restore filesystem layout (mounted target)."); }
 }

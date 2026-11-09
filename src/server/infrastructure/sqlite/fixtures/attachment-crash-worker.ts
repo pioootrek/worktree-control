@@ -34,7 +34,7 @@ if (operation === "hub") {
   upload();
   exportKnowledgeProject(store, identity, project.id, join(root, "export"), attachments, owner, { applicationVersion: "test" });
   // Use a separate isolated target with the same principals, without the project.
-  owned.database.exec("DELETE FROM knowledge_idempotency; DELETE FROM knowledge_attachments; DELETE FROM knowledge_history; DELETE FROM knowledge_tasks; DELETE FROM knowledge_project_grants; DELETE FROM knowledge_projects; DELETE FROM knowledge_idempotency;");
+  (store as unknown as {database:import("better-sqlite3").Database}).database.exec("DELETE FROM knowledge_idempotency; DELETE FROM knowledge_attachments; DELETE FROM knowledge_history; DELETE FROM knowledge_tasks; DELETE FROM knowledge_project_grants; DELETE FROM knowledge_projects; DELETE FROM knowledge_idempotency;");
   fs.rmSync(attachments, { recursive: true });
   run = () => importKnowledgeProject(store, identity, join(root, "export"), attachments, owner);
 }

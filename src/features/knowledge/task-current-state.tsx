@@ -7,7 +7,7 @@ import { useI18n } from "@/i18n/provider";
 import type { TranslationKey } from "@/i18n/messages";
 import { knowledgeSourceHref } from "@/shared/contracts/knowledge-links";
 import type { KnowledgeTaskStateView, TaskCurrentState, TaskDeliveryStage, TaskStateSource } from "@/shared/contracts/knowledge-task-state";
-import { knowledgeRequest } from "./knowledge-client";
+import { knowledgeRequest, type KnowledgeCredential } from "./knowledge-client";
 
 type Tone = "ok" | "bad" | "warn" | "progress" | "partial" | "neutral" | "unknown";
 const TONE: Record<string, Tone> = { merged: "ok", passed: "ok", findings_closed: "ok", verified: "ok", done: "ok", failed: "bad", closed_unmerged: "bad",
@@ -26,7 +26,7 @@ function formatTime(value: string, locale: string): string {
 }
 
 /** Current state shown before the description; refreshed by the existing Knowledge change signal only. */
-export function TaskCurrentState({ token, projectId, taskId, changeVersion, onShowHistory }: { token: string; projectId: string; taskId: string; changeVersion: number; onShowHistory: () => void }) {
+export function TaskCurrentState({ token, projectId, taskId, changeVersion, onShowHistory }: { token: KnowledgeCredential; projectId: string; taskId: string; changeVersion: number; onShowHistory: () => void }) {
   const { t, locale } = useI18n();
   const [view, setView] = useState<KnowledgeTaskStateView | null>(null);
   const [failed, setFailed] = useState(false);

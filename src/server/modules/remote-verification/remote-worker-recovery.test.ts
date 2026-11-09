@@ -238,13 +238,16 @@ function staleCancellations(f: ReturnType<typeof fixture>) {
   const controller = new RemoteVerificationController(f.store, f.store.remoteConnection, f.identity, now);
   const attempts = new RemoteVerificationAttemptService(f.store, now);
   controller.cancel(f.request.id, f.owner);
-  const stale = Array.from({ length: 120 }, (_, index) => {
+  // This is historical pagination data, not the crash boundary under test.
+  // Commit the full >100-item backlog once, using the real operations and
+  // fence. Recovery and all delivery/reopen assertions run after this commit.
+  const stale = f.store.remoteConnection.atomic(() => Array.from({ length: 120 }, (_, index) => {
     const request = controller.submit({ projectId: "project", workerId: "worker", presetId: "node:test",
       commitSha: "a".repeat(40), idempotencyKey: `stale-cancel-${index}` }, f.owner);
     const attempt = attempts.assign({ requestId: request.id, workerId: "worker" }, f.actor);
     controller.cancel(request.id, f.owner);
     return attempt.id;
-  });
+  }));
   controller.recover();
   const first = f.store.getRemoteVerificationAttempt(stale[0])!;
   attempts.report({ attemptId: first.id, expectedVersion: first.version, phase: "cancel_requested" }, f.actor);

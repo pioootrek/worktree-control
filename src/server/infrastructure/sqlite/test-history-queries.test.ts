@@ -1,3 +1,4 @@
+import { ownedFixtureDatabase, unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -43,7 +44,7 @@ function fixture() {
       durations: { queueMs: 1, prepareMs: 2, processMs: 3, cleanupMs: 4, finalizationMs: 5, totalMs: 15, runnerWaitMs: null } },
     ...overrides,
   });
-  return { root, owned, store, project, other, at, filter, history, run, summaries: new TestSummaryQueries(owned.database) };
+  return { root, owned, store, project, other, at, filter, history, run, db:ownedFixtureDatabase(store), summaries: new TestSummaryQueries(ownedFixtureDatabase(store)) };
 }
 
 describe("verification history on the existing SQLite owner", () => {
@@ -72,12 +73,12 @@ describe("verification history on the existing SQLite owner", () => {
       summary: { telemetry: { resources: run.telemetry!.resources } } });
     const legacy = f.run({ queuedAt: f.at(100) }); delete legacy.telemetry!.resources;
     f.store.saveTestRun(legacy);
-    f.owned.database.prepare("UPDATE test_runs SET telemetry_json=? WHERE id=?").run(JSON.stringify(legacy.telemetry), legacy.id);
+    (f.store as unknown as {database:import("better-sqlite3").Database}).database.prepare("UPDATE test_runs SET telemetry_json=? WHERE id=?").run(JSON.stringify(legacy.telemetry), legacy.id);
     expect(f.store.getTestRun(legacy.id)?.telemetry?.resources?.status).toBe("legacy_unknown");
     // Exercise already-stored JSON from the previous release, not only new writes.
-    const json = JSON.parse(f.owned.database.prepare("SELECT summary_json FROM test_run_summaries WHERE run_id=?").pluck().get(legacy.id) as string);
+    const json = JSON.parse(f.db.prepare("SELECT summary_json FROM test_run_summaries WHERE run_id=?").pluck().get(legacy.id) as string);
     delete json.telemetry.resources;
-    f.owned.database.prepare("UPDATE test_run_summaries SET summary_json=? WHERE run_id=?").run(JSON.stringify(json), legacy.id);
+    f.db.prepare("UPDATE test_run_summaries SET summary_json=? WHERE run_id=?").run(JSON.stringify(json), legacy.id);
     expect(f.history.summary({ projectId: f.project.id, runId: legacy.id }).summary.telemetry.resources).toMatchObject({ status: "legacy_unknown", peakSampledRssBytes: null });
     expect(f.history.list(f.filter).items.find(e => e.summary.runId === legacy.id)?.summary.telemetry.resources?.status).toBe("legacy_unknown");
   });
@@ -117,7 +118,7 @@ describe("verification history on the existing SQLite owner", () => {
     const first = f.history.list({ ...f.filter, limit: 3 });
     expect(first.items.map(e => e.summary.runId)).toEqual(runs.slice(0, 3).map(r => r.id));
     f.store.saveTestRun(f.run({ queuedAt: f.at(1) })); // inserted above first page ceiling
-    f.owned.database.prepare("DELETE FROM test_run_summaries WHERE run_id=?").run(runs[3].id);
+    f.db.prepare("DELETE FROM test_run_summaries WHERE run_id=?").run(runs[3].id);
     const second = f.history.list({ ...f.filter, limit: 2, cursor: first.nextCursor });
     expect(second.items.map(e => e.summary.runId)).toEqual(runs.slice(4, 6).map(r => r.id));
     const third = f.history.list({ ...f.filter, cursor: second.nextCursor });
@@ -135,7 +136,7 @@ describe("verification history on the existing SQLite owner", () => {
     for (const invalid of [{ limit: 51 }, { limit: 0 }, { cursor: "x".repeat(2049) }, { unknown: 1 }, { dirty: "false" }, { processOutcome: "secret" }, { from: "2026-02-30T00:00:00.000Z" }, { from: f.at(1), to: f.at() }, { from: f.at(-32 * 86400_000) }]) {
       expect(() => f.history.list({ ...f.filter, ...invalid })).toThrow("Invalid verification");
     }
-    const save = f.owned.database.transaction(() => { for (let i = 0; i < 1002; i++) f.summaries.save(f.run({ queuedAt: f.at(i) })); }); save();
+    const save = f.db.transaction(() => { for (let i = 0; i < 1002; i++) f.summaries.save(f.run({ queuedAt: f.at(i) })); }); save();
     const first = f.history.list({ ...f.filter, presetId: "node:missing" });
     expect(first.items).toEqual([]);
     expect(first.selection).toMatchObject({ scanned: 1000, scanLimit: 1000, scanLimitReached: true });
@@ -226,7 +227,7 @@ describe("verification history on the existing SQLite owner", () => {
         recoveredAt: milestone === "recovered" ? f.at() : null };
     }
     f.store.saveTestRun(baseline); f.store.saveTestRun(run);
-    const persisted = f.owned.database.prepare("SELECT terminal FROM test_run_summaries WHERE run_id=?").get(run.id) as { terminal: number };
+    const persisted = f.db.prepare("SELECT terminal FROM test_run_summaries WHERE run_id=?").get(run.id) as { terminal: number };
     expect(persisted.terminal).toBe(terminal ? 1 : 0);
     const metrics = f.history.metrics(f.filter);
     const completed = population === "completed_execution";
@@ -280,18 +281,24 @@ describe("verification history on the existing SQLite owner", () => {
   it("bounds read work at representative 5000/project, 50000/global volume using the existing index", () => {
     const f = fixture();
     const projects = [f.project, f.other, ...Array.from({ length: 8 }, (_, i) => f.store.addProject({ name: `P${i}`, repositoryPath: join(f.root, `p${i}`), port: 3300 + i, executable: "node", args: [] }))];
-    f.owned.database.transaction(() => {
-      for (const p of projects) for (let i = 0; i < 5000; i++) f.summaries.save(f.run({ projectId: p.id, queuedAt: f.at(i) }));
-    })();
-    const plan = f.owned.database.prepare(`EXPLAIN QUERY PLAN ${historyScanSql(f.filter)}`).all(f.project.id, f.filter.from, f.filter.to, "\uffff", 1001) as Array<{ detail: string }>;
+    // Construct volume offline; the measured query path below uses the real
+    // protected store. No runtime permission or authority table is seeded.
+    f.store.close();
+    const seed=unmanagedFixtureDatabase(f.owned.canonicalPath);
+    try{const summaries=new TestSummaryQueries(seed);seed.transaction(()=>{
+      for (const p of projects) for (let i = 0; i < 5000; i++) summaries.save(f.run({ projectId: p.id, queuedAt: f.at(i) }));
+    })();}finally{seed.close();}
+    f.store=new SqliteStateStore(f.owned.canonicalPath);cleanup.push(()=>f.store.close());
+    f.db=ownedFixtureDatabase(f.store);f.history=new VerificationHistoryService(f.store);f.summaries=new TestSummaryQueries(f.db);
+    const plan = f.db.prepare(`EXPLAIN QUERY PLAN ${historyScanSql(f.filter)}`).all(f.project.id, f.filter.from, f.filter.to, "\uffff", 1001) as Array<{ detail: string }>;
     expect(plan.some(p => p.detail.includes("test_summaries_project_history") && p.detail.includes("SEARCH"))).toBe(true);
     expect(plan.some(p => /SCAN s|TEMP B-TREE/.test(p.detail))).toBe(false);
     const start = performance.now(), page = f.history.list(f.filter), pageMs = performance.now() - start;
     const metricStart = performance.now(), metrics = f.history.metrics(f.filter), metricsMs = performance.now() - metricStart;
     expect(page.selection.scanned).toBe(50); expect(metrics.selection).toMatchObject({ scanned: 5000, truncated: false, matched: 5000 });
-    const overflow = f.run({ queuedAt: f.at(6000) }); f.owned.database.transaction(() => f.summaries.save(overflow))();
+    const overflow = f.run({ queuedAt: f.at(6000) }); f.db.transaction(() => f.summaries.save(overflow))();
     expect(f.history.metrics({ ...f.filter, presetId: "missing" }).selection).toMatchObject({ scanned: 5000, truncated: true, matched: 0 });
-    const cursorPlan = f.owned.database.prepare(`EXPLAIN QUERY PLAN ${historyScanSql({ ...f.filter, before: { queuedAt: f.at(1000), runId: overflow.id } })}`).all(f.project.id, f.filter.from, f.at(1000), overflow.id, 1001) as Array<{ detail: string }>;
+    const cursorPlan = f.db.prepare(`EXPLAIN QUERY PLAN ${historyScanSql({ ...f.filter, before: { queuedAt: f.at(1000), runId: overflow.id } })}`).all(f.project.id, f.filter.from, f.at(1000), overflow.id, 1001) as Array<{ detail: string }>;
     expect(cursorPlan.some(p => /SCAN s|TEMP B-TREE/.test(p.detail))).toBe(false);
     console.info("verification-history-cost", JSON.stringify({ globalRows: 50000, projectRows: 5000, pageMs, metricsMs, pageResponseBytes: Buffer.byteLength(JSON.stringify(page)), metricsResponseBytes: Buffer.byteLength(JSON.stringify(metrics)), plan, cursorPlan }));
   }, 120_000);

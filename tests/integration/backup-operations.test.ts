@@ -32,17 +32,12 @@ describe("operational backups in the packaged controller", () => {
     }, 10000, () => "Backup did not complete.");
     await f.setMode(project, "gate");
     const starting = f.requestResult(`/api/projects/${project.id}/operation`, { method: "POST", body: JSON.stringify({ operation: "start", worktreePath: project.main }) });
-    let startOutcome = "pending"; void starting.then(result => { startOutcome = `HTTP ${result.status}`; });
     const pids = await waitFor(async () => { const pids = await f.ownedPids(project); return pids.length ? pids : null; }, 10000, () => "Gated start did not spawn its owned fixture.");
     const input = { action: "restore", backupId: copy.backupId, idempotencyKey: "cancel-start", confirmation: "replace-entire-installation" };
     const accepted = await f.request<RestoreOperation>("/api/backups", { method: "POST", body: JSON.stringify(input) });
-    const completed = await waitFor(async () => {
-      try {
-        const status = await f.request<RestoreOperation>("/api/backups", { method: "POST", body: JSON.stringify({ action: "status", backupId: copy.backupId, idempotencyKey: input.idempotencyKey }) });
-        return status.state === "verified" ? status : null;
-      } catch { return null; }
-    }, 10000, () => `Restore waited for the gated readiness timeout. start=${startOutcome}, ownedAlive=${pids.map(pid => { try { process.kill(pid, 0); return true; } catch { return false; } })}\n${f.diagnostics()}`);
-    expect(completed.operationId).toBe(accepted.operationId);
+    await f.recoverRestore();
+    const completed=JSON.parse(await readFile(join(f.paths.data,"state.sqlite3.backup-operations","handoff.json"),"utf8")).payload as RestoreOperation;
+    expect(completed).toMatchObject({operationId:accepted.operationId,state:"verified"});
     expect((await starting).ok).toBe(false);
     for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow();
   });
@@ -52,7 +47,7 @@ describe("operational backups in the packaged controller", () => {
     const admin = <T>(input: unknown) => f.request<T>("/api/identity/admin", { method: "POST", headers: { Authorization: `Bearer ${f.installationToken}` }, body: JSON.stringify(input) });
     const { principal } = await admin<{ principal: { id: string } }>({ action: "create-agent" });
     const scopedCredential = await admin<{ token: string }>({ action: "issue-agent-token", principalId: principal.id, label: "restore fixture" });
-    expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${scopedCredential.token}` } })).status).toBe(200);
+    expect((await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${scopedCredential.token}`, "x-worktree-control-token": scopedCredential.token } })).status).toBe(200);
     const key = "live-copy";
     const copy = await f.request<BackupOperation>("/api/backups", { method: "POST", body: JSON.stringify({ action: "create", idempotencyKey: key }) });
     const complete = await waitFor(async () => {
@@ -75,25 +70,34 @@ describe("operational backups in the packaged controller", () => {
     await waitFor(async () => (await f.testEvents(project)).some(event => event.event === "start") || null, 10000, () => "Owned finite fixture did not start.");
     const input = { action: "restore", backupId: copy.backupId, idempotencyKey: "whole-installation", confirmation: "replace-entire-installation" };
     const accepted = await f.request<RestoreOperation>("/api/backups", { method: "POST", body: JSON.stringify(input) });
-    const restored = await waitFor(async () => {
-      try {
-        const result = await f.request<RestoreOperation>("/api/backups", { method: "POST", body: JSON.stringify({ action: "status", backupId: copy.backupId, idempotencyKey: input.idempotencyKey }) });
-        return result.state === "verified" ? result : null;
-      } catch { return null; } // Explicit wait for this controlled listener restart, not a test retry.
-    }, 20000, () => "Controller did not reconnect after restore.");
-    expect(restored.operationId).toBe(accepted.operationId);
+    const previousToken=f.installationToken;
+    await f.recoverRestore();
+    const restored=JSON.parse(await readFile(join(f.paths.data,"state.sqlite3.backup-operations","handoff.json"),"utf8")).payload as RestoreOperation;
+    expect(restored).toMatchObject({operationId:accepted.operationId,state:"verified"});
+    expect((await f.requestResult("/api/identity",{headers:{Authorization:`Bearer ${previousToken}`,"x-worktree-control-token":previousToken}})).status).toBe(401);
     for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow();
     expect((await f.testEvents(project)).some(event => event.event === "cancel")).toBe(true);
     expect(run.id).toBeTruthy();
     const dashboard = await f.request<ControllerDashboardResponse>("/api/dashboard");
     expect(dashboard.capacity.enabled).toBe(false);
     expect(dashboard.projects[0]?.runtime.phase).toBe("stopped");
-    const scoped = await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${scopedCredential.token}` } }); expect(scoped.status).toBe(401);
+    const scoped = await f.requestResult("/api/identity", { headers: { Authorization: `Bearer ${scopedCredential.token}`, "x-worktree-control-token": scopedCredential.token } }); expect(scoped.status).toBe(401);
     const policy = await f.request<BackupOverview>("/api/backups"); expect(policy.policy.uiActions).toEqual(["create", "restore"]); expect(policy.policy.intervalSeconds).toBeNull();
     await f.request("/api/settings/capacity", { method: "POST", body: JSON.stringify({ enabled: true, limit: 2 }) });
-    const repeated = await f.request<RestoreOperation>("/api/backups", { method: "POST", body: JSON.stringify(input) }); expect(repeated.operationId).toBe(accepted.operationId);
+    const repeated=await f.requestResult("/api/backups",{method:"POST",headers:{Authorization:`Bearer ${previousToken}`,"x-worktree-control-token":previousToken},body:JSON.stringify(input)});expect(repeated.status).toBe(403);expect(repeated.body).toMatchObject({code:"backup_forbidden"});
     expect((await f.request<ControllerDashboardResponse>("/api/dashboard")).capacity.enabled).toBe(true);
     await mcp.close();
+  });
+  it("fences an offline CLI restore before listeners and resumes only through protected CLI with a fresh token",async()=>{
+    fixture=await startControllerFixture(0,[],{backups:true});const f=fixture,old=f.installationToken;
+    const copy=JSON.parse(await f.cli(["backup","now","--idempotency-key","offline-copy"])) as BackupOperation;
+    await waitFor(async()=>{const result=JSON.parse(await f.cli(["backup","status","--idempotency-key","offline-copy"])) as BackupOperation;return result.state==="succeeded"?true:null;},10000,()=>"Offline fixture backup did not finish.");
+    await f.stop();
+    await f.cli(["backup","restore",join(f.paths.base,"backups",copy.backupId),"--idempotency-key","offline-restore"]);
+    await expect(f.restart()).rejects.toThrow(/security_fence_recovery_required/);
+    await f.recoverRestore();
+    expect((await f.requestResult("/api/identity",{headers:{Authorization:`Bearer ${old}`,"x-worktree-control-token":old}})).status).toBe(401);
+    expect((await f.requestResult("/api/dashboard")).status).toBe(200);
   });
   it("defaults to disabled operations and refuses project authority and service-policy mutation", async () => {
     fixture = await startControllerFixture(0);

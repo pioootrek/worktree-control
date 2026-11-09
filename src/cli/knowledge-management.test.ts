@@ -1,7 +1,8 @@
+import { unmanagedFixtureDatabase } from "../server/unmanaged-sqlite-fixture";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { acquireControllerLock } from "../server/controller-lock";
 import { calculateHubImportPlanHash, KnowledgeError, type HubImportMapping, type HubImportPlan } from "../server/modules/knowledge";
@@ -74,7 +75,7 @@ describe("knowledge execute-import CLI authentication", () => {
     const openOutput: string[] = [];
     runHubImportExecuteCommand(args(file, "open"), paths, { environment: {}, verifyPlan, write: line => openOutput.push(line) });
     expect(JSON.parse(openOutput[0]!)).toMatchObject({ actorPrincipalId: "installation", authenticationMethod: "none" });
-    const database = new Database(paths.databasePath, { readonly: true });
+    const database = unmanagedFixtureDatabase(paths.databasePath, { readonly: true });
     expect(database.prepare("SELECT target_project_id, actor_principal_id, authentication_method, status FROM knowledge_import_batches").all())
       .toEqual([{ target_project_id: "open", actor_principal_id: "installation", authentication_method: "none", status: "published" }]);
     database.close();

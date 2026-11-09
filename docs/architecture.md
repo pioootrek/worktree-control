@@ -1,11 +1,27 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-11-06"
+last_reviewed: "2026-11-08"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
 
 # Architecture decisions
+
+## Current A5 account integration
+
+Production bootstrap now validates the actual pinned optional provider, canonical
+HTTPS configuration, external fence and existing owner enrollment before account
+mode can be selected or listeners opened. The shared bounded adapter is publicly
+mounted only for the immutable active RBAC boot. Individual agents keep explicit
+credential ceilings; diagnostic logs/storage/capacity have independent grants.
+Unconverted cookie and broad privileged operations deny. The optional provider
+artifact remains separate from Community. See the current
+[operator contract](authentication.md#account-mode-better-auth) for the transport
+inventory, protected CLI, account dashboard and installed acceptance. The static
+dashboard selects the separate account dashboard only for an active
+`better-auth` boot. Older slice descriptions below record their original
+boundaries; A5 supersedes the unconditional mode-refusal, missing-public-mount
+and missing-GUI statements. General ENV roles remain unimplemented.
 
 ## Runtime shape
 
@@ -108,6 +124,19 @@ again at completion. Queue counts and scheduling candidates use filtered SQL
 queries that do not hydrate historical log tails. Controller shutdown cancels
 active jobs; stale queued or running records become `interrupted` during recovery.
 
+Scoped finite verification adds independent `tests:run` authorization in the
+verification application module. Migration 44 writes an immutable requester
+row atomically with enqueue, binding principal, credential, project, originating
+session and any required reservation/hash. Existing jobs and credentials receive
+no backfill. The same queue checks current authority at dispatch and immediately
+before spawn; it retains existing process ownership and cleanup semantics.
+Own-run reads/waits use an allowlist through the shared status sampler and
+recheck authority after admission. New sessions with the same credential may
+read retained results; cancellation remains restricted to the originating
+session. Server-profile inheritance requires separate ENV authority and is
+denied for these scoped enqueues. Raw HTTP runtime routes remain closed.
+See [finite verification](authentication.md#independently-delegated-finite-verification).
+
 Queued verification records bounded Git source observations at enqueue, before
 spawn, and after owned-process cleanup. Preparation consumes the same global
 slot and per-worktree exclusion as a running job. A changed or unavailable
@@ -136,6 +165,53 @@ remote configuration. This operation uses the existing singleton connection and
 locks; it adds no process signalling, database owner or report protocol.
 See the [remote verification setup contract](remote-verification-plan.md) for
 commands, proof assumptions, retained artifacts and remaining acceptance gates.
+
+The production authentication bootstrap owns one lazy provider composition.
+Protected administration and the internal browser preparation method share its
+runtime, configuration pin, current-session authority and IdentityService.
+Ordinary-restart issuance recovery runs once on the existing store before load;
+P3b refuses unacknowledged restore before opening the store; its protected quarantine receipt permits subsequent recovery without erasing provenance. One disposal joins
+accepted administration/preparation and drains the provider before SQLite closes.
+A5 validates account readiness before mode selection and public browser mounting. See
+[shared provider composition](authentication-reference.md#shared-controller-provider-composition-p1)
+for explicit engineering limits. P2a adds an explicit runtime reader aggregate
+(schema 45), protected local administration and current-provider-session reads
+through the existing scoped projections and controller facade. Discovery yields
+the same connection admission and rechecks before result delivery. Humans have
+no agent lease ownership. P2b1 adds explicit operator action subsets and actual
+provider-session human leases through shared runtime operations and a closed
+mutate route. Schema 46 retains reservations on the sole connection, adds a
+permanent bound marker, finite-deadline/evidence sidecar and bounded durable
+intent ledger. The existing lifecycle locks, capacity and process verifier are
+reused; pending/interrupted intent never reruns automatically. Exact original
+membership/session authority fences mutation and delivery, including replays.
+See [human runtime leases](authentication-reference.md#human-runtime-operators-and-leases-p2b1).
+P2b2 adds human tests-only discovery/enqueue/own-run status/wait/cancel on the
+existing finite queue and shared status budgets. Schema 47 keeps a durable
+provider-bound run marker and separate immutable requester attribution. A
+provider-owned native-row reference revalidates original current session and
+membership without constructing an agent or trusting persistence as authority.
+Missing attribution fails closed. Original no-claim/exact-claim fences govern
+dispatch and replay; all human own-run access retains its original session and
+membership revision, including completed history. P2c supplies explicit literal
+profile selection and timeout-only configuration below. A5 mounts the converted public workflows and denies the remaining unsupported operations.
+
+### Human configuration operations
+
+`HumanConfigurationService` accepts only actual provider-session actors and uses
+IdentityService, the existing ProjectLifecycle lock/admission and discovered
+worktrees/presets. ControlService and the closed internal authentication HTTP
+adapter call that shared application. Profile selection and timeout-only overrides
+are independent explicit human permissions, with no implied runtime or ENV rights.
+
+Schema 48 extends the existing bounded human runtime intent ledger with a typed
+configuration context and marker. Original session/evidence/membership and
+no-claim or exact pinned-lease context fence both writes and receipt replay.
+SqliteStateStore shares the agent configuration mutation/revision/audit fragment;
+the human transaction also completes the durable receipt on the sole connection.
+No new lifecycle, queue, lock map, capacity counter or provider connection is added.
+Selection never controls processes; queued timeout snapshots remain unchanged.
+See [the bounded contract](authentication-reference.md#human-literal-profiles-and-preset-timeouts-p2c).
 
 ## Resource policy
 
@@ -495,14 +571,15 @@ admission after waits.
 
 Version-2 restore handoffs persist active `executionMode` separately from the
 latest configured authentication policy. Execution uses the former and the
-current captured token ID; startup restores the latter before capturing the new
-boot mode. Old format-1 handoffs use their historical policy mode. New malformed,
-unknown or inconsistent records fail closed. Existing restore revocation fences
-and owner locks remain; A5 provider-session resurrection remains unresolved.
+current captured token ID. Old format-1 handoffs use their historical policy mode.
+P3b requires protected quarantine before the next boot: captured policy/token
+remain evidence, resumed mode is explicit, and a durable receipt follows handoff
+acknowledgement. Malformed records fail closed; A5 transport/cutover acceptance
+remains open.
 
 New databases default to `token` and cannot
 start until a token has been generated. Existing databases migrate to `legacy`;
-`open` is explicit and `better-auth` is an unavailable provider. Installation
+`open` is explicit and `better-auth` requires the configured optional provider. Installation
 tokens are stored as verifiers, and rotation invalidates active sessions.
 Local administration uses an owner-only Unix socket while running or the
 singleton lock while stopped. Scoped knowledge credentials keep their grants;
@@ -514,8 +591,8 @@ the active policy when no token variable is present, including open mode.
 
 The first A3 slice adds a versioned server-only provider contract and explicit
 local loader, exercised by a private Better Auth workspace proof. Startup
-does not load it and account mode stays unavailable. Explicit protected CLI
-maintenance uses a single lazy runtime without mounting browser login. Controller
+loads it only for an active RBAC boot after validated readiness. Protected CLI
+maintenance shares that same lazy lifetime. Controller
 migration 38 owns the empty namespaced provider tables and explicit subject-to-owner
 mapping. Controller migration 39 adds only the `provider_session` Knowledge
 history method, preserving rows, IDs, timestamps, indexes and deleted-ID
@@ -542,10 +619,10 @@ Unconverted HTTP and separate MCP requests carrying provider cookies are denied
 before compatible installation authority, including open mode. Production main
 has no browser-composition caller. Provider maintenance is reached only through
 the protected CLI/private Unix socket. See the
-[browser contract](authentication.md#bounded-browser-adapter).
+[browser contract](authentication-reference.md#bounded-browser-adapter).
 
 The isolated adapter also serves
-[closed factor routes](authentication.md#closed-factor-http-api). The runtime dispatches
+[closed factor routes](authentication-reference.md#closed-factor-http-api). The runtime dispatches
 a closed operation table and returns an opaque release plus a separate settlement
 promise, so a response slot outlives a timed-out borrow until its callback really ends.
 A final check against current rows, the durable publication marker and header emission form one synchronous
@@ -553,7 +630,7 @@ admitted phase. Accepted cleanup uses reserved queue room on the same gate, with
 lock, counter or connection.
 
 Current isolated provider API is contract 5, storage revision 3, implementation
-`0.0.0-proof.5` and core schema 43. Earlier versions evolved as follows.
+`0.0.0-proof.5` and core schema 49. Earlier versions evolved as follows.
 Provider API contract 2 requires durable `signOut`; version 1 fails compatibility
 checks. Contract 3 adds the application-owned `host.protection` port: the provider
 calls it synchronously inside its open transaction, and `AccountProtection` keeps
@@ -563,8 +640,8 @@ in-memory ID records tied to the exclusive borrow. Issuers are refused before mi
 at the bound. Schema 41 keeps session issuance durable: each new session commits with a
 `pending` marker, `may_publish` commits before any cookie leaves, and the owner's one
 ordinary-restart recovery removes `pending` rows before an issuer can load. Installation-wide
-row and batch bounds are required inputs. A recognized restore refuses that recovery. See
-[durable issuance](authentication.md#closed-factor-http-api).
+row and batch bounds are required inputs. An unacknowledged restore refuses that recovery before store opening; a protected quarantine receipt permits subsequent boot recovery. See
+[durable issuance](authentication-reference.md#closed-factor-http-api).
 The owning shutdown helper disposes the optional provider after external
 producers/listeners/accepted responses drain and before service/SQLite close.
 A rejected disposal reports unconfirmed cleanup and retains both owner locks;
@@ -572,7 +649,7 @@ concurrent calls share completion or failure. Partial-load disposal failure is
 also reported honestly. Raw library logs/router errors are replaced with fixed
 events, including errors that the native router would otherwise print directly.
 Local provider modules are trusted code, not sandboxed plugins. See the
-[proof contract and limitations](authentication.md#optional-provider-proof-first-a3-slice).
+[proof contract and limitations](authentication-reference.md#optional-provider-proof-first-a3-slice).
 
 Protected provider administration shares one server-only application across
 offline CLI and the private socket. Short config/status/principal phases use
@@ -686,7 +763,7 @@ Current session/mapping/principal state and original expiry are checked before
 ordinary grants/role ceilings and replay. Safe identity metadata has no A2
 credential. No provider reentry or notification-only cache authorizes work.
 Owner/runtime/vault privileges remain denied. See the
-[implemented API](authentication.md#provider-authorization-handoff).
+[implemented API](authentication-reference.md#provider-authorization-handoff).
 Production browser loading/account mode and broader callback coverage remain
 separate acceptance gates. The bounded isolated browser API already exists. The [proof coverage table](../packages/auth-provider-better-auth-proof/README.md#live-admission-coverage)
 records what the strict integration tests exercise and what remains open.
@@ -782,3 +859,39 @@ worktree-control service install --refresh
 Without `--refresh`, installation refuses to replace a definition that points
 at different paths or settings. Uninstall removes only the user-service
 artifact and preserves the database, tokens, configuration, and logs.
+
+### Protected recovery boundary (P3a)
+
+The shared production provider now supports password recovery for existing active
+humans and the single active owner. Private CLI input defaults to preserving
+factors; explicit `factors: "reset"` requires a new password and the provider's
+`localFactorReset: "v1"` readiness plus separate reset method. Password, sessions,
+factor bindings, challenge authority and account generation change in one sole
+connection transaction. IDs, roles, grants, audit, TOTP steps and account budgets
+remain. See [authentication](authentication.md#protected-factor-loss-recovery-p3a) for the operator contract.
+P3b now requires an external checkpoint and protected quarantine receipt before restored provider loading. Public account activation and A5 transport enforcement remain separate gates.
+
+### External restore checkpoint and protected resume (P3b)
+
+Migration49 adds a fixed SQLite checkpoint and authority-table triggers, preserving
+migrations1..48. The sole core/provider connection publishes a private external
+pending witness from the BEFORE-trigger observer before authority rows change,
+and a confirmed witness after FULL SQLite COMMIT.
+Normal confirmed restarts preserve current rights. Supported restore and raw
+DB-only rollback fail closed before provider/listeners, including older schemas.
+The bounded witness binds the canonical database path and installation outside
+the application backup payload; custom state-directory nesting does not change
+that boundary. Whole-host rollback including the witness is outside this local
+OS-owner trust model.
+
+Protected offline `auth fence inspect/establish/resume` uses both singleton locks
+and an exact preflight. Resume quarantines restored credentials, sessions, factors,
+passwords, grants, leases and pending work, preserves the same owner and history,
+then acknowledges the existing handoff and publishes a durable receipt. No public
+session or token can perform it. Captured mode/token policy remains historical
+evidence; resumed mode is explicit, and old verifiers stay invalid. Schedules and
+vault use an additional receipt floor while retaining their separate signed proof.
+See [operator flow and crash protocol](authentication.md#external-security-fence-and-protected-resume-p3b).
+A5 implements validated account selection/public mounting, explicit agent diagnostics
+and the transport deny inventory. Independent review and verified live/client
+migration remain release gates. The five historical factor negatives remain visible.

@@ -1,3 +1,5 @@
+import { rmSync } from "node:fs";
+import { securityTriggers } from "../security-fence-migration";
 import type Database from "better-sqlite3";
 import { rebuildTable } from "../verification-project-migration";
 
@@ -16,13 +18,45 @@ export const WITHOUT_AUTHENTICATION_PROVIDER_STORAGE = `DROP TABLE authenticatio
   DROP TABLE "authentication_ba_verification"; DROP TABLE "authentication_ba_user";
   DELETE FROM schema_migrations WHERE version >= 38;`;
 
-/**
- * Only for synthetic old-schema fixtures: removes migration 43's column and
- * record so a current test database can be rewound to schema 42. The launch
- * preset CHECK stays at the latest bootstrap shape, which inspection accepts at
- * every older version (like the other latest constraints these fixtures keep).
- */
+/** Only synthetic fixture databases; production migrations and checksums stay immutable. */
+export function rewindHumanConfiguration(database: Database.Database): void {
+  if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=49").get()) {
+    for(const trigger of securityTriggers) database.exec(`DROP TRIGGER IF EXISTS ${trigger.name}`);
+    database.exec("DROP TABLE security_checkpoint; DELETE FROM schema_migrations WHERE version=49");
+    // A synthetic older release never owned an external witness. This helper is
+    // fixture construction only; production restore never removes that evidence.
+    if(database.name!==":memory:")rmSync(`${database.name}.security`,{recursive:true,force:true});
+  }
+  if (!database.prepare("SELECT 1 FROM schema_migrations WHERE version=48").get()) return;
+  database.exec("ALTER TABLE human_runtime_intents DROP COLUMN configuration_context_json; ALTER TABLE human_runtime_intents DROP COLUMN configuration_bound; DELETE FROM schema_migrations WHERE version=48");
+  rebuildTable(database, "runtime_human_memberships", "BETWEEN 1 AND 6", "BETWEEN 1 AND 4");
+}
+/** Remove schema47 job attribution before earlier synthetic fixture rewinds. */
+export function rewindHumanTestRuns(database: Database.Database): void {
+  rewindHumanConfiguration(database);
+  if (!database.prepare("SELECT 1 FROM schema_migrations WHERE version=47").get()) return;
+  database.exec("DROP TABLE human_test_run_intents; DROP TABLE human_test_run_requesters; ALTER TABLE test_runs DROP COLUMN provider_bound; DELETE FROM schema_migrations WHERE version=47");
+  rebuildTable(database, "runtime_human_memberships", "BETWEEN 1 AND 4", "BETWEEN 1 AND 3");
+}
+export function rewindHumanRuntime(database: Database.Database): void {
+  rewindHumanTestRuns(database);
+  if (!database.prepare("SELECT 1 FROM schema_migrations WHERE version=46").get()) return;
+  database.exec("DROP TABLE human_runtime_intents; DROP TABLE human_runtime_leases; ALTER TABLE reservations DROP COLUMN provider_bound; DELETE FROM schema_migrations WHERE version=46");
+  rebuildTable(database, "runtime_human_memberships", "CHECK(role IN ('reader','operator'))", "CHECK(role='reader')");
+  // Synthetic fixtures use empty memberships. Restore the exact original CHECK.
+  const sql = (database.prepare("SELECT sql FROM sqlite_master WHERE name='runtime_human_memberships'").get() as {sql:string}).sql;
+  const start = sql.indexOf("CHECK(json_valid(permissions_json)"), end = sql.indexOf(",\n  revision", start);
+  if (start < 0 || end < 0) throw new Error("Unknown membership fixture shape");
+  rebuildTable(database, "runtime_human_memberships", sql.slice(start, end), `CHECK(permissions_json='["projects:read"]')`);
+}
 export function rewindGodotWeb(database: Database.Database): void {
+  rewindHumanRuntime(database);
+  if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=45").get()) {
+    database.exec("DROP TABLE runtime_human_memberships; DELETE FROM schema_migrations WHERE version=45");
+  }
+  if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=44").get()) {
+    database.exec("DROP TABLE test_run_requesters; DELETE FROM schema_migrations WHERE version=44");
+  }
   if (!database.prepare("SELECT 1 FROM schema_migrations WHERE version=43").get()) return;
   database.transaction(() => {
     database.exec("ALTER TABLE projects DROP COLUMN godot_web_json; DELETE FROM schema_migrations WHERE version=43");

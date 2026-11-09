@@ -1,10 +1,11 @@
+import { unmanagedFixtureDatabase } from "../server/unmanaged-sqlite-fixture";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import Database from "better-sqlite3";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import { acquireControllerLock } from "../server/controller-lock";
@@ -41,10 +42,10 @@ describe("identity management CLI", () => {
     store.close();
     const expiry = new Date(Date.now() + 3600_000).toISOString();
     for (const project of projects) {
-      await runIdentityCommand(["set-runtime-delegation", "--principal-id", principalId, "--project-id", project.id, "--actions", "projects:read,claims:manage,profiles:select,config:write", "--expires-at", expiry, "--expected-revision", "0"], appPaths, dependencies);
+      await runIdentityCommand(["set-runtime-delegation", "--principal-id", principalId, "--project-id", project.id, "--actions", "projects:read,claims:manage,profiles:select,config:write,tests:run", "--expires-at", expiry, "--expected-revision", "0"], appPaths, dependencies);
       expect(JSON.parse(lines.pop()!).delegation).toMatchObject({ sponsorId: owner.principalId, revision: 1, expiresAt: expiry });
     }
-    const scopes = projects.map(project => ({ projectId: project.id, actions: ["projects:read", "claims:manage", "profiles:select", "config:write"] }));
+    const scopes = projects.map(project => ({ projectId: project.id, actions: ["projects:read", "claims:manage", "profiles:select", "config:write", "tests:run"] }));
     await runIdentityCommand(["issue-runtime-credential", "--principal-id", principalId, "--label", "Private client", "--projects-json", JSON.stringify(scopes), "--expires-at", expiry], appPaths, dependencies);
     expect(lines).toHaveLength(1);
     const issued = JSON.parse(lines.pop()!);
@@ -90,7 +91,7 @@ describe("identity management CLI", () => {
     ["list-runtime-access", "--principal-id", "agent", "--token", "secret"],
     ["list-runtime-access", "--principal-id", "agent", "trailing"],
     ["issue-runtime-credential", "--principal-id", "agent", "--label", "client", "--projects-json", "@file"],
-    ["issue-runtime-credential", "--principal-id", "agent", "--label", "client", "--projects-json", '[{"projectId":"p","actions":["tests:run"]}]'],
+    ["issue-runtime-credential", "--principal-id", "agent", "--label", "client", "--projects-json", '[{"projectId":"p","actions":["tests:launch"]}]'],
     ["issue-runtime-credential", "--principal-id", "agent", "--label", "client", "--projects-json", '[{"projectId":"p","actions":["projects:read"],"sponsorId":"owner"}]'],
     ["issue-runtime-credential", "--principal-id", "agent", "--label", "client"],
     ["rotate-runtime-credential", "--credential-id", "id", "--label", "a", "--label", "b"],
@@ -159,7 +160,7 @@ describe("identity management CLI", () => {
     expect(result.token).toMatch(/^wts_[0-9a-f-]{36}_[0-9a-f]{64}$/);
     expect(Date.parse(result.credential.expiresAt)).toBeGreaterThan(Date.now());
 
-    const database = new Database(appPaths.databasePath, { readonly: true });
+    const database = unmanagedFixtureDatabase(appPaths.databasePath, { readonly: true });
     const persisted = JSON.stringify(database.prepare("SELECT * FROM principal_credentials").all())
       + JSON.stringify(database.prepare("SELECT * FROM controller_audit_events").all());
     expect(persisted).not.toContain(result.token);

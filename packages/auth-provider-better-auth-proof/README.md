@@ -1,15 +1,45 @@
-# Better Auth provider proof
+# Optional account provider (Better Auth)
 
-Private, unpublished proof that Better Auth 1.7.14 with Kysely 0.28.17 can run
-against the Worktree Control controller's single SQLite connection. It is not
-part of the Community package, is not loaded at controller startup, and does not
-make the `better-auth` authentication mode selectable.
+This package is the optional provider for Worktree Control account mode
+(`better-auth`). It runs Better Auth 1.7.14 with Kysely 0.28.17 against the
+controller's single SQLite connection. It is MIT licensed, `private: true` and
+not part of the Community package: the controller loads its separately
+installed, compiled artifact at account-mode startup, after protected
+configuration, owner enrollment and the security fence are validated.
 
-The proof harness loads it from an explicit local path through the server-only
-`loadAuthenticationProvider` API and borrows the controller-owned connection
-one operation at a time. Storage comes from controller migrations 38, 40 and 41; the
-provider never runs library migrations. Provider modules are trusted local
-code, not sandboxed code.
+For `0.2.0` the built artifact is attached to the GitHub Release beside the
+Community package; it is never published to npm. The package keeps its
+historical proof name and version `0.0.0`, and its implementation reports
+`0.0.0-proof.5` (provider contract `5`, storage revision `3`). The controller
+checks those capabilities, not the name. Identify a release's provider by its
+`worktree-control-provider-provenance.json` (`compatibleCore.version`, source commit, tarball sha256).
+
+Install it from the verified artifact by extracting it into a private directory
+and running `npm ci --prefix <dir> --omit=dev --ignore-scripts`; never
+`npm install <tarball>`, which ignores the shipped lock. See
+[release packaging](../../docs/release-packaging.md) and
+[turn on account mode](../../docs/authentication.md#turn-on-account-mode).
+
+Provider modules are trusted local code, not sandboxed code. The provider
+borrows the controller-owned connection one operation at a time. Storage comes
+from controller migrations 38, 40 and 41; the provider never runs library
+migrations. Upstream licenses are reproduced in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Verification status
+
+The installed acceptance (`pnpm test:rbac-artifact` and
+`pnpm test:rbac-artifact:fresh`) and the production-composition suite exercise
+the integrated production route. The full proof suite below is not green: it
+keeps five historical failures in `factor-compatibility.test.ts`, which
+characterize native and older bounded factor behaviour. They stay unmodified
+and unskipped. The full run on `370bac2` on 2026-11-08 finished with exactly
+those five failures, 1,107 passes and zero skips; the separate production RBAC
+preset passed all 78 tests on the same commit. See the
+[current verification evidence](../../docs/authentication.md#verification-status-and-known-limitations)
+for the production mechanisms and fixture distinction.
+This package makes no ASVS, compliance or hardware MFA claim;
+numeric limits are engineering bounds.
 
 Run its real-library tests from the repository root:
 
@@ -47,22 +77,14 @@ TOTP login challenges and reset tokens. Their controller contexts then fail the 
 check. Selected factors and independent WebAuthn challenges remain intact; a password
 replacement keeps its inherited session evidence.
 
-This proof does not establish ASVS Level 2, and its numeric limits are experimental
-settings. Standard Better Auth stores
-bearer session tokens and includes native session tokens in sign-in and
-password-change JSON. The bounded isolated browser API strips those fields;
-production mounting/cutover remains open. Admitted core phases now wait on the
-same gate while a provider borrows the connection. Strict proof fixtures reject
-unadmitted SQL even when idle; production without a provider retains compatible
-synchronous store access. Live coexistence remains unaccepted while broader
-coverage and design gates are open. Restoring backups can restore old
-sessions and passwords until A5 adds an external revocation fence. A2 credentials
-remain unchanged; A4 vault authorization still requires its separate proof.
-Closed factor HTTP routes and protected ordinary-human reader/operator membership
-now work in the isolated composition. Production mounting, factor management,
-invitations, delegated role administration, GUI and account activation remain gated. Protected CLI enrollment/recovery is
-described below. See the
-[authentication contract](../../docs/authentication.md#optional-provider-proof-first-a3-slice).
+## Historical proof notes
+
+The sections below record each proof slice as it landed. Statements that
+account mode, public login, the browser mount or a dashboard were unavailable
+or gated describe that slice; account mode in `0.2.0` supersedes them. The
+current operator contract is [authentication](../../docs/authentication.md),
+and the slice-by-slice internals are in the
+[authentication reference](../../docs/authentication-reference.md).
 
 ## Ordinary human membership proof
 
@@ -92,8 +114,12 @@ Core schema 43 adds only the Godot Web project configuration. It likewise change
 no provider API, storage, native tables or proof; current-schema positive
 expectations change 42 to 43.
 
+Core schema 44 adds only immutable scoped-test requester attribution. Provider API 5,
+storage 3, native tables and signed vault proof remain unchanged. Current-schema
+positive expectations change 43 to 44; the historical negative bodies remain unchanged.
+
 Knowledge write includes project archive/restore. Human runtime-link writes deny
-before lookup/replay; linked IDs grant no runtime authority. Human recovery,
+before lookup/replay; linked IDs grant no runtime authority. Browser recovery,
 factor reset/removal, privileged approval, administration, runtime/claims and ENV
 remain denied. Production browser mounting/account mode and full A3/A4/A5 remain
 outside this bounded workflow.
@@ -223,7 +249,7 @@ The bounded acceptance checklist is:
   grants/role ceilings; mapping alone grants nothing. Safe identity metadata
   uses `credential: null`. Owner administration, token mint/renew, runtime,
   privileged approval and vault access remain denied. See the
-  [implemented API](../../docs/authentication.md#provider-authorization-handoff).
+  [implemented API](../../docs/authentication-reference.md#provider-authorization-handoff).
 - **Migration evidence:** seven existing
   `src/server/infrastructure/sqlite/provider-session-history-migration.test.ts`
   cases cover genuine 38-to-39 upgrade/late rollback, old registry rows and
@@ -291,9 +317,6 @@ A failed strict regression blocks live-coexistence acceptance. Keep it failing
 until production code is fixed; do not weaken it or use build/package success
 as a substitute for admission acceptance.
 
-Upstream licenses are reproduced in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-
 ## Restart-only mode selection
 
 `mode-restart-admission.test.ts` uses the actual CLI, private Unix admin listener,
@@ -345,7 +368,7 @@ caller session, covering a real delete-hook failure that native sign-out swallow
 The core drops native bodies and arbitrary headers; no bearer token is returned
 in browser JSON. Library logs/router exceptions become fixed events. After-commit
 notification failures remain `committed:true`, without automatic mutation replay.
-The current composition uses core schema 43 and provider storage revision 3. Contract 5
+The current composition uses core schema 46 and provider storage revision 3. Contract 5
 adds durable session issuance and changes no pinned dependency.
 
 Provider-cookie requests to unconverted HTTP operations and the actual separate
@@ -362,7 +385,7 @@ The injected fault runs after real Kysely destruction solely to permit isolated
 fixture cleanup; production must treat unconfirmed cleanup as failure.
 
 Experimental bounds and proxy limitations are documented in the
-[browser API contract](../../docs/authentication.md#bounded-browser-adapter).
+[browser API contract](../../docs/authentication-reference.md#bounded-browser-adapter).
 The native limiter is in-memory and per peer/path, not per account. Behind a
 proxy all remote clients share its peer until explicit trusted-proxy design.
 No production security defaults, MFA/ASVS Level 2, full transport cutover,
@@ -406,7 +429,7 @@ TOTP was an unselected compatibility candidate. The owner has since selected
 both TOTP and passkeys as optional methods; the pinned TOTP implementation still
 needed an accepted replay remedy at that stage. That historical baseline was
 schema 39, provider storage revision 1 and contract 2. Later integrated authority
-uses current core schema 43, storage 3 and contract 5. This experiment changes no
+uses current core schema 46, storage 3 and contract 5. This experiment changes no
 production provider, route, actor, mode or migration. Account mode remains
 unavailable; A4, A5, general delegated roles and GUI remain separate.
 
@@ -687,7 +710,7 @@ controller's `host.protection` port. It runs on recognized migration 40 storage,
 closes and reopens through `SqliteStateStore`, and issues real provider actors through
 `runtime.authenticate` into `ProviderKnowledgeApplication`.
 `test/integrated-factor-authority.test.ts` is its acceptance suite. See the
-[contract and limits](../../docs/authentication.md#integrated-factor-authority).
+[contract and limits](../../docs/authentication-reference.md#integrated-factor-authority).
 
 Routes outside the list return 404, including every native route not listed in
 `FACTOR_ROUTES` or `NATIVE_ROUTES`. Sign-in strips all cookies, so a trust cookie cannot
@@ -741,7 +764,7 @@ enrollment can use a password; enrolled/selected protection cannot be bypassed
 through an unprotected password path. Methods are alternatives, not mandatory
 sequential TOTP plus passkey checks. Enabled flags grant no roles or privileges.
 Current production identity hard guards remain. See the
-[policy record](../../docs/authentication.md#owner-selected-optional-methods).
+[policy record](../../docs/authentication-reference.md#owner-selected-optional-methods).
 
 The new `test/passkey-*` files are a separate, nonauthorizing backend experiment.
 The default provider is unchanged. Only this private package adds exact
@@ -883,3 +906,114 @@ In-process faults that need a live runtime, such as unreadable markers and faile
 are in `browser-session-issuance.test.ts`. Migration and tamper cases, including the frozen
 `schema-v40.sql`, are in `authentication-session-issuance-migration.test.ts`. The proof
 covers neither a browser, hardware, TLS, a proxy nor the installed service.
+
+
+## Human runtime reader slice (P2a)
+
+`runtime-reader.test.ts` exercises the actual `createControllerAuthentication`
+composition, real provider cookies for the existing owner
+`69849424-2aba-4fdd-b4fa-a394a77a193c` and an ordinary human, the existing
+ControlService scoped read projections, and private offline/IPC administration.
+Migration 45 stores a separate typed runtime reader aggregate with explicit
+`projects:read`, CAS/tombstones and atomic audit. Knowledge membership and runtime
+membership do not imply each other. A human has no agent lease owner or synthetic
+credential. Current authority is checked after Git discovery/readmission and in
+the admitted HTTP delivery phase. Corrupted role/permissions, missing authority,
+copied/foreign actors, revocation and session invalidation fail closed.
+
+Run `pnpm test:runtime-readers` through the managed verification queue for the
+focused core plus real-provider matrix. Full proof retains its historical native/
+old-bounded TOTP replay and failed-guess rollback negatives; this slice does not
+change or skip them. Provider contract/storage/implementation remain 5/3/5.
+Public login/account-mode selection remains gated. P2b1 human runtime leases
+and control are described below. P3b supplies external restore fencing and
+protected quarantine. Unacknowledged restored provenance refuses across boots. These tests neither
+activate the installed service nor certify full RBAC readiness.
+
+## Human runtime mutations (P2b1)
+
+`runtime-mutate.test.ts` uses the shared production composition, real existing-owner
+and ordinary-human cookies, two sessions, another human and an agent across two
+runtime projects. Finite process doubles cover start/restart/stop without starting
+a development server. Protected operator assignment grants only explicit subsets
+of projects:read/claims:manage/runtime:control. No role, Knowledge link, owner kind
+or provider load creates extra authority.
+
+Schema 46 adds a permanent reservation marker, original session/evidence/revision
+lease sidecar and bounded durable intent/receipt ledger on the existing connection.
+TTL is 30..1800 seconds, default 1800, with an eight-hour/session absolute maximum.
+Legacy owner-string calls cannot authorize marked leases; machine binding stays
+unchanged. Rights are checked after Git/lock/borrow/readmission, before spawn and
+at delivery/replay. Revoke/regrant or a new login cannot take an old lease.
+
+Tests cover strict HTTP fields/origin/body bounds, independent control/read rights,
+exact own status, foreign and cloned actors, lease expiry, disconnect/concurrent
+retry, real database/provider reopening with the same cookie, and interrupted
+intent returning outcome_unknown without repeating effects. Reboots preserve only
+still-current ordinary sessions. Restored provider load remains P1 fail-closed;
+P3a supplies protected recovery below. P3b now supplies external revocation fencing and protected quarantine; activation still waits for A5.
+Receipts/identity/logs expose no native session/binding secrets, ENV, commands or
+global capacity. Release, expiry and revocation do not stop an existing process.
+
+Run `pnpm test:runtime-mutations` through the managed queue for focused core and
+provider tests, then the complete provider proof. Its five historical native/old
+bounded factor negatives remain visible. P2b2 job/remaining transports, P3/A5,
+public browser mounting and account-mode activation are separate gates.
+
+### Protected recovery boundary (P3a)
+
+The shared production provider now supports password recovery for existing active
+humans and the single active owner. Private CLI input defaults to preserving
+factors; explicit `factors: "reset"` requires a new password and the provider's
+`localFactorReset: "v1"` readiness plus separate reset method. Password, sessions,
+factor bindings, challenge authority and account generation change in one sole
+connection transaction. IDs, roles, grants, audit, TOTP steps and account budgets
+remain. See [authentication](../../docs/authentication.md#protected-factor-loss-recovery-p3a) for the operator contract.
+P3b now requires an external checkpoint and protected quarantine receipt before restored provider loading. Public account activation and A5 transport enforcement remain separate gates.
+
+### External restore checkpoint and protected resume (P3b)
+
+Migration49 adds a fixed SQLite checkpoint and authority-table triggers, preserving
+migrations1..48. The sole core/provider connection publishes a private external
+pending witness from the BEFORE-trigger observer before authority rows change,
+and a confirmed witness after FULL SQLite COMMIT.
+Normal confirmed restarts preserve current rights. Supported restore and raw
+DB-only rollback fail closed before provider/listeners, including older schemas.
+The bounded witness binds the canonical database path and installation outside
+the application backup payload; custom state-directory nesting does not change
+that boundary. Whole-host rollback including the witness is outside this local
+OS-owner trust model.
+
+Protected offline `auth fence inspect/establish/resume` uses both singleton locks
+and an exact preflight. Resume quarantines restored credentials, sessions, factors,
+passwords, grants, leases and pending work, preserves the same owner and history,
+then acknowledges the existing handoff and publishes a durable receipt. No public
+session or token can perform it. Captured mode/token policy remains historical
+evidence; resumed mode is explicit, and old verifiers stay invalid. Schedules and
+vault use an additional receipt floor while retaining their separate signed proof.
+See [operator flow and crash protocol](../../docs/authentication.md#external-security-fence-and-protected-resume-p3b).
+Production account-mode selection/public mounting, minimum agent diagnostics,
+complete transport enforcement, independent review and verified release/client
+migration remain A5 gates. The five historical factor negatives remain visible.
+
+## A5 local optional artifact
+
+`pnpm build:auth-provider` emits a compiled JavaScript tarball and checksum under
+`dist/private-auth-provider/`. Its runtime dependencies stay in that optional
+package. Community root dependencies and assets contain no provider engine.
+The tarball carries its complete npm shrinkwrap and the artifact metadata records
+the lock hash; deployment uses the reviewed tarball rather than rebuilding it.
+The shrinkwrap is the committed `release/npm-shrinkwrap.json`, pinned to the
+versions tested through `pnpm-lock.yaml`; the build never re-resolves it.
+Install with `npm ci` in the extracted package, never `npm install <tarball>`. See
+[release packaging](../../docs/release-packaging.md) for the release artifact.
+The installed-artifact acceptance uses a separate prefix without source links
+or test loader hooks, and exercises public login/session plus machine MCP/CLI,
+protected revocation, an old-release upgrade requiring fence establishment,
+rollback quarantine and recovery. It never changes an installed service.
+
+Earlier sections describe the boundaries of their original slices. A5 replaces
+the unconditional account-mode refusal and absent public mount. The five
+historical native/old-bounded factor negatives remain unmodified and unskipped;
+they do not describe the closed production route, whose integrated replay and
+durable guessing-budget tests run separately. No full-proof green claim is made.

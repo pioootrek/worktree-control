@@ -1,7 +1,9 @@
+import { resumeFixtureSecurity } from "./fixtures/protected-security";
+import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { createControllerBackup } from "@/server/controller-backup";
 import { ExclusiveConnectionError, type ExclusiveConnectionOptions } from "./exclusive-connection";
@@ -24,7 +26,7 @@ function fixture(options?: ExclusiveConnectionOptions) {
   return { root, path, store, storage, core, project };
 }
 const committed = <T>(path: string, read: (db: Database.Database) => T) => {
-  const db = new Database(path, { readonly: true }); try { return read(db); } finally { db.close(); }
+  const db = unmanagedFixtureDatabase(path, { readonly: true }); try { return read(db); } finally { db.close(); }
 };
 const providerUsers = (path: string) => committed(path, db => (db.prepare('SELECT count(*) n FROM "authentication_ba_user"').get() as { n: number }).n);
 const insertUser = 'INSERT INTO "authentication_ba_user"("id","name","email","emailVerified","createdAt","updatedAt") VALUES (?,?,?,0,?,?)';
@@ -113,8 +115,9 @@ describe("exclusive provider borrow of the controller connection", () => {
     stores.splice(stores.indexOf(f.store), 1);
     expect(f.core.open).toBe(false);
     expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
+    resumeFixtureSecurity(f.path);
     const reopened = new SqliteStateStore(f.path); stores.push(reopened);
-    expect(reopened.schemaVersion()).toBe(43);
+    expect(reopened.schemaVersion()).toBe(49);
   });
 
   it.each([false, true])("releases a synchronously throwing provider callback (open transaction: %s)", async (openTransaction) => {
@@ -290,9 +293,10 @@ describe("exclusive provider borrow of the controller connection", () => {
     expect(await asyncCode(() => f.storage.borrow(async () => undefined))).toBe("poisoned");
     stores.splice(stores.indexOf(f.store), 1); f.store.close();
     expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
+    resumeFixtureSecurity(f.path);
     const reopened = new SqliteStateStore(f.path); stores.push(reopened);
     expect(providerUsers(f.path)).toBe(0);
-    expect(reopened.schemaVersion()).toBe(43);
+    expect(reopened.schemaVersion()).toBe(49);
   });
 
   it("waits for a running core backup before lending the connection", async () => {

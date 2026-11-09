@@ -1,3 +1,4 @@
+import { runtimeMembershipPageSchema, runtimeMembershipSetSchema, runtimeMembershipRevokeSchema } from "@/shared/contracts/runtime-memberships";
 import { humanPageSchema, humanMembershipPageSchema, humanKnowledgeSetSchema, humanKnowledgeRevokeSchema } from "@/shared/contracts/human-accounts";
 import { HumanAccountError } from "../identity";
 import { z } from "zod";
@@ -15,7 +16,7 @@ export const providerConfigurationInputSchema = z.object({
 }).strict();
 export type ProviderConfigurationInput = z.infer<typeof providerConfigurationInputSchema>;
 export const providerEnrollmentInputSchema = z.object({ email: text, name: text, password: text }).strict();
-export const providerRecoveryInputSchema = z.object({ newPassword: text }).strict();
+export const providerRecoveryInputSchema = z.object({ newPassword: text, factors: z.enum(["preserve", "reset"]).optional() }).strict();
 const command = z.literal("auth-provider");
 const commandSchema = z.discriminatedUnion("action", [
   z.object({ command, action: z.literal("status"), principalId: text.optional() }).strict(),
@@ -27,17 +28,26 @@ const commandSchema = z.discriminatedUnion("action", [
   z.object({ command, action: z.literal("knowledge-access-list"), input: humanMembershipPageSchema }).strict(),
   z.object({ command, action: z.literal("knowledge-access-set"), input: humanKnowledgeSetSchema }).strict(),
   z.object({ command, action: z.literal("knowledge-access-revoke"), input: humanKnowledgeRevokeSchema }).strict(),
+  z.object({ command, action: z.literal("runtime-access-list"), input: runtimeMembershipPageSchema }).strict(),
+  z.object({ command, action: z.literal("runtime-access-set"), input: runtimeMembershipSetSchema }).strict(),
+  z.object({ command, action: z.literal("runtime-access-revoke"), input: runtimeMembershipRevokeSchema }).strict(),
   z.object({ command, action: z.literal("enroll"), principalId: text, input: providerEnrollmentInputSchema }).strict(),
   z.object({ command, action: z.literal("recover"), principalId: text, input: providerRecoveryInputSchema }).strict(),
 ]);
 export type ProviderAdminCommand = z.infer<typeof commandSchema>;
 
 const messages = {
+  security_fence_owner_running: "Stop the owning controller before protected offline security maintenance.",
+  security_fence_establishment_required: "Protected offline security fence establishment is required; use auth fence inspect.",
+  security_fence_recovery_required: "Protected offline security recovery is required; use auth fence inspect.",
+  security_fence_pending: "Security checkpoint publication is unconfirmed; use protected offline auth fence inspect.",
+  security_fence_preflight_changed: "Security preflight changed; inspect again before explicit recovery.",
   invalid_input: "Invalid protected provider administration input.",
+  recovery_unavailable: "The loaded authentication provider does not support explicit factor recovery.",
   provider_unavailable: "The authentication provider is unavailable.",
   provider_failed: "The authentication provider operation failed; inspect state before another explicit operation.",
   principal_unavailable: "The requested account principal is unavailable.",
-  membership_revision_conflict: "Human Knowledge membership revision changed; inspect current state before another explicit operation.",
+  membership_revision_conflict: "Human membership revision changed; inspect current state before another explicit operation.",
   owner_already_initialized: "An owner principal already exists. Inspect private provider status.",
   subject_conflict: "The principal has provider enrollment history; enrollment is refused.",
   not_linked: "The principal has no active provider enrollment.",

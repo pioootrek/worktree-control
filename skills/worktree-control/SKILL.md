@@ -46,10 +46,12 @@ tool is absent. Fetch full status, storage, presets, worktrees, or bounded
 Read-only status requests do not need a claim.
 
 When `get_identity` reports `runtimeAccess`, use scoped runtime tools only for
-the returned project/actions. Scoped sessions have no runtime resources,
-compact status, wait API, logs, capacity, storage, local tests or profile/ENV
-editing. Scoped profile selection and timeout configuration use the narrow
-workflow below. Use `get_project_status`; ask the owner for missing access.
+the returned project/actions; each action is a separate grant. `projects:read`
+covers project resources, compact status and status waits; `tests:run` covers
+presets and your own test runs; `logs:read`, `storage:read` and `capacity:read`
+cover bounded logs, cached storage and aggregate capacity. Scoped profile
+selection and timeout configuration use the narrow workflow below. ENV and
+profile content stay outside every scope. Ask the owner for missing access.
 Installation/open/legacy sessions keep the broader compatibility tools below.
 
 If the server is already running on another worktree, do not move it unless the
@@ -146,8 +148,8 @@ current authority and the original claim. Verify `outcome`,
 
 `config:write` grants timeout overrides only, with at most 256 overrides. It
 assigns no manager role and cannot change commands, ENV, profiles, preset-profile
-assignments, launch/TLS/global settings, identities or vaults. Scoped finite
-jobs, resources, compact status and wait remain unavailable. See
+assignments, launch/TLS/global settings, identities or vaults. Finite jobs need
+the separate `tests:run` action. See
 [the full operational contract](../../docs/reservations-and-mcp.md#scoped-configuration-workflow)
 for receipt fields and deferred followups. Installation/open/legacy compatibility
 sessions retain their broader tools and different input shapes; do not send

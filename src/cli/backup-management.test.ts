@@ -1,7 +1,8 @@
+import { unmanagedFixtureDatabase } from "../server/unmanaged-sqlite-fixture";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+
 import { afterEach, expect, it } from "vitest";
 import { acquireControllerLock } from "@/server/controller-lock";
 import { AuthenticationService } from "@/server/modules/authentication";
@@ -18,6 +19,12 @@ it("creates and restores a controller backup through the offline owner CLI seam"
   const backup=join(root,"backup"); await runBackupCommand(["create",backup],paths,"test",()=>{});
   const changed=new SqliteStateStore(paths.databasePath); changed.removeProject(changed.listProjects()[0]!.id,"test"); changed.close();
   await runBackupCommand(["restore",backup],paths,"test",()=>{});
+  expect(()=>new SqliteStateStore(paths.databasePath)).toThrow(/security_fence_recovery_required/);
+  const lines:string[]=[];
+  await runAuthCommand(["fence","inspect"],paths,{write:line=>lines.push(line)});
+  const status=JSON.parse(lines.pop()!) as {trusted:boolean;preflight:string};expect(status.trusted).toBe(false);
+  await runAuthCommand(["fence","resume","--expect",status.preflight,"--mode","token"],paths,{write:line=>lines.push(line)});
+  expect(JSON.parse(lines.pop()!)).toMatchObject({trusted:true,quarantined:true});
   const restored=new SqliteStateStore(paths.databasePath); expect(restored.listProjects()[0]?.name).toBe("Kept"); restored.close();
 });
 it("exports and imports a logical project in open mode without token variables and requires a credential in token mode",async()=>{
@@ -36,7 +43,7 @@ it("exports and imports a logical project in open mode without token variables a
   await runBackupCommand(["export-project",projectId,exported],source,"test",line=>lines.push(line),{});
   expect(JSON.parse(lines[0]!)).toMatchObject({projectId});
   await runBackupCommand(["import-project",exported],target,"test",()=>{},{});
-  const database=new Database(target.databasePath,{readonly:true});
+  const database=unmanagedFixtureDatabase(target.databasePath,{readonly:true});
   expect(database.prepare("SELECT principal_id, authentication_method FROM knowledge_history WHERE project_id = ? AND record_kind = 'task'").all(projectId))
     .toEqual([{principal_id:"installation",authentication_method:"none"}]);
   database.close();

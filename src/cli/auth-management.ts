@@ -1,3 +1,4 @@
+import { runSecurityFenceCommand } from "./security-fence";
 import type { AppPaths } from "../server/paths";
 import { requestAdminSocket } from "../server/admin-socket";
 import { acquireControllerLock, ControllerAlreadyRunningError } from "../server/controller-lock";
@@ -32,6 +33,7 @@ export async function runAuthCommand(
   paths: AppPaths,
   dependencies: AuthCommandDependencies = {},
 ): Promise<void> {
+  if (args[0] === "fence") return runSecurityFenceCommand(args, paths, dependencies.write ?? console.log);
   if (isProviderCommandArgs(args)) return runProviderCommand(args, paths, dependencies);
   const write = dependencies.write ?? console.log;
   const request = authenticationCommandFromArgs(args);
@@ -54,13 +56,19 @@ export async function runAuthCommand(
     return;
   }
   let store: SqliteStateStore | null = null;
+  let administration: ReturnType<typeof createAuthenticationAdministration> | undefined;
   try {
     store = new SqliteStateStore(paths.databasePath);
-    const { result } = executeAuthenticationCommand(new AuthenticationService(store, undefined, undefined, undefined, undefined, "offline"), request, AUTH_CLI_ACTOR);
+    const authentication = new AuthenticationService(store, undefined, undefined, undefined, undefined, "offline");
+    if (request.command === "mode set" && request.value === "better-auth") {
+      administration = createAuthenticationAdministration({ store, authentication, dataDirectory: paths.dataDirectory, actor: AUTH_CLI_ACTOR });
+      await authentication.prepareAccountMode();
+    }
+    const { result } = executeAuthenticationCommand(authentication, request, AUTH_CLI_ACTOR);
     write(JSON.stringify(result, null, 2));
   } finally {
-    store?.close();
-    lock.release();
+    try { await administration?.dispose(); await store?.closeAfterDrain(); lock.release(); }
+    catch { retainAuthenticationOwnership({ store, administration, lock }); throw new ProviderAdminError("disposal_unconfirmed", undefined, false); }
   }
 }
 
@@ -99,7 +107,7 @@ async function runProviderCommand(args: string[], paths: AppPaths, dependencies:
     lock.release();
   } catch {
     retainAuthenticationOwnership({ store, administration, lock });
-    const mutation = !["status", "human-list", "knowledge-access-list"].includes(request.action)
+    const mutation = !["status", "human-list", "knowledge-access-list", "runtime-access-list"].includes(request.action)
       && !(request.action === "human-disable" && (result as { changed?: boolean } | undefined)?.changed === false);
     const committed = (result !== undefined && mutation) || providerAdminFailure(effectFailure).committed;
     throw new ProviderAdminError("disposal_unconfirmed", committed ? true : undefined, false);

@@ -4,9 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/provider";
 import type { KnowledgeHistoryEntry, KnowledgeMemoryHistorySnapshot, KnowledgePage } from "@/shared/contracts/knowledge";
-import { knowledgeRequest } from "./knowledge-client";
+import { knowledgeRequest, type KnowledgeCredential } from "./knowledge-client";
 
-type Props = { token: string; principalId: string; projectId: string; recordId: string; changeVersion: number };
+type Props = { token: KnowledgeCredential; principalId: string; projectId: string; recordId: string; changeVersion: number };
 type Field = keyof KnowledgeMemoryHistorySnapshot;
 const fields: Field[] = ["title", "body", "category", "status", "tags", "legacyId", "sources", "approval", "supersededBy"];
 

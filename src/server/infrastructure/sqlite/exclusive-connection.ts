@@ -1,3 +1,4 @@
+import type { SqliteExecutionBoundary } from "./security-fence";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type Database from "better-sqlite3";
 
@@ -136,7 +137,7 @@ export class ExclusiveSqliteConnection {
   #draining = false;
   #everBorrowed = false;
 
-  constructor(connection: Database.Database, options: ExclusiveConnectionOptions = {}) {
+  constructor(connection: Database.Database, options: ExclusiveConnectionOptions = {}, private readonly boundary?: SqliteExecutionBoundary) {
     this.#raw = connection;
     this.#options = {
       maxQueued: options.maxQueued ?? 32,
@@ -148,7 +149,7 @@ export class ExclusiveSqliteConnection {
     };
     this.#strict = this.#options.admission === "strict";
     this.core = coreFacade(connection, () => this.#assertCore(), iterator => this.#trackCoreIterator(iterator),
-      (destination, backupOptions) => this.#backup(destination, backupOptions));
+      (destination, backupOptions) => this.#backup(destination, backupOptions), boundary);
   }
 
   /** `open`, `provider_closed` (core usable, no more borrows), `poisoned` or `closed`. */
@@ -176,7 +177,7 @@ export class ExclusiveSqliteConnection {
    */
   runCore<T>(operation: () => T | Promise<T>, options: AdmissionRequestOptions = {}): Promise<T> {
     const current = this.#context.getStore();
-    if (current?.kind === "core" && this.#live(current)) return this.#execute(current, operation);
+    if (current?.kind === "core" && this.#live(current)) return this.#execute(current, operation, options.reserved);
     return this.#root(operation, options, current);
   }
 
@@ -193,6 +194,7 @@ export class ExclusiveSqliteConnection {
     const participant = joined ?? this.#participant(true);
     participant.pending++;
     try {
+      this.boundary?.assert();
       const value = this.#context.run(participant, operation);
       if (isThenable(value)) throw new TypeError("tryCore operations must be synchronous.");
       return { ran: true, value };
@@ -234,6 +236,7 @@ export class ExclusiveSqliteConnection {
     try { result = await this.#context.run(SUSPENDED, operation); } finally {
       current.suspensions--;
       if (!current.ended && !current.admitted) await this.#readmit(current, options);
+      if(!options.reserved)this.boundary?.assert();
     }
     return result;
   }
@@ -260,7 +263,7 @@ export class ExclusiveSqliteConnection {
     let settled = false;
     // A provider may throw before returning its promise. Keep that failure on
     // the same release/rollback path as an asynchronous rejection.
-    const execution = this.#context.run(borrow, async () => operation());
+    const execution = this.#context.run(borrow, async () => { if(!options.reserved)this.boundary?.assert(); return operation(); });
     this.#track(this.#executions, execution);
     const expiry = new Promise<never>((_, reject) => {
       borrow.timer = setTimeout(() => {
@@ -311,10 +314,10 @@ export class ExclusiveSqliteConnection {
       prepare: (sql: string): BorrowedSqliteStatement => {
         if (facade.closed) throw fail("closed", "The provider connection was closed.");
         const borrow = this.#currentBorrow();
-        return borrowedStatement(this.#raw.prepare(sql), () => {
+        return borrowedStatement(this.boundary ? this.boundary.execute(() => this.#raw.prepare(sql),true) : this.#raw.prepare(sql), () => {
           if (facade.closed) throw fail("closed", "The provider connection was closed.");
           if (!borrow.active || this.#currentBorrow() !== borrow) throw this.#released();
-        }, borrow.iterators);
+        }, borrow.iterators, this.boundary);
       },
       close: (): void => { facade.closed = true; },
     };
@@ -394,10 +397,10 @@ export class ExclusiveSqliteConnection {
     if (this.#state === "closed") return Promise.reject(fail("closed", "The database connection is closed."));
     if (this.#state === "poisoned") return Promise.reject(fail("poisoned", "The database connection is unusable after a failed provider rollback."));
     if (options.signal?.aborted) return Promise.reject(fail("cancelled", "The database operation was cancelled before admission."));
-    if (!this.#active && this.#queue.length === 0) return this.#execute(this.#participant(true), operation);
+    if (!this.#active && this.#queue.length === 0) return this.#execute(this.#participant(true), operation, options.reserved);
     const participant = this.#participant(false);
     return this.#enqueue("core", () => this.#admitCore(participant), options).then(
-      () => this.#execute(participant, operation),
+      () => this.#execute(participant, operation, options.reserved),
       error => { this.#endParticipant(participant); throw error; },
     );
   }
@@ -415,10 +418,10 @@ export class ExclusiveSqliteConnection {
     this.#coreActive++;
   }
 
-  #execute<T>(participant: Participant, operation: () => T | Promise<T>): Promise<T> {
+  #execute<T>(participant: Participant, operation: () => T | Promise<T>, reserved=false): Promise<T> {
     participant.pending++;
     let result: T | Promise<T>;
-    try { result = this.#context.run(participant, operation); } catch (error) {
+    try { if(!reserved)this.boundary?.assert(); result = this.#context.run(participant, operation); } catch (error) {
       this.#settle(participant);
       return Promise.reject(error);
     }
@@ -594,7 +597,10 @@ export class ExclusiveSqliteConnection {
     }
     borrow.iterators.clear();
     if (this.#raw.open && this.#raw.inTransaction) {
-      try { this.#options.rollback(this.#raw); } catch { /* checked below */ }
+      let ran=false;
+      const rollback=()=>{ran=true;this.#options.rollback(this.#raw);};
+      try { if(this.boundary)this.boundary.execute(rollback,false);else rollback(); }
+      catch { if(!ran)try{rollback();}catch{/* Cleanup remains independent of lost authority. */} }
       if (this.#raw.inTransaction) {
         this.#state = "poisoned";
         error = fail("poisoned", "A provider transaction could not be rolled back; the database connection is unusable.");
@@ -616,43 +622,51 @@ export class ExclusiveSqliteConnection {
     if (this.#active) throw fail("busy", "The database connection is lent to the authentication provider.");
     if (this.#state === "closed") throw fail("closed", "The database connection is closed.");
     // The hold lasts until the driver's promise settles, not until the caller stops waiting.
+    this.boundary?.assert();
     const pending = this.#raw.backup(destination, options);
     this.#track(this.#backups, pending);
     return pending;
   }
 }
 
-function borrowedStatement(statement: Database.Statement, check: () => void, iterators: Set<IterableIterator<unknown>>): BorrowedSqliteStatement {
+function borrowedStatement(statement: Database.Statement, check: () => void, iterators: Set<IterableIterator<unknown>>, boundary?: SqliteExecutionBoundary): BorrowedSqliteStatement {
+  const execute = <T>(operation: () => T) => boundary ? boundary.execute(operation, statement.readonly) : operation();
   return {
     reader: statement.reader,
-    all(parameters) { check(); return statement.all(...parameters); },
-    run(parameters) { check(); return statement.run(...parameters); },
+    all(parameters) { check(); return execute(() => statement.all(...parameters)); },
+    run(parameters) { check(); return execute(() => statement.run(...parameters)); },
     iterate(parameters) {
       check();
-      const iterator = statement.iterate(...parameters);
-      iterators.add(iterator);
-      return guardedIterator(iterator, check, () => { iterators.delete(iterator); });
+      if (boundary && !statement.readonly) throw fail("unadmitted", "Mutating SQL iterators are unavailable.");
+      const iterator = execute(() => statement.iterate(...parameters));
+      const guarded = guardedIterator(iterator, check, () => { iterators.delete(guarded); }, execute);
+      iterators.add(guarded);
+      return guarded;
     },
   };
 }
 
-function guardedIterator<T>(iterator: IterableIterator<T>, check: () => void, finished: () => void = () => undefined): IterableIterator<T> {
+function guardedIterator<T>(iterator: IterableIterator<T>, check: () => void, finished: () => void = () => undefined, execute: <R>(operation: () => R) => R = operation => operation()): IterableIterator<T> {
   const guarded: IterableIterator<T> = {
     next() {
       try {
         check();
-        const result = iterator.next();
+        const result = execute(() => iterator.next());
         if (result.done) finished();
         return result;
       } catch (error) {
-        try { iterator.return?.(); finished(); } catch { /* retained for borrow cleanup */ }
+        try { guarded.return?.(); } catch { /* retained for borrow cleanup */ }
         throw error;
       }
     },
     return(value?: unknown) {
-      const result = iterator.return?.(value) ?? { done: true, value: undefined as T };
-      finished();
-      return result;
+      let ran=false;
+      const close=()=>{ran=true;return iterator.return?.(value) ?? {done:true,value:undefined as T};};
+      let result:IteratorResult<T>;
+      try{result=execute(close);}catch(error){if(ran)throw error;result=close();}
+      // Resource cleanup remains possible after a lost fence. A failed physical
+      // close stays tracked for the owner's existing cleanup/poison protocol.
+      finished();return result;
     },
     [Symbol.iterator]() { return guarded; },
   };
@@ -668,20 +682,24 @@ function coreFacade(
   assert: () => void,
   track: (iterator: IterableIterator<unknown>) => (() => void) | undefined,
   backup: (destination: string, options?: Database.BackupOptions) => Promise<Database.BackupMetadata>,
+  boundary?: SqliteExecutionBoundary,
 ): Database.Database {
+  const execute = <T>(operation: () => T, readonly = false) => boundary ? boundary.execute(operation, readonly) : operation();
+  const checked = assert;
+  assert = () => { checked(); boundary?.assert(); };
   const facade = {
     get memory() { return raw.memory; },
     get readonly() { return raw.readonly; },
     get name() { return raw.name; },
     get open() { return raw.open; },
     get inTransaction() { return raw.inTransaction; },
-    prepare(source: string) { assert(); return coreStatement(raw.prepare(source), facade as unknown as Database.Database, assert, track); },
+    prepare(source: string) { checked(); return coreStatement(execute(() => raw.prepare(source),true), facade as unknown as Database.Database, checked, track, boundary); },
     transaction(fn: (...parameters: unknown[]) => unknown) {
-      assert();
+      checked();
       const inner = raw.transaction(fn);
       const guard = (variant: (...parameters: unknown[]) => unknown) => function guardedTransaction(this: unknown, ...parameters: unknown[]) {
-        assert();
-        return variant.apply(this, parameters);
+        checked();
+        return execute(() => variant.apply(this, parameters), true);
       };
       const variants = { default: guard(inner.default), deferred: guard(inner.deferred), immediate: guard(inner.immediate), exclusive: guard(inner.exclusive) };
       const properties = {
@@ -692,8 +710,8 @@ function coreFacade(
       for (const variant of Object.values(variants)) Object.defineProperties(variant, properties);
       return variants.default;
     },
-    exec(source: string) { assert(); raw.exec(source); return facade; },
-    pragma(source: string, options?: Database.PragmaOptions) { assert(); return raw.pragma(source, options); },
+    exec(source: string) { checked(); execute(() => raw.exec(source)); return facade; },
+    pragma(source: string, options?: Database.PragmaOptions) { checked(); return execute(() => raw.pragma(source, options)); },
     function(...parameters: unknown[]) { assert(); (raw.function as (...values: unknown[]) => unknown)(...parameters); return facade; },
     aggregate(name: string, options: Database.AggregateOptions) { assert(); raw.aggregate(name, options); return facade; },
     loadExtension(path: string) { assert(); raw.loadExtension(path); return facade; },
@@ -712,21 +730,25 @@ function coreStatement(
   database: Database.Database,
   assert: () => void,
   track: (iterator: IterableIterator<unknown>) => (() => void) | undefined,
+  boundary?: SqliteExecutionBoundary,
 ): Database.Statement {
+  const execute = <T>(operation: () => T) => boundary ? boundary.execute(operation, statement.readonly) : operation();
   const wrapper = {
     get database() { return database; },
     get source() { return statement.source; },
     get reader() { return statement.reader; },
     get readonly() { return statement.readonly; },
     get busy() { return statement.busy; },
-    run(...parameters: unknown[]) { assert(); return statement.run(...parameters); },
-    get(...parameters: unknown[]) { assert(); return statement.get(...parameters); },
-    all(...parameters: unknown[]) { assert(); return statement.all(...parameters); },
+    run(...parameters: unknown[]) { assert(); return execute(() => statement.run(...parameters)); },
+    get(...parameters: unknown[]) { assert(); return execute(() => statement.get(...parameters)); },
+    all(...parameters: unknown[]) { assert(); return execute(() => statement.all(...parameters)); },
     iterate(...parameters: unknown[]) {
       assert();
+      if (boundary && !statement.readonly) throw fail("unadmitted", "Mutating SQL iterators are unavailable.");
       // An admitted operation's cursors close when it ends, before a provider can be admitted.
-      const iterator = statement.iterate(...parameters) as IterableIterator<unknown>;
-      return guardedIterator(iterator, assert, track(iterator));
+      const iterator = execute(() => statement.iterate(...parameters)) as IterableIterator<unknown>;
+      const guarded=guardedIterator(iterator,assert,()=>finished?.(),execute);
+      const finished=track(guarded);return guarded;
     },
     pluck(...parameters: [boolean?]) { statement.pluck(...parameters); return wrapper; },
     expand(...parameters: [boolean?]) { statement.expand(...parameters); return wrapper; },

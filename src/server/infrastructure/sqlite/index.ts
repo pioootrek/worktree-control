@@ -5,3 +5,6 @@ export { inspectSchema, snapshotAttachments, SUPPORTED_SCHEMA_VERSION } from "./
 export { hashFile, parseManifest, readBoundedJson, syncTree, validateBackup, validateBackupFiles, ensureStagingCapacity, stageVerifiedBackup, BACKUP_LIMITS, sha256Schema, type ControllerBackupManifest } from "./backup-validation";
 export { getOwnedRestoreStatus, prepareOwnedRestore, recoverOwnedRestore, restoreActorSchema, restoreRoot, type RestoreActor } from "./restore-recovery";
 export { openRemoteRecoveryInspection } from "./remote-connection-inspection";
+
+export { SecurityFence, SecurityFenceError, securityRecoveryBoundary } from "./security-fence";
+export { maintainSqliteSecurityFence, type SecurityMaintenanceCommand } from "./security-maintenance";

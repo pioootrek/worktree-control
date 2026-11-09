@@ -133,15 +133,33 @@ export function validateSensitivePath(path: string, excludedRoots: readonly stri
 }
 
 /** Fixed allocation, no-follow/nonblocking descriptor read, checked before AND after reading. */
-export function readPrivateBoundedFile(path: string, maxBytes: number, excludedRoots: readonly string[] = []): Buffer {
+export function readPrivateBoundedFile(path: string, maxBytes: number, excludedRoots: readonly string[] = [], allowEmpty=false): Buffer {
+  validateSensitivePath(path,excludedRoots);
+  return readPrivateDescriptor(path,maxBytes,allowEmpty);
+}
+
+/** A live owner pins the already validated private parent. Every read still
+ * checks the no-follow descriptor, named inode, ownership, mode and byte bound.
+ * An ancestor can be changed only by the trusted OS owner; replacing or opening
+ * up the pinned directory invalidates this reader. */
+export function privateBoundedFileReader(path:string,maxBytes:number):()=>Buffer {
+  validateSensitivePath(path);
+  const parent=dirname(path), pinned=lstatSync(parent);
+  const check=()=>{
+    const current=lstatSync(parent);
+    if(!current.isDirectory() || !owned(current.uid) || (current.mode&0o077) || current.dev!==pinned.dev || current.ino!==pinned.ino) unsafe();
+  };
+  return ()=>{check();const bytes=readPrivateDescriptor(path,maxBytes,false);check();return bytes;};
+}
+
+function readPrivateDescriptor(path:string,maxBytes:number,allowEmpty:boolean):Buffer {
   let fd: number | undefined;
   try {
-    validateSensitivePath(path, excludedRoots);
     const before = lstatSync(path);
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const opened = fstatSync(fd);
     const safe = (stat: typeof opened) => stat.isFile() && stat.nlink === 1 && owned(stat.uid)
-      && (stat.mode & 0o077) === 0 && stat.size > 0 && stat.size <= maxBytes;
+      && (stat.mode & 0o077) === 0 && (allowEmpty ? stat.size >= 0 : stat.size > 0) && stat.size <= maxBytes;
     if (!safe(before) || !safe(opened) || before.dev !== opened.dev || before.ino !== opened.ino) unsafe();
     const bytes = Buffer.alloc(maxBytes + 1);
     let size = 0;

@@ -1,3 +1,9 @@
+import { applySecurityFenceMigration } from "./security-fence-migration";
+import { applyHumanConfigurationMigration } from "./human-configuration-migration";
+import { applyHumanTestRunMigration } from "./human-test-run-migration";
+import { applyHumanRuntimeMigration } from "./human-runtime-migration";
+import { applyRuntimeMembershipMigration } from "./runtime-membership-migration";
+import { applyTestRunRequesterMigration } from "./test-run-requester-migration";
 import { applyHumanPrincipalMigration } from "./human-principal-migration";
 import { applyKnowledgeRoleMigration } from "./knowledge-role-migration";
 import { applyRuntimeAccessMigration } from "./runtime-access-migration";
@@ -9,7 +15,7 @@ import { applyAuthenticationProviderMigration } from "./authentication-provider-
 import { applyDevVaultMigration } from "./dev-vault-migration";
 import { applyGodotWebMigration } from "./godot-web-migration";
 import { applyRemoteConnectionMigration } from "./remote-connection-migration";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { applyRegistryMigration, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { applyTelemetryMigration } from "./test-summary-migration";
 import { applyVerificationProjectMigration, rebuildTable } from "./verification-project-migration";
@@ -375,6 +381,12 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyAuthenticationSessionIssuanceMigration(database);
       applyHumanPrincipalMigration(database);
       applyGodotWebMigration(database);
+      applyTestRunRequesterMigration(database);
+      applyRuntimeMembershipMigration(database);
+      applyHumanRuntimeMigration(database);
+      applyHumanTestRunMigration(database);
+      applyHumanConfigurationMigration(database);
+      applySecurityFenceMigration(database);
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();

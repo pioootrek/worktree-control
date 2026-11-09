@@ -70,7 +70,7 @@ describe("protected CLI provider administration against actual SQLite/Better Aut
       if (mode === "token") expect(await f.runCore(() => f.authentication.authenticateInstallation(f.token))).not.toBeNull();
       expect((await f.run(["status", "--principal-id", f.principalId])).principal).toEqual({ id: f.principalId, kind: "owner", status: "active", enrollment: "active" });
       expect(() => new SqliteStateStore(f.paths.databasePath)).toThrow();
-      await expect(f.runCore(() => f.authentication.setMode("better-auth", "fixture"))).rejects.toMatchObject({ code: "auth_provider_unavailable" });
+      await expect(f.runCore(() => f.authentication.setMode("better-auth", "fixture"))).rejects.toMatchObject({ code: "provider_unavailable" });
       await f.configure("https://next.test", "preserve");
       expect(await f.run(["status"])).toMatchObject({ maintenance: "ready", configurationRestartRequired: true });
       await expect(f.run(["recover", "--principal-id", f.principalId, ...f.input({ newPassword: nextPassword })])).rejects.toMatchObject({ code: "provider_configuration_restart_required" });

@@ -58,6 +58,7 @@ export type {
   AuthenticationProviderReadiness,
   LocalProvisionInput,
   LocalRecoveryInput,
+  LocalFactorResetSummary,
   ProviderAccountProtection,
   ProviderAuditEvent,
   ProviderAuthenticationEvidence,
@@ -75,3 +76,12 @@ export type {
   ProviderSubjectRegistry,
   VerifiedProviderSession,
 } from "./provider-contract";
+
+export { ProviderRuntimeReadApplication, type ProviderRuntimeReadPort } from "./provider-runtime-read-application";
+
+export { parseStrictProviderJson } from "./strict-json";
+
+export { ProviderVerificationApplication, type ProviderVerificationPort } from "./provider-verification-application";
+export { ProviderRuntimeMutateApplication, type ProviderRuntimeMutatePort } from "./provider-runtime-mutate-application";
+
+export { ProviderConfigurationApplication, type ProviderConfigurationApplicationPort } from "./provider-configuration-application";

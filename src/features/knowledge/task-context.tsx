@@ -7,10 +7,10 @@ import { fieldClass } from "./knowledge-editor";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n/provider";
 import type { KnowledgeExport, KnowledgeTaskContext } from "@/shared/contracts/knowledge-memory";
-import { knowledgeRequest } from "./knowledge-client";
+import { knowledgeRequest, type KnowledgeCredential } from "./knowledge-client";
 import { knowledgeSourceHref as sourceHref } from "@/shared/contracts/knowledge-links";
 
-export function TaskContext({ token, projectId, taskId, changeVersion }: { token: string; projectId: string; taskId: string; changeVersion: number }) {
+export function TaskContext({ token, projectId, taskId, changeVersion }: { token: KnowledgeCredential; projectId: string; taskId: string; changeVersion: number }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [context, setContext] = useState<KnowledgeTaskContext | null>(null);

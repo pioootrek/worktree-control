@@ -78,7 +78,8 @@ export class BrowserClient {
           const pair = line.split(";")[0]!, equals = pair.indexOf("="), name = pair.slice(0, equals), value = pair.slice(equals + 1);
           if (!value || /max-age=0/i.test(line)) this.jar.delete(name); else this.jar.set(name, value);
         }
-        resolve({ status: response.statusCode!, body: JSON.parse(Buffer.concat(chunks).toString("utf8")), headers: response.headers });
+        try { resolve({ status: response.statusCode!, body: JSON.parse(Buffer.concat(chunks).toString("utf8")), headers: response.headers }); }
+        catch (error) { reject(error); }
       });
     });
     call.on("error", reject); call.flushHeaders();

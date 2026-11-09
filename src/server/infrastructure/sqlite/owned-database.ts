@@ -31,8 +31,7 @@ export function acquireDatabaseOwnership(input: string, options?: { inspectOnly:
 /**
  * What this owner can say about how its database file came to be. `restored`
  * and `unconfirmed` both mean a snapshot may stand behind the current rows, so
- * nothing there may be read as left over from an ordinary crash. A manual file
- * replacement leaves no trace and is not covered.
+ * nothing there may be read as left over from an ordinary crash. Raw replacement detection is supplied separately by the external security fence.
  */
 export type DatabaseProvenance = "ordinary" | "restored" | "unconfirmed";
 function databaseProvenance(path: string): DatabaseProvenance {
@@ -83,6 +82,7 @@ export class OwnedSqliteDatabase {
     }
   }
   get database(): Database.Database { return this.connection; }
+  get canonicalPath(): string { return this.ownership.path; }
   backupEstimateBytes(): number {
     return Number(this.connection.pragma("page_count", { simple: true })) * Number(this.connection.pragma("page_size", { simple: true }))
       + snapshotAttachments(this.connection).reduce((sum, entry) => sum + entry.size, 0);

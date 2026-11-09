@@ -1,4 +1,5 @@
-import { effectiveKnowledgePermissions, effectiveRuntimeActions, isAuthorized, type AuthorizationSubject, type RuntimeAuthority } from "@/server/modules/authorization";
+import type { RuntimeMembershipStore } from "./runtime-membership-service";
+import { effectiveKnowledgePermissions, effectiveRuntimeActions, effectiveHumanRuntimeActions, isAuthorized, type AuthorizationSubject, type RuntimeAuthority } from "@/server/modules/authorization";
 import { knowledgePermissions, setKnowledgeRoleSchema, revokeKnowledgeRoleSchema, listKnowledgeRolesSchema, type AuthorizationAction, type AuthorizationResource, type KnowledgeRoleBinding, type SubjectKind } from "@/shared/contracts/authorization";
 import {
   issueRuntimeCredentialSchema, listRuntimeAccessSchema, revokeRuntimeDelegationSchema, rotateRuntimeCredentialSchema,
@@ -13,6 +14,7 @@ import type {
   AuthenticatedPrincipal,
   CredentialAuthenticatedPrincipal,
   ProviderSessionAuthority,
+  ProviderSessionActor,
   CredentialAuthenticationRecord,
   IdentityStore,
   InstallationAuthority,
@@ -141,6 +143,7 @@ export class IdentityService {
     private readonly installationAuthority?: InstallationAuthority,
     private readonly runtimeAccess?: RuntimeAccessStore,
     private readonly providerSessions?: ProviderSessionAuthority,
+    private readonly runtimeMemberships?: RuntimeMembershipStore,
   ) {}
 
   bootstrapOwnerSession(input: BootstrapOwnerInput = {}): BootstrappedOwner {
@@ -235,6 +238,7 @@ export class IdentityService {
       principal,
       credential: credential ? publicCredential(credential) : null,
       ...(principal.kind === "agent" && this.runtimeAccess && credential ? { runtimeAccess: this.currentRuntimeAccess(actor, credential) } : {}),
+      ...(actor.authenticationMethod === "provider_session" ? { runtimeAccess: this.humanRuntimeAccess(actor) } : {}),
       knowledgeGrants: this.store.listKnowledgeProjectGrants(actor.principalId)
         .filter((grant) => grant.revokedAt === null)
         .map(grant => ({ projectId: grant.projectId, permissions: effectiveKnowledgePermissions(this.subject(actor), grant.projectId, {
@@ -398,6 +402,7 @@ export class IdentityService {
     if (resource.kind === "runtime-project") {
       if (!isAuthorized(this.subject(actor), action, resource, {
         project: null, grant: null, binding: null, runtime: this.runtimeAuthority(actor, resource.id),
+        humanRuntime: actor.authenticationMethod === "provider_session" ? this.humanRuntimeAuthority(actor, resource.id) : undefined,
       })) throw new IdentityError("runtime_forbidden", RUNTIME_ACCESS_DENIED);
       return;
     }
@@ -407,6 +412,7 @@ export class IdentityService {
       grant: knowledge ? this.store.getKnowledgeProjectGrant(actor.principalId, resource.id) : null,
       binding: knowledge ? this.store.getKnowledgeRoleBinding(actor.principalId, resource.id) : null,
       ordinaryHuman: this.store.getPrincipal(actor.principalId)?.kind === "human",
+      installationAuthenticated: actor.principalKind === "installation" && this.installationAuthority?.isCurrentInstallationActor(actor) === true,
       allowArchived: context.allowArchived,
     })) throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
   }
@@ -433,6 +439,7 @@ export class IdentityService {
   /** Current effective runtime scope of the authenticated credential. */
   runtimeAccessFor(actor: AuthenticatedPrincipal): RuntimeAccessEntry[] {
     this.requireCurrentAuthentication(actor);
+    if (actor.authenticationMethod === "provider_session") return this.humanRuntimeAccess(actor);
     if (actor.principalKind !== "agent" || !this.runtimeAccess) return [];
     return this.currentRuntimeAccess(actor, this.store.getCredentialForAuthentication(actor.credentialId)!);
   }
@@ -568,6 +575,66 @@ export class IdentityService {
     return this.runtimeAccess;
   }
 
+  /** Exact opaque session plus current explicit aggregate; no stored machine credential. */
+  resolveHumanRuntimeAuthority(actor: ProviderSessionActor, projectId: string, actions: readonly RuntimeAction[]): import("./contracts").HumanRuntimeAuthority {
+    this.requireCurrentAuthentication(actor);
+    if (actor.authenticationMethod !== "provider_session") throw new IdentityError("invalid_credential", "Invalid provider session.");
+    for (const action of actions) this.authorizeRuntime(actor, projectId, action);
+    const session = this.providerSessions?.resolveRuntimeSession?.(actor, this.clock());
+    const membership = this.runtimeMemberships?.getRuntimeMembership(actor.principalId, projectId);
+    if (!session || session.principalId !== actor.principalId || !membership
+      || !effectiveHumanRuntimeActions(this.subject(actor), projectId, this.humanRuntimeAuthority(actor, projectId)).length) {
+      throw new IdentityError("runtime_forbidden", RUNTIME_ACCESS_DENIED);
+    }
+    return Object.freeze({ ...session, membershipRevision: membership.revision, permissions: Object.freeze([...membership.permissions]) });
+  }
+
+  captureHumanVerificationAuthority(actor: ProviderSessionActor, projectId: string) {
+    const authority = this.resolveHumanRuntimeAuthority(actor, projectId, ["tests:run"]);
+    const reference = this.providerSessions?.captureRuntimeSession?.(actor, this.clock());
+    if (!reference || reference.sessionKey !== authority.sessionKey) throw new IdentityError("runtime_forbidden", RUNTIME_ACCESS_DENIED);
+    return { authority, reference };
+  }
+
+  validateHumanVerificationAuthority(authority: import("./contracts").HumanRuntimeAuthority,
+    reference: import("./contracts").RetainedProviderSession, projectId: string): void {
+    const principal = this.store.getPrincipal(authority.principalId);
+    const membership = this.runtimeMemberships?.getRuntimeMembership(authority.principalId, projectId);
+    if (!principal || principal.status !== "active" || (principal.kind !== "human" && principal.kind !== "owner")
+      || reference.principalId !== authority.principalId || reference.sessionKey !== authority.sessionKey
+      || reference.evidenceKey !== authority.evidenceKey || reference.generation !== authority.generation || reference.deadline !== authority.deadline
+      || !this.providerSessions?.validateRetainedRuntimeSession?.(reference, this.clock())
+      || !membership || membership.revision !== authority.membershipRevision
+      || JSON.stringify(membership.permissions) !== JSON.stringify(authority.permissions)
+      || !effectiveHumanRuntimeActions({ id: principal.id, kind: "human", humanSession: false }, projectId, {
+        providerSession: true, project: this.runtimeAccess?.hasRuntimeProject(projectId) ? { id: projectId } : null, membership,
+      }).includes("tests:run")) throw new IdentityError("runtime_forbidden", RUNTIME_ACCESS_DENIED);
+  }
+
+  private humanRuntimeAuthority(actor: AuthenticatedPrincipal, projectId: string) {
+    return {
+      providerSession: actor.authenticationMethod === "provider_session",
+      project: this.runtimeAccess?.hasRuntimeProject(projectId) ? { id: projectId } : null,
+      membership: this.runtimeMemberships?.getRuntimeMembership(actor.principalId, projectId) ?? null,
+    };
+  }
+
+  private humanRuntimeAccess(actor: ProviderSessionActor): RuntimeAccessEntry[] {
+    if (!this.runtimeMemberships) return [];
+    const result: RuntimeAccessEntry[] = [];
+    let after: string | undefined;
+    do {
+      const page = this.runtimeMemberships.listRuntimeMemberships({ principalId: actor.principalId, limit: 20, after });
+      for (const membership of page.items) {
+        const projectId = membership.scope.id;
+        const actions = effectiveHumanRuntimeActions(this.subject(actor), projectId, this.humanRuntimeAuthority(actor, projectId));
+        if (actions.length) result.push({ projectId, actions, expiresAt: null });
+      }
+      after = page.nextAfter ?? undefined;
+    } while (after !== undefined);
+    return result;
+  }
+
   private runtimeAuthority(actor: AuthenticatedPrincipal, projectId: string): RuntimeAuthority | undefined {
     const store = this.runtimeAccess;
     if (!store || actor.principalKind !== "agent") return undefined;
@@ -650,10 +717,15 @@ export class IdentityService {
 
   private requireCurrentAuthentication(actor: AuthenticatedPrincipal): void {
     if (actor.authenticationMethod === "provider_session") {
-      if (!this.providerSessions?.isCurrentProviderSession(actor, this.clock())) {
+      const principal = this.store.getPrincipal(actor.principalId);
+      if (principal?.kind !== actor.principalKind || principal.status !== "active"
+        || !this.providerSessions?.isCurrentProviderSession(actor, this.clock())) {
         throw new IdentityError("invalid_credential", "Nieprawidłowe lub nieaktywne poświadczenie.");
       }
       return;
+    }
+    if (this.installationAuthority?.permitsCredential?.(actor) === false) {
+      throw new IdentityError("invalid_credential", "Nieprawidłowe lub nieaktywne poświadczenie.");
     }
     const principal = this.store.getPrincipal(actor.principalId);
     if (actor.principalKind === "installation") {
