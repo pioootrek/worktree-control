@@ -82,6 +82,20 @@ writeFileSync("exports/web/index.pck", "pck");
 }
 
 describe("godot-web application workflow", () => {
+  it("retains a disabled project when owned export cleanup fails and allows a retry", async () => {
+    const f = await fixture();
+    const project = await f.service.addProject({ name: "Cached preview", repositoryPath: f.repository, port: f.port, launchPreset: "none" });
+    const exportStore = join(f.root, "state/godot-web", project.id);
+    mkdirSync(exportStore, { recursive: true });
+    vi.spyOn(f.godotWeb, "forget").mockRejectedValueOnce(new Error("owned export cleanup refused"));
+    await expect(f.service.removeProject(project.id)).rejects.toThrow("owned export cleanup refused");
+    expect(f.store.getProject(project.id)).not.toBeNull();
+    expect(existsSync(exportStore)).toBe(true);
+    await f.service.removeProject(project.id);
+    expect(f.store.getProject(project.id)).toBeNull();
+    expect(existsSync(exportStore)).toBe(false);
+  });
+
   it("drains a disabled preview's cancelled preflight before deleting its run and owned export store", async () => {
     const f = await fixture();
     const config = { exporter: { kind: "command", command: ["node", "export.mjs"], outputDirectory: "exports/web" }, watch: { paths: ["game"], debounceMs: 100 } };

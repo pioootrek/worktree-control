@@ -483,11 +483,14 @@ export class ControlService {
       );
       this.store.assertProjectRemovalAllowed(projectId);
       await this.processes.stop(projectId);
-      this.store.removeProject(projectId, actor.owner);
-      // A disabled preview can still have cached generations and staging files.
+      // A disabled preview can still have a cancelled export finishing its
+      // preflight. Keep its database receipt until drain and owned-store cleanup
+      // complete; deleting it first prevents the queue from settling the session.
       await this.godotWeb?.forget(projectId).catch((error: unknown) => {
         this.logs.controller("godot_web.store_cleanup_failed", { projectId, error: String(error) });
+        throw error;
       });
+      this.store.removeProject(projectId, actor.owner);
       await this.tests?.pruneLogs();
       this.logs.controller("project.removed", {
         projectId: project.id,
