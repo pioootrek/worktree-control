@@ -25,6 +25,12 @@ export interface EnqueueTestInput {
    * It cannot change the run outcome; failures are logged and ignored.
    */
   settle?(run: TestRun, log: (line: string) => void): Promise<void>;
+  /**
+   * Trusted synchronous notification after log finalization and durable terminal
+   * persistence. Retain needed receipts here: ordinary history can be pruned.
+   * Not called if finalization fails; callback failures are logged and ignored.
+   */
+  finalized?(run: Readonly<TestRun>): void;
 }
 export interface VerificationPreparation {
   /** Overall admitted preparation budget, independent of the execution preset. */
