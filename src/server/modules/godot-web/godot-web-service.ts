@@ -165,15 +165,16 @@ export class GodotWebService {
     // Never hold database admission while waiting: the queue needs it to settle this very run.
     await this.admission.idle(() => session.settled(DRAIN_TIMEOUT_MS));
     const read = () => this.admission.run(() => this.options.store.getTestRun(runId), { reserved: true });
-    // Settlement precedes the queue's final write; wait (bounded) until the run is terminal.
+    // Cancellation may persist a terminal phase before preflight settles.
+    // Wait for the queue's durable finalization receipt as well as its phase.
     const deadline = Date.now() + DRAIN_TIMEOUT_MS;
     while (runId && Date.now() < deadline) {
-      const phase = (await read())?.phase;
-      if (phase !== "queued" && phase !== "running") break;
+      const run = await read();
+      if (!run || (run.phase !== "queued" && run.phase !== "running" && run.telemetry?.finalizedAt)) break;
       await this.admission.idle(() => new Promise((resolve) => setTimeout(resolve, 50)));
     }
     const run = await read();
-    if (session.activeRunId || run?.phase === "queued" || run?.phase === "running"
+    if (session.activeRunId || !run?.telemetry?.finalizedAt || run.phase === "queued" || run.phase === "running"
       || (run && run.telemetry?.cleanup !== "confirmed" && run.telemetry?.cleanup !== "not_required")) {
       throw new Error("The previous Web export has not confirmed process cleanup; retry after it finishes.");
     }
