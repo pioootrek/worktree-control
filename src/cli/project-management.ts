@@ -9,6 +9,7 @@ import type { WebExportStatus } from "../shared/contracts/godot-web";
 import { localizeServerMessage } from "../i18n/server-errors";
 import { type Locale, translate } from "../i18n/messages";
 import { ControlService } from "../server/control-service";
+import { AdminRequestError, requestAdminSocket } from "../server/admin-socket";
 import { acquireControllerLock, ControllerAlreadyRunningError, type ControllerLock } from "../server/controller-lock";
 import { SystemGitWorktreeReader } from "../server/git-worktrees";
 import { detectLaunchPreset } from "../server/launch-command";
@@ -54,6 +55,8 @@ export async function openProjectGateway(paths: AppPaths, locale: Locale): Promi
     if (!token && access.authenticationMode === "token") throw new Error(translate(locale, "cli.project.installationTokenRequired"));
     // An open-mode controller authenticates nobody, so no token is needed.
     const credential = access.authenticationMode === "open" ? token ?? "" : token;
+    // Account modes issue no CLI credential; the owner-only admin socket replaces it.
+    if (credential === null) return new AdminSocketProjectGateway(paths.adminSocketPath, access.pid, locale);
     return new ControllerProjectGateway(localDashboardEndpoint(access), credential, locale);
   }
 
@@ -289,14 +292,61 @@ class OfflineProjectGateway implements ProjectGateway {
   }
 }
 
+/** Upper bound for one dashboard read over the admin socket. */
+const ADMIN_PROJECT_RESPONSE_LIMIT = 8 * 1024 * 1024;
+
+/**
+ * Reaches a running controller through its owner-only admin socket when the CLI has no HTTP
+ * credential, as in better-auth mode. Operating-system permissions authorize the request.
+ */
+class AdminSocketProjectGateway implements ProjectGateway {
+  readonly mode = "controller" as const;
+
+  constructor(private readonly socketPath: string, private readonly pid: number, private readonly locale: Locale) {}
+
+  dashboard(): Promise<DashboardResponse> {
+    return this.request<DashboardResponse>({ action: "dashboard" });
+  }
+
+  async addProject(input: ProjectAddInput): Promise<ProjectView> {
+    return (await this.request<{ project: ProjectView }>({ action: "add", input })).project;
+  }
+
+  async configureGodotWeb(projectId: string, config: unknown): Promise<ProjectView> {
+    return (await this.request<{ project: ProjectView }>({ action: "configure-godot-web", projectId, config })).project;
+  }
+
+  async rebuildWebExport(projectId: string): Promise<WebExportStatus> {
+    return (await this.request<{ webExport: WebExportStatus }>({ action: "rebuild-web-export", projectId })).webExport;
+  }
+
+  async removeProject(projectId: string): Promise<ProjectView> {
+    return (await this.request<{ project: ProjectView }>({ action: "remove", projectId })).project;
+  }
+
+  async close(): Promise<void> {}
+
+  private async request<T>(body: Record<string, unknown>): Promise<T> {
+    try {
+      return await requestAdminSocket(this.socketPath, { command: "project", ...body }, 60_000, ADMIN_PROJECT_RESPONSE_LIMIT) as T;
+    } catch (error) {
+      if (error instanceof AdminRequestError) throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ECONNREFUSED") {
+        throw new Error(translate(this.locale, "cli.project.adminSocketUnavailable", { pid: this.pid, path: this.socketPath }));
+      }
+      throw error;
+    }
+  }
+}
+
 class ControllerProjectGateway implements ProjectGateway {
   readonly mode = "controller" as const;
   private readonly token: string;
   private readonly endpoints: string[];
 
-  /** An empty token sends no credential header; null means no usable access record. */
-  constructor(endpoint: string, token: string | null, private readonly locale: Locale) {
-    if (token === null) throw new Error(translate(locale, "cli.project.controllerUnavailable"));
+  /** An empty token sends no credential header. */
+  constructor(endpoint: string, token: string, private readonly locale: Locale) {
     this.token = token;
     this.endpoints = controllerEndpoints(endpoint);
   }

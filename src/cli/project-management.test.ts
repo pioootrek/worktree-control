@@ -7,6 +7,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { listenAdminSocket } from "../server/admin-socket";
 import { acquireControllerLock } from "../server/controller-lock";
 import { resolveAppPaths } from "../server/paths";
 import { findAvailablePort, openProjectGateway, runDoctorCommand, runProjectCommand } from "./project-management";
@@ -239,6 +240,73 @@ describe("project management CLI", () => {
     try {
       await expect(openProjectGateway(paths, "en")).rejects.toThrow("Set WORKTREE_CONTROL_TOKEN");
     } finally {
+      if (previous !== undefined) process.env.WORKTREE_CONTROL_TOKEN = previous;
+    }
+  });
+
+  it("manages projects of a better-auth controller through its admin socket", async () => {
+    const dataDirectory = temporaryDirectory("worktree-control-cli-account-data-");
+    const stateDirectory = temporaryDirectory("worktree-control-cli-account-state-");
+    const paths = resolveAppPaths(dataDirectory, stateDirectory);
+    const requests: unknown[] = [];
+    const socket = await listenAdminSocket(paths.adminSocketPath, (body) => {
+      requests.push(body);
+      const action = (body as { action?: string }).action;
+      if (action === "dashboard") return { projects: [] };
+      if (action === "remove") return { project: { id: "project-1", name: "Fixture" } };
+      throw new Error("Unexpected request.");
+    });
+    writeServiceAccess(paths.serviceAccessPath, {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      version: "0.0.1",
+      dashboardEndpoint: "http://127.0.0.1:1",
+      mcpEndpoint: null,
+      accessUrl: "http://127.0.0.1:1/",
+      logDirectory: paths.logDirectory,
+      authenticationMode: "better-auth",
+    });
+    const previous = process.env.WORKTREE_CONTROL_TOKEN;
+    delete process.env.WORKTREE_CONTROL_TOKEN;
+    const gateway = await openProjectGateway(paths, "en");
+    try {
+      expect(gateway.mode).toBe("controller");
+      await runProjectCommand(["list"], gateway, "en", { write: () => undefined });
+      await runProjectCommand(["remove", "project-1"], gateway, "en", { write: () => undefined });
+      expect(requests).toEqual([
+        { command: "project", action: "dashboard" },
+        { command: "project", action: "remove", projectId: "project-1" },
+      ]);
+    } finally {
+      await gateway.close();
+      await socket.close();
+      if (previous !== undefined) process.env.WORKTREE_CONTROL_TOKEN = previous;
+    }
+  });
+
+  it("explains a missing admin socket instead of an invalid access record", async () => {
+    const dataDirectory = temporaryDirectory("worktree-control-cli-nosocket-data-");
+    const stateDirectory = temporaryDirectory("worktree-control-cli-nosocket-state-");
+    const paths = resolveAppPaths(dataDirectory, stateDirectory);
+    writeServiceAccess(paths.serviceAccessPath, {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      version: "0.0.1",
+      dashboardEndpoint: "http://127.0.0.1:1",
+      mcpEndpoint: null,
+      accessUrl: "http://127.0.0.1:1/",
+      logDirectory: paths.logDirectory,
+      authenticationMode: "better-auth",
+    });
+    const previous = process.env.WORKTREE_CONTROL_TOKEN;
+    delete process.env.WORKTREE_CONTROL_TOKEN;
+    const gateway = await openProjectGateway(paths, "en");
+    try {
+      const failure = await gateway.dashboard().then(() => null, (error: Error) => error);
+      expect(failure?.message).toContain(`without an admin socket at ${paths.adminSocketPath}`);
+      expect(failure?.message).not.toContain("access record");
+    } finally {
+      await gateway.close();
       if (previous !== undefined) process.env.WORKTREE_CONTROL_TOKEN = previous;
     }
   });

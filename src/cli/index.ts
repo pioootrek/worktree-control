@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createControllerRestoreFailure, createControllerShutdown } from "../server/bootstrap/controller-shutdown";
 import { createProtectedIdentityAdministration } from "../server/bootstrap/identity-administration";
+import { projectAdminHandler } from "../server/bootstrap/project-administration";
 import { createDevVault } from "../server/bootstrap/dev-vault";
 import { runDevVaultCommand } from "./dev-vault";
 import { loadRemoteVerificationConfig, runRemoteVerificationCommand } from "./remote-verification";
@@ -452,7 +453,14 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     const backupHandler = backupAdminHandler(backups, restores, userSchedules);
     const identityHandler = createProtectedIdentityAdministration(store, () => maintenance);
     const mcpDiagnosticsHandler = mcpDiagnosticsAdminHandler(readMcpDiagnostics);
+    const projectHandler = projectAdminHandler({
+      service,
+      admission: store.admission,
+      publish: (change) => events.publish(change),
+      maintenance: () => maintenance,
+    });
     adminSocket = await listenAdminSocket(paths.adminSocketPath, body => {
+      if (body && typeof body === "object" && "command" in body && body.command === "project") return projectHandler(body);
       if (body && typeof body === "object" && "command" in body && body.command === "auth-provider") return providerAdministration.execute(body);
       if (body && typeof body === "object" && "command" in body && body.command === "identity-admin") return identityHandler(body);
       if (body && typeof body === "object" && "command" in body && (body.command === "backup" || body.command === "backup-remote" || body.command === "backup-monitor" || body.command === "user-export-recovery")) return backupHandler(body);
