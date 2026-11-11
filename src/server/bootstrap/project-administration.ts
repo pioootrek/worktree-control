@@ -71,23 +71,51 @@ export interface ProjectOverviewEntry extends Pick<ProjectSnapshot, "reservation
   runtime: RuntimeSummary;
 }
 
+/** An explicit allowlist, so a new project field never reaches the socket reply by default. */
 export function projectSummary(project: ProjectView): ProjectSummary {
-  const { environment: _environment, environmentProfiles: _profiles, testEnvironmentProfiles: _testProfiles, testPresetProfiles: _presetProfiles, testPresetTimeouts: _timeouts, ...summary } = project;
-  return summary;
+  return {
+    id: project.id,
+    name: project.name,
+    repositoryPath: project.repositoryPath,
+    port: project.port,
+    launchPreset: project.launchPreset,
+    tlsMode: project.tlsMode,
+    tlsKeyPath: project.tlsKeyPath,
+    tlsCertPath: project.tlsCertPath,
+    tlsCaPath: project.tlsCaPath,
+    executable: project.executable,
+    args: project.args,
+    selectedEnvironmentProfile: project.selectedEnvironmentProfile,
+    godotWeb: project.godotWeb,
+    healthcheckPath: project.healthcheckPath,
+    startupTimeoutMs: project.startupTimeoutMs,
+    selectedWorktreePath: project.selectedWorktreePath,
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+  };
+}
+
+function runtimeSummary(runtime: RuntimeSnapshot): RuntimeSummary {
+  return {
+    phase: runtime.phase,
+    pid: runtime.pid,
+    worktreePath: runtime.worktreePath,
+    startedAt: runtime.startedAt,
+    error: runtime.error,
+    failure: runtime.failure,
+    resources: runtime.resources,
+  };
 }
 
 /** The fields project commands read. Test history, runtime logs and environment data stay out of the reply. */
 function projectOverview(dashboard: DashboardResponse): { projects: ProjectOverviewEntry[] } {
   return {
-    projects: dashboard.projects.map(({ project, runtime, reservation, discoveryError }) => {
-      const { logs: _logs, ...runtimeSummary } = runtime;
-      return {
-        project: projectSummary(project),
-        runtime: runtimeSummary,
-        reservation,
-        ...(discoveryError ? { discoveryError } : {}),
-      };
-    }),
+    projects: dashboard.projects.map(({ project, runtime, reservation, discoveryError }) => ({
+      project: projectSummary(project),
+      runtime: runtimeSummary(runtime),
+      reservation,
+      ...(discoveryError ? { discoveryError } : {}),
+    })),
   };
 }
 
