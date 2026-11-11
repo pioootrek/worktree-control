@@ -45,7 +45,7 @@ describe("project administration over the admin socket", () => {
     const { service, execute } = fixture();
     const large = "x".repeat(4_000);
     const project = {
-      id: "project-1", name: "Fixture",
+      id: "project-1", name: "Fixture", godotWeb: { watch: { paths: Array.from({ length: 16 }, () => "w".repeat(240)) } },
       environment: { TOKEN: large }, environmentProfiles: Array.from({ length: 150 }, (_, index) => ({ name: `p${index}`, environment: { VALUE: large } })),
       testEnvironmentProfiles: [{ name: "ci", variableNames: ["A"] }], testPresetProfiles: { "node:test": "ci" }, testPresetTimeouts: { "node:test": 1000 },
     };
@@ -58,7 +58,8 @@ describe("project administration over the admin socket", () => {
     expect(overview).toEqual({ projects: [{ project: { id: "project-1", name: "Fixture" }, runtime: { phase: "running", error: null }, reservation: null, discoveryError: "Discovery failed." }] });
     expect(JSON.stringify(overview).length).toBeLessThan(1_000);
     (service.removeProject as ReturnType<typeof vi.fn>).mockResolvedValueOnce(project);
-    expect(await execute({ command: "project", action: "remove", projectId: "project-1" })).toEqual({ project: { id: "project-1", name: "Fixture" } });
+    // A single-project receipt keeps the bounded Godot Web configuration; the overview does not.
+    expect(await execute({ command: "project", action: "remove", projectId: "project-1" })).toEqual({ project: { id: "project-1", name: "Fixture", godotWeb: project.godotWeb } });
   });
 
   it("rejects unknown shapes and refuses during maintenance", async () => {

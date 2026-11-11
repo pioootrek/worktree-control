@@ -66,8 +66,14 @@ export type ProjectSummary = Omit<ProjectView, "environment" | "environmentProfi
 /** Runtime state without its retained log tail. */
 export type RuntimeSummary = Omit<RuntimeSnapshot, "logs">;
 
+/**
+ * Project fields in the unpaginated overview. A Godot Web configuration can be 64 KiB per project,
+ * so the overview leaves it out; single-project receipts keep it.
+ */
+export type OverviewProject = Omit<ProjectSummary, "godotWeb">;
+
 export interface ProjectOverviewEntry extends Pick<ProjectSnapshot, "reservation" | "discoveryError"> {
-  project: ProjectSummary;
+  project: OverviewProject;
   runtime: RuntimeSummary;
 }
 
@@ -107,11 +113,17 @@ function runtimeSummary(runtime: RuntimeSnapshot): RuntimeSummary {
   };
 }
 
+function overviewProject(project: ProjectView): OverviewProject {
+  const { godotWeb: _godotWeb, ...overview } = projectSummary(project);
+  void _godotWeb;
+  return overview;
+}
+
 /** The fields project commands read. Test history, runtime logs and environment data stay out of the reply. */
 function projectOverview(dashboard: DashboardResponse): { projects: ProjectOverviewEntry[] } {
   return {
     projects: dashboard.projects.map(({ project, runtime, reservation, discoveryError }) => ({
-      project: projectSummary(project),
+      project: overviewProject(project),
       runtime: runtimeSummary(runtime),
       reservation,
       ...(discoveryError ? { discoveryError } : {}),
