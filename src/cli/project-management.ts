@@ -4,11 +4,13 @@ import { readFileSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import type { DashboardResponse, LaunchPreset, ProjectView } from "../shared/contracts";
+import type { LaunchPreset, ProjectView } from "../shared/contracts";
+import type { ProjectOverviewEntry, ProjectSummary } from "../server/bootstrap/project-administration";
 import type { WebExportStatus } from "../shared/contracts/godot-web";
 import { localizeServerMessage } from "../i18n/server-errors";
 import { type Locale, translate } from "../i18n/messages";
 import { ControlService } from "../server/control-service";
+import { AdminRequestError, requestAdminSocket } from "../server/admin-socket";
 import { acquireControllerLock, ControllerAlreadyRunningError, type ControllerLock } from "../server/controller-lock";
 import { SystemGitWorktreeReader } from "../server/git-worktrees";
 import { detectLaunchPreset } from "../server/launch-command";
@@ -25,12 +27,29 @@ const execFileAsync = promisify(execFile);
 
 export interface ProjectGateway {
   readonly mode: "controller" | "offline";
-  dashboard(): Promise<DashboardResponse>;
-  addProject(input: ProjectAddInput): Promise<ProjectView>;
-  removeProject(projectId: string): Promise<ProjectView>;
-  configureGodotWeb(projectId: string, config: unknown): Promise<ProjectView>;
+  dashboard(): Promise<ProjectOverview>;
+  addProject(input: ProjectAddInput): Promise<ProjectSummary>;
+  removeProject(projectId: string): Promise<ProjectSummary>;
+  configureGodotWeb(projectId: string, config: unknown): Promise<ProjectSummary>;
   rebuildWebExport(projectId: string): Promise<WebExportStatus>;
   close(): Promise<void>;
+}
+
+/** The dashboard fields project commands read; a full dashboard response satisfies it. */
+export interface ProjectOverview {
+  projects: ProjectOverviewEntry[];
+}
+
+/** Localizes the overview's error text, as the HTTP API does for its dashboard. */
+function localizedOverview(overview: ProjectOverview, locale: Locale): ProjectOverview {
+  if (locale === "pl") return overview;
+  return {
+    projects: overview.projects.map((entry) => ({
+      ...entry,
+      ...(entry.discoveryError ? { discoveryError: localizeServerMessage(entry.discoveryError, locale) } : {}),
+      runtime: { ...entry.runtime, error: entry.runtime.error ? localizeServerMessage(entry.runtime.error, locale) : null },
+    })),
+  };
 }
 
 export interface ProjectAddInput { name: string; repositoryPath: string; port: number; launchPreset: LaunchPreset; godotWeb?: unknown }
@@ -54,6 +73,8 @@ export async function openProjectGateway(paths: AppPaths, locale: Locale): Promi
     if (!token && access.authenticationMode === "token") throw new Error(translate(locale, "cli.project.installationTokenRequired"));
     // An open-mode controller authenticates nobody, so no token is needed.
     const credential = access.authenticationMode === "open" ? token ?? "" : token;
+    // Account modes issue no CLI credential; the owner-only admin socket replaces it.
+    if (credential === null) return new AdminSocketProjectGateway(paths.adminSocketPath, access.pid, locale);
     return new ControllerProjectGateway(localDashboardEndpoint(access), credential, locale);
   }
 
@@ -81,7 +102,7 @@ export async function openProjectGateway(paths: AppPaths, locale: Locale): Promi
       store, git, processes, jobs: offlineJobs, lifecycle, logs: nullLogWriter, notify: () => undefined,
     });
     const service = new ControlService(store, git, processes, nullLogWriter, commands, undefined, undefined, undefined, undefined, lifecycle, undefined, undefined, undefined, godotWeb);
-    return new OfflineProjectGateway(service, lock);
+    return new OfflineProjectGateway(service, lock, locale);
   } catch (error) {
     lock.release();
     throw error;
@@ -256,10 +277,10 @@ class OfflineProjectGateway implements ProjectGateway {
   readonly mode = "offline" as const;
   private closed = false;
 
-  constructor(private readonly service: ControlService, private readonly lock: ControllerLock) {}
+  constructor(private readonly service: ControlService, private readonly lock: ControllerLock, private readonly locale: Locale) {}
 
-  dashboard(): Promise<DashboardResponse> {
-    return this.service.dashboard();
+  async dashboard(): Promise<ProjectOverview> {
+    return localizedOverview(await this.service.dashboard(), this.locale);
   }
 
   addProject(input: ProjectAddInput): Promise<ProjectView> {
@@ -289,20 +310,67 @@ class OfflineProjectGateway implements ProjectGateway {
   }
 }
 
+/** Upper bound for one admin socket reply; the project overview carries no test history or logs. */
+const ADMIN_PROJECT_RESPONSE_LIMIT = 8 * 1024 * 1024;
+
+/**
+ * Reaches a running controller through its owner-only admin socket when the CLI has no HTTP
+ * credential, as in better-auth mode. Operating-system permissions authorize the request.
+ */
+class AdminSocketProjectGateway implements ProjectGateway {
+  readonly mode = "controller" as const;
+
+  constructor(private readonly socketPath: string, private readonly pid: number, private readonly locale: Locale) {}
+
+  async dashboard(): Promise<ProjectOverview> {
+    return localizedOverview(await this.request<ProjectOverview>({ action: "dashboard" }), this.locale);
+  }
+
+  async addProject(input: ProjectAddInput): Promise<ProjectSummary> {
+    return (await this.request<{ project: ProjectSummary }>({ action: "add", input })).project;
+  }
+
+  async configureGodotWeb(projectId: string, config: unknown): Promise<ProjectSummary> {
+    return (await this.request<{ project: ProjectSummary }>({ action: "configure-godot-web", projectId, config })).project;
+  }
+
+  async rebuildWebExport(projectId: string): Promise<WebExportStatus> {
+    return (await this.request<{ webExport: WebExportStatus }>({ action: "rebuild-web-export", projectId })).webExport;
+  }
+
+  async removeProject(projectId: string): Promise<ProjectSummary> {
+    return (await this.request<{ project: ProjectSummary }>({ action: "remove", projectId })).project;
+  }
+
+  async close(): Promise<void> {}
+
+  private async request<T>(body: Record<string, unknown>): Promise<T> {
+    try {
+      return await requestAdminSocket(this.socketPath, { command: "project", ...body }, 60_000, ADMIN_PROJECT_RESPONSE_LIMIT) as T;
+    } catch (error) {
+      if (error instanceof AdminRequestError) throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ECONNREFUSED") {
+        throw new Error(translate(this.locale, "cli.project.adminSocketUnavailable", { pid: this.pid, path: this.socketPath }));
+      }
+      throw error;
+    }
+  }
+}
+
 class ControllerProjectGateway implements ProjectGateway {
   readonly mode = "controller" as const;
   private readonly token: string;
   private readonly endpoints: string[];
 
-  /** An empty token sends no credential header; null means no usable access record. */
-  constructor(endpoint: string, token: string | null, private readonly locale: Locale) {
-    if (token === null) throw new Error(translate(locale, "cli.project.controllerUnavailable"));
+  /** An empty token sends no credential header. */
+  constructor(endpoint: string, token: string, private readonly locale: Locale) {
     this.token = token;
     this.endpoints = controllerEndpoints(endpoint);
   }
 
-  async dashboard(): Promise<DashboardResponse> {
-    return this.request<DashboardResponse>("/api/dashboard");
+  async dashboard(): Promise<ProjectOverview> {
+    return this.request<ProjectOverview>("/api/dashboard");
   }
 
   async addProject(input: ProjectAddInput): Promise<ProjectView> {

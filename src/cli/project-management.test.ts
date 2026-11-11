@@ -7,6 +7,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { listenAdminSocket } from "../server/admin-socket";
 import { acquireControllerLock } from "../server/controller-lock";
 import { resolveAppPaths } from "../server/paths";
 import { findAvailablePort, openProjectGateway, runDoctorCommand, runProjectCommand } from "./project-management";
@@ -243,6 +244,111 @@ describe("project management CLI", () => {
     }
   });
 
+  it("manages projects of a better-auth controller through its admin socket", async () => {
+    const dataDirectory = temporaryDirectory("worktree-control-cli-account-data-");
+    const stateDirectory = temporaryDirectory("worktree-control-cli-account-state-");
+    const paths = resolveAppPaths(dataDirectory, stateDirectory);
+    const requests: unknown[] = [];
+    const socket = await listenAdminSocket(paths.adminSocketPath, (body) => {
+      requests.push(body);
+      const action = (body as { action?: string }).action;
+      if (action === "dashboard") return { projects: [] };
+      if (action === "remove") return { project: { id: "project-1", name: "Fixture" } };
+      throw new Error("Unexpected request.");
+    });
+    writeServiceAccess(paths.serviceAccessPath, {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      version: "0.0.1",
+      dashboardEndpoint: "http://127.0.0.1:1",
+      mcpEndpoint: null,
+      accessUrl: "http://127.0.0.1:1/",
+      logDirectory: paths.logDirectory,
+      authenticationMode: "better-auth",
+    });
+    const previous = process.env.WORKTREE_CONTROL_TOKEN;
+    delete process.env.WORKTREE_CONTROL_TOKEN;
+    const gateway = await openProjectGateway(paths, "en");
+    try {
+      expect(gateway.mode).toBe("controller");
+      await runProjectCommand(["list"], gateway, "en", { write: () => undefined });
+      await runProjectCommand(["remove", "project-1"], gateway, "en", { write: () => undefined });
+      expect(requests).toEqual([
+        { command: "project", action: "dashboard" },
+        { command: "project", action: "remove", projectId: "project-1" },
+      ]);
+    } finally {
+      await gateway.close();
+      await socket.close();
+      if (previous !== undefined) process.env.WORKTREE_CONTROL_TOKEN = previous;
+    }
+  });
+
+  it("localizes socket overview errors like the HTTP dashboard", async () => {
+    const dataDirectory = temporaryDirectory("worktree-control-cli-locale-data-");
+    const stateDirectory = temporaryDirectory("worktree-control-cli-locale-state-");
+    const paths = resolveAppPaths(dataDirectory, stateDirectory);
+    const polish = "Nie udało się potwierdzić stanu co najmniej jednego worktree. Przyjęto bezpiecznie, że zawiera zmiany.";
+    const socket = await listenAdminSocket(paths.adminSocketPath, () => ({
+      projects: [{
+        project: { id: "project-1", name: "Fixture", repositoryPath: "/srv/fixture", port: 3100, launchPreset: "node", selectedWorktreePath: null },
+        runtime: { phase: "stopped", error: null },
+        reservation: null,
+        discoveryError: polish,
+      }],
+    }));
+    writeServiceAccess(paths.serviceAccessPath, {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      version: "0.0.1",
+      dashboardEndpoint: "http://127.0.0.1:1",
+      mcpEndpoint: null,
+      accessUrl: "http://127.0.0.1:1/",
+      logDirectory: paths.logDirectory,
+      authenticationMode: "better-auth",
+    });
+    const previous = process.env.WORKTREE_CONTROL_TOKEN;
+    delete process.env.WORKTREE_CONTROL_TOKEN;
+    const gateway = await openProjectGateway(paths, "en");
+    try {
+      const output: string[] = [];
+      await runProjectCommand(["list", "--json"], gateway, "en", { write: (line) => output.push(line) });
+      expect(JSON.parse(output.join("\n"))[0].discoveryError)
+        .toBe("The status of at least one worktree could not be confirmed. It is conservatively treated as having changes.");
+    } finally {
+      await gateway.close();
+      await socket.close();
+      if (previous !== undefined) process.env.WORKTREE_CONTROL_TOKEN = previous;
+    }
+  });
+
+  it("explains a missing admin socket instead of an invalid access record", async () => {
+    const dataDirectory = temporaryDirectory("worktree-control-cli-nosocket-data-");
+    const stateDirectory = temporaryDirectory("worktree-control-cli-nosocket-state-");
+    const paths = resolveAppPaths(dataDirectory, stateDirectory);
+    writeServiceAccess(paths.serviceAccessPath, {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      version: "0.0.1",
+      dashboardEndpoint: "http://127.0.0.1:1",
+      mcpEndpoint: null,
+      accessUrl: "http://127.0.0.1:1/",
+      logDirectory: paths.logDirectory,
+      authenticationMode: "better-auth",
+    });
+    const previous = process.env.WORKTREE_CONTROL_TOKEN;
+    delete process.env.WORKTREE_CONTROL_TOKEN;
+    const gateway = await openProjectGateway(paths, "en");
+    try {
+      const failure = await gateway.dashboard().then(() => null, (error: Error) => error);
+      expect(failure?.message).toContain(`without an admin socket at ${paths.adminSocketPath}`);
+      expect(failure?.message).not.toContain("access record");
+    } finally {
+      await gateway.close();
+      if (previous !== undefined) process.env.WORKTREE_CONTROL_TOKEN = previous;
+    }
+  });
+
   it("refuses offline database access through a typed live-controller lock", async () => {
     const dataDirectory = temporaryDirectory("worktree-control-cli-lock-data-");
     const stateDirectory = temporaryDirectory("worktree-control-cli-lock-state-");
@@ -363,7 +469,8 @@ describe("Godot Web project CLI", () => {
       expect(snapshot.project).toMatchObject({ launchPreset: "godot-web", godotWeb: { exporter: { kind: "command", outputDirectory: "exports/web" }, liveReload: false } });
       expect(snapshot.project.args).toEqual(expect.arrayContaining(["--root", "--worktree-key", "--live-reload", "0"]));
       expect(snapshot.project.args.join(" ")).toContain(join(paths.stateDirectory, "godot-web", snapshot.project.id, "public"));
-      expect(snapshot.webExport).toBeNull();
+      // The offline gateway still returns the full service snapshot behind the narrower overview type.
+      expect((snapshot as { webExport?: unknown }).webExport).toBeNull();
       await runProjectCommand(["godot-web", snapshot.project.id, "--disable"], gateway, "en", { write: line => output.push(line) });
       expect((await gateway.dashboard()).projects[0].project).toMatchObject({ launchPreset: "none", godotWeb: null, executable: "", args: [] });
       await runProjectCommand(["godot-web", snapshot.project.id, "--config", config], gateway, "en", { write: line => output.push(line) });

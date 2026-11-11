@@ -732,6 +732,25 @@ ls "$PROVIDER_DIR/dist/index.js"
 recovery. The directory name above is an example; any private path outside Git
 working trees works.
 
+### Choose OS accounts for agents
+
+Account mode authorizes requests that arrive over HTTP and MCP. It does not
+separate processes that run as the controller's OS user. Such a process can
+use the private admin socket, the protected CLI and the user service manager,
+and it can read the state directory and the database. It can register or
+remove projects and change the authentication mode without an agent
+credential.
+
+Run agents under a different OS account or in a sandbox that cannot reach the
+controller's data and state directories, its admin socket or its service
+manager. These agents use the MCP or HTTP endpoint with their own credential.
+Give them access to the repositories through a group or ACLs. Keep the
+controller and the repositories under the operator's account.
+
+If agents share the controller's OS user, RBAC still limits what agents do
+through MCP and HTTP. Use that setup only when you trust every agent process
+as the operator.
+
 ### Turn on account mode
 
 Run these steps as the installation's OS user, with the controller stopped, on
@@ -813,7 +832,7 @@ choose another mode explicitly (see [Leave account mode](#leave-account-mode)).
 | Public identity bootstrap/admin, broad dashboard/runtime API, directories, ENV, TLS and storage cleanup | Denied before effects; cookies and machine tokens gain no installation authority |
 | Cookie downloads/attachments/exports, SSE, Godot preview, backups/restore and schedules | Unsupported and denied; use converted operations or protected operator workflows |
 | Agent attachments/exports/schedules | Only existing explicit Knowledge permissions and resource checks; no runtime right implies them |
-| Protected Unix admin socket | OS owner channel; provider/mode maintenance and current-owner identity administration on the same store |
+| Protected Unix admin socket | OS owner channel; provider/mode maintenance, project registration and current-owner identity administration on the same store |
 | Protected stopped CLI and recovery | Both singleton locks, current owner credential where required, protected fence preflight and existing recovery operations |
 | Static dashboard assets | Public static export; no private data or controller authority |
 

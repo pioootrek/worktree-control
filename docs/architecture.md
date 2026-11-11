@@ -793,6 +793,9 @@ worktree-control service status|start|stop|restart|open|url|uninstall
 Project mutations share `ControlService` with HTTP and MCP. When the user
 service is running, project CLI commands use its owner-only access record and
 HTTP API. Token mode requires `WORKTREE_CONTROL_TOKEN`; open mode does not.
+Account mode issues no CLI credential, so project commands and `doctor` use the
+controller's owner-only admin socket. Its handler validates input like the HTTP
+route, runs under database admission and publishes the same dashboard events.
 When no controller owns the state, the CLI acquires the same
 singleton lock before opening SQLite. A foreground controller without a safe
 access record causes a clear refusal instead of concurrent database access.

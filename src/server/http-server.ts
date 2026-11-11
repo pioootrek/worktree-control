@@ -61,7 +61,7 @@ function optionalString(record: JsonRecord, key: string, max: number): string | 
   return value;
 }
 
-function parseAddProject(value: unknown) {
+export function parseAddProject(value: unknown) {
   const record = strictRecord(value, ["name", "repositoryPath", "port", "launchPreset", "godotWeb"]);
   const port = record.port;
   if (typeof port !== "number" || !Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Nieprawidłowe pole port.");

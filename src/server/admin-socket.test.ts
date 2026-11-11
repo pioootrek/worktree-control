@@ -34,6 +34,17 @@ describe("admin socket", () => {
     expect(reply).toMatchObject({ status: 400, body: { code: "invalid_input" } });
     expect(dispatched).toBe(false);
   });
+  it("accepts larger bodies only for project commands", async () => {
+    const root = directory(), path = join(root, "state", "admin.sock");
+    const seen: unknown[] = [];
+    const admin = await listenAdminSocket(path, (body) => { seen.push((body as { command: string }).command); return { ok: true }; });
+    cleanups.push(() => admin.close());
+    const config = { padding: "x".repeat(40 * 1024) };
+    expect(await requestAdminSocket(path, { command: "project", action: "configure-godot-web", projectId: "p", config })).toEqual({ ok: true });
+    await expect(requestAdminSocket(path, { command: "backup", padding: config.padding })).rejects.toMatchObject({ code: "invalid_input" });
+    expect(seen).toEqual(["project"]);
+  });
+
   it("is reachable only through an owner-only socket and replaces a stale one", async () => {
     const root = directory();
     const path = join(root, "state", "admin.sock");
