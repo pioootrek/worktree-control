@@ -284,6 +284,44 @@ describe("project management CLI", () => {
     }
   });
 
+  it("localizes socket overview errors like the HTTP dashboard", async () => {
+    const dataDirectory = temporaryDirectory("worktree-control-cli-locale-data-");
+    const stateDirectory = temporaryDirectory("worktree-control-cli-locale-state-");
+    const paths = resolveAppPaths(dataDirectory, stateDirectory);
+    const polish = "Nie udało się potwierdzić stanu co najmniej jednego worktree. Przyjęto bezpiecznie, że zawiera zmiany.";
+    const socket = await listenAdminSocket(paths.adminSocketPath, () => ({
+      projects: [{
+        project: { id: "project-1", name: "Fixture", repositoryPath: "/srv/fixture", port: 3100, launchPreset: "node", selectedWorktreePath: null },
+        runtime: { phase: "stopped", error: null },
+        reservation: null,
+        discoveryError: polish,
+      }],
+    }));
+    writeServiceAccess(paths.serviceAccessPath, {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      version: "0.0.1",
+      dashboardEndpoint: "http://127.0.0.1:1",
+      mcpEndpoint: null,
+      accessUrl: "http://127.0.0.1:1/",
+      logDirectory: paths.logDirectory,
+      authenticationMode: "better-auth",
+    });
+    const previous = process.env.WORKTREE_CONTROL_TOKEN;
+    delete process.env.WORKTREE_CONTROL_TOKEN;
+    const gateway = await openProjectGateway(paths, "en");
+    try {
+      const output: string[] = [];
+      await runProjectCommand(["list", "--json"], gateway, "en", { write: (line) => output.push(line) });
+      expect(JSON.parse(output.join("\n"))[0].discoveryError)
+        .toBe("The status of at least one worktree could not be confirmed. It is conservatively treated as having changes.");
+    } finally {
+      await gateway.close();
+      await socket.close();
+      if (previous !== undefined) process.env.WORKTREE_CONTROL_TOKEN = previous;
+    }
+  });
+
   it("explains a missing admin socket instead of an invalid access record", async () => {
     const dataDirectory = temporaryDirectory("worktree-control-cli-nosocket-data-");
     const stateDirectory = temporaryDirectory("worktree-control-cli-nosocket-state-");

@@ -4,7 +4,7 @@ import { readFileSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import type { DashboardResponse, LaunchPreset, ProjectView } from "../shared/contracts";
+import type { LaunchPreset, ProjectSnapshot, ProjectView } from "../shared/contracts";
 import type { WebExportStatus } from "../shared/contracts/godot-web";
 import { localizeServerMessage } from "../i18n/server-errors";
 import { type Locale, translate } from "../i18n/messages";
@@ -26,12 +26,29 @@ const execFileAsync = promisify(execFile);
 
 export interface ProjectGateway {
   readonly mode: "controller" | "offline";
-  dashboard(): Promise<DashboardResponse>;
+  dashboard(): Promise<ProjectOverview>;
   addProject(input: ProjectAddInput): Promise<ProjectView>;
   removeProject(projectId: string): Promise<ProjectView>;
   configureGodotWeb(projectId: string, config: unknown): Promise<ProjectView>;
   rebuildWebExport(projectId: string): Promise<WebExportStatus>;
   close(): Promise<void>;
+}
+
+/** The dashboard fields project commands read; a full dashboard response satisfies it. */
+export interface ProjectOverview {
+  projects: Array<Pick<ProjectSnapshot, "project" | "runtime" | "reservation" | "discoveryError">>;
+}
+
+/** Localizes the overview's error text, as the HTTP API does for its dashboard. */
+function localizedOverview(overview: ProjectOverview, locale: Locale): ProjectOverview {
+  if (locale === "pl") return overview;
+  return {
+    projects: overview.projects.map((entry) => ({
+      ...entry,
+      ...(entry.discoveryError ? { discoveryError: localizeServerMessage(entry.discoveryError, locale) } : {}),
+      runtime: { ...entry.runtime, error: entry.runtime.error ? localizeServerMessage(entry.runtime.error, locale) : null },
+    })),
+  };
 }
 
 export interface ProjectAddInput { name: string; repositoryPath: string; port: number; launchPreset: LaunchPreset; godotWeb?: unknown }
@@ -84,7 +101,7 @@ export async function openProjectGateway(paths: AppPaths, locale: Locale): Promi
       store, git, processes, jobs: offlineJobs, lifecycle, logs: nullLogWriter, notify: () => undefined,
     });
     const service = new ControlService(store, git, processes, nullLogWriter, commands, undefined, undefined, undefined, undefined, lifecycle, undefined, undefined, undefined, godotWeb);
-    return new OfflineProjectGateway(service, lock);
+    return new OfflineProjectGateway(service, lock, locale);
   } catch (error) {
     lock.release();
     throw error;
@@ -259,10 +276,10 @@ class OfflineProjectGateway implements ProjectGateway {
   readonly mode = "offline" as const;
   private closed = false;
 
-  constructor(private readonly service: ControlService, private readonly lock: ControllerLock) {}
+  constructor(private readonly service: ControlService, private readonly lock: ControllerLock, private readonly locale: Locale) {}
 
-  dashboard(): Promise<DashboardResponse> {
-    return this.service.dashboard();
+  async dashboard(): Promise<ProjectOverview> {
+    return localizedOverview(await this.service.dashboard(), this.locale);
   }
 
   addProject(input: ProjectAddInput): Promise<ProjectView> {
@@ -292,7 +309,7 @@ class OfflineProjectGateway implements ProjectGateway {
   }
 }
 
-/** Upper bound for one dashboard read over the admin socket. */
+/** Upper bound for one admin socket reply; the project overview carries no test history or logs. */
 const ADMIN_PROJECT_RESPONSE_LIMIT = 8 * 1024 * 1024;
 
 /**
@@ -304,8 +321,8 @@ class AdminSocketProjectGateway implements ProjectGateway {
 
   constructor(private readonly socketPath: string, private readonly pid: number, private readonly locale: Locale) {}
 
-  dashboard(): Promise<DashboardResponse> {
-    return this.request<DashboardResponse>({ action: "dashboard" });
+  async dashboard(): Promise<ProjectOverview> {
+    return localizedOverview(await this.request<ProjectOverview>({ action: "dashboard" }), this.locale);
   }
 
   async addProject(input: ProjectAddInput): Promise<ProjectView> {
@@ -351,8 +368,8 @@ class ControllerProjectGateway implements ProjectGateway {
     this.endpoints = controllerEndpoints(endpoint);
   }
 
-  async dashboard(): Promise<DashboardResponse> {
-    return this.request<DashboardResponse>("/api/dashboard");
+  async dashboard(): Promise<ProjectOverview> {
+    return this.request<ProjectOverview>("/api/dashboard");
   }
 
   async addProject(input: ProjectAddInput): Promise<ProjectView> {

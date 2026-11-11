@@ -41,6 +41,19 @@ describe("project administration over the admin socket", () => {
     expect(publish).toHaveBeenCalledWith({ kinds: ["topology"] });
   });
 
+  it("returns only the fields project commands read, without test history or logs", async () => {
+    const { service, execute } = fixture();
+    const project = { id: "project-1", name: "Fixture" };
+    const runtime = { phase: "stopped", error: null };
+    const logs = Array.from({ length: 200 }, () => "x".repeat(2_000));
+    (service.dashboard as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      projects: [{ project, runtime, reservation: null, worktrees: [], testRuns: Array.from({ length: 50 }, (_, index) => ({ id: `run-${index}`, logs })), discoveryError: "Discovery failed." }],
+    });
+    const overview = await execute({ command: "project", action: "dashboard" });
+    expect(overview).toEqual({ projects: [{ project, runtime, reservation: null, discoveryError: "Discovery failed." }] });
+    expect(JSON.stringify(overview).length).toBeLessThan(1_000);
+  });
+
   it("rejects unknown shapes and refuses during maintenance", async () => {
     const { execute } = fixture();
     await expect(execute({ command: "project", action: "dashboard", extra: true })).rejects.toThrow("Invalid project administration request.");

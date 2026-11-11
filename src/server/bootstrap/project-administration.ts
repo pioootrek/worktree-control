@@ -1,4 +1,4 @@
-import type { DashboardChangeKind, DashboardResponse, ProjectView } from "@/shared/contracts";
+import type { DashboardChangeKind, DashboardResponse, ProjectSnapshot, ProjectView } from "@/shared/contracts";
 import type { WebExportStatus } from "@/shared/contracts/godot-web";
 import type { DatabaseAdmission } from "../database-admission";
 import { parseAddProject } from "../http-server";
@@ -32,7 +32,7 @@ export function projectAdminHandler(dependencies: ProjectAdministrationDependenc
     const request = parseRequest(body);
     switch (request.action) {
       case "dashboard":
-        return service.dashboard();
+        return projectOverview(await service.dashboard());
       case "add": {
         const project = await service.addProject(parseAddProject(request.input));
         publish({ kinds: ["topology", "metadata"], projectIds: [project.id] });
@@ -55,6 +55,20 @@ export function projectAdminHandler(dependencies: ProjectAdministrationDependenc
       }
     }
   });
+}
+
+/** The fields the project CLI reads. Test history and logs stay out of the bounded socket reply. */
+export type ProjectOverviewEntry = Pick<ProjectSnapshot, "project" | "runtime" | "reservation" | "discoveryError">;
+
+function projectOverview(dashboard: DashboardResponse): { projects: ProjectOverviewEntry[] } {
+  return {
+    projects: dashboard.projects.map(({ project, runtime, reservation, discoveryError }) => ({
+      project,
+      runtime,
+      reservation,
+      ...(discoveryError ? { discoveryError } : {}),
+    })),
+  };
 }
 
 type ProjectAdminRequest =
