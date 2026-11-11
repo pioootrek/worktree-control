@@ -6,6 +6,8 @@ import { createHttpServerCloser } from "./http-server-lifecycle";
 import { ProviderAdminError, providerAdminErrorBody, parseStrictProviderJson } from "./modules/authentication";
 
 const BODY_LIMIT = 16 * 1024;
+/** Project commands carry Godot Web configuration files of up to 64 KiB plus the command envelope. */
+const PROJECT_BODY_LIMIT = 96 * 1024;
 
 export interface AdminSocketServer {
   server: Server;
@@ -46,13 +48,15 @@ export async function listenAdminSocket(
         let size = 0;
         for await (const chunk of request) {
           size += (chunk as Buffer).length;
-          if (size > BODY_LIMIT) throw new ProviderAdminError("invalid_input");
+          if (size > PROJECT_BODY_LIMIT) throw new ProviderAdminError("invalid_input");
           chunks.push(chunk as Buffer);
         }
         clearTimeout(deadline);
         let body: unknown;
         try { body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))); }
         catch { throw new ProviderAdminError("invalid_input"); }
+        const projectCommand = typeof body === "object" && body !== null && "command" in body && body.command === "project";
+        if (size > BODY_LIMIT && !projectCommand) throw new ProviderAdminError("invalid_input");
         provider = typeof body === "object" && body !== null && "command" in body && body.command === "auth-provider";
         if (provider) body = decodeProviderJson(Buffer.concat(chunks));
         else if (typeof body === "object" && body !== null && "command" in body && body.command === "identity-admin") {

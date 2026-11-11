@@ -4,7 +4,8 @@ import { readFileSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import type { LaunchPreset, ProjectSnapshot, ProjectView } from "../shared/contracts";
+import type { LaunchPreset, ProjectView } from "../shared/contracts";
+import type { ProjectOverviewEntry, ProjectSummary } from "../server/bootstrap/project-administration";
 import type { WebExportStatus } from "../shared/contracts/godot-web";
 import { localizeServerMessage } from "../i18n/server-errors";
 import { type Locale, translate } from "../i18n/messages";
@@ -27,16 +28,16 @@ const execFileAsync = promisify(execFile);
 export interface ProjectGateway {
   readonly mode: "controller" | "offline";
   dashboard(): Promise<ProjectOverview>;
-  addProject(input: ProjectAddInput): Promise<ProjectView>;
-  removeProject(projectId: string): Promise<ProjectView>;
-  configureGodotWeb(projectId: string, config: unknown): Promise<ProjectView>;
+  addProject(input: ProjectAddInput): Promise<ProjectSummary>;
+  removeProject(projectId: string): Promise<ProjectSummary>;
+  configureGodotWeb(projectId: string, config: unknown): Promise<ProjectSummary>;
   rebuildWebExport(projectId: string): Promise<WebExportStatus>;
   close(): Promise<void>;
 }
 
 /** The dashboard fields project commands read; a full dashboard response satisfies it. */
 export interface ProjectOverview {
-  projects: Array<Pick<ProjectSnapshot, "project" | "runtime" | "reservation" | "discoveryError">>;
+  projects: ProjectOverviewEntry[];
 }
 
 /** Localizes the overview's error text, as the HTTP API does for its dashboard. */
@@ -325,20 +326,20 @@ class AdminSocketProjectGateway implements ProjectGateway {
     return localizedOverview(await this.request<ProjectOverview>({ action: "dashboard" }), this.locale);
   }
 
-  async addProject(input: ProjectAddInput): Promise<ProjectView> {
-    return (await this.request<{ project: ProjectView }>({ action: "add", input })).project;
+  async addProject(input: ProjectAddInput): Promise<ProjectSummary> {
+    return (await this.request<{ project: ProjectSummary }>({ action: "add", input })).project;
   }
 
-  async configureGodotWeb(projectId: string, config: unknown): Promise<ProjectView> {
-    return (await this.request<{ project: ProjectView }>({ action: "configure-godot-web", projectId, config })).project;
+  async configureGodotWeb(projectId: string, config: unknown): Promise<ProjectSummary> {
+    return (await this.request<{ project: ProjectSummary }>({ action: "configure-godot-web", projectId, config })).project;
   }
 
   async rebuildWebExport(projectId: string): Promise<WebExportStatus> {
     return (await this.request<{ webExport: WebExportStatus }>({ action: "rebuild-web-export", projectId })).webExport;
   }
 
-  async removeProject(projectId: string): Promise<ProjectView> {
-    return (await this.request<{ project: ProjectView }>({ action: "remove", projectId })).project;
+  async removeProject(projectId: string): Promise<ProjectSummary> {
+    return (await this.request<{ project: ProjectSummary }>({ action: "remove", projectId })).project;
   }
 
   async close(): Promise<void> {}

@@ -1,4 +1,4 @@
-import type { DashboardChangeKind, DashboardResponse, ProjectSnapshot, ProjectView } from "@/shared/contracts";
+import type { DashboardChangeKind, DashboardResponse, ProjectSnapshot, ProjectView, RuntimeSnapshot } from "@/shared/contracts";
 import type { WebExportStatus } from "@/shared/contracts/godot-web";
 import type { DatabaseAdmission } from "../database-admission";
 import { parseAddProject } from "../http-server";
@@ -36,17 +36,17 @@ export function projectAdminHandler(dependencies: ProjectAdministrationDependenc
       case "add": {
         const project = await service.addProject(parseAddProject(request.input));
         publish({ kinds: ["topology", "metadata"], projectIds: [project.id] });
-        return { project };
+        return { project: projectSummary(project) };
       }
       case "remove": {
         const project = await service.removeProject(request.projectId);
         publish({ kinds: ["topology"] });
-        return { project };
+        return { project: projectSummary(project) };
       }
       case "configure-godot-web": {
         const project = await service.configureGodotWeb(request.projectId, request.config);
         publish({ kinds: ["topology", "metadata"], projectIds: [request.projectId] });
-        return { project };
+        return { project: projectSummary(project) };
       }
       case "rebuild-web-export": {
         const webExport = await service.rebuildWebExport(request.projectId);
@@ -57,17 +57,37 @@ export function projectAdminHandler(dependencies: ProjectAdministrationDependenc
   });
 }
 
-/** The fields the project CLI reads. Test history and logs stay out of the bounded socket reply. */
-export type ProjectOverviewEntry = Pick<ProjectSnapshot, "project" | "runtime" | "reservation" | "discoveryError">;
+/**
+ * Project fields returned over the socket. Environment values, profiles and preset maps have no
+ * aggregate bound, so they stay out of the reply; the CLI never reads them.
+ */
+export type ProjectSummary = Omit<ProjectView, "environment" | "environmentProfiles" | "testEnvironmentProfiles" | "testPresetProfiles" | "testPresetTimeouts">;
 
+/** Runtime state without its retained log tail. */
+export type RuntimeSummary = Omit<RuntimeSnapshot, "logs">;
+
+export interface ProjectOverviewEntry extends Pick<ProjectSnapshot, "reservation" | "discoveryError"> {
+  project: ProjectSummary;
+  runtime: RuntimeSummary;
+}
+
+export function projectSummary(project: ProjectView): ProjectSummary {
+  const { environment: _environment, environmentProfiles: _profiles, testEnvironmentProfiles: _testProfiles, testPresetProfiles: _presetProfiles, testPresetTimeouts: _timeouts, ...summary } = project;
+  return summary;
+}
+
+/** The fields project commands read. Test history, runtime logs and environment data stay out of the reply. */
 function projectOverview(dashboard: DashboardResponse): { projects: ProjectOverviewEntry[] } {
   return {
-    projects: dashboard.projects.map(({ project, runtime, reservation, discoveryError }) => ({
-      project,
-      runtime,
-      reservation,
-      ...(discoveryError ? { discoveryError } : {}),
-    })),
+    projects: dashboard.projects.map(({ project, runtime, reservation, discoveryError }) => {
+      const { logs: _logs, ...runtimeSummary } = runtime;
+      return {
+        project: projectSummary(project),
+        runtime: runtimeSummary,
+        reservation,
+        ...(discoveryError ? { discoveryError } : {}),
+      };
+    }),
   };
 }
 

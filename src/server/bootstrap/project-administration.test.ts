@@ -41,17 +41,24 @@ describe("project administration over the admin socket", () => {
     expect(publish).toHaveBeenCalledWith({ kinds: ["topology"] });
   });
 
-  it("returns only the fields project commands read, without test history or logs", async () => {
+  it("returns only the fields project commands read, without history, logs or environment data", async () => {
     const { service, execute } = fixture();
-    const project = { id: "project-1", name: "Fixture" };
-    const runtime = { phase: "stopped", error: null };
+    const large = "x".repeat(4_000);
+    const project = {
+      id: "project-1", name: "Fixture",
+      environment: { TOKEN: large }, environmentProfiles: Array.from({ length: 150 }, (_, index) => ({ name: `p${index}`, environment: { VALUE: large } })),
+      testEnvironmentProfiles: [{ name: "ci", variableNames: ["A"] }], testPresetProfiles: { "node:test": "ci" }, testPresetTimeouts: { "node:test": 1000 },
+    };
+    const runtime = { phase: "running", error: null, logs: Array.from({ length: 400 }, () => large) };
     const logs = Array.from({ length: 200 }, () => "x".repeat(2_000));
     (service.dashboard as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       projects: [{ project, runtime, reservation: null, worktrees: [], testRuns: Array.from({ length: 50 }, (_, index) => ({ id: `run-${index}`, logs })), discoveryError: "Discovery failed." }],
     });
     const overview = await execute({ command: "project", action: "dashboard" });
-    expect(overview).toEqual({ projects: [{ project, runtime, reservation: null, discoveryError: "Discovery failed." }] });
+    expect(overview).toEqual({ projects: [{ project: { id: "project-1", name: "Fixture" }, runtime: { phase: "running", error: null }, reservation: null, discoveryError: "Discovery failed." }] });
     expect(JSON.stringify(overview).length).toBeLessThan(1_000);
+    (service.removeProject as ReturnType<typeof vi.fn>).mockResolvedValueOnce(project);
+    expect(await execute({ command: "project", action: "remove", projectId: "project-1" })).toEqual({ project: { id: "project-1", name: "Fixture" } });
   });
 
   it("rejects unknown shapes and refuses during maintenance", async () => {
