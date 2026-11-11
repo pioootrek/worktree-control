@@ -469,7 +469,8 @@ describe("Godot Web project CLI", () => {
       expect(snapshot.project).toMatchObject({ launchPreset: "godot-web", godotWeb: { exporter: { kind: "command", outputDirectory: "exports/web" }, liveReload: false } });
       expect(snapshot.project.args).toEqual(expect.arrayContaining(["--root", "--worktree-key", "--live-reload", "0"]));
       expect(snapshot.project.args.join(" ")).toContain(join(paths.stateDirectory, "godot-web", snapshot.project.id, "public"));
-      expect(snapshot.webExport).toBeNull();
+      // The offline gateway still returns the full service snapshot behind the narrower overview type.
+      expect((snapshot as { webExport?: unknown }).webExport).toBeNull();
       await runProjectCommand(["godot-web", snapshot.project.id, "--disable"], gateway, "en", { write: line => output.push(line) });
       expect((await gateway.dashboard()).projects[0].project).toMatchObject({ launchPreset: "none", godotWeb: null, executable: "", args: [] });
       await runProjectCommand(["godot-web", snapshot.project.id, "--config", config], gateway, "en", { write: line => output.push(line) });
