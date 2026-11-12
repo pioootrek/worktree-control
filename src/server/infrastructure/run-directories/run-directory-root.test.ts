@@ -9,10 +9,18 @@ import { openRunDirectoryRoot, RUN_DIRECTORY_PATH_BUDGET, RUN_DIRECTORY_RECORD, 
 
 const scratch: string[] = [];
 
+/** Restores owner access a test removed anywhere below `path`, without following links. */
+function restoreAccess(path: string): void {
+  let stats;
+  try { stats = lstatSync(path); } catch { return; }
+  if (!stats.isDirectory()) return;
+  try { chmodSync(path, 0o700); } catch { return; }
+  for (const name of readdirSync(path)) restoreAccess(join(path, name));
+}
+
 afterEach(() => {
   for (const directory of scratch.splice(0)) {
-    // Restore owner access a test removed so the fixture itself can be cleaned.
-    try { chmodSync(directory, 0o700); } catch { /* already gone */ }
+    restoreAccess(directory);
     rmSync(directory, { recursive: true, force: true });
   }
 });
@@ -36,7 +44,10 @@ function fixture() {
     expect(readFileSync(join(outside, "nested", "keep.txt"), "utf8")).toBe("keep");
   };
   const record = (stateDirectory = state) => JSON.parse(readFileSync(join(stateDirectory, RUN_DIRECTORY_RECORD), "utf8")) as { roots: string[] };
-  return { base, state, temporary, outside, logs, open, outsideIntact, record };
+  /** Recorded root paths, whatever the entry shape. */
+  const recordedPaths = (stateDirectory = state) => (JSON.parse(readFileSync(join(stateDirectory, RUN_DIRECTORY_RECORD), "utf8")) as { roots: (string | { path: string })[] })
+    .roots.map(entry => (typeof entry === "string" ? entry : entry.path));
+  return { base, state, temporary, outside, logs, open, outsideIntact, record, recordedPaths };
 }
 
 const mode = (path: string) => statSync(path).mode & 0o777;
@@ -169,6 +180,54 @@ describe("run directory root", () => {
     expect(existsSync(victim)).toBe(true);
     await root.close().catch(() => undefined);
     await second.close();
+  });
+
+  it("never deletes an unrelated directory that a path-only record names", async () => {
+    const { base, open, state, temporary } = fixture();
+    const home = join(base, "home");
+    const lookalike = join(temporary, "wtc-lookalike");
+    for (const directory of [home, lookalike]) {
+      mkdirSync(join(directory, "project", "src"), { recursive: true });
+      writeFileSync(join(directory, "project", "src", "index.ts"), "keep");
+    }
+    writeFileSync(join(state, RUN_DIRECTORY_RECORD), JSON.stringify({ version: 1, roots: [home, lookalike] }));
+    const root = await open();
+    for (const directory of [home, lookalike]) expect(readFileSync(join(directory, "project", "src", "index.ts"), "utf8")).toBe("keep");
+    await root.close();
+  });
+
+  it("keeps every recorded root that still exists, however many accumulate", async () => {
+    const { open, outside, recordedPaths } = fixture();
+    const leaked: string[] = [];
+    for (let index = 0; index < 10; index += 1) {
+      const root = await open();
+      // A root that cannot be removed: it became a symbolic link, which is never followed.
+      rmSync(root.path, { recursive: true });
+      symlinkSync(outside, root.path);
+      leaked.push(root.path);
+    }
+    const last = await open();
+    expect(recordedPaths()).toEqual(expect.arrayContaining(leaked));
+    await last.close();
+    expect(recordedPaths()).toEqual(expect.arrayContaining(leaked));
+  });
+
+  it("removes directories without any owner permission at every depth", async () => {
+    const { open, outsideIntact } = fixture();
+    const root = await open();
+    const run = root.create();
+    mkdirSync(join(run, "a", "b", "c"), { recursive: true });
+    writeFileSync(join(run, "a", "b", "c", "deep"), "x");
+    writeFileSync(join(run, "a", "b", "file"), "x");
+    mkdirSync(join(run, "top"));
+    writeFileSync(join(run, "top", "file"), "x");
+    chmodSync(join(run, "a", "b", "c"), 0o000);
+    chmodSync(join(run, "a", "b"), 0o000);
+    chmodSync(join(run, "top"), 0o000);
+    await root.remove(run);
+    expect(existsSync(run)).toBe(false);
+    outsideIntact();
+    await root.close();
   });
 
   it("fails run creation when no root is available", async () => {

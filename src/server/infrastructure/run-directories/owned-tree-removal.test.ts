@@ -1,0 +1,103 @@
+import { lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { removeOwnedTree } from "./owned-tree-removal";
+
+/** Fault injection for the asynchronous calls removal makes; every hook defaults to the real call. */
+const control = vi.hoisted(() => ({
+  unlinkDelayMs: 0,
+  failUnlink: null as null | ((path: string) => boolean),
+  lstatDelayMs: null as null | ((path: string) => number),
+  failLstat: null as null | ((path: string) => boolean),
+  unlinksInFlight: 0,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  const injected = (code: string) => Object.assign(new Error(`injected ${code}`), { code });
+  return {
+    ...actual,
+    unlink: async (path: string) => {
+      control.unlinksInFlight += 1;
+      try {
+        await delay(control.unlinkDelayMs);
+        if (control.failUnlink?.(String(path))) throw injected("EBUSY");
+        return await actual.unlink(path);
+      } finally { control.unlinksInFlight -= 1; }
+    },
+    lstat: async (path: string, ...rest: unknown[]) => {
+      const ms = control.lstatDelayMs?.(String(path)) ?? 0;
+      if (ms) await delay(ms);
+      if (control.failLstat?.(String(path))) throw injected("EIO");
+      return (actual.lstat as (...args: unknown[]) => Promise<unknown>)(path, ...rest);
+    },
+  };
+});
+
+const scratch: string[] = [];
+const unhandled: unknown[] = [];
+const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+
+beforeEach(() => { process.on("unhandledRejection", onUnhandled); });
+
+afterEach(() => {
+  process.off("unhandledRejection", onUnhandled);
+  unhandled.splice(0);
+  Object.assign(control, { unlinkDelayMs: 0, failUnlink: null, lstatDelayMs: null, failLstat: null, unlinksInFlight: 0 });
+  for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true });
+});
+
+/**
+ * A directory listed as: subdirectory, a few files, subdirectory. Whatever the
+ * file system's listing order, at least one file precedes a subdirectory, so
+ * an unlink is still pending while removal awaits that subdirectory's `lstat`.
+ */
+function tree() {
+  const base = mkdtempSync(join(tmpdir(), "wtc-owned-tree-test-"));
+  scratch.push(base);
+  const target = join(base, "target");
+  mkdirSync(target);
+  mkdirSync(join(target, "d-first"));
+  writeFileSync(join(target, "d-first", "inner"), "x");
+  for (let index = 0; index < 5; index += 1) writeFileSync(join(target, `f-${index}`), "x");
+  mkdirSync(join(target, "d-last"));
+  writeFileSync(join(target, "d-last", "inner"), "x");
+  return target;
+}
+
+const settle = () => new Promise(resolve => setTimeout(resolve, 100));
+
+describe("owned tree removal failures", () => {
+  it("reports an unlink failure through the returned promise while traversal awaits another call", async () => {
+    const target = tree();
+    control.unlinkDelayMs = 1;
+    control.failUnlink = path => basename(path).startsWith("f-");
+    control.lstatDelayMs = path => (basename(path).startsWith("d-") ? 30 : 0);
+    await expect(removeOwnedTree(target, lstatSync(target))).rejects.toMatchObject({ code: "EBUSY" });
+    await settle();
+    expect(unhandled).toEqual([]);
+    expect(control.unlinksInFlight).toBe(0);
+  });
+
+  it("drains pending unlinks before a traversal error propagates", async () => {
+    const target = tree();
+    control.unlinkDelayMs = 60;
+    control.failUnlink = path => basename(path).startsWith("f-");
+    control.lstatDelayMs = path => (basename(path).startsWith("d-") ? 10 : 0);
+    // The second subdirectory is reached after the files, whose unlinks are then still in flight.
+    let directories = 0;
+    control.failLstat = path => basename(path).startsWith("d-") && ++directories === 2;
+    let inFlightAtRejection = -1;
+    await expect(removeOwnedTree(target, lstatSync(target)).catch((error: unknown) => {
+      inFlightAtRejection = control.unlinksInFlight;
+      throw error;
+    })).rejects.toBeTruthy();
+    expect(inFlightAtRejection).toBe(0);
+    await settle();
+    expect(unhandled).toEqual([]);
+  });
+});
