@@ -440,6 +440,23 @@ describe("sandbox command", () => {
     expectNoLeftovers(harness);
   }, 60_000);
 
+  it("reports a standard input failure that arrives while it waits for output to drain", async () => {
+    // The stop request and the cleanup are over, but an unread standard error keeps the drain wait active.
+    // A read error raised then must still decide the exit status.
+    const harness = startHarness("burst-on-stop", "stdin-error");
+    const descriptor = await harness.descriptor();
+    harness.child.stderr!.pause();
+    harness.child.kill("SIGTERM");
+    while (alive(descriptor.pid)) await delay(20);
+    await delay(500);
+    harness.child.kill("SIGUSR2");
+    await delay(500);
+    harness.child.stderr!.resume();
+    expect(await harness.exit).toEqual({ code: 1, signal: null });
+    expect(alive(descriptor.pid)).toBe(false);
+    expectNoLeftovers(harness);
+  }, 60_000);
+
   it("drops controller output instead of queueing it while standard error is not read, then reports the amount", async () => {
     const files = fixture();
     const stalled = stalledWritable();
