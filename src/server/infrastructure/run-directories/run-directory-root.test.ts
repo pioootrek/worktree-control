@@ -6,8 +6,23 @@ import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { nullLogWriter } from "@/server/log-writer";
-import { MAX_RECORDED_ROOTS, openRunDirectoryRoot, RUN_DIRECTORY_PATH_BUDGET, RUN_DIRECTORY_RECORD, RUN_DIRECTORY_ROOT_MARKER, unavailableRunDirectories } from "./index";
+import { MAX_RECORDED_ROOTS, openRunDirectoryRoot, RUN_DIRECTORY_PATH_BUDGET, RUN_DIRECTORY_RECORD, RUN_DIRECTORY_ROOT_MARKER, unavailableRunDirectories, type RunDirectoryRootOptions } from "./index";
+import { ProcessGroups } from "./process-group-fixture";
 
+/** Order of directory synchronizations and record publications; the real calls still run. */
+const storage = vi.hoisted(() => ({ calls: [] as string[] }));
+vi.mock("@/server/private-storage", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/private-storage")>();
+  return {
+    ...actual,
+    syncDirectory: (path: string) => { storage.calls.push(`sync:${path}`); actual.syncDirectory(path); },
+    durableJson: (path: string, value: unknown) => { storage.calls.push(`record:${JSON.stringify(value)}`); actual.durableJson(path, value); },
+  };
+});
+
+const IGNORED_COPY = "run-directory-root.ignored.json";
+const RECORD_MAX_BYTES = 64 * 1024;
+const groups = new ProcessGroups();
 const scratch: string[] = [];
 
 /** Restores owner access a test removed anywhere below `path`, without following links. */
@@ -19,12 +34,17 @@ function restoreAccess(path: string): void {
   for (const name of readdirSync(path)) restoreAccess(join(path, name));
 }
 
-afterEach(() => {
+afterEach(async () => {
+  storage.calls.splice(0);
+  expect(await groups.stopAll()).toEqual([]);
   for (const directory of scratch.splice(0)) {
     restoreAccess(directory);
     rmSync(directory, { recursive: true, force: true });
+    expect(existsSync(directory)).toBe(false);
   }
 });
+
+interface RecordedRoot { path: string; token: string; bootId?: string | null; runs?: { name: string; processGroupId: number | null }[] }
 
 function fixture() {
   const base = mkdtempSync(join(tmpdir(), "wtc-root-test-"));
@@ -39,13 +59,15 @@ function fixture() {
   mkdirSync(join(outside, "nested"));
   writeFileSync(join(outside, "nested", "keep.txt"), "keep");
   const logs = { ...nullLogWriter, controller: vi.fn() };
-  const open = (stateDirectory = state) => openRunDirectoryRoot({ stateDirectory, temporaryDirectory: temporary, logs });
+  const open = (stateDirectory = state, options: Partial<RunDirectoryRootOptions> = {}) => openRunDirectoryRoot({ stateDirectory, temporaryDirectory: temporary, logs, ...options });
   const outsideIntact = () => {
     expect(readFileSync(join(outside, "keep.txt"), "utf8")).toBe("keep");
     expect(readFileSync(join(outside, "nested", "keep.txt"), "utf8")).toBe("keep");
   };
-  const record = (stateDirectory = state) => JSON.parse(readFileSync(join(stateDirectory, RUN_DIRECTORY_RECORD), "utf8")) as { version: number; roots: { path: string; token: string }[] };
-  const writeRecord = (roots: { path: string; token: string }[], stateDirectory = state) => writeFileSync(join(stateDirectory, RUN_DIRECTORY_RECORD), JSON.stringify({ version: 2, roots }));
+  const record = (stateDirectory = state) => JSON.parse(readFileSync(join(stateDirectory, RUN_DIRECTORY_RECORD), "utf8")) as { version: number; roots: Required<RecordedRoot>[] };
+  /** Writes a current-format record; entries default to an unknown boot and no bound runs. */
+  const writeRecord = (roots: RecordedRoot[], stateDirectory = state) => writeFileSync(join(stateDirectory, RUN_DIRECTORY_RECORD),
+    JSON.stringify({ version: 3, roots: roots.map(entry => ({ bootId: null, runs: [], ...entry })) }));
   /** Recorded root paths, whatever the entry shape. */
   const recordedPaths = (stateDirectory = state) => (JSON.parse(readFileSync(join(stateDirectory, RUN_DIRECTORY_RECORD), "utf8")) as { roots: (string | { path: string })[] })
     .roots.map(entry => (typeof entry === "string" ? entry : entry.path));
@@ -65,7 +87,7 @@ describe("run directory root", () => {
     expect(mode(root.path)).toBe(0o700);
     // The record stores the path and the random token held by the root's marker.
     const [entry] = record().roots;
-    expect(record()).toMatchObject({ version: 2, roots: [{ path: root.path }] });
+    expect(record()).toMatchObject({ version: 3, roots: [{ path: root.path, runs: [] }] });
     expect(entry!.token).toMatch(/^[0-9a-f]{64}$/);
     expect(lstatSync(marker(root.path)).isFile()).toBe(true);
     expect(mode(marker(root.path))).toBe(0o600);
@@ -148,8 +170,13 @@ describe("run directory root", () => {
     const otherState = join(base, "other-state");
     mkdirSync(otherState, { mode: 0o700 });
     const crashed = await open();
-    writeFileSync(join(crashed.create(), "left-over"), "x");
-    symlinkSync(outside, join(crashed.create(), "escape"));
+    const leftOver = crashed.create();
+    const escape = crashed.create();
+    writeFileSync(join(leftOver, "left-over"), "x");
+    symlinkSync(outside, join(escape, "escape"));
+    // Their test processes have exited, so the sweep may remove both run directories.
+    crashed.bind(leftOver, await groups.exited());
+    crashed.bind(escape, await groups.exited());
     const neighbour = await open(otherState);
     writeFileSync(join(neighbour.create(), "in-use"), "x");
     const unrecorded = join(temporary, "wtc-unrecorded");
@@ -311,7 +338,7 @@ describe("run directory root", () => {
     writeFileSync(join(state, RUN_DIRECTORY_RECORD), JSON.stringify({ version: 1, roots: [crashed.path] }));
     const restarted = await open();
     expect(existsSync(join(crashed.path, "r1", "left-over"))).toBe(true);
-    expect(logs.controller).toHaveBeenCalledWith("run_directory.record_ignored", { error: "record_version_unsupported" });
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.record_ignored", { error: "record_version_unsupported", copy: join(state, IGNORED_COPY) });
     await restarted.close();
   });
 
@@ -346,12 +373,181 @@ describe("run directory root", () => {
     writeRecord(leaked);
     await expect(open()).rejects.toThrow("run_directory_record_full");
     expect(readdirSync(temporary)).toHaveLength(MAX_RECORDED_ROOTS);
-    expect(record().roots).toEqual(leaked);
-    expect(logs.controller).toHaveBeenCalledWith("run_directory.record_full", { record: join(state, RUN_DIRECTORY_RECORD), count: MAX_RECORDED_ROOTS, limit: MAX_RECORDED_ROOTS });
+    expect(record().roots).toEqual(leaked.map(entry => ({ ...entry, bootId: null, runs: [] })));
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.record_full", {
+      record: join(state, RUN_DIRECTORY_RECORD), entries: MAX_RECORDED_ROOTS + 1, entryLimit: MAX_RECORDED_ROOTS, bytes: expect.any(Number), byteLimit: RECORD_MAX_BYTES,
+    });
     // After the operator removes one leaked directory, its entry is dropped and a root is created.
     rmSync(leaked[0]!.path, { recursive: true });
     const root = await open();
     expect(record().roots.map(entry => entry.path)).toEqual([...leaked.slice(1).map(entry => entry.path), root.path]);
+    await root.close();
+  });
+
+  it("restores the marker with its token when the final removal of a root fails", async () => {
+    const { open, temporary, record } = fixture();
+    const root = await open();
+    const token = readFileSync(marker(root.path), "utf8");
+    writeFileSync(join(root.create(), "left-over"), "x");
+    // The temporary parent lost write permission: the emptied root cannot be unlinked from it.
+    chmodSync(temporary, 0o500);
+    try {
+      await expect(root.close()).rejects.toMatchObject({ code: "EACCES" });
+    } finally { chmodSync(temporary, 0o700); }
+    expect(readdirSync(root.path)).toEqual([RUN_DIRECTORY_ROOT_MARKER]);
+    expect(readFileSync(marker(root.path), "utf8")).toBe(token);
+    expect(mode(marker(root.path))).toBe(0o600);
+    expect(record().roots.map(entry => entry.path)).toEqual([root.path]);
+    // Still provably ours, so the next start removes it.
+    const restarted = await open();
+    expect(existsSync(root.path)).toBe(false);
+    expect(record().roots.map(entry => entry.path)).toEqual([restarted.path]);
+    await restarted.close();
+  });
+
+  it("drops a recorded path without the name prefix once it no longer exists", async () => {
+    const { open, temporary, record, writeRecord, logs } = fixture();
+    const gone = join(temporary, "gone-without-prefix");
+    writeRecord([{ path: gone, token: newToken() }]);
+    const root = await open();
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.previous_root_missing", { path: gone });
+    expect(record().roots.map(entry => entry.path)).toEqual([root.path]);
+    await root.close();
+  });
+
+  it("refuses to create or remove run directories once the live root's marker does not match", async () => {
+    const { open } = fixture();
+    const root = await open();
+    const run = root.create();
+    writeFileSync(join(run, "kept"), "x");
+    const token = readFileSync(marker(root.path), "utf8");
+    writeFileSync(marker(root.path), newToken());
+    expect(() => root.create()).toThrow("marker_mismatch");
+    await expect(root.remove(run)).rejects.toThrow("marker_mismatch");
+    expect(existsSync(join(run, "kept"))).toBe(true);
+    rmSync(marker(root.path));
+    expect(() => root.create()).toThrow("marker_missing");
+    await expect(root.remove(run)).rejects.toThrow("marker_missing");
+    writeFileSync(marker(root.path), token, { mode: 0o600 });
+    await root.remove(run);
+    expect(existsSync(run)).toBe(false);
+    await root.close();
+  });
+
+  it("synchronizes the marker's directory entries before the record names the root", async () => {
+    const { open, temporary } = fixture();
+    const root = await open();
+    const published = storage.calls.findIndex(call => call.startsWith("record:") && call.includes(JSON.stringify(root.path)));
+    expect(published).toBeGreaterThan(-1);
+    for (const directory of [root.path, temporary]) {
+      const synchronized = storage.calls.indexOf(`sync:${directory}`);
+      expect(synchronized).toBeGreaterThan(-1);
+      expect(synchronized).toBeLessThan(published);
+    }
+    await root.close();
+  });
+
+  it("keeps one private bounded copy of an ignored record and never uses it for deletion", async () => {
+    const { open, state, logs } = fixture();
+    const recordPath = join(state, RUN_DIRECTORY_RECORD);
+    const copy = join(state, IGNORED_COPY);
+    writeFileSync(recordPath, "{not json");
+    const first = await open();
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.record_ignored", { error: expect.any(String), copy });
+    expect(readFileSync(copy, "utf8")).toBe("{not json");
+    expect(mode(copy)).toBe(0o600);
+    await first.close();
+
+    // Overwritten at the next ignored record, and never larger than a record may be.
+    writeFileSync(recordPath, "x".repeat(RECORD_MAX_BYTES + 10));
+    const second = await open();
+    expect(statSync(copy).size).toBe(RECORD_MAX_BYTES);
+    await second.close();
+
+    // An earlier record shape naming a real root: copied, but nothing it names is removed.
+    const crashed = await open();
+    writeFileSync(join(crashed.create(), "left-over"), "x");
+    const earlier = JSON.stringify({ version: 2, roots: [{ path: crashed.path, token: readFileSync(marker(crashed.path), "utf8") }] });
+    writeFileSync(recordPath, earlier);
+    const third = await open();
+    expect(readFileSync(copy, "utf8")).toBe(earlier);
+    const fourth = await open();
+    expect(existsSync(join(crashed.path, "r1", "left-over"))).toBe(true);
+    expect(existsSync(third.path)).toBe(false);
+    await fourth.close();
+  });
+
+  it("reports entries and bytes against both limits when the record has no room for another root", async () => {
+    const { open, state, record, writeRecord, logs } = fixture();
+    const crashed = await open();
+    const { token } = record().roots[0]!;
+    // Run directories of unknown liveness fill the record almost to its byte limit.
+    const runs: { name: string; processGroupId: null }[] = [];
+    const size = () => Buffer.byteLength(JSON.stringify({ version: 3, roots: [{ path: crashed.path, token, bootId: null, runs }] }));
+    for (let index = 1; size() < RECORD_MAX_BYTES - 100; index += 1) {
+      const name = `r${index.toString(36)}`;
+      mkdirSync(join(crashed.path, name));
+      runs.push({ name, processGroupId: null });
+    }
+    writeRecord([{ path: crashed.path, token, runs }]);
+    await expect(open()).rejects.toThrow("run_directory_record_full");
+    const event = logs.controller.mock.calls.find(call => call[0] === "run_directory.record_full")?.[1] as Record<string, unknown>;
+    expect(event).toEqual({ record: join(state, RUN_DIRECTORY_RECORD), entries: 2, entryLimit: MAX_RECORDED_ROOTS, bytes: expect.any(Number), byteLimit: RECORD_MAX_BYTES });
+    expect(event.bytes).toBeGreaterThan(RECORD_MAX_BYTES);
+    expect(record().roots).toEqual([{ path: crashed.path, token, bootId: null, runs }]);
+  });
+
+  it("stops removing a run directory at its deadline and keeps it and the marker", async () => {
+    const { open } = fixture();
+    let now = 0;
+    let advancing = true;
+    const root = await open(undefined, { clock: () => (advancing ? (now += 1_000) : now), removalDeadlineMs: 5_000 });
+    const run = root.create();
+    for (let index = 0; index < 50; index += 1) writeFileSync(join(run, `file-${index}`), "x");
+    await expect(root.remove(run)).rejects.toMatchObject({ code: "run_directory_removal_deadline" });
+    expect(existsSync(run)).toBe(true);
+    expect(existsSync(marker(root.path))).toBe(true);
+    advancing = false;
+    await root.close();
+    expect(existsSync(root.path)).toBe(false);
+  });
+
+  it("leaves roots that the startup budget does not reach recorded for a later start", async () => {
+    const { base, open, state, record, writeRecord, logs } = fixture();
+    const entries: Required<RecordedRoot>[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const other = join(base, `state-${index}`);
+      mkdirSync(other, { mode: 0o700 });
+      await open(other);
+      entries.push(record(other).roots[0]!);
+    }
+    writeRecord(entries);
+    let now = 0;
+    // Removing a root takes longer than the whole startup budget.
+    logs.controller.mockImplementation((event: string) => { if (event === "run_directory.previous_root_removed") now += 10_000; });
+    const root = await open(state, { clock: () => now, sweepBudgetMs: 5_000 });
+    expect(existsSync(entries[0]!.path)).toBe(false);
+    for (const entry of entries.slice(1)) {
+      expect(existsSync(entry.path)).toBe(true);
+      expect(logs.controller).toHaveBeenCalledWith("run_directory.previous_root_skipped", { path: entry.path, reason: "sweep_budget_exhausted" });
+    }
+    expect(record().roots.map(entry => entry.path)).toEqual([entries[1]!.path, entries[2]!.path, root.path]);
+
+    const next = await open();
+    for (const entry of entries) expect(existsSync(entry.path)).toBe(false);
+    expect(existsSync(root.path)).toBe(false);
+    expect(record().roots.map(entry => entry.path)).toEqual([next.path]);
+    await next.close();
+  });
+
+  it("removes a bound run directory and drops its binding from the record", async () => {
+    const { open, record } = fixture();
+    const root = await open();
+    const run = root.create();
+    root.bind(run, await groups.exited());
+    expect(record().roots[0]!.runs.map(entry => entry.name)).toEqual([basename(run)]);
+    await root.remove(run);
+    expect(record().roots[0]!.runs).toEqual([]);
     await root.close();
   });
 

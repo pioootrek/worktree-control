@@ -1,13 +1,14 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Worktree } from "@/shared/contracts";
 import type { ResolvedTestEnvironment } from "@/server/modules/environments";
 import type { RunDirectories } from "@/server/modules/verification";
-import { openRunDirectoryRoot, RUN_DIRECTORY_ROOT_MARKER, unavailableRunDirectories, type RunDirectoryRoot } from "./infrastructure/run-directories";
+import { openRunDirectoryRoot, RUN_DIRECTORY_RECORD, RUN_DIRECTORY_ROOT_MARKER, unavailableRunDirectories, type RunDirectoryRoot, type RunDirectoryRootOptions } from "./infrastructure/run-directories";
+import { groupGone } from "./infrastructure/run-directories/process-group-fixture";
 import { nullLogWriter } from "./log-writer";
 import { SqliteStateStore } from "./sqlite-store";
 import type { TestCommand } from "./test-command";
@@ -18,7 +19,11 @@ const managers: TestJobManager[] = [];
 
 afterEach(async () => {
   await Promise.all(managers.splice(0).map(manager => manager.shutdown().catch(() => undefined)));
-  for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true });
+  for (const directory of scratch.splice(0)) {
+    try { chmodSync(join(directory, "state"), 0o700); } catch { /* absent */ }
+    rmSync(directory, { recursive: true, force: true });
+    expect(existsSync(directory)).toBe(false);
+  }
 });
 
 function resolved(environment: Record<string, string> = {}): ResolvedTestEnvironment {
@@ -43,7 +48,7 @@ const runDirectoriesIn = (root: RunDirectoryRoot) => readdirSync(root.path).filt
 
 interface Seen { TMPDIR: string; TMP: string; TEMP: string; mode: number; pid: number }
 
-async function fixture(options: { directories?: (root: RunDirectoryRoot) => RunDirectories } = {}) {
+async function fixture(options: { directories?: (root: RunDirectoryRoot) => RunDirectories; root?: Partial<RunDirectoryRootOptions> } = {}) {
   const base = mkdtempSync(join(tmpdir(), "wtc-run-dir-test-"));
   scratch.push(base);
   const state = join(base, "state");
@@ -54,7 +59,7 @@ async function fixture(options: { directories?: (root: RunDirectoryRoot) => RunD
   const store = new SqliteStateStore(join(base, "state.sqlite3"));
   const project = store.addProject({ name: "App", repositoryPath: base, port: 3211, executable: "node", args: [] });
   const logs = { ...nullLogWriter, controller: vi.fn() };
-  const root = await openRunDirectoryRoot({ stateDirectory: state, temporaryDirectory: temporary, logs });
+  const root = await openRunDirectoryRoot({ stateDirectory: state, temporaryDirectory: temporary, logs, ...options.root });
   const manager = new TestJobManager(store, logs);
   managers.push(manager);
   manager.configureRunDirectories(options.directories ? options.directories(root) : root);
@@ -84,7 +89,8 @@ async function fixture(options: { directories?: (root: RunDirectoryRoot) => RunD
     await manager.shutdown();
     store.close();
   };
-  return { base, outside, temporary, store, logs, root, manager, enqueue, seen, terminal, close };
+  const record = () => JSON.parse(readFileSync(join(state, RUN_DIRECTORY_RECORD), "utf8")) as { roots: { path: string; runs: { name: string; processGroupId: number | null }[] }[] };
+  return { base, state, outside, temporary, store, logs, root, manager, enqueue, seen, terminal, close, record };
 }
 
 function expectPrivateRunDirectory(seen: Seen, root: RunDirectoryRoot) {
@@ -179,7 +185,7 @@ describe("per-run private temporary directory", () => {
   it("keeps the process outcome, reports a reason code and keeps admission open when removal fails", async () => {
     const remove = vi.fn(async () => { throw new Error("EBUSY"); });
     const { store, logs, manager, root, enqueue, seen, terminal, close } = await fixture({
-      directories: real => ({ create: () => real.create(), remove, close: () => real.close() }),
+      directories: real => ({ create: () => real.create(), bind: (path, group) => real.bind(path, group), remove, close: () => real.close() }),
     });
     const run = enqueue(CHILD("process.exit(0);"));
     const observed = await seen(run.id);
@@ -228,6 +234,7 @@ process.exit(0);`));
     const { store, root, manager, enqueue, seen } = await fixture({
       directories: real => ({
         create: () => real.create(),
+        bind: (path, group) => real.bind(path, group),
         remove: async path => {
           let alive = true;
           try { process.kill(pid, 0); } catch { alive = false; }
@@ -260,7 +267,7 @@ process.exit(0);`));
   it("leaves remote-worker attempts with their own directories untouched", async () => {
     const create = vi.fn();
     const { store, manager, base, terminal, close } = await fixture({
-      directories: real => ({ create: () => { create(); return real.create(); }, remove: path => real.remove(path), close: () => real.close() }),
+      directories: real => ({ create: () => { create(); return real.create(); }, bind: (path, group) => real.bind(path, group), remove: path => real.remove(path), close: () => real.close() }),
     });
     const project = store.listProjects()[0]!;
     const worktree: Worktree = { path: join(base, "remote"), head: "aaa", shortHead: "aaa", branch: "main", detached: false, locked: false, prunable: false, dirty: false };
@@ -280,5 +287,59 @@ process.exit(0);`));
     expect(store.getTestRun(run.id)?.logs).toContain(`tmp:${attemptTemporary}`);
     expect(store.getTestRun(run.id)?.environmentVariableNames).toEqual(["TMPDIR"]);
     await close();
+  });
+
+  it("records the run's process group for its directory while it runs and drops it after removal", async () => {
+    const { root, manager, enqueue, seen, terminal, close, record } = await fixture();
+    const run = enqueue(CHILD("setInterval(() => {}, 1000);"));
+    const observed = await seen(run.id);
+    // The detached child leads its own process group.
+    expect(record().roots).toEqual([expect.objectContaining({ path: root.path, runs: [{ name: basename(observed.TMPDIR), processGroupId: observed.pid }] })]);
+    await manager.cancel(run.id, "local-user");
+    await terminal(run.id, "cancelled");
+    expect(groupGone(observed.pid)).toBe(true);
+    expect(existsSync(observed.TMPDIR)).toBe(false);
+    expect(record().roots[0]!.runs).toEqual([]);
+    await close();
+  });
+
+  it("lets the run continue when its binding cannot be recorded", async () => {
+    const { state, store, logs, root, enqueue, seen, terminal, close } = await fixture();
+    chmodSync(state, 0o500);
+    try {
+      const run = enqueue(CHILD("process.exit(0);"));
+      const observed = await seen(run.id);
+      await terminal(run.id, "passed");
+      expect(logs.controller).toHaveBeenCalledWith("run_directory.binding_not_recorded", expect.objectContaining({ root: root.path, name: basename(observed.TMPDIR) }));
+      expect(existsSync(observed.TMPDIR)).toBe(false);
+      expect(store.getTestRun(run.id)?.source.reasonCodes).not.toContain("run_directory_cleanup_failed");
+    } finally { chmodSync(state, 0o700); }
+    await close();
+  });
+
+  it("makes a removal deadline final: one attempt, a reason code, and the slot is released", async () => {
+    let now = 0;
+    let advancing = false;
+    const remove = vi.fn();
+    const { store, logs, manager, root, enqueue, seen, terminal, close } = await fixture({
+      root: { clock: () => (advancing ? (now += 1_000) : now), removalDeadlineMs: 5_000 },
+      directories: real => ({ create: () => real.create(), bind: (path, group) => real.bind(path, group), remove: path => { remove(path); return real.remove(path); }, close: () => real.close() }),
+    });
+    advancing = true;
+    const run = enqueue(CHILD("process.exit(0);"));
+    const observed = await seen(run.id);
+    await terminal(run.id, "passed");
+    advancing = false;
+    const stored = store.getTestRun(run.id)!;
+    expect(stored).toMatchObject({ exitCode: 0, source: { processOutcome: "passed" }, telemetry: { cleanup: "confirmed" } });
+    expect(stored.source.reasonCodes).toContain("run_directory_cleanup_failed");
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(logs.controller).toHaveBeenCalledWith("test_run.run_directory_cleanup_failed", expect.objectContaining({ runId: run.id, attempts: 1, code: "run_directory_removal_deadline" }));
+    expect(existsSync(observed.TMPDIR)).toBe(true);
+    expect(manager.status().admissionBlockReason).toBeUndefined();
+    const next = enqueue("process.exit(0);");
+    await terminal(next.id, "passed");
+    await close();
+    expect(existsSync(root.path)).toBe(false);
   });
 });

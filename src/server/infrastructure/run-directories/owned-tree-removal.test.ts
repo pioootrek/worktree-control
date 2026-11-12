@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -12,6 +12,7 @@ const control = vi.hoisted(() => ({
   failUnlink: null as null | ((path: string) => boolean),
   lstatDelayMs: null as null | ((path: string) => number),
   failLstat: null as null | ((path: string) => boolean),
+  afterRmdir: null as null | ((path: string) => void),
   unlinksInFlight: 0,
 }));
 
@@ -35,6 +36,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       if (control.failLstat?.(String(path))) throw injected("EIO");
       return (actual.lstat as (...args: unknown[]) => Promise<unknown>)(path, ...rest);
     },
+    rmdir: async (path: string) => {
+      await actual.rmdir(path);
+      control.afterRmdir?.(String(path));
+    },
   };
 });
 
@@ -47,8 +52,11 @@ beforeEach(() => { process.on("unhandledRejection", onUnhandled); });
 afterEach(() => {
   process.off("unhandledRejection", onUnhandled);
   unhandled.splice(0);
-  Object.assign(control, { unlinkDelayMs: 0, failUnlink: null, lstatDelayMs: null, failLstat: null, unlinksInFlight: 0 });
-  for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true });
+  Object.assign(control, { unlinkDelayMs: 0, failUnlink: null, lstatDelayMs: null, failLstat: null, afterRmdir: null, unlinksInFlight: 0 });
+  for (const directory of scratch.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+    expect(existsSync(directory)).toBe(false);
+  }
 });
 
 /**
@@ -105,11 +113,54 @@ describe("owned tree removal failures", () => {
     const target = tree();
     writeFileSync(join(target, "keep-last"), "token");
     control.failUnlink = path => basename(path) === "f-0";
-    await expect(removeOwnedTree(target, lstatSync(target), "keep-last")).rejects.toMatchObject({ code: "EBUSY" });
+    await expect(removeOwnedTree(target, lstatSync(target), { last: "keep-last" })).rejects.toMatchObject({ code: "EBUSY" });
     expect(existsSync(join(target, "keep-last"))).toBe(true);
     control.failUnlink = null;
-    await removeOwnedTree(target, lstatSync(target), "keep-last");
+    await removeOwnedTree(target, lstatSync(target), { last: "keep-last" });
     expect(existsSync(target)).toBe(false);
     expect(unhandled).toEqual([]);
+  });
+
+  it("rejects at its deadline while a producer keeps recreating a directory, after settling every unlink", async () => {
+    const target = tree();
+    writeFileSync(join(target, "keep-last"), "token");
+    const again = join(target, "again");
+    mkdirSync(again);
+    writeFileSync(join(again, "file"), "x");
+    // Every removal of `again` is followed at once by a new one; bounded so a missing deadline cannot hang the suite.
+    let recreated = 0;
+    control.afterRmdir = path => {
+      if (path !== again || recreated >= 2_000) return;
+      recreated += 1;
+      mkdirSync(again);
+      writeFileSync(join(again, "file"), "x");
+    };
+    control.unlinkDelayMs = 1;
+    let now = 0;
+    const deadline = { now: () => (now += 1), expiresAt: 400 };
+    let inFlightAtRejection = -1;
+    await expect(removeOwnedTree(target, lstatSync(target), { last: "keep-last", deadline }).catch((error: unknown) => {
+      inFlightAtRejection = control.unlinksInFlight;
+      throw error;
+    })).rejects.toMatchObject({ code: "run_directory_removal_deadline" });
+    expect(recreated).toBeGreaterThan(0);
+    expect(recreated).toBeLessThan(2_000);
+    expect(inFlightAtRejection).toBe(0);
+    expect(existsSync(join(target, "keep-last"))).toBe(true);
+    await settle();
+    expect(unhandled).toEqual([]);
+    control.afterRmdir = null;
+    await removeOwnedTree(target, lstatSync(target), { last: "keep-last" });
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it("rejects at its deadline inside a large flat directory without unlinking past it", async () => {
+    const target = tree();
+    for (let index = 0; index < 500; index += 1) writeFileSync(join(target, `g-${index}`), "");
+    let now = 0;
+    const deadline = { now: () => (now += 1), expiresAt: 50 };
+    await expect(removeOwnedTree(target, lstatSync(target), { deadline })).rejects.toMatchObject({ code: "run_directory_removal_deadline" });
+    expect(control.unlinksInFlight).toBe(0);
+    expect(readdirSync(target).length).toBeGreaterThan(300);
   });
 });
