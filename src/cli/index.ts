@@ -135,7 +135,8 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       temporaryDirectory: tmpdir(),
       environment: process.env,
     });
-    // A watched standard input stays referenced; the sandbox has already stopped and removed its files.
+    // The controller and its files are gone and buffered output has drained. A watched standard
+    // input and the signal handlers stay referenced until this exit.
     process.exit(status);
   }
   if (command === "backup" && process.argv[3] === "monitor") {

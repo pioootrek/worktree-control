@@ -13,7 +13,8 @@ import { resolveAppPaths } from "../server/paths";
 import { SqliteStateStore } from "../server/sqlite-store";
 import { authenticateOfflineActor } from "./offline-actor";
 import {
-  parseSandboxArgs, prepareSandboxInstallation, runSandbox, runSandboxCommand, SANDBOX_FORMAT, sandboxEnvironment, type SandboxDescriptor,
+  parseSandboxArgs, prepareSandboxInstallation, runSandbox, runSandboxCommand, SANDBOX_FORMAT, sandboxEnvironment, watchSandboxStop,
+  type SandboxDescriptor,
 } from "./sandbox";
 
 const repositoryRoot = resolve(import.meta.dirname, "../..");
@@ -66,7 +67,7 @@ if (mode === "crash-after-ready") setTimeout(() => process.exit(4), 200);
 if (mode === "chatty") setInterval(() => console.error("chatty controller"), 20);
 process.on("SIGTERM", () => {
   if (mode === "slow-stop") setTimeout(() => process.exit(0), 1500);
-  else if (mode === "burst-on-stop") process.stderr.write("x".repeat(256 * 1024) + "\\nFAKE-STOPPED\\n", () => process.exit(0));
+  else if (mode === "burst-on-stop") process.stderr.write("x".repeat(2 * 1024 * 1024) + "\\nFAKE-STOPPED\\n", () => process.exit(0));
   else process.exit(0);
 });
 setInterval(() => {}, 1000);
@@ -253,7 +254,7 @@ describe("sandbox lifecycle", () => {
   }, 30_000);
 
   it("never accepts a record from a controller that has already exited", async () => {
-    // The record outlives its writer; the exit falls between two readiness polls.
+    // The record outlives its writer. Whichever poll sees the exit, the sandbox must fail rather than wait.
     const harness = sandboxHarness("ready-then-exit");
     await expect(harness.run).rejects.toThrow(/exited (during startup|unexpectedly) \(5\)/);
     expect(harness.lines.length).toBeLessThanOrEqual(1);
@@ -262,13 +263,29 @@ describe("sandbox lifecycle", () => {
 
   it("stops the controller when its service record cannot be used", async () => {
     const harness = sandboxHarness("bad-record");
-    await expect(harness.run).rejects.toThrow(/service record/);
-    expect(harness.lines).toEqual([]);
+    const failure = await harness.run.then(() => null, (error: unknown) => error);
     expectNoLeftovers(harness);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(/service record/);
+    expect(harness.lines).toEqual([]);
   }, 30_000);
 });
 
 describe("sandbox command", () => {
+  it("keeps its signal handlers until it is disposed", () => {
+    const signals = new EventEmitter();
+    const trigger = watchSandboxStop(Object.assign(new PassThrough(), { fd: -1 }), signals);
+    const counts = () => ["SIGINT", "SIGTERM", "SIGHUP"].map(signal => signals.listenerCount(signal));
+    signals.emit("SIGTERM");
+    signals.emit("SIGINT");
+    signals.emit("SIGHUP");
+    expect(trigger.signal.aborted).toBe(true);
+    // Without a listener, a repeated signal would end the process during cleanup.
+    expect(counts()).toEqual([1, 1, 1]);
+    trigger.dispose();
+    expect(counts()).toEqual([0, 0, 0]);
+  });
+
   it("writes the descriptor to standard output even when only standard error is a terminal", async () => {
     const files = fixture();
     const [stdout, stderr] = [new PassThrough(), Object.assign(new PassThrough(), { isTTY: true })];
@@ -341,6 +358,7 @@ describe("sandbox command", () => {
   }, 60_000);
 
   it("delivers the controller's last output to a slow reader before exiting", async () => {
+    // Two megabytes exceed what the pipe and this reader buffer, so the sandbox still holds output when it is done.
     const harness = startHarness("burst-on-stop");
     await harness.descriptor();
     harness.child.stderr!.pause();

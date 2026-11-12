@@ -40,7 +40,9 @@ worktree-control sandbox [--project-name NAME] [--permissions LIST] \
    directories and tokens cannot reach it.
 
 When the controller accepts requests, the command prints one JSON line on
-standard output. The controller's own output goes to standard error.
+standard output. It always uses standard output, also when standard output is
+a pipe and standard error is a terminal. The controller's own output goes to
+standard error.
 
 ```json
 {
@@ -75,7 +77,21 @@ directory when any of these happens:
 - it receives `SIGTERM`, `SIGINT` or `SIGHUP`;
 - its standard input is a pipe or socket and reaches end of file, for example
   because the test process that holds the other end exits;
-- the controller exits on its own. The command then exits with status 1.
+- a write to its standard output or standard error fails, for example with
+  `EPIPE` because the test closed its reader. Nothing more is written to that
+  stream;
+- the controller exits on its own.
+
+It stops the controller with one `SIGTERM`, then `SIGKILL` after 15 seconds.
+Further `SIGTERM`, `SIGINT` or `SIGHUP` signals while it stops are ignored, so a
+repeated Ctrl-C does not leave the controller or the directory behind. Before it
+exits, the command waits up to 5 seconds for its remaining output to reach the
+reader.
+
+| Exit status | Meaning |
+| --- | --- |
+| 0 | Stopped on request: a signal or the end of standard input. |
+| 1 | Invalid options, the controller failed to start or exited on its own, or a write to standard output or standard error failed. Any files it created are removed. |
 
 A terminal or `/dev/null` on standard input never ends the sandbox. A sandbox
 killed with `SIGKILL` cannot clean up: its controller keeps running and its
@@ -89,8 +105,10 @@ not one per test case.
 
 ```js
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { createInterface } from "node:readline";
 
+// The controller's log goes to the inherited standard error; the descriptor is always on stdout.
 const child = spawn("worktree-control", ["sandbox"], { stdio: ["pipe", "pipe", "inherit"] });
 const [line] = await createInterface({ input: child.stdout })[Symbol.asyncIterator]().next().then(r => [r.value]);
 const sandbox = JSON.parse(line);
@@ -103,6 +121,7 @@ const response = await fetch(`${sandbox.url}/api/knowledge`, {
 });
 
 child.stdin.end(); // stops the controller and removes its files
+await once(child, "exit");
 ```
 
 An installed release without this command prints its list of available

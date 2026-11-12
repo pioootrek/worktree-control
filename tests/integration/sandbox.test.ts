@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -12,6 +13,7 @@ import type { SandboxDescriptor } from "../../src/cli/sandbox";
 const repositoryRoot = resolve(import.meta.dirname, "../..");
 const cli = join(repositoryRoot, "dist/cli/index.js");
 const running: ChildProcess[] = [];
+const parents: string[] = [];
 
 afterEach(async () => {
   for (const child of running.splice(0)) {
@@ -20,15 +22,37 @@ afterEach(async () => {
       await new Promise(resolveExit => child.once("exit", resolveExit));
     }
   }
+  // A failed test must not leave a controller behind for the next one.
+  for (const parent of parents.splice(0)) {
+    for (const pid of processesMentioning(parent)) process.kill(pid, "SIGKILL");
+    rmSync(parent, { recursive: true, force: true });
+  }
 });
 
 function alive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+/** Processes whose command line contains `text`; every sandbox controller names its directory there. */
+function processesMentioning(text: string): number[] {
+  if (!existsSync("/proc/self/cmdline")) return [];
+  return readdirSync("/proc").filter(entry => /^\d+$/.test(entry) && Number(entry) !== process.pid).filter(entry => {
+    try { return readFileSync(`/proc/${entry}/cmdline`, "utf8").includes(text); } catch { return false; }
+  }).map(Number);
+}
+
+/** No controller runs from the sandbox parent directory and nothing is left inside it. */
+function expectNoLeftovers(parent: string) {
+  expect(processesMentioning(parent)).toEqual([]);
+  expect(readdirSync(parent)).toEqual([]);
+}
+
 /** Starts the built CLI the way an external suite does: stdin is a pipe it holds open. */
-async function startSandbox(environment: Record<string, string> = {}) {
-  const env = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", LANG: "C.UTF-8", NODE_ENV: "production", ...environment } as NodeJS.ProcessEnv;
+function spawnSandbox(environment: Record<string, string> = {}) {
+  // Each sandbox gets its own temporary parent, so a test sees exactly what that sandbox leaves.
+  const parent = mkdtempSync(join(tmpdir(), "worktree-control-sandbox-integration-"));
+  parents.push(parent);
+  const env = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", LANG: "C.UTF-8", NODE_ENV: "production", TMPDIR: parent, ...environment } as NodeJS.ProcessEnv;
   const child: ChildProcess = spawn(process.execPath, [cli, "sandbox", "--project-name", "Integration"], {
     cwd: repositoryRoot, env, stdio: ["pipe", "pipe", "pipe"],
   });
@@ -36,12 +60,17 @@ async function startSandbox(environment: Record<string, string> = {}) {
   let stderr = "";
   child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
   const exit = new Promise<number | null>(resolveExit => child.once("exit", (code: number | null) => resolveExit(code)));
-  const lines = createInterface({ input: child.stdout! });
+  return { child, exit, parent, stderr: () => stderr };
+}
+
+async function startSandbox(environment: Record<string, string> = {}) {
+  const sandbox = spawnSandbox(environment);
+  const lines = createInterface({ input: sandbox.child.stdout! });
   const first = await Promise.race([
     new Promise<string>(resolveLine => lines.once("line", resolveLine)),
-    exit.then(code => { throw new Error(`sandbox exited (${code}) before its descriptor:\n${stderr}`); }),
+    sandbox.exit.then(code => { throw new Error(`sandbox exited (${code}) before its descriptor:\n${sandbox.stderr()}`); }),
   ]);
-  return { child, exit, descriptor: JSON.parse(first) as SandboxDescriptor, stderr: () => stderr };
+  return { ...sandbox, descriptor: JSON.parse(first) as SandboxDescriptor };
 }
 
 describe("worktree-control sandbox", () => {
@@ -77,6 +106,7 @@ describe("worktree-control sandbox", () => {
     expect(await sandbox.exit).toBe(0);
     expect(alive(descriptor.pid)).toBe(false);
     expect(existsSync(join(descriptor.dataDirectory, ".."))).toBe(false);
+    expectNoLeftovers(sandbox.parent);
   });
 
   it("stops on SIGTERM and gives each sandbox its own installation", async () => {
@@ -93,6 +123,30 @@ describe("worktree-control sandbox", () => {
       expect(await sandbox.exit).toBe(0);
       expect(alive(sandbox.descriptor.pid)).toBe(false);
       expect(existsSync(join(sandbox.descriptor.dataDirectory, ".."))).toBe(false);
+      expectNoLeftovers(sandbox.parent);
     }
+  });
+
+  it("finishes stopping when signals repeat", async () => {
+    const sandbox = await startSandbox();
+    sandbox.child.kill("SIGTERM");
+    // Keep interrupting, like a repeated Ctrl-C, for as long as the sandbox is stopping.
+    let sent = 0;
+    const repeat = setInterval(() => sandbox.child.kill(sent++ % 2 ? "SIGHUP" : "SIGINT"), 25);
+    try {
+      expect(await sandbox.exit).toBe(0);
+    } finally {
+      clearInterval(repeat);
+    }
+    expect(alive(sandbox.descriptor.pid)).toBe(false);
+    expectNoLeftovers(sandbox.parent);
+  });
+
+  it("stops and removes everything when its standard output is closed before the descriptor", async () => {
+    const sandbox = spawnSandbox();
+    sandbox.child.stdout!.destroy();
+    expect(await sandbox.exit).toBe(1);
+    expect(sandbox.stderr()).toContain("standard output was closed");
+    expectNoLeftovers(sandbox.parent);
   });
 });
