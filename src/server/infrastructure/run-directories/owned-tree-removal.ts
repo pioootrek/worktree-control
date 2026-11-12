@@ -37,7 +37,7 @@ export interface RemovalOptions {
 }
 
 /** Throws once the deadline has passed. Callers settle pending unlinks before the error propagates. */
-export function checkDeadline(deadline: RemovalDeadline | undefined): void {
+function checkDeadline(deadline: RemovalDeadline | undefined): void {
   if (deadline && deadline.now() >= deadline.expiresAt) throw new RemovalDeadlineError();
 }
 
