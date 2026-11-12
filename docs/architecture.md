@@ -123,6 +123,10 @@ per line, while the bounded SQLite tail is persisted on a short debounce and
 again at completion. Queue counts and scheduling candidates use filtered SQL
 queries that do not hydrate historical log tails. Controller shutdown cancels
 active jobs; stale queued or running records become `interrupted` during recovery.
+A local operator can inspect and stop one exact run over the owner-only admin
+socket with `worktree-control test-run`; the job manager decides and applies the
+effect under admission and never adopts a group it did not spawn. See
+[single-run administration](test-run-administration.md).
 
 Scoped finite verification adds independent `tests:run` authorization in the
 verification application module. Migration 44 writes an immutable requester

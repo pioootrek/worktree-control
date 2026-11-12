@@ -789,6 +789,7 @@ intended to remain complete and independent. Read Knowledge memory `570757852db1
 | [Knowledge delivery](https://github.com/pioootrek/worktree-control/blob/main/docs/shared-project-memory-plan.md) | Discussions, backlog, memory, import and remaining migration work |
 | [Knowledge evidence](docs/knowledge-evidence.md) | Attachment policy, logical capacity, preflight and evidence bundles |
 | [Architecture](https://github.com/pioootrek/worktree-control/blob/main/docs/architecture.md) | Controller, persistence and module boundaries |
+| [Test run administration](https://github.com/pioootrek/worktree-control/blob/main/docs/test-run-administration.md) | Local operator inspection and safe stop of one orphaned test run |
 | [UI standards](https://github.com/pioootrek/worktree-control/blob/main/docs/ui-standards.md) | Layout, readers, focus and interaction rules |
 | [Backlog workflow](https://github.com/pioootrek/worktree-control/blob/main/docs/knowledge/AGENTS.md) | Tasks, discussions and historical sources in Knowledge |
 
