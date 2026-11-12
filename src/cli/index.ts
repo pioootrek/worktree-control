@@ -45,7 +45,7 @@ import { retainAuthenticationOwnership } from "../server/bootstrap/authenticatio
 import { ProviderAdminError, providerAdminErrorBody } from "../server/modules/authentication";
 import { bootstrapInstallationToken, bootstrapServiceInstallationToken } from "./first-run-token";
 import { runIdentityCommand } from "./identity-management";
-import { parseSandboxArgs, runSandbox, sandboxStopSignal } from "./sandbox";
+import { parseSandboxArgs, runSandboxCommand } from "./sandbox";
 import { runBackupCommand } from "./backup-management";
 import { runBackupMonitor } from "./backup-monitor";
 import { pairingUrl } from "./pairing-url";
@@ -129,22 +129,14 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   if (command === "sandbox") {
     // Chooses its own private directories, so no path option or product variable applies here.
     const options = parseSandboxArgs(process.argv.slice(3));
-    try {
-      await runSandbox(options, {
-        entry: { command: process.execPath, args: [...process.execArgv, process.argv[1]!] },
-        version: packageJson.version,
-        temporaryDirectory: tmpdir(),
-        environment: process.env,
-        write: writeCliLine,
-        log: chunk => process.stderr.write(chunk),
-        stop: sandboxStopSignal(),
-      });
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
+    const status = await runSandboxCommand(options, {
+      entry: { command: process.execPath, args: [...process.execArgv, process.argv[1]!] },
+      version: packageJson.version,
+      temporaryDirectory: tmpdir(),
+      environment: process.env,
+    });
     // A watched standard input stays referenced; the sandbox has already stopped and removed its files.
-    process.exit(process.exitCode ?? 0);
+    process.exit(status);
   }
   if (command === "backup" && process.argv[3] === "monitor") {
     const result = await runBackupMonitor(process.argv.slice(4));

@@ -1,16 +1,35 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { PassThrough } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { resolveAppPaths } from "../server/paths";
 import { SqliteStateStore } from "../server/sqlite-store";
 import { authenticateOfflineActor } from "./offline-actor";
-import { parseSandboxArgs, prepareSandboxInstallation, runSandbox, SANDBOX_FORMAT, sandboxEnvironment, type SandboxDescriptor } from "./sandbox";
+import {
+  parseSandboxArgs, prepareSandboxInstallation, runSandbox, runSandboxCommand, SANDBOX_FORMAT, sandboxEnvironment, type SandboxDescriptor,
+} from "./sandbox";
 
+const repositoryRoot = resolve(import.meta.dirname, "../..");
 const directories: string[] = [];
-afterEach(() => {
+const pidFiles: string[] = [];
+const processes: ChildProcess[] = [];
+
+afterEach(async () => {
+  for (const child of processes.splice(0)) {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      await new Promise(resolveExit => child.once("exit", resolveExit));
+    }
+  }
+  // A failed test must not leave a fake controller behind for the next one.
+  for (const pid of pidFiles.splice(0).flatMap(fakePids)) if (alive(pid)) process.kill(pid, "SIGKILL");
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -20,50 +39,124 @@ function temporary(prefix: string): string {
   return directory;
 }
 
-/** Stands in for `start`: publishes the service record after "listening", per FAKE_MODE. */
+/**
+ * Stands in for `start`: records its pid, publishes the service record after "listening", per FAKE_MODE.
+ * It ignores broken output pipes so that a sandbox which dies without cleanup leaves it running.
+ */
 const FAKE_CONTROLLER = `
-import { writeFileSync, renameSync } from "node:fs";
+import { appendFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
+process.stdout.on("error", () => {});
+process.stderr.on("error", () => {});
 const option = name => process.argv[process.argv.indexOf(name) + 1];
 const mode = process.env.FAKE_MODE ?? "normal";
+if (process.env.FAKE_PID_FILE) appendFileSync(process.env.FAKE_PID_FILE, process.pid + "\\n");
 console.log("fake controller", process.argv.slice(2).join(" "));
 if (mode === "exit") { console.error("listen EADDRINUSE"); process.exit(3); }
 const record = { pid: process.pid, startedAt: new Date().toISOString(), version: "fake", dashboardEndpoint: "http://127.0.0.1:" + option("--port"),
   localDashboardEndpoint: "http://127.0.0.1:" + option("--port"), mcpEndpoint: "http://127.0.0.1:" + option("--mcp-port") + "/mcp",
   accessUrl: "http://127.0.0.1:" + option("--port") + "/", logDirectory: join(option("--state-dir"), "logs"), authenticationMode: "token" };
+if (mode === "bad-record") { record.dashboardEndpoint = "not a url"; delete record.localDashboardEndpoint; }
 if (mode !== "never-ready") {
   writeFileSync(join(option("--state-dir"), "service-access.json.tmp"), JSON.stringify(record));
   renameSync(join(option("--state-dir"), "service-access.json.tmp"), join(option("--state-dir"), "service-access.json"));
 }
+if (mode === "ready-then-exit") process.exit(5);
 if (mode === "crash-after-ready") setTimeout(() => process.exit(4), 200);
-process.on("SIGTERM", () => process.exit(0));
+if (mode === "chatty") setInterval(() => console.error("chatty controller"), 20);
+process.on("SIGTERM", () => {
+  if (mode === "slow-stop") setTimeout(() => process.exit(0), 1500);
+  else if (mode === "burst-on-stop") process.stderr.write("x".repeat(256 * 1024) + "\\nFAKE-STOPPED\\n", () => process.exit(0));
+  else process.exit(0);
+});
 setInterval(() => {}, 1000);
+`;
+
+/** Runs the sandbox command the way the CLI does, with the fake controller as its `start`. */
+const HARNESS = (sandboxModule: string) => `
+import { runSandboxCommand } from ${JSON.stringify(sandboxModule)};
+const [script, parent, mode] = process.argv.slice(2);
+const status = await runSandboxCommand({ projectName: "Harness", permissions: ["knowledge:read"], readyTimeoutMs: 10_000 }, {
+  entry: { command: process.execPath, args: [script] }, version: "9.9.9", temporaryDirectory: parent,
+  environment: { PATH: process.env.PATH, FAKE_MODE: mode, FAKE_PID_FILE: process.env.FAKE_PID_FILE },
+});
+process.exit(status);
 `;
 
 function alive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-function sandboxHarness(mode: string, readyTimeoutMs = 10_000) {
+function fakePids(pidFile: string): number[] {
+  try { return readFileSync(pidFile, "utf8").split("\n").filter(Boolean).map(Number); } catch { return []; }
+}
+
+/** A fake controller script, an empty parent for sandbox directories and a file collecting controller pids. */
+function fixture() {
   const scripts = temporary("worktree-control-sandbox-script-");
   const script = join(scripts, "fake-controller.mjs");
   writeFileSync(script, FAKE_CONTROLLER);
-  const parent = temporary("worktree-control-sandbox-parent-");
+  const pidFile = join(scripts, "pids");
+  pidFiles.push(pidFile);
+  return { scripts, script, pidFile, parent: temporary("worktree-control-sandbox-parent-") };
+}
+
+/** Every controller the sandbox started has exited and its directory is gone. */
+function expectNoLeftovers({ parent, pidFile }: { parent: string; pidFile: string }) {
+  expect(fakePids(pidFile).length).toBeGreaterThan(0);
+  expect(fakePids(pidFile).filter(alive)).toEqual([]);
+  expect(readdirSync(parent)).toEqual([]);
+}
+
+function sandboxHarness(mode: string, readyTimeoutMs = 10_000) {
+  const files = fixture();
   const stop = new AbortController();
   const lines: string[] = [];
   let log = "";
   let resolveDescriptor!: (value: SandboxDescriptor) => void;
   const descriptor = new Promise<SandboxDescriptor>(resolve => { resolveDescriptor = resolve; });
   const run = runSandbox({ projectName: "Unit", permissions: ["knowledge:read", "knowledge:write"], readyTimeoutMs }, {
-    entry: { command: process.execPath, args: [script] },
+    entry: { command: process.execPath, args: [files.script] },
     version: "9.9.9",
-    temporaryDirectory: parent,
-    environment: { PATH: process.env.PATH, FAKE_MODE: mode, WORKTREE_CONTROL_DATA_DIR: "/must/not/leak" },
+    temporaryDirectory: files.parent,
+    environment: { PATH: process.env.PATH, FAKE_MODE: mode, FAKE_PID_FILE: files.pidFile, WORKTREE_CONTROL_DATA_DIR: "/must/not/leak" },
     write: line => { lines.push(line); resolveDescriptor(JSON.parse(line) as SandboxDescriptor); },
     log: chunk => { log += chunk.toString(); },
     stop: stop.signal,
   });
-  return { run, descriptor, stop, parent, lines, output: () => log };
+  return { ...files, run, descriptor, stop, lines, output: () => log };
+}
+
+/** Runs the harness as its own process: real signals, real pipes and the command's own exit. */
+function harnessCommand(mode: string) {
+  const files = fixture();
+  const harness = join(files.scripts, "harness.mts");
+  writeFileSync(harness, HARNESS(pathToFileURL(join(repositoryRoot, "src/cli/sandbox.ts")).href));
+  // tsx resolves from the checkout.
+  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", NODE_ENV: "test", FAKE_PID_FILE: files.pidFile };
+  return { ...files, env, args: [process.execPath, "--import", "tsx", harness, files.script, files.parent, mode] };
+}
+
+function startHarness(mode: string) {
+  const command = harnessCommand(mode);
+  const child = spawn(command.args[0]!, command.args.slice(1), { cwd: repositoryRoot, env: command.env, stdio: ["pipe", "pipe", "pipe"] });
+  processes.push(child);
+  let stdout = "";
+  let stderr = "";
+  child.stdout!.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+  child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+  // `close` also waits for the last output, unlike `exit`.
+  const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolveExit => {
+    child.once("close", (code: number | null, signal: NodeJS.Signals | null) => resolveExit({ code, signal }));
+  });
+  const descriptor = async (): Promise<SandboxDescriptor> => {
+    for (;;) {
+      if (stdout.includes("\n")) return JSON.parse(stdout.slice(0, stdout.indexOf("\n"))) as SandboxDescriptor;
+      if (child.exitCode !== null || child.signalCode !== null) throw new Error(`harness exited before its descriptor:\n${stderr}`);
+      await delay(20);
+    }
+  };
+  return { ...command, child, exit, descriptor, stdout: () => stdout, stderr: () => stderr };
 }
 
 describe("sandbox options", () => {
@@ -124,35 +217,138 @@ describe("sandbox lifecycle", () => {
     await harness.run;
     expect(harness.lines).toHaveLength(1);
     expect(alive(descriptor.pid)).toBe(false);
-    expect(readdirSync(harness.parent)).toEqual([]);
+    expectNoLeftovers(harness);
   }, 30_000);
 
   it("reports a controller that exits during startup and removes its files", async () => {
     const harness = sandboxHarness("exit");
     await expect(harness.run).rejects.toThrow(/exited during startup \(3\)[\s\S]*EADDRINUSE/);
     expect(harness.lines).toEqual([]);
-    expect(readdirSync(harness.parent)).toEqual([]);
+    // Each port conflict is retried with a new controller; none of them may remain.
+    expect(fakePids(harness.pidFile)).toHaveLength(3);
+    expectNoLeftovers(harness);
   }, 30_000);
 
   it("stops a controller that never becomes ready", async () => {
     const harness = sandboxHarness("never-ready", 1_000);
     await expect(harness.run).rejects.toThrow(/not ready within 1 seconds/);
     expect(harness.lines).toEqual([]);
-    expect(readdirSync(harness.parent)).toEqual([]);
+    expectNoLeftovers(harness);
   }, 30_000);
 
   it("fails when the controller exits after it was ready", async () => {
     const harness = sandboxHarness("crash-after-ready");
     await harness.descriptor;
     await expect(harness.run).rejects.toThrow(/exited unexpectedly \(4\)/);
-    expect(readdirSync(harness.parent)).toEqual([]);
+    expectNoLeftovers(harness);
   }, 30_000);
 
   it("stops cleanly when asked to stop before the controller is ready", async () => {
     const harness = sandboxHarness("never-ready");
-    setTimeout(() => harness.stop.abort(), 300);
+    while (!fakePids(harness.pidFile).length) await delay(20);
+    harness.stop.abort();
     await harness.run;
     expect(harness.lines).toEqual([]);
-    expect(readdirSync(harness.parent)).toEqual([]);
+    expectNoLeftovers(harness);
   }, 30_000);
+
+  it("never accepts a record from a controller that has already exited", async () => {
+    // The record outlives its writer; the exit falls between two readiness polls.
+    const harness = sandboxHarness("ready-then-exit");
+    await expect(harness.run).rejects.toThrow(/exited (during startup|unexpectedly) \(5\)/);
+    expect(harness.lines.length).toBeLessThanOrEqual(1);
+    expectNoLeftovers(harness);
+  }, 30_000);
+
+  it("stops the controller when its service record cannot be used", async () => {
+    const harness = sandboxHarness("bad-record");
+    await expect(harness.run).rejects.toThrow(/service record/);
+    expect(harness.lines).toEqual([]);
+    expectNoLeftovers(harness);
+  }, 30_000);
+});
+
+describe("sandbox command", () => {
+  it("writes the descriptor to standard output even when only standard error is a terminal", async () => {
+    const files = fixture();
+    const [stdout, stderr] = [new PassThrough(), Object.assign(new PassThrough(), { isTTY: true })];
+    let [written, logged] = ["", ""];
+    stdout.on("data", chunk => { written += chunk; });
+    stderr.on("data", chunk => { logged += chunk; });
+    const status = await runSandboxCommand({ projectName: "Unit", permissions: ["knowledge:read"], readyTimeoutMs: 10_000 }, {
+      entry: { command: process.execPath, args: [files.script] }, version: "9.9.9", temporaryDirectory: files.parent,
+      environment: { PATH: process.env.PATH, FAKE_MODE: "crash-after-ready", FAKE_PID_FILE: files.pidFile },
+    }, { stdin: Object.assign(new PassThrough(), { fd: -1 }), stdout, stderr, signals: new EventEmitter() });
+    expect(status).toBe(1);
+    expect(written.trim().split("\n").map(line => (JSON.parse(line) as SandboxDescriptor).format)).toEqual([SANDBOX_FORMAT]);
+    expect(logged).not.toContain(SANDBOX_FORMAT);
+    expect(logged).toContain("exited unexpectedly (4)");
+    expectNoLeftovers(files);
+  }, 30_000);
+
+  it.skipIf(process.platform !== "linux" || !existsSync("/usr/bin/script"))(
+    "writes the descriptor to standard output when it is redirected from an interactive terminal",
+    async () => {
+      const command = harnessCommand("crash-after-ready");
+      const stdoutFile = join(command.scripts, "stdout");
+      const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+      // `script` gives the command a terminal on standard input and standard error only.
+      const child = spawn("/usr/bin/script", ["-qec", `${command.args.map(quote).join(" ")} > ${quote(stdoutFile)}`, "/dev/null"], {
+        cwd: repositoryRoot, env: command.env, stdio: ["pipe", "pipe", "pipe"],
+      });
+      processes.push(child);
+      let terminal = "";
+      child.stdout!.on("data", (chunk: Buffer) => { terminal += chunk.toString(); });
+      const code = await new Promise<number | null>(resolveExit => child.once("close", resolveExit));
+      expect(terminal).toContain("exited unexpectedly (4)");
+      expect(code).toBe(1);
+      const lines = readFileSync(stdoutFile, "utf8").trim().split("\n");
+      expect(lines.map(line => (JSON.parse(line) as SandboxDescriptor).format)).toEqual([SANDBOX_FORMAT]);
+      expect(terminal).not.toContain(SANDBOX_FORMAT);
+      expectNoLeftovers(command);
+    },
+    60_000,
+  );
+
+  it("finishes stopping when more signals arrive during cleanup", async () => {
+    const harness = startHarness("slow-stop");
+    const descriptor = await harness.descriptor();
+    harness.child.kill("SIGTERM");
+    await delay(300);
+    harness.child.kill("SIGINT");
+    await delay(300);
+    harness.child.kill("SIGHUP");
+    expect(await harness.exit).toEqual({ code: 0, signal: null });
+    expect(alive(descriptor.pid)).toBe(false);
+    expectNoLeftovers(harness);
+  }, 60_000);
+
+  it("stops and cleans up when the reader of its standard error goes away", async () => {
+    const harness = startHarness("chatty");
+    await harness.descriptor();
+    while (!harness.stderr().includes("chatty controller")) await delay(20);
+    harness.child.stderr!.destroy();
+    expect(await harness.exit).toEqual({ code: 1, signal: null });
+    expectNoLeftovers(harness);
+  }, 60_000);
+
+  it("stops and cleans up when its standard output is closed before the descriptor", async () => {
+    const harness = startHarness("normal");
+    harness.child.stdout!.destroy();
+    expect(await harness.exit).toEqual({ code: 1, signal: null });
+    expect(harness.stderr()).toContain("standard output was closed");
+    expectNoLeftovers(harness);
+  }, 60_000);
+
+  it("delivers the controller's last output to a slow reader before exiting", async () => {
+    const harness = startHarness("burst-on-stop");
+    await harness.descriptor();
+    harness.child.stderr!.pause();
+    harness.child.kill("SIGTERM");
+    await delay(1_000);
+    harness.child.stderr!.resume();
+    expect(await harness.exit).toEqual({ code: 0, signal: null });
+    expect(harness.stderr()).toContain("FAKE-STOPPED");
+    expectNoLeftovers(harness);
+  }, 60_000);
 });

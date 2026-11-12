@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { fstatSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
+import type { Readable, Writable } from "node:stream";
 
 import { acquireControllerLock } from "../server/controller-lock";
 import { AuthenticationService, executeAuthenticationCommand, type IssuedInstallationToken } from "../server/modules/authentication";
@@ -9,6 +10,7 @@ import type { KnowledgePermission } from "../server/modules/identity";
 import { resolveAppPaths, type AppPaths } from "../server/paths";
 import { SqliteStateStore } from "../server/sqlite-store";
 import { authenticateOfflineActor } from "./offline-actor";
+import { visibleOutput } from "./output";
 import { readServiceAccess } from "./service-access";
 
 /** Consumers check this before reading any other field; it changes only with an incompatible output. */
@@ -46,12 +48,15 @@ export interface SandboxDescriptor {
   agent: { principalId: string; token: string; permissions: KnowledgePermission[] };
 }
 
-export interface SandboxDependencies {
+export interface SandboxSetup {
   /** Command that runs this CLI; the sandbox appends `start` and its own options. */
   entry: { command: string; args: readonly string[] };
   version: string;
   temporaryDirectory: string;
   environment: Readonly<Record<string, string | undefined>>;
+}
+
+export interface SandboxDependencies extends SandboxSetup {
   /** Receives the descriptor line on standard output. */
   write: (line: string) => void;
   /** Receives the controller's own output, which never reaches standard output. */
@@ -248,10 +253,10 @@ export async function runSandbox(options: SandboxOptions, dependencies: SandboxD
  * Stops on SIGINT, SIGTERM or SIGHUP, and on end of standard input when it is a pipe or socket, so
  * a test harness that dies or closes its end also stops the sandbox. A terminal or /dev/null never ends it.
  */
-export function sandboxStopSignal(input: NodeJS.ReadStream & { fd: number } = process.stdin): AbortSignal {
+export function sandboxStopSignal(input: Readable & { fd: number } = process.stdin, signals: NodeJS.EventEmitter = process): AbortSignal {
   const controller = new AbortController();
   const stop = () => controller.abort();
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.once(signal, stop);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) signals.once(signal, stop);
   let watched = false;
   try {
     const stat = fstatSync(input.fd);
@@ -264,8 +269,36 @@ export function sandboxStopSignal(input: NodeJS.ReadStream & { fd: number } = pr
     input.resume();
   }
   controller.signal.addEventListener("abort", () => {
-    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.removeListener(signal, stop);
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) signals.removeListener(signal, stop);
     if (watched) input.pause();
   }, { once: true });
   return controller.signal;
+}
+
+/** The process streams and signal source the command uses; tests substitute their own. */
+export interface SandboxProcessIo {
+  stdin: Readable & { fd: number };
+  stdout: Writable & { isTTY?: boolean };
+  stderr: Writable & { isTTY?: boolean };
+  signals: NodeJS.EventEmitter;
+}
+
+function processIo(): SandboxProcessIo {
+  return { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr, signals: process };
+}
+
+/** The `sandbox` command: runs one sandbox on the process streams and returns its exit status. */
+export async function runSandboxCommand(options: SandboxOptions, setup: SandboxSetup, io: SandboxProcessIo = processIo()): Promise<number> {
+  try {
+    await runSandbox(options, {
+      ...setup,
+      write: line => visibleOutput(io.stdout, io.stderr).write(`${line}\n`),
+      log: chunk => io.stderr.write(chunk),
+      stop: sandboxStopSignal(io.stdin, io.signals),
+    });
+    return 0;
+  } catch (error) {
+    io.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
 }
