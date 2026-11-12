@@ -429,9 +429,12 @@ export async function runSandboxCommand(options: SandboxOptions, setup: SandboxS
     status = 1;
   }
   if (stdout.failed()) stderr.write("Sandbox stopped: its standard output was closed.\n");
-  const inputError = trigger.inputError();
-  if (inputError) stderr.write(`Sandbox stopped: reading its standard input failed (${inputError.message}).\n`);
+  const reportedInputError = trigger.inputError();
+  if (reportedInputError) stderr.write(`Sandbox stopped: reading its standard input failed (${reportedInputError.message}).\n`);
   await Promise.all([stdout.drain(OUTPUT_DRAIN_MS), stderr.drain(OUTPUT_DRAIN_MS)]);
+  // Standard input may fail while buffered output drains; that failure still decides the status.
+  const inputError = trigger.inputError();
+  if (inputError && inputError !== reportedInputError) stderr.write(`Sandbox stopped: reading its standard input failed (${inputError.message}).\n`);
   // The handlers stay installed until the caller exits the process: removing them first would let a
   // late signal end it by default action, with a status that no longer reports the outcome.
   return stdout.failed() || stderr.failed() || inputError ? 1 : status;
