@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Worktree } from "@/shared/contracts";
 import type { ResolvedTestEnvironment } from "@/server/modules/environments";
 import type { RunDirectories } from "@/server/modules/verification";
-import { openRunDirectoryRoot, unavailableRunDirectories, type RunDirectoryRoot } from "./infrastructure/run-directories";
+import { openRunDirectoryRoot, RUN_DIRECTORY_ROOT_MARKER, unavailableRunDirectories, type RunDirectoryRoot } from "./infrastructure/run-directories";
 import { nullLogWriter } from "./log-writer";
 import { SqliteStateStore } from "./sqlite-store";
 import type { TestCommand } from "./test-command";
@@ -37,6 +37,9 @@ fs.mkdirSync(path.join(dir, "nested", "deep"), { recursive: true });
 fs.writeFileSync(path.join(dir, "nested", "deep", "file"), "y");
 console.log("seen:" + JSON.stringify({ TMPDIR: dir, TMP: process.env.TMP, TEMP: process.env.TEMP, mode: fs.statSync(dir).mode & 0o777, pid: process.pid }));
 ${tail}`;
+
+/** Entries of the root other than its identity marker. */
+const runDirectoriesIn = (root: RunDirectoryRoot) => readdirSync(root.path).filter(name => name !== RUN_DIRECTORY_ROOT_MARKER);
 
 interface Seen { TMPDIR: string; TMP: string; TEMP: string; mode: number; pid: number }
 
@@ -101,7 +104,7 @@ describe("per-run private temporary directory", () => {
     expectPrivateRunDirectory(observed, root);
     await terminal(run.id, "passed");
     expect(existsSync(observed.TMPDIR)).toBe(false);
-    expect(readdirSync(root.path)).toEqual([]);
+    expect(runDirectoriesIn(root)).toEqual([]);
     const stored = store.getTestRun(run.id)!;
     expect(stored.environmentVariableNames).toEqual(expect.arrayContaining(["TEMP", "TMP", "TMPDIR"]));
     expect(stored.source.reasonCodes).not.toContain("run_directory_cleanup_failed");
@@ -116,7 +119,7 @@ describe("per-run private temporary directory", () => {
     const observed = await seen(run.id);
     await terminal(run.id, "failed");
     expect(existsSync(observed.TMPDIR)).toBe(false);
-    expect(readdirSync(root.path)).toEqual([]);
+    expect(runDirectoriesIn(root)).toEqual([]);
     await close();
   });
 
@@ -127,7 +130,7 @@ describe("per-run private temporary directory", () => {
     await manager.cancel(run.id, "local-user");
     await terminal(run.id, "cancelled");
     expect(existsSync(observed.TMPDIR)).toBe(false);
-    expect(readdirSync(root.path)).toEqual([]);
+    expect(runDirectoriesIn(root)).toEqual([]);
     await close();
   });
 
@@ -137,7 +140,7 @@ describe("per-run private temporary directory", () => {
     const observed = await seen(run.id);
     await terminal(run.id, "timed_out");
     expect(existsSync(observed.TMPDIR)).toBe(false);
-    expect(readdirSync(root.path)).toEqual([]);
+    expect(runDirectoriesIn(root)).toEqual([]);
     await close();
   });
 
@@ -148,7 +151,7 @@ describe("per-run private temporary directory", () => {
     await expect(manager.administrativeStop(run.id)).resolves.toMatchObject({ action: "cancel" });
     await terminal(run.id, "cancelled");
     expect(existsSync(observed.TMPDIR)).toBe(false);
-    expect(readdirSync(root.path)).toEqual([]);
+    expect(runDirectoriesIn(root)).toEqual([]);
     await close();
   });
 
@@ -157,7 +160,7 @@ describe("per-run private temporary directory", () => {
     const run = enqueue("", {}, 10_000, join(root.path, "missing-executable"));
     await terminal(run.id, "failed");
     expect(store.getTestRun(run.id)?.environmentVariableNames).toEqual(expect.arrayContaining(["TMPDIR"]));
-    expect(readdirSync(root.path)).toEqual([]);
+    expect(runDirectoriesIn(root)).toEqual([]);
     await close();
   });
 

@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -98,6 +98,18 @@ describe("owned tree removal failures", () => {
     })).rejects.toBeTruthy();
     expect(inFlightAtRejection).toBe(0);
     await settle();
+    expect(unhandled).toEqual([]);
+  });
+
+  it("keeps the entry named last when removal fails before it", async () => {
+    const target = tree();
+    writeFileSync(join(target, "keep-last"), "token");
+    control.failUnlink = path => basename(path) === "f-0";
+    await expect(removeOwnedTree(target, lstatSync(target), "keep-last")).rejects.toMatchObject({ code: "EBUSY" });
+    expect(existsSync(join(target, "keep-last"))).toBe(true);
+    control.failUnlink = null;
+    await removeOwnedTree(target, lstatSync(target), "keep-last");
+    expect(existsSync(target)).toBe(false);
     expect(unhandled).toEqual([]);
   });
 });

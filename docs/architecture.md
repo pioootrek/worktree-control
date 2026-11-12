@@ -128,20 +128,52 @@ socket with `worktree-control test-run`; the job manager decides and applies the
 effect under admission and never adopts a group it did not spawn. See
 [single-run administration](test-run-administration.md).
 
-Each locally executed run receives a private temporary directory. At start the
-controller records a root created with `mkdtemp` under the OS temporary
-directory (mode 0700) in `run-directory-root.json` in its state directory. It
-then removes any root that record names from an earlier instance. Directories
-without a record are never touched, so controllers with separate state
-directories never delete each other's roots. Just before spawn, in the same
-admitted phase as the running state, the run gets a short 0700 subdirectory
-(for example `/tmp/wtc-AbC123/r1`, short enough for Unix socket paths) and
-`TMPDIR`, `TMP` and `TEMP` point to it. These values override a test profile's
-values; stored profiles stay valid. Finalization removes the directory after
-the owned process group is confirmed stopped and before the run releases its
-slot. Removal uses asynchronous, streamed, bounded calls and checks each target
-with `lstat`: only a directory owned by the controller's user that is the root
-or directly inside it, never following links or crossing devices. After three
+Each locally executed run receives a private temporary directory. At start
+the controller creates a root with `mkdtemp` under the OS temporary directory
+(`wtc-XXXXXX`, mode 0700), writes a random 256-bit token to the marker file
+`.wtc-root` (mode 0600) inside it, and only then records the path and token in
+`run-directory-root.json` (version 2) in its state directory. Before that, it
+removes the roots an earlier instance recorded there. A recorded root is
+removed only when its path is absolute and normalized, its name starts with
+`wtc-`, `lstat` shows a real directory owned by the controller's user, and its
+marker is a regular file with a single link, owned by that user and opened
+without following links, whose content equals the recorded token (compared in constant
+time; tokens are never logged). The same check applies when the live root is
+removed at shutdown. Anything else is left untouched and logged as
+`run_directory.previous_root_skipped` with a reason. Its entry stays recorded
+while the path exists and is dropped once it is gone. A record in any other
+shape, including the earlier path-only format, is ignored
+(`run_directory.record_ignored`) and never used for deletion. Directories
+without a matching record are never touched, so controllers with separate
+state directories never delete each other's roots.
+
+This identity check protects against a damaged or stale record: a path that
+names a home directory or repository, or a temporary path later reused by
+another directory. It does not protect against a malicious process of the same
+user. A test runs as that user and can delete or copy the marker. A deleted
+marker makes the sweep skip the root, a logged leak rather than a deletion.
+
+The record holds at most 64 roots. A root that still exists is never dropped
+from it. When the limit is reached, the controller creates no root, logs
+`run_directory.record_full` with the record file and the entry count, and local
+runs fail before spawn with `run_directory_unavailable`. The operator then
+reviews the paths named by `run_directory.previous_root_skipped` events,
+removes those that are not needed, and restarts the controller. Entries whose
+path no longer exists are dropped at that start.
+
+Just before spawn, in the same admitted phase as the running state, the run
+gets a short 0700 subdirectory (for example `/tmp/wtc-AbC123/r1`, short enough
+for Unix socket paths) and `TMPDIR`, `TMP` and `TEMP` point to it. These values
+override a test profile's values; stored profiles stay valid. Finalization
+removes the directory after the owned process group is confirmed stopped and
+before the run releases its slot. Run directories are never named like the
+marker, and the marker is removed last, with the root. Removal uses
+asynchronous, streamed, bounded calls and checks each target with `lstat`: only
+a directory owned by the controller's user that is the verified root or directly
+inside it, never following links or crossing devices. It holds one open
+directory at any depth and repairs owner permissions a test removed, including
+mode 0000. A directory without owner read permission can only be repaired by
+path, so its device and inode are verified again after `chmod`. After three
 failed attempts the run keeps its process outcome and process-cleanup state,
 gains the reason code `run_directory_cleanup_failed`, logs a controller event,
 and leaves the directory for the next startup sweep; admission stays open.
@@ -151,6 +183,8 @@ runs fail before spawn with `run_directory_unavailable`. Remote-worker attempts
 keep their own per-attempt directories and are unchanged. This is temporary-file
 hygiene, not a sandbox. A process that escapes its owned group can still race
 path-based removal, and work outside `TMPDIR` is not covered.
+
+The startup sweep runs before the controller reports ready.
 
 Scoped finite verification adds independent `tests:run` authorization in the
 verification application module. Migration 44 writes an immutable requester

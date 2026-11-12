@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -5,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { nullLogWriter } from "@/server/log-writer";
-import { openRunDirectoryRoot, RUN_DIRECTORY_PATH_BUDGET, RUN_DIRECTORY_RECORD, unavailableRunDirectories } from "./index";
+import { MAX_RECORDED_ROOTS, openRunDirectoryRoot, RUN_DIRECTORY_PATH_BUDGET, RUN_DIRECTORY_RECORD, RUN_DIRECTORY_ROOT_MARKER, unavailableRunDirectories } from "./index";
 
 const scratch: string[] = [];
 
@@ -43,22 +44,33 @@ function fixture() {
     expect(readFileSync(join(outside, "keep.txt"), "utf8")).toBe("keep");
     expect(readFileSync(join(outside, "nested", "keep.txt"), "utf8")).toBe("keep");
   };
-  const record = (stateDirectory = state) => JSON.parse(readFileSync(join(stateDirectory, RUN_DIRECTORY_RECORD), "utf8")) as { roots: string[] };
+  const record = (stateDirectory = state) => JSON.parse(readFileSync(join(stateDirectory, RUN_DIRECTORY_RECORD), "utf8")) as { version: number; roots: { path: string; token: string }[] };
+  const writeRecord = (roots: { path: string; token: string }[], stateDirectory = state) => writeFileSync(join(stateDirectory, RUN_DIRECTORY_RECORD), JSON.stringify({ version: 2, roots }));
   /** Recorded root paths, whatever the entry shape. */
   const recordedPaths = (stateDirectory = state) => (JSON.parse(readFileSync(join(stateDirectory, RUN_DIRECTORY_RECORD), "utf8")) as { roots: (string | { path: string })[] })
     .roots.map(entry => (typeof entry === "string" ? entry : entry.path));
-  return { base, state, temporary, outside, logs, open, outsideIntact, record, recordedPaths };
+  return { base, state, temporary, outside, logs, open, outsideIntact, record, recordedPaths, writeRecord };
 }
 
 const mode = (path: string) => statSync(path).mode & 0o777;
+const newToken = () => randomBytes(32).toString("hex");
+const marker = (root: string) => join(root, RUN_DIRECTORY_ROOT_MARKER);
 
 describe("run directory root", () => {
   it("creates and records a private root and short private run directories directly inside it", async () => {
-    const { open, temporary, record } = fixture();
+    const { open, temporary, record, logs } = fixture();
     const root = await open();
     expect(dirname(root.path)).toBe(temporary);
+    expect(basename(root.path)).toMatch(/^wtc-/);
     expect(mode(root.path)).toBe(0o700);
-    expect(record().roots).toEqual([root.path]);
+    // The record stores the path and the random token held by the root's marker.
+    const [entry] = record().roots;
+    expect(record()).toMatchObject({ version: 2, roots: [{ path: root.path }] });
+    expect(entry!.token).toMatch(/^[0-9a-f]{64}$/);
+    expect(lstatSync(marker(root.path)).isFile()).toBe(true);
+    expect(mode(marker(root.path))).toBe(0o600);
+    expect(readFileSync(marker(root.path), "utf8")).toBe(entry!.token);
+    expect(JSON.stringify(logs.controller.mock.calls)).not.toContain(entry!.token);
     const first = root.create();
     const second = root.create();
     expect(dirname(first)).toBe(root.path);
@@ -146,8 +158,8 @@ describe("run directory root", () => {
 
     const restarted = await open();
     expect(existsSync(crashed.path)).toBe(false);
-    expect(record().roots).toEqual([restarted.path]);
-    expect(readdirSync(neighbour.path)).toHaveLength(1);
+    expect(record().roots.map(entry => entry.path)).toEqual([restarted.path]);
+    expect(readdirSync(neighbour.path).sort()).toEqual([RUN_DIRECTORY_ROOT_MARKER, "r1"]);
     expect(existsSync(join(unrecorded, "kept"))).toBe(true);
     outsideIntact();
     await restarted.close();
@@ -162,10 +174,10 @@ describe("run directory root", () => {
     const restarted = await open();
     outsideIntact();
     expect(lstatSync(root.path).isSymbolicLink()).toBe(true);
-    expect(record(state).roots).toEqual([root.path, restarted.path]);
-    expect(logs.controller).toHaveBeenCalledWith("run_directory.previous_root_cleanup_failed", { path: root.path, error: "not_a_directory" });
+    expect(record(state).roots.map(entry => entry.path)).toEqual([root.path, restarted.path]);
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.previous_root_skipped", { path: root.path, reason: "not_a_directory" });
     await restarted.close();
-    expect(record(state).roots).toEqual([root.path]);
+    expect(record(state).roots.map(entry => entry.path)).toEqual([root.path]);
   });
 
   it("ignores a malformed record instead of treating anything as owned", async () => {
@@ -227,6 +239,119 @@ describe("run directory root", () => {
     await root.remove(run);
     expect(existsSync(run)).toBe(false);
     outsideIntact();
+    await root.close();
+  });
+
+  it("removes a recorded root whose marker holds the recorded token and updates the record", async () => {
+    const { open, record, logs } = fixture();
+    const crashed = await open();
+    const run = crashed.create();
+    writeFileSync(join(run, "left-over"), "x");
+    // Run directories never remove the marker.
+    await crashed.remove(run);
+    await expect(crashed.remove(marker(crashed.path))).rejects.toThrow("root_marker");
+    expect(existsSync(marker(crashed.path))).toBe(true);
+    const restarted = await open();
+    expect(existsSync(crashed.path)).toBe(false);
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.previous_root_removed", { path: crashed.path });
+    expect(record().roots.map(entry => entry.path)).toEqual([restarted.path]);
+    await restarted.close();
+    expect(record().roots).toEqual([]);
+  });
+
+  it("never deletes an unrelated user directory that a well-formed record names", async () => {
+    const { base, open, temporary, record, writeRecord, logs } = fixture();
+    const home = join(base, "home");
+    const lookalike = join(temporary, "wtc-lookalike");
+    for (const directory of [home, lookalike]) {
+      mkdirSync(join(directory, "project", "src"), { recursive: true });
+      writeFileSync(join(directory, "project", "src", "index.ts"), "keep");
+    }
+    writeRecord([{ path: home, token: newToken() }, { path: lookalike, token: newToken() }]);
+    const root = await open();
+    for (const directory of [home, lookalike]) expect(readFileSync(join(directory, "project", "src", "index.ts"), "utf8")).toBe("keep");
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.previous_root_skipped", { path: home, reason: "name_mismatch" });
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.previous_root_skipped", { path: lookalike, reason: "marker_missing" });
+    // Directories that still exist stay recorded so an operator can see them.
+    expect(record().roots.map(entry => entry.path)).toEqual([home, lookalike, root.path]);
+    await root.close();
+  });
+
+  it("keeps a root whose marker holds a different token", async () => {
+    const { open, record, writeRecord, logs } = fixture();
+    const crashed = await open();
+    writeFileSync(join(crashed.create(), "left-over"), "x");
+    writeRecord([{ path: crashed.path, token: newToken() }]);
+    const restarted = await open();
+    expect(existsSync(join(crashed.path, "r1", "left-over"))).toBe(true);
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.previous_root_skipped", { path: crashed.path, reason: "marker_mismatch" });
+    expect(record().roots.map(entry => entry.path)).toEqual([crashed.path, restarted.path]);
+    await restarted.close();
+  });
+
+  it("keeps a root whose marker was replaced by a link to a file holding the right token", async () => {
+    const { open, outside, logs } = fixture();
+    const crashed = await open();
+    writeFileSync(join(crashed.create(), "left-over"), "x");
+    const copy = join(outside, "token-copy");
+    writeFileSync(copy, readFileSync(marker(crashed.path)));
+    rmSync(marker(crashed.path));
+    symlinkSync(copy, marker(crashed.path));
+    const restarted = await open();
+    expect(existsSync(join(crashed.path, "r1", "left-over"))).toBe(true);
+    expect(existsSync(copy)).toBe(true);
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.previous_root_skipped", { path: crashed.path, reason: "marker_not_regular" });
+    await restarted.close();
+  });
+
+  it("never uses a path-only version 1 record, even for a real root", async () => {
+    const { open, state, logs } = fixture();
+    const crashed = await open();
+    writeFileSync(join(crashed.create(), "left-over"), "x");
+    writeFileSync(join(state, RUN_DIRECTORY_RECORD), JSON.stringify({ version: 1, roots: [crashed.path] }));
+    const restarted = await open();
+    expect(existsSync(join(crashed.path, "r1", "left-over"))).toBe(true);
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.record_ignored", { error: "record_version_unsupported" });
+    await restarted.close();
+  });
+
+  it("drops the entry of a recorded root that no longer exists", async () => {
+    const { open, temporary, record, writeRecord, logs } = fixture();
+    const gone = join(temporary, "wtc-gone");
+    writeRecord([{ path: gone, token: newToken() }]);
+    const root = await open();
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.previous_root_missing", { path: gone });
+    expect(record().roots.map(entry => entry.path)).toEqual([root.path]);
+    await root.close();
+  });
+
+  it("keeps the live root recorded when its marker is gone at close", async () => {
+    const { open, record, logs } = fixture();
+    const root = await open();
+    writeFileSync(join(root.create(), "left-over"), "x");
+    rmSync(marker(root.path));
+    await expect(root.close()).rejects.toThrow("marker_missing");
+    expect(existsSync(join(root.path, "r1", "left-over"))).toBe(true);
+    expect(record().roots.map(entry => entry.path)).toEqual([root.path]);
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.root_cleanup_failed", { root: root.path, error: "marker_missing" });
+  });
+
+  it("creates no root when the record is full and keeps every existing entry", async () => {
+    const { open, temporary, state, record, writeRecord, logs } = fixture();
+    const leaked = Array.from({ length: MAX_RECORDED_ROOTS }, (_, index) => {
+      const path = join(temporary, `wtc-leak${index}`);
+      mkdirSync(path);
+      return { path, token: newToken() };
+    });
+    writeRecord(leaked);
+    await expect(open()).rejects.toThrow("run_directory_record_full");
+    expect(readdirSync(temporary)).toHaveLength(MAX_RECORDED_ROOTS);
+    expect(record().roots).toEqual(leaked);
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.record_full", { record: join(state, RUN_DIRECTORY_RECORD), count: MAX_RECORDED_ROOTS, limit: MAX_RECORDED_ROOTS });
+    // After the operator removes one leaked directory, its entry is dropped and a root is created.
+    rmSync(leaked[0]!.path, { recursive: true });
+    const root = await open();
+    expect(record().roots.map(entry => entry.path)).toEqual([...leaked.slice(1).map(entry => entry.path), root.path]);
     await root.close();
   });
 
