@@ -136,7 +136,7 @@ async function measure(fileSystem: string, label: string, path: string, entries:
 async function measureFileSystem(fileSystem: string, parent: string) {
   const base = scratchBase(parent);
   console.log(JSON.stringify({ fileSystem, base }));
-  const results = [];
+  const results: Awaited<ReturnType<typeof measure>>[] = [];
   const wide = join(base, "wide");
   let started = performance.now();
   await createWide(wide);
