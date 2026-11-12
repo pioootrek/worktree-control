@@ -188,6 +188,7 @@ async function main() {
       "package/docs/authentication.md",
       "package/docs/package-trial.md",
       "package/docs/user-service.md",
+      "package/docs/test-sandbox.md",
       "package/CHANGELOG.md",
       "package/LICENSE",
       "package/README.md",
