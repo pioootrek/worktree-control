@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
@@ -54,6 +54,10 @@ const mode = process.env.FAKE_MODE ?? "normal";
 if (process.env.FAKE_PID_FILE) appendFileSync(process.env.FAKE_PID_FILE, process.pid + "\\n");
 console.log("fake controller", process.argv.slice(2).join(" "));
 if (mode === "exit") { console.error("listen EADDRINUSE"); process.exit(3); }
+if (mode === "noisy-exit") {
+  process.stderr.write("n".repeat(256 * 1024) + "\\nlisten EADDRINUSE\\n", () => process.exit(3));
+  await new Promise(() => {});
+}
 const record = { pid: process.pid, startedAt: new Date().toISOString(), version: "fake", dashboardEndpoint: "http://127.0.0.1:" + option("--port"),
   localDashboardEndpoint: "http://127.0.0.1:" + option("--port"), mcpEndpoint: "http://127.0.0.1:" + option("--mcp-port") + "/mcp",
   accessUrl: "http://127.0.0.1:" + option("--port") + "/", logDirectory: join(option("--state-dir"), "logs"), authenticationMode: "token" };
@@ -65,6 +69,16 @@ if (mode !== "never-ready") {
 if (mode === "ready-then-exit") process.exit(5);
 if (mode === "crash-after-ready") setTimeout(() => process.exit(4), 200);
 if (mode === "chatty") setInterval(() => console.error("chatty controller"), 20);
+if (mode === "flood") {
+  // 32 MiB on standard error, honouring the pipe's backpressure like a real controller, then a marker file.
+  const chunk = "f".repeat(64 * 1024 - 1) + "\\n";
+  let sent = 0;
+  const pump = () => {
+    while (sent < 512) { sent++; if (!process.stderr.write(chunk)) { process.stderr.once("drain", pump); return; } }
+    process.stderr.write("flood done\\n", () => writeFileSync(process.env.FAKE_PID_FILE + ".flooded", "done"));
+  };
+  pump();
+}
 process.on("SIGTERM", () => {
   if (mode === "slow-stop") setTimeout(() => process.exit(0), 1500);
   else if (mode === "burst-on-stop") process.stderr.write("x".repeat(2 * 1024 * 1024) + "\\nFAKE-STOPPED\\n", () => process.exit(0));
@@ -76,7 +90,9 @@ setInterval(() => {}, 1000);
 /** Runs the sandbox command the way the CLI does, with the fake controller as its `start`. */
 const HARNESS = (sandboxModule: string) => `
 import { runSandboxCommand } from ${JSON.stringify(sandboxModule)};
-const [script, parent, mode] = process.argv.slice(2);
+const [script, parent, mode, inject] = process.argv.slice(2);
+// Lets a test make standard input fail the way a reset socket does.
+if (inject === "stdin-error") process.on("SIGUSR2", () => process.stdin.destroy(Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" })));
 const status = await runSandboxCommand({ projectName: "Harness", permissions: ["knowledge:read"], readyTimeoutMs: 10_000 }, {
   entry: { command: process.execPath, args: [script] }, version: "9.9.9", temporaryDirectory: parent,
   environment: { PATH: process.env.PATH, FAKE_MODE: mode, FAKE_PID_FILE: process.env.FAKE_PID_FILE },
@@ -128,8 +144,30 @@ function sandboxHarness(mode: string, readyTimeoutMs = 10_000) {
   return { ...files, run, descriptor, stop, lines, output: () => log };
 }
 
+/** A standard error whose reader has stopped reading: writes are held, so any queued output stays in memory. */
+function stalledWritable() {
+  const held: Array<() => void> = [];
+  let reading = false;
+  let received = "";
+  const stream = new Writable({
+    highWaterMark: 16 * 1024,
+    write(chunk: Buffer, _encoding, callback) {
+      received += chunk.toString();
+      if (reading) callback(); else held.push(callback);
+    },
+  });
+  return { stream, received: () => received, resume: () => { reading = true; for (const callback of held.splice(0)) callback(); } };
+}
+
+/** The process streams `runSandboxCommand` is given in tests that do not use a child process. */
+function commandIo(stderr: Writable, signals = new EventEmitter()) {
+  const stdout = new PassThrough();
+  stdout.resume();
+  return { stdin: Object.assign(new PassThrough(), { fd: -1 }), stdout, stderr, signals };
+}
+
 /** Runs the harness as its own process: real signals, real pipes and the command's own exit. */
-function harnessCommand(mode: string) {
+function harnessCommand(mode: string, inject?: string) {
   const files = fixture();
   // Plain JavaScript importing the TypeScript module through tsx: an `.mts` entry would make standard
   // error blocking and hide output that the built CLI loses when it exits too early.
@@ -137,11 +175,11 @@ function harnessCommand(mode: string) {
   writeFileSync(harness, HARNESS(pathToFileURL(join(repositoryRoot, "src/cli/sandbox.ts")).href));
   // tsx resolves from the checkout.
   const env: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", NODE_ENV: "test", FAKE_PID_FILE: files.pidFile };
-  return { ...files, env, args: [process.execPath, "--import", "tsx", harness, files.script, files.parent, mode] };
+  return { ...files, env, args: [process.execPath, "--import", "tsx", harness, files.script, files.parent, mode, ...(inject ? [inject] : [])] };
 }
 
-function startHarness(mode: string) {
-  const command = harnessCommand(mode);
+function startHarness(mode: string, inject?: string) {
+  const command = harnessCommand(mode, inject);
   const child = spawn(command.args[0]!, command.args.slice(1), { cwd: repositoryRoot, env: command.env, stdio: ["pipe", "pipe", "pipe"] });
   processes.push(child);
   let stdout = "";
@@ -263,6 +301,23 @@ describe("sandbox lifecycle", () => {
     expectNoLeftovers(harness);
   }, 30_000);
 
+  it("prints no descriptor when a stop was requested before the ready record was seen", async () => {
+    // The controller never publishes; the test publishes for it and requests the stop in the same turn, so
+    // the next poll finds a valid record and an aborted signal together, as when a stop arrives during the poll delay.
+    const harness = sandboxHarness("never-ready");
+    while (!fakePids(harness.pidFile).length) await delay(20);
+    const [controllerPid] = fakePids(harness.pidFile);
+    const [directory] = readdirSync(harness.parent);
+    writeFileSync(join(harness.parent, directory!, "state", "service-access.json"), JSON.stringify({
+      pid: controllerPid, startedAt: new Date().toISOString(), version: "fake", dashboardEndpoint: "http://127.0.0.1:1",
+      mcpEndpoint: "http://127.0.0.1:2/mcp", accessUrl: "http://127.0.0.1:1/", logDirectory: "/nonexistent", authenticationMode: "token",
+    }));
+    harness.stop.abort();
+    await harness.run;
+    expect(harness.lines).toEqual([]);
+    expectNoLeftovers(harness);
+  }, 30_000);
+
   it("stops the controller when its service record cannot be used", async () => {
     const harness = sandboxHarness("bad-record");
     const failure = await harness.run.then(() => null, (error: unknown) => error);
@@ -370,5 +425,65 @@ describe("sandbox command", () => {
     expect(await harness.exit).toEqual({ code: 0, signal: null });
     expect(harness.stderr()).toContain("FAKE-STOPPED");
     expectNoLeftovers(harness);
+  }, 60_000);
+
+  it("stops and cleans up when its standard input fails", async () => {
+    // A reset socket raises a stream error; without a handler the process would end before any cleanup.
+    const harness = startHarness("normal", "stdin-error");
+    const descriptor = await harness.descriptor();
+    harness.child.kill("SIGUSR2");
+    expect(await harness.exit).toEqual({ code: 1, signal: null });
+    expect(harness.stderr()).toContain("standard input");
+    expect(alive(descriptor.pid)).toBe(false);
+    expectNoLeftovers(harness);
+  }, 60_000);
+
+  it("drops controller output instead of queueing it while standard error is not read, then reports the amount", async () => {
+    const files = fixture();
+    const stalled = stalledWritable();
+    const io = commandIo(stalled.stream);
+    const status = runSandboxCommand({ projectName: "Unit", permissions: ["knowledge:read"], readyTimeoutMs: 10_000 }, {
+      entry: { command: process.execPath, args: [files.script] }, version: "9.9.9", temporaryDirectory: files.parent,
+      environment: { PATH: process.env.PATH, FAKE_MODE: "flood", FAKE_PID_FILE: files.pidFile },
+    }, io);
+    let maxQueued = 0;
+    const sampler = setInterval(() => { maxQueued = Math.max(maxQueued, stalled.stream.writableLength); }, 5);
+    try {
+      while (!existsSync(`${files.pidFile}.flooded`)) await delay(20);
+      // The last chunks may still be on their way from the controller's pipe.
+      await delay(300);
+      maxQueued = Math.max(maxQueued, stalled.stream.writableLength);
+      // The controller wrote 32 MiB; the queue is bounded by the stream's mark plus one chunk, not by the volume.
+      expect(maxQueued).toBeLessThan(512 * 1024);
+      stalled.resume();
+      let notice: RegExpExecArray | null = null;
+      for (const deadline = Date.now() + 10_000; !notice && Date.now() < deadline; await delay(20)) notice = /dropped (\d+) bytes/.exec(stalled.received());
+      expect(notice).not.toBeNull();
+      expect(Number(notice![1])).toBeGreaterThan(30_000_000);
+      expect(stalled.received().length).toBeLessThan(1024 * 1024);
+      expect(stalled.received().match(/dropped \d+ bytes/g)).toHaveLength(1);
+    } finally {
+      clearInterval(sampler);
+      io.signals.emit("SIGTERM");
+    }
+    expect(await status).toBe(0);
+    expectNoLeftovers(files);
+  }, 60_000);
+
+  it("keeps the startup diagnostics while standard error is not read", async () => {
+    const files = fixture();
+    const stalled = stalledWritable();
+    const status = runSandboxCommand({ projectName: "Unit", permissions: ["knowledge:read"], readyTimeoutMs: 10_000 }, {
+      entry: { command: process.execPath, args: [files.script] }, version: "9.9.9", temporaryDirectory: files.parent,
+      environment: { PATH: process.env.PATH, FAKE_MODE: "noisy-exit", FAKE_PID_FILE: files.pidFile },
+    }, commandIo(stalled.stream));
+    while (fakePids(files.pidFile).length < 3) await delay(20);
+    await delay(500);
+    stalled.resume();
+    expect(await status).toBe(1);
+    // The failure message carries the controller's own last lines although forwarding was dropping them.
+    expect(stalled.received()).toMatch(/exited during startup \(3\)[\s\S]*EADDRINUSE/);
+    expect(stalled.received()).toMatch(/dropped \d+ bytes/);
+    expectNoLeftovers(files);
   }, 60_000);
 });
