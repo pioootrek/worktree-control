@@ -158,12 +158,12 @@ class StartupFailure extends Error {
 /** Waits for the record a service-mode controller publishes only after both listeners are bound. */
 async function startController(paths: AppPaths, root: string, options: SandboxOptions, dependencies: SandboxDependencies) {
   const [port, mcpPort] = [await freePort(), await freePort()];
-  const child = spawn(dependencies.entry.command, [
+  const child: ChildProcess = spawn(dependencies.entry.command, [
     ...dependencies.entry.args, "start", "--service-mode", "--no-open",
     "--host", "127.0.0.1", "--port", String(port), "--mcp-port", String(mcpPort),
     "--data-dir", paths.dataDirectory, "--state-dir", paths.stateDirectory, "--browse-root", root,
   ], {
-    env: sandboxEnvironment(dependencies.environment), stdio: ["ignore", "pipe", "pipe"],
+    env: sandboxEnvironment(dependencies.environment) as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "pipe"],
     // A terminal interrupt reaches only the sandbox, which sends exactly one SIGTERM; a second
     // signal would end the controller during its own shutdown.
     detached: true,
@@ -218,15 +218,15 @@ export async function runSandbox(options: SandboxOptions, dependencies: SandboxD
       }
     }
     if (!started) return;
-    child = started.child;
+    const running = started.child;
+    child = running;
     const descriptor: SandboxDescriptor = {
-      format: SANDBOX_FORMAT, version: dependencies.version, pid: child.pid!,
+      format: SANDBOX_FORMAT, version: dependencies.version, pid: running.pid!,
       url: started.url, mcpUrl: started.mcpUrl,
       dataDirectory: paths.dataDirectory, stateDirectory: paths.stateDirectory,
       ...installation,
     };
     dependencies.write(JSON.stringify(descriptor));
-    const running = child;
     const unexpected = new Promise<"exited">(resolveExit => running.once("exit", () => resolveExit("exited")));
     const requested = new Promise<"stop">(resolveStop => {
       if (dependencies.stop.aborted) resolveStop("stop");
@@ -248,7 +248,7 @@ export async function runSandbox(options: SandboxOptions, dependencies: SandboxD
  * Stops on SIGINT, SIGTERM or SIGHUP, and on end of standard input when it is a pipe or socket, so
  * a test harness that dies or closes its end also stops the sandbox. A terminal or /dev/null never ends it.
  */
-export function sandboxStopSignal(input: NodeJS.ReadStream = process.stdin): AbortSignal {
+export function sandboxStopSignal(input: NodeJS.ReadStream & { fd: number } = process.stdin): AbortSignal {
   const controller = new AbortController();
   const stop = () => controller.abort();
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.once(signal, stop);

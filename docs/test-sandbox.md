@@ -27,7 +27,9 @@ worktree-control sandbox [--project-name NAME] [--permissions LIST] \
 ## What it starts
 
 1. A private directory under the system temporary directory, with `data` and
-   `state` inside it.
+   `state` inside it. Like any data directory, its ancestors must not be
+   writable by other users unless they are sticky, as `/tmp` is. A `TMPDIR`
+   inside a group-writable directory is refused.
 2. Offline, under that directory's controller lock: the token-mode installation
    token, one Knowledge project, one agent with the requested grant, and that
    agent's token.

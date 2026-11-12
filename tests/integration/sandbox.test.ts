@@ -28,13 +28,14 @@ function alive(pid: number): boolean {
 
 /** Starts the built CLI the way an external suite does: stdin is a pipe it holds open. */
 async function startSandbox(environment: Record<string, string> = {}) {
-  const child = spawn(process.execPath, [cli, "sandbox", "--project-name", "Integration"], {
-    cwd: repositoryRoot, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", LANG: "C.UTF-8", ...environment }, stdio: ["pipe", "pipe", "pipe"],
+  const env = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", LANG: "C.UTF-8", NODE_ENV: "production", ...environment } as NodeJS.ProcessEnv;
+  const child: ChildProcess = spawn(process.execPath, [cli, "sandbox", "--project-name", "Integration"], {
+    cwd: repositoryRoot, env, stdio: ["pipe", "pipe", "pipe"],
   });
   running.push(child);
   let stderr = "";
-  child.stderr!.on("data", chunk => { stderr += chunk.toString(); });
-  const exit = new Promise<number | null>(resolveExit => child.once("exit", code => resolveExit(code)));
+  child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+  const exit = new Promise<number | null>(resolveExit => child.once("exit", (code: number | null) => resolveExit(code)));
   const lines = createInterface({ input: child.stdout! });
   const first = await Promise.race([
     new Promise<string>(resolveLine => lines.once("line", resolveLine)),
