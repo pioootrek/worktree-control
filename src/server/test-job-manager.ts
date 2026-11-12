@@ -230,7 +230,8 @@ export class TestJobManager implements AdministrableTestJobs {
     const active = this.active.get(runId);
     const session = this.preparationSessions.get(runId);
     return {
-      run: active?.run ?? persisted,
+      // A point-in-time copy: the live record keeps changing while its owner stops it.
+      run: structuredClone(active?.run ?? persisted),
       ownedProcess: active ? {
         exited: active.exited,
         stopping: active.completion !== null,

@@ -5,7 +5,7 @@ export type AdministrativeStopAction = "cancel" | "cleanup_retry" | "join" | "no
 
 /** Live ownership evidence of one run, as seen by the manager that may own it. */
 export interface TestRunOwnershipEvidence {
-  /** Newest state, including a write still waiting for admission. */
+  /** Snapshot of the newest state, including a write still waiting for admission. */
   run: TestRun;
   /** Present only for a process group this manager spawned itself in this controller lifetime. */
   ownedProcess: { exited: boolean; stopping: boolean; cancellationRequested: boolean; timedOut: boolean } | null;
