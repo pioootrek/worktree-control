@@ -63,7 +63,10 @@ export interface SandboxSetup {
 export interface SandboxDependencies extends SandboxSetup {
   /** Receives the descriptor line on standard output. */
   write: (line: string) => void;
-  /** Receives the controller's own output, which never reaches standard output. */
+  /**
+   * Receives the controller's own output, which never reaches standard output. It must not block:
+   * the controller's pipes keep flowing, so a slow consumer drops output instead of holding it.
+   */
   log: (chunk: string | Buffer) => void;
   /** Aborting stops the controller and removes every sandbox file. */
   stop: AbortSignal;
@@ -219,12 +222,14 @@ class StartupFailure extends Error {
 
 /**
  * Waits for the record a service-mode controller publishes only after both listeners are bound.
- * Returns null when `stop` aborts first. The caller stops the controller on every outcome.
+ * Returns null when `stop` aborts first, including when the record is already there: an instance
+ * that is stopping is never reported as ready. The caller stops the controller on every outcome.
  */
 async function waitForReady(controller: Controller, paths: AppPaths, options: SandboxOptions, stop: AbortSignal) {
   const { child } = controller;
   const deadline = Date.now() + options.readyTimeoutMs;
   for (;;) {
+    if (stop.aborted) return null;
     const access = readServiceAccess(paths.serviceAccessPath);
     const startError = controller.startError();
     if (startError) throw new StartupFailure(`Sandbox controller could not start: ${startError.message}`, false);
@@ -241,7 +246,6 @@ async function waitForReady(controller: Controller, paths: AppPaths, options: Sa
       }
       return { url: new URL(dashboard).origin, mcpUrl: access.mcpEndpoint };
     }
-    if (stop.aborted) return null;
     if (Date.now() > deadline) throw new StartupFailure(`Sandbox controller was not ready within ${options.readyTimeoutMs / 1000} seconds.\n${controller.tail()}`, false);
     await delay(50);
   }
@@ -274,7 +278,8 @@ export async function runSandbox(options: SandboxOptions, dependencies: SandboxD
         controller = null;
       }
     }
-    if (!endpoints || !controller) return;
+    // A stop requested while readiness was being confirmed leaves nothing to announce.
+    if (!endpoints || !controller || dependencies.stop.aborted) return;
     const descriptor: SandboxDescriptor = {
       format: SANDBOX_FORMAT, version: dependencies.version, pid: controller.child.pid!,
       url: endpoints.url, mcpUrl: endpoints.mcpUrl,
@@ -304,6 +309,8 @@ export interface SandboxStopTrigger {
   signal: AbortSignal;
   /** Requests a stop; repeating it has no further effect. */
   stop: () => void;
+  /** The read error of standard input, if it failed. A failed input stops the sandbox like a closed one. */
+  inputError: () => Error | null;
   /** Removes the handlers. Call it only after the controller has exited and the files are gone. */
   dispose: () => void;
 }
@@ -311,7 +318,9 @@ export interface SandboxStopTrigger {
 /**
  * Stops on SIGINT, SIGTERM or SIGHUP, and on end of standard input when it is a pipe or socket, so
  * a test harness that dies or closes its end also stops the sandbox. A terminal or /dev/null never ends it.
- * The signal handlers stay installed until `dispose`, so a repeated signal cannot interrupt cleanup.
+ * A read error on standard input, such as a reset socket, also stops it. The signal handlers and the
+ * input's error handler stay installed until `dispose`, and the error handler beyond it: a stream error
+ * with no listener would end the process before cleanup, and one may still arrive as the input closes.
  */
 export function watchSandboxStop(input: Readable & { fd: number } = process.stdin, signals: NodeJS.EventEmitter = process): SandboxStopTrigger {
   const controller = new AbortController();
@@ -322,16 +331,19 @@ export function watchSandboxStop(input: Readable & { fd: number } = process.stdi
     const stat = fstatSync(input.fd);
     watched = stat.isFIFO() || stat.isSocket();
   } catch { /* Without a readable descriptor only signals stop the sandbox. */ }
+  let inputError: Error | null = null;
   const ignore = () => { /* Input is ignored; only its end matters. */ };
   if (watched) {
     input.on("data", ignore);
     input.once("end", stop);
     input.once("close", stop);
+    input.on("error", (error: Error) => { inputError ??= error; stop(); });
     input.resume();
   }
   return {
     signal: controller.signal,
     stop,
+    inputError: () => inputError,
     dispose: () => {
       for (const signal of STOP_SIGNALS) signals.removeListener(signal, stop);
       if (!watched) return;
@@ -358,19 +370,38 @@ function processIo(): SandboxProcessIo {
 /**
  * A process stream whose reader may go away. A write error such as EPIPE stops the sandbox
  * instead of ending the process before cleanup, and nothing more is written to that stream.
+ *
+ * `forward` carries output the sandbox does not own. Once a write reports backpressure, later chunks
+ * are counted and discarded until the stream drains, so a reader that stops reading cannot make the
+ * queue grow; the source is never paused. One line then states how much was dropped.
  */
-function guardOutput(stream: Writable, stop: () => void) {
+function guardOutput(stream: Writable, stop: () => void, name: string) {
   let failed = false;
+  let blocked = false;
+  let dropped = 0;
   // Stays installed: a write still in flight may fail after the sandbox has finished.
   stream.on("error", () => { failed = true; stop(); });
   const usable = () => !failed && !stream.destroyed && stream.writable;
+  const waitForDrain = () => { blocked = true; stream.once("drain", resume); };
+  function resume() {
+    blocked = false;
+    if (!dropped || !usable()) return;
+    const notice = `Sandbox: dropped ${dropped} bytes of controller output while ${name} was not being read.\n`;
+    dropped = 0;
+    if (!stream.write(notice)) waitForDrain();
+  }
   return {
     failed: () => failed,
     write: (chunk: string | Buffer) => { if (usable()) stream.write(chunk); },
+    forward: (chunk: string | Buffer) => {
+      if (!usable()) return;
+      if (blocked) { dropped += Buffer.byteLength(chunk); return; }
+      if (!stream.write(chunk)) waitForDrain();
+    },
     /** Waits until buffered output has reached the reader, the stream fails, or the time runs out. */
     drain: async (timeoutMs: number) => {
       const deadline = Date.now() + timeoutMs;
-      while (usable() && stream.writableLength > 0 && Date.now() < deadline) await delay(20);
+      while (usable() && (stream.writableLength > 0 || blocked) && Date.now() < deadline) await delay(20);
     },
   };
 }
@@ -383,14 +414,14 @@ function guardOutput(stream: Writable, stop: () => void) {
  */
 export async function runSandboxCommand(options: SandboxOptions, setup: SandboxSetup, io: SandboxProcessIo = processIo()): Promise<number> {
   const trigger = watchSandboxStop(io.stdin, io.signals);
-  const stdout = guardOutput(io.stdout, trigger.stop);
-  const stderr = guardOutput(io.stderr, trigger.stop);
+  const stdout = guardOutput(io.stdout, trigger.stop, "standard output");
+  const stderr = guardOutput(io.stderr, trigger.stop, "standard error");
   let status = 0;
   try {
     await runSandbox(options, {
       ...setup,
       write: line => stdout.write(`${line}\n`),
-      log: chunk => stderr.write(chunk),
+      log: chunk => stderr.forward(chunk),
       stop: trigger.signal,
     });
   } catch (error) {
@@ -398,8 +429,10 @@ export async function runSandboxCommand(options: SandboxOptions, setup: SandboxS
     status = 1;
   }
   if (stdout.failed()) stderr.write("Sandbox stopped: its standard output was closed.\n");
+  const inputError = trigger.inputError();
+  if (inputError) stderr.write(`Sandbox stopped: reading its standard input failed (${inputError.message}).\n`);
   await Promise.all([stdout.drain(OUTPUT_DRAIN_MS), stderr.drain(OUTPUT_DRAIN_MS)]);
   // The handlers stay installed until the caller exits the process: removing them first would let a
   // late signal end it by default action, with a status that no longer reports the outcome.
-  return stdout.failed() || stderr.failed() ? 1 : status;
+  return stdout.failed() || stderr.failed() || inputError ? 1 : status;
 }

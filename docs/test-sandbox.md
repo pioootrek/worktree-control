@@ -42,7 +42,20 @@ worktree-control sandbox [--project-name NAME] [--permissions LIST] \
 When the controller accepts requests, the command prints one JSON line on
 standard output. It always uses standard output, also when standard output is
 a pipe and standard error is a terminal. The controller's own output goes to
-standard error.
+standard error. A stop requested before the controller is confirmed ready
+prints no descriptor, so a descriptor always describes an instance that was
+still meant to run.
+
+The sandbox never pauses the controller's output pipes, because a controller
+blocked on a full pipe would hang the instance under test. When standard error
+is not being read and its queue is full, the sandbox discards the controller's
+output instead of holding it and counts the discarded bytes. Once the reader
+catches up it forwards output again and writes one line, for example
+`Sandbox: dropped 33554432 bytes of controller output while standard error was
+not being read.` Memory used for forwarding stays bounded however much the
+controller logs. The last 8 KiB of controller output that startup failure
+messages quote is kept separately and is not affected by dropping. A suite
+that needs the controller's full log must read standard error continuously.
 
 ```json
 {
@@ -80,6 +93,8 @@ directory when any of these happens:
 - a write to its standard output or standard error fails, for example with
   `EPIPE` because the test closed its reader. Nothing more is written to that
   stream;
+- its standard input is a pipe or socket and fails with a read error, for
+  example `ECONNRESET`;
 - the controller exits on its own.
 
 It stops the controller with one `SIGTERM`, then `SIGKILL` after 15 seconds.
@@ -90,8 +105,13 @@ reader.
 
 | Exit status | Meaning |
 | --- | --- |
-| 0 | Stopped on request: a signal or the end of standard input. |
-| 1 | Invalid options, the controller failed to start or exited on its own, or a write to standard output or standard error failed. Any files it created are removed. |
+| 0 | Stopped on request: a signal or the end of standard input. This includes a request that arrives before the descriptor was printed. |
+| 1 | Invalid options, the controller failed to start or exited on its own, a read from standard input or a write to standard output or standard error failed, or the controller could not be stopped (see below). Any files it created are removed. |
+
+If the controller still has not exited 5 seconds after `SIGKILL`, the command
+removes the directory anyway, writes `Sandbox controller <pid> did not exit
+after SIGKILL.` to standard error and exits with status 1. Check that process
+by hand: it may still be running.
 
 A terminal or `/dev/null` on standard input never ends the sandbox. A sandbox
 killed with `SIGKILL` cannot clean up: its controller keeps running and its
