@@ -2,7 +2,7 @@ import { admitWithRetry, type DatabaseAdmission } from "@/server/database-admiss
 import type { TestRun } from "@/shared/contracts";
 import {
   administrativeStopAction, nextStep, resolveRun, type AdministrableTestJobs, type AdministrativeStopAction, type RunResolutionReason,
-  type RunResolutionState, type TestRunOwnershipEvidence,
+  type RunPersistenceState, type RunResolutionState, type TestRunOwnershipEvidence,
 } from "./run-ownership";
 
 /** The local OS account behind the owner-only admin socket, as seen by the controller itself. */
@@ -23,8 +23,12 @@ export interface TestRunAdministrationAuditEntry {
   outcome?: RunResolutionState;
   outcomeReason?: RunResolutionReason | "stop_request_failed";
   phaseBefore?: TestRun["phase"] | null;
+  /** Live phase and cleanup held by the owner after the wait. */
   phaseAfter?: TestRun["phase"] | null;
   cleanupAfter?: string | null;
+  /** The committed record after the wait and the state of the run's newest write. */
+  durablePhaseAfter?: TestRun["phase"] | null;
+  persistenceAfter?: RunPersistenceState | null;
 }
 
 export interface TestRunAdministrationRecord extends Omit<TestRunAdministrationAuditEntry, "operator"> {
@@ -52,6 +56,7 @@ export interface TestRunInspection {
   found: boolean;
   run: RunProjection | null;
   ownership: OwnershipProjection | null;
+  durableRecord: DurableProjection | null;
   resolution: { state: RunResolutionState; reason: RunResolutionReason; nextStep: string; stopEffect: AdministrativeStopAction };
   audit: TestRunAdministrationRecord[];
 }
@@ -66,11 +71,14 @@ export interface TestRunStopResult {
   nextStep: string;
   waitedMs: number;
   before: { phase: TestRun["phase"]; cleanup: string | null } | null;
+  /** Newest state held by the owner; see `durableRecord` for what is committed. */
   run: RunProjection | null;
+  durableRecord: DurableProjection | null;
 }
 
 type RunProjection = ReturnType<typeof runProjection>;
 type OwnershipProjection = ReturnType<typeof ownershipProjection>;
+type DurableProjection = ReturnType<typeof durableProjection>;
 
 export class TestRunAdministrationError extends Error {
   constructor(readonly code: "project_mismatch" | "maintenance", message: string) {
@@ -169,11 +177,13 @@ export class TestRunAdministration {
       waitedMs: Math.max(0, Math.round(this.now() - started)),
       before: before ? { phase: before.run.phase, cleanup: before.run.telemetry?.cleanup ?? null } : null,
       run: latest ? runProjection(latest.run) : null,
+      durableRecord: latest ? durableProjection(latest) : null,
     };
     await admitWithRetry(admission, () => audit.recordTestRunAdministration({
       ...base, event: "test_run.admin_stop_result", projectId: latest?.run.projectId ?? before?.run.projectId ?? null,
       action, outcome, outcomeReason: reason, phaseBefore: before?.run.phase ?? null,
       phaseAfter: latest?.run.phase ?? null, cleanupAfter: latest?.run.telemetry?.cleanup ?? null,
+      durablePhaseAfter: latest?.durable?.phase ?? null, persistenceAfter: latest?.persistence ?? null,
     }), { reserved: true, deadlineMs: 10_000 });
     this.dependencies.log?.("test_run.admin_stop", { runId: input.runId, requestId: input.requestId, action, outcome, reason });
     return result;
@@ -207,6 +217,7 @@ export class TestRunAdministration {
       found: evidence !== null,
       run: evidence ? runProjection(evidence.run) : null,
       ownership: evidence ? ownershipProjection(evidence) : null,
+      durableRecord: evidence ? durableProjection(evidence) : null,
       resolution: {
         ...resolution,
         nextStep: nextStep(resolution.reason, runId),
@@ -269,6 +280,17 @@ function runProjection(run: TestRun) {
       processOutcome: run.source.processOutcome,
       reasonCodes: run.source.reasonCodes.slice(0, 12),
     },
+  };
+}
+
+/** What the store has committed for the run, apart from the owner's newest in-memory state. */
+function durableProjection(evidence: TestRunOwnershipEvidence) {
+  const durable = evidence.durable;
+  return {
+    write: evidence.persistence,
+    phase: durable?.phase ?? null,
+    cleanup: durable?.telemetry?.cleanup ?? null,
+    finalizedAt: durable?.telemetry?.finalizedAt ?? null,
   };
 }
 

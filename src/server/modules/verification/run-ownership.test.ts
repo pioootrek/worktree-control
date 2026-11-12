@@ -17,13 +17,18 @@ function run(overrides: Partial<TestRun> = {}, telemetry: Partial<NonNullable<Te
   };
 }
 
+/** By default the committed record equals the live state. */
 function evidence(overrides: Partial<TestRunOwnershipEvidence> = {}): TestRunOwnershipEvidence {
+  const live = overrides.run ?? run();
   return {
-    run: run(), ownedProcess: { exited: false, stopping: false, cancellationRequested: false, timedOut: false },
+    run: live, durable: live, persistence: "committed", ownedProcess: { exited: false, stopping: false, cancellationRequested: false, timedOut: false },
     preparing: false, preparationActive: false, preparationCleanupUnconfirmed: false, finalizing: false, queueClosed: false,
     admissionBlockReason: null, ...overrides,
   };
 }
+
+const finalizedInMemory = (phase: TestRun["phase"], cleanup: "confirmed" | "not_required", spawnedAt: string | null) =>
+  run({ phase, exitCode: spawnedAt ? 0 : null }, { cleanup, finalizedAt: "t", spawnedAt });
 
 const owned = (state: Partial<NonNullable<TestRunOwnershipEvidence["ownedProcess"]>> = {}) => ({
   exited: false, stopping: false, cancellationRequested: false, timedOut: false, ...state,
@@ -48,6 +53,18 @@ describe("administrator run ownership policy", () => {
     ["legacy record", evidence({ run: run({ phase: "passed" }, { availability: "legacy_unknown", finalizedAt: "t", cleanup: "confirmed" }), ownedProcess: null }), "unresolved", "cleanup_evidence_unavailable", "none"],
     ["startup recovery", evidence({ run: run({ phase: "interrupted" }, { recoveredAt: "t", finalizedAt: "t", cleanup: "confirmed" }), ownedProcess: null }), "unresolved", "ownership_lost_after_restart", "none"],
     ["workspace disposal failure", evidence({ run: run({ phase: "interrupted", error: "workspace_cleanup_failed" }, { cleanup: "failed", finalizedAt: "t" }), ownedProcess: owned({ exited: true }), preparationCleanupUnconfirmed: true }), "unresolved", "workspace_cleanup_failed", "none"],
+    ["terminal write failed after a natural exit, slot still held", evidence({ run: finalizedInMemory("passed", "confirmed", "t"), durable: run({ exitCode: 0 }, { cleanup: "pending", spawnedAt: "t" }),
+      persistence: "failed", ownedProcess: owned({ exited: true }) }), "unresolved", "finalization_not_durable", "none"],
+    ["terminal write failed before a spawn", evidence({ run: finalizedInMemory("cancelled", "not_required", null), durable: run({ phase: "queued" }),
+      persistence: "failed", ownedProcess: null }), "unresolved", "finalization_not_durable", "none"],
+    ["terminal write waiting for admission", evidence({ run: finalizedInMemory("cancelled", "not_required", null), durable: run({ phase: "queued" }),
+      persistence: "pending", ownedProcess: null }), "pending", "finalizing", "none"],
+    ["owner still holds the group after finalization ended", evidence({ run: finalizedInMemory("failed", "confirmed", "t"), ownedProcess: owned({ exited: true }) }),
+      "unresolved", "finalization_not_durable", "none"],
+    ["committed record lags the live terminal state", evidence({ run: finalizedInMemory("passed", "confirmed", "t"), durable: run({}, { cleanup: "confirmed", spawnedAt: "t" }),
+      ownedProcess: null }), "unresolved", "finalization_not_durable", "none"],
+    ["terminal state with a missing committed row", evidence({ run: finalizedInMemory("passed", "confirmed", "t"), durable: null, ownedProcess: null }),
+      "unresolved", "finalization_not_durable", "none"],
     ["remote preparation cleanup", evidence({ run: run({ phase: "interrupted", error: "preparation_cleanup_unconfirmed" }, { cleanup: "failed", finalizedAt: "t" }), ownedProcess: null, preparing: true, preparationCleanupUnconfirmed: true }), "unresolved", "preparation_cleanup_unconfirmed", "none"],
   ] as const)("%s", (_label, input, state, reason, action) => {
     expect(resolveRun(input)).toEqual({ state, reason });

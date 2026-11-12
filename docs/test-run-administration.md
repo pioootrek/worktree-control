@@ -50,8 +50,12 @@ there is no prefix search.
 
 ## Read the result
 
-`inspect` returns allowlisted run fields, live ownership and a resolution.
-Output contains no log tail, environment values, requester identifiers or
+`inspect` returns allowlisted run fields, live ownership, the committed record
+and a resolution. `run` is the newest state the controller holds, which can be
+ahead of the database. `durableRecord` shows what the store has committed
+(`phase`, `cleanup`, `finalizedAt`) and the state of the run's newest write:
+`committed`, `pending` (waiting for database admission) or `failed`. `stop`
+returns the same two views. Output contains no log tail, environment values, requester identifiers or
 session identifiers; the requester appears only as a class such as `agent`.
 The command and working directory are included so that an operator can find a
 process the controller no longer owns.
@@ -61,10 +65,13 @@ process the controller no longer owns.
 | State | Reasons | Meaning |
 | --- | --- | --- |
 | `pending` | `queued`, `preparing`, `running`, `stop_in_progress`, `finalizing` | This controller owns the work or its cleanup and is still progressing. |
-| `confirmed` | `finalized` | Terminal, cleanup confirmed (or provably not required before spawn) and finalization saved. |
-| `unresolved` | `process_cleanup_unconfirmed`, `preparation_cleanup_unconfirmed`, `workspace_cleanup_failed`, `ownership_lost_after_restart`, `ownership_unknown`, `cleanup_evidence_unavailable`, `run_not_found`, `stop_request_failed` | The controller cannot prove that no process or workspace remains. |
+| `confirmed` | `finalized` | The committed record is terminal and finalized, with cleanup confirmed (or provably not required before spawn), and no newer write is outstanding. |
+| `unresolved` | `process_cleanup_unconfirmed`, `finalization_not_durable`, `preparation_cleanup_unconfirmed`, `workspace_cleanup_failed`, `ownership_lost_after_restart`, `ownership_unknown`, `cleanup_evidence_unavailable`, `run_not_found`, `stop_request_failed` | The controller cannot prove that no process or workspace remains. |
 
-`confirmed` uses the same release boundary as the queue. The process outcome
+`confirmed` uses the same release boundary as the queue and is decided from the
+committed record only. A terminal phase or `finalizedAt` held in memory is never
+enough: the queue writes the terminal state before it releases a slot, so a
+failed terminal write leaves the run unresolved. The process outcome
 remains separate: a run that exited with code 3 stays `failed`, and a natural
 exit is never reported as a cancellation. Source attribution is unchanged.
 
@@ -104,6 +111,15 @@ released.
 - **`process_cleanup_unconfirmed`**: the controller still owns the group and
   keeps its queue slot. Repeat `stop` to retry cleanup. If it keeps failing,
   check the process group of the command shown and the controller log.
+- **`finalization_not_durable`**: the controller finished the run in memory, but
+  writing its terminal state to the database failed. The committed record still
+  shows the earlier phase, the run keeps its queue slot, and the persistence
+  failure keeps the test queue closed (`test_run.persistence_failed` in the
+  controller log). `stop` has no effect: it neither retries the write nor
+  releases the slot. The shown process outcome is not changed. Check database
+  health and free space. Only a controller restart reopens the queue, and
+  recovery then records the run as `interrupted`, not as finished. Other runs
+  that were already finalized durably stay `confirmed`.
 - **`ownership_lost_after_restart`**: the controller that started the run stopped
   before observing its cleanup. Recovery marked the record `interrupted` with
   `recoveredAt`. The current controller never spawned that group and does not
@@ -127,8 +143,9 @@ Each `stop` appends two rows to the controller audit table, actor `local-admin`:
 `test_run.admin_stop_requested` before any effect and
 `test_run.admin_stop_result` after the wait. Details contain the request ID, run
 and project IDs, operator (`local-admin-socket`, the controller's UID and
-username), reason, action, outcome and reason code, and phase/cleanup before and
-after. They contain no tokens, session identifiers, environment values or log
+username), reason, action, outcome and reason code, phase/cleanup before and
+after as held by the owner, and the committed phase and write state after the
+wait (`durablePhaseAfter`, `persistenceAfter`). They contain no tokens, session identifiers, environment values or log
 output. A refused project binding or malformed request has no effect and is not
 audited. `inspect` is read-only and shows the newest ten audit records of the
 run.
@@ -136,7 +153,11 @@ run.
 ## Limits
 
 - Ownership exists only for groups spawned by the current controller process.
-  Runs from before a controller restart are always unresolved for this command.
+  A run that was still queued, preparing or running when the controller stopped
+  is recovered as `interrupted` with `recoveredAt` and stays unresolved for this
+  command, as does any record without durable cleanup evidence. A run that was
+  durably finalized before the restart, without `recoveredAt`, can still be
+  `confirmed`.
 - Root, or anyone else able to open the socket, holds the same authority as the
   controller's account.
 - The audit table is append-only and has no separate retention for these rows.

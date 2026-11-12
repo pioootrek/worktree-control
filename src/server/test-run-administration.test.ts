@@ -72,6 +72,25 @@ function fixture() {
 const LIVE = "console.log('pid:' + process.pid); setInterval(() => {}, 1000)";
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
+/**
+ * Fails only the terminal write (the one carrying `finalizedAt`) of the chosen
+ * runs. Reads, audit rows and every other run's writes keep working.
+ */
+function failFinalizationWrites(store: SqliteStateStore) {
+  const original = store.saveTestRun.bind(store);
+  const targets = new Set<string>();
+  const state = { failures: 0 };
+  vi.spyOn(store, "saveTestRun").mockImplementation((...args: Parameters<SqliteStateStore["saveTestRun"]>) => {
+    const [run] = args;
+    if (targets.has(run.id) && run.telemetry?.finalizedAt) {
+      state.failures += 1;
+      throw new Error("injected terminal write failure");
+    }
+    return original(...args);
+  });
+  return { targets, state };
+}
+
 describe("protected test run administration", () => {
   it("cancels a queued run without a spawn and confirms its durable finalization", async () => {
     const { manager, enqueue, stop, store, audit } = fixture();
@@ -244,5 +263,99 @@ describe("protected test run administration", () => {
     expect(alive(pid)).toBe(true);
     expect(store.getTestRun(run.id)?.phase).toBe("running");
     expect(audit(run.id)).toEqual([]);
+  });
+
+  describe("when the terminal write fails", () => {
+    /** Waits until every completion, cleanup and finalization promise of the run has settled. */
+    const settled = async (administration: TestRunAdministration, runId: string, state: { failures: number }) => {
+      await vi.waitFor(async () => {
+        expect(state.failures).toBeGreaterThan(0);
+        const { ownership } = await administration.inspect({ runId });
+        expect(ownership).toMatchObject({ finalizing: false, stopping: false });
+      }, { timeout: 5_000 });
+    };
+
+    it("does not confirm a natural exit whose finalization was not saved, and keeps already durable runs confirmed", async () => {
+      const { enqueue, store, manager, administration, stop, audit } = fixture();
+      const historical = enqueue("process.exit(0)");
+      await vi.waitFor(async () => expect((await administration.inspect({ runId: historical.id })).resolution.state).toBe("confirmed"), { timeout: 5_000 });
+      const failing = failFinalizationWrites(store);
+      const run = enqueue("setTimeout(() => process.exit(0), 50)");
+      failing.targets.add(run.id);
+
+      await settled(administration, run.id, failing.state);
+
+      const persisted = store.getTestRun(run.id)!;
+      expect(persisted.phase).toBe("running");
+      expect(persisted.telemetry?.finalizedAt).toBeNull();
+      const inspection = await administration.inspect({ runId: run.id });
+      expect(inspection.resolution).toMatchObject({ state: "unresolved", reason: "finalization_not_durable", stopEffect: "none" });
+      expect(inspection.resolution.nextStep).toContain("not durable");
+      expect(inspection.durableRecord).toEqual({ write: "failed", phase: persisted.phase, cleanup: persisted.telemetry?.cleanup ?? null, finalizedAt: null });
+      // The process result held in memory is reported, never rewritten.
+      expect(inspection.run).toMatchObject({ phase: "passed", exitCode: 0 });
+      // The slot stays held and the queue stays closed by the persistence failure.
+      expect(manager.status().running).toBe(1);
+
+      const result = await stop(run.id, { waitMs: 1_000 });
+      expect(result).toMatchObject({ action: "none", outcome: "unresolved", reason: "finalization_not_durable",
+        durableRecord: { write: "failed", phase: "running", finalizedAt: null } });
+      expect(store.getTestRun(run.id)).toMatchObject({ phase: "running", telemetry: { finalizedAt: null } });
+      expect(manager.status().running).toBe(1);
+      expect(audit(run.id)[0]).toMatchObject({ event: "test_run.admin_stop_result", outcome: "unresolved", outcomeReason: "finalization_not_durable",
+        persistenceAfter: "failed", durablePhaseAfter: "running" });
+
+      // Another run's failure closes the queue, but a durably finalized run stays confirmed.
+      expect((await administration.inspect({ runId: historical.id })).resolution).toMatchObject({ state: "confirmed", reason: "finalized" });
+      expect(await stop(historical.id, { requestId: "request-historical" })).toMatchObject({ action: "none", outcome: "confirmed" });
+    });
+
+    it("does not confirm an administrator cancellation whose finalization was not saved", async () => {
+      const { enqueue, ready, store, manager, administration, stop } = fixture();
+      const failing = failFinalizationWrites(store);
+      const run = enqueue(LIVE);
+      failing.targets.add(run.id);
+      const pid = await ready(run.id);
+
+      const result = await stop(run.id);
+
+      expect(failing.state.failures).toBeGreaterThan(0);
+      await settled(administration, run.id, failing.state);
+      expect(alive(pid)).toBe(false);
+      const persisted = store.getTestRun(run.id)!;
+      expect(persisted.phase).toBe("running");
+      expect(persisted.telemetry?.finalizedAt).toBeNull();
+      expect(result).toMatchObject({ action: "cancel", outcome: "unresolved", reason: "finalization_not_durable" });
+      expect(manager.status().running).toBe(1);
+      const retry = await stop(run.id, { requestId: "request-retry-durable", waitMs: 1_000 });
+      expect(retry).toMatchObject({ action: "none", outcome: "unresolved", reason: "finalization_not_durable" });
+      expect((await administration.inspect({ runId: run.id })).resolution.state).toBe("unresolved");
+      expect(store.getTestRun(run.id)?.phase).toBe("running");
+    });
+
+    it("does not confirm a queued cancellation that exists only as a failed staged write", async () => {
+      const { enqueue, store, manager, administration, stop, ready } = fixture();
+      manager.setLimit(1);
+      const blocker = enqueue(LIVE);
+      const blockerPid = await ready(blocker.id);
+      const queued = enqueue(LIVE);
+      const failing = failFinalizationWrites(store);
+      failing.targets.add(queued.id);
+
+      const first = await stop(queued.id, { waitMs: 1_000 });
+
+      expect(first.outcome).not.toBe("confirmed");
+      expect(failing.state.failures).toBeGreaterThan(0);
+      expect(store.getTestRun(queued.id)).toMatchObject({ phase: "queued", startedAt: null, telemetry: { finalizedAt: null } });
+      const inspection = await administration.inspect({ runId: queued.id });
+      expect(inspection.resolution).toMatchObject({ state: "unresolved", reason: "finalization_not_durable" });
+      expect(inspection.durableRecord).toMatchObject({ write: "failed", phase: "queued", finalizedAt: null });
+      expect(await stop(queued.id, { requestId: "request-queued-retry", waitMs: 1_000 })).toMatchObject({ action: "none", outcome: "unresolved",
+        reason: "finalization_not_durable" });
+      expect(store.getTestRun(queued.id)?.phase).toBe("queued");
+      // Exactly one run: the running neighbour is not touched.
+      expect(alive(blockerPid)).toBe(true);
+      expect(store.getTestRun(blocker.id)?.phase).toBe("running");
+    });
   });
 });

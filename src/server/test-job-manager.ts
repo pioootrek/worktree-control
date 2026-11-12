@@ -221,17 +221,27 @@ export class TestJobManager implements AdministrableTestJobs {
 
   /**
    * Live ownership evidence for one run. The caller holds admission. Reads only
-   * this manager's own state and the durable record; it never adopts, signals or
-   * rewrites anything, and a missing record is returned as null.
+   * this manager's own state and the durable record; it never adopts, signals,
+   * retries or rewrites anything, and a missing record is returned as null.
+   * The committed record and the newest in-memory state are kept apart: a
+   * terminal write that failed stays staged, and only the committed row can
+   * prove durable finalization.
    */
   administrativeEvidence(runId: string): TestRunOwnershipEvidence | null {
-    const persisted = this.read(runId);
-    if (!persisted) return null;
+    const durable = this.store.getTestRun(runId);
+    const write = this.writes.get(runId);
+    const staged = write?.dirty ? write.latest : null;
+    const latest = staged ?? durable;
+    if (!latest) return null;
     const active = this.active.get(runId);
     const session = this.preparationSessions.get(runId);
     return {
       // A point-in-time copy: the live record keeps changing while its owner stops it.
-      run: structuredClone(active?.run ?? persisted),
+      run: structuredClone(active?.run ?? latest),
+      durable,
+      // Under admission a dirty write without a chain is one whose write threw;
+      // a chain is a write still waiting for admission.
+      persistence: !staged ? "committed" : write!.chain ? "pending" : "failed",
       ownedProcess: active ? {
         exited: active.exited,
         stopping: active.completion !== null,

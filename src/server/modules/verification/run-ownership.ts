@@ -3,10 +3,24 @@ import type { TestRun } from "@/shared/contracts";
 /** What a protected administrator stop did; `none` and `join` add no effect of their own. */
 export type AdministrativeStopAction = "cancel" | "cleanup_retry" | "join" | "none";
 
+/**
+ * State of this run's own newest write. `committed`: the store holds the newest
+ * state. `pending`: a write is ordered behind database admission. `failed`: the
+ * write was refused and remains staged only in memory (the queue is closed).
+ */
+export type RunPersistenceState = "committed" | "pending" | "failed";
+
 /** Live ownership evidence of one run, as seen by the manager that may own it. */
 export interface TestRunOwnershipEvidence {
-  /** Snapshot of the newest state, including a write still waiting for admission. */
+  /**
+   * Snapshot of the newest state this manager holds, including a write that is
+   * still waiting or that failed. It describes live work and is never, alone,
+   * proof of durable finalization.
+   */
   run: TestRun;
+  /** The record as last committed to the store: the only basis for `confirmed`. */
+  durable: TestRun | null;
+  persistence: RunPersistenceState;
   /** Present only for a process group this manager spawned itself in this controller lifetime. */
   ownedProcess: { exited: boolean; stopping: boolean; cancellationRequested: boolean; timedOut: boolean } | null;
   /** Holds a finite-queue slot for source preflight or remote preparation. */
@@ -53,6 +67,7 @@ export type RunResolutionReason =
   | "queued" | "preparing" | "running" | "stop_in_progress" | "finalizing"
   | "finalized"
   | "process_cleanup_unconfirmed" | "preparation_cleanup_unconfirmed" | "workspace_cleanup_failed"
+  | "finalization_not_durable"
   | "ownership_lost_after_restart" | "ownership_unknown" | "cleanup_evidence_unavailable"
   | "run_not_found";
 
@@ -69,9 +84,10 @@ export interface RunResolution {
 const TERMINAL = new Set<TestRun["phase"]>(["passed", "failed", "cancelled", "timed_out", "interrupted"]);
 
 /**
- * Release-safety of one run from durable and live evidence. Terminal phase or a
- * finalization timestamp alone never confirms cleanup, and a missing record is
- * never evidence of quiescence.
+ * Release-safety of one run from durable and live evidence. Live state decides
+ * whether work is still pending; only the committed record can confirm. A
+ * terminal phase or finalization timestamp held in memory never confirms
+ * cleanup, and a missing record is never evidence of quiescence.
  */
 export function resolveRun(evidence: TestRunOwnershipEvidence | null): RunResolution {
   if (!evidence) return { state: "unresolved", reason: "run_not_found" };
@@ -97,12 +113,21 @@ export function resolveRun(evidence: TestRunOwnershipEvidence | null): RunResolu
   // Source qualification of an exited process runs before finalization begins.
   if (ownedProcess?.stopping) return { state: "pending", reason: "finalizing" };
   if (telemetry?.recoveredAt) return { state: "unresolved", reason: "ownership_lost_after_restart" };
-  if (!telemetry || telemetry.availability === "legacy_unknown" || !telemetry.finalizedAt) {
+  // The terminal write is still ordered behind admission: the owner is finishing.
+  if (evidence.persistence === "pending") return { state: "pending", reason: "finalizing" };
+  // A failed terminal write leaves the state only in memory, and an owner that
+  // still holds the group after finalization ended never released its slot.
+  if (evidence.persistence === "failed" || ownedProcess) return { state: "unresolved", reason: "finalization_not_durable" };
+  const durable = evidence.durable;
+  if (!durable || durable.phase !== run.phase) return { state: "unresolved", reason: "finalization_not_durable" };
+  const saved = durable.telemetry;
+  if (saved?.recoveredAt) return { state: "unresolved", reason: "ownership_lost_after_restart" };
+  if (!saved || saved.availability === "legacy_unknown" || !saved.finalizedAt) {
     return { state: "unresolved", reason: "cleanup_evidence_unavailable" };
   }
-  if (telemetry.cleanup === "failed") return { state: "unresolved", reason: "process_cleanup_unconfirmed" };
-  if (telemetry.cleanup === "confirmed") return { state: "confirmed", reason: "finalized" };
-  if (telemetry.cleanup === "not_required" && !telemetry.spawnedAt) return { state: "confirmed", reason: "finalized" };
+  if (saved.cleanup === "failed") return { state: "unresolved", reason: "process_cleanup_unconfirmed" };
+  if (saved.cleanup === "confirmed") return { state: "confirmed", reason: "finalized" };
+  if (saved.cleanup === "not_required" && !saved.spawnedAt) return { state: "confirmed", reason: "finalized" };
   return { state: "unresolved", reason: "cleanup_evidence_unavailable" };
 }
 
@@ -123,6 +148,8 @@ export function nextStep(reason: RunResolutionReason, runId: string): string {
     case "preparation_cleanup_unconfirmed":
     case "workspace_cleanup_failed":
       return "Remote preparation or workspace disposal was not confirmed, so new test admission stays blocked. Reconcile the remote worker with its recovery procedure; this command neither disposes the workspace nor clears the block.";
+    case "finalization_not_durable":
+      return "The controller holds a terminal state for this run only in memory: writing it to the database failed, so finalization is not durable. The run keeps its queue slot and the test queue stays closed until the controller restarts (see test_run.persistence_failed in the controller log). This command does not retry the write, release the slot or signal anything. Check database health and free space before a planned restart; after it, recovery records the run as interrupted, not as finished.";
     case "ownership_lost_after_restart":
       return "The controller that started this run stopped before observing its cleanup. This controller never owned its process group and will not signal a saved PID. Check the host for processes of the command and working directory shown, and stop them manually only after verifying them.";
     case "ownership_unknown":
