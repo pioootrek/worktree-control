@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -12,7 +12,7 @@ const scratch: string[] = [];
 
 /** Restores owner access a test removed anywhere below `path`, without following links. */
 function restoreAccess(path: string): void {
-  let stats;
+  let stats: Stats;
   try { stats = lstatSync(path); } catch { return; }
   if (!stats.isDirectory()) return;
   try { chmodSync(path, 0o700); } catch { return; }
