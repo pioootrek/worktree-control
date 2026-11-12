@@ -2,6 +2,8 @@ import { constants, type Dirent, type Stats } from "node:fs";
 import { chmod, lstat, open, opendir, rmdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
+import { RUN_DIRECTORY_REMOVAL_DEADLINE } from "@/server/modules/verification";
+
 /** Unlinks issued concurrently inside one directory. Subdirectories are removed one at a time. */
 const UNLINK_BATCH = 32;
 /** Directory entries read per system call; the listing is streamed, never held in memory. */
@@ -9,6 +11,34 @@ const LISTING_BUFFER = 128;
 
 export class UnsafeRemovalError extends Error {
   constructor(readonly code: string) { super(code); }
+}
+
+/** One removal attempt took longer than its deadline. Removal stopped with every pending unlink settled. */
+export class RemovalDeadlineError extends Error {
+  readonly code = RUN_DIRECTORY_REMOVAL_DEADLINE;
+  constructor() { super(RUN_DIRECTORY_REMOVAL_DEADLINE); }
+}
+
+/**
+ * Time bound of one removal attempt, shared by its whole recursion and every
+ * unlink batch. `now` is a monotonic clock in milliseconds.
+ */
+export interface RemovalDeadline { now(): number; expiresAt: number }
+
+export interface RemovalOptions {
+  /** One entry directly inside the tree that is unlinked only after everything else is gone. */
+  last?: string;
+  /**
+   * Recreates `last` when the final removal of the emptied tree fails while
+   * the same directory (device, inode, owner) is still in place. It must not throw.
+   */
+  restoreLast?: () => void;
+  deadline?: RemovalDeadline;
+}
+
+/** Throws once the deadline has passed. Callers settle pending unlinks before the error propagates. */
+export function checkDeadline(deadline: RemovalDeadline | undefined): void {
+  if (deadline && deadline.now() >= deadline.expiresAt) throw new RemovalDeadlineError();
 }
 
 const currentUid = () => (process.getuid ? process.getuid() : null);
@@ -28,20 +58,51 @@ export function assertOwnedDirectory(stats: Stats): void {
  * non-directories are unlinked, and a directory is entered only after `lstat`
  * shows a real directory on the same device that this user owns.
  *
- * `last` names one entry directly inside `path` that is unlinked only after
- * everything else is gone, so an interrupted removal leaves it in place.
+ * `options.last` names one entry directly inside `path` that is unlinked only
+ * after everything else is gone, so an interrupted removal leaves it in place.
+ * If the emptied directory then cannot be removed (for example its parent lost
+ * write permission) and is still the same directory, `restoreLast` puts the
+ * entry back. A crash between that unlink and the final `rmdir` still leaves
+ * the directory without it.
+ *
+ * `options.deadline` bounds the whole attempt: a producer that keeps
+ * recreating entries makes it reject with `RemovalDeadlineError` instead of
+ * running forever. `last` is then still in place.
  *
  * Path-based calls cannot exclude a concurrent swap by a process that escaped
  * its owned process group; callers remove a run's tree only after that group
  * is confirmed stopped.
  */
-export async function removeOwnedTree(path: string, expected: Stats, last?: string): Promise<void> {
-  await removeContents(path, expected, last);
-  if (last) await ignoreMissing(unlink(join(path, last)));
+export async function removeOwnedTree(path: string, expected: Stats, options: RemovalOptions = {}): Promise<void> {
+  const { last, deadline } = options;
+  await removeContents(path, expected, deadline, last);
+  if (!last) {
+    await removeEmptied(path, expected);
+    return;
+  }
+  checkDeadline(deadline);
+  await ignoreMissing(unlink(join(path, last)));
+  try {
+    await removeEmptied(path, expected);
+  } catch (error) {
+    if (options.restoreLast && await stillSameDirectory(path, expected)) options.restoreLast();
+    throw error;
+  }
+}
+
+async function removeEmptied(path: string, expected: Stats): Promise<void> {
   const current = await lstat(path);
   if (current.dev !== expected.dev || current.ino !== expected.ino) throw new UnsafeRemovalError("directory_replaced");
   assertOwnedDirectory(current);
   await rmdir(path);
+}
+
+async function stillSameDirectory(path: string, expected: Stats): Promise<boolean> {
+  try {
+    const current = await lstat(path);
+    assertOwnedDirectory(current);
+    return current.dev === expected.dev && current.ino === expected.ino;
+  } catch { return false; }
 }
 
 /**
@@ -49,14 +110,15 @@ export async function removeOwnedTree(path: string, expected: Stats, last?: stri
  * is entered and reopened after it is removed, so removal holds one open
  * directory at any depth; entries already removed do not reappear.
  */
-async function removeContents(directory: string, expected: Stats, skip?: string): Promise<void> {
+async function removeContents(directory: string, expected: Stats, deadline: RemovalDeadline | undefined, skip?: string): Promise<void> {
   await ensureOwnerAccess(directory, expected);
   for (;;) {
-    const subdirectory = await unlinkUntilDirectory(directory, skip);
+    checkDeadline(deadline);
+    const subdirectory = await unlinkUntilDirectory(directory, deadline, skip);
     if (!subdirectory) return;
     if (subdirectory.stats.dev !== expected.dev) throw new UnsafeRemovalError("mount_point");
     assertOwnedDirectory(subdirectory.stats);
-    await removeContents(subdirectory.path, subdirectory.stats);
+    await removeContents(subdirectory.path, subdirectory.stats, deadline);
     await ignoreMissing(rmdir(subdirectory.path));
   }
 }
@@ -67,7 +129,7 @@ async function removeContents(directory: string, expected: Stats, skip?: string)
  * once, and all of them have settled before this returns or throws; the first
  * failure, of an unlink or of the traversal, is the one reported.
  */
-async function unlinkUntilDirectory(directory: string, skip?: string): Promise<{ path: string; stats: Stats } | null> {
+async function unlinkUntilDirectory(directory: string, deadline: RemovalDeadline | undefined, skip?: string): Promise<{ path: string; stats: Stats } | null> {
   const unlinks = new SettledUnlinks();
   let found: { path: string; stats: Stats } | null = null;
   try {
@@ -75,6 +137,7 @@ async function unlinkUntilDirectory(directory: string, skip?: string): Promise<{
     // `for await` closes the listing on completion, on `break` and on every thrown error.
     for await (const entry of listing) {
       if (entry.name === skip) continue;
+      checkDeadline(deadline);
       const child = join(directory, entry.name);
       if (entry.isDirectory() || !knownNonDirectory(entry)) {
         // A directory, or a file system that does not report entry types: decide with lstat.

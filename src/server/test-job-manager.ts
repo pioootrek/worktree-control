@@ -8,7 +8,7 @@ import type { StateStore, VerificationRequester } from "./state-store";
 import { admissionOf, admitWithRetry, type DatabaseAdmission } from "./database-admission";
 
 import { OwnedProcessGroup } from "./owned-process-group";
-import { emptyTelemetry, emptyRunResources, resourceReason, observeRunResources, TEST_RESOURCE_INTERVAL_MS, type RunResourceObservation, type RunResourceOptions, RunTelemetryRecorder, verificationClock, PreparationSession, PreparationError, type VerificationClock, type EnqueueTestInput, administrativeStopAction, type AdministrableTestJobs, type AdministrativeStopAction, type TestRunOwnershipEvidence, RUN_DIRECTORY_CLEANUP_FAILED, RUN_DIRECTORY_UNAVAILABLE, withRunDirectory, type RunDirectories } from "./modules/verification";
+import { emptyTelemetry, emptyRunResources, resourceReason, observeRunResources, TEST_RESOURCE_INTERVAL_MS, type RunResourceObservation, type RunResourceOptions, RunTelemetryRecorder, verificationClock, PreparationSession, PreparationError, type VerificationClock, type EnqueueTestInput, administrativeStopAction, type AdministrableTestJobs, type AdministrativeStopAction, type TestRunOwnershipEvidence, RUN_DIRECTORY_CLEANUP_FAILED, RUN_DIRECTORY_REMOVAL_DEADLINE, RUN_DIRECTORY_UNAVAILABLE, withRunDirectory, type RunDirectories } from "./modules/verification";
 import { compareSource, legacySourceEvidence, pendingSourceEvidence, qualifySource, type TestSourceObserver } from "./test-source-attribution";
 
 const MAX_LOG_LINES = 200;
@@ -619,6 +619,7 @@ export class TestJobManager implements AdministrableTestJobs {
       });
       return;
     }
+    this.bindRunDirectory(run, child);
     const timeout = setTimeout(() => {
       const active = this.active.get(run.id);
       if (!active || active.exited) return;
@@ -899,28 +900,47 @@ export class TestJobManager implements AdministrableTestJobs {
   }
 
   /**
+   * Records which process group uses the run's directory, so that a later
+   * controller start removes it only once that group is gone. A detached POSIX
+   * child leads its own group; Windows has no group id. Without a pid the spawn
+   * failed and finalization removes the directory.
+   */
+  private bindRunDirectory(run: TestRun, child: ChildProcess): void {
+    const directory = this.runDirectoryPaths.get(run.id);
+    if (!directory || !this.runDirectories || child.pid === undefined) return;
+    try { this.runDirectories.bind(directory, process.platform === "win32" ? null : child.pid); }
+    catch (error) { this.logs.controller("test_run.run_directory_binding_failed", { runId: run.id, error: String(error) }); }
+  }
+
+  /**
    * Runs during finalization: the owned process group is confirmed stopped (or
    * never existed) and the run still holds its queue slot, so leftovers of
    * several runs cannot accumulate. A failure keeps the process outcome and
    * process-cleanup state; the root's startup sweep removes the directory later.
+   * An attempt that exceeded its removal deadline is final: retrying would hold
+   * the slot for another full deadline.
    */
   private async removeRunDirectory(run: TestRun): Promise<void> {
     const directory = this.runDirectoryPaths.get(run.id);
     if (!directory || !this.runDirectories) return;
     let lastError: unknown;
+    let attempts = 0;
     for (let attempt = 1; attempt <= RUN_DIRECTORY_CLEANUP_ATTEMPTS; attempt += 1) {
+      attempts = attempt;
       try {
         await this.runDirectories.remove(directory);
         this.runDirectoryPaths.delete(run.id);
         return;
       } catch (error) {
         lastError = error;
+        if ((error as { code?: unknown } | null)?.code === RUN_DIRECTORY_REMOVAL_DEADLINE) break;
         if (attempt < RUN_DIRECTORY_CLEANUP_ATTEMPTS) await new Promise(resolve => setTimeout(resolve, RUN_DIRECTORY_CLEANUP_RETRY_MS));
       }
     }
     this.runDirectoryPaths.delete(run.id);
     run.source.reasonCodes = [...new Set([...run.source.reasonCodes, RUN_DIRECTORY_CLEANUP_FAILED])];
-    this.logs.controller("test_run.run_directory_cleanup_failed", { runId: run.id, attempts: RUN_DIRECTORY_CLEANUP_ATTEMPTS, error: String(lastError) });
+    const code = (lastError as { code?: unknown } | null)?.code;
+    this.logs.controller("test_run.run_directory_cleanup_failed", { runId: run.id, attempts, code: typeof code === "string" ? code : null, error: String(lastError) });
   }
 
   private recordPersistenceFailure(run: TestRun, error: unknown): void {

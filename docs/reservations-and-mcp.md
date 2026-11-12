@@ -513,9 +513,10 @@ Every locally executed run also gets its own private temporary directory.
 controller removes it, with everything the test left there, when the run
 ends: on success, failure, cancellation, timeout or administrative stop. A run
 whose directory could not be removed keeps its result and reports
-`run_directory_cleanup_failed`; the next controller start removes it after
+`run_directory_cleanup_failed`. A later controller start removes it after
 confirming, through a random token in the root's marker file, that the
-directory is one this controller created. Remote-worker
+directory is one this controller created, and that the run's process group is
+gone. Each removal attempt is bounded in time. Remote-worker
 attempts keep their existing per-attempt directories. See
 [architecture](architecture.md#process-ownership-and-shutdown) for ownership
 and deletion safety.

@@ -49,7 +49,7 @@ function fixture() {
 }
 
 /** Zero-signal probes of process groups issued through `process.kill`. */
-function probes(kill: ReturnType<typeof vi.spyOn>): number[] {
+function probes(kill: { mock: { calls: unknown[][] } }): number[] {
   return kill.mock.calls.filter(call => call[1] === 0 && typeof call[0] === "number" && call[0] < 0).map(call => -(call[0] as number));
 }
 

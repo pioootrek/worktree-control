@@ -276,8 +276,10 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   });
   const lifecycle = new ProjectLifecycle(store, processes);
   const storage = new WorktreeStorageManager(store, lifecycle, undefined, (projectId) => events.publish({ kinds: ["storage"], projectIds: [projectId] }));
-  // Sweeps roots recorded by an earlier instance with this state directory, then
-  // records a fresh one. Without a root, local test runs fail before spawn.
+  // Sweeps roots recorded by an earlier instance with this state directory, as
+  // far as their runs' process groups are proven gone and within a bounded
+  // startup budget, then records a fresh one. Without a root, local test runs
+  // fail before spawn.
   const runDirectories = await openRunDirectoryRoot({ stateDirectory: paths.stateDirectory, logs }).catch((error: unknown) => {
     logs.controller("run_directory.root_unavailable", { error: String(error) });
     return unavailableRunDirectories();

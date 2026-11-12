@@ -1,2 +1,2 @@
-export { openRunDirectoryRoot, unavailableRunDirectories, RunDirectoryRoot, MAX_RECORDED_ROOTS, RUN_DIRECTORY_PATH_BUDGET, RUN_DIRECTORY_RECORD, RUN_DIRECTORY_RECORD_FULL, RUN_DIRECTORY_ROOT_MARKER, type RunDirectoryRootOptions } from "./run-directory-root";
-export { UnsafeRemovalError } from "./owned-tree-removal";
+export { openRunDirectoryRoot, unavailableRunDirectories, RunDirectoryRoot, MAX_RECORDED_ROOTS, RUN_DIRECTORY_PATH_BUDGET, RUN_DIRECTORY_RECORD, RUN_DIRECTORY_RECORD_FULL, RUN_DIRECTORY_RECORD_IGNORED, RUN_DIRECTORY_REMOVAL_DEADLINE_MS, RUN_DIRECTORY_ROOT_MARKER, RUN_DIRECTORY_SWEEP_BUDGET_MS, type RunDirectoryRootOptions } from "./run-directory-root";
+export { RemovalDeadlineError, UnsafeRemovalError } from "./owned-tree-removal";
