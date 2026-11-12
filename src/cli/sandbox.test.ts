@@ -131,7 +131,9 @@ function sandboxHarness(mode: string, readyTimeoutMs = 10_000) {
 /** Runs the harness as its own process: real signals, real pipes and the command's own exit. */
 function harnessCommand(mode: string) {
   const files = fixture();
-  const harness = join(files.scripts, "harness.mts");
+  // Plain JavaScript importing the TypeScript module through tsx: an `.mts` entry would make standard
+  // error blocking and hide output that the built CLI loses when it exits too early.
+  const harness = join(files.scripts, "harness.mjs");
   writeFileSync(harness, HARNESS(pathToFileURL(join(repositoryRoot, "src/cli/sandbox.ts")).href));
   // tsx resolves from the checkout.
   const env: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", NODE_ENV: "test", FAKE_PID_FILE: files.pidFile };
