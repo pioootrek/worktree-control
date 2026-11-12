@@ -86,7 +86,7 @@ therefore cannot be overtaken.
 | Queued, or in source preflight or remote preparation | `cancel` through the existing queue path; preparation is aborted and disposed by its owner |
 | Running process group spawned by this controller | `cancel`: SIGTERM to the owned group, SIGKILL after the existing grace period |
 | Owned group whose earlier cleanup failed (after exit, timeout or cancel) | `cleanup_retry`: retries the same owned group; the recorded stop cause and exit result stay |
-| Stop or finalization already in progress | `join`: no new effect |
+| Stop or finalization already in progress, including cancelled source preflight awaiting its observer | `join`: no new effect |
 | Terminal, recovered after restart, unowned or unknown | `none` |
 
 The command then waits up to `--wait-seconds` (default 30, maximum 120) for a
@@ -99,6 +99,11 @@ Retries are idempotent by state: a repeated or concurrent request joins the
 existing stop, and a confirmed run gets `action: "none"`. `--request-id`
 (generated as `cli-<uuid>` when omitted) correlates audit records. It is not a
 replay cache.
+
+If the owner fails before returning its decision, the result and audit use
+`action: "undetermined"`: cancellation may already have started. The same
+action is used when the decision exceeds the wait budget. Inspect the run
+before retrying; neither case proves that no effect occurred.
 
 The operation affects one run. Other queued or running tests continue, and the
 queue limit is unchanged. A slot is released only by the owner's own durable

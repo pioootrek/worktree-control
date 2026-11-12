@@ -53,6 +53,7 @@ export function administrativeStopAction(evidence: TestRunOwnershipEvidence): Ad
     if (evidence.preparationCleanupUnconfirmed) return "none";
     return run.telemetry?.stopRequestedAt ? "join" : "cancel";
   }
+  if (cancelledPreparationPending(evidence)) return "join";
   if (ownedProcess?.stopping) return "join";
   if (run.phase !== "running" || !ownedProcess) return "none";
   // Exited or already stopping without an in-flight completion means an earlier
@@ -82,6 +83,14 @@ export interface RunResolution {
 }
 
 const TERMINAL = new Set<TestRun["phase"]>(["passed", "failed", "cancelled", "timed_out", "interrupted"]);
+
+/** A cancelled local preflight still owns its slot until its observer returns. */
+function cancelledPreparationPending(evidence: TestRunOwnershipEvidence): boolean {
+  const { run } = evidence;
+  return run.phase === "cancelled" && evidence.preparationActive && evidence.persistence !== "failed"
+    && !evidence.preparationCleanupUnconfirmed && !run.telemetry?.recoveredAt && run.telemetry?.cleanup !== "failed"
+    && run.error !== "workspace_cleanup_failed" && run.error !== "preparation_cleanup_unconfirmed";
+}
 
 /**
  * Release-safety of one run from durable and live evidence. Live state decides
@@ -113,6 +122,7 @@ export function resolveRun(evidence: TestRunOwnershipEvidence | null): RunResolu
   // Source qualification of an exited process runs before finalization begins.
   if (ownedProcess?.stopping) return { state: "pending", reason: "finalizing" };
   if (telemetry?.recoveredAt) return { state: "unresolved", reason: "ownership_lost_after_restart" };
+  if (cancelledPreparationPending(evidence)) return { state: "pending", reason: "stop_in_progress" };
   // The terminal write is still ordered behind admission: the owner is finishing.
   if (evidence.persistence === "pending") return { state: "pending", reason: "finalizing" };
   // A failed terminal write leaves the state only in memory, and an owner that

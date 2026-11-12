@@ -47,7 +47,7 @@ const POLL_MS = 100;
 const MAX_POLL_MS = 500;
 const AUDIT_READ_LIMIT = 10;
 
-/** `undetermined`: the owner did not answer within the budget; its decision is logged when it does. */
+/** `undetermined`: the owner timed out or failed without returning its decision; an effect may have started. */
 export type StopAction = AdministrativeStopAction | "undetermined";
 
 export interface TestRunInspection {
@@ -153,6 +153,8 @@ export class TestRunAdministration {
       } else if (settled.ok) {
         action = settled.value.action;
       } else {
+        // Rejection may follow a cancellation effect, so it cannot prove `none`.
+        action = "undetermined";
         failure = settled.error;
       }
       latest = await this.evidence(input.runId);
