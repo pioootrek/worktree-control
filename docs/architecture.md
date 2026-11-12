@@ -129,11 +129,11 @@ effect under admission and never adopts a group it did not spawn. See
 [single-run administration](test-run-administration.md).
 
 Each locally executed run receives a private temporary directory. At start
-the controller creates a root with `mkdtemp` under the OS temporary directory
-(`wtc-XXXXXX`, mode 0700), writes a random 256-bit token to the marker file
-`.wtc-root` (mode 0600) inside it, and only then records the path and token in
-`run-directory-root.json` (version 2) in its state directory. Before that, it
-removes the roots an earlier instance recorded there. A recorded root is
+the controller first removes the roots that an earlier instance recorded in
+`run-directory-root.json` (version 2) in its state directory. It then creates a
+root with `mkdtemp` under the OS temporary directory (`wtc-XXXXXX`, mode 0700),
+writes a random 256-bit token to the marker file `.wtc-root` (mode 0600) inside
+it, and only then records the path and token. A recorded root is
 removed only when its path is absolute and normalized, its name starts with
 `wtc-`, `lstat` shows a real directory owned by the controller's user, and its
 marker is a regular file with a single link, owned by that user and opened
@@ -184,7 +184,15 @@ keep their own per-attempt directories and are unchanged. This is temporary-file
 hygiene, not a sandbox. A process that escapes its owned group can still race
 path-based removal, and work outside `TMPDIR` is not covered.
 
-The startup sweep runs before the controller reports ready.
+The startup sweep runs before the controller reports ready, so a large
+leftover root delays startup. `pnpm test:run-directory-scale` measured removal
+on a Linux host with a RAM-backed tmpfs and Node.js 24: 200,000 empty
+files in four directories took about 2.4 seconds, and a chain of 400 nested
+directories about 0.2 seconds. The longest event-loop delay was about 11 ms at
+a 10 ms sampling resolution, and at most 33 file descriptors were open. Time
+grows roughly with the number of entries and is longer on disk-backed
+temporary directories. Leftover roots exist only after a crash or a failed
+removal, so the sweep stays in the startup path for now.
 
 Scoped finite verification adds independent `tests:run` authorization in the
 verification application module. Migration 44 writes an immutable requester
