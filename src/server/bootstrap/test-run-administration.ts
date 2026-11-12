@@ -10,7 +10,6 @@ export const TEST_RUN_ADMIN_MAX_WAIT_MS = 120_000;
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,119}$/;
-// eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 
 export class TestRunAdminRequestError extends Error {
