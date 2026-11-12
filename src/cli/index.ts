@@ -79,6 +79,7 @@ import { parseMigrationBackupOptions } from "./migration-backup-options";
 import { mcpSessionLimits, parseMcpSessionOptions } from "./mcp-session-options";
 import { WorktreeStorageManager } from "../server/worktree-storage";
 import { TestJobManager } from "../server/test-job-manager";
+import { openRunDirectoryRoot, unavailableRunDirectories } from "../server/infrastructure/run-directories";
 
 /** The socket is 0600 in a 0700 directory, so its peer runs as the controller's own OS account. */
 function administrativeOperator() {
@@ -275,10 +276,17 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   });
   const lifecycle = new ProjectLifecycle(store, processes);
   const storage = new WorktreeStorageManager(store, lifecycle, undefined, (projectId) => events.publish({ kinds: ["storage"], projectIds: [projectId] }));
+  // Sweeps roots recorded by an earlier instance with this state directory, then
+  // records a fresh one. Without a root, local test runs fail before spawn.
+  const runDirectories = await openRunDirectoryRoot({ stateDirectory: paths.stateDirectory, logs }).catch((error: unknown) => {
+    logs.controller("run_directory.root_unavailable", { error: String(error) });
+    return unavailableRunDirectories();
+  });
   const tests = new TestJobManager(store, logs, (projectId) => events.publish({
     kinds: ["tests", "controller"],
     ...(projectId ? { projectIds: [projectId] } : {}),
   }));
+  tests.configureRunDirectories(runDirectories);
   const providerAdministration = createControllerAuthentication({ store, authentication, dataDirectory: paths.dataDirectory,
     actor: "local-admin", maintenance: () => maintenance,
     configurationEvent: () => logs.controller("authentication.provider_configuration_written", {}) });

@@ -217,7 +217,7 @@ export function caveatKey(text: string): CaveatKey | null {
   return caveatPrefixes.find(([, prefix]) => text.startsWith(prefix))?.[0] ?? null;
 }
 
-export const KNOWN_SOURCE_REASONS = ["dirty_source", "source_evidence_incomplete", "source_changed_before_start", "source_changed_during_execution", "legacy_evidence_unavailable", "source_preflight_failed", "source_finish_failed"] as const;
+export const KNOWN_SOURCE_REASONS = ["dirty_source", "source_evidence_incomplete", "source_changed_before_start", "source_changed_during_execution", "legacy_evidence_unavailable", "source_preflight_failed", "source_finish_failed", "run_directory_cleanup_failed"] as const;
 export type KnownSourceReason = (typeof KNOWN_SOURCE_REASONS)[number];
 export function knownSourceReason(code: string): code is KnownSourceReason {
   return (KNOWN_SOURCE_REASONS as readonly string[]).includes(code);
