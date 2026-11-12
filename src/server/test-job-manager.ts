@@ -8,7 +8,7 @@ import type { StateStore, VerificationRequester } from "./state-store";
 import { admissionOf, admitWithRetry, type DatabaseAdmission } from "./database-admission";
 
 import { OwnedProcessGroup } from "./owned-process-group";
-import { emptyTelemetry, emptyRunResources, resourceReason, observeRunResources, TEST_RESOURCE_INTERVAL_MS, type RunResourceObservation, type RunResourceOptions, RunTelemetryRecorder, verificationClock, PreparationSession, PreparationError, type VerificationClock, type EnqueueTestInput } from "./modules/verification";
+import { emptyTelemetry, emptyRunResources, resourceReason, observeRunResources, TEST_RESOURCE_INTERVAL_MS, type RunResourceObservation, type RunResourceOptions, RunTelemetryRecorder, verificationClock, PreparationSession, PreparationError, type VerificationClock, type EnqueueTestInput, administrativeStopAction, type AdministrableTestJobs, type AdministrativeStopAction, type TestRunOwnershipEvidence } from "./modules/verification";
 import { compareSource, legacySourceEvidence, pendingSourceEvidence, qualifySource, type TestSourceObserver } from "./test-source-attribution";
 
 const MAX_LOG_LINES = 200;
@@ -45,7 +45,7 @@ export type { EnqueueTestInput } from "./modules/verification";
  */
 interface RunWrite { latest: TestRun; dirty: boolean; chain: Promise<void> | null }
 
-export class TestJobManager {
+export class TestJobManager implements AdministrableTestJobs {
   private readonly telemetry: RunTelemetryRecorder;
   private readonly summaryMaintenance: NodeJS.Timeout;
   private persistenceFailure: unknown = null;
@@ -211,14 +211,71 @@ export class TestJobManager {
 
   /** Admitted as one operation; waits for other finalization without holding admission. */
   cancel(runId: string, actor: string, revalidate?: () => void): Promise<TestRun> {
-    return this.admission.run(() => { revalidate?.(); return this.cancelAdmitted(runId, actor); });
+    return this.admission.run(() => {
+      revalidate?.();
+      return this.cancelAdmitted(runId, run => {
+        if (actor !== "local-user" && run.actor !== actor) throw new Error("Tylko autor testu może go anulować.");
+      });
+    });
   }
 
-  private async cancelAdmitted(runId: string, actor: string): Promise<TestRun> {
+  /**
+   * Live ownership evidence for one run. The caller holds admission. Reads only
+   * this manager's own state and the durable record; it never adopts, signals or
+   * rewrites anything, and a missing record is returned as null.
+   */
+  administrativeEvidence(runId: string): TestRunOwnershipEvidence | null {
+    const persisted = this.read(runId);
+    if (!persisted) return null;
+    const active = this.active.get(runId);
+    const session = this.preparationSessions.get(runId);
+    return {
+      run: active?.run ?? persisted,
+      ownedProcess: active ? {
+        exited: active.exited,
+        stopping: active.completion !== null,
+        cancellationRequested: active.cancellationRequested,
+        timedOut: active.timedOut,
+      } : null,
+      preparing: this.preparing.has(runId),
+      preparationActive: this.preparationPromises.has(runId),
+      preparationCleanupUnconfirmed: session?.cleanupUnconfirmed === true,
+      finalizing: this.finalizations.has(runId),
+      queueClosed: this.closed,
+      admissionBlockReason: this.admissionBlock,
+    };
+  }
+
+  /**
+   * Protected local-administrator stop of exactly one run. There is no actor
+   * parameter: the owner socket's caller is authorized by the bootstrap, and
+   * this never reuses or impersonates the run's original requester. The
+   * decision and its effect happen in one admitted phase, so a natural exit,
+   * a concurrent cancellation or finalization cannot be overtaken. Only this
+   * manager's own verified process group is ever signalled.
+   */
+  administrativeStop(runId: string): Promise<{ action: AdministrativeStopAction; before: TestRunOwnershipEvidence | null }> {
+    return this.admission.run(async () => {
+      const before = this.administrativeEvidence(runId);
+      const action = before ? administrativeStopAction(before) : "none";
+      if (action === "cancel") await this.cancelAdmitted(runId, () => undefined);
+      if (action === "cleanup_retry") {
+        // Retry only the owned group's cleanup; the recorded stop cause and
+        // process result stay as observed (an exit is never turned into a cancel).
+        const active = this.active.get(runId)!;
+        void this.complete(active);
+        if (this.persistenceFailure) throw this.persistenceFailure;
+        this.onChange(active.run.projectId);
+      }
+      return { action, before };
+    });
+  }
+
+  private async cancelAdmitted(runId: string, authorize: (run: TestRun) => void): Promise<TestRun> {
     const persisted = this.requireRun(runId);
     const active = this.active.get(runId);
     const run = active?.run ?? persisted;
-    if (actor !== "local-user" && run.actor !== actor) throw new Error("Tylko autor testu może go anulować.");
+    authorize(run);
     const session = this.preparationSessions.get(runId);
     if (run.phase === "queued" && session) {
       session.cancel();

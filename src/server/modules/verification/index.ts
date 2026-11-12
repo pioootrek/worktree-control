@@ -12,3 +12,5 @@ export { emptyRunResources, observeRunResources, resourceReason, TEST_RESOURCE_I
 
 export { humanTestRequesterSchema } from "./human-requester";
 export { ScopedVerificationService } from "./scoped-verification";
+export { administrativeStopAction, nextStep, resolveRun, type AdministrableTestJobs, type AdministrativeStopAction, type RunResolution, type RunResolutionReason, type RunResolutionState, type TestRunOwnershipEvidence } from "./run-ownership";
+export { TestRunAdministration, type TestRunAdministrationAudit, type TestRunAdministrationAuditEntry, type TestRunAdministrationRecord, type AdministrativeOperator, type TestRunInspection, type TestRunStopResult, type StopAction, TestRunAdministrationError, requesterKind } from "./run-administration";

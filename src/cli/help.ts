@@ -14,6 +14,7 @@ export const CLI_HELP = [
   "  backup             Installation backups: create, restore, now, list, status, monitor, remote, export-project, import-project, user-cleanup",
   "  project            Registered projects: add <path>, list, remove <id>",
   "  doctor             Check Node.js, Git and the application state",
+  "  test-run           Local operator, one exact run via the owner socket: inspect <run-id>, stop <run-id> --reason TEXT [--wait-seconds N]",
   "  knowledge          Project knowledge operations and Hub imports",
   "  identity           Owners, agents, runtime delegations/credentials and knowledge grants",
   "  vault              DEV-only encrypted vault; signed owner approval, JSON on stdin",

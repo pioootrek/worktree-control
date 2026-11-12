@@ -2,6 +2,9 @@
 import { createControllerRestoreFailure, createControllerShutdown } from "../server/bootstrap/controller-shutdown";
 import { createProtectedIdentityAdministration } from "../server/bootstrap/identity-administration";
 import { projectAdminHandler } from "../server/bootstrap/project-administration";
+import { TEST_RUN_ADMIN_COMMAND, testRunAdminHandler } from "../server/bootstrap/test-run-administration";
+import { TestRunAdministration } from "../server/modules/verification";
+import { runTestRunCommand } from "./test-run-administration";
 import { createDevVault } from "../server/bootstrap/dev-vault";
 import { runDevVaultCommand } from "./dev-vault";
 import { loadRemoteVerificationConfig, runRemoteVerificationCommand } from "./remote-verification";
@@ -19,7 +22,7 @@ import type { ControllerLock } from "../server/controller-lock";
 import { parseKnowledgeCommandArgs, runKnowledgeCommand } from "./knowledge-management";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
-import { homedir, networkInterfaces } from "node:os";
+import { homedir, networkInterfaces, userInfo } from "node:os";
 import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -76,6 +79,13 @@ import { parseMigrationBackupOptions } from "./migration-backup-options";
 import { mcpSessionLimits, parseMcpSessionOptions } from "./mcp-session-options";
 import { WorktreeStorageManager } from "../server/worktree-storage";
 import { TestJobManager } from "../server/test-job-manager";
+
+/** The socket is 0600 in a 0700 directory, so its peer runs as the controller's own OS account. */
+function administrativeOperator() {
+  let user: string | null = null;
+  try { user = userInfo().username; } catch { /* Unnamed accounts keep only the UID. */ }
+  return { kind: "local-admin-socket" as const, uid: process.getuid?.() ?? null, user };
+}
 
 function option(name: string, args = process.argv): string | undefined {
   const index = args.indexOf(name);
@@ -138,6 +148,10 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     if (withoutPathOptions(process.argv.slice(4)).length) throw new Error("Usage: mcp diagnostics [--data-dir PATH] [--state-dir PATH]");
     const result = await requestAdminSocket(paths.adminSocketPath, { command: "mcp-diagnostics" }, 5000, 64 * 1024);
     writeCliLine(JSON.stringify(result, null, 2));
+    return;
+  }
+  if (command === "test-run") {
+    process.exitCode = await runTestRunCommand(withoutPathOptions(process.argv.slice(3)), paths.adminSocketPath, { write: writeCliLine });
     return;
   }
   if (command === "config" && process.argv[3] === "path") {
@@ -459,8 +473,16 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       publish: (change) => events.publish(change),
       maintenance: () => maintenance,
     });
+    const testRunHandler = testRunAdminHandler({
+      administration: new TestRunAdministration({
+        jobs: tests, audit: store, admission: store.admission, operator: administrativeOperator,
+        log: (event, details) => logs.controller(event, details),
+      }),
+      maintenance: () => maintenance,
+    });
     adminSocket = await listenAdminSocket(paths.adminSocketPath, body => {
       if (body && typeof body === "object" && "command" in body && body.command === "project") return projectHandler(body);
+      if (body && typeof body === "object" && "command" in body && body.command === TEST_RUN_ADMIN_COMMAND) return testRunHandler(body);
       if (body && typeof body === "object" && "command" in body && body.command === "auth-provider") return providerAdministration.execute(body);
       if (body && typeof body === "object" && "command" in body && body.command === "identity-admin") return identityHandler(body);
       if (body && typeof body === "object" && "command" in body && (body.command === "backup" || body.command === "backup-remote" || body.command === "backup-monitor" || body.command === "user-export-recovery")) return backupHandler(body);

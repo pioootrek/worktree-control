@@ -1,7 +1,7 @@
 import type { PendingTestRun, TestRunStatusRecord, TestRunRequester, HumanTestRunRequester, VerificationRequester } from "@/server/state-store";
 import type { TestEnvironmentMode, TestRun, TestRunPhase } from "@/shared/contracts";
 import Database from "better-sqlite3";
-import { humanTestRequesterSchema, emptyTelemetry, emptyRunResources, resourceReason } from "@/server/modules/verification";
+import { humanTestRequesterSchema, emptyTelemetry, emptyRunResources, resourceReason, type TestRunAdministrationAuditEntry, type TestRunAdministrationRecord } from "@/server/modules/verification";
 import { TestSummaryQueries } from "./test-summary-queries";
 import { legacySourceEvidence } from "@/server/test-source-attribution";
 
@@ -251,6 +251,27 @@ export class TestRunQueries {
 
   pruneTestSummaryHistory(): number {
     return this.database.transaction(() => new TestSummaryQueries(this.database).prune())();
+  }
+
+  /** Append-only local-administrator audit in the shared controller audit table. Details are bounded by the caller's validation. */
+  recordTestRunAdministration(entry: TestRunAdministrationAuditEntry): void {
+    const { event, ...details } = entry;
+    this.database.prepare("INSERT INTO controller_audit_events(event_type, actor, details_json, created_at) VALUES (?, 'local-admin', ?, ?)")
+      .run(event, JSON.stringify(details), new Date().toISOString());
+  }
+
+  /** Newest administrator events for one exact run ID; bounded by `limit`. */
+  listTestRunAdministration(runId: string, limit: number): TestRunAdministrationRecord[] {
+    const rows = this.database.prepare(`
+      SELECT event_type, details_json, created_at FROM controller_audit_events
+      WHERE event_type IN ('test_run.admin_stop_requested', 'test_run.admin_stop_result')
+        AND json_valid(details_json) AND json_extract(details_json, '$.runId') = ?
+      ORDER BY id DESC LIMIT ?
+    `).all(runId, Math.max(1, Math.min(limit, 50))) as { event_type: TestRunAdministrationAuditEntry["event"]; details_json: string; created_at: string }[];
+    return rows.map(row => {
+      const details = JSON.parse(row.details_json) as Omit<TestRunAdministrationAuditEntry, "event">;
+      return { ...details, operator: details.operator ?? null, event: row.event_type, at: row.created_at };
+    });
   }
 
   markInterruptedTestRuns(): void {

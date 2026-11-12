@@ -1,3 +1,4 @@
+import type { TestRunAdministrationAuditEntry, TestRunAdministrationRecord } from "@/server/modules/verification";
 import { SecurityFence } from "./security-fence";
 import { SCOPED_TEST_PRESET_OVERRIDE_LIMIT } from "@/shared/contracts/scoped-configuration";
 import { HumanConfigurationQueries } from "./human-configuration-queries";
@@ -905,6 +906,14 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
 
   markInterruptedTestRuns(): void {
     return this.testRuns.markInterruptedTestRuns();
+  }
+
+  recordTestRunAdministration(entry: TestRunAdministrationAuditEntry): void {
+    this.testRuns.recordTestRunAdministration(entry);
+  }
+
+  listTestRunAdministration(runId: string, limit: number): TestRunAdministrationRecord[] {
+    return this.testRuns.listTestRunAdministration(runId, limit);
   }
 
   getRemotePrincipal(id: string): RemotePrincipal | null {
