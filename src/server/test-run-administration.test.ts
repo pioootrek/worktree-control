@@ -145,6 +145,61 @@ describe("protected test run administration", () => {
     expect(await stop(run.id)).toMatchObject({ outcome: "confirmed", run: { phase: "cancelled" } });
   });
 
+  it.each([0, 5_000])("keeps a cancelled source preflight pending until it finishes (wait %i ms)", async waitMs => {
+    const { manager, project, directory, administration, store, stop } = fixture();
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    cleanups.push(release);
+    const observation = (): TestSourceObservation => ({ observedAt: new Date().toISOString(), head: "abcdef1", branch: "main",
+      dirty: false, statusDigest: "empty", statusEntries: 0, complete: true, errorCode: null });
+    const observer = vi.fn(async () => { await barrier; return observation(); });
+    const run = manager.enqueue({ projectId: project.id,
+      worktree: { path: directory, head: "abcdef1", shortHead: "abcdef1", branch: "main", detached: false, locked: false, prunable: false, dirty: false },
+      command: { preset: { id: "node:test", name: "test", adapter: "node", timeoutMs: 60_000 }, executable: process.execPath,
+        args: ["-e", LIVE], cwd: directory }, environment: environment(), actor: "agent:mcp:original-session",
+      sourceObservation: observation(), observe: observer });
+    await vi.waitFor(() => expect(observer).toHaveBeenCalledOnce());
+    const stopping = stop(run.id, { waitMs });
+    try {
+      await vi.waitFor(() => expect(store.getTestRun(run.id)?.phase).toBe("cancelled"));
+      const inspection = await administration.inspect({ runId: run.id });
+      expect(inspection).toMatchObject({ ownership: { preparationActive: true },
+        resolution: { state: "pending", reason: "stop_in_progress", stopEffect: "join" } });
+      expect(await stop(run.id, { waitMs: 0, requestId: "request-join-preflight" }))
+        .toMatchObject({ action: "join", outcome: "pending", reason: "stop_in_progress" });
+      if (waitMs === 0) expect(await stopping).toMatchObject({ action: "cancel", outcome: "pending" });
+      release();
+      if (waitMs > 0) expect(await stopping).toMatchObject({ action: "cancel", outcome: "confirmed" });
+      await vi.waitFor(async () => expect((await administration.inspect({ runId: run.id })).resolution.state).toBe("confirmed"));
+      expect(store.getTestRun(run.id)).toMatchObject({ phase: "cancelled", startedAt: null,
+        telemetry: { spawnedAt: null, cleanup: "not_required", finalizedAt: expect.any(String) } });
+    } finally {
+      release();
+      await stopping;
+    }
+  });
+
+  it("does not report no effect when the cancellation checkpoint fails after stop has started", async () => {
+    const { enqueue, ready, store, stop, audit } = fixture();
+    const run = enqueue(LIVE);
+    const pid = await ready(run.id);
+    const original = store.saveTestRun.bind(store);
+    let rejected = false;
+    vi.spyOn(store, "saveTestRun").mockImplementation((...args: Parameters<SqliteStateStore["saveTestRun"]>) => {
+      if (!rejected && args[0].id === run.id && args[0].telemetry?.stopRequestedAt) {
+        rejected = true;
+        throw new Error("injected cancellation checkpoint failure");
+      }
+      return original(...args);
+    });
+    const result = await stop(run.id);
+    expect(rejected).toBe(true);
+    expect(result).toMatchObject({ action: "undetermined", outcome: "unresolved", reason: "stop_request_failed" });
+    expect(audit(run.id)[0]).toMatchObject({ action: "undetermined", outcome: "unresolved", outcomeReason: "stop_request_failed" });
+    await vi.waitFor(() => expect(alive(pid)).toBe(false), { timeout: 5_000 });
+    expect(store.getTestRun(run.id)?.telemetry?.stopRequestedAt).toBeTruthy();
+  });
+
   it("is idempotent on retries and lets concurrent requests share one effect", async () => {
     const { enqueue, ready, stop } = fixture();
     const run = enqueue(LIVE);
@@ -334,7 +389,7 @@ describe("protected test run administration", () => {
     });
 
     it("does not confirm a queued cancellation that exists only as a failed staged write", async () => {
-      const { enqueue, store, manager, administration, stop, ready } = fixture();
+      const { enqueue, store, manager, administration, stop, ready, audit } = fixture();
       manager.setLimit(1);
       const blocker = enqueue(LIVE);
       const blockerPid = await ready(blocker.id);
@@ -345,6 +400,8 @@ describe("protected test run administration", () => {
       const first = await stop(queued.id, { waitMs: 1_000 });
 
       expect(first.outcome).not.toBe("confirmed");
+      expect(first.action).toBe("undetermined");
+      expect(audit(queued.id)[0]).toMatchObject({ action: "undetermined", outcome: "unresolved" });
       expect(failing.state.failures).toBeGreaterThan(0);
       expect(store.getTestRun(queued.id)).toMatchObject({ phase: "queued", startedAt: null, telemetry: { finalizedAt: null } });
       const inspection = await administration.inspect({ runId: queued.id });
