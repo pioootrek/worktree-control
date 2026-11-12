@@ -183,9 +183,17 @@ directories are removed, and the root is removed once only its marker is left.
 A root that keeps a run directory stays recorded with the bindings of what it
 kept and is logged once per start as `run_directory.previous_root_retained`
 with reason `liveness_unknown` and the kept and removed counts. A later start
-removes it once the groups are gone. A reused group id can only delay the
-sweep. A process that left its run's process group is outside this proof, as
-it is outside process cleanup. Where the platform provides no group id or boot
+removes it once the groups are gone. A start examines at most 4,096 entries of
+one root. A binding leaves the record only when its directory was removed or is
+confirmed absent from a complete listing, so the bindings of entries a
+truncated listing did not reach stay recorded for a later start. Listing the
+root and removing its top-level files and links observe the same deadline as
+the removal of a tree. When it passes, the sweep stops, the root stays recorded
+with its remaining bindings, and the controller logs
+`run_directory.previous_root_skipped` with reason `sweep_budget_exhausted`
+(`removal_deadline` when the deadline of one root passes first). A reused
+group id can only delay the sweep. A process that left its run's process
+group is outside this proof, as it is outside process cleanup. Where the platform provides no group id or boot
 id, such roots stay for the operator. To recover one by hand, take its path
 from the event or the record, confirm that nothing uses it (for example
 `pgrep -g <group>` for each recorded group and `lsof +D <path>`), remove the

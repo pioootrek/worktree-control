@@ -97,8 +97,14 @@ export async function openRunDirectoryRoot(options: RunDirectoryRootOptions): Pr
       continue;
     }
     const deadline = { now: clock, expiresAt: Math.min(clock() + removalDeadlineMs, sweepEnd) };
-    const kept = await sweepPreviousRoot(previous, bootId, deadline, options.logs, listingLimit);
+    const { entry: kept, expired } = await sweepPreviousRoot(previous, bootId, deadline, options.logs, listingLimit);
     if (kept) retained.push(kept);
+    if (expired) {
+      // The deadline passed inside this root: what was not reached stays on disk and recorded.
+      const budgetSpent = clock() >= sweepEnd;
+      options.logs.controller("run_directory.previous_root_skipped", { path: previous.path, reason: budgetSpent ? "sweep_budget_exhausted" : "removal_deadline" });
+      if (budgetSpent) notReached += 1;
+    }
   }
   if (notReached) options.logs.controller("run_directory.sweep_budget_exhausted", { notReached, budgetMs: sweepBudgetMs });
 
@@ -257,7 +263,8 @@ export function unavailableRunDirectories(): RunDirectories {
 
 /**
  * Sweeps one root recorded by an earlier instance and returns the entry that
- * stays recorded, or `null` when the root is gone.
+ * stays recorded, or `null` when the root is gone. `expired` is set when the
+ * deadline passed before the root's entries had all been examined.
  *
  * Its test processes were spawned detached and may outlive that instance, so
  * a run directory is removed only when it is proven quiescent: either the
@@ -266,20 +273,23 @@ export function unavailableRunDirectories(): RunDirectories {
  * a zero-signal probe of that group fails with `ESRCH`. A run directory
  * without a binding, with a `null` group id, or whose probe succeeds or fails
  * otherwise (including `EPERM`) is kept. The root is removed once nothing but
- * its marker is left.
+ * its marker is left. A binding leaves the record only once its directory is
+ * confirmed removed or confirmed absent; entries not examined keep theirs.
  */
-async function sweepPreviousRoot(entry: RootEntry, bootId: string | null, deadline: RemovalDeadline, logs: Logs, listingLimit: number): Promise<RootEntry | null> {
+async function sweepPreviousRoot(
+  entry: RootEntry, bootId: string | null, deadline: RemovalDeadline, logs: Logs, listingLimit: number,
+): Promise<{ entry: RootEntry | null; expired: boolean }> {
   let stats: Stats | null;
   try {
     stats = await verifyRoot(entry);
   } catch (error) {
     // Not provably ours: left untouched and kept recorded for an operator to inspect.
     logs.controller("run_directory.previous_root_skipped", { path: entry.path, reason: errorCode(error) });
-    return entry;
+    return { entry, expired: false };
   }
   if (!stats) {
     logs.controller("run_directory.previous_root_missing", { path: entry.path });
-    return null;
+    return { entry: null, expired: false };
   }
   const verified = stats;
   const removeRoot = async () => {
@@ -287,55 +297,88 @@ async function sweepPreviousRoot(entry: RootEntry, bootId: string | null, deadli
       last: RUN_DIRECTORY_ROOT_MARKER, restoreLast: () => restoreMarker(entry.path, entry.token, logs), deadline,
     });
     logs.controller("run_directory.previous_root_removed", { path: entry.path });
-    return null;
+    return { entry: null, expired: false };
   };
   try {
     // Every process of an earlier boot is gone.
     if (entry.bootId !== null && bootId !== null && entry.bootId !== bootId) return await removeRoot();
-    const { kept, removed, complete } = await removeQuiescentRuns(entry, verified, deadline, listingLimit);
+    const { kept, settled, removed, complete, expired } = await removeQuiescentRuns(entry, verified, deadline, listingLimit);
     if (!kept.size && complete) return await removeRoot();
-    logs.controller("run_directory.previous_root_retained", {
-      path: entry.path, reason: kept.size ? "liveness_unknown" : "listing_limit", kept: kept.size, removed,
-    });
-    return { ...entry, runs: entry.runs.filter(run => kept.has(run.name)) };
+    if (!expired) {
+      logs.controller("run_directory.previous_root_retained", {
+        path: entry.path, reason: kept.size ? "liveness_unknown" : "listing_limit", kept: kept.size, removed,
+      });
+    }
+    return { entry: { ...entry, runs: entry.runs.filter(run => !settled.has(run.name)) }, expired };
   } catch (error) {
     logs.controller("run_directory.previous_root_cleanup_failed", { path: entry.path, error: errorCode(error) });
-    return entry;
+    return { entry, expired: false };
   }
 }
 
-/** Removes the entries of a verified root whose runs are proven quiescent and returns the names it kept. */
+/**
+ * Removes the entries of a verified root whose runs are proven quiescent.
+ *
+ * `kept` names the examined entries left in place. `settled` names the bindings
+ * that may leave the record: their entry was removed here or is confirmed absent
+ * from a complete listing. A binding whose entry was not examined (a truncated
+ * listing, or the deadline passing first) is never settled. `complete` is false
+ * unless every entry was examined; `expired` is true when the deadline stopped
+ * the sweep.
+ */
 async function removeQuiescentRuns(entry: RootEntry, root: Stats, deadline: RemovalDeadline, listingLimit: number) {
   const groups = new Map(entry.runs.map(run => [run.name, run.processGroupId] as const));
-  const { names, complete } = await listRoot(entry.path, listingLimit);
   const kept = new Set<string>();
+  const settled = new Set<string>();
   let removed = 0;
+  const stopped = (complete: boolean, expired: boolean) => ({ kept, settled, removed, complete: complete && !expired, expired });
+  if (deadlinePassed(deadline)) return stopped(false, true);
+  const { names, complete, expired } = await listRoot(entry.path, listingLimit, deadline);
+  if (expired) return stopped(false, true);
   for (const name of names) {
+    if (deadlinePassed(deadline)) return stopped(false, true);
     if (!processGroupGone(groups.get(name))) { kept.add(name); continue; }
     const path = join(entry.path, name);
     const stats = await lstatMissing(path);
     if (stats?.isDirectory()) {
       if (stats.dev !== root.dev) throw new UnsafeRemovalError("mount_point");
       assertOwnedDirectory(stats);
+      // Observes the deadline throughout and throws when it passes.
       await removeOwnedTree(path, stats, { deadline });
     } else if (stats) {
+      if (deadlinePassed(deadline)) return stopped(false, true);
       try { await unlink(path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     }
+    settled.add(name);
     removed += 1;
   }
-  return { kept, removed, complete };
+  // A complete listing proves every other binding's entry absent.
+  if (complete) {
+    const listed = new Set(names);
+    for (const run of entry.runs) if (!listed.has(run.name)) settled.add(run.name);
+  }
+  return stopped(complete, false);
 }
 
-/** Names directly inside a root other than its marker, at most `limit` of them. */
-async function listRoot(root: string, limit: number): Promise<{ names: string[]; complete: boolean }> {
+/** Whether the deadline of the sweep has passed; unlike `removeOwnedTree` this stops quietly. */
+function deadlinePassed(deadline: RemovalDeadline): boolean {
+  return deadline.now() >= deadline.expiresAt;
+}
+
+/**
+ * Names directly inside a root other than its marker, at most `limit` of them.
+ * Stops between entries once the deadline has passed.
+ */
+async function listRoot(root: string, limit: number, deadline: RemovalDeadline): Promise<{ names: string[]; complete: boolean; expired: boolean }> {
   const names: string[] = [];
   for await (const entry of await opendir(root)) {
-    if (entry.name === RUN_DIRECTORY_ROOT_MARKER) continue;
     // `for await` closes the listing on `return`.
-    if (names.length >= limit) return { names, complete: false };
+    if (deadlinePassed(deadline)) return { names, complete: false, expired: true };
+    if (entry.name === RUN_DIRECTORY_ROOT_MARKER) continue;
+    if (names.length >= limit) return { names, complete: false, expired: false };
     names.push(entry.name);
   }
-  return { names, complete: true };
+  return { names, complete: true, expired: false };
 }
 
 /**
