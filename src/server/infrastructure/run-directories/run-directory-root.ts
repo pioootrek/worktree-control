@@ -279,7 +279,7 @@ function isRootEntry(value: unknown): value is RootEntry {
     && typeof token === "string" && TOKEN_PATTERN.test(token);
 }
 
-function recordBytes(roots: readonly RootEntry[]): number {
+function recordBytes(roots: RootEntry[]): number {
   return Buffer.byteLength(JSON.stringify({ version: 2, roots } satisfies RootRecord));
 }
 
