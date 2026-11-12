@@ -1,6 +1,6 @@
 ---
 audience: "product owner and contributors discussing agent coordination"
-last_reviewed: "2026-11-07"
+last_reviewed: "2026-11-12"
 source_of_truth: "implemented reservation and local MCP integration design"
 status: "active"
 ---
@@ -507,6 +507,16 @@ from the profile: detected unit scripts default to `test`, while build, lint,
 and typecheck presets run without a runtime mode. Test-profile tools return
 variable names without values, and `get_test_run` reports the policy that was
 applied to a finished run.
+
+Every locally executed run also gets its own private temporary directory.
+`TMPDIR`, `TMP` and `TEMP` point to it, overriding any profile value. The
+controller removes it, with everything the test left there, when the run
+ends: on success, failure, cancellation, timeout or administrative stop. A run
+whose directory could not be removed keeps its result and reports
+`run_directory_cleanup_failed`; the next controller start removes it. Remote-worker
+attempts keep their existing per-attempt directories. See
+[architecture](architecture.md#process-ownership-and-shutdown) for ownership
+and deletion safety.
 
 ## Session liveness, cleanup and admission
 

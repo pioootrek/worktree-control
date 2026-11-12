@@ -222,7 +222,7 @@ process.exit(0);`));
   it("stops the owned process group before shutdown removes the directory and the root", async () => {
     let pid = 0;
     const removedWhileAlive: boolean[] = [];
-    const { store, root, enqueue, seen, close } = await fixture({
+    const { store, root, manager, enqueue, seen } = await fixture({
       directories: real => ({
         create: () => real.create(),
         remove: async path => {
@@ -236,8 +236,10 @@ process.exit(0);`));
     });
     const run = enqueue(CHILD("setInterval(() => {}, 1000);"));
     pid = (await seen(run.id)).pid;
-    await close();
+    managers.splice(managers.indexOf(manager), 1);
+    await manager.shutdown();
     expect(store.getTestRun(run.id)?.phase).toBe("cancelled");
+    store.close();
     expect(removedWhileAlive).toEqual([false]);
     expect(existsSync(root.path)).toBe(false);
   });

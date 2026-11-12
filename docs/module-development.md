@@ -1,6 +1,6 @@
 ---
 audience: "contributors developing and testing application modules"
-last_reviewed: "2026-10-27"
+last_reviewed: "2026-11-12"
 source_of_truth: "implemented module entry points and focused verification workflow"
 status: "active"
 ---
@@ -21,6 +21,7 @@ modules still share the facade's lifecycle dependencies.
 | Test environment filtering and preset assignment | `src/server/modules/environments/` and `verification/` | `src/features/verification/` | `pnpm test src/server/modules/environments src/server/test-job-manager.test.ts` |
 | Runtime start/stop/switch or TLS | `src/server/modules/runtime/` and shared `lifecycle/` | `src/features/runtime/` and project-card composition | `pnpm test src/server/control-service-capacity.test.ts src/server/control-service-agent.test.ts src/server/modules/lifecycle` |
 | Test-run SQL or storage history | `src/server/infrastructure/sqlite/test-run-queries.ts` or `storage-queries.ts` | Owning feature, if payload presentation changes | `pnpm test src/server/infrastructure/sqlite` |
+| Per-run temporary directory (TMPDIR) and its startup sweep | `src/server/modules/verification/run-directory.ts` (contract), `src/server/infrastructure/run-directories/` (filesystem adapter), wired in `src/cli/index.ts` | None | `pnpm test:run-directory` |
 | Remote verification admission, identity storage, and exact-commit workspaces | `src/server/modules/remote-verification/`, `src/server/infrastructure/sqlite/remote-verification-queries.ts`, and `src/server/infrastructure/git/remote-verification-workspace.ts` | None until a transport slice is implemented | `pnpm test src/server/modules/remote-verification src/server/infrastructure/sqlite src/server/infrastructure/git` |
 | Installation authentication and live administration | `src/server/modules/authentication/`, `src/server/admin-socket.ts`, `src/cli/auth-management.ts` | Dashboard access form and shared session | `pnpm test src/server/modules/authentication src/server/installation-token-transports.test.ts src/cli/auth-management.test.ts` |
 | Knowledge identity, content and recovery | `src/server/modules/identity/`, `src/server/modules/knowledge/`, SQLite knowledge helpers and extracted transports | `src/features/knowledge/` | `pnpm test src/server/modules/identity src/server/infrastructure/sqlite src/server/knowledge-transports.test.ts`; built integration and knowledge UI suites |
