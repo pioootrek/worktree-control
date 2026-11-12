@@ -540,6 +540,65 @@ describe("run directory root", () => {
     await next.close();
   });
 
+  it("keeps the bindings of entries a truncated listing did not examine", async () => {
+    const { open, record, logs } = fixture();
+    const crashed = await open();
+    const gone = await groups.exited();
+    const runs = [crashed.create(), crashed.create(), crashed.create()];
+    for (const run of runs) crashed.bind(run, gone);
+    // Two of the three quiescent run directories fit the listing; whichever one it leaves out stays on disk.
+    await open(undefined, { rootListingLimit: 2 });
+    const remaining = runs.filter(run => existsSync(run));
+    expect(remaining).toHaveLength(1);
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.previous_root_retained", { path: crashed.path, reason: "listing_limit", kept: 0, removed: 2 });
+    // The directory that is still there keeps the group id that proves it quiescent.
+    expect(record().roots.find(entry => entry.path === crashed.path)?.runs).toEqual([{ name: basename(remaining[0]!), processGroupId: gone }]);
+
+    // The next start, with room to list everything, finishes the job.
+    const next = await open();
+    expect(existsSync(crashed.path)).toBe(false);
+    expect(record().roots.map(entry => entry.path)).toEqual([next.path]);
+    await next.close();
+  });
+
+  it("stops at the deadline while removing top-level entries and keeps the remaining bindings", async () => {
+    const { open, record, writeRecord, logs } = fixture();
+    const crashed = await open();
+    const gone = await groups.exited();
+    const names = Array.from({ length: 20 }, (_, index) => `r${index + 1}`);
+    // Top-level files: nothing but the sweep's own unlink calls spends time on them.
+    for (const name of names) writeFileSync(join(crashed.path, name), "x");
+    writeRecord([{ path: crashed.path, token: record().roots[0]!.token, runs: names.map(name => ({ name, processGroupId: gone })) }]);
+    // One second passes for every entry that has been removed.
+    let last = 0;
+    const clock = () => {
+      try { last = (names.length + 1 - readdirSync(crashed.path).length) * 1_000; } catch { /* the root is gone */ }
+      return last;
+    };
+    await open(undefined, { clock, sweepBudgetMs: 5_000 });
+    const remaining = names.filter(name => existsSync(join(crashed.path, name)));
+    expect(remaining).toHaveLength(15);
+    expect(existsSync(marker(crashed.path))).toBe(true);
+    expect(record().roots.find(entry => entry.path === crashed.path)?.runs.map(run => run.name).sort()).toEqual([...remaining].sort());
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.previous_root_skipped", { path: crashed.path, reason: "sweep_budget_exhausted" });
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.sweep_budget_exhausted", { notReached: 1, budgetMs: 5_000 });
+  });
+
+  it("stops at the deadline while listing a root and keeps every binding", async () => {
+    const { open, record, writeRecord, logs } = fixture();
+    const crashed = await open();
+    const gone = await groups.exited();
+    const names = Array.from({ length: 200 }, (_, index) => `r${index + 1}`);
+    for (const name of names) writeFileSync(join(crashed.path, name), "x");
+    writeRecord([{ path: crashed.path, token: record().roots[0]!.token, runs: names.map(name => ({ name, processGroupId: gone })) }]);
+    // Every reading of the clock costs one second, far more than the listing can afford.
+    let now = 0;
+    await open(undefined, { clock: () => (now += 1_000), sweepBudgetMs: 20_000 });
+    expect(readdirSync(crashed.path)).toHaveLength(names.length + 1);
+    expect(record().roots.find(entry => entry.path === crashed.path)?.runs).toHaveLength(names.length);
+    expect(logs.controller).toHaveBeenCalledWith("run_directory.previous_root_skipped", { path: crashed.path, reason: "sweep_budget_exhausted" });
+  });
+
   it("removes a bound run directory and drops its binding from the record", async () => {
     const { open, record } = fixture();
     const root = await open();

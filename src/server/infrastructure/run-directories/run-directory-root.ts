@@ -67,6 +67,8 @@ export interface RunDirectoryRootOptions {
   removalDeadlineMs?: number;
   /** Defaults to `RUN_DIRECTORY_SWEEP_BUDGET_MS`. */
   sweepBudgetMs?: number;
+  /** Entries of one recorded root examined per start; defaults to 4096. Tests inject a small value. */
+  rootListingLimit?: number;
 }
 
 /**
@@ -81,6 +83,7 @@ export async function openRunDirectoryRoot(options: RunDirectoryRootOptions): Pr
   const clock = options.clock ?? (() => performance.now());
   const removalDeadlineMs = options.removalDeadlineMs ?? RUN_DIRECTORY_REMOVAL_DEADLINE_MS;
   const sweepBudgetMs = options.sweepBudgetMs ?? RUN_DIRECTORY_SWEEP_BUDGET_MS;
+  const listingLimit = options.rootListingLimit ?? ROOT_LISTING_LIMIT;
   const bootId = currentBootId();
   const recordPath = join(options.stateDirectory, RUN_DIRECTORY_RECORD);
   const retained: RootEntry[] = [];
@@ -94,7 +97,7 @@ export async function openRunDirectoryRoot(options: RunDirectoryRootOptions): Pr
       continue;
     }
     const deadline = { now: clock, expiresAt: Math.min(clock() + removalDeadlineMs, sweepEnd) };
-    const kept = await sweepPreviousRoot(previous, bootId, deadline, options.logs);
+    const kept = await sweepPreviousRoot(previous, bootId, deadline, options.logs, listingLimit);
     if (kept) retained.push(kept);
   }
   if (notReached) options.logs.controller("run_directory.sweep_budget_exhausted", { notReached, budgetMs: sweepBudgetMs });
@@ -265,7 +268,7 @@ export function unavailableRunDirectories(): RunDirectories {
  * otherwise (including `EPERM`) is kept. The root is removed once nothing but
  * its marker is left.
  */
-async function sweepPreviousRoot(entry: RootEntry, bootId: string | null, deadline: RemovalDeadline, logs: Logs): Promise<RootEntry | null> {
+async function sweepPreviousRoot(entry: RootEntry, bootId: string | null, deadline: RemovalDeadline, logs: Logs, listingLimit: number): Promise<RootEntry | null> {
   let stats: Stats | null;
   try {
     stats = await verifyRoot(entry);
@@ -289,7 +292,7 @@ async function sweepPreviousRoot(entry: RootEntry, bootId: string | null, deadli
   try {
     // Every process of an earlier boot is gone.
     if (entry.bootId !== null && bootId !== null && entry.bootId !== bootId) return await removeRoot();
-    const { kept, removed, complete } = await removeQuiescentRuns(entry, verified, deadline);
+    const { kept, removed, complete } = await removeQuiescentRuns(entry, verified, deadline, listingLimit);
     if (!kept.size && complete) return await removeRoot();
     logs.controller("run_directory.previous_root_retained", {
       path: entry.path, reason: kept.size ? "liveness_unknown" : "listing_limit", kept: kept.size, removed,
@@ -302,9 +305,9 @@ async function sweepPreviousRoot(entry: RootEntry, bootId: string | null, deadli
 }
 
 /** Removes the entries of a verified root whose runs are proven quiescent and returns the names it kept. */
-async function removeQuiescentRuns(entry: RootEntry, root: Stats, deadline: RemovalDeadline) {
+async function removeQuiescentRuns(entry: RootEntry, root: Stats, deadline: RemovalDeadline, listingLimit: number) {
   const groups = new Map(entry.runs.map(run => [run.name, run.processGroupId] as const));
-  const { names, complete } = await listRoot(entry.path);
+  const { names, complete } = await listRoot(entry.path, listingLimit);
   const kept = new Set<string>();
   let removed = 0;
   for (const name of names) {
@@ -323,13 +326,13 @@ async function removeQuiescentRuns(entry: RootEntry, root: Stats, deadline: Remo
   return { kept, removed, complete };
 }
 
-/** Names directly inside a root other than its marker, at most `ROOT_LISTING_LIMIT` of them. */
-async function listRoot(root: string): Promise<{ names: string[]; complete: boolean }> {
+/** Names directly inside a root other than its marker, at most `limit` of them. */
+async function listRoot(root: string, limit: number): Promise<{ names: string[]; complete: boolean }> {
   const names: string[] = [];
   for await (const entry of await opendir(root)) {
     if (entry.name === RUN_DIRECTORY_ROOT_MARKER) continue;
     // `for await` closes the listing on `return`.
-    if (names.length >= ROOT_LISTING_LIMIT) return { names, complete: false };
+    if (names.length >= limit) return { names, complete: false };
     names.push(entry.name);
   }
   return { names, complete: true };
