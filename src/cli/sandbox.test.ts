@@ -81,7 +81,7 @@ if (mode === "flood") {
 }
 process.on("SIGTERM", () => {
   if (mode === "slow-stop") setTimeout(() => process.exit(0), 1500);
-  else if (mode === "burst-on-stop") process.stderr.write("x".repeat(2 * 1024 * 1024) + "\\nFAKE-STOPPED\\n", () => process.exit(0));
+  else if (mode === "burst-on-stop") process.stderr.write("BURST-HEAD\\n" + "x".repeat(2 * 1024 * 1024) + "\\nFAKE-STOPPED\\n", () => process.exit(0));
   else process.exit(0);
 });
 setInterval(() => {}, 1000);
@@ -414,8 +414,9 @@ describe("sandbox command", () => {
     expectNoLeftovers(harness);
   }, 60_000);
 
-  it("delivers the controller's last output to a slow reader before exiting", async () => {
-    // Two megabytes exceed what the pipe and this reader buffer, so the sandbox still holds output when it is done.
+  it("delivers the output it accepted to a slow reader before exiting and reports what it dropped", async () => {
+    // Two megabytes exceed what the pipe and this reader buffer: the head reaches the pipe, the next chunk
+    // is queued, and the rest is dropped. The sandbox must still hold its queue until the reader has it.
     const harness = startHarness("burst-on-stop");
     await harness.descriptor();
     harness.child.stderr!.pause();
@@ -423,7 +424,8 @@ describe("sandbox command", () => {
     await delay(1_000);
     harness.child.stderr!.resume();
     expect(await harness.exit).toEqual({ code: 0, signal: null });
-    expect(harness.stderr()).toContain("FAKE-STOPPED");
+    expect(harness.stderr()).toContain("BURST-HEAD");
+    expect(harness.stderr()).toMatch(/dropped \d+ bytes of controller output/);
     expectNoLeftovers(harness);
   }, 60_000);
 
