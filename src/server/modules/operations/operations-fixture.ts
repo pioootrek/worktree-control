@@ -9,7 +9,7 @@ import {
   createListenerBoundary,
   type Actor, type CoordinationSessionRef, type CredentialIdentity, type CredentialVerifier, type ProviderEvidence, type VerifiedCredential,
 } from "./authentication-context";
-import type { IdempotencyKey, IdempotencyRecord, IdempotencyStore, OperationRuntime } from "./runner";
+import type { IdempotencyKey, IdempotencyRecord, IdempotencyStore, OperationObserver, OperationRuntime } from "./runner";
 import type { GrantsSnapshot, StoredGrant } from "./grants";
 import type { ResolvedResource, ResourceKind, ResourceRef, ResourceRelation } from "./requirements";
 import type { ResourceResolver } from "./resolver";
@@ -195,23 +195,35 @@ export function createWorld(options: { now?: number } = {}) {
     return { credentialId, session: coordination, context };
   };
   const operator = () => boundary("better-auth", "unix").mint(presented());
+  /** Every disposal failure the runner reported, in order. */
+  const disposalFailures: { operationId: string; kind: string }[] = [];
+  const observer: OperationObserver = { streamDisposalFailed: event => { disposalFailures.push({ ...event }); } };
   const runtime = (extra: { completionDeadlineMs?: number; idempotency?: IdempotencyStore; disposeTimeoutMs?: number } = {}): OperationRuntime => ({
     admission, resolver, grants: () => grants, now: () => clock.now, completionDeadlineMs: extra.completionDeadlineMs ?? 50,
-    idempotency: extra.idempotency, disposeTimeoutMs: extra.disposeTimeoutMs ?? 50,
+    idempotency: extra.idempotency, disposeTimeoutMs: extra.disposeTimeoutMs ?? 50, observer,
   });
-  return { verifier, grants, resolver, admission, clock, listenerOpen, boundary, human, agent, installation, operator, runtime };
+  return { verifier, grants, resolver, admission, clock, listenerOpen, boundary, human, agent, installation, operator, runtime, disposalFailures };
 }
 
-/** Idempotency store double. Stores and returns copies, as a real adapter must. */
+/**
+ * Idempotency store double. Stores and returns copies, as a real adapter must.
+ * `failOn` makes one transition throw: `get`, a `put` of the named state, or `release`.
+ */
 export class MemoryIdempotency implements IdempotencyStore {
   readonly entries = new Map<string, IdempotencyRecord>();
+  failOn: Set<"get" | "release" | IdempotencyRecord["state"]> = new Set();
   #key = (key: IdempotencyKey) => JSON.stringify([key.operationId, key.principal, key.idempotencyKey]);
   get(key: IdempotencyKey): IdempotencyRecord | null {
+    if (this.failOn.has("get")) throw new Error("store get failed /secret");
     const record = this.entries.get(this.#key(key));
     return record ? structuredClone(record) : null;
   }
-  put(key: IdempotencyKey, record: IdempotencyRecord): void { this.entries.set(this.#key(key), structuredClone(record)); }
+  put(key: IdempotencyKey, record: IdempotencyRecord): void {
+    if (this.failOn.has(record.state)) throw new Error(`store put ${record.state} failed /secret`);
+    this.entries.set(this.#key(key), structuredClone(record));
+  }
   release(key: IdempotencyKey, attempt: string): void {
+    if (this.failOn.has("release")) throw new Error("store release failed /secret");
     if (this.entries.get(this.#key(key))?.attempt === attempt) this.entries.delete(this.#key(key));
   }
   states(): string[] { return [...this.entries.values()].map(record => record.state); }

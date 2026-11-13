@@ -1,6 +1,6 @@
 import type { AccountId, ProjectId } from "@/shared/contracts/operations";
 import { OperationError } from "./errors";
-import { resourceKinds, type ResolvedResource, type ResolvedResources, type ResourceRef, type ResourceRelation } from "./requirements";
+import { isSlotName, resourceKinds, type ResolvedResource, type ResolvedResources, type ResourceRef, type ResourceRelation } from "./requirements";
 
 /**
  * Port mapping typed references to their current project. Called inside an
@@ -50,35 +50,89 @@ function copyRelation(value: unknown): ResourceRelation | null | undefined {
   }
 }
 
+const invalidSlots = () => new OperationError("internal", "invalid_resource_slot");
+
+/** Data value of an own property, never an accessor and never anything inherited. */
+function own(source: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(source, key);
+  return descriptor && "value" in descriptor ? descriptor.value : undefined;
+}
+
+/** Slot names of a plain record: every own key, validated. Throws `internal`/`invalid_resource_slot`. */
+function slotsOf(record: unknown): string[] {
+  if (typeof record !== "object" || record === null) throw invalidSlots();
+  const prototype: unknown = Object.getPrototypeOf(record);
+  // A `__proto__` literal key makes the reference the prototype; it would otherwise vanish from every check.
+  if (prototype !== null && prototype !== Object.prototype) throw invalidSlots();
+  const keys = Reflect.ownKeys(record);
+  if (!keys.every(isSlotName)) throw invalidSlots();
+  return keys as string[];
+}
+
 /**
  * Resolves every slot and verifies the adapter answered for the same
  * namespace and ID. A wrong or malformed answer is treated as not-found,
- * never as a hint to try another namespace. The result is a deep, frozen copy.
+ * never as a hint to try another namespace. Slot names must match
+ * `SLOT_NAME`; the result is a deep, frozen, null-prototype copy.
  */
 export function resolveAll(resolver: ResourceResolver, refs: Readonly<Record<string, ResourceRef>>): ResolvedResources {
-  const resolved: Record<string, ResolvedResource> = {};
-  for (const [slot, ref] of Object.entries(refs)) {
-    if (!resourceKinds.includes(ref.kind)) throw new OperationError("invalid_request", "unknown_resource_kind");
-    if (!isText(ref.id)) throw new OperationError("invalid_request", "invalid_resource_id");
-    const own = Object.freeze({ kind: ref.kind, id: ref.id });
-    const result = resolver.resolve({ ...own });
-    const relation = result ? copyRelation(result.relation) : undefined;
-    if (!result || result.ref?.kind !== own.kind || result.ref?.id !== own.id || !isText(result.projectId)
-      || !Number.isSafeInteger(result.version) || relation === undefined) {
-      throw new OperationError("not_found", "resource_not_found");
-    }
-    resolved[slot] = Object.freeze({ ref: own, projectId: result.projectId, version: result.version, relation });
+  const resolved = Object.create(null) as Record<string, ResolvedResource>;
+  for (const name of slotsOf(refs)) {
+    const ref = own(refs, name);
+    if (typeof ref !== "object" || ref === null) throw new OperationError("invalid_request", "invalid_resource_reference");
+    const kind = own(ref, "kind"), id = own(ref, "id");
+    if (!(resourceKinds as readonly unknown[]).includes(kind)) throw new OperationError("invalid_request", "unknown_resource_kind");
+    if (!isText(id)) throw new OperationError("invalid_request", "invalid_resource_id");
+    const reference = Object.freeze({ kind: kind as ResourceRef["kind"], id });
+    const copy = copyResolved(resolver.resolve({ ...reference }));
+    if (!copy || copy.ref.kind !== reference.kind || copy.ref.id !== reference.id) throw new OperationError("not_found", "resource_not_found");
+    Object.defineProperty(resolved, name, { value: copy, enumerable: true });
   }
   return Object.freeze(resolved);
 }
 
-/** Whether every slot still maps to the same reference, project and relation version. */
+/** Validated, frozen copy of one resolution; `null` when malformed. */
+function copyResolved(value: unknown): ResolvedResource | null {
+  if (typeof value !== "object" || value === null) return null;
+  const source = value as Record<string, unknown>;
+  const ref = source.ref, projectId = source.projectId, version = source.version;
+  if (typeof ref !== "object" || ref === null) return null;
+  const kind = (ref as Record<string, unknown>).kind, id = (ref as Record<string, unknown>).id;
+  if (!(resourceKinds as readonly unknown[]).includes(kind) || !isText(id) || !isText(projectId) || !Number.isSafeInteger(version)) return null;
+  const relation = copyRelation(source.relation);
+  if (relation === undefined) return null;
+  return Object.freeze({ ref: Object.freeze({ kind: kind as ResourceRef["kind"], id }), projectId: projectId as ProjectId, version: version as number, relation });
+}
+
+/**
+ * Validated deep copy of a resources record read back from a store (for
+ * example a retained idempotency record). `null` when anything is malformed.
+ */
+export function copyResolution(value: unknown): ResolvedResources | null {
+  try {
+    const copy = Object.create(null) as Record<string, ResolvedResource>;
+    for (const name of slotsOf(value)) {
+      const resource = copyResolved(own(value as object, name));
+      if (!resource) return null;
+      Object.defineProperty(copy, name, { value: resource, enumerable: true });
+    }
+    return Object.freeze(copy);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether every slot still maps to the same reference, project and relation
+ * version. Compares every own slot of both records, whatever its name.
+ */
 export function sameResolution(before: ResolvedResources, after: ResolvedResources): boolean {
-  const keys = Object.keys(before);
-  if (keys.length !== Object.keys(after).length) return false;
-  return keys.every(key => {
-    const left = before[key], right = after[key];
-    return !!right && left.ref.kind === right.ref.kind && left.ref.id === right.ref.id
-      && right.projectId === left.projectId && right.version === left.version;
+  let left: string[], right: string[];
+  try { left = slotsOf(before); right = slotsOf(after); } catch { return false; }
+  if (left.length !== right.length) return false;
+  return left.every(name => {
+    if (!right.includes(name)) return false;
+    const a = own(before, name) as ResolvedResource | undefined, b = own(after, name) as ResolvedResource | undefined;
+    return !!a && !!b && a.ref.kind === b.ref.kind && a.ref.id === b.ref.id && a.projectId === b.projectId && a.version === b.version;
   });
 }

@@ -1,84 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { DatabaseAdmission } from "@/server/database-admission";
 import { FRESH_LOGIN_WINDOW_MS, type ProjectId } from "@/shared/contracts/operations";
 import type { AuthenticationContext } from "./authentication-context";
 import { OperationError } from "./errors";
-import type { Lease, MutationOperation, ReadOperation, StreamOperation } from "./operation";
-import { admissionRefusal, createWorld, MemoryIdempotency, P } from "./operations-fixture";
+import type { PhaseScope, ReadOperation } from "./operation";
+import { admissionRefusal } from "./operations-fixture";
 import { allOf, onProject, type OperationRequirement } from "./requirements";
-import { OperationRunner, type StreamItem } from "./runner";
-
-const projectA = P("project-a");
-const projectB = P("project-b");
-const REGISTRATION = { kind: "registration" as const, id: "reg-1" };
-
-function deferred<T = void>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>(done => { resolve = done; });
-  return { promise, resolve };
-}
-const tick = () => new Promise(resolve => setTimeout(resolve, 0));
-
-interface StartInput { registrationId: string }
-interface StartInternal { projectId: ProjectId; pid: number; processSecret: string }
-
-/**
- * Fake effect operation: waits for a project lock, starts a "process" (the
- * effect), finalizes with an audit record and owned-process bookkeeping.
- */
-function fakeStart(world: ReturnType<typeof createWorld>, hooks: {
-  lockWait?: Promise<void>;
-  duringEffect?: () => void;
-  effect?: () => Promise<void> | void;
-  requirement?: OperationRequirement;
-  finalizeThrows?: boolean;
-} = {}) {
-  const log = { attempts: 0, effects: [] as string[], audit: [] as string[], lockHeld: false, lockReleases: 0 };
-  const operation: MutationOperation<StartInput, StartInternal, { projectId: ProjectId; started: boolean }> = {
-    id: "fixture.runtime_start",
-    kind: "mutation",
-    requirement: hooks.requirement ?? { require: onProject("runtime:control", "registration") },
-    parse: raw => ({ registrationId: String((raw as StartInput).registrationId) }),
-    resources: input => ({ registration: { kind: "registration", id: input.registrationId } }),
-    async acquire(): Promise<Lease> {
-      await hooks.lockWait;
-      log.lockHeld = true;
-      return { release: () => { log.lockHeld = false; log.lockReleases++; } };
-    },
-    effect: {
-      mode: "idle",
-      async run(_input, scope) {
-        if (world.admission.admitted) throw new Error("The SQL-free effect must run outside admission.");
-        log.attempts++;
-        await hooks.effect?.();
-        log.effects.push(`start ${scope.resources.registration.projectId}`);
-        hooks.duringEffect?.();
-        return { projectId: scope.resources.registration.projectId, pid: 4242, processSecret: "pid-secret-token" };
-      },
-    },
-    finalize(_input, outcome) {
-      if (hooks.finalizeThrows) throw new Error("audit store unavailable");
-      log.audit.push(outcome.ok ? `started ${outcome.value.pid}` : "failed");
-    },
-    retain: true,
-    publicKeys: ["projectId", "started"],
-    project: result => ({ projectId: result.projectId, started: true }),
-  };
-  return { operation, log };
-}
-
-function setup() {
-  const world = createWorld();
-  world.resolver.addProject(projectA).addProject(projectB).put(REGISTRATION, projectA);
-  const alice = world.human("alice");
-  world.grants.grant({ accountId: alice.id, role: "operator", scope: { kind: "project", projectId: projectA } });
-  const idempotency = new MemoryIdempotency();
-  const runner = new OperationRunner(world.runtime({ idempotency }));
-  return { world, alice, runner, idempotency };
-}
-
-const input = { registrationId: REGISTRATION.id };
-const key = (idempotencyKey: string) => ({ idempotencyKey });
+import { OperationRunner } from "./runner";
+import {
+  collect, deferred, fakeStart, fakeStream, gatedAdmission, input, key, manualStream, projectA, projectB, REGISTRATION, setup, tick,
+  type EventOperation, type ProjectEvent, type StartInput, type StartInternal,
+} from "./runner-fixture";
 
 describe("operation runner: effects", () => {
   it("runs check, wait, effect, finalization and release in order", async () => {
@@ -316,6 +247,25 @@ describe("operation runner: idempotency", () => {
     expect(log.effects).toEqual(["start project-a"]);
   });
 
+  it("runs one effect for two identical requests started together", async () => {
+    const { world, alice, runner, idempotency } = setup();
+    const lock = deferred();
+    const { operation, log } = fakeStart(world, { lockWait: lock.promise });
+    // Both start in the same turn; neither has reached admission when the other is issued.
+    const both = Promise.all([runner.run(operation, alice.context, input, key("k-1")), runner.run(operation, alice.context, input, key("k-1"))]);
+    await tick();
+    lock.resolve();
+    const results = await both;
+    expect(results.filter(result => result.ok)).toHaveLength(1);
+    expect(results.filter(result => !result.ok)).toEqual([{ ok: false, error: {
+      category: "conflict", status: 409, reason: "request_in_progress", retry: "none", effect: "not_started" } }]);
+    // The decisive fact: one effect and one finalization, not merely the immediate answer.
+    expect(log.attempts).toBe(1);
+    expect(log.effects).toEqual(["start project-a"]);
+    expect(log.audit).toEqual(["started 4242"]);
+    expect(idempotency.states()).toEqual(["completed"]);
+  });
+
   it("serializes concurrent requests with one key: in progress, conflicting input, then replay", async () => {
     const { world, alice, runner } = setup();
     world.resolver.put({ kind: "registration", id: "reg-2" }, projectA);
@@ -436,6 +386,8 @@ describe("operation runner: outcome-safe errors", () => {
       new OperationError("conflict", "port_in_use", { effect: "not_started" }),
       new OperationError("busy", "worker_busy"),
       new OperationError("internal", "spawn_failed", { effect: "committed" }),
+      // Already carrying the observed effect: still normalized (decision I), never released as `conflict`.
+      new OperationError("conflict", "port_in_use_unknown", { effect: "unknown" }),
     ]) {
       const { world, alice, runner } = setup();
       const { operation, log } = fakeStart(world);
@@ -473,9 +425,11 @@ describe("operation runner: outcome-safe errors", () => {
       Object.defineProperty(value, "toJSON", { enumerable: false, value: () => ({ projectId: result.projectId, started: true, processSecret: result.processSecret }) });
       return value;
     } };
-    class Released { constructor(readonly projectId: ProjectId, readonly started: boolean, private readonly secret: string) {}
-      toJSON() { return { projectId: this.projectId, started: this.started, processSecret: this.secret }; } }
-    const inherited = { ...operation, project: (result: StartInternal) => new Released(result.projectId, true, result.processSecret) };
+    // Own keys are exactly the allowlist, so only the inherited toJSON could add the secret: an allowlist check alone would pass it.
+    const inherited = { ...operation, project: (result: StartInternal) => Object.assign(
+      Object.create({ toJSON: () => ({ projectId: result.projectId, started: true, processSecret: result.processSecret }) }) as object,
+      { projectId: result.projectId, started: true }) as { projectId: ProjectId; started: boolean } };
+    expect(Object.keys(inherited.project({ projectId: projectA, pid: 1, processSecret: "s" })).sort()).toEqual(["projectId", "started"]);
     for (const bypass of [hidden, inherited]) {
       const result = await runner.run(bypass, alice.context, input);
       expect(result).toMatchObject({ ok: false, error: { category: "internal", reason: "invalid_projection", effect: "committed" } });
@@ -488,7 +442,7 @@ describe("operation runner: outcome-safe errors", () => {
     const { world, alice, runner } = setup();
     const writes: string[] = [];
     const { operation } = fakeStart(world);
-    const write: typeof operation = { ...operation, acquire: undefined, effect: { mode: "admitted", run: (_input, scope) => {
+    const write: typeof operation = { ...operation, acquire: undefined, effect: { mode: "admitted", run: (_input: StartInput, scope: PhaseScope) => {
       if (!world.admission.admitted) throw new Error("must be admitted");
       writes.push("row");
       return { projectId: scope.resources.registration.projectId, pid: 1, processSecret: "x" };
@@ -508,30 +462,6 @@ describe("operation runner: outcome-safe errors", () => {
     expect(world.admission.events).toEqual([]);
   });
 });
-
-/** Admission whose fresh admissions wait for `open`, refusing like the real gate when aborted while waiting. */
-function gatedAdmission(world: ReturnType<typeof createWorld>) {
-  const gate = deferred();
-  const inner = world.admission;
-  const admission: DatabaseAdmission = {
-    run: async (operation, options) => {
-      if (!inner.admitted) {
-        await new Promise<void>((resolve, reject) => {
-          const refuse = () => reject(Object.assign(new Error("cancelled"), { name: "ExclusiveConnectionError", code: "cancelled" }));
-          if (options?.signal?.aborted) { refuse(); return; }
-          options?.signal?.addEventListener("abort", refuse, { once: true });
-          void gate.promise.then(() => resolve());
-        });
-      }
-      return inner.run(operation, options);
-    },
-    detached: (operation, options) => inner.detached(operation, options),
-    idle: (operation, options) => inner.idle(operation, options),
-    tryRun: operation => inner.tryRun(operation),
-    outside: operation => inner.outside(operation),
-  };
-  return { admission, open: gate.resolve };
-}
 
 describe("operation runner: cancellation", () => {
   it("abort during the admission wait cancels a mutation before anything happens", async () => {
@@ -557,66 +487,15 @@ describe("operation runner: cancellation", () => {
     const pending = runner.stream(operation, alice.context, { projectId: projectA }, { signal: abort.signal });
     await tick();
     abort.abort();
-    expect(await pending).toMatchObject({ ok: false, error: { category: "unavailable", reason: "request_cancelled" } });
+    expect(await pending).toEqual({ ok: false, error: { category: "unavailable", status: 503, reason: "request_cancelled", retry: "retry", effect: null } });
+    // open() itself was never called (not merely a generator body that did not start).
+    expect(state.opens).toBe(0);
     expect(state.opened).toBe(false);
   });
 });
 
-interface ProjectEvent { projectId: ProjectId; seq: number; holderSession: string }
-
-function fakeStream(world: ReturnType<typeof createWorld>, beforeEvent: (seq: number) => void) {
-  const state = { opened: false, disposed: false, produced: 0 };
-  const events: ProjectEvent[] = [
-    { projectId: projectA, seq: 1, holderSession: "s-x" }, { projectId: projectB, seq: 2, holderSession: "s-y" },
-    { projectId: projectA, seq: 3, holderSession: "s-x" }, { projectId: projectA, seq: 4, holderSession: "s-x" },
-    { projectId: projectA, seq: 5, holderSession: "s-x" },
-  ];
-  const operation: StreamOperation<{ projectId: string }, ProjectEvent, { seq: number; projectId: ProjectId }> = {
-    id: "fixture.status_events",
-    kind: "stream",
-    requirement: { require: onProject("project:read", "project") },
-    parse: raw => ({ projectId: String((raw as { projectId: string }).projectId) }),
-    resources: input => ({ project: { kind: "project", id: input.projectId } }),
-    async *open() {
-      state.opened = true;
-      try {
-        for (const event of events) {
-          await Promise.resolve();
-          beforeEvent(event.seq);
-          state.produced++;
-          yield event;
-        }
-      } finally { state.disposed = true; }
-    },
-    publicKeys: ["seq", "projectId"],
-    projectEvent: (event, release) => release.can("project:read", event.projectId) ? { seq: event.seq, projectId: event.projectId } : null,
-  };
-  return { operation, state, world };
-}
-
-/** A stream over a hand-written iterator, for failure and abort cases. */
-function manualStream(iterator: Partial<AsyncIterator<ProjectEvent>> & { next: AsyncIterator<ProjectEvent>["next"] }, extra: { construct?: () => never } = {}) {
-  const operation: StreamOperation<{ projectId: string }, ProjectEvent, { seq: number; projectId: ProjectId }> = {
-    id: "fixture.manual_events",
-    kind: "stream",
-    requirement: { require: onProject("project:read", "project") },
-    parse: raw => ({ projectId: String((raw as { projectId: string }).projectId) }),
-    resources: input => ({ project: { kind: "project", id: input.projectId } }),
-    open: () => ({ [Symbol.asyncIterator]: () => { if (extra.construct) extra.construct(); return iterator as AsyncIterator<ProjectEvent>; } }),
-    publicKeys: ["seq", "projectId"],
-    projectEvent: event => ({ seq: event.seq, projectId: event.projectId }),
-  };
-  return operation;
-}
-
-async function collect(iterable: AsyncIterable<StreamItem<{ seq: number }>>) {
-  const items: unknown[] = [];
-  for await (const item of iterable) items.push(item);
-  return items;
-}
-
 describe("operation runner: streams", () => {
-  async function open(context: AuthenticationContext, runner: OperationRunner, operation: StreamOperation<{ projectId: string }, ProjectEvent, { seq: number; projectId: ProjectId }>, signal?: AbortSignal) {
+  async function open(context: AuthenticationContext, runner: OperationRunner, operation: EventOperation, signal?: AbortSignal) {
     const opened = await runner.stream(operation, context, { projectId: projectA }, { signal });
     if (!opened.ok) throw new Error(JSON.stringify(opened.error));
     return opened.events;
@@ -650,8 +529,9 @@ describe("operation runner: streams", () => {
     const { world, runner } = setup();
     const stranger = world.human("stranger");
     const { operation, state } = fakeStream(world, () => undefined);
-    expect(await runner.stream(operation, stranger.context, { projectId: projectA })).toMatchObject({ ok: false, error: { category: "not_found" } });
-    expect(state.opened).toBe(false);
+    expect(await runner.stream(operation, stranger.context, { projectId: projectA })).toEqual({ ok: false, error: {
+      category: "not_found", status: 404, reason: "resource_not_found", retry: "none", effect: null } });
+    expect(state.opens).toBe(0);
   });
 
   it("disposes the source when the consumer stops early", async () => {
@@ -667,7 +547,8 @@ describe("operation runner: streams", () => {
     const opened = await runner.stream(throwing, alice.context, { projectId: projectA });
     expect(opened).toEqual({ ok: false, error: { category: "internal", status: 500, reason: "unexpected_failure", retry: "none", effect: null } });
     const failingOpen = { ...throwing, open: (): never => { throw new Error("secret open failure"); } };
-    expect(JSON.stringify(await runner.stream(failingOpen, alice.context, { projectId: projectA }))).not.toContain("secret");
+    expect(await runner.stream(failingOpen, alice.context, { projectId: projectA })).toEqual({ ok: false, error: {
+      category: "internal", status: 500, reason: "unexpected_failure", retry: "none", effect: null } });
   });
 
   it("turns next() failures into one sanitized error item and disposes once", async () => {
@@ -691,7 +572,7 @@ describe("operation runner: streams", () => {
     }
   });
 
-  it("keeps the denial when cleanup fails after it", async () => {
+  it("keeps the denial when cleanup fails after it, reports the failure, and lets return() resolve done", async () => {
     const { world, alice, runner } = setup();
     let returns = 0;
     const operation = manualStream({
@@ -704,12 +585,17 @@ describe("operation runner: streams", () => {
     const items = await collect(await open(alice.context, runner, operation));
     expect(items).toEqual([{ error: { category: "not_found", status: 404, reason: "resource_not_found", retry: "none", effect: null } }]);
     expect(returns).toBe(1);
+    // Decision T: the disposal failure is reported to the observer, and nothing follows the denial.
+    expect(world.disposalFailures).toEqual([{ operationId: "fixture.manual_events", kind: "rejected" }]);
     const consumer = await open(world.installation().context, runner, manualStream({
       next: async () => ({ done: false, value: { projectId: projectA, seq: 1, holderSession: "s" } }),
       return: async () => { throw new Error("secret cleanup failure"); },
     }));
     expect(await consumer.next()).toMatchObject({ done: false, value: { event: { seq: 1 } } });
     await expect(consumer.return!()).resolves.toEqual({ done: true, value: undefined });
+    expect(await consumer.next()).toEqual({ done: true, value: undefined });
+    expect(world.disposalFailures).toEqual([
+      { operationId: "fixture.manual_events", kind: "rejected" }, { operationId: "fixture.manual_events", kind: "rejected" }]);
   });
 
   it("abort settles a pending read, disposes once and drops a late event", async () => {

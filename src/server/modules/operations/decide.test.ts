@@ -84,13 +84,23 @@ describe("decision", () => {
     expect(verdict(check(human(), requirement, {}, g))).toBe("not_found:resource_not_found");
   });
 
-  it("treats a project without project:read as invisible even with another role there", () => {
-    const g = grants().grant({ accountId: bot, role: "executor", scope: { kind: "project", projectId: projectA } });
-    expect(verdict(check(agent(), { require: onProject("tests:read", "p") }, { p: resource("test_run", "r", projectA) }, g))).toBe("not_found:resource_not_found");
-    // Masking comes first: without project:read the project is invisible, so even a permission it holds there is not_found.
-    expect(verdict(check(agent(), { require: onProject("worker:execute", "p") }, { p: resource("project", projectA) }, g))).toBe("not_found:resource_not_found");
-    g.grant({ accountId: bot, role: "reader", scope: { kind: "project", projectId: projectA } });
-    expect(verdict(check(agent(), { require: onProject("worker:execute", "p") }, { p: resource("project", projectA) }, g))).toBe("allowed");
+  it("makes a project visible through any active role there, without granting any permission (decision M)", () => {
+    // An agent holding only executor sees the project, may execute, and may not read.
+    const executorOnly = grants().grant({ accountId: bot, role: "executor", scope: { kind: "project", projectId: projectA } });
+    expect(verdict(check(agent(), { require: onProject("worker:execute", "p") }, { p: resource("project", projectA) }, executorOnly))).toBe("allowed");
+    expect(verdict(check(agent(), { require: onProject("tests:read", "p") }, { p: resource("test_run", "r", projectA) }, executorOnly))).toBe("forbidden:permission_denied");
+    expect(verdict(check(agent(), { require: onProject("project:read", "p") }, { p: resource("project", projectA) }, executorOnly))).toBe("forbidden:permission_denied");
+    // A human holding only secrets: visible, cannot read.
+    const secretsOnly = grants().grant({ accountId: alice, role: "secrets", scope: { kind: "project", projectId: projectA } });
+    expect(verdict(check(human(), { require: onProject("project:read", "p") }, { p: resource("project", projectA) }, secretsOnly))).toBe("forbidden:permission_denied");
+    expect(verdict(check(human(), { require: onProject("secrets:read", "p") }, { p: resource("vault_entry", "v", projectA) }, secretsOnly))).toBe("allowed");
+    // Another project stays invisible: not_found, not forbidden.
+    expect(verdict(check(agent(), { require: onProject("worker:execute", "p") }, { p: resource("project", projectB, projectB) }, executorOnly))).toBe("not_found:resource_not_found");
+    // admin sees every project; a role that fails re-validation gives no visibility.
+    const admin = grants().grant({ accountId: alice, role: "admin", scope: { kind: "installation" } });
+    expect(verdict(check(human(), { require: onProject("secrets:read", "p") }, { p: resource("project", projectB, projectB) }, admin))).toBe("forbidden:permission_denied");
+    const invalid = grants().grant({ accountId: alice, role: "executor", scope: { kind: "project", projectId: projectA } });
+    expect(verdict(check(human(), { require: onProject("project:read", "p") }, { p: resource("project", projectA) }, invalid))).toBe("not_found:resource_not_found");
   });
 
   it("refuses agents on human-only operations whatever their grants, and lets full authority through", () => {
@@ -203,5 +213,44 @@ describe("masking comes first", () => {
     expect(verdict(check(human(), requirement, claim(projectB), readerOnA()))).toBe("not_found:resource_not_found");
     expect(verdict(check(human(), requirement, {}, readerOnA()))).toBe("not_found:resource_not_found");
     expect(verdict(check(human(), requirement, claim(projectA), readerOnA()))).toBe("claim_held:claim_held_by_another_session");
+  });
+});
+
+describe("decisions are fresh frozen values (decision P)", () => {
+  it("lets no holder of a denial change a later decision", () => {
+    const first = check(agent(), { require: onProject("project:read", "p") }, {});
+    expect(first).toEqual({ allowed: false, category: "not_found", reason: "resource_not_found" });
+    expect(Object.isFrozen(first)).toBe(true);
+    Reflect.set(first, "allowed", true);
+    Reflect.set(first, "category", "conflict");
+    const second = check(agent(), { require: onProject("project:read", "p") }, {});
+    expect(second).not.toBe(first);
+    expect(second).toEqual({ allowed: false, category: "not_found", reason: "resource_not_found" });
+  });
+
+  it("hands out a fresh frozen decision and permission sets on every allowed call", () => {
+    const first = check(installationActor(), { require: authenticated() }, {});
+    const second = check(installationActor(), { require: authenticated() }, {});
+    if (!first.allowed || !second.allowed) throw new Error("expected allowed");
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(first.permissions).not.toBe(second.permissions);
+    expect(first.permissions.installation).not.toBe(second.permissions.installation);
+    expect(() => (first.permissions.everyProject as unknown as Set<string>).add("x")).toThrow(TypeError);
+    expect(() => Set.prototype.clear.call(first.permissions.installation)).toThrow(TypeError);
+    expect(second.permissions.installation.has("accounts:manage")).toBe(true);
+  });
+});
+
+describe("resource slots (decision Q)", () => {
+  it("fails closed on a malformed resources record instead of skipping a slot", () => {
+    const readerOnA = grants().grant({ accountId: alice, role: "reader", scope: { kind: "project", projectId: projectA } });
+    const invisible = resource("registration", "reg-b", projectB);
+    const withProtoSlot = Object.assign(Object.create(null) as Record<string, ResolvedResource>, { p: resource("project", projectA) });
+    Object.defineProperty(withProtoSlot, "__proto__", { value: invisible, enumerable: true });
+    const inherited = Object.assign(Object.create({ hidden: invisible }) as Record<string, ResolvedResource>, { p: resource("project", projectA) });
+    for (const resources of [withProtoSlot, inherited]) {
+      expect(verdict(check(human(), { require: onProject("project:read", "p") }, resources, readerOnA))).toBe("not_found:resource_not_found");
+    }
+    expect(verdict(check(human(), { require: onProject("project:read", "p") }, { p: resource("project", projectA) }, readerOnA))).toBe("allowed");
   });
 });

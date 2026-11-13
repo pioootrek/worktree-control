@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ProjectId } from "@/shared/contracts/operations";
 import type { ReadOperation } from "./operation";
 import { createWorld, P } from "./operations-fixture";
-import { pick, releaseError, releaseValue, serializeRelease, MAX_RELEASE_DEPTH, type Page } from "./release";
+import { canonicalJson, pick, releaseError, releaseValue, serializeRelease, MAX_RELEASE_DEPTH, MAX_RELEASE_NODES, type Page } from "./release";
 import { allOf, collection } from "./requirements";
 import { OperationRunner, type RunResult } from "./runner";
 
@@ -35,7 +35,7 @@ function scenario(hidden: boolean) {
   const invisible = ["p-01", "p-03", "p-05", "p-07", "p-09", "p-11"].map(P);
   for (const id of hidden ? [...visible, ...invisible].sort() : visible) world.resolver.addProject(id);
   for (const id of visible) world.grants.grant({ accountId: alice.id, role: "reader", scope: { kind: "project", projectId: id } });
-  // A non-reading role on hidden projects must not make them visible.
+  // A non-reading role on hidden projects makes them visible (decision M) but releases none of their items.
   if (hidden) for (const id of invisible) world.grants.grant({ accountId: alice.id, role: "secrets", scope: { kind: "project", projectId: id } });
   return { runner: new OperationRunner(world.runtime()), context: alice.context };
 }
@@ -103,7 +103,7 @@ describe("several collection requirements on one operation", () => {
     const secretsOnly = { ...listFixture, read: (input: Input, scope: Parameters<typeof listFixture.read>[1]) =>
       scope.release.page(scope.resolver.listProjects().map(projectId => ({ projectId, name: projectId, secretHolder: "x" })),
         { projectOf: row => row.projectId, keyOf: row => row.projectId, permission: "secrets:read", limit: input.limit, cursor: input.cursor }) };
-    // A permission held on an invisible project never releases its items.
+    // c is visible through secrets (decision M) and holds secrets:read, but lacks the collection's project:read: nothing is released.
     expect(await runner.run(secretsOnly, alice.context, { limit: 10 })).toMatchObject({ ok: true, value: { items: [] } });
     expect(await runner.run(both, world.installation().context, { limit: 10 })).toMatchObject({ ok: true, value: { items: [{ projectId: "a" }, { projectId: "b" }, { projectId: "c" }, { projectId: "d" }] } });
   });
@@ -163,5 +163,39 @@ describe("strict release serializer", () => {
     expect(releaseError({ category: "conflict", status: 409, reason: "x", retry: "none", effect: "unknown", detail: "/secret" } as never))
       .toEqual({ category: "outcome_unknown", status: 409, reason: "unexpected_failure", retry: "inspect_first", effect: "unknown" });
     expect(releaseError({ category: "conflict", status: 200, reason: "Localized text", retry: "none", effect: null })).toEqual({ category: "internal", status: 500, reason: "unexpected_failure", retry: "none", effect: null });
+  });
+});
+
+describe("strict serializer: further shapes", () => {
+  const rejected = (value: unknown) => {
+    try { serializeRelease(value); return "accepted"; } catch (error) { return (error as { reason?: string }).reason; }
+  };
+
+  it("rejects accessors on array indices, typed arrays and a toJSON key on a null-prototype object", () => {
+    const arrayAccessor = [1, 2];
+    Object.defineProperty(arrayAccessor, 1, { enumerable: true, get: () => "secret" });
+    const nullToJson = Object.assign(Object.create(null) as object, { toJSON: "not even a function", a: 1 });
+    for (const value of [arrayAccessor, new Uint8Array(2), new Float64Array(1), new DataView(new ArrayBuffer(1)), new ArrayBuffer(1), nullToJson,
+      { nested: [new Int32Array(1)] }]) expect(rejected(value)).toBe("invalid_projection");
+  });
+
+  it("turns -0 into 0", () => {
+    const copy = serializeRelease({ n: -0, list: [-0] }) as { n: number; list: number[] };
+    expect(Object.is(copy.n, 0)).toBe(true);
+    expect(Object.is(copy.list[0], 0)).toBe(true);
+    expect(canonicalJson({ n: -0 })).toBe(canonicalJson({ n: 0 }));
+  });
+
+  it("bounds the number of values, not only the depth", () => {
+    expect(rejected(Array.from({ length: MAX_RELEASE_NODES }, () => 0))).toBe("invalid_projection");
+    expect(rejected(Array.from({ length: MAX_RELEASE_NODES - 1 }, () => 0))).toBe("accepted");
+    const wide = Object.fromEntries(Array.from({ length: 1_000 }, (_, index) => [`k${index}`, Array.from({ length: 100 }, () => 1)]));
+    expect(rejected(wide)).toBe("invalid_projection");
+  });
+
+  it("gives one canonical text per value, independent of key order", () => {
+    expect(canonicalJson({ b: [1, { d: 2, c: 3 }], a: "x" })).toBe('{"a":"x","b":[1,{"c":3,"d":2}]}');
+    expect(canonicalJson({ a: "x", b: [1, { c: 3, d: 2 }] })).toBe(canonicalJson({ b: [1, { d: 2, c: 3 }], a: "x" }));
+    expect(() => canonicalJson({ at: new Date(0) })).toThrow(/invalid_projection/);
   });
 });

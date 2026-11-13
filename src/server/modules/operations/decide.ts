@@ -2,7 +2,7 @@ import { FRESH_LOGIN_WINDOW_MS, type ErrorCategory, type FreshLoginState, type P
 import { isFullAuthority, type CurrentAuthority } from "./authentication-context";
 import { effectivePermissions, type EffectivePermissions, type GrantsSnapshot } from "./grants";
 import type { OperationRequirement, PredicateName, Requirement, ResolvedResource, ResolvedResources } from "./requirements";
-import { requiredSlots } from "./requirements";
+import { isSlotName, requiredSlots } from "./requirements";
 
 export interface DecisionInput {
   authority: CurrentAuthority;
@@ -14,11 +14,37 @@ export interface DecisionInput {
   now: number;
 }
 
-export type Denial = { allowed: false; category: Extract<ErrorCategory, "forbidden" | "login_stale" | "not_found" | "claim_held" | "conflict">; reason: string };
-export type Decision = { allowed: true; permissions: EffectivePermissions } | Denial;
+export type Denial = { readonly allowed: false; category: Extract<ErrorCategory, "forbidden" | "login_stale" | "not_found" | "claim_held" | "conflict">; reason: string };
+export type Decision = Readonly<{ allowed: true; permissions: EffectivePermissions }> | Denial;
 
-const deny = (category: Denial["category"], reason: string): Denial => ({ allowed: false, category, reason });
-const NOT_FOUND = deny("not_found", "resource_not_found");
+/** Every denial is a fresh frozen value: nothing a holder does to one can change another decision. */
+const deny = (category: Denial["category"], reason: string): Denial => Object.freeze({ allowed: false, category, reason });
+const notFound = (): Denial => deny("not_found", "resource_not_found");
+
+/** Own slot of a resources record, never anything inherited. */
+function slot(resources: ResolvedResources, name: string): ResolvedResource | undefined {
+  return Object.prototype.hasOwnProperty.call(resources, name) ? resources[name] : undefined;
+}
+
+/**
+ * Every resource of a well-formed resources record, or `null` when the record
+ * is malformed (a non-plain prototype, a symbol key, an invalid slot name or a
+ * non-object entry). A malformed record fails closed as `not_found`.
+ */
+function everyResource(resources: ResolvedResources): ResolvedResource[] | null {
+  if (typeof resources !== "object" || resources === null) return null;
+  const prototype: unknown = Object.getPrototypeOf(resources);
+  if (prototype !== null && prototype !== Object.prototype) return null;
+  const found: ResolvedResource[] = [];
+  for (const key of Reflect.ownKeys(resources)) {
+    if (!isSlotName(key)) return null;
+    const descriptor = Object.getOwnPropertyDescriptor(resources, key);
+    const value: unknown = descriptor && "value" in descriptor ? descriptor.value : undefined;
+    if (typeof value !== "object" || value === null || typeof (value as ResolvedResource).projectId !== "string") return null;
+    found.push(value as ResolvedResource);
+  }
+  return found;
+}
 
 /** Fresh-login state from current provider evidence only. Missing or malformed evidence is stale. */
 export function freshLoginState(authority: CurrentAuthority, now: number): FreshLoginState {
@@ -30,9 +56,13 @@ export function freshLoginState(authority: CurrentAuthority, now: number): Fresh
   return age >= 0 && age < FRESH_LOGIN_WINDOW_MS ? "satisfied" : "stale";
 }
 
-/** A project is visible to an actor holding `project:read` on it, or to full authority. */
+/**
+ * Visibility (decision M): a project is visible to full authority, to an
+ * account holding `admin`, and to an account holding at least one active
+ * project role on it. Visibility grants no permission.
+ */
 export function projectVisible(authority: CurrentAuthority, permissions: EffectivePermissions, projectId: ProjectId): boolean {
-  return isFullAuthority(authority.actor) || permissions.project(projectId).has("project:read");
+  return isFullAuthority(authority.actor) || permissions.visible(projectId);
 }
 
 function predicateHolds(name: PredicateName, authority: CurrentAuthority, resource: ResolvedResource): Denial | null {
@@ -76,13 +106,13 @@ function evaluate(requirement: Requirement, input: DecisionInput, permissions: E
     case "installation":
       return full || permissions.installation.has(requirement.permission) ? null : deny("forbidden", "permission_denied");
     case "project": {
-      const resource = resources[requirement.resource];
-      if (!resource) return NOT_FOUND;
+      const resource = slot(resources, requirement.resource);
+      if (!resource) return notFound();
       return full || permissions.project(resource.projectId).has(requirement.permission) ? null : deny("forbidden", "permission_denied");
     }
     case "predicate": {
-      const resource = resources[requirement.resource];
-      if (!resource) return NOT_FOUND;
+      const resource = slot(resources, requirement.resource);
+      if (!resource) return notFound();
       return predicateHolds(requirement.predicate, authority, resource);
     }
     case "all":
@@ -113,8 +143,11 @@ function evaluate(requirement: Requirement, input: DecisionInput, permissions: E
 export function decide(input: DecisionInput): Decision {
   const { authority, requirement, resources, grants, now } = input;
   const permissions = effectivePermissions(authority.actor, grants);
-  for (const slot of requiredSlots(requirement.require)) if (!Object.prototype.hasOwnProperty.call(resources, slot)) return NOT_FOUND;
-  for (const resource of Object.values(resources)) if (!projectVisible(authority, permissions, resource.projectId)) return NOT_FOUND;
+  const all = everyResource(resources);
+  if (!all) return notFound();
+  for (const name of requiredSlots(requirement.require)) if (!isSlotName(name) || !slot(resources, name)) return notFound();
+  // Every own slot, whatever its name: nothing referenced escapes masking.
+  for (const resource of all) if (!projectVisible(authority, permissions, resource.projectId)) return notFound();
   if (requirement.agents === false && authority.actor.kind === "agent") return deny("forbidden", "human_only");
   const denial = evaluate(requirement.require, input, permissions);
   if (denial) return denial;
@@ -123,5 +156,5 @@ export function decide(input: DecisionInput): Decision {
     if (state === "unavailable") return deny("forbidden", "fresh_login_unavailable");
     if (state === "stale") return deny("login_stale", "fresh_login_required");
   }
-  return { allowed: true, permissions };
+  return Object.freeze({ allowed: true, permissions });
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FRESH_LOGIN_WINDOW_MS, installationPermissions, projectPermissions } from "@/shared/contracts/operations";
-import { OperationRegistry } from "./operation";
+import { OperationRegistry, type ReadOperation } from "./operation";
 import { createWorld, P } from "./operations-fixture";
 import { OperationRunner } from "./runner";
 import { MAX_DESCRIBED_PROJECTS, sessionDescribe } from "./session-describe";
@@ -25,7 +25,7 @@ describe("session.describe", () => {
     } });
   });
 
-  it("lists only visible projects with their permissions, and installation permissions", async () => {
+  it("lists every visible project with the permissions actually held, and installation permissions", async () => {
     const w = world();
     const alice = w.human("alice", { authenticatedAt: w.clock.now - FRESH_LOGIN_WINDOW_MS });
     w.grants.grant({ accountId: alice.id, role: "reader", scope: { kind: "project", projectId: projectA } })
@@ -33,8 +33,12 @@ describe("session.describe", () => {
       .grant({ accountId: alice.id, role: "secrets", scope: { kind: "project", projectId: projectB } });
     const result = await w.runner.run(sessionDescribe, alice.context, {});
     expect(result).toMatchObject({ ok: true, value: {
-      projects: [{ projectId: projectA, permissions: ["project:read", "logs:read", "storage:read", "config:read", "tests:read",
-        "knowledge:read", "attachments:read", "secrets:read", "secrets:write"] }],
+      projects: [
+        { projectId: projectA, permissions: ["project:read", "logs:read", "storage:read", "config:read", "tests:read",
+          "knowledge:read", "attachments:read", "secrets:read", "secrets:write"] },
+        // Visible through the secrets role alone (decision M): listed with exactly what is held.
+        { projectId: projectB, permissions: ["secrets:read", "secrets:write"] },
+      ],
       installationPermissions: [], freshLogin: { state: "stale", validUntil: null },
     } });
   });
@@ -78,6 +82,14 @@ describe("session.describe", () => {
     expect(await w.runner.run(sessionDescribe, alice.context, {})).toMatchObject({ ok: false, error: { category: "unauthenticated" } });
   });
 
+  it("lists an executor-only project for an agent with worker:execute only (decision M)", async () => {
+    const w = world();
+    const bot = w.agent("bot");
+    w.grants.grant({ accountId: bot.id, role: "executor", scope: { kind: "project", projectId: projectB } });
+    expect(await w.runner.run(sessionDescribe, bot.context, {})).toMatchObject({ ok: true, value: {
+      projects: [{ projectId: projectB, permissions: ["worker:execute"] }], installationPermissions: [] } });
+  });
+
   it("rejects input", async () => {
     const w = world();
     expect(await w.runner.run(sessionDescribe, w.operator(), { projectId: "x" })).toMatchObject({ ok: false, error: { category: "invalid_request" } });
@@ -92,5 +104,28 @@ describe("operation registry", () => {
     expect(() => registry.register({ ...sessionDescribe, id: "Session Describe" })).toThrow(/Invalid/);
     expect(() => registry.register({ ...sessionDescribe, id: "describe" })).toThrow(/Invalid/);
     expect(registry.ids()).toEqual(["session.describe"]);
+  });
+
+  it("validates requirements, slots and allowlists, and registers a deeply frozen copy", () => {
+    const registry = new OperationRegistry();
+    const base = { ...sessionDescribe, id: "fixture.base" } as unknown as ReadOperation<Record<string, never>, never, never>;
+    const bad = (change: Record<string, unknown>) => ({ ...base, ...change }) as typeof base;
+    expect(() => registry.register(bad({ id: "fixture.proto", requirement: { require: { kind: "project", permission: "project:read", resource: "__proto__" } } }))).toThrow(/slot/);
+    expect(() => registry.register(bad({ id: "fixture.typo", requirement: { require: { kind: "project", permission: "runtime:contrl", resource: "r" } } }))).toThrow(/permission/);
+    expect(() => registry.register(bad({ id: "fixture.empty", requirement: { require: { kind: "all", of: [] } } }))).toThrow(/conjunction/);
+    expect(() => registry.register(bad({ id: "fixture.keys", publicKeys: ["__proto__"] }))).toThrow(/allowlist/);
+    expect(() => registry.register(bad({ id: "fixture.flag", requirement: { require: { kind: "authenticated" }, agents: true } }))).toThrow(/agents/);
+    const shared = { require: { kind: "all", of: [{ kind: "project", permission: "project:read", resource: "r" }] } };
+    const keys = ["actor"];
+    const registered = registry.register(bad({ id: "fixture.ok", requirement: shared, publicKeys: keys }));
+    // Later changes to the objects that were passed in change nothing registered.
+    (shared.require.of[0] as { permission: string }).permission = "secrets:read";
+    keys.push("secret");
+    expect(registered.requirement).toEqual({ require: { kind: "all", of: [{ kind: "project", permission: "project:read", resource: "r" }] } });
+    expect(registered.publicKeys).toEqual(["actor"]);
+    expect(Object.isFrozen(registered.requirement.require)).toBe(true);
+    expect(Object.isFrozen(registered.publicKeys)).toBe(true);
+    expect(Object.isFrozen(sessionDescribe)).toBe(true);
+    expect(Object.isFrozen(sessionDescribe.publicKeys)).toBe(true);
   });
 });

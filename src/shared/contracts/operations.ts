@@ -4,6 +4,7 @@
  *
  * The permission list and the six roles are closed. There are no wildcards and
  * no custom roles; changing either is a contract change, not configuration.
+ * Every exported list and table is frozen, so no holder can widen it.
  */
 
 declare const brand: unique symbol;
@@ -25,7 +26,7 @@ export const projectId = (value: unknown): ProjectId => brandId<ProjectId>(value
 export const registrationId = (value: unknown): RegistrationId => brandId<RegistrationId>(value, "registration ID");
 export const accountId = (value: unknown): AccountId => brandId<AccountId>(value, "account ID");
 
-export const projectPermissions = [
+export const projectPermissions = Object.freeze([
   "project:read", "project:manage",
   "logs:read", "storage:read", "storage:manage",
   "config:read", "config:write", "profiles:select",
@@ -35,14 +36,14 @@ export const projectPermissions = [
   "attachments:read", "attachments:write",
   "secrets:read", "secrets:write",
   "roles:manage", "worker:execute",
-] as const;
+] as const);
 export type ProjectPermission = typeof projectPermissions[number];
 
-export const installationPermissions = [
+export const installationPermissions = Object.freeze([
   "accounts:manage", "projects:create", "projects:remove",
   "capacity:read", "capacity:write", "settings:write",
   "backups:manage", "workers:manage", "diagnostics:read", "vault:recover",
-] as const;
+] as const);
 export type InstallationPermission = typeof installationPermissions[number];
 
 export type Permission = ProjectPermission | InstallationPermission;
@@ -59,7 +60,7 @@ export function isInstallationPermission(value: unknown): value is InstallationP
   return typeof value === "string" && (installationPermissions as readonly string[]).includes(value);
 }
 
-export const roles = ["reader", "operator", "maintainer", "secrets", "executor", "admin"] as const;
+export const roles = Object.freeze(["reader", "operator", "maintainer", "secrets", "executor", "admin"] as const);
 export type Role = typeof roles[number];
 /** Which account kind may hold a role. Checked when granting and again on every evaluation. */
 export type RoleRecipient = "any" | "human" | "agent";
@@ -95,29 +96,29 @@ export function isRole(value: unknown): value is Role {
   return typeof value === "string" && (roles as readonly string[]).includes(value);
 }
 
-export const actorKinds = ["installation", "operator", "human", "agent"] as const;
+export const actorKinds = Object.freeze(["installation", "operator", "human", "agent"] as const);
 export type ActorKind = typeof actorKinds[number];
 /** `installation` and `operator` hold full authority; human and agent are evaluated by grants. */
 export const fullAuthorityKinds: readonly ActorKind[] = Object.freeze(["installation", "operator"]);
 
 /** Target modes. The former `legacy` mode is not part of the contract and accepts nothing. */
-export const authenticationModes = ["open", "token", "better-auth"] as const;
+export const authenticationModes = Object.freeze(["open", "token", "better-auth"] as const);
 export type AuthenticationMode = typeof authenticationModes[number];
 /**
  * Listener boundaries. `api` is the TCP HTTP API (including the browser), `mcp`
  * the TCP MCP endpoint, `worker` the remote-worker protocol, `unix` the local
  * socket, `offline` a CLI invocation holding the exclusive controller lock.
  */
-export const listenerKinds = ["api", "mcp", "worker", "unix", "offline"] as const;
+export const listenerKinds = Object.freeze(["api", "mcp", "worker", "unix", "offline"] as const);
 export type ListenerKind = typeof listenerKinds[number];
 
 /** Fresh-login window: `0 <= now - authenticatedAt < 600000` from current provider evidence. */
 export const FRESH_LOGIN_WINDOW_MS = 600_000;
 
-export const errorCategories = [
+export const errorCategories = Object.freeze([
   "unauthenticated", "forbidden", "login_stale", "not_found", "invalid_request", "conflict", "claim_held",
   "rate_limited", "busy", "unavailable", "internal", "payload_too_large", "gone", "outcome_unknown",
-] as const;
+] as const);
 export type ErrorCategory = typeof errorCategories[number];
 
 /**
@@ -137,11 +138,11 @@ export const errorCategoryStatus: Readonly<Record<ErrorCategory, number>> = Obje
  * - `inspect_first`: an effect may have happened or its cleanup is unconfirmed; inspect before any retry.
  * - `none`: repeating the same request will not succeed or must not be done.
  */
-export const retryDispositions = ["retry", "reauthenticate", "inspect_first", "none"] as const;
+export const retryDispositions = Object.freeze(["retry", "reauthenticate", "inspect_first", "none"] as const);
 export type RetryDisposition = typeof retryDispositions[number];
 
 /** For mutations. Reads report `null`. */
-export const effectStates = ["not_started", "committed", "unknown", "cleanup_unconfirmed"] as const;
+export const effectStates = Object.freeze(["not_started", "committed", "unknown", "cleanup_unconfirmed"] as const);
 export type EffectState = typeof effectStates[number];
 
 /** The released shape of every error, on every transport. */
@@ -168,7 +169,13 @@ export interface SessionDescription {
   listener: ListenerKind;
   fullAuthority: boolean;
   installationPermissions: InstallationPermission[];
-  /** Only projects the caller can see (`project:read` or full authority), sorted by ID. */
+  /**
+   * Every project visible to the caller, sorted by ID: a project on which the
+   * account holds at least one active role (any of the five project roles), every
+   * project for `admin`, every project for full authority. Visibility grants no
+   * permission: `permissions` lists what is actually held there, which may be
+   * only `worker:execute` or `secrets:*`.
+   */
   projects: { projectId: ProjectId; permissions: ProjectPermission[] }[];
   /** True when more visible projects exist than this bounded description lists. */
   projectsTruncated: boolean;

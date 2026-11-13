@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { errorCategories, errorCategoryStatus } from "@/shared/contracts/operations";
 import { ExclusiveConnectionError } from "@/server/infrastructure/sqlite/exclusive-connection";
-import { classify, OperationError, publicError } from "./errors";
+import { classify, classifyBeforeCommit, OperationError, publicError } from "./errors";
+import { releaseError } from "./release";
 
 describe("operation errors", () => {
   it("maps every category to its status", () => {
@@ -74,3 +75,74 @@ describe("operation errors", () => {
     expect(publicError(busy, "unknown")).toMatchObject({ category: "outcome_unknown", reason: "effect_interrupted" });
   });
 });
+
+describe("normalization always runs (decision I)", () => {
+  it("never releases a typed error carrying an unknown effect under its own category", () => {
+    const typed = new OperationError("conflict", "port_in_use", { effect: "unknown" });
+    const expected = { category: "outcome_unknown", status: 409, reason: "port_in_use", retry: "inspect_first", effect: "unknown" };
+    expect(typed.toPublic()).toEqual(expected);
+    expect(classify(typed, "unknown").toPublic()).toEqual(expected);
+    expect(publicError(typed, "unknown")).toEqual(expected);
+    expect(publicError(typed, null)).toEqual(expected);
+    expect(publicError(typed, "not_started")).toEqual(expected);
+    // A typed error mutated after construction is normalized from its fields, not trusted.
+    const mutated = new OperationError("internal", "x", { effect: "unknown" });
+    Object.defineProperty(mutated, "category", { value: "conflict" });
+    expect(publicError(mutated, "unknown")).toMatchObject({ category: "outcome_unknown", effect: "unknown" });
+  });
+
+  it("returns a fresh error, never the thrown object", () => {
+    const typed = new OperationError("forbidden", "x");
+    expect(classify(typed, null)).not.toBe(typed);
+  });
+});
+
+describe("total sanitization (decision S)", () => {
+  class RogueError extends OperationError {
+    override toPublic(): never { throw new Error("toPublic /secret"); }
+    override withEffect(): never { throw new Error("withEffect /secret"); }
+  }
+  const hostile = new Proxy({}, { get: () => { throw new Error("get"); }, getPrototypeOf: () => { throw new Error("proto"); },
+    getOwnPropertyDescriptor: () => { throw new Error("descriptor"); }, ownKeys: () => { throw new Error("keys"); }, has: () => { throw new Error("has"); } });
+  const accessors = Object.defineProperties(new Error("x"), {
+    name: { get: () => { throw new Error("name"); } }, code: { get: () => { throw new Error("code"); } },
+  });
+  const shape = (value: unknown) => Object.keys(value as object).sort();
+
+  it("never calls a method of a thrown value and always returns a well-formed error", () => {
+    expect(publicError(new RogueError("conflict", "rogue"), null)).toEqual({ category: "conflict", status: 409, reason: "rogue", retry: "none", effect: null });
+    expect(publicError(new RogueError("conflict", "rogue", { effect: "not_started" }), "not_started")).toMatchObject({ category: "conflict", effect: "not_started" });
+    for (const thrown of [hostile, accessors, Object.create(OperationError.prototype) as unknown, undefined, Symbol("s")]) {
+      for (const effect of [null, "not_started", "unknown", "committed", "bogus"] as const) {
+        const released = publicError(thrown, effect as never);
+        expect(shape(released)).toEqual(["category", "effect", "reason", "retry", "status"]);
+        expect(released.effect).toBe(effect === "bogus" ? null : effect);
+      }
+    }
+  });
+
+  it("releases errors totally, reading the effect only from a data property", () => {
+    const getter = Object.defineProperty({ category: "conflict" }, "effect", { enumerable: true, get: () => { throw new Error("effect"); } });
+    for (const value of [getter, hostile, null, 42, { effect: "unknown" }]) expect(shape(releaseError(value))).toEqual(["category", "effect", "reason", "retry", "status"]);
+    expect(releaseError({ effect: "unknown" })).toEqual({ category: "outcome_unknown", status: 409, reason: "unexpected_failure", retry: "inspect_first", effect: "unknown" });
+    // The outcome rules hold for released errors too.
+    expect(releaseError({ category: "conflict", status: 409, reason: "x", retry: "inspect_first", effect: "unknown" })).toMatchObject({ category: "outcome_unknown" });
+    expect(releaseError({ category: "busy", status: 503, reason: "x", retry: "retry", effect: "committed" })).toMatchObject({ category: "internal", effect: "committed" });
+    expect(releaseError({ category: "outcome_unknown", status: 409, reason: "x", retry: "inspect_first", effect: null })).toMatchObject({ category: "internal", effect: null });
+  });
+});
+
+describe("before the commit point (decision N)", () => {
+  it("keeps a typed category with not_started and makes an untyped failure internal", () => {
+    expect(classifyBeforeCommit(new OperationError("conflict", "port_in_use", { effect: "committed" })).toPublic()).toEqual({
+      category: "conflict", status: 409, reason: "port_in_use", retry: "none", effect: "not_started" });
+    expect(classifyBeforeCommit(new OperationError("busy", "worker_busy")).toPublic()).toMatchObject({ category: "busy", retry: "retry", effect: "not_started" });
+    expect(classifyBeforeCommit(new OperationError("conflict", "x", { effect: "unknown" })).toPublic()).toMatchObject({ category: "internal", effect: "not_started" });
+    expect(classifyBeforeCommit(new Error("boom")).toPublic()).toEqual({ category: "internal", status: 500, reason: "unexpected_failure", retry: "none", effect: "not_started" });
+    expect(classifyBeforeCommit(hostileValue()).toPublic()).toMatchObject({ category: "internal", effect: "not_started" });
+  });
+});
+
+function hostileValue(): unknown {
+  return new Proxy({}, { getPrototypeOf: () => { throw new Error("proto"); } });
+}

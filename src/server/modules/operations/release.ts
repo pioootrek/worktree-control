@@ -12,6 +12,8 @@ import type { ResolvedResources } from "./requirements";
 export const MAX_PAGE_SIZE = 100;
 /** Nesting bound of a released value. */
 export const MAX_RELEASE_DEPTH = 32;
+/** Bound of the number of values (objects, arrays and primitives) in one released value. */
+export const MAX_RELEASE_NODES = 100_000;
 
 export interface Page<T> { items: T[]; nextCursor: string | null }
 
@@ -90,7 +92,10 @@ export function createReleaseContext(authority: CurrentAuthority, permissions: E
 /** Copies only allowlisted keys. Used by projectors so new internal fields are never released by default. */
 export function pick<T extends object, K extends keyof T>(value: T, keys: readonly K[]): Pick<T, K> {
   const result = {} as Pick<T, K>;
-  for (const key of keys) if (Object.prototype.hasOwnProperty.call(value, key)) result[key] = value[key];
+  // Defined, not assigned: a key named `__proto__` becomes an own property that the serializer then rejects.
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) Object.defineProperty(result, key, { value: value[key], enumerable: true, writable: true, configurable: true });
+  }
   return result;
 }
 
@@ -99,16 +104,22 @@ const invalid = () => new OperationError("internal", "invalid_projection");
 /**
  * Strict serializer of released data. Accepts only plain objects (prototype
  * `Object.prototype` or `null`), dense arrays, strings, finite numbers,
- * booleans and `null`. Rejects `toJSON` (own or inherited, enumerable or not),
- * accessors, non-enumerable or symbol keys, `__proto__` keys, functions,
- * symbols, bigints, `undefined`, proxies, any other prototype, cycles and
- * nesting beyond `MAX_RELEASE_DEPTH`. Every property is read once from its
- * data descriptor, so the result cannot differ from what was checked. Returns
- * a fresh value made only of plain data.
+ * booleans and `null`. Rejects `toJSON` (own or inherited, enumerable or not,
+ * whatever its value), accessors (also on array indices), non-enumerable or
+ * symbol keys, `__proto__` keys, functions, symbols, bigints, `undefined`,
+ * proxies, typed arrays and any other prototype, cycles, nesting beyond
+ * `MAX_RELEASE_DEPTH` and more than `MAX_RELEASE_NODES` values. Every property
+ * is read once from its data descriptor, so the result cannot differ from what
+ * was checked. `-0` becomes `0`. Returns a fresh value made only of plain data.
  */
-export function serializeRelease(value: unknown, depth = 0, ancestors: Set<object> = new Set()): unknown {
+export function serializeRelease(value: unknown): unknown {
+  return serializeValue(value, 0, new Set(), { nodes: 0 });
+}
+
+function serializeValue(value: unknown, depth: number, ancestors: Set<object>, budget: { nodes: number }): unknown {
+  if (++budget.nodes > MAX_RELEASE_NODES) throw invalid();
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") { if (!Number.isFinite(value)) throw invalid(); return value; }
+  if (typeof value === "number") { if (!Number.isFinite(value)) throw invalid(); return value === 0 ? 0 : value; }
   if (typeof value !== "object") throw invalid();
   if (depth >= MAX_RELEASE_DEPTH || ancestors.has(value) || types.isProxy(value)) throw invalid();
   if ("toJSON" in value) throw invalid();
@@ -118,13 +129,14 @@ export function serializeRelease(value: unknown, depth = 0, ancestors: Set<objec
     const keys = Reflect.ownKeys(value);
     if (Array.isArray(value)) {
       if (prototype !== Array.prototype) throw invalid();
-      const length = value.length;
-      if (keys.length !== length + 1) throw invalid();
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+      const length: unknown = lengthDescriptor && "value" in lengthDescriptor ? lengthDescriptor.value : undefined;
+      if (typeof length !== "number" || keys.length !== length + 1) throw invalid();
       const result: unknown[] = [];
       for (let index = 0; index < length; index++) {
         const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
         if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) throw invalid();
-        result.push(serializeRelease(descriptor.value, depth + 1, ancestors));
+        result.push(serializeValue(descriptor.value, depth + 1, ancestors, budget));
       }
       return result;
     }
@@ -134,12 +146,28 @@ export function serializeRelease(value: unknown, depth = 0, ancestors: Set<objec
       if (typeof key !== "string" || key === "__proto__") throw invalid();
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) throw invalid();
-      result[key] = serializeRelease(descriptor.value, depth + 1, ancestors);
+      result[key] = serializeValue(descriptor.value, depth + 1, ancestors, budget);
     }
     return result;
   } finally {
     ancestors.delete(value);
   }
+}
+
+/**
+ * Canonical text of a JSON-domain value (decision V): the strict serializer
+ * first, then JSON with object keys sorted by code unit. Two values have the
+ * same canonical text exactly when the serializer produces equal plain data.
+ * Throws `internal`/`invalid_projection` for anything outside the domain.
+ */
+export function canonicalJson(value: unknown): string {
+  const encode = (item: unknown): string => {
+    if (item === null || typeof item !== "object") return JSON.stringify(item);
+    if (Array.isArray(item)) return `[${item.map(encode).join(",")}]`;
+    const record = item as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${encode(record[key])}`).join(",")}}`;
+  };
+  return encode(serializeRelease(value));
 }
 
 /**
@@ -154,27 +182,41 @@ export function releaseValue<T extends object>(value: unknown, keys: readonly st
 }
 
 const errorKeys = ["category", "status", "reason", "retry", "effect"] as const;
-const fallbackError: PublicOperationError = Object.freeze({ category: "internal", status: 500, reason: "unexpected_failure", retry: "none", effect: null });
+const REASON = /^[a-z][a-z0-9_]{0,63}$/;
+
+/** Whether a serialized error is one the contract can produce: closed vocabularies and the outcome rules. */
+function wellFormed(value: PublicOperationError): boolean {
+  const { category, status, reason, retry, effect } = value;
+  if (Object.keys(value).length !== errorKeys.length) return false;
+  if (!Object.prototype.hasOwnProperty.call(errorCategoryStatus, category) || errorCategoryStatus[category] !== status) return false;
+  if (typeof reason !== "string" || !REASON.test(reason) || !(retryDispositions as readonly string[]).includes(retry)) return false;
+  if (effect !== null && !(effectStates as readonly string[]).includes(effect)) return false;
+  const began = effect !== null && effect !== "not_started";
+  if ((effect === "unknown") !== (category === "outcome_unknown")) return false;
+  if (began && (category === "busy" || retry === "retry")) return false;
+  return !((effect === "unknown" || effect === "cleanup_unconfirmed") && retry !== "inspect_first");
+}
 
 /**
  * The release point of every error: the same strict serializer and allowlist,
- * plus the closed vocabularies. A value that fails is replaced by a generic
- * `internal` error that keeps a known effect state.
+ * plus the closed vocabularies and the outcome rules. Total: whatever `error`
+ * is or does, the result is a fresh well-formed error. A value that fails is
+ * replaced by a generic error that keeps a known effect state; the effect is
+ * read only from an own data property, inside a guard.
  */
-export function releaseError(error: PublicOperationError): PublicOperationError {
+export function releaseError(error: unknown): PublicOperationError {
   try {
     const value = releaseValue<PublicOperationError>(error, errorKeys);
-    const valid = Object.keys(value).length === errorKeys.length
-      && Object.prototype.hasOwnProperty.call(errorCategoryStatus, value.category) && errorCategoryStatus[value.category] === value.status
-      && typeof value.reason === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(value.reason)
-      && (retryDispositions as readonly string[]).includes(value.retry)
-      && (value.effect === null || (effectStates as readonly string[]).includes(value.effect));
-    if (valid) return value;
+    if (wellFormed(value)) return value;
   } catch { /* fall through */ }
-  const effect = (error as { effect?: unknown } | null)?.effect;
+  let effect: unknown = null;
+  try {
+    const descriptor = typeof error === "object" && error !== null ? Object.getOwnPropertyDescriptor(error, "effect") : undefined;
+    effect = descriptor && "value" in descriptor ? descriptor.value : null;
+  } catch { effect = null; }
   if (effect === "unknown") return { category: "outcome_unknown", status: 409, reason: "unexpected_failure", retry: "inspect_first", effect };
-  if (effect === "committed") return { ...fallbackError, effect };
-  if (effect === "cleanup_unconfirmed") return { ...fallbackError, retry: "inspect_first", effect };
-  if (effect === "not_started") return { ...fallbackError, effect };
-  return { ...fallbackError };
+  if (effect === "committed") return { category: "internal", status: 500, reason: "unexpected_failure", retry: "none", effect };
+  if (effect === "cleanup_unconfirmed") return { category: "internal", status: 500, reason: "unexpected_failure", retry: "inspect_first", effect };
+  if (effect === "not_started") return { category: "internal", status: 500, reason: "unexpected_failure", retry: "none", effect };
+  return { category: "internal", status: 500, reason: "unexpected_failure", retry: "none", effect: null };
 }

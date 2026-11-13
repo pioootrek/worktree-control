@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { OperationError } from "./errors";
 import { InMemoryResolver, P } from "./operations-fixture";
-import { resolveAll, sameResolution, type ResourceResolver } from "./resolver";
+import { copyResolution, resolveAll, sameResolution, type ResourceResolver } from "./resolver";
+import type { ResolvedResources } from "./requirements";
 
 const projectA = P("project-a");
 const projectB = P("project-b");
@@ -48,5 +49,40 @@ describe("resource resolution", () => {
     expect(sameResolution(before, resolveAll(resolver, refs))).toBe(false);
     resolver.delete(refs.r);
     expect(reason(() => resolveAll(resolver, refs))).toBe("not_found:resource_not_found");
+  });
+});
+
+describe("resource slots (decision Q)", () => {
+  const resolver = () => new InMemoryResolver().addProject(projectA).addProject(projectB)
+    .put({ kind: "registration", id: "reg-a" }, projectA).put({ kind: "registration", id: "reg-b" }, projectB);
+
+  it("rejects a __proto__ slot, a prototype smuggled by a literal and any other invalid name", () => {
+    const ref = { kind: "registration" as const, id: "reg-b" };
+    const computed = { ["__proto__"]: ref, a: { kind: "registration" as const, id: "reg-a" } };
+    expect(Object.keys(computed)).toContain("__proto__");
+    const literal = { __proto__: ref, a: { kind: "registration" as const, id: "reg-a" } };
+    for (const refs of [computed, literal, { "": ref }, { "1slot": ref }, { "bad-slot": ref }, { _hidden: ref }, { [Symbol("s")]: ref }]) {
+      expect(reason(() => resolveAll(resolver(), refs as never))).toBe("internal:invalid_resource_slot");
+    }
+  });
+
+  it("returns a frozen null-prototype record", () => {
+    const resolved = resolveAll(resolver(), { a: { kind: "registration", id: "reg-a" } });
+    expect(Object.getPrototypeOf(resolved)).toBeNull();
+    expect(Object.isFrozen(resolved)).toBe(true);
+    expect(Object.isFrozen(resolved.a)).toBe(true);
+  });
+
+  it("compares every slot, whatever its name, and copies stored records strictly", () => {
+    const before = resolveAll(resolver(), { a: { kind: "registration", id: "reg-a" } });
+    const extra = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(extra, "a", { value: before.a, enumerable: true });
+    Object.defineProperty(extra, "__proto__", { value: before.a, enumerable: true });
+    expect(sameResolution(before, extra as ResolvedResources)).toBe(false);
+    expect(sameResolution(extra as ResolvedResources, before)).toBe(false);
+    expect(sameResolution(before, resolveAll(resolver(), { a: { kind: "registration", id: "reg-a" } }))).toBe(true);
+    expect(copyResolution(structuredClone(before))).toEqual(before);
+    expect(copyResolution(extra)).toBeNull();
+    expect(copyResolution({ a: { ...before.a, projectId: 5 } })).toBeNull();
   });
 });

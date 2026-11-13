@@ -91,3 +91,52 @@ describe("grant validation", () => {
     expect(effective.project(projectA).has("tests:run")).toBe(false);
   });
 });
+
+describe("permission sets are immutable and fresh (decision P)", () => {
+  it("cannot be widened by a holder, for an unknown account, a known account or full authority", () => {
+    const ghost: Actor = { kind: "human", accountId: A("ghost") };
+    for (const actor of [ghost, human, { kind: "installation" } as Actor]) {
+      const grants = world().grant({ accountId: alice, role: "reader", scope: onA });
+      const first = effectivePermissions(actor, grants);
+      for (const set of [first.installation, first.everyProject, first.project(projectA)]) {
+        expect(() => (set as unknown as Set<string>).add("accounts:manage")).toThrow(TypeError);
+        expect(() => Set.prototype.add.call(set, "accounts:manage")).toThrow(TypeError);
+        expect(() => Set.prototype.delete.call(set, "project:read")).toThrow(TypeError);
+      }
+      expect(Object.isFrozen(first)).toBe(true);
+      const second = effectivePermissions(actor, grants);
+      expect(second).not.toBe(first);
+      expect(second.installation).not.toBe(first.installation);
+      expect(first.project(projectA)).not.toBe(first.project(projectA));
+    }
+    expect(effectivePermissions(ghost, world()).installation.has("accounts:manage")).toBe(false);
+  });
+
+  it("keeps the frozen contract tables closed", async () => {
+    const contracts = await import("@/shared/contracts/operations");
+    for (const list of [contracts.projectPermissions, contracts.installationPermissions, contracts.roles, contracts.effectStates,
+      contracts.retryDispositions, contracts.errorCategories, contracts.actorKinds, contracts.authenticationModes, contracts.listenerKinds]) {
+      expect(Object.isFrozen(list)).toBe(true);
+    }
+    expect(() => (contracts.effectStates as unknown as string[]).push("whatever")).toThrow(TypeError);
+  });
+});
+
+describe("visibility (decision M)", () => {
+  it("is any valid project role on the project, admin everywhere, or full authority; never a permission", () => {
+    const grants = world()
+      .grant({ accountId: bot, role: "executor", scope: onA })
+      .grant({ accountId: alice, role: "secrets", scope: { kind: "project", projectId: projectB } })
+      .grant({ accountId: alice, role: "executor", scope: onA });
+    const botView = effectivePermissions(agent, grants);
+    expect([botView.visible(projectA), botView.visible(projectB)]).toEqual([true, false]);
+    expect([...botView.project(projectA)]).toEqual(["worker:execute"]);
+    const aliceView = effectivePermissions(human, grants);
+    // executor is not valid for a human: no visibility from it.
+    expect([aliceView.visible(projectA), aliceView.visible(projectB)]).toEqual([false, true]);
+    expect([...aliceView.project(projectB)]).toEqual(["secrets:read", "secrets:write"]);
+    const admin = effectivePermissions(human, world().grant({ accountId: alice, role: "admin", scope: whole }));
+    expect([admin.visible(projectA), admin.visible(projectB)]).toEqual([true, true]);
+    expect(effectivePermissions({ kind: "operator", via: "unix" }, world()).visible(projectB)).toBe(true);
+  });
+});

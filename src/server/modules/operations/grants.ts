@@ -27,10 +27,16 @@ export interface EffectivePermissions {
   installation: ReadonlySet<InstallationPermission>;
   /** Project permissions held on every project (from the installation role). */
   everyProject: ReadonlySet<ProjectPermission>;
+  /** Permissions held on one project; a fresh immutable set on every call. */
   project(projectId: ProjectId): ReadonlySet<ProjectPermission>;
+  /**
+   * Visibility (decision M): at least one active project role on this project,
+   * an active `admin` grant, or full authority. Visibility grants no permission.
+   */
+  visible(projectId: ProjectId): boolean;
 }
 
-const SECRETS: readonly ProjectPermission[] = ["secrets:read", "secrets:write"];
+const SECRETS: readonly ProjectPermission[] = Object.freeze(["secrets:read", "secrets:write"]);
 
 /** Whether a role may be granted to an account of this kind in this scope. Used by grant operations too. */
 export function grantAllowed(role: Role, recipientKind: "human" | "agent", scope: GrantScope): boolean {
@@ -39,14 +45,41 @@ export function grantAllowed(role: Role, recipientKind: "human" | "agent", scope
   return definition.recipient === "any" || definition.recipient === recipientKind;
 }
 
-const ALL_PROJECT: ReadonlySet<ProjectPermission> = new Set(projectPermissions);
-const ALL_INSTALLATION: ReadonlySet<InstallationPermission> = new Set(installationPermissions);
-const fullAuthority: EffectivePermissions = Object.freeze({
-  installation: ALL_INSTALLATION, everyProject: ALL_PROJECT, project: () => ALL_PROJECT,
-});
-const none: EffectivePermissions = Object.freeze({
-  installation: new Set<InstallationPermission>(), everyProject: new Set<ProjectPermission>(), project: () => new Set<ProjectPermission>(),
-});
+/**
+ * An immutable set: no mutating method exists, the storage is private and the
+ * instance and its prototype are frozen. `Set.prototype.add.call(...)` on it
+ * throws, because it is not a `Set`.
+ */
+class FrozenSet<T> implements ReadonlySet<T> {
+  readonly #items: Set<T>;
+  constructor(items: Iterable<T>) {
+    this.#items = new Set(items);
+    Object.freeze(this);
+  }
+  get size(): number { return this.#items.size; }
+  has(value: T): boolean { return this.#items.has(value); }
+  forEach(callback: (value: T, key: T, set: ReadonlySet<T>) => void, thisArg?: unknown): void {
+    for (const value of this.#items) callback.call(thisArg, value, value, this);
+  }
+  entries(): SetIterator<[T, T]> { return this.#items.entries(); }
+  keys(): SetIterator<T> { return this.#items.keys(); }
+  values(): SetIterator<T> { return this.#items.values(); }
+  [Symbol.iterator](): SetIterator<T> { return this.#items.values(); }
+}
+Object.freeze(FrozenSet.prototype);
+
+function permissionsOf(installation: Iterable<InstallationPermission>, everyProject: readonly ProjectPermission[],
+  byProject: ReadonlyMap<ProjectId, readonly ProjectPermission[]>, visible: (projectId: ProjectId) => boolean): EffectivePermissions {
+  // Every call builds new frozen values; nothing mutable is shared between decisions.
+  return Object.freeze({
+    installation: new FrozenSet(installation),
+    everyProject: new FrozenSet(everyProject),
+    project: (projectId: ProjectId): ReadonlySet<ProjectPermission> => new FrozenSet([...everyProject, ...(byProject.get(projectId) ?? [])]),
+    visible: (projectId: ProjectId): boolean => visible(projectId),
+  });
+}
+
+const isText = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 
 /**
  * Effective permissions of an actor. Full authority holds everything. For a
@@ -55,35 +88,39 @@ const none: EffectivePermissions = Object.freeze({
  * and its recipient kind allows the account. A project grant yields only
  * project permissions on that project; the installation role yields its
  * installation permissions and its project permissions on every project, never
- * `secrets:*`.
+ * `secrets:*`. Every call returns fresh, frozen values.
  */
 export function effectivePermissions(actor: Actor, grants: GrantsSnapshot): EffectivePermissions {
-  if (actor.kind === "installation" || actor.kind === "operator") return fullAuthority;
+  if (actor.kind === "installation" || actor.kind === "operator") {
+    return permissionsOf(installationPermissions, [...projectPermissions], new Map(), () => true);
+  }
+  const none = () => permissionsOf([], [], new Map(), () => false);
   const storedKind = grants.accountKind(actor.accountId);
-  if (storedKind === null || storedKind !== actor.kind) return none;
+  if (storedKind === null || storedKind !== actor.kind) return none();
   const installation = new Set<InstallationPermission>();
   const everyProject = new Set<ProjectPermission>();
-  const byProject = new Map<ProjectId, Set<ProjectPermission>>();
+  const byProject = new Map<ProjectId, ProjectPermission[]>();
+  const visibleProjects = new Set<ProjectId>();
+  let everywhere = false;
   for (const grant of grants.grantsFor(actor.accountId)) {
     if (grant.accountId !== actor.accountId || !isRole(grant.role) || !grantAllowed(grant.role, storedKind, grant.scope)) continue;
+    const scopeKind = grant.scope.kind;
+    const grantProject = scopeKind === "project" ? grant.scope.projectId : null;
+    if (scopeKind === "project" && !isText(grantProject)) continue;
+    if (scopeKind === "installation") everywhere = true;
+    else visibleProjects.add(grantProject as ProjectId);
     for (const permission of roleDefinitions[grant.role].permissions) {
       const scope = permissionScope(permission);
-      if (grant.scope.kind === "installation") {
+      if (scopeKind === "installation") {
         if (scope === "installation") installation.add(permission as InstallationPermission);
         else if (!SECRETS.includes(permission as ProjectPermission)) everyProject.add(permission as ProjectPermission);
       } else if (scope === "project") {
-        const set = byProject.get(grant.scope.projectId) ?? new Set<ProjectPermission>();
-        set.add(permission as ProjectPermission);
-        byProject.set(grant.scope.projectId, set);
+        const list = byProject.get(grantProject as ProjectId) ?? [];
+        if (!list.includes(permission as ProjectPermission)) list.push(permission as ProjectPermission);
+        byProject.set(grantProject as ProjectId, list);
       }
     }
   }
-  return Object.freeze({
-    installation, everyProject,
-    project(projectId: ProjectId): ReadonlySet<ProjectPermission> {
-      const own = byProject.get(projectId);
-      if (!own) return everyProject;
-      return new Set([...everyProject, ...own]);
-    },
-  });
+  const every = [...everyProject];
+  return permissionsOf(installation, every, byProject, projectId => everywhere || visibleProjects.has(projectId));
 }
