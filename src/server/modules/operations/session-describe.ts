@@ -8,6 +8,7 @@ import { OperationError } from "./errors";
 import type { ReadOperation } from "./operation";
 import { pick } from "./release";
 import { authenticated } from "./requirements";
+import { synchronous } from "./synchronous";
 
 /** Upper bound of projects listed in one description. */
 export const MAX_DESCRIBED_PROJECTS = 500;
@@ -35,7 +36,7 @@ const definition: ReadOperation<Record<string, never>, SessionDescription, Sessi
   read(_input, scope) {
     const { authority, release, resolver, now } = scope;
     const { actor } = authority;
-    const visible = [...new Set(resolver.listProjects())].filter(id => release.visible(id)).sort();
+    const visible = [...new Set(synchronous(resolver.listProjects(), "resolver_not_synchronous"))].filter(id => release.visible(id)).sort();
     const projects = visible.slice(0, MAX_DESCRIBED_PROJECTS).map((projectId: ProjectId) => ({
       projectId, permissions: projectPermissions.filter(permission => release.can(permission, projectId)),
     }));

@@ -1,6 +1,7 @@
 import { authenticationModes, listenerKinds, type AccountId, type AuthenticationMode, type ListenerKind } from "@/shared/contracts/operations";
 import { pathActorKind, resolveAcceptance, type AcceptedPath, type PresentedCredentials } from "./acceptance";
 import { OperationError } from "./errors";
+import { absorb, holds, isThenable } from "./synchronous";
 
 /** The four actor kinds. A worker is an installation (open/token) or an agent holding `executor`. */
 export type Actor =
@@ -156,6 +157,8 @@ interface Verified { identity: CredentialIdentity; actor: Actor; evidence: Provi
 
 /** Copies and validates one verifier answer for `path`. `null` when anything is malformed or does not fit the path. */
 function copyVerification(path: AcceptedPath, value: VerifiedCredential | null): Verified | null {
+  // A verifier is synchronous (decision W): a thenable answer is no answer, and its rejection is absorbed.
+  if (isThenable(value)) { absorb(value); return null; }
   if (typeof value !== "object" || value === null) return null;
   const source = value as unknown as Record<string, unknown>;
   const identity = copyIdentity(source.identity);
@@ -205,7 +208,8 @@ export interface ListenerBoundary {
 /**
  * Bootstrap creates one boundary per listener with the mode active at start.
  * `open()` reports whether this listener is still serving (a closed unix
- * listener must not keep operator authority alive).
+ * listener must not keep operator authority alive). Only a synchronous `true`
+ * means open; anything else, a promise included, is closed (decision W).
  */
 export function createListenerBoundary(options: {
   mode: AuthenticationMode;
@@ -225,7 +229,7 @@ export function createListenerBoundary(options: {
       const { path } = acceptance;
       if (path === "operator_unix") {
         const current = (): CurrentAuthority => {
-          if (!open()) throw unauthenticated("listener_closed");
+          if (!holds(open())) throw unauthenticated("listener_closed");
           return authority({ kind: "operator", via: "unix" }, mode, listener, null, null);
         };
         current();
@@ -237,7 +241,7 @@ export function createListenerBoundary(options: {
       const baseline = copyVerification(path, verifier.verify(path, secret));
       if (!baseline) throw unauthenticated("invalid_credential");
       const current = (): CurrentAuthority => {
-        if (!open()) throw unauthenticated("listener_closed");
+        if (!holds(open())) throw unauthenticated("listener_closed");
         // The verifier receives its own copy of the identity, never the baseline object.
         const now = copyVerification(path, verifier.current({ ...baseline.identity }));
         if (!now || !sameIdentity(baseline.identity, now.identity) || !sameActor(baseline.actor, now.actor)) {
@@ -255,10 +259,11 @@ export function createListenerBoundary(options: {
 export function mintOfflineContext(options: { mode: AuthenticationMode; lockHeld: () => boolean }): AuthenticationContext {
   const { mode, lockHeld } = options;
   const none: PresentedCredentials = { bearers: [], providerSession: null, legacySecret: false, browserHeaders: false };
-  const acceptance = resolveAcceptance(mode, "offline", none, lockHeld());
+  // Only a synchronous `true` means the lock is held; a promise is not (decision W).
+  const acceptance = resolveAcceptance(mode, "offline", none, holds(lockHeld()));
   if (!acceptance.accepted) throw unauthenticated(acceptance.reason);
   const current = (): CurrentAuthority => {
-    if (!lockHeld()) throw unauthenticated("offline_lock_not_held");
+    if (!holds(lockHeld())) throw unauthenticated("offline_lock_not_held");
     return authority({ kind: "operator", via: "offline" }, mode, "offline", null, null);
   };
   return mint(mode, "offline", current);

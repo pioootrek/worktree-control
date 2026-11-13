@@ -3,6 +3,7 @@ import {
   type AccountId, type InstallationPermission, type ProjectId, type ProjectPermission, type Role, type RoleDefinition,
 } from "@/shared/contracts/operations";
 import type { Actor } from "./authentication-context";
+import { synchronous } from "./synchronous";
 
 export type GrantScope = { kind: "project"; projectId: ProjectId } | { kind: "installation" };
 /** One stored role assignment. Stored data is re-validated on every evaluation. */
@@ -95,14 +96,15 @@ export function effectivePermissions(actor: Actor, grants: GrantsSnapshot): Effe
     return permissionsOf(installationPermissions, [...projectPermissions], new Map(), () => true);
   }
   const none = () => permissionsOf([], [], new Map(), () => false);
-  const storedKind = grants.accountKind(actor.accountId);
+  // The snapshot is synchronous (decision W): a thenable is `internal`, never an empty or partial grant set.
+  const storedKind = synchronous(grants.accountKind(actor.accountId), "grants_not_synchronous");
   if (storedKind === null || storedKind !== actor.kind) return none();
   const installation = new Set<InstallationPermission>();
   const everyProject = new Set<ProjectPermission>();
   const byProject = new Map<ProjectId, ProjectPermission[]>();
   const visibleProjects = new Set<ProjectId>();
   let everywhere = false;
-  for (const grant of grants.grantsFor(actor.accountId)) {
+  for (const grant of synchronous(grants.grantsFor(actor.accountId), "grants_not_synchronous")) {
     if (grant.accountId !== actor.accountId || !isRole(grant.role) || !grantAllowed(grant.role, storedKind, grant.scope)) continue;
     const scopeKind = grant.scope.kind;
     const grantProject = scopeKind === "project" ? grant.scope.projectId : null;

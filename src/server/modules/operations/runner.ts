@@ -9,6 +9,7 @@ import type { EffectOutcome, Lease, MutationOperation, Operation, PhaseScope, Re
 import { canonicalJson, createReleaseContext, releaseError, releaseValue, serializeRelease, type ReleaseContext } from "./release";
 import { collectionPermissions, type OperationRequirement, type ResolvedResources, type ResourceRef } from "./requirements";
 import { copyResolution, resolveAll, sameResolution, type ResourceResolver } from "./resolver";
+import { absorb, isThenable, synchronous } from "./synchronous";
 
 /**
  * Identifies one idempotent request. `principal` is never caller-supplied:
@@ -46,7 +47,9 @@ export interface IdempotencyRecord {
 /**
  * Admitted idempotency reservations. Every call happens inside an admitted
  * phase and is synchronous, so a read and the following write of one phase
- * are atomic against other requests. The adapter stores copies, never
+ * are atomic against other requests. A call that returns a promise or other
+ * thenable is a failed call (decision W): its rejection is absorbed and the
+ * runner proceeds as if the call had thrown. The adapter stores copies, never
  * references; the runner validates and copies every record it reads back
  * (a malformed record is `internal`/`invalid_idempotency_record`). Adapter obligations (not implemented in this slice): bound
  * retention; after a controller restart, delete `reserved` records (their
@@ -130,17 +133,6 @@ function isLease(value: unknown): value is Lease {
   return typeof value === "object" && value !== null && typeof (value as { release?: unknown }).release === "function";
 }
 
-function isThenable(value: unknown): boolean {
-  try {
-    return (typeof value === "object" || typeof value === "function") && value !== null && typeof (value as { then?: unknown }).then === "function";
-  } catch { return true; }
-}
-
-/** Marks a promise (or thenable) returned where none is allowed as handled, so its rejection is never unhandled. */
-function absorb(value: unknown): void {
-  try { Promise.resolve(value).then(undefined, () => undefined); } catch { /* nothing to absorb */ }
-}
-
 /** Settles with the promise, or with `null` once the signal aborts. A late rejection is always handled. */
 function untilAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<{ value: T } | null> {
   if (signal.aborted) { promise.catch(() => undefined); return Promise.resolve(null); }
@@ -193,8 +185,8 @@ export class OperationRunner {
   private admit(context: AuthenticationContext, requirement: OperationRequirement, refs: Readonly<Record<string, ResourceRef>>): Phase {
     const authority = currentAuthority(context);
     const resources = resolveAll(this.runtime.resolver, refs);
-    const now = this.runtime.now();
-    const grants = this.runtime.grants();
+    const now = synchronous(this.runtime.now(), "runtime_not_synchronous");
+    const grants = synchronous(this.runtime.grants(), "runtime_not_synchronous");
     const decision = decide({ authority, requirement, resources, grants, now });
     if (!decision.allowed) throw new OperationError(decision.category, decision.reason);
     const release = createReleaseContext(authority, decision.permissions, resources, collectionPermissions(requirement.require));
@@ -214,11 +206,19 @@ export class OperationRunner {
     return { authority: phase.authority, resources: phase.resources, release: phase.release, resolver: this.runtime.resolver, now: phase.now, signal };
   }
 
+  /** A thrown value is `invalid_request`; a thenable is a broken definition, `internal`/`parse_not_synchronous`. */
   private parse<I>(parse: (raw: unknown) => I, raw: unknown): I {
-    try { return parse(raw); } catch (error) {
+    let input: I;
+    try { input = parse(raw); } catch (error) {
       const typed = classifyBeforeCommit(error);
       throw new OperationError("invalid_request", typed.category === "invalid_request" ? typed.reason : "invalid_input");
     }
+    return synchronous(input, "parse_not_synchronous");
+  }
+
+  /** The operation's references, from a synchronous `resources(input)`. */
+  private references<I>(operation: { resources(input: I): Readonly<Record<string, ResourceRef>> }, input: I): Readonly<Record<string, ResourceRef>> {
+    return synchronous(operation.resources(input), "resources_not_synchronous");
   }
 
   /** Idempotency keys are accepted only by mutations that declare `retain`. */
@@ -242,7 +242,7 @@ export class OperationRunner {
     if (!decision.allowed) throw new OperationError(decision.category, decision.reason);
     if (!sameResolution(historical, phase.resources)) throw new OperationError("conflict", "resource_changed");
     const release = createReleaseContext(phase.authority, decision.permissions, historical, collectionPermissions(operation.requirement.require));
-    return releaseValue<P>(operation.project(record.result as R, release), operation.publicKeys);
+    return releaseValue<P>(synchronous(operation.project(record.result as R, release), "projection_not_synchronous"), operation.publicKeys);
   }
 
   async run<I, R, P extends object>(operation: Operation<I, R, P>, context: AuthenticationContext, raw: unknown, options: RunOptions = {}): Promise<RunResult<P>> {
@@ -260,12 +260,12 @@ export class OperationRunner {
     try {
       this.idempotency(false, options.idempotencyKey);
       const input = this.parse(operation.parse, raw);
-      const refs = operation.resources(input);
+      const refs = this.references(operation, input);
       const value = await this.runtime.admission.run(() => {
         const phase = this.admit(context, operation.requirement, refs);
         const result = operation.read(input, this.scope(phase, signal));
         if (isThenable(result)) { absorb(result); throw new OperationError("internal", "read_not_synchronous"); }
-        return releaseValue<P>(operation.project(result, phase.release), operation.publicKeys);
+        return releaseValue<P>(synchronous(operation.project(result, phase.release), "projection_not_synchronous"), operation.publicKeys);
       }, { signal });
       return { ok: true, value, replayed: false };
     } catch (error) {
@@ -287,12 +287,16 @@ export class OperationRunner {
       /** Resources of the phase that admitted the effect (its commit point). */
       resources?: ResolvedResources;
     } = { effect: "not_started", recorded: false };
-    /** Releases a held lease exactly once. `false` when the release threw. */
+    /**
+     * Releases a held lease exactly once. `false` when the release threw or
+     * returned a thenable (decision W): its rejection is absorbed and the
+     * release counts as unconfirmed, never as done.
+     */
     const releaseLease = (): boolean => {
       const lease = state.lease;
       state.lease = undefined;
       if (!lease) return true;
-      try { lease.release(); return true; } catch {
+      try { synchronous(lease.release(), "lease_release_not_synchronous"); return true; } catch {
         if (state.effect === "committed") state.effect = "cleanup_unconfirmed";
         return false;
       }
@@ -311,14 +315,14 @@ export class OperationRunner {
         try { source = serializeRelease(raw); print = canonicalJson(source); } catch { throw new OperationError("invalid_request", "invalid_input"); }
       }
       const input = this.parse(operation.parse, source);
-      const refs = operation.resources(input);
+      const refs = this.references(operation, input);
 
       // 1. Admission: authority, resources, requirement; the idempotency reservation or a replay.
       const first = await admission.run(() => {
         const phase = this.admit(context, operation.requirement, refs);
         if (store && idempotencyKey !== undefined) {
           const key: IdempotencyKey = Object.freeze({ operationId: operation.id, principal: principalKey(phase.authority), idempotencyKey });
-          const record = readRecord(store.get({ ...key }));
+          const record = readRecord(synchronous(store.get({ ...key }), "idempotency_store_not_synchronous"));
           if (record) {
             if (record.fingerprint !== print) throw new OperationError("conflict", "idempotency_conflict");
             if (record.state === "completed") return { kind: "replay" as const, value: this.replay(operation, phase, record) };
@@ -326,8 +330,9 @@ export class OperationRunner {
             throw new OperationError("conflict", "request_in_progress");
           }
           const attempt = randomUUID();
-          store.put({ ...key }, { attempt, fingerprint: print, resources: phase.resources, state: "reserved" });
+          // Owned before the write: a write that lands and then throws is still given back in `finally`.
           state.reservation = { store, key, attempt, fingerprint: print };
+          synchronous(store.put({ ...key }, { attempt, fingerprint: print, resources: phase.resources, state: "reserved" }), "idempotency_store_not_synchronous");
         }
         return { kind: "fresh" as const, phase };
       }, { signal });
@@ -359,7 +364,8 @@ export class OperationRunner {
       const cross = (resources: ResolvedResources) => {
         const reservation = state.reservation;
         if (reservation) {
-          reservation.store.put({ ...reservation.key }, { attempt: reservation.attempt, fingerprint: reservation.fingerprint, resources, state: "started" });
+          synchronous(reservation.store.put({ ...reservation.key }, { attempt: reservation.attempt, fingerprint: reservation.fingerprint, resources, state: "started" }),
+            "idempotency_store_not_synchronous");
         }
         state.resources = resources;
         state.effect = "unknown";
@@ -444,16 +450,18 @@ export class OperationRunner {
       //    admission and without an authority check: finalization, then the
       //    lease release, then the idempotency record (decision R). A failed
       //    finalization or lease release records `unknown`, never `completed`.
+      //    Each step is confirmed only when its synchronous callback returned
+      //    normally; a thenable is a failed step (decision W).
       const reservation = state.reservation;
       if (operation.finalize || reservation) {
         try {
           await this.complete(() => {
             let failed = false;
-            try { operation.finalize?.(input, settled, { resources: effectResources }); } catch { failed = true; }
+            try { synchronous(operation.finalize?.(input, settled, { resources: effectResources }), "finalize_not_synchronous"); } catch { failed = true; }
             if (!releaseLease()) failed = true;
             if (reservation) {
-              reservation.store.put({ ...reservation.key }, settled.ok && !failed
-                ? finalRecord("completed", effectResources, settled.value) : finalRecord("unknown", effectResources));
+              synchronous(reservation.store.put({ ...reservation.key }, settled.ok && !failed
+                ? finalRecord("completed", effectResources, settled.value) : finalRecord("unknown", effectResources)), "idempotency_store_not_synchronous");
               state.recorded = true;
             }
             if (failed) throw new OperationError("unavailable", "finalization_unconfirmed", { effect: "cleanup_unconfirmed" });
@@ -470,7 +478,7 @@ export class OperationRunner {
         if (!sameResolution(effectResources, phase.resources)) throw new OperationError("conflict", "resource_changed");
         if (state.effect === "cleanup_unconfirmed") throw new OperationError("unavailable", "finalization_unconfirmed", { effect: state.effect });
         if (!settled.ok) throw settled.error;
-        return releaseValue<P>(operation.project(settled.value, phase.release), operation.publicKeys);
+        return releaseValue<P>(synchronous(operation.project(settled.value, phase.release), "projection_not_synchronous"), operation.publicKeys);
       }, { reserved: true });
       return { ok: true, value, replayed: false };
     } catch (error) {
@@ -482,11 +490,13 @@ export class OperationRunner {
         try {
           if (state.effect === "not_started") {
             // An attempt that never crossed its commit point gives its reservation back, so a retry runs fresh.
-            await this.complete(() => reservation.store.release({ ...reservation.key }, reservation.attempt));
+            await this.complete(() => { synchronous(reservation.store.release({ ...reservation.key }, reservation.attempt), "idempotency_store_not_synchronous"); });
           } else {
             // The effect may have begun but its final state was never written: never leave a replayable record.
             const resources = state.resources;
-            if (resources) await this.complete(() => { reservation.store.put({ ...reservation.key }, finalRecord("unknown", resources)); });
+            if (resources) {
+              await this.complete(() => { synchronous(reservation.store.put({ ...reservation.key }, finalRecord("unknown", resources)), "idempotency_store_not_synchronous"); });
+            }
           }
         } catch {
           // The record stays as it was (`reserved` or `started`); later requests see `request_in_progress` until the adapter clears it.
@@ -514,7 +524,10 @@ export class OperationRunner {
   private disposer(operationId: string, iterator: AsyncIterator<unknown>): () => Promise<boolean> {
     const disposeTimeoutMs = this.runtime.disposeTimeoutMs ?? 1_000;
     const report = (kind: "rejected" | "timed_out") => {
-      try { this.runtime.observer.streamDisposalFailed(Object.freeze({ operationId, kind })); } catch { /* an observer cannot change the stream */ }
+      try {
+        const returned: unknown = this.runtime.observer.streamDisposalFailed(Object.freeze({ operationId, kind }));
+        if (isThenable(returned)) absorb(returned);
+      } catch { /* an observer cannot change the stream */ }
     };
     let disposal: Promise<boolean> | null = null;
     return () => {
@@ -570,12 +583,14 @@ export class OperationRunner {
     try {
       this.idempotency(false, options.idempotencyKey);
       const input = this.parse(operation.parse, raw);
-      const refs = operation.resources(input);
+      const refs = this.references(operation, input);
       opened = await admission.run(() => {
         const phase = this.admit(context, operation.requirement, refs);
-        const source = operation.open(input, this.scope(phase, signal));
+        const source = synchronous(operation.open(input, this.scope(phase, signal)), "invalid_stream");
         const iterator: unknown = source[Symbol.asyncIterator]();
         if (typeof iterator !== "object" || iterator === null) throw new OperationError("internal", "invalid_stream");
+        // An iterator is never itself a thenable; one that is cannot be told apart from an unfinished step.
+        if (isThenable(iterator)) { absorb(iterator); throw new OperationError("internal", "invalid_stream"); }
         created.iterator = iterator as AsyncIterator<E>;
         if (typeof (iterator as AsyncIterator<E>).next !== "function") throw new OperationError("internal", "invalid_stream");
         return { refs, phase, iterator: iterator as AsyncIterator<E> };
@@ -654,7 +669,7 @@ export class OperationRunner {
             if (finished) return null;
             const phase = this.admit(context, operation.requirement, refs);
             if (!sameResolution(opened.phase.resources, phase.resources)) throw new OperationError("conflict", "resource_changed");
-            const projected = operation.projectEvent(value as E, phase.release);
+            const projected = synchronous(operation.projectEvent(value as E, phase.release), "projection_not_synchronous");
             return projected === null ? null : releaseValue<P>(projected, operation.publicKeys);
           }, { signal: stop.signal });
         } catch (error) {
