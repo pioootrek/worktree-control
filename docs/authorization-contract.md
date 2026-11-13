@@ -640,6 +640,7 @@ These are not implemented here. The slices that mount the contract own them.
 
 - Store adapters: the grants snapshot, resolver, credential verifier and
   idempotency store exist only as ports and in-memory test doubles.
-- The disposition of the 204 current operations.
+- The disposition of the 204 current operations: a revised draft under review
+  in [authorization operation dispositions](authorization-operation-dispositions.md).
 - Admin without `secrets` and reader with `logs:read` do not guarantee
   non-disclosure of secrets that an application prints into its logs.
