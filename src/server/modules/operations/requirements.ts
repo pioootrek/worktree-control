@@ -8,17 +8,57 @@ import type { CoordinationSessionRef } from "./authentication-context";
  * Typed reference to something an operation acts on. Each kind resolves in its
  * own namespace to exactly one project or to not-found.
  */
-export type ResourceKind = "project" | "registration" | "claim" | "test_run" | "profile" | "vault_entry" | "knowledge_record" | "worker_attempt";
+export type ResourceKind =
+  | "project" | "registration" | "claim" | "test_run" | "profile" | "vault_entry" | "knowledge_record" | "worker_attempt"
+  | "project_claim" | "schedule" | "remote_request" | "test_intent";
 export const resourceKinds: readonly ResourceKind[] = Object.freeze([
   "project", "registration", "claim", "test_run", "profile", "vault_entry", "knowledge_record", "worker_attempt",
+  "project_claim", "schedule", "remote_request", "test_intent",
 ]);
+/**
+ * A typed reference. Kinds added by the slice 4 contract extensions:
+ *
+ * - `project_claim`: the claim slot of one project; its ID is the project ID.
+ *   It resolves while the project exists, to that project, with a `claim`
+ *   relation whose holder is `null` when no claim exists. Absence of a claim is
+ *   therefore a resolved, versioned fact, never a missing resource.
+ * - `schedule`: an export schedule, execution or artifact, with its durable owner.
+ * - `remote_request`: a remote verification request, with its stored submitter.
+ * - `test_intent`: a saved original test-run intent, with its origin.
+ */
 export interface ResourceRef { kind: ResourceKind; id: string }
+
+/**
+ * A principal stored durably with a resource (a schedule owner, a request
+ * submitter, an intent origin). Never a session: an account, or one of the two
+ * full-authority actor kinds.
+ */
+export type StoredPrincipal = { kind: "account"; accountId: AccountId } | { kind: "installation" } | { kind: "operator" };
+
+/**
+ * Origin of a saved test-run intent (I1, `intent_origin`). The digest binds the
+ * other fields under an explicit digest version (`intentOriginDigest`).
+ */
+export interface IntentOrigin {
+  principal: StoredPrincipal;
+  credentialId: string;
+  credentialGeneration: number;
+  projectId: ProjectId;
+  worktree: string;
+  preset: string;
+  key: string;
+  digest: string;
+  digestVersion: number;
+}
 
 /** Relation facts used by ownership and assignment predicates. */
 export type ResourceRelation =
   | { kind: "claim"; holder: CoordinationSessionRef | null }
   | { kind: "test_run"; origin: { sessionId: string; credentialId: string } | null }
-  | { kind: "worker_attempt"; assignee: { accountId: AccountId | null; sessionId: string } | null };
+  | { kind: "worker_attempt"; assignee: { accountId: AccountId | null; sessionId: string } | null }
+  | { kind: "schedule"; owner: StoredPrincipal }
+  | { kind: "remote_request"; submitter: StoredPrincipal }
+  | { kind: "test_intent"; origin: IntentOrigin };
 
 export interface ResolvedResource {
   readonly ref: ResourceRef;
@@ -47,7 +87,9 @@ export type ResolvedResources = Readonly<Record<string, ResolvedResource>>;
  */
 export const isSlotName = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value);
 
-export type PredicateName = "claim_holder" | "run_originating_session" | "worker_assignment";
+export type PredicateName =
+  | "claim_holder" | "run_originating_session" | "worker_assignment"
+  | "claim_holder_if_claimed" | "schedule_owner" | "request_submitter" | "intent_origin";
 
 export type Requirement =
   | { kind: "authenticated" }
@@ -56,6 +98,14 @@ export type Requirement =
   | { kind: "all"; of: readonly Requirement[] }
   /** A query over many projects: items are released per project holding `permission`. */
   | { kind: "collection"; permission: ProjectPermission }
+  /**
+   * An aggregate: `permission` on at least one current project. Decided at
+   * every decision point, independently of collection filtering. Full
+   * authority passes, also on an installation without projects.
+   */
+  | { kind: "any_project"; permission: ProjectPermission }
+  /** Every named slot resolves to one and the same project; otherwise `not_found`. */
+  | { kind: "same_project"; resources: readonly string[] }
   | { kind: "predicate"; predicate: PredicateName; resource: string };
 
 /** The complete requirement of an operation, evaluated at every decision point. */
@@ -76,8 +126,17 @@ export const collection = (permission: ProjectPermission): Requirement => Object
 export const claimHolder = (resource: string): Requirement => Object.freeze({ kind: "predicate", predicate: "claim_holder", resource });
 export const runOriginatingSession = (resource: string): Requirement => Object.freeze({ kind: "predicate", predicate: "run_originating_session", resource });
 export const workerAssignment = (resource: string): Requirement => Object.freeze({ kind: "predicate", predicate: "worker_assignment", resource });
+export const claimHolderIfClaimed = (resource: string): Requirement => Object.freeze({ kind: "predicate", predicate: "claim_holder_if_claimed", resource });
+export const scheduleOwner = (resource: string): Requirement => Object.freeze({ kind: "predicate", predicate: "schedule_owner", resource });
+export const requestSubmitter = (resource: string): Requirement => Object.freeze({ kind: "predicate", predicate: "request_submitter", resource });
+export const intentOrigin = (resource: string): Requirement => Object.freeze({ kind: "predicate", predicate: "intent_origin", resource });
+export const anyProject = (permission: ProjectPermission): Requirement => Object.freeze({ kind: "any_project", permission });
+export const sameProject = (...resources: string[]): Requirement => Object.freeze({ kind: "same_project", resources: Object.freeze([...resources]) });
 
-const PREDICATES: readonly PredicateName[] = Object.freeze(["claim_holder", "run_originating_session", "worker_assignment"]);
+const PREDICATES: readonly PredicateName[] = Object.freeze([
+  "claim_holder", "run_originating_session", "worker_assignment",
+  "claim_holder_if_claimed", "schedule_owner", "request_submitter", "intent_origin",
+]);
 
 /**
  * Validates a requirement and returns a deeply frozen copy. Throws `TypeError`
@@ -99,6 +158,16 @@ export function frozenRequirement(value: unknown, depth = 0): Requirement {
     case "collection":
       if (!isProjectPermission(source.permission)) throw new TypeError("Unknown project permission in requirement.");
       return collection(source.permission);
+    case "any_project":
+      if (!isProjectPermission(source.permission)) throw new TypeError("Unknown project permission in requirement.");
+      return anyProject(source.permission);
+    case "same_project": {
+      const names: unknown = source.resources;
+      if (!Array.isArray(names) || names.length < 2 || names.length > 16 || !names.every(isSlotName) || new Set(names).size !== names.length) {
+        throw new TypeError("`same_project` needs two to sixteen distinct valid slot names.");
+      }
+      return sameProject(...(names as string[]));
+    }
     case "predicate":
       if (!(PREDICATES as readonly unknown[]).includes(source.predicate)) throw new TypeError("Unknown predicate in requirement.");
       if (!isSlotName(source.resource)) throw new TypeError("Invalid resource slot name in requirement.");
@@ -128,6 +197,7 @@ export function frozenOperationRequirement(value: unknown): OperationRequirement
 export function requiredSlots(requirement: Requirement): string[] {
   switch (requirement.kind) {
     case "project": case "predicate": return [requirement.resource];
+    case "same_project": return [...requirement.resources];
     case "all": return [...new Set(requirement.of.flatMap(requiredSlots))];
     default: return [];
   }
@@ -140,5 +210,18 @@ export function requiredSlots(requirement: Requirement): string[] {
 export function collectionPermissions(requirement: Requirement): ProjectPermission[] {
   if (requirement.kind === "collection") return [requirement.permission];
   if (requirement.kind === "all") return [...new Set(requirement.of.flatMap(collectionPermissions))];
+  return [];
+}
+
+/** Whether a requirement contains an `any_project` part (the runner then reads the current project list). */
+export function usesAnyProject(requirement: Requirement): boolean {
+  if (requirement.kind === "any_project") return true;
+  return requirement.kind === "all" && requirement.of.some(usesAnyProject);
+}
+
+/** Every predicate part of a requirement (a requirement is a conjunction, so each one must hold). */
+export function predicatesOf(requirement: Requirement): { predicate: PredicateName; resource: string }[] {
+  if (requirement.kind === "predicate") return [{ predicate: requirement.predicate, resource: requirement.resource }];
+  if (requirement.kind === "all") return requirement.of.flatMap(predicatesOf);
   return [];
 }

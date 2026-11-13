@@ -73,6 +73,33 @@ const unauthenticated = (reason: string) => new OperationError("unauthenticated"
 
 /** Module-private registry of minted contexts and their revalidation closures. Never exported. */
 const minted = new WeakMap<object, () => CurrentAuthority>();
+/**
+ * Module-private baseline credential of each minted context (`null` for the
+ * operator, which presents none). Fixed at mint: revalidation fails unless the
+ * verifier still answers this exact identity and generation.
+ */
+const credentials = new WeakMap<object, CredentialRef | null>();
+/** Listener of each minted context, for listener-level checks before input is parsed. */
+const listeners = new WeakMap<object, ListenerKind>();
+
+/** The credential a context was minted from: identity and generation, never the secret. */
+export interface CredentialRef { readonly credentialId: string; readonly generation: number }
+
+/**
+ * Current authority plus the credential it was minted from, in one
+ * revalidation. Throws exactly as `currentAuthority`. Used by decisions that
+ * bind to the original credential (`intent_origin`).
+ */
+export function currentAuthorityWithCredential(context: unknown): { authority: CurrentAuthority; credential: CredentialRef | null } {
+  const authority = currentAuthority(context);
+  const credential = credentials.get(context as object) ?? null;
+  return { authority, credential: credential ? Object.freeze({ credentialId: credential.credentialId, generation: credential.generation }) : null };
+}
+
+/** Listener of a minted context without revalidating it; `null` for anything not minted here. */
+export function mintedListener(context: unknown): ListenerKind | null {
+  return typeof context === "object" && context !== null ? listeners.get(context) ?? null : null;
+}
 
 /**
  * The only way a consumer of this module obtains authority from a context.
@@ -102,9 +129,11 @@ class MintedAuthenticationContext {
 }
 Object.freeze(MintedAuthenticationContext.prototype);
 
-function mint(mode: AuthenticationMode, listener: ListenerKind, current: () => CurrentAuthority): AuthenticationContext {
+function mint(mode: AuthenticationMode, listener: ListenerKind, current: () => CurrentAuthority, credential: CredentialRef | null = null): AuthenticationContext {
   const context = Object.freeze(new MintedAuthenticationContext(mode, listener));
   minted.set(context, current);
+  credentials.set(context, credential ? Object.freeze({ credentialId: credential.credentialId, generation: credential.generation }) : null);
+  listeners.set(context, listener);
   return context as unknown as AuthenticationContext;
 }
 
@@ -250,7 +279,7 @@ export function createListenerBoundary(options: {
         if (!sameSession(baseline.session, now.session)) throw unauthenticated("coordination_session_changed");
         return authority(baseline.actor, mode, listener, now.evidence, now.session);
       };
-      return mint(mode, listener, current);
+      return mint(mode, listener, current, baseline.identity);
     },
   });
 }

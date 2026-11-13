@@ -14,7 +14,7 @@ import type { Actor } from "./authentication-context";
 const READER = "project:read logs:read storage:read config:read tests:read knowledge:read attachments:read";
 const OPERATOR = `${READER} claims:manage runtime:control tests:run profiles:select knowledge:write attachments:write`;
 const MAINTAINER = `${OPERATOR} config:write storage:manage roles:manage knowledge:approve knowledge:export knowledge:import project:manage runtime:administer`;
-const INSTALLATION = "accounts:manage projects:create projects:remove capacity:read capacity:write settings:write backups:manage workers:manage diagnostics:read vault:recover";
+const INSTALLATION = "accounts:manage projects:create capacity:read capacity:write settings:write backups:manage workers:manage diagnostics:read vault:recover";
 const expected: Record<Role, { human: string; agent: string }> = {
   reader: { human: READER, agent: READER },
   operator: { human: OPERATOR, agent: OPERATOR },
