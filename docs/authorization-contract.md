@@ -486,7 +486,6 @@ Allowlisted files with non-literal specifiers, unchanged:
 | `scripts/package-rbac.mjs` | Loads the MCP SDK from the installed package directory under test. |
 | `scripts/package-smoke.mjs` | Loads the MCP SDK from the packed package directory under test. |
 | `scripts/package-smoke.test.mjs` | Imports a copy of `package-smoke.mjs` from a temporary directory. |
-| `scripts/remote-worker-acceptance.test.mjs` | Re-imports itself by `process.argv[1]` in a child process. |
 
 The guard does not see a `require` function passed around as a value, worker
 or child-process entry points (`new Worker(path)`, `fork(path)`), `vm`

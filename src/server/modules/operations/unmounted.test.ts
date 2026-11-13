@@ -51,7 +51,6 @@ const ALLOWLIST: Readonly<Record<string, string>> = Object.freeze({
   "scripts/package-rbac.mjs": "loads the MCP SDK from the installed package directory under test",
   "scripts/package-smoke.mjs": "loads the MCP SDK from the packed package directory under test",
   "scripts/package-smoke.test.mjs": "imports a copy of package-smoke.mjs from a temporary directory",
-  "scripts/remote-worker-acceptance.test.mjs": "re-imports itself by process.argv[1] in a child process",
 });
 
 interface Analysis { literals: string[]; dynamic: string[] }
