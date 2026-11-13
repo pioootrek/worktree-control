@@ -1155,8 +1155,8 @@ secret-safe: `config.environment_values_set`, `profile.values_set`,
 `coordination.close`, `capacity.set`, `test_queue.set`, `worker.poll` and
 `worker.report` do not. Operations with `agents: false`: 17
 (`knowledge.approve_memory`, `vault.recover_key`, `claim.force_release`,
-`runtime.force_stop` and the 13 account and role operations). Operations with `freshLogin`: 12 (the same two and 10 account and
-role mutations). Rows carrying a marker in the `Needs` column: 56, of which 52
+`runtime.force_stop` and the 13 account and role operations). Operations with `freshLogin`: 12 (`knowledge.approve_memory`,
+`vault.recover_key` and 10 account and role mutations). Rows carrying a marker in the `Needs` column: 56, of which 52
 name a planned extension (`query` 5, `bounded_stream` 2, `expected_transition`
 6, `claim_holder_if_claimed` 17, `any_project` 3, `schedule_owner` 4,
 `remote_request` 4, `request_submitter` 2, `secret_safe_retention` 9,
@@ -1374,7 +1374,8 @@ up are added.
     session-held ledger (64 per session, 512 global) and HTTP operations accept
     keys; replays are reauthorized and can answer `resource_changed`, except
     for the declared transitions of `registration.move`, `registration.detach`,
-    `claim.release` and `claim.force_release`. Rows 1.6 to 1.12, 3.x, 4.2.
+    `claim.release`, `claim.force_release`, `runtime.switch` and
+    `user_backup.save`. Rows 1.6 to 1.12, 3.x, 4.2.
 23. **Test run reads.** Any `tests:read` holder reads the project's runs as safe
     status; own-run proof stays safe even for a caller holding `config:read`
     (task `6d680061`); `test_preset.list` lists all presets with an advisory
