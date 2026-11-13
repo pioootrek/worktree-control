@@ -133,9 +133,14 @@ queued test runs that were active in the sandbox.
 Other controllers of the same user keep roots with the same `wtc-` prefix in
 the same place, including the installed one, so do not remove such directories
 by name. To make leftovers unambiguous, start the sandbox with `TMPDIR` set to
-a private directory that the suite created with `mkdtemp`, and remove that
-directory after the sandbox has exited. Both the sandbox directory and the
-controller's root are then created inside it.
+a private directory that the suite created with `mkdtemp`. Both the sandbox
+directory and the controller's root are then created inside it.
+
+Remove that directory only when the controller is gone. An exit with status 0
+confirms that. After status 1, read standard error first: `Sandbox controller
+<pid> did not exit after SIGKILL.` names a controller that may still be
+running. Removing the directory under a live controller deletes its root and
+the temporary files of runs that are still active.
 
 Each sandbox costs one controller process: about half a second to start and
 roughly 150 MB of resident memory on Linux. Start one per test file or suite,
