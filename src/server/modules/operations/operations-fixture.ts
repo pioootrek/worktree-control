@@ -205,26 +205,39 @@ export function createWorld(options: { now?: number } = {}) {
   return { verifier, grants, resolver, admission, clock, listenerOpen, boundary, human, agent, installation, operator, runtime, disposalFailures };
 }
 
+export type StoreTransition = "get" | "release" | IdempotencyRecord["state"];
+
 /**
  * Idempotency store double. Stores and returns copies, as a real adapter must.
- * `failOn` makes one transition throw: `get`, a `put` of the named state, or `release`.
+ * `failOn` makes one transition throw before it changes anything: `get`, a
+ * `put` of the named state, or `release`. `failAfterWrite` applies the write
+ * (a `put` of the named state, or `release`) and then throws, as a store whose
+ * commit succeeded but whose acknowledgement failed. `calls` lists every
+ * transition attempted, in order.
  */
 export class MemoryIdempotency implements IdempotencyStore {
   readonly entries = new Map<string, IdempotencyRecord>();
-  failOn: Set<"get" | "release" | IdempotencyRecord["state"]> = new Set();
+  failOn: Set<StoreTransition> = new Set();
+  failAfterWrite: Set<Exclude<StoreTransition, "get">> = new Set();
+  readonly calls: StoreTransition[] = [];
   #key = (key: IdempotencyKey) => JSON.stringify([key.operationId, key.principal, key.idempotencyKey]);
   get(key: IdempotencyKey): IdempotencyRecord | null {
+    this.calls.push("get");
     if (this.failOn.has("get")) throw new Error("store get failed /secret");
     const record = this.entries.get(this.#key(key));
     return record ? structuredClone(record) : null;
   }
   put(key: IdempotencyKey, record: IdempotencyRecord): void {
+    this.calls.push(record.state);
     if (this.failOn.has(record.state)) throw new Error(`store put ${record.state} failed /secret`);
     this.entries.set(this.#key(key), structuredClone(record));
+    if (this.failAfterWrite.has(record.state)) throw new Error(`store put ${record.state} unacknowledged /secret`);
   }
   release(key: IdempotencyKey, attempt: string): void {
+    this.calls.push("release");
     if (this.failOn.has("release")) throw new Error("store release failed /secret");
     if (this.entries.get(this.#key(key))?.attempt === attempt) this.entries.delete(this.#key(key));
+    if (this.failAfterWrite.has("release")) throw new Error("store release unacknowledged /secret");
   }
   states(): string[] { return [...this.entries.values()].map(record => record.state); }
 }

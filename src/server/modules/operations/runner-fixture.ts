@@ -38,6 +38,14 @@ export function fakeStart(world: ReturnType<typeof createWorld>, hooks: {
   requirement?: OperationRequirement;
   finalizeThrows?: boolean;
   releaseThrows?: boolean;
+  /** Finalize written as an async function (decision W): it rejects or fulfils after an await. */
+  finalizeAsync?: "reject" | "fulfil";
+  /**
+   * Lease release written as an async function (decision W). `lockReleases`
+   * counts the call at once; the lock is freed only after an await, and only
+   * when it fulfils.
+   */
+  releaseAsync?: "reject" | "fulfil";
 } = {}) {
   const log = { attempts: 0, effects: [] as string[], audit: [] as string[], lockHeld: false, lockReleases: 0 };
   const operation: StartOperation = {
@@ -49,6 +57,15 @@ export function fakeStart(world: ReturnType<typeof createWorld>, hooks: {
     async acquire(): Promise<Lease> {
       await hooks.lockWait;
       log.lockHeld = true;
+      if (hooks.releaseAsync) {
+        const outcome = hooks.releaseAsync;
+        return { release: (async () => {
+          log.lockReleases++;
+          await Promise.resolve();
+          if (outcome === "reject") throw new Error("async unlock failed /secret");
+          log.lockHeld = false;
+        }) as unknown as () => void };
+      }
       return { release: () => { log.lockHeld = false; log.lockReleases++; if (hooks.releaseThrows) throw new Error("unlock failed /secret"); } };
     },
     effect: {
@@ -62,10 +79,16 @@ export function fakeStart(world: ReturnType<typeof createWorld>, hooks: {
         return { projectId: scope.resources.registration.projectId, pid: 4242, processSecret: "pid-secret-token" };
       },
     },
-    finalize(_input, outcome) {
-      if (hooks.finalizeThrows) throw new Error("audit store unavailable");
-      log.audit.push(outcome.ok ? `started ${outcome.value.pid}` : "failed");
-    },
+    finalize: hooks.finalizeAsync
+      ? (async (_input: StartInput, outcome: { ok: boolean }) => {
+        await Promise.resolve();
+        if (hooks.finalizeAsync === "reject") throw new Error("async audit failed /secret");
+        log.audit.push(outcome.ok ? "started async" : "failed async");
+      }) as unknown as StartOperation["finalize"]
+      : (_input, outcome) => {
+        if (hooks.finalizeThrows) throw new Error("audit store unavailable");
+        log.audit.push(outcome.ok ? `started ${outcome.value.pid}` : "failed");
+      },
     retain: true,
     publicKeys: ["projectId", "started"],
     project: result => ({ projectId: result.projectId, started: true }),

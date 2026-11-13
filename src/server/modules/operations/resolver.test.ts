@@ -86,3 +86,61 @@ describe("resource slots (decision Q)", () => {
     expect(copyResolution({ a: { ...before.a, projectId: 5 } })).toBeNull();
   });
 });
+
+describe("three passes over references (decision X)", () => {
+  const malformed = { kind: "tenant", id: "x" } as never;
+  const missing = { kind: "registration" as const, id: "reg-missing" };
+  const existing = { kind: "registration" as const, id: "reg-b" };
+  const world = () => new InMemoryResolver().addProject(projectA).addProject(projectB)
+    .put({ kind: "registration", id: "reg-a" }, projectA).put(existing, projectB);
+  /** Every arrangement of two references: both slot assignments and both key insertion orders. */
+  const arrangements = (left: unknown, right: unknown) => [
+    { first: left, second: right }, { second: right, first: left },
+    { first: right, second: left }, { second: left, first: right },
+  ] as never[];
+
+  it("rejects a malformed reference before any lookup, whether the other one exists or not", () => {
+    for (const other of [missing, existing]) {
+      for (const refs of arrangements(malformed, other)) {
+        const resolver = world();
+        expect(reason(() => resolveAll(resolver, refs))).toBe("invalid_request:unknown_resource_kind");
+        expect(resolver.resolveCalls).toBe(0);
+      }
+    }
+  });
+
+  it("reports one syntax reason for several malformed references, whatever their order", () => {
+    const badId = { kind: "registration", id: "" } as never;
+    for (const refs of arrangements(badId, malformed)) expect(reason(() => resolveAll(world(), refs))).toBe("invalid_request:unknown_resource_kind");
+    for (const refs of arrangements(badId, null)) expect(reason(() => resolveAll(world(), refs))).toBe("invalid_request:invalid_resource_reference");
+  });
+
+  it("resolves every reference before answering not_found, in every order", () => {
+    for (const other of [missing, existing, { kind: "registration" as const, id: "reg-a" }]) {
+      for (const refs of arrangements(missing, other)) {
+        const resolver = world();
+        expect(reason(() => resolveAll(resolver, refs))).toBe("not_found:resource_not_found");
+        expect(resolver.resolveCalls).toBe(2);
+      }
+    }
+  });
+
+  it("lets a failing lookup win over a miss, whatever the order, without hiding it as not_found", () => {
+    for (const other of [missing, existing]) {
+      for (const failure of ["throws", "thenable"] as const) {
+        for (const refs of arrangements({ kind: "registration", id: "reg-boom" }, other)) {
+          const resolver = world();
+          const resolve = resolver.resolve.bind(resolver);
+          resolver.resolve = ref => {
+            if (ref.id !== "reg-boom") return resolve(ref);
+            if (failure === "throws") throw new Error("lookup failed /secret");
+            return Promise.reject(new Error("late /secret")) as never;
+          };
+          const answer = reason(() => resolveAll(resolver, refs));
+          expect(answer).toBe(failure === "throws" ? "Error: lookup failed /secret" : "internal:resolver_not_synchronous");
+          expect(resolver.resolveCalls).toBe(1);
+        }
+      }
+    }
+  });
+});

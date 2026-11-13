@@ -239,3 +239,66 @@ describe("total sanitization (decision S)", () => {
     expect(result).toMatchObject({ ok: false, error: { category: "outcome_unknown", effect: "unknown" } });
   });
 });
+
+describe("a store write that lands and then throws, at each transition", () => {
+  it("reserved: the reservation is given back, nothing runs, and a retry runs fresh", async () => {
+    const { world, alice, runner, idempotency } = setup();
+    const { operation, log } = fakeStart(world);
+    idempotency.failAfterWrite.add("reserved");
+    expect(await runner.run(operation, alice.context, input, key("k-1"))).toEqual({ ok: false, error: {
+      category: "internal", status: 500, reason: "unexpected_failure", retry: "none", effect: "not_started" } });
+    expect(log).toMatchObject({ attempts: 0, lockReleases: 0 });
+    expect(idempotency.states()).toEqual([]);
+    idempotency.failAfterWrite.clear();
+    expect(await runner.run(operation, alice.context, input, key("k-1"))).toMatchObject({ ok: true, replayed: false });
+    expect(log.attempts).toBe(1);
+  });
+
+  it("started: the effect never runs, the record is removed, and a retry runs fresh", async () => {
+    const { world, alice, runner, idempotency } = setup();
+    const { operation, log } = fakeStart(world);
+    idempotency.failAfterWrite.add("started");
+    expect(await runner.run(operation, alice.context, input, key("k-1"))).toMatchObject({ ok: false, error: { category: "internal", effect: "not_started" } });
+    expect(log).toMatchObject({ attempts: 0, lockHeld: false, lockReleases: 1 });
+    expect(idempotency.states()).toEqual([]);
+    idempotency.failAfterWrite.clear();
+    expect(await runner.run(operation, alice.context, input, key("k-1"))).toMatchObject({ ok: true, replayed: false });
+    expect(log.attempts).toBe(1);
+  });
+
+  it("completed: the written completion is overwritten with unknown, so no retry replays success", async () => {
+    const { world, alice, runner, idempotency } = setup();
+    const { operation, log } = fakeStart(world);
+    idempotency.failAfterWrite.add("completed");
+    expect(await runner.run(operation, alice.context, input, key("k-1"))).toEqual({ ok: false, error: {
+      category: "unavailable", status: 503, reason: "finalization_unconfirmed", retry: "inspect_first", effect: "cleanup_unconfirmed" } });
+    expect(idempotency.calls).toEqual(["get", "reserved", "started", "completed", "unknown"]);
+    expect(idempotency.states()).toEqual(["unknown"]);
+    idempotency.failAfterWrite.clear();
+    expect(await runner.run(operation, alice.context, input, key("k-1"))).toMatchObject({ ok: false, error: { category: "outcome_unknown", reason: "previous_attempt_outcome_unknown" } });
+    expect(log).toMatchObject({ attempts: 1, lockHeld: false, lockReleases: 1 });
+  });
+
+  it("unknown: the record stays unknown and a retry is never run again", async () => {
+    const { world, alice, runner, idempotency } = setup();
+    const { operation, log } = fakeStart(world, { effect: () => { throw new Error("spawn failed"); } });
+    idempotency.failAfterWrite.add("unknown");
+    expect(await runner.run(operation, alice.context, input, key("k-1"))).toMatchObject({ ok: false, error: { category: "outcome_unknown", effect: "unknown" } });
+    expect(idempotency.states()).toEqual(["unknown"]);
+    expect(await runner.run(operation, alice.context, input, key("k-1"))).toMatchObject({ ok: false, error: { category: "outcome_unknown", reason: "previous_attempt_outcome_unknown" } });
+    expect(log.attempts).toBe(1);
+  });
+
+  it("release: the reservation of an attempt that never began is gone, and a retry runs once", async () => {
+    const { world, alice, runner, idempotency } = setup();
+    const { operation, log } = fakeStart(world);
+    world.admission.onAdmit = event => { if (event.n === 2) world.grants.revokeAll(alice.id); };
+    idempotency.failAfterWrite.add("release");
+    expect(await runner.run(operation, alice.context, input, key("k-1"))).toMatchObject({ ok: false, error: { category: "not_found", effect: "not_started" } });
+    expect(idempotency.states()).toEqual([]);
+    world.admission.onAdmit = null;
+    world.grants.grant({ accountId: alice.id, role: "operator", scope: { kind: "project", projectId: projectA } });
+    expect(await runner.run(operation, alice.context, input, key("k-1"))).toMatchObject({ ok: true, replayed: false });
+    expect(log.attempts).toBe(1);
+  });
+});
