@@ -26,9 +26,8 @@ where they differ:
    accepted, nine planned contract extensions, design answers for OPEN-2,
    OPEN-21 and OPEN-23, and two questions left to the owner (A and B).
 
-Two things on this page are not decided and are marked in the tables:
-**owner question A** (`OWNER-A`) and **owner question B** (`OWNER-B`), stated
-in [section 9.2](#92-for-the-owner). The two places the revision found
+Owner questions A and B were answered (`17802524`, [section 9.2](#92-owner-questions-a-and-b-decided));
+no open item remains. The two places the revision found
 undecided (`NEW-OPEN-1`, `NEW-OPEN-2`) were decided afterwards by the lead and
 confirmed or extended by the owner (`46672ea8`, `fb1567d5`;
 [section 9.4](#94-decided-after-the-revision)). Everything else the first draft
@@ -94,8 +93,7 @@ vocabulary and execution shapes. Otherwise it names the planned extension from
 `query`, `bounded_stream`, `expected_transition`, `claim_holder_if_claimed`,
 `any_project`, `schedule_owner`, `remote_request`, `request_submitter`,
 `secret_safe_retention`, `token_delivery`, `intent_origin`, `coordination`.
-Owner-question markers `OWNER-A` and `OWNER-B` appear in the `Needs` cell of
-the affected rows. A label
+A label
 `OPEN-<n>` in a cell is a reference to the decision on that former open item in
 [section 9.1](#91-decided); it is not an open marker.
 
@@ -395,9 +393,9 @@ authorization rule. All writes retain and take an optional key.
 | `knowledge.check_attachment_batch` | read | `project` | `allOf(attachments:write on project, attachments:read on project)` | - | - | - | no | H M C | Manifest at most 10000 files, request at most 4 MiB. |
 | `knowledge.attachment` | read | `project`, `knowledge_record` | `attachments:read on project` | - | - | - | no | H M C | Returns base64 content. |
 | `knowledge.create_attachment` | mutation | `project`, `knowledge_record` | `attachments:write on project` | - | - | declared: size and capacity limits are refused before the commit | yes | H M C | `payload_too_large` above 14.1 MB. Authorization is rechecked inside the commit callback today and stays so. |
-| `knowledge.project_export` | mutation | `project` | `allOf(knowledge:export on project, attachments:read on project)` | `OWNER-A` | - | declared: limits and destination checks before the write | yes | C (unix or offline); H and M excluded pending `OWNER-A` | Writes a directory on the controller host: Knowledge and attachments only, no Vault data, grants or credentials. Raw host paths stay local (OPEN-10). Account-facing form: `OWNER-A`. |
-| `knowledge.project_import` | mutation | `project` as `destination` | `knowledge:import on destination` | `OWNER-A` | - | declared: manifest and integrity checks before the first write | yes | C (unix or offline); H and M excluded pending `OWNER-A` | OPEN-13: import into an existing project. Fixed schema ([section 4.5](#45-project-transfer-and-import)). Today owner-session only; the first enforcement of `knowledge:import`. |
-| `project.create_from_import` | mutation | none | `installation projects:create` | `OWNER-A` | - | declared: manifest and integrity checks before the first write | yes | C (unix or offline); H and M excluded pending `OWNER-A` | OPEN-13: import that creates a new project. Fixed schema, same restrictions. No matrix row of its own; row 7.39 splits by destination. |
+| `knowledge.project_export` | mutation | `project` | `allOf(knowledge:export on project, attachments:read on project)` | - | - | declared: limits and destination checks before the write | yes | C (unix or offline); H and M excluded in this release (owner decision `17802524`) | Writes a directory on the controller host: Knowledge and attachments only, no Vault data, grants or credentials. Raw host paths stay local (OPEN-10). No account-facing form in this release (owner decision `17802524`). |
+| `knowledge.project_import` | mutation | `project` as `destination` | `knowledge:import on destination` | - | - | declared: manifest and integrity checks before the first write | yes | C (unix or offline); H and M excluded in this release (owner decision `17802524`) | OPEN-13: import into an existing project. Fixed schema ([section 4.5](#45-project-transfer-and-import)). Today owner-session only; the first enforcement of `knowledge:import`. |
+| `project.create_from_import` | mutation | none | `installation projects:create` | - | - | declared: manifest and integrity checks before the first write | yes | C (unix or offline); H and M excluded in this release (owner decision `17802524`) | OPEN-13: import that creates a new project. Fixed schema, same restrictions. No matrix row of its own; row 7.39 splits by destination. |
 
 ### 3.9 Vault
 
@@ -424,10 +422,10 @@ authorization rule. All writes retain and take an optional key.
 | `backup.remote_reupload` | mutation | none | `installation backups:manage` | - | - | declared: unknown backup refused before the upload | yes | H M C | Destinations are configured destination ids. |
 | `backup.remote_retry` | mutation | none | `installation backups:manage` | - | - | declared: generation check before the retry | yes | H M C | |
 | `backup.remote_rebind` | mutation | none | `installation backups:manage` | - | - | declared: needs a completed restore, checked before the rebind | yes | C offline only; H and M excluded (OPEN-11) | Needs the exclusive controller lock: stopped-controller maintenance of the local operator. |
-| `user_backup.overview` | read | none | `allOf(collection(knowledge:export), collection(attachments:read))`, items filtered by `schedule_owner` | `schedule_owner`, `OWNER-B` | - | - | no | H M C | An account sees its own schedules; items need both permissions on their project; full authority sees all. Owner filtering happens before pagination and release ([section 4.4](#44-export-schedules-ownership)). |
-| `user_backup.save` | mutation | `project`, `schedule` | `allOf(knowledge:export on project, attachments:read on project, schedule_owner on schedule)` | `schedule_owner`, `expected_transition`, `OWNER-B` | - | declared: policy gate and limits before the write | yes | H M C | Durable owner plus immutable job specification. On a change of project both the old binding (resolved from `schedule`) and the new one (`project`) are authorized, at the effect and again on release and replay (declared expected transition of `schedule`). Absent `schedule` on create. A schedule created by the local operator in better-auth is owned by `operator` (`46672ea8`, owner `fb1567d5`). |
-| `user_backup.status` | read | none | `allOf(collection(knowledge:export), collection(attachments:read))`, items filtered by `schedule_owner` | `schedule_owner`, `OWNER-B` | - | - | no | H M C | As `user_backup.overview`. |
-| `user_backup.artifact` | read | `schedule` | `allOf(knowledge:export on schedule, attachments:read on schedule, schedule_owner on schedule)` | `schedule_owner`, `OWNER-B` | - | - | no | H M C | Releases artifact content: a data release, authorized at release; the server resolves the artifact to its schedule and project. |
+| `user_backup.overview` | read | none | `allOf(collection(knowledge:export), collection(attachments:read))`, items filtered by `schedule_owner` | `schedule_owner` | - | - | no | H M C | An account sees its own schedules; items need both permissions on their project; full authority sees all. Owner filtering happens before pagination and release ([section 4.4](#44-export-schedules-ownership)). |
+| `user_backup.save` | mutation | `project`, `schedule` | `allOf(knowledge:export on project, attachments:read on project, schedule_owner on schedule)` | `schedule_owner`, `expected_transition` | - | declared: policy gate and limits before the write | yes | H M C | Durable owner plus immutable job specification. On a change of project both the old binding (resolved from `schedule`) and the new one (`project`) are authorized, at the effect and again on release and replay (declared expected transition of `schedule`). Absent `schedule` on create. A schedule created by the local operator in better-auth is owned by `operator` (`46672ea8`, owner `fb1567d5`). |
+| `user_backup.status` | read | none | `allOf(collection(knowledge:export), collection(attachments:read))`, items filtered by `schedule_owner` | `schedule_owner` | - | - | no | H M C | As `user_backup.overview`. |
+| `user_backup.artifact` | read | `schedule` | `allOf(knowledge:export on schedule, attachments:read on schedule, schedule_owner on schedule)` | `schedule_owner` | - | - | no | H M C | Releases artifact content: a data release, authorized at release; the server resolves the artifact to its schedule and project. |
 | `user_export.recovery_list` | read | none | `installation backups:manage` | - | - | - | no | H M C | Today operator socket only. Field allowlist ([section 4.9](#49-sensitive-output-allowlists)). |
 | `user_export.recovery_preview` | read | none | `installation backups:manage` | - | - | - | no | H M C | Field allowlist. |
 | `user_export.recovery_cleanup` | mutation | none | `installation backups:manage` | - | - | declared: confirmation id checked before the removal | yes | H M C | |
@@ -465,7 +463,7 @@ OPEN-24).
 | `remote_verification.cancel` | mutation | `request` (kind `remote_request`) | `allOf(tests:run on request, request_submitter on request)` | `remote_request`, `request_submitter` | - | declared: unknown request refused before the intent | yes | H M C | Persists intent even when the worker is offline. |
 | `worker.poll` | mutation | none | per candidate request: `worker:execute` on the request's project for the executor, and `tests:run` on the same project for the stored submitter, evaluated separately | `remote_request`, `request_submitter`, `coordination` | - | declared: the assignment is recorded only after both evaluations succeed | no | H on the worker listener only; M, C and the ordinary API listener excluded | Not `collection(worker:execute)`. In better-auth the executor is an authenticated agent account; in open and token mode it is the installation actor on the worker listener; in every mode it is bound to an active registration; project and preset compatibility are checked; the assignment is recorded; each item is released separately ([section 4.6](#46-remote-verification-and-workers)). Machine-to-machine protocol with its own versioning, framing and sequence numbers. |
 | `worker.report` | mutation | `worker_attempt` | `allOf(worker:execute on worker_attempt, worker_assignment on worker_attempt)` | `coordination` | - | declared: sequence check before the report is accepted | no | H on the worker listener only; M and C excluded | Preserves exact assignment, sequence, immutable commit and cleanup checks. Finalization and cleanup of an assignment already begun complete after a revocation. |
-| `worker.register` | mutation | `project` | `installation workers:manage` | `OWNER-A` | - | declared: project and preset checks before the write | yes | C offline only today; an online form for `admin` is `OWNER-A` | Registers a worker for a project and presets. No token is issued and no caller grants are written. |
+| `worker.register` | mutation | `project` | `installation workers:manage` | - | `agents: false`, `freshLogin` | declared: project and preset checks before the write | yes | H M† C (owner decision `17802524`) | Registers a worker for a project and presets. No token is issued and no caller grants are written. |
 | `worker.recovery_inspect` | read | `worker_attempt` | `installation workers:manage` | - | - | - | no | C offline only; H and M excluded (OPEN-11) | Stopped-controller process recovery on the host. |
 | `worker.recovery_reconcile` | mutation | `worker_attempt` | `installation workers:manage` | - | - | declared: recovery assessment before the audit write | yes | C offline only; H and M excluded (OPEN-11) | As `worker.recovery_inspect`. |
 
@@ -624,8 +622,8 @@ For `user_backup.*` (`ce8aa214` F3, `29cf8fa5` delta 5 and OPEN-12).
   owner and the permissions.
 - Agents cannot own an export schedule under the six roles: `knowledge:export`
   is held by `maintainer` and `admin`, which are human-only. Whether this
-  stands is `OWNER-B`. Until the owner answers, the rows show the effective
-  behaviour under the current roles.
+  stays (owner decision `17802524`): the role table is not changed, and a
+  human sets up export schedules.
 
 Restore (OPEN-23, `29cf8fa5`). `backup.preview` is a query and persists
 nothing. `backup.restore` is the registry operation of durable restore
@@ -649,7 +647,8 @@ OPEN-10, OPEN-13, `ce8aa214` F6 and required change 8.
   operation is specified.
 - `knowledge.project_export` writes Knowledge and attachments only.
 - Raw host paths stay local (the CLI under the unix socket or offline).
-  Account-facing forms for bundle transfer: `OWNER-A`.
+  Bundle transfer has no account-facing form in this release (owner decision `17802524`); a
+  maintainer who needs it asks someone with access to the machine.
 - Hub import (rows 7.40, 7.41) stays a local maintenance command. It no longer
   reads an owner credential: local offline operator authentication replaces it,
   with the lock, the import validation and the provenance retained, and no
@@ -830,8 +829,7 @@ behaviour column says which part each covers. Decision references: owner
 decisions `9ba49f3c` (numbered 1 to 4 there), `2c641ff7`, `4ac7fb45`, `42019833`;
 accepted target `5583b882`/`1367c632` (points 1 to 9 of the common goal);
 contract v1 `032aa386`. A reference `OPEN-<n>` points to the decision on that
-former open item in [section 9.1](#91-decided). The markers `OWNER-A`,
-and `OWNER-B` mark what is not decided.
+former open item in [section 9.1](#91-decided). No row carries an undecided marker.
 
 ### 5.1 Family 1: runtime and claims
 
@@ -963,8 +961,8 @@ matrix's order; `7.38` to `7.41` are its four CLI-only items.
 | 7.35 | `check_attachment_batch` | REPLACED BY `knowledge.check_attachment_batch` | |
 | 7.36 | `attachment` | REPLACED BY `knowledge.attachment` | |
 | 7.37 | `create_attachment` | REPLACED BY `knowledge.create_attachment` | |
-| 7.38 | project export: CLI `backup export-project` (offline) | REPLACED BY `knowledge.project_export` | Needs `knowledge:export` and `attachments:read`. CLI only for now; account-facing form: `OWNER-A`. |
-| 7.39 | project import: CLI `backup import-project` (offline) | REPLACED BY `knowledge.project_import` and `project.create_from_import` | Split by destination (OPEN-13): existing project with `knowledge:import` (its first real consumer), new project with `projects:create`. Today owner session. CLI only for now; account-facing form: `OWNER-A`. |
+| 7.38 | project export: CLI `backup export-project` (offline) | REPLACED BY `knowledge.project_export` | Needs `knowledge:export` and `attachments:read`. CLI only in this release (owner decision `17802524`). |
+| 7.39 | project import: CLI `backup import-project` (offline) | REPLACED BY `knowledge.project_import` and `project.create_from_import` | Split by destination (OPEN-13): existing project with `knowledge:import` (its first real consumer), new project with `projects:create`. Today owner session. CLI only in this release (owner decision `17802524`). |
 | 7.40 | hub `knowledge plan-import` (offline, no authentication) | LOCAL: `knowledge plan-import` | Offline file read of a legacy Hub plan; stays local maintenance (OPEN-10). |
 | 7.41 | hub `knowledge execute-import` (offline, owner or installation credential) | LOCAL: `knowledge execute-import` | Local offline operator authentication replaces the owner credential; the lock, validation and provenance are retained; no remote fallback (OPEN-10). |
 
@@ -1005,10 +1003,10 @@ matrix's order; `7.38` to `7.41` are its four CLI-only items.
 
 | Row | Current operation | Disposition | Target and behaviour change |
 | --- | --- | --- | --- |
-| 10.1 | user_backup.overview: HTTP | REPLACED BY `user_backup.overview` | Needs export and attachment read per project and `schedule_owner` filtering. The installation token is accepted (rejected today). Agent-owned schedules are unavailable under the six roles: `OWNER-B`. |
-| 10.2 | user_backup.save: HTTP | REPLACED BY `user_backup.save` | Durable owner; both bindings authorized on a project change; recheck at dispatch. `OWNER-B`. Expected transition on a change of project; a local operator's schedule is owned by `operator` (`46672ea8`). |
-| 10.3 | user_backup.status: HTTP | REPLACED BY `user_backup.status` | As 10.1. `OWNER-B`. |
-| 10.4 | user_backup.artifact: HTTP | REPLACED BY `user_backup.artifact` | Owner-checked; publication rechecked. `OWNER-B`. |
+| 10.1 | user_backup.overview: HTTP | REPLACED BY `user_backup.overview` | Needs export and attachment read per project and `schedule_owner` filtering. The installation token is accepted (rejected today). Agent-owned schedules are unavailable under the six roles (owner decision `17802524`). |
+| 10.2 | user_backup.save: HTTP | REPLACED BY `user_backup.save` | Durable owner; both bindings authorized on a project change; recheck at dispatch. Expected transition on a change of project; a local operator's schedule is owned by `operator` (`46672ea8`). |
+| 10.3 | user_backup.status: HTTP | REPLACED BY `user_backup.status` | As 10.1. |
+| 10.4 | user_backup.artifact: HTTP | REPLACED BY `user_backup.artifact` | Owner-checked; publication rechecked. |
 | 10.5 | user_export.recovery_list: socket; CLI | REPLACED BY `user_export.recovery_list` | Needs `backups:manage`; now on HTTP and MCP. |
 | 10.6 | user_export.recovery_preview: socket; CLI | REPLACED BY `user_export.recovery_preview` | |
 | 10.7 | user_export.recovery_cleanup: socket; CLI | REPLACED BY `user_export.recovery_cleanup` | |
@@ -1084,7 +1082,7 @@ full authority.
 | 12.4 | remote_verification.cancel: MCP only | REPLACED BY `remote_verification.cancel` | `request_submitter` (OPEN-5). |
 | 12.5 | remote_worker.poll: worker listener | REPLACED BY `worker.poll` | Worker listener only. Two evaluations at assignment: the executor's and the stored submitter's (OPEN-5); `workerId` selects, never authenticates (`575a4fe8` answer f). |
 | 12.6 | remote_worker.report: worker listener | REPLACED BY `worker.report` | Worker listener only. |
-| 12.7 | remote_verification.provision: CLI offline | REPLACED BY `worker.register` | Worker token file and `callerPrincipalIds` are gone (separate worker tokens removed, accepted target point 2). CLI offline only today; an online operation for `admin`: `OWNER-A`. |
+| 12.7 | remote_verification.provision: CLI offline | REPLACED BY `worker.register` | Worker token file and `callerPrincipalIds` are gone (separate worker tokens removed, accepted target point 2). Becomes an online operation for a human `admin` (owner decision `17802524`). |
 | 12.8 | remote_verification.revoke_token: CLI offline | REMOVED: accepted target point 2 (separate worker tokens) | Better-auth: `account.token_revoke` on the executor agent account. Token mode: the installation token, rotated locally (14.3). Open mode has no token to revoke. |
 | 12.9 | remote_verification.inspect: CLI offline | REPLACED BY `worker.recovery_inspect` | Needs `workers:manage` (owner session removed). CLI offline only: stopped-controller recovery (OPEN-11). |
 | 12.10 | remote_verification.reconcile: CLI offline | REPLACED BY `worker.recovery_reconcile` | As 12.9. |
@@ -1153,15 +1151,17 @@ secret-safe: `config.environment_values_set`, `profile.values_set`,
 `test_profile.values_set`, `vault.import`, `vault.update`, `account.enroll`,
 `account.recover`, `account.token_issue`, `coordination.open`); `coordination.renew`,
 `coordination.close`, `capacity.set`, `test_queue.set`, `worker.poll` and
-`worker.report` do not. Operations with `agents: false`: 17
+`worker.report` do not. Operations with `agents: false`: 18
 (`knowledge.approve_memory`, `vault.recover_key`, `claim.force_release`,
-`runtime.force_stop` and the 13 account and role operations). Operations with `freshLogin`: 12 (`knowledge.approve_memory`,
-`vault.recover_key` and 10 account and role mutations). Rows carrying a marker in the `Needs` column: 56, of which 52
+`runtime.force_stop`, `worker.register` and the 13 account and role
+operations). Operations with `freshLogin`: 13 (`knowledge.approve_memory`,
+`vault.recover_key`, `worker.register` and 10 account and role mutations).
+Rows carrying a marker in the `Needs` column: 52, all of which
 name a planned extension (`query` 5, `bounded_stream` 2, `expected_transition`
 6, `claim_holder_if_claimed` 17, `any_project` 3, `schedule_owner` 4,
 `remote_request` 4, `request_submitter` 2, `secret_safe_retention` 9,
 `token_delivery` 1, `intent_origin` 1, `coordination` 10; a row may carry
-several) and 4 carry only `OWNER-A`.
+several).
 
 The first draft had 139 operations (62 reads, 74 mutations, 2 waits, 1
 stream). Changes against it:
@@ -1225,11 +1225,9 @@ row because the matrix has none; they exist because the records require them.
 The resource row `1.R` (MCP resources, not counted in the 204) is also
 REPLACED BY the read operations it mirrors. Rows 7.40 and 7.41 are LOCAL
 without a provisional mark: Hub import stays a local maintenance command
-(OPEN-10). Seven rows carry an undecided marker in their cells: `7.38`, `7.39` and
-`12.7` (`OWNER-A`), and `10.1` to `10.4` (`OWNER-B`). They keep the class shown; the table does
-not pretend that their surface or owner is settled. The first draft had 35 rows
-with an open marker; the rest are decided and carry only a decision reference
-`OPEN-<n>`.
+(OPEN-10). No row carries an undecided marker. The first draft had 35 rows with an open
+marker; all are decided and carry only a decision reference `OPEN-<n>` or the
+owner decision `17802524`.
 
 ### 6.3 Reconciliation
 
@@ -1273,7 +1271,7 @@ column; (4) every backticked `family.verb` id in the disposition column
 checked against section 3 (a typo shows as an id not in the catalogue); (5)
 the ids of section 3 that appear in no disposition column and in no cell of
 section 5; (6) the number of cells in every row of sections 3 and 5; (7) the
-markers of the `Needs` column and the rows carrying an owner marker. The matrix
+markers of the `Needs` column (no row carries an owner marker since `17802524`). The matrix
 itself was not re-counted from source.
 
 ## 7. Behaviour changes visible to users and agents
@@ -1437,13 +1435,13 @@ up are added.
     longer fit. Secret-bearing operations retain only ids and revisions; a replay
     never returns a secret. Rows 7.x, 9.x, 10.x, 3.x.
 35. **Agents cannot own export schedules** under the six roles, because
-    `knowledge:export` is human-only (`OWNER-B`). Rows 10.1 to 10.4.
-36. **Capability reductions pending owner questions A and B.** If bundle transfer
-    and worker registration stay local operator commands, `maintainer` has no
-    reachable Knowledge import or export of a whole project, and `admin` has no
-    reachable worker registration, although the accepted target grants them
-    (`OWNER-A`). Agent export schedules are the corresponding reduction for B.
-    Rows 7.38, 7.39, 12.7, 10.1 to 10.4.
+    `knowledge:export` is human-only (owner decision `17802524`). Rows 10.1 to 10.4.
+36. **Project bundle transfer stays a local operator command; worker
+    registration moves online.** In better-auth a `maintainer` cannot export or
+    import a whole project from the dashboard in this release, although the
+    accepted target grants it; someone with access to the machine does it. A
+    human `admin` registers workers from the dashboard or the CLI (fresh login).
+    Owner decision `17802524`. Rows 7.38, 7.39, 12.7.
 37. **Expanded human access by role.** Human maintainers hold Knowledge approval,
     export and import and project administration by role; `knowledge:import` is
     enforced for the first time (today no operation checks it,
@@ -1520,8 +1518,8 @@ operator command, so that no account reaches the permission through it.
 | `knowledge:read` | `knowledge.memories`, `memory`, `search`, `task_context`, `check_context_export`, `threads`, `reply`, `thread`, `replies`, `tasks`, `task`, `relations`, `history`, `task_state`; as the second term of every Knowledge write, `approve_memory` and `export_context` |
 | `knowledge:write` | `knowledge.create_memory`, `update_memory`, `archive_memory`, `restore_memory`, `supersede_memory`, `create_thread`, `create_reply`, `create_task`, `task_from_thread`, `update_task`, `update_task_state` |
 | `knowledge:approve` | `knowledge.approve_memory` |
-| `knowledge:export` | `knowledge.export_context`, `knowledge.project_export` (o until `OWNER-A`), `user_backup.overview` (c), `user_backup.save`, `user_backup.status` (c), `user_backup.artifact` (agents cannot hold it: `OWNER-B`) |
-| `knowledge:import` | `knowledge.project_import` (o until `OWNER-A`); one consumer |
+| `knowledge:export` | `knowledge.export_context`, `knowledge.project_export` (o), `user_backup.overview` (c), `user_backup.save`, `user_backup.status` (c), `user_backup.artifact` (agents cannot hold it: owner decision `17802524`) |
+| `knowledge:import` | `knowledge.project_import` (o); one consumer |
 | `attachments:read` | `knowledge.attachments`, `attachment_policy`, `attachment`, `check_attachment_batch`, `knowledge.project_export` (o), `user_backup.overview` (c), `user_backup.save`, `user_backup.status` (c), `user_backup.artifact` |
 | `attachments:write` | `knowledge.check_attachment_batch`, `knowledge.create_attachment` |
 | `secrets:read` | `vault.list`, `vault.read`, `config.environment_values_read`, `profile.values_read`, `test_profile.values_read` |
@@ -1529,22 +1527,22 @@ operator command, so that no account reaches the permission through it.
 | `roles:manage` | `role.grant`, `role.revoke`, `role.list`, `vault.audit` |
 | `worker:execute` | `worker.poll` (the executor's evaluation, per item), `worker.report` |
 | `accounts:manage` | `account.create`, `account.enroll`, `account.list`, `account.get`, `account.disable`, `account.recover`, `account.token_issue`, `account.token_revoke`, `admin_role.grant`, `admin_role.revoke` |
-| `projects:create` | `project.create`, `directory.browse`; `project.create_from_import` (o until `OWNER-A`) |
+| `projects:create` | `project.create`, `directory.browse`; `project.create_from_import` (o) |
 | `projects:remove` | **no operation**; dropped from the vocabulary (planned extension 9, OPEN-3) |
 | `capacity:read` | `capacity.detail_read` |
 | `capacity:write` | `capacity.set` |
 | `settings:write` | `test_queue.set` |
 | `backups:manage` | every `backup.*` and `user_export.recovery_*` operation |
-| `workers:manage` | `worker.register` (o until `OWNER-A`), `worker.recovery_inspect` (o), `worker.recovery_reconcile` (o) |
+| `workers:manage` | `worker.register`, `worker.recovery_inspect` (o), `worker.recovery_reconcile` (o) |
 | `diagnostics:read` | `diagnostics.mcp` |
 | `vault:recover` | `vault.recover_key` |
 
-Permissions with no operation: `projects:remove`. Permissions whose only
-consumers are operator-only surfaces in this draft, so that no account reaches
-them: `knowledge:import` (with `project.create_from_import` for
-`projects:create`) and `workers:manage`, both pending `OWNER-A`; the recovery
-operations of `workers:manage` are stopped-controller maintenance and stay
-operator-only under OPEN-11 whatever the answer to A.
+Permissions with no operation: `projects:remove`. Permission whose only
+consumer is an operator-only surface in this release, so that no account reaches
+it: `knowledge:import` (and `project.create_from_import` for `projects:create`),
+accepted by the owner (`17802524`). `workers:manage` is reachable through
+`worker.register`; its recovery operations are stopped-controller maintenance
+and stay operator-only under OPEN-11.
 
 Requirement forms that need a planned extension:
 
@@ -1588,9 +1586,9 @@ decision is in the sections it names.
 | OPEN-7 | Structure and literal values are separate operations, reads and writes, for development and test profiles | agent | `e06943b7`, completed by `ce8aa214` required change 5 and `29cf8fa5` delta 8 |
 | OPEN-8 | `directory.browse` (a query) needs `installation projects:create`; a maintainer without it types the TLS path | agent | `e06943b7`, `ce8aa214`, `29cf8fa5` delta 1 |
 | OPEN-9 | `events.subscribe` is a registry stream with SSE as adapter; controller-wide events are aggregates under `any_project`; MCP keeps `project.wait` | agent | `e06943b7`, corrected by `29cf8fa5` |
-| OPEN-10 | Raw host paths and Hub import stay local; Hub import uses local offline operator authentication with validation and provenance retained. The account-facing form of bundle transfer is **owner question A** | agent (remainder: owner) | `e06943b7`, corrected by `29cf8fa5`; `ce8aa214` F6, F13 |
-| OPEN-11 | Operations that need the exclusive controller lock (`backup.remote_rebind`, `worker.recovery_inspect`, `worker.recovery_reconcile`) stay offline operator commands. `worker.register` is **owner question A** | agent (remainder: owner) | `e06943b7`; `ce8aa214` F6; `29cf8fa5` |
-| OPEN-12 | Durable owner, immutable job specification, current grants at dispatch, `schedule_owner`, no installation fallback; agent-owned schedules are **owner question B**; local operator's schedule is owned by `operator` (`46672ea8`, `fb1567d5`) | agent (remainder: owner) | `e06943b7`, `ce8aa214` F3, F4, `29cf8fa5` delta 5 |
+| OPEN-10 | Raw host paths and Hub import stay local; Hub import uses local offline operator authentication with validation and provenance retained. Bundle transfer stays operator-only in this release (owner, `17802524`) | agent and owner | `e06943b7`, corrected by `29cf8fa5`; `ce8aa214` F6, F13 |
+| OPEN-11 | Operations that need the exclusive controller lock (`backup.remote_rebind`, `worker.recovery_inspect`, `worker.recovery_reconcile`) stay offline operator commands. `worker.register` is an online operation for a human `admin` (owner, `17802524`) | agent and owner | `e06943b7`; `ce8aa214` F6; `29cf8fa5` |
+| OPEN-12 | Durable owner, immutable job specification, current grants at dispatch, `schedule_owner`, no installation fallback; agents cannot own schedules (owner, `17802524`); local operator's schedule is owned by `operator` (`46672ea8`, `fb1567d5`) | agent (remainder: owner) | `e06943b7`, `ce8aa214` F3, F4, `29cf8fa5` delta 5 |
 | OPEN-13 | Merged project DTO carries safe Knowledge metadata; two import operations: `knowledge.project_import` and `project.create_from_import` | agent | `e06943b7`, `ce8aa214` required change 8 |
 | OPEN-14 | `test_preset.list` lists all presets with an advisory `enqueueable` flag; `tests:read` | agent | `e06943b7`; `ce8aa214` |
 | OPEN-15 | `storage.refresh` needs `storage:manage`; `godot_web.rebuild` needs `runtime:control` | agent | `e06943b7`; `ce8aa214` |
@@ -1604,51 +1602,20 @@ decision is in the sections it names.
 | OPEN-23 | `backup.preview` is a query and persists nothing; `backup.restore` is a mutation whose commit point is the first durable write of the restore request; the handoff makes the last authorization and fence check; completion runs under the recorded specification. Adapter deferred (D3) | agent | `29cf8fa5`; `ce8aa214` |
 | OPEN-24 | All role grants and revocations are human-only with a fresh login; a maintainer may grant and revoke the five project roles on its own project; the last active `admin` cannot be disabled or have its role revoked except by the operator; account and role reads are human-only without a fresh login | agent | `e06943b7`, corrected by `29cf8fa5` |
 
-### 9.2 For the owner
+### 9.2 Owner questions A and B (decided)
 
-Two questions that are the owner's. The affected rows stay marked so that the
-tables do not pretend they are settled. The options and the recommendation are
-those of `29cf8fa5`.
+Both answered by the owner (`17802524`), accepting the recommendations of
+`29cf8fa5`. Both apply to better-auth mode only.
 
-**Question A. Account-facing forms for project bundle transfer and worker
-registration, or accept the reduction (from review finding F6).**
-
-The accepted target gives `maintainer` Knowledge import and export and gives
-`admin` worker administration, but this page keeps project bundle transfer and
-worker registration as local operator commands, so no account can use them.
-
-- Option 1: this release adds account-facing forms (online operations that an
-  account can use).
-- Option 2: the owner accepts the reduction: the capabilities stay local operator
-  commands.
-
-Architect's recommendation (`29cf8fa5`): worker registration becomes an online
-operation for `admin` (fresh login); project bundle transfer stays operator-only
-in this release, because a safe remote form needs upload and download that does
-not exist yet.
-
-Affected rows: 7.38 (`knowledge.project_export`), 7.39
-(`knowledge.project_import`, `project.create_from_import`), 12.7
-(`worker.register`). Permissions without an account-reachable consumer until
-decided: `knowledge:import`, `workers:manage`.
-
-**Question B. Agents cannot own export schedules under the six roles (from
-review finding F4).**
-
-No role an agent can hold includes `knowledge:export`, so an agent cannot own an
-export schedule. `ce8aa214` adds that silently granting export to `operator` or
-re-interpreting the scheduler as installation would be a new privilege.
-
-- Option 1: document the limitation; agents do not own export schedules.
-- Option 2: the owner chooses an explicit role change that gives an agent-eligible
-  role `knowledge:export` (widening `operator` is the case `ce8aa214` warns
-  against).
-
-Architect's recommendation (`29cf8fa5`): document the limitation; do not widen
-`operator`.
-
-Affected rows: 10.1 to 10.4 (`user_backup.overview`, `save`, `status`,
-`artifact`).
+- **A.** Worker registration (`worker.register`, row 12.7) is an online
+  operation for a human `admin` on the dashboard and the CLI, with
+  `agents: false` and `freshLogin`. Project bundle transfer
+  (`knowledge.project_export`, `knowledge.project_import`,
+  `project.create_from_import`; rows 7.38, 7.39) stays a local operator command
+  in this release, an accepted reduction of the maintainer capability of the
+  accepted target.
+- **B.** Agents cannot own export schedules (rows 10.1 to 10.4): no role an agent
+  can hold includes `knowledge:export`, and the role table is not changed.
 
 ### 9.3 Deferred implementation
 
@@ -1669,7 +1636,8 @@ request of slice 4 carries the contract extensions of section 1.2.
 ### 9.4 Decided after the revision
 
 The revision found two places the four replies did not decide. Both were decided
-afterwards; there is no open item other than owner questions A and B.
+afterwards; with owner questions A and B answered (section 9.2), no open item
+remains.
 
 - **NEW-OPEN-1, `runtime.switch` and a claim pinned to the old worktree.**
   Decided by the lead (`46672ea8`): when a claim exists only its holder switches,
