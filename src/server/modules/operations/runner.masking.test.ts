@@ -21,7 +21,7 @@ const VISIBLE = { kind: "registration", id: "reg-1" };
 const THROWING = { kind: "registration", id: "reg-boom" };
 
 const requirement = { require: allOf(onProject("project:read", "first"), onProject("project:read", "second")) };
-const refsOf = (input: Pair) => ({ first: input.first, second: input.second }) as Readonly<Record<string, ResourceRef>>;
+const refsOf = (input: Pair) => ({ first: input.first, second: input.second }) as unknown as Readonly<Record<string, ResourceRef>>;
 
 function world() {
   const context = setup();
@@ -56,10 +56,11 @@ const faulted = { category: "internal", status: 500, reason: "unexpected_failure
 /** The public error of every path for one pair: mutation (with and without a key), read and stream open. */
 async function answers(input: Pair) {
   const { alice, runner, mutation, read, stream, counts, idempotency } = world();
+  const keyedMutation: MutationOperation<Pair, Public, Public> = { ...mutation, retain: true };
   const failed = (result: RunResult<unknown> | { ok: false; error: unknown } | { ok: true }) => (result.ok ? "allowed" : result.error);
   const results = {
     mutation: failed(await runner.run(mutation, alice.context, input)),
-    keyed: failed(await runner.run({ ...mutation, retain: true }, alice.context, input, { idempotencyKey: "k-1" })),
+    keyed: failed(await runner.run(keyedMutation, alice.context, input, { idempotencyKey: "k-1" })),
     read: failed(await runner.run(read, alice.context, input)),
     stream: failed(await runner.stream(stream, alice.context, input)),
   };

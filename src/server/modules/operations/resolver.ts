@@ -133,13 +133,11 @@ export function resolveAll(resolver: ResourceResolver, refs: Readonly<Record<str
   // 3. One answer.
   const failure = answers.find(answer => "failed" in answer);
   if (failure && "failed" in failure) throw failure.failed;
+  if (answers.some(answer => !("found" in answer) || !answer.found)) throw new OperationError("not_found", "resource_not_found");
   const resolved = Object.create(null) as Record<string, ResolvedResource>;
-  let missing = false;
   answers.forEach((answer, index) => {
     if ("found" in answer && answer.found) Object.defineProperty(resolved, names[index], { value: answer.found, enumerable: true });
-    else missing = true;
   });
-  if (missing) throw new OperationError("not_found", "resource_not_found");
   return Object.freeze(resolved);
 }
 

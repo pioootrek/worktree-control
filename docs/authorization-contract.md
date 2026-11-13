@@ -50,10 +50,12 @@ back the reservation of an attempt that never crossed its commit point, and
 disposes a stream source it opened. Two cases can still leave something held,
 and both are reported rather than hidden:
 
-- A lease or stream source whose release or disposal fails (throws, rejects,
-  times out, or returns a promise where a synchronous answer is required) may
-  stay held. The runner calls it once, reports `cleanup_unconfirmed` or the
-  disposal observer, and does not retry.
+- A lease or stream source whose release or disposal fails may stay held. A
+  failure means it throws, rejects, times out, or returns a promise where a
+  synchronous answer is required. The runner calls it once and does not
+  retry. After an effect that began, the caller gets `cleanup_unconfirmed`. A
+  failed disposal goes to the disposal observer. A failed lease release before
+  any effect began is not reported.
 - A reservation whose own removal fails stays `reserved`, and a record whose
   final write fails stays `started`. Later requests see `request_in_progress`
   until the store adapter clears them (see
