@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ProjectId } from "@/shared/contracts/operations";
 import { OperationRegistry, type AdmittedCommitScope, type EffectScope, type MutationOperation, type TransitionResult } from "./operation";
 import { createWorld, MemoryIdempotency, P } from "./operations-fixture";
-import { allOf, claimHolder, onProject, type ResolvedResources } from "./requirements";
+import { allOf, claimHolder, onProject, type ResolvedResources, type ResourceRef } from "./requirements";
 import { OperationRunner } from "./runner";
 
 /**
@@ -44,7 +44,7 @@ function claimRelease(fixture: ReturnType<typeof createWorld>, options: {
       ? allOf(onProject("claims:manage", "claim"), claimHolder("claim"), onProject("project:read", "project"))
       : allOf(onProject("claims:manage", "claim"), claimHolder("claim")) },
     parse: raw => ({ claimId: String((raw as ClaimInput).claimId) }),
-    resources: input => (options.extraSlot
+    resources: (input): Record<string, ResourceRef> => (options.extraSlot
       ? { claim: { kind: "claim", id: input.claimId }, project: { kind: "project", id: projectA } }
       : { claim: { kind: "claim", id: input.claimId } }),
     ...(declare ? { transitions: ["claim"] } : {}),
