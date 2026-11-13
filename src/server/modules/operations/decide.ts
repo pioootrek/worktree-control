@@ -139,7 +139,9 @@ function evaluate(requirement: Requirement, input: PermittedDecisionInput, permi
 
 /**
  * The single authorization decision, used at admission, before each new
- * effect, before replay, before release and per stream event. Pure.
+ * effect, before replay, before release and per stream event. Computes the
+ * effective permissions from the snapshot (its only adapter calls), then runs
+ * the pure `decideWith`; the runner calls `decideWith` directly (decision Y).
  *
  * Masking comes first: before the human-only flag, fresh login and any
  * requirement branch, every slot the requirement names must be resolved and

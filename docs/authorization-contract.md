@@ -21,7 +21,8 @@ independent review with eleven required changes is `575a4fe8`, and contract v1
 (binding) is `032aa386`. The review of the first implementation and the
 parent decisions A to L are in reply `ad5ac74a`. Decisions M and N are in
 `9d5ae2f7`; the second review, decisions O to V and the acceptance rule are in
-`6b95f3db`; the third review and decisions W and X are in `9403b43c`.
+`6b95f3db`; the third review and decisions W and X are in `9403b43c`; the
+fourth review and decisions Y and Z are in `e33c6ace`.
 
 Code: `src/shared/contracts/operations.ts` (browser-safe vocabulary) and
 `src/server/modules/operations/` (public API in `index.ts`).
@@ -41,9 +42,10 @@ Decision O bounds what this module defends against:
   store, admission) and effect handlers.
 
 For trusted code, the module makes accidental corruption of authority
-impossible. Decisions, permission sets, relations, requirements and the
-exported vocabularies are frozen and never shared between decisions. Resource
-slot names are restricted, so no reserved property name can reach a prototype.
+impossible. Decisions, relations, requirements and the exported vocabularies
+are frozen and never shared between decisions. A permission set is frozen and
+belongs to one admitted phase: a replay's historical decision reuses the set
+of the phase that admitted it (decision Y). Resource slot names are restricted, so no reserved property name can reach a prototype.
 A value that trusted code throws or returns malformed never escapes
 unsanitized. The runner always calls the release of a lease it owns, gives
 back the reservation of an attempt that never crossed its commit point, and
@@ -56,9 +58,11 @@ and both are reported rather than hidden:
   retry. After an effect that began, the caller gets `cleanup_unconfirmed`. A
   failed disposal goes to the disposal observer. A failed lease release before
   any effect began is not reported.
-- A reservation whose own removal fails stays `reserved`, and a record whose
-  final write fails stays `started`. Later requests see `request_in_progress`
-  until the store adapter clears them (see
+- A reservation whose own removal fails stays `reserved`. A record whose
+  final write and its repair both fail stays `started`, and later requests
+  see `request_in_progress` until the store adapter clears it. If a
+  `completed` write landed before the store reported its failure, the record
+  stays `completed` (see [Idempotency](#idempotency) and
   [Obligations of later slices](#obligations-of-later-slices)).
 
 The module does not try to resist deliberately hostile in-process code beyond
@@ -193,7 +197,9 @@ of these forms:
 
 The `agents: false` and `freshLogin` flags complete the requirement.
 
-`decide` is pure and runs in this order:
+`decide` computes the effective permissions from a grants snapshot and then
+runs `decideWith`. `decideWith` takes permissions computed beforehand, calls no
+adapter and runs in this order:
 
 1. **Masking.** Every slot the requirement names must be resolved, and every
    resource the operation references must be visible to the caller. This
@@ -242,14 +248,34 @@ caller cannot see exists:
    the first failing slot in code-unit order is released after sanitization,
    whatever the other references are. Otherwise any missing reference is
    `not_found`/`resource_not_found`. Every resolved resource then goes
-   through masking in `decide`, which gives the same `not_found` for an
-   invisible one. Category, status, reason, retry and effect are identical.
+   through masking in `decideWith`, which gives the same `not_found` for an
+   invisible one.
+
+Decision Y. In every admitted phase that decides, the runner first does
+everything that can fail independently of the referenced resources:
+authority revalidation, the clock (`OperationRuntime.now`), the grants
+snapshot (`OperationRuntime.grants`) and the effective permissions, which make
+every `GrantsSnapshot` call. Only then does `resolveAll` run its three passes.
+A fault before resolution therefore gives the same answer whatever exists, and
+the resolver is not called. After resolution only `decideWith` runs before the
+answer. It reads the frozen authority, the frozen requirement, the frozen
+resolution copies and the closures of the permission set, so a denial is one
+of its own answers. Anything after an allowed decision runs only when every
+referenced resource exists and is visible. A malformed reference is therefore
+`invalid_request` only when every earlier step succeeded.
+
+With that order, a missing and an existing invisible resource get the same
+category, status, reason, retry and effect, provided the resolver itself
+answers a missing reference with `null`. A resolver whose own failure depends
+on whether the failing reference exists can still reveal that. Resolvers
+return `null` for a missing reference and throw only on a fault.
 
 Every decision point resolves through this path: admission, the recheck
 before an effect and before an idle commit point, the release, a replay, a
-stream open and each stream event. A resolver whose own failure depends on
-whether the failing reference exists can still reveal that. Resolvers
-return `null` for a missing reference and throw only on a fault.
+stream open and each stream event. A replay is decided after its phase's
+admission allowed the current resolution, reusing that phase's permissions.
+`session.describe` references no resource; it lists projects only after an
+allowed decision.
 
 Resource slot names must match `^[A-Za-z][A-Za-z0-9_]{0,63}$` (decision Q).
 `OperationRegistry.register` checks the slot names of the requirement.
@@ -291,8 +317,10 @@ transport.
    synchronous callback returned normally (decision W). A finalization or
    lease release that throws or returns a promise or other thenable writes
    `unknown`, never `completed`. The caller gets `cleanup_unconfirmed`, and a
-   retry gets `outcome_unknown`. A `completed` write that lands but then
-   throws is overwritten with `unknown`.
+   retry gets `outcome_unknown`. A record write that throws or returns a
+   thenable is repaired at once in the same admitted callback (decision Z):
+   the callback writes `unknown` before it returns, even when the failed write
+   was a `completed` one that landed.
 5. Revalidate, re-resolve and decide, then release through the projector.
 
 Finalization, audit and owned cleanup of an effect that began complete even
@@ -411,15 +439,24 @@ The runner owns the reservation before it writes it, so a `reserved` or
 `started` write that lands and then throws is still given back. An attempt
 that fails before its commit point releases its own reservation, so
 a retry runs fresh. If that release fails, the reservation stays and later
-requests see `request_in_progress`. If an attempt crossed its commit point but
-its final record could not be written, the runner tries once more to write
-`unknown`. If that also fails, the record stays `started`, and later requests
-see `request_in_progress`, never a replay. The guarantee needs a store that
-fails at most once per attempt. If a `completed` write lands and then throws
-and the `unknown` write after it also fails, the record stays `completed`. If
-a store returns a thenable and finishes the write later, that write can land
-after the runner's `unknown`. Store adapters must be synchronous and must not
-report failure for a write that landed.
+requests see `request_in_progress`.
+
+Decision Z. The completion callback owns the final record of an attempt that
+crossed its commit point. If its write throws or returns a thenable, the same
+callback writes `unknown` at once, before it returns. No other admission runs
+between the two writes, so no request can read a `completed` record that the
+runner is about to replace. The caller gets `cleanup_unconfirmed` (or
+`outcome_unknown` for an effect that failed), and a retry gets
+`outcome_unknown`. The `finally` block of the runner writes `unknown` only for
+an attempt whose completion callback never ran, for example because its
+admission was refused. It never writes after the callback ran. If the repair
+also fails, nothing more is tried: the record stays `started`, and later
+requests see `request_in_progress`, never a replay. If the failed write was a
+`completed` one that landed, the record stays `completed` and a retry replays
+it, while the original caller was told `cleanup_unconfirmed`. If a store
+returns a thenable and finishes the write later, that write can land after
+the runner's `unknown`. Store adapters must therefore be synchronous and must
+not report failure for a write that landed.
 
 A replay is a release of historical data. It requires a fresh decision on the
 current authority and current resolution. It is then decided again against
@@ -584,8 +621,9 @@ These are not implemented here. The slices that mount the contract own them.
 - **Store adapters.** The idempotency store stores and returns copies and
   bounds retention. After a controller restart it deletes `reserved` records,
   whose effect never crossed its commit point, and turns `started` records into
-  `unknown`. It also clears reservations left behind by a failed release. The
-  grants snapshot returns active grants only. The resolver keeps versions that
+  `unknown`. It also clears reservations left behind by a failed release. Its
+  calls are synchronous, and it never reports failure for a write that landed
+  (decision Z). The grants snapshot returns active grants only. The resolver keeps versions that
   are never reused for one reference.
 - **Coordination sessions and leases.** Issuance, lease secret, renewal,
   expiry, generation changes, disconnect and restart. The module only compares
