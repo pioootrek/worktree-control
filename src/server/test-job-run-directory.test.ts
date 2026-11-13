@@ -193,12 +193,17 @@ describe("per-run private temporary directory", () => {
     manager.setLimit(limit);
     // A NUL byte in an argument makes spawn throw synchronously, after the directory exists.
     const failed = enqueue("process.exit(0);\0", {}, 10_000, process.execPath, worktreeName);
-    await vi.waitFor(() => expect(removals).toHaveLength(1));
-    expect(runDirectoriesIn(root)).toHaveLength(1);
-    const next = enqueue("process.exit(0);", {}, 10_000, process.execPath, worktreeName);
-    await new Promise(resolve => setTimeout(resolve, 300));
-    expect(store.getTestRun(next.id)).toMatchObject({ phase: "queued", startedAt: null });
-    release();
+    let next: ReturnType<typeof enqueue>;
+    // A failed expectation must still release the held removal, or teardown waits for it until the hook times out.
+    try {
+      await vi.waitFor(() => expect(removals).toHaveLength(1));
+      expect(runDirectoriesIn(root)).toHaveLength(1);
+      next = enqueue("process.exit(0);", {}, 10_000, process.execPath, worktreeName);
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(store.getTestRun(next.id)).toMatchObject({ phase: "queued", startedAt: null });
+    } finally {
+      release();
+    }
     await terminal(failed.id, "failed");
     expect(store.getTestRun(failed.id)?.telemetry?.termination).toBe("spawn_error");
     await terminal(next.id, "passed");

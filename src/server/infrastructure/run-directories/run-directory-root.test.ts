@@ -22,10 +22,13 @@ vi.mock("@/server/private-storage", async (importOriginal) => {
 
 /**
  * Asynchronous `lstat` results, adjusted per path by a test (a test cannot
- * mount a file system), and the asynchronous unlinks issued; the real calls still run.
+ * mount a file system), and the asynchronous `lstat`, `opendir` and `unlink` calls issued;
+ * the real calls still run.
  */
 const filesystem = vi.hoisted(() => ({
   lstat: null as null | ((path: string, stats: Stats) => Stats),
+  examined: [] as string[],
+  opened: [] as string[],
   unlinked: [] as string[],
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -33,8 +36,13 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return {
     ...actual,
     lstat: async (path: string, ...rest: unknown[]) => {
+      filesystem.examined.push(String(path));
       const stats = await (actual.lstat as (...args: unknown[]) => Promise<Stats>)(path, ...rest);
       return filesystem.lstat ? filesystem.lstat(String(path), stats) : stats;
+    },
+    opendir: async (path: string, ...rest: unknown[]) => {
+      filesystem.opened.push(String(path));
+      return (actual.opendir as (...args: unknown[]) => Promise<unknown>)(path, ...rest);
     },
     unlink: async (path: string) => { filesystem.unlinked.push(String(path)); return actual.unlink(path); },
   };
@@ -57,7 +65,7 @@ function restoreAccess(path: string): void {
 afterEach(async () => {
   storage.calls.splice(0);
   filesystem.lstat = null;
-  filesystem.unlinked.splice(0);
+  for (const calls of [filesystem.examined, filesystem.opened, filesystem.unlinked]) calls.splice(0);
   expect(await groups.stopAll()).toEqual([]);
   for (const directory of scratch.splice(0)) {
     restoreAccess(directory);
@@ -170,11 +178,14 @@ describe("run directory root", () => {
     writeFileSync(join(run, "file"), "x");
     mkdirSync(join(run, "nested"));
     writeFileSync(join(run, "nested", "file"), "y");
-    filesystem.unlinked.splice(0);
+    for (const calls of [filesystem.examined, filesystem.opened, filesystem.unlinked]) calls.splice(0);
     // As if the test had mounted a file system exactly at its run directory: everything in it reports that device.
     const mounted = (path: string) => path === run || path.startsWith(`${run}/`);
     filesystem.lstat = (path, stats) => (mounted(path) ? Object.assign(stats, { dev: stats.dev + 1 }) : stats);
     await expect(root.remove(run)).rejects.toThrow("mount_point");
+    // Traversal never started: the directory was not opened and nothing inside it was examined or unlinked.
+    expect(filesystem.opened.filter(mounted)).toEqual([]);
+    expect(filesystem.examined.filter(path => path.startsWith(`${run}/`))).toEqual([]);
     expect(filesystem.unlinked.filter(path => path.startsWith(`${run}/`))).toEqual([]);
     expect(readFileSync(join(run, "file"), "utf8")).toBe("x");
     expect(readFileSync(join(run, "nested", "file"), "utf8")).toBe("y");
