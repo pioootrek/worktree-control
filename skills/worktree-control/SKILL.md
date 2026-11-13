@@ -212,6 +212,15 @@ flags, fixtures, or a database guard, and report a missing variable instead of
 running the command in a terminal to work around it. Only change a profile or
 its preset assignment when the user asks for that change.
 
+Newer controllers give every locally executed run a private temporary
+directory. `TMPDIR`, `TMP` and `TEMP` point to it and override profile values,
+and the controller removes it with its contents when the run ends. Write
+temporary files under `TMPDIR`, not under a fixed `/tmp` path, and keep
+nothing there that must outlive the run. The reason code
+`run_directory_cleanup_failed` means that this removal failed; the test result
+is unchanged. The error `run_directory_unavailable` means that the run never
+started because no directory could be created.
+
 Do not bypass an available managed test preset by starting the same command in
 a terminal. If test-queue tools are unavailable, follow the repository's own
 finite verification command and host resource policy.
