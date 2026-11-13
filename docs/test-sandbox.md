@@ -1,6 +1,6 @@
 ---
 audience: "authors of external test suites that exercise Knowledge or MCP against a real controller"
-last_reviewed: "2026-11-12"
+last_reviewed: "2026-11-13"
 source_of_truth: "the worktree-control sandbox command and its descriptor format"
 status: "active"
 ---
@@ -38,6 +38,12 @@ worktree-control sandbox [--project-name NAME] [--permissions LIST] \
    the sandbox directory. `WORKTREE_CONTROL_*` and `WORKTREE_SWITCHER_*`
    variables are removed from its environment, so the host installation's
    directories and tokens cannot reach it.
+
+Like every controller, the sandbox controller also creates a root for per-run
+temporary directories, `wtc-XXXXXX`, in the system temporary directory, next to
+the sandbox directory and not inside it. It removes that root when it stops
+normally. [Reservations and MCP](reservations-and-mcp.md) describes these
+directories.
 
 When the controller accepts requests, the command prints one JSON line on
 standard output. It always uses standard output, also when standard output is
@@ -106,7 +112,7 @@ reader.
 | Exit status | Meaning |
 | --- | --- |
 | 0 | Stopped on request: a signal or the end of standard input. This includes a request that arrives before the descriptor was printed. |
-| 1 | Invalid options, the controller failed to start or exited on its own, a read from standard input or a write to standard output or standard error failed, or the controller could not be stopped (see below). Any files it created are removed. |
+| 1 | Invalid options, the controller failed to start or exited on its own, a read from standard input or a write to standard output or standard error failed, or the controller could not be stopped (see below). The sandbox directory is removed. |
 
 If the controller still has not exited 5 seconds after `SIGKILL`, the command
 removes the directory anyway, writes `Sandbox controller <pid> did not exit
@@ -116,6 +122,25 @@ by hand: it may still be running.
 A terminal or `/dev/null` on standard input never ends the sandbox. A sandbox
 killed with `SIGKILL` cannot clean up: its controller keeps running and its
 directory stays. Stop it with `SIGTERM` or close its input instead.
+
+A controller that is killed cannot remove its `wtc-XXXXXX` root. This happens
+when the sandbox has to send `SIGKILL`, and when a sandbox was itself killed
+and its controller is killed later. The root stays in the system temporary
+directory, and no later start removes it, because the record that names it was
+in the sandbox directory. It holds one marker file, plus the directories of any
+queued test runs that were active in the sandbox.
+
+Other controllers of the same user keep roots with the same `wtc-` prefix in
+the same place, including the installed one, so do not remove such directories
+by name. To make leftovers unambiguous, start the sandbox with `TMPDIR` set to
+a private directory that the suite created with `mkdtemp`. Both the sandbox
+directory and the controller's root are then created inside it.
+
+Remove that directory only when the controller is gone. An exit with status 0
+confirms that. After status 1, read standard error first: `Sandbox controller
+<pid> did not exit after SIGKILL.` names a controller that may still be
+running. Removing the directory under a live controller deletes its root and
+the temporary files of runs that are still active.
 
 Each sandbox costs one controller process: about half a second to start and
 roughly 150 MB of resident memory on Linux. Start one per test file or suite,
