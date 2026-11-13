@@ -41,10 +41,11 @@ export type ResolvedResources = Readonly<Record<string, ResolvedResource>>;
  * Resource slot names: an identifier of at most 64 characters. Rejects
  * `__proto__`, `constructor` look-alikes with leading underscores, empty names
  * and anything that is not a plain identifier. Checked when an operation is
- * registered and again whenever resources are resolved or compared.
+ * registered and again whenever resources are resolved or compared. The
+ * pattern is private and created per call, so no caller can reach or change
+ * a shared `RegExp` (its `lastIndex`, flags or methods).
  */
-export const SLOT_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
-export const isSlotName = (value: unknown): value is string => typeof value === "string" && SLOT_NAME.test(value);
+export const isSlotName = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value);
 
 export type PredicateName = "claim_holder" | "run_originating_session" | "worker_assignment";
 

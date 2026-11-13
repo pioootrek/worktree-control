@@ -26,7 +26,7 @@ export {
 } from "./release";
 export {
   allOf, authenticated, claimHolder, collection, collectionPermissions, frozenOperationRequirement, installation, isSlotName, onProject, requiredSlots, resourceKinds,
-  runOriginatingSession, SLOT_NAME, workerAssignment,
+  runOriginatingSession, workerAssignment,
   type OperationRequirement, type PredicateName, type Requirement, type ResolvedResource, type ResolvedResources, type ResourceKind,
   type ResourceRef, type ResourceRelation,
 } from "./requirements";
