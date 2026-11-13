@@ -137,12 +137,12 @@ export class OperationRunner {
           const retained = retention.get({ operationId: operation.id, principal: principalKey(phase.authority), idempotencyKey });
           if (retained) {
             if (retained.fingerprint !== print) throw new OperationError("conflict", "idempotency_conflict");
-            return { replay: released(operation.project(retained.result as R, phase.release), operation.publicKeys) };
+            return { kind: "replay" as const, value: released(operation.project(retained.result as R, phase.release), operation.publicKeys) };
           }
         }
-        return { phase };
+        return { kind: "fresh" as const, phase };
       }, { signal });
-      if ("replay" in first) return { ok: true, value: first.replay, replayed: true };
+      if (first.kind === "replay") return { ok: true, value: first.value, replayed: true };
       const initial = first.phase;
 
       // 2. Optional SQL-free wait (for example a project lock) outside admission.

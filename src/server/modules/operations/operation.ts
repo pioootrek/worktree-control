@@ -89,7 +89,8 @@ export class OperationRegistry {
   register<T extends AnyOperation>(operation: T): T {
     if (!OPERATION_ID.test(operation.id)) throw new TypeError(`Invalid operation ID: ${operation.id}`);
     if (this.#operations.has(operation.id)) throw new TypeError(`Duplicate operation ID: ${operation.id}`);
-    this.#operations.set(operation.id, Object.freeze(operation));
+    Object.freeze(operation);
+    this.#operations.set(operation.id, operation);
     return operation;
   }
 

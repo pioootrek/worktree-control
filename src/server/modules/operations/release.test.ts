@@ -4,13 +4,14 @@ import type { ReadOperation } from "./operation";
 import { createWorld, P } from "./operations-fixture";
 import { pick, type Page } from "./release";
 import { collection } from "./requirements";
-import { OperationRunner } from "./runner";
+import { OperationRunner, type RunResult } from "./runner";
 
 interface Row { projectId: ProjectId; name: string; secretHolder: string }
 interface Input { limit: number; cursor: string | null }
 
 /** Fixture of a multi-project collection query with no project input (like a future project.list). */
-const listFixture: ReadOperation<Input, Page<Row>, { items: { projectId: ProjectId; name: string }[]; nextCursor: string | null }> = {
+interface ListPublic { items: { projectId: ProjectId; name: string }[]; nextCursor: string | null }
+const listFixture: ReadOperation<Input, Page<Row>, ListPublic> = {
   id: "fixture.project_list",
   kind: "read",
   requirement: { require: collection("project:read") },
@@ -44,7 +45,7 @@ async function allPages(hidden: boolean, limit: number) {
   const pages: unknown[] = [];
   let cursor: string | null = null;
   do {
-    const result = await runner.run(listFixture, context, { limit, cursor });
+    const result: RunResult<ListPublic> = await runner.run(listFixture, context, { limit, cursor });
     if (!result.ok) throw new Error(JSON.stringify(result.error));
     pages.push(result.value);
     cursor = result.value.nextCursor;
