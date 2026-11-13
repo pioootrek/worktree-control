@@ -8,7 +8,15 @@ export type GrantScope = { kind: "project"; projectId: ProjectId } | { kind: "in
 /** One stored role assignment. Stored data is re-validated on every evaluation. */
 export interface StoredGrant { accountId: AccountId; role: Role; scope: GrantScope }
 
-/** Current grants and stored account kinds, read inside the admitted phase that decides. */
+/**
+ * Current grants and stored account kinds, read inside the admitted phase that decides.
+ *
+ * Grants in this model do not expire: revocation is removal. The snapshot
+ * therefore contains active grants only, and returning nothing else is the
+ * snapshot adapter's obligation (to be tested with the adapter, slice 3). A
+ * stored grant has no expiry field and this module never filters by time.
+ * Coordination-session leases do expire; they are not part of this slice.
+ */
 export interface GrantsSnapshot {
   /** Stored kind of an account, never a request claim. `null` when unknown or disabled. */
   accountKind(accountId: AccountId): "human" | "agent" | null;

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { authenticationModes, listenerKinds, type AuthenticationMode, type ListenerKind } from "@/shared/contracts/operations";
 import { acceptanceTable, credentialClasses, resolveAcceptance, unregisteredRouteClasses, type CredentialClass, type PresentedCredentials } from "./acceptance";
-import { createListenerBoundary, mintOfflineContext } from "./authentication-context";
+import { createListenerBoundary, mintOfflineContext, type CredentialVerifier, type VerifiedCredential } from "./authentication-context";
 import { OperationError } from "./errors";
 import { A, createWorld, FakeVerifier, presented } from "./operations-fixture";
 
@@ -145,5 +145,67 @@ describe("authentication context", () => {
     lock.held = false;
     expect(failure(() => context.revalidate())).toBe("unauthenticated:offline_lock_not_held");
     expect(failure(() => mintOfflineContext({ mode: "token", lockHeld: () => false }))).toBe("unauthenticated:offline_lock_not_held");
+  });
+});
+
+describe("authority values are immutable copies", () => {
+  const failure = (call: () => unknown) => {
+    try { call(); } catch (error) { return error instanceof OperationError ? `${error.category}:${error.reason}` : String(error); }
+    return "ok";
+  };
+  /** A verifier that hands out the same mutable objects it keeps, as a careless adapter would. */
+  function sharingVerifier() {
+    const stored = {
+      identity: { path: "provider_session" as const, credentialId: "c-alice", generation: 1 },
+      actor: { kind: "human" as const, accountId: A("alice") },
+      evidence: { authenticatedAt: 1_000 },
+      coordinationSession: { id: "s-1", generation: 1, credentialId: "c-alice" },
+    };
+    const verifier: CredentialVerifier = { verify: () => stored, current: () => stored };
+    const context = createListenerBoundary({ mode: "better-auth", listener: "api", verifier, open: () => true })
+      .mint(presented({ providerSession: { secret: "cookie" } }));
+    return { stored, context };
+  }
+
+  it("returns a fresh deeply frozen copy on every revalidation", () => {
+    const { context } = sharingVerifier();
+    const first = context.revalidate();
+    for (const value of [first, first.actor, first.evidence, first.coordinationSession]) expect(Object.isFrozen(value)).toBe(true);
+    expect(Reflect.set(first.actor, "accountId", "mallory")).toBe(false);
+    expect(Reflect.set(first.coordinationSession!, "id", "adopted")).toBe(false);
+    expect(Reflect.set(first.evidence!, "authenticatedAt", 999_999)).toBe(false);
+    const second = context.revalidate();
+    expect(second).not.toBe(first);
+    expect(second.actor).not.toBe(first.actor);
+    expect(second).toEqual({ actor: { kind: "human", accountId: "alice" }, mode: "better-auth", listener: "api",
+      evidence: { authenticatedAt: 1_000 }, coordinationSession: { id: "s-1", generation: 1, credentialId: "c-alice" } });
+  });
+
+  it("keeps the baseline when the verifier mutates the objects it returned", () => {
+    for (const change of ["actor", "generation", "session", "credential"] as const) {
+      const { stored, context } = sharingVerifier();
+      if (change === "actor") stored.actor.accountId = A("mallory");
+      if (change === "generation") stored.identity.generation = 2;
+      if (change === "session") stored.coordinationSession.id = "adopted";
+      if (change === "credential") stored.identity.credentialId = "c-mallory";
+      // In place, on the very objects returned at mint: the baseline must not follow.
+      expect(failure(() => context.revalidate())).toBe(change === "session" ? "unauthenticated:coordination_session_changed" : "unauthenticated:credential_no_longer_valid");
+    }
+  });
+
+  it("does not let a verifier that mutates the identity it is given change the baseline", () => {
+    let calls = 0;
+    const credential = (): VerifiedCredential => ({
+      identity: { path: "agent_token", credentialId: "c-bot", generation: 1 }, actor: { kind: "agent", accountId: A("bot") },
+      evidence: null, coordinationSession: null,
+    });
+    const verifier: CredentialVerifier = {
+      verify: credential,
+      current: identity => { calls++; (identity as { generation: number }).generation = 7; return calls === 1 ? credential() : { ...credential(), identity: { ...credential().identity, generation: 7 } }; },
+    };
+    const context = createListenerBoundary({ mode: "better-auth", listener: "mcp", verifier, open: () => true })
+      .mint(presented({ bearers: [{ class: "agent_token", secret: "t" }] }));
+    expect(context.revalidate().actor).toEqual({ kind: "agent", accountId: "bot" });
+    expect(failure(() => context.revalidate())).toBe("unauthenticated:credential_no_longer_valid");
   });
 });

@@ -18,11 +18,15 @@ export type ResourceRelation =
   | { kind: "worker_attempt"; assignee: { accountId: AccountId | null; sessionId: string } | null };
 
 export interface ResolvedResource {
-  ref: ResourceRef;
-  projectId: ProjectId;
-  /** Changes whenever the resource's project mapping or relation changes. */
-  version: number;
-  relation: ResourceRelation | null;
+  readonly ref: ResourceRef;
+  readonly projectId: ProjectId;
+  /**
+   * Changes whenever the resource's project mapping or relation changes, and is
+   * never reused for the same reference, including after delete and recreate.
+   * Replay and every recheck compare it.
+   */
+  readonly version: number;
+  readonly relation: ResourceRelation | null;
 }
 export type ResolvedResources = Readonly<Record<string, ResolvedResource>>;
 
@@ -64,8 +68,12 @@ export function requiredSlots(requirement: Requirement): string[] {
   }
 }
 
-export function collectionPermission(requirement: Requirement): ProjectPermission | null {
-  if (requirement.kind === "collection") return requirement.permission;
-  if (requirement.kind === "all") for (const part of requirement.of) { const found = collectionPermission(part); if (found) return found; }
-  return null;
+/**
+ * Every collection permission of a requirement. Release of a collection item
+ * requires all of them on the item's project, plus visibility.
+ */
+export function collectionPermissions(requirement: Requirement): ProjectPermission[] {
+  if (requirement.kind === "collection") return [requirement.permission];
+  if (requirement.kind === "all") return [...new Set(requirement.of.flatMap(collectionPermissions))];
+  return [];
 }

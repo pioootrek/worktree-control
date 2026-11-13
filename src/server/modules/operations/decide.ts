@@ -7,6 +7,7 @@ import { requiredSlots } from "./requirements";
 export interface DecisionInput {
   authority: CurrentAuthority;
   requirement: OperationRequirement;
+  /** Every resource the operation references, resolved in this phase. */
   resources: ResolvedResources;
   grants: GrantsSnapshot;
   /** Milliseconds since the epoch. */
@@ -17,6 +18,7 @@ export type Denial = { allowed: false; category: Extract<ErrorCategory, "forbidd
 export type Decision = { allowed: true; permissions: EffectivePermissions } | Denial;
 
 const deny = (category: Denial["category"], reason: string): Denial => ({ allowed: false, category, reason });
+const NOT_FOUND = deny("not_found", "resource_not_found");
 
 /** Fresh-login state from current provider evidence only. Missing or malformed evidence is stale. */
 export function freshLoginState(authority: CurrentAuthority, now: number): FreshLoginState {
@@ -45,6 +47,7 @@ function predicateHolds(name: PredicateName, authority: CurrentAuthority, resour
       return null;
     }
     case "run_originating_session": {
+      // Cancel from the originating session only. This is NOT the I1 original-intent lookup.
       if (relation?.kind !== "test_run") return deny("forbidden", "relation_unavailable");
       if (!relation.origin || !session || session.id !== relation.origin.sessionId || session.credentialId !== relation.origin.credentialId) {
         return deny("forbidden", "not_originating_session");
@@ -62,6 +65,7 @@ function predicateHolds(name: PredicateName, authority: CurrentAuthority, resour
   }
 }
 
+/** Runs only after masking: every referenced resource exists and is visible. */
 function evaluate(requirement: Requirement, input: DecisionInput, permissions: EffectivePermissions): Denial | null {
   const { authority, resources } = input;
   const full = isFullAuthority(authority.actor);
@@ -73,16 +77,13 @@ function evaluate(requirement: Requirement, input: DecisionInput, permissions: E
       return full || permissions.installation.has(requirement.permission) ? null : deny("forbidden", "permission_denied");
     case "project": {
       const resource = resources[requirement.resource];
-      if (!resource) return deny("not_found", "resource_not_found");
-      if (full || permissions.project(resource.projectId).has(requirement.permission)) return null;
-      return projectVisible(authority, permissions, resource.projectId) ? deny("forbidden", "permission_denied") : deny("not_found", "resource_not_found");
+      if (!resource) return NOT_FOUND;
+      return full || permissions.project(resource.projectId).has(requirement.permission) ? null : deny("forbidden", "permission_denied");
     }
     case "predicate": {
       const resource = resources[requirement.resource];
-      if (!resource) return deny("not_found", "resource_not_found");
-      const denial = predicateHolds(requirement.predicate, authority, resource);
-      if (!denial) return null;
-      return projectVisible(authority, permissions, resource.projectId) ? denial : deny("not_found", "resource_not_found");
+      if (!resource) return NOT_FOUND;
+      return predicateHolds(requirement.predicate, authority, resource);
     }
     case "all":
       for (const part of requirement.of) {
@@ -97,14 +98,23 @@ function evaluate(requirement: Requirement, input: DecisionInput, permissions: E
  * The single authorization decision, used at admission, before each new
  * effect, before replay, before release and per stream event. Pure.
  *
+ * Masking comes first: before the human-only flag, fresh login and any
+ * requirement branch, every slot the requirement names must be resolved and
+ * every referenced resource must be visible. Otherwise the decision is
+ * `not_found`/`resource_not_found`, identical for a missing and an invisible
+ * resource, independent of flags and of the order of conjunction branches.
+ * Only then can `forbidden`, `login_stale`, `claim_held` or `conflict` reveal
+ * anything, and only about a resource the caller can already see.
+ *
  * Full authority passes permissions, the human-only flag and fresh login, but
  * not resource resolution or the predicates that protect foreign claims, runs
  * and assignments.
  */
 export function decide(input: DecisionInput): Decision {
   const { authority, requirement, resources, grants, now } = input;
-  for (const slot of requiredSlots(requirement.require)) if (!resources[slot]) return deny("not_found", "resource_not_found");
   const permissions = effectivePermissions(authority.actor, grants);
+  for (const slot of requiredSlots(requirement.require)) if (!Object.prototype.hasOwnProperty.call(resources, slot)) return NOT_FOUND;
+  for (const resource of Object.values(resources)) if (!projectVisible(authority, permissions, resource.projectId)) return NOT_FOUND;
   if (requirement.agents === false && authority.actor.kind === "agent") return deny("forbidden", "human_only");
   const denial = evaluate(requirement.require, input, permissions);
   if (denial) return denial;

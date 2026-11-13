@@ -9,17 +9,22 @@ import {
   createListenerBoundary,
   type Actor, type CoordinationSessionRef, type CredentialIdentity, type CredentialVerifier, type ProviderEvidence, type VerifiedCredential,
 } from "./authentication-context";
-import type { OperationRuntime, RetainedResults, RetentionKey } from "./runner";
+import type { IdempotencyKey, IdempotencyRecord, IdempotencyStore, OperationRuntime } from "./runner";
 import type { GrantsSnapshot, StoredGrant } from "./grants";
 import type { ResolvedResource, ResourceKind, ResourceRef, ResourceRelation } from "./requirements";
 import type { ResourceResolver } from "./resolver";
 
 interface Entry { projectId: ProjectId; version: number; relation: ResourceRelation | null }
 
-/** Separate maps per namespace; no lookup ever crosses into another map. */
+/**
+ * Separate maps per namespace; no lookup ever crosses into another map.
+ * Versions come from one counter, so they are never reused for a reference,
+ * even after delete and recreate (an obligation of every real resolver).
+ */
 export class InMemoryResolver implements ResourceResolver {
   readonly #entries = new Map<ResourceKind, Map<string, Entry>>();
   readonly #projects: ProjectId[] = [];
+  #version = 0;
   resolveCalls = 0;
 
   addProject(id: ProjectId): this {
@@ -33,8 +38,7 @@ export class InMemoryResolver implements ResourceResolver {
   }
   put(ref: ResourceRef, projectId: ProjectId, relation: ResourceRelation | null = null): this {
     const map = this.#entries.get(ref.kind) ?? new Map<string, Entry>();
-    const previous = map.get(ref.id);
-    map.set(ref.id, { projectId, version: (previous?.version ?? 0) + 1, relation });
+    map.set(ref.id, { projectId, version: ++this.#version, relation });
     this.#entries.set(ref.kind, map);
     return this;
   }
@@ -191,15 +195,24 @@ export function createWorld(options: { now?: number } = {}) {
     return { credentialId, session: coordination, context };
   };
   const operator = () => boundary("better-auth", "unix").mint(presented());
-  const runtime = (extra: { completionDeadlineMs?: number; retained?: RetainedResults } = {}): OperationRuntime => ({
-    admission, resolver, grants: () => grants, now: () => clock.now, completionDeadlineMs: extra.completionDeadlineMs ?? 50, retained: extra.retained,
+  const runtime = (extra: { completionDeadlineMs?: number; idempotency?: IdempotencyStore; disposeTimeoutMs?: number } = {}): OperationRuntime => ({
+    admission, resolver, grants: () => grants, now: () => clock.now, completionDeadlineMs: extra.completionDeadlineMs ?? 50,
+    idempotency: extra.idempotency, disposeTimeoutMs: extra.disposeTimeoutMs ?? 50,
   });
   return { verifier, grants, resolver, admission, clock, listenerOpen, boundary, human, agent, installation, operator, runtime };
 }
 
-export class MemoryRetained implements RetainedResults {
-  readonly entries = new Map<string, { fingerprint: string; result: unknown }>();
-  #key = (key: RetentionKey) => JSON.stringify([key.operationId, key.principal, key.idempotencyKey]);
-  get(key: RetentionKey) { return this.entries.get(this.#key(key)) ?? null; }
-  put(key: RetentionKey, fingerprint: string, result: unknown) { this.entries.set(this.#key(key), { fingerprint, result: structuredClone(result) }); }
+/** Idempotency store double. Stores and returns copies, as a real adapter must. */
+export class MemoryIdempotency implements IdempotencyStore {
+  readonly entries = new Map<string, IdempotencyRecord>();
+  #key = (key: IdempotencyKey) => JSON.stringify([key.operationId, key.principal, key.idempotencyKey]);
+  get(key: IdempotencyKey): IdempotencyRecord | null {
+    const record = this.entries.get(this.#key(key));
+    return record ? structuredClone(record) : null;
+  }
+  put(key: IdempotencyKey, record: IdempotencyRecord): void { this.entries.set(this.#key(key), structuredClone(record)); }
+  release(key: IdempotencyKey, attempt: string): void {
+    if (this.entries.get(this.#key(key))?.attempt === attempt) this.entries.delete(this.#key(key));
+  }
+  states(): string[] { return [...this.entries.values()].map(record => record.state); }
 }

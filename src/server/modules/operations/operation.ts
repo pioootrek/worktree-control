@@ -18,7 +18,10 @@ export interface FinalizeScope { resources: ResolvedResources }
 
 export type EffectOutcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
 
-/** A held SQL-free resource such as a project lock. Released by the runner. */
+/**
+ * A held SQL-free resource such as a project lock. The runner owns it from the
+ * moment `acquire` resolves and releases it exactly once, on every path.
+ */
 export interface Lease { release(): void }
 
 interface OperationBase<Input> {
@@ -57,10 +60,20 @@ export type OperationEffect<Input, InternalResult> =
 export interface MutationOperation<Input, InternalResult, PublicResult extends object> extends ProjectedOperation<Input, InternalResult, PublicResult> {
   kind: "mutation";
   acquire?(input: Input, signal: AbortSignal | undefined): Promise<Lease>;
+  /**
+   * Exactly one bounded effect. Anything it throws is reported as an unknown
+   * outcome (`outcome_unknown`, keeping the thrown reason): once invoked, the
+   * runner cannot know how far it got. Refusals that must report `not_started`
+   * belong in the requirement or in `acquire`, before the effect.
+   */
   effect: OperationEffect<Input, InternalResult>;
   /** Audit, receipt and owned cleanup of an effect that began. Synchronous, reserved admission. */
   finalize?(input: Input, outcome: EffectOutcome<InternalResult>, scope: FinalizeScope): void;
-  /** Retain successful results by idempotency key for authorized replay. */
+  /**
+   * Accept idempotency keys: an admitted reservation per operation, principal
+   * and key (see `IdempotencyStore`). The internal result is retained for
+   * replay and must be structured-cloneable plain data.
+   */
   retain?: true;
 }
 

@@ -1,25 +1,25 @@
-import type { AccountId, AuthenticationMode, ListenerKind } from "@/shared/contracts/operations";
+import { authenticationModes, listenerKinds, type AccountId, type AuthenticationMode, type ListenerKind } from "@/shared/contracts/operations";
 import { pathActorKind, resolveAcceptance, type AcceptedPath, type PresentedCredentials } from "./acceptance";
 import { OperationError } from "./errors";
 
 /** The four actor kinds. A worker is an installation (open/token) or an agent holding `executor`. */
 export type Actor =
-  | { kind: "installation" }
-  | { kind: "operator"; via: "unix" | "offline" }
-  | { kind: "human"; accountId: AccountId }
-  | { kind: "agent"; accountId: AccountId };
+  | { readonly kind: "installation" }
+  | { readonly kind: "operator"; readonly via: "unix" | "offline" }
+  | { readonly kind: "human"; readonly accountId: AccountId }
+  | { readonly kind: "agent"; readonly accountId: AccountId };
 
 /**
  * Current provider evidence for a human session, re-read on every revalidation.
  * Milliseconds since the epoch of the session's original authentication.
  */
-export interface ProviderEvidence { authenticatedAt: number }
+export interface ProviderEvidence { readonly authenticatedAt: number }
 
 /** Server-issued coordination session (MCP session, bounded browser or CLI session). Never caller-supplied. */
-export interface CoordinationSessionRef { id: string; generation: number; credentialId: string }
+export interface CoordinationSessionRef { readonly id: string; readonly generation: number; readonly credentialId: string }
 
 /** Identity and generation of the credential a context was minted from. */
-export interface CredentialIdentity { path: AcceptedPath; credentialId: string; generation: number }
+export interface CredentialIdentity { readonly path: AcceptedPath; readonly credentialId: string; readonly generation: number }
 
 export interface VerifiedCredential {
   identity: CredentialIdentity;
@@ -28,7 +28,12 @@ export interface VerifiedCredential {
   coordinationSession: CoordinationSessionRef | null;
 }
 
-/** Port to the credential stores. Implementations never substitute another credential or actor. */
+/**
+ * Port to the credential stores. Implementations never substitute another
+ * credential or actor. Whatever they return is copied before use, so an
+ * implementation that keeps, mutates or shares the returned objects cannot
+ * change a context's baseline.
+ */
 export interface CredentialVerifier {
   /** Checks a presented secret for an accepted path. `null` when invalid. */
   verify(path: AcceptedPath, secret: string | null): VerifiedCredential | null;
@@ -36,28 +41,134 @@ export interface CredentialVerifier {
   current(identity: CredentialIdentity): VerifiedCredential | null;
 }
 
-/** What one admitted phase may rely on. Obtained only through `revalidate`. */
+/** What one admitted phase may rely on. Obtained only through revalidation; always a fresh, deeply frozen copy. */
 export interface CurrentAuthority {
-  actor: Actor;
-  mode: AuthenticationMode;
-  listener: ListenerKind;
-  evidence: ProviderEvidence | null;
-  coordinationSession: CoordinationSessionRef | null;
+  readonly actor: Actor;
+  readonly mode: AuthenticationMode;
+  readonly listener: ListenerKind;
+  readonly evidence: ProviderEvidence | null;
+  readonly coordinationSession: CoordinationSessionRef | null;
 }
+
+/** Type-level brand only. There is no runtime symbol: membership is checked against a module-private registry. */
+declare const mintedBrand: unique symbol;
 
 /**
  * Opaque, server-owned authentication of one request. Only a listener or
- * offline boundary can mint it. It is never serialized: `toJSON` throws, so a
- * projection that leaks it fails instead of releasing it.
+ * offline boundary of this module can mint it. Consumers accept a context only
+ * when it is registered in this module's private registry (`currentAuthority`);
+ * an object of the same shape, a copy or a proxy is `unauthenticated`. It is
+ * never serialized: `toJSON` throws.
  */
 export interface AuthenticationContext {
   readonly mode: AuthenticationMode;
   readonly listener: ListenerKind;
   /** Re-reads the original credential. Throws `unauthenticated`; never falls back. */
   revalidate(): CurrentAuthority;
+  readonly [mintedBrand]: true;
 }
 
-const minting = Symbol("authentication-context-minting");
+const unauthenticated = (reason: string) => new OperationError("unauthenticated", reason);
+
+/** Module-private registry of minted contexts and their revalidation closures. Never exported. */
+const minted = new WeakMap<object, () => CurrentAuthority>();
+
+/**
+ * The only way a consumer of this module obtains authority from a context.
+ * Anything not minted here (including a structurally identical object) is
+ * `unauthenticated`; the object's own `revalidate` is never called.
+ */
+export function currentAuthority(context: unknown): CurrentAuthority {
+  const current = typeof context === "object" && context !== null ? minted.get(context) : undefined;
+  if (!current) throw unauthenticated("unrecognized_context");
+  return current();
+}
+
+/** Whether a value is a context minted by this module. */
+export function isMintedContext(value: unknown): value is AuthenticationContext {
+  return typeof value === "object" && value !== null && minted.has(value);
+}
+
+class MintedAuthenticationContext {
+  readonly mode: AuthenticationMode;
+  readonly listener: ListenerKind;
+  constructor(mode: AuthenticationMode, listener: ListenerKind) {
+    this.mode = mode;
+    this.listener = listener;
+  }
+  revalidate(): CurrentAuthority { return currentAuthority(this); }
+  toJSON(): never { throw new TypeError("An authentication context is never released."); }
+}
+Object.freeze(MintedAuthenticationContext.prototype);
+
+function mint(mode: AuthenticationMode, listener: ListenerKind, current: () => CurrentAuthority): AuthenticationContext {
+  const context = Object.freeze(new MintedAuthenticationContext(mode, listener));
+  minted.set(context, current);
+  return context as unknown as AuthenticationContext;
+}
+
+// Copies read every field once and keep only known fields, so getters, extra
+// properties and later mutation of the verifier's objects cannot reach the baseline.
+const isString = (value: unknown): value is string => typeof value === "string" && value.length > 0;
+const isGeneration = (value: unknown): value is number => Number.isSafeInteger(value);
+
+function copyActor(value: unknown): Actor | null {
+  if (typeof value !== "object" || value === null) return null;
+  const source = value as Record<string, unknown>;
+  const kind = source.kind;
+  if (kind === "installation") return Object.freeze({ kind });
+  if (kind === "operator") {
+    const via = source.via;
+    return via === "unix" || via === "offline" ? Object.freeze({ kind, via }) : null;
+  }
+  if (kind === "human" || kind === "agent") {
+    const accountId = source.accountId;
+    return isString(accountId) ? Object.freeze({ kind, accountId: accountId as AccountId }) : null;
+  }
+  return null;
+}
+
+function copySession(value: unknown): CoordinationSessionRef | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== "object" || value === undefined) return undefined;
+  const source = value as Record<string, unknown>;
+  const id = source.id, generation = source.generation, credentialId = source.credentialId;
+  if (!isString(id) || !isGeneration(generation) || !isString(credentialId)) return undefined;
+  return Object.freeze({ id, generation, credentialId });
+}
+
+function copyEvidence(value: unknown): ProviderEvidence | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== "object" || value === undefined) return undefined;
+  const authenticatedAt = (value as Record<string, unknown>).authenticatedAt;
+  return typeof authenticatedAt === "number" && Number.isFinite(authenticatedAt) ? Object.freeze({ authenticatedAt }) : undefined;
+}
+
+function copyIdentity(value: unknown): CredentialIdentity | null {
+  if (typeof value !== "object" || value === null) return null;
+  const source = value as Record<string, unknown>;
+  const path = source.path, credentialId = source.credentialId, generation = source.generation;
+  if (typeof path !== "string" || !(path in pathActorKind) || !isString(credentialId) || !isGeneration(generation)) return null;
+  return Object.freeze({ path: path as AcceptedPath, credentialId, generation });
+}
+
+interface Verified { identity: CredentialIdentity; actor: Actor; evidence: ProviderEvidence | null; session: CoordinationSessionRef | null }
+
+/** Copies and validates one verifier answer for `path`. `null` when anything is malformed or does not fit the path. */
+function copyVerification(path: AcceptedPath, value: VerifiedCredential | null): Verified | null {
+  if (typeof value !== "object" || value === null) return null;
+  const source = value as unknown as Record<string, unknown>;
+  const identity = copyIdentity(source.identity);
+  const actor = copyActor(source.actor);
+  const evidence = copyEvidence(source.evidence);
+  const session = copySession(source.coordinationSession);
+  if (!identity || !actor || evidence === undefined || session === undefined) return null;
+  if (identity.path !== path || actor.kind !== pathActorKind[path]) return null;
+  if (path !== "provider_session" && evidence !== null) return null;
+  // A coordination session is bound to the credential that opened it.
+  if (session && session.credentialId !== identity.credentialId) return null;
+  return { identity, actor, evidence, session };
+}
 
 function sameActor(left: Actor, right: Actor): boolean {
   if (left.kind !== right.kind) return false;
@@ -75,27 +186,14 @@ function sameSession(left: CoordinationSessionRef | null, right: CoordinationSes
   return left.id === right.id && left.generation === right.generation && left.credentialId === right.credentialId;
 }
 
-function validVerification(path: AcceptedPath, verified: VerifiedCredential | null): verified is VerifiedCredential {
-  if (!verified || verified.identity.path !== path || verified.actor.kind !== pathActorKind[path]) return false;
-  if (path !== "provider_session" && verified.evidence !== null) return false;
-  if (verified.evidence && !Number.isFinite(verified.evidence.authenticatedAt)) return false;
-  // A coordination session is bound to the credential that opened it.
-  if (verified.coordinationSession && verified.coordinationSession.credentialId !== verified.identity.credentialId) return false;
-  return true;
+function authority(actor: Actor, mode: AuthenticationMode, listener: ListenerKind, evidence: ProviderEvidence | null, session: CoordinationSessionRef | null): CurrentAuthority {
+  // Fresh frozen copies on every call: a caller mutating or retaining one result affects nothing else.
+  return Object.freeze({
+    actor: copyActor(actor)!, mode, listener,
+    evidence: evidence ? Object.freeze({ authenticatedAt: evidence.authenticatedAt }) : null,
+    coordinationSession: session ? Object.freeze({ id: session.id, generation: session.generation, credentialId: session.credentialId }) : null,
+  });
 }
-
-class MintedAuthenticationContext implements AuthenticationContext {
-  readonly #current: () => CurrentAuthority;
-  constructor(token: symbol, readonly mode: AuthenticationMode, readonly listener: ListenerKind, current: () => CurrentAuthority) {
-    if (token !== minting) throw new TypeError("Authentication contexts are minted only at listener boundaries.");
-    this.#current = current;
-    Object.freeze(this);
-  }
-  revalidate(): CurrentAuthority { return this.#current(); }
-  toJSON(): never { throw new TypeError("An authentication context is never released."); }
-}
-
-const unauthenticated = (reason: string) => new OperationError("unauthenticated", reason);
 
 export interface ListenerBoundary {
   readonly mode: AuthenticationMode;
@@ -116,6 +214,9 @@ export function createListenerBoundary(options: {
   open: () => boolean;
 }): ListenerBoundary {
   const { mode, listener, verifier, open } = options;
+  if (!(authenticationModes as readonly string[]).includes(mode) || !(listenerKinds as readonly string[]).includes(listener) || listener === ("offline" as string)) {
+    throw new TypeError("Invalid listener boundary.");
+  }
   return Object.freeze({
     mode, listener,
     mint(presented: PresentedCredentials): AuthenticationContext {
@@ -125,40 +226,42 @@ export function createListenerBoundary(options: {
       if (path === "operator_unix") {
         const current = (): CurrentAuthority => {
           if (!open()) throw unauthenticated("listener_closed");
-          return { actor: { kind: "operator", via: "unix" }, mode, listener, evidence: null, coordinationSession: null };
+          return authority({ kind: "operator", via: "unix" }, mode, listener, null, null);
         };
         current();
-        return new MintedAuthenticationContext(minting, mode, listener, current);
+        return mint(mode, listener, current);
       }
       const secret = path === "provider_session" ? presented.providerSession?.secret ?? null
         : path === "anonymous_installation" ? null : presented.bearers[0]?.secret ?? null;
-      const verified = verifier.verify(path, secret);
-      if (!validVerification(path, verified)) throw unauthenticated("invalid_credential");
-      const { identity, actor, coordinationSession: session } = verified;
+      // The baseline is a deep, frozen copy taken once at mint.
+      const baseline = copyVerification(path, verifier.verify(path, secret));
+      if (!baseline) throw unauthenticated("invalid_credential");
       const current = (): CurrentAuthority => {
         if (!open()) throw unauthenticated("listener_closed");
-        const now = verifier.current(identity);
-        if (!validVerification(path, now) || !sameIdentity(identity, now.identity) || !sameActor(actor, now.actor)) {
+        // The verifier receives its own copy of the identity, never the baseline object.
+        const now = copyVerification(path, verifier.current({ ...baseline.identity }));
+        if (!now || !sameIdentity(baseline.identity, now.identity) || !sameActor(baseline.actor, now.actor)) {
           throw unauthenticated("credential_no_longer_valid");
         }
-        if (!sameSession(session, now.coordinationSession)) throw unauthenticated("coordination_session_changed");
-        return { actor: now.actor, mode, listener, evidence: now.evidence, coordinationSession: now.coordinationSession };
+        if (!sameSession(baseline.session, now.session)) throw unauthenticated("coordination_session_changed");
+        return authority(baseline.actor, mode, listener, now.evidence, now.session);
       };
-      return new MintedAuthenticationContext(minting, mode, listener, current);
+      return mint(mode, listener, current);
     },
   });
 }
 
 /** An offline CLI invocation: operator authority only while the exclusive lock is held. */
 export function mintOfflineContext(options: { mode: AuthenticationMode; lockHeld: () => boolean }): AuthenticationContext {
+  const { mode, lockHeld } = options;
   const none: PresentedCredentials = { bearers: [], providerSession: null, legacySecret: false, browserHeaders: false };
-  const acceptance = resolveAcceptance(options.mode, "offline", none, options.lockHeld());
+  const acceptance = resolveAcceptance(mode, "offline", none, lockHeld());
   if (!acceptance.accepted) throw unauthenticated(acceptance.reason);
   const current = (): CurrentAuthority => {
-    if (!options.lockHeld()) throw unauthenticated("offline_lock_not_held");
-    return { actor: { kind: "operator", via: "offline" }, mode: options.mode, listener: "offline", evidence: null, coordinationSession: null };
+    if (!lockHeld()) throw unauthenticated("offline_lock_not_held");
+    return authority({ kind: "operator", via: "offline" }, mode, "offline", null, null);
   };
-  return new MintedAuthenticationContext(minting, options.mode, "offline", current);
+  return mint(mode, "offline", current);
 }
 
 export function isFullAuthority(actor: Actor): boolean {

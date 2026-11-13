@@ -87,6 +87,9 @@ describe("decision", () => {
   it("treats a project without project:read as invisible even with another role there", () => {
     const g = grants().grant({ accountId: bot, role: "executor", scope: { kind: "project", projectId: projectA } });
     expect(verdict(check(agent(), { require: onProject("tests:read", "p") }, { p: resource("test_run", "r", projectA) }, g))).toBe("not_found:resource_not_found");
+    // Masking comes first: without project:read the project is invisible, so even a permission it holds there is not_found.
+    expect(verdict(check(agent(), { require: onProject("worker:execute", "p") }, { p: resource("project", projectA) }, g))).toBe("not_found:resource_not_found");
+    g.grant({ accountId: bot, role: "reader", scope: { kind: "project", projectId: projectA } });
     expect(verdict(check(agent(), { require: onProject("worker:execute", "p") }, { p: resource("project", projectA) }, g))).toBe("allowed");
   });
 
@@ -153,5 +156,52 @@ describe("decision", () => {
 
   it("refuses a predicate on a resource of the wrong kind", () => {
     expect(verdict(check(installationActor(), { require: claimHolder("p") }, { p: resource("project", projectA) }))).toBe("forbidden:relation_unavailable");
+  });
+});
+
+describe("masking comes first", () => {
+  const readerOnA = () => grants()
+    .grant({ accountId: alice, role: "reader", scope: { kind: "project", projectId: projectA } })
+    .grant({ accountId: bot, role: "reader", scope: { kind: "project", projectId: projectA } });
+  const visible = { p: resource("registration", "reg-a", projectA) };
+  const invisible = { p: resource("registration", "reg-b", projectB) };
+  const missing = {};
+
+  it("is identical for missing and invisible resources under agents: false", () => {
+    const requirement: OperationRequirement = { require: onProject("runtime:control", "p"), agents: false };
+    expect(verdict(check(agent(), requirement, invisible, readerOnA()))).toBe("not_found:resource_not_found");
+    expect(verdict(check(agent(), requirement, missing, readerOnA()))).toBe("not_found:resource_not_found");
+    expect(verdict(check(agent(), requirement, visible, readerOnA()))).toBe("forbidden:human_only");
+  });
+
+  it("is identical for missing and invisible resources under fresh login", () => {
+    const requirement: OperationRequirement = { require: onProject("project:read", "p"), freshLogin: true };
+    const stale = human({ authenticatedAt: NOW - FRESH_LOGIN_WINDOW_MS });
+    expect(verdict(check(stale, requirement, invisible, readerOnA()))).toBe("not_found:resource_not_found");
+    expect(verdict(check(stale, requirement, missing, readerOnA()))).toBe("not_found:resource_not_found");
+    expect(verdict(check(stale, requirement, visible, readerOnA()))).toBe("login_stale:fresh_login_required");
+    expect(verdict(check(agent(), requirement, invisible, readerOnA()))).toBe("not_found:resource_not_found");
+    expect(verdict(check(agent(), requirement, visible, readerOnA()))).toBe("forbidden:fresh_login_unavailable");
+  });
+
+  it("does not depend on the order of conjunction branches", () => {
+    const resources = { a: resource("registration", "reg-a", projectA), b: resource("registration", "reg-b", projectB) };
+    const withoutB = { a: resources.a };
+    for (const order of [["a", "b"], ["b", "a"]] as const) {
+      const requirement: OperationRequirement = { require: allOf(onProject("runtime:control", order[0]), onProject("runtime:control", order[1])) };
+      // a is visible but forbidden; b is invisible or missing: always the same not_found.
+      expect(verdict(check(human(), requirement, resources, readerOnA()))).toBe("not_found:resource_not_found");
+      expect(verdict(check(human(), requirement, withoutB, readerOnA()))).toBe("not_found:resource_not_found");
+    }
+    // A referenced resource that no branch names is masked too.
+    expect(verdict(check(human(), { require: onProject("project:read", "a") }, resources, readerOnA()))).toBe("not_found:resource_not_found");
+  });
+
+  it("masks predicates the same way", () => {
+    const claim = (projectId: typeof projectA) => ({ c: resource("claim", "claim-1", projectId, { kind: "claim", holder: otherSession }) });
+    const requirement = { require: claimHolder("c") };
+    expect(verdict(check(human(), requirement, claim(projectB), readerOnA()))).toBe("not_found:resource_not_found");
+    expect(verdict(check(human(), requirement, {}, readerOnA()))).toBe("not_found:resource_not_found");
+    expect(verdict(check(human(), requirement, claim(projectA), readerOnA()))).toBe("claim_held:claim_held_by_another_session");
   });
 });
