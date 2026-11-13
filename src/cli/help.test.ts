@@ -31,7 +31,7 @@ describe("CLI help and version", () => {
     const commands = CLI_HELP.split("\n").filter((line) => /^ {2}\S/.test(line)).map((line) => line.trim().split(/\s{2,}/)[0]);
     expect(commands).toEqual([
       "start", "service", "auth", "backup", "project", "doctor", "test-run", "knowledge", "identity", "vault", "remote-verification",
-      "config mcp", "config path", "mcp diagnostics", "help, --help, -h", "--version, -v",
+      "sandbox", "config mcp", "config path", "mcp diagnostics", "help, --help, -h", "--version, -v",
     ]);
   });
 

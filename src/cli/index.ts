@@ -22,7 +22,7 @@ import type { ControllerLock } from "../server/controller-lock";
 import { parseKnowledgeCommandArgs, runKnowledgeCommand } from "./knowledge-management";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
-import { homedir, networkInterfaces, userInfo } from "node:os";
+import { homedir, networkInterfaces, tmpdir, userInfo } from "node:os";
 import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -45,6 +45,7 @@ import { retainAuthenticationOwnership } from "../server/bootstrap/authenticatio
 import { ProviderAdminError, providerAdminErrorBody } from "../server/modules/authentication";
 import { bootstrapInstallationToken, bootstrapServiceInstallationToken } from "./first-run-token";
 import { runIdentityCommand } from "./identity-management";
+import { parseSandboxArgs, runSandboxCommand } from "./sandbox";
 import { runBackupCommand } from "./backup-management";
 import { runBackupMonitor } from "./backup-monitor";
 import { pairingUrl } from "./pairing-url";
@@ -124,6 +125,19 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     validateServiceCommand(args);
     await handleServiceCommand(args, resolveAppPaths(option("--data-dir", args), option("--state-dir", args)));
     return;
+  }
+  if (command === "sandbox") {
+    // Chooses its own private directories, so no path option or product variable applies here.
+    const options = parseSandboxArgs(process.argv.slice(3));
+    const status = await runSandboxCommand(options, {
+      entry: { command: process.execPath, args: [...process.execArgv, process.argv[1]!] },
+      version: packageJson.version,
+      temporaryDirectory: tmpdir(),
+      environment: process.env,
+    });
+    // The controller and its files are gone and buffered output has drained. A watched standard
+    // input and the signal handlers stay referenced until this exit.
+    process.exit(status);
   }
   if (command === "backup" && process.argv[3] === "monitor") {
     const result = await runBackupMonitor(process.argv.slice(4));
