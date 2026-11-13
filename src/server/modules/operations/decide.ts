@@ -1,0 +1,117 @@
+import { FRESH_LOGIN_WINDOW_MS, type ErrorCategory, type FreshLoginState, type ProjectId } from "@/shared/contracts/operations";
+import { isFullAuthority, type CurrentAuthority } from "./authentication-context";
+import { effectivePermissions, type EffectivePermissions, type GrantsSnapshot } from "./grants";
+import type { OperationRequirement, PredicateName, Requirement, ResolvedResource, ResolvedResources } from "./requirements";
+import { requiredSlots } from "./requirements";
+
+export interface DecisionInput {
+  authority: CurrentAuthority;
+  requirement: OperationRequirement;
+  resources: ResolvedResources;
+  grants: GrantsSnapshot;
+  /** Milliseconds since the epoch. */
+  now: number;
+}
+
+export type Denial = { allowed: false; category: Extract<ErrorCategory, "forbidden" | "login_stale" | "not_found" | "claim_held" | "conflict">; reason: string };
+export type Decision = { allowed: true; permissions: EffectivePermissions } | Denial;
+
+const deny = (category: Denial["category"], reason: string): Denial => ({ allowed: false, category, reason });
+
+/** Fresh-login state from current provider evidence only. Missing or malformed evidence is stale. */
+export function freshLoginState(authority: CurrentAuthority, now: number): FreshLoginState {
+  if (isFullAuthority(authority.actor)) return "exempt";
+  if (authority.actor.kind !== "human") return "unavailable";
+  const at = authority.evidence?.authenticatedAt;
+  if (typeof at !== "number" || !Number.isFinite(at) || !Number.isFinite(now)) return "stale";
+  const age = now - at;
+  return age >= 0 && age < FRESH_LOGIN_WINDOW_MS ? "satisfied" : "stale";
+}
+
+/** A project is visible to an actor holding `project:read` on it, or to full authority. */
+export function projectVisible(authority: CurrentAuthority, permissions: EffectivePermissions, projectId: ProjectId): boolean {
+  return isFullAuthority(authority.actor) || permissions.project(projectId).has("project:read");
+}
+
+function predicateHolds(name: PredicateName, authority: CurrentAuthority, resource: ResolvedResource): Denial | null {
+  const session = authority.coordinationSession;
+  const relation = resource.relation;
+  switch (name) {
+    case "claim_holder": {
+      if (relation?.kind !== "claim") return deny("forbidden", "relation_unavailable");
+      if (!relation.holder) return deny("conflict", "claim_not_held");
+      if (!session || session.id !== relation.holder.id || session.generation !== relation.holder.generation
+        || session.credentialId !== relation.holder.credentialId) return deny("claim_held", "claim_held_by_another_session");
+      return null;
+    }
+    case "run_originating_session": {
+      if (relation?.kind !== "test_run") return deny("forbidden", "relation_unavailable");
+      if (!relation.origin || !session || session.id !== relation.origin.sessionId || session.credentialId !== relation.origin.credentialId) {
+        return deny("forbidden", "not_originating_session");
+      }
+      return null;
+    }
+    case "worker_assignment": {
+      if (relation?.kind !== "worker_attempt") return deny("forbidden", "relation_unavailable");
+      const assignee = relation.assignee;
+      if (!assignee || !session || session.id !== assignee.sessionId) return deny("forbidden", "not_assigned");
+      if (authority.actor.kind === "agent" && assignee.accountId !== authority.actor.accountId) return deny("forbidden", "not_assigned");
+      if (authority.actor.kind === "human") return deny("forbidden", "not_assigned");
+      return null;
+    }
+  }
+}
+
+function evaluate(requirement: Requirement, input: DecisionInput, permissions: EffectivePermissions): Denial | null {
+  const { authority, resources } = input;
+  const full = isFullAuthority(authority.actor);
+  switch (requirement.kind) {
+    case "authenticated":
+    case "collection":
+      return null;
+    case "installation":
+      return full || permissions.installation.has(requirement.permission) ? null : deny("forbidden", "permission_denied");
+    case "project": {
+      const resource = resources[requirement.resource];
+      if (!resource) return deny("not_found", "resource_not_found");
+      if (full || permissions.project(resource.projectId).has(requirement.permission)) return null;
+      return projectVisible(authority, permissions, resource.projectId) ? deny("forbidden", "permission_denied") : deny("not_found", "resource_not_found");
+    }
+    case "predicate": {
+      const resource = resources[requirement.resource];
+      if (!resource) return deny("not_found", "resource_not_found");
+      const denial = predicateHolds(requirement.predicate, authority, resource);
+      if (!denial) return null;
+      return projectVisible(authority, permissions, resource.projectId) ? denial : deny("not_found", "resource_not_found");
+    }
+    case "all":
+      for (const part of requirement.of) {
+        const denial = evaluate(part, input, permissions);
+        if (denial) return denial;
+      }
+      return null;
+  }
+}
+
+/**
+ * The single authorization decision, used at admission, before each new
+ * effect, before replay, before release and per stream event. Pure.
+ *
+ * Full authority passes permissions, the human-only flag and fresh login, but
+ * not resource resolution or the predicates that protect foreign claims, runs
+ * and assignments.
+ */
+export function decide(input: DecisionInput): Decision {
+  const { authority, requirement, resources, grants, now } = input;
+  for (const slot of requiredSlots(requirement.require)) if (!resources[slot]) return deny("not_found", "resource_not_found");
+  const permissions = effectivePermissions(authority.actor, grants);
+  if (requirement.agents === false && authority.actor.kind === "agent") return deny("forbidden", "human_only");
+  const denial = evaluate(requirement.require, input, permissions);
+  if (denial) return denial;
+  if (requirement.freshLogin) {
+    const state = freshLoginState(authority, now);
+    if (state === "unavailable") return deny("forbidden", "fresh_login_unavailable");
+    if (state === "stale") return deny("login_stale", "fresh_login_required");
+  }
+  return { allowed: true, permissions };
+}

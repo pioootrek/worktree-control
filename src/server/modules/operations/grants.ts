@@ -1,0 +1,81 @@
+import {
+  installationPermissions, isRole, permissionScope, projectPermissions, roleDefinitions,
+  type AccountId, type InstallationPermission, type ProjectId, type ProjectPermission, type Role, type RoleDefinition,
+} from "@/shared/contracts/operations";
+import type { Actor } from "./authentication-context";
+
+export type GrantScope = { kind: "project"; projectId: ProjectId } | { kind: "installation" };
+/** One stored role assignment. Stored data is re-validated on every evaluation. */
+export interface StoredGrant { accountId: AccountId; role: Role; scope: GrantScope }
+
+/** Current grants and stored account kinds, read inside the admitted phase that decides. */
+export interface GrantsSnapshot {
+  /** Stored kind of an account, never a request claim. `null` when unknown or disabled. */
+  accountKind(accountId: AccountId): "human" | "agent" | null;
+  grantsFor(accountId: AccountId): readonly StoredGrant[];
+}
+
+export interface EffectivePermissions {
+  installation: ReadonlySet<InstallationPermission>;
+  /** Project permissions held on every project (from the installation role). */
+  everyProject: ReadonlySet<ProjectPermission>;
+  project(projectId: ProjectId): ReadonlySet<ProjectPermission>;
+}
+
+const SECRETS: readonly ProjectPermission[] = ["secrets:read", "secrets:write"];
+
+/** Whether a role may be granted to an account of this kind in this scope. Used by grant operations too. */
+export function grantAllowed(role: Role, recipientKind: "human" | "agent", scope: GrantScope): boolean {
+  const definition: RoleDefinition | undefined = roleDefinitions[role];
+  if (!definition || definition.scope !== scope.kind) return false;
+  return definition.recipient === "any" || definition.recipient === recipientKind;
+}
+
+const ALL_PROJECT: ReadonlySet<ProjectPermission> = new Set(projectPermissions);
+const ALL_INSTALLATION: ReadonlySet<InstallationPermission> = new Set(installationPermissions);
+const fullAuthority: EffectivePermissions = Object.freeze({
+  installation: ALL_INSTALLATION, everyProject: ALL_PROJECT, project: () => ALL_PROJECT,
+});
+const none: EffectivePermissions = Object.freeze({
+  installation: new Set<InstallationPermission>(), everyProject: new Set<ProjectPermission>(), project: () => new Set<ProjectPermission>(),
+});
+
+/**
+ * Effective permissions of an actor. Full authority holds everything. For a
+ * human or agent, each stored grant counts only if the account's stored kind
+ * matches the actor, the role is known, its scope matches the grant's scope
+ * and its recipient kind allows the account. A project grant yields only
+ * project permissions on that project; the installation role yields its
+ * installation permissions and its project permissions on every project, never
+ * `secrets:*`.
+ */
+export function effectivePermissions(actor: Actor, grants: GrantsSnapshot): EffectivePermissions {
+  if (actor.kind === "installation" || actor.kind === "operator") return fullAuthority;
+  const storedKind = grants.accountKind(actor.accountId);
+  if (storedKind === null || storedKind !== actor.kind) return none;
+  const installation = new Set<InstallationPermission>();
+  const everyProject = new Set<ProjectPermission>();
+  const byProject = new Map<ProjectId, Set<ProjectPermission>>();
+  for (const grant of grants.grantsFor(actor.accountId)) {
+    if (grant.accountId !== actor.accountId || !isRole(grant.role) || !grantAllowed(grant.role, storedKind, grant.scope)) continue;
+    for (const permission of roleDefinitions[grant.role].permissions) {
+      const scope = permissionScope(permission);
+      if (grant.scope.kind === "installation") {
+        if (scope === "installation") installation.add(permission as InstallationPermission);
+        else if (!SECRETS.includes(permission as ProjectPermission)) everyProject.add(permission as ProjectPermission);
+      } else if (scope === "project") {
+        const set = byProject.get(grant.scope.projectId) ?? new Set<ProjectPermission>();
+        set.add(permission as ProjectPermission);
+        byProject.set(grant.scope.projectId, set);
+      }
+    }
+  }
+  return Object.freeze({
+    installation, everyProject,
+    project(projectId: ProjectId): ReadonlySet<ProjectPermission> {
+      const own = byProject.get(projectId);
+      if (!own) return everyProject;
+      return new Set([...everyProject, ...own]);
+    },
+  });
+}
