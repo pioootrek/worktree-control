@@ -1,6 +1,7 @@
 import type { AccountId, ProjectId } from "@/shared/contracts/operations";
 import { OperationError } from "./errors";
 import { isSlotName, resourceKinds, type ResolvedResource, type ResolvedResources, type ResourceRef, type ResourceRelation } from "./requirements";
+import { absorb, isThenable } from "./synchronous";
 
 /**
  * Port mapping typed references to their current project. Called inside an
@@ -69,25 +70,76 @@ function slotsOf(record: unknown): string[] {
   return keys as string[];
 }
 
+/** Syntax errors of a reference, most general first. The reported reason is the first one any reference has. */
+const SYNTAX_REASONS = Object.freeze(["invalid_resource_reference", "unknown_resource_kind", "invalid_resource_id"] as const);
+type SyntaxReason = typeof SYNTAX_REASONS[number];
+
+/** A frozen copy of a well-formed reference, or the reason it is malformed. Reads own data properties only. */
+function referenceOf(value: unknown): ResourceRef | SyntaxReason {
+  if (typeof value !== "object" || value === null) return "invalid_resource_reference";
+  const kind = own(value, "kind"), id = own(value, "id");
+  if (!(resourceKinds as readonly unknown[]).includes(kind)) return "unknown_resource_kind";
+  if (!isText(id)) return "invalid_resource_id";
+  return Object.freeze({ kind: kind as ResourceRef["kind"], id });
+}
+
+/** Slots in code-unit order, so no answer depends on the order in which an operation listed its references. */
+const byName = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0);
+
 /**
  * Resolves every slot and verifies the adapter answered for the same
  * namespace and ID. A wrong or malformed answer is treated as not-found,
- * never as a hint to try another namespace. Slot names must match
- * `SLOT_NAME`; the result is a deep, frozen, null-prototype copy.
+ * never as a hint to try another namespace. Slot names must satisfy
+ * `isSlotName`; the result is a deep, frozen, null-prototype copy.
+ *
+ * Decision X, three passes, so that no answer depends on the order of the
+ * references or on whether a resource the caller cannot see exists:
+ *
+ * 1. Syntax of every reference, before any lookup. Any malformed reference is
+ *    `invalid_request`, whatever exists; with several, the reason is the first
+ *    of `SYNTAX_REASONS` that any of them has.
+ * 2. Every reference is resolved, without stopping at a miss or a failure.
+ * 3. One answer. A failed lookup (the resolver threw or returned a thenable)
+ *    wins over a miss: the failure of the first failing slot in code-unit
+ *    order is thrown, so a fault is never hidden as `not_found` and never
+ *    depends on what the other references are. Otherwise any miss is
+ *    `not_found`/`resource_not_found`, the same value `decide` gives when it
+ *    masks an invisible resource.
  */
 export function resolveAll(resolver: ResourceResolver, refs: Readonly<Record<string, ResourceRef>>): ResolvedResources {
-  const resolved = Object.create(null) as Record<string, ResolvedResource>;
-  for (const name of slotsOf(refs)) {
-    const ref = own(refs, name);
-    if (typeof ref !== "object" || ref === null) throw new OperationError("invalid_request", "invalid_resource_reference");
-    const kind = own(ref, "kind"), id = own(ref, "id");
-    if (!(resourceKinds as readonly unknown[]).includes(kind)) throw new OperationError("invalid_request", "unknown_resource_kind");
-    if (!isText(id)) throw new OperationError("invalid_request", "invalid_resource_id");
-    const reference = Object.freeze({ kind: kind as ResourceRef["kind"], id });
-    const copy = copyResolved(resolver.resolve({ ...reference }));
-    if (!copy || copy.ref.kind !== reference.kind || copy.ref.id !== reference.id) throw new OperationError("not_found", "resource_not_found");
-    Object.defineProperty(resolved, name, { value: copy, enumerable: true });
+  const names = slotsOf(refs).sort(byName);
+  // 1. Syntax.
+  const references: ResourceRef[] = [];
+  const malformed = new Set<SyntaxReason>();
+  for (const name of names) {
+    const reference = referenceOf(own(refs, name));
+    if (typeof reference === "string") malformed.add(reference); else references.push(reference);
   }
+  const reason = SYNTAX_REASONS.find(candidate => malformed.has(candidate));
+  if (reason) throw new OperationError("invalid_request", reason);
+
+  // 2. Every lookup.
+  const answers = references.map((reference): { found: ResolvedResource | null } | { failed: unknown } => {
+    try {
+      const answer: unknown = resolver.resolve({ ...reference });
+      if (isThenable(answer)) { absorb(answer); return { failed: new OperationError("internal", "resolver_not_synchronous") }; }
+      const copy = copyResolved(answer);
+      return { found: copy && copy.ref.kind === reference.kind && copy.ref.id === reference.id ? copy : null };
+    } catch (error) {
+      return { failed: error };
+    }
+  });
+
+  // 3. One answer.
+  const failure = answers.find(answer => "failed" in answer);
+  if (failure && "failed" in failure) throw failure.failed;
+  const resolved = Object.create(null) as Record<string, ResolvedResource>;
+  let missing = false;
+  answers.forEach((answer, index) => {
+    if ("found" in answer && answer.found) Object.defineProperty(resolved, names[index], { value: answer.found, enumerable: true });
+    else missing = true;
+  });
+  if (missing) throw new OperationError("not_found", "resource_not_found");
   return Object.freeze(resolved);
 }
 
