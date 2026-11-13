@@ -28,10 +28,11 @@ where they differ:
 
 Two things on this page are not decided and are marked in the tables:
 **owner question A** (`OWNER-A`) and **owner question B** (`OWNER-B`), stated
-in [section 9.2](#92-for-the-owner), and two places the replies do not decide
-(`NEW-OPEN-1`, `NEW-OPEN-2`, [section 9.4](#94-new-open)). Everything else the
-first draft left open is decided and recorded in
-[section 9.1](#91-decided).
+in [section 9.2](#92-for-the-owner). The two places the revision found
+undecided (`NEW-OPEN-1`, `NEW-OPEN-2`) were decided afterwards by the lead and
+confirmed or extended by the owner (`46672ea8`, `fb1567d5`;
+[section 9.4](#94-decided-after-the-revision)). Everything else the first draft
+left open is decided and recorded in [section 9.1](#91-decided).
 
 **Implemented versus planned.** The code in the draft pull request #128 can
 express only what [section 1](#1-implemented-vocabulary-and-planned-contract-extensions)
@@ -93,8 +94,8 @@ vocabulary and execution shapes. Otherwise it names the planned extension from
 `query`, `bounded_stream`, `expected_transition`, `claim_holder_if_claimed`,
 `any_project`, `schedule_owner`, `remote_request`, `request_submitter`,
 `secret_safe_retention`, `token_delivery`, `intent_origin`, `coordination`.
-Owner-question markers `OWNER-A` and `OWNER-B` and the markers `NEW-OPEN-1`
-and `NEW-OPEN-2` appear in the `Needs` cell of the affected rows. A label
+Owner-question markers `OWNER-A` and `OWNER-B` appear in the `Needs` cell of
+the affected rows. A label
 `OPEN-<n>` in a cell is a reference to the decision on that former open item in
 [section 9.1](#91-decided); it is not an open marker.
 
@@ -143,7 +144,7 @@ so in its `Needs` column.
 | # | Extension | Marker in `Needs` | What it adds |
 | --- | --- | --- | --- |
 | 1 | Kind `query` and waits as bounded one-event streams | `query`, `bounded_stream` | `query`: authorization in an admitted phase, asynchronous work outside admission, then a fresh decision with unchanged resolution before release. `project.wait` and `test_run.wait` are streams of at most one event with waiter limits and cancellation. There is no `wait` kind. Discovery, hashing and filesystem reads (`project.worktrees`, `test_preset.list`, `backup.preview`, `directory.browse`) are queries. See [section 2](#2-execution-shapes-and-expected-transitions). |
-| 2 | Expected transitions | `expected_transition` | An operation may declare which resource slots its effect changes or removes (`registration.move`, `registration.detach`, `claim.release`, `claim.force_release`). |
+| 2 | Expected transitions | `expected_transition` | An operation may declare which resource slots its effect changes or removes (`registration.move`, `registration.detach`, `claim.release`, `claim.force_release`, `runtime.switch`, `user_backup.save`). |
 | 3 | Predicate `claim_holder_if_claimed` | `claim_holder_if_claimed` | Owner decision OPEN-1 (`42019833`): with no claim anyone holding the permission may act; when a claim exists only its holder may; anyone else needs `claim.force_release` (`runtime:administer`). Needs a way to resolve an absent claim safely. |
 | 4 | Requirement kind `any_project(permission)` | `any_project` | Aggregates (`capacity.read`, `test_queue.read`, controller-wide events) require `project:read` on at least one project. Installation detail is a separate operation requiring `capacity:read`. |
 | 5 | Predicate `schedule_owner` | `schedule_owner` | Durable account ownership of an export schedule, evaluated on a server-resolved schedule resource. |
@@ -187,6 +188,8 @@ unchanged resolution. Affected operations and what each changes:
 | `registration.detach` | `registration`: the mapping is removed |
 | `claim.release` | `claim`: the active holder relation is removed |
 | `claim.force_release` | `claim`: the holder relation is changed or removed |
+| `runtime.switch` | `claim`: when a claim exists, the holder's claim moves to the destination worktree in the same effect (`46672ea8`) |
+| `user_backup.save` | `schedule`: on a change of project the schedule's project binding changes; original and resulting project and owner are retained and both bindings are authorized on release and replay |
 
 Rule (`29cf8fa5` delta 2). The operation declares its changed slots. For a
 declared slot the runner authorizes release and replay against the relation
@@ -257,7 +260,7 @@ coordination session (OPEN-2).
 | `claim.acquire` | mutation | `project` | `claims:manage on project` | `coordination` | - | declared: a conflicting holder or an unavailable worktree is refused before the reservation | yes | H M C | Only reserves: it never starts a server. A session never adopts another session's claim. Result: claim summary, TTL at most 1800 s. |
 | `claim.renew` | mutation | `claim` | `allOf(claims:manage on claim, claim_holder on claim)` | `coordination` | - | declared: a stale or expired claim is refused before the extension | yes | H M C | Keys are optional, as on the account surface today. Automatic renewal from a session is a background-authorization obligation, not an operation. |
 | `claim.release` | mutation | `claim` | `allOf(claims:manage on claim, claim_holder on claim)` | `coordination`, `expected_transition` | - | entry: ownership is decided before the effect | yes | H M C | Does not stop the server. The removal of the holder relation is a declared transition, so the receipt is deliverable. |
-| `claim.force_release` | mutation | `claim` | `runtime:administer on claim` | `expected_transition` | - | entry: the removal has no typed refusal | yes | H M C | Separate and audited. The only way to remove another session's claim. It does not stop the server and does not kill an unverified foreign process. |
+| `claim.force_release` | mutation | `claim` | `runtime:administer on claim` | `expected_transition` | `agents: false` | entry: the removal has no typed refusal | yes | H C; M excluded (owner decision `fb1567d5`) | Only a human breaks a claim: on `H` (the dashboard) and `C`; never on `M`, in any mode, because in open and token mode the dashboard and MCP share the installation actor and the rule is enforced by listener (owner decision `fb1567d5`). An agent blocked by a claim waits for its expiry. Separate and audited. The only way to remove another session's claim. It does not stop the server and does not kill an unverified foreign process. |
 
 ### 3.4 Runtime
 
@@ -268,7 +271,9 @@ operations need `runtime:control` on the project and the predicate
 `claim_holder_if_claimed`; no claim is required; when a claim exists only its
 holder may act; anyone else needs `claim.force_release` first (or
 `runtime.force_stop`). The rule is the same for humans, agents and full-authority
-actors on every surface. The preserved invariants per operation are in
+actors on every surface. Breaking someone else's claim is the exception: only a
+human does it, through the dashboard or the CLI, never through MCP; an agent waits
+for the claim to expire (owner decision `fb1567d5`). The preserved invariants per operation are in
 [section 4.1](#41-lifecycle-invariants-and-the-claim-rule).
 
 | Id | Kind | Resources | Requirement | Needs | Flags | Commit | Retain | Surfaces | Projection and notes |
@@ -276,8 +281,8 @@ actors on every surface. The preserved invariants per operation are in
 | `runtime.start` | mutation | `project`, `claim` | `allOf(runtime:control on project, claim_holder_if_claimed on claim)` | `claim_holder_if_claimed` | - | declared: an occupied port, missing capacity, an unavailable worktree or a foreign claim are refused before the spawn | yes | H M C | Explicit. An occupied port never proves ownership. Absence of a claim is rechecked under the shared lifecycle coordination immediately before the spawn. Receipt allowlist as the scoped receipt today. |
 | `runtime.restart` | mutation | `project`, `claim` | `allOf(runtime:control on project, claim_holder_if_claimed on claim)` | `claim_holder_if_claimed` | - | declared: refusals before the stop; the stop is past the point | yes | H M C | Keeps an existing claim and the capacity slot. The claim's absence is rechecked before the stop and again immediately before the start that follows it. |
 | `runtime.stop` | mutation | `project`, `claim` | `allOf(runtime:control on project, claim_holder_if_claimed on claim)` | `claim_holder_if_claimed` | - | entry: a failed process-tree stop leaves cleanup unconfirmed | yes | H M C | An existing claim stays held. Stops only verified owned process trees. |
-| `runtime.switch` | mutation | `project`, `claim` | `allOf(runtime:control on project, claim_holder_if_claimed on claim)` | `claim_holder_if_claimed`, `NEW-OPEN-1` | - | declared: as `runtime.restart`; the destination must be a discovered worktree of the project | yes | H M C | Today HTTP only. What happens to a claim pinned to the old worktree: `NEW-OPEN-1`. |
-| `runtime.force_stop` | mutation | `project` | `runtime:administer on project` | - | - | entry: as `runtime.stop` | yes | H M C | Stops a run started under another session's claim. Foreign processes stay protected; it does not authorize killing an unverified process and does not silently release a claim. |
+| `runtime.switch` | mutation | `project`, `claim` | `allOf(runtime:control on project, claim_holder_if_claimed on claim)` | `claim_holder_if_claimed`, `expected_transition` | - | declared: as `runtime.restart`; the destination must be a discovered worktree of the project | yes | H M C | Today HTTP only. When a claim exists, only its holder switches, and the claim moves to the destination worktree atomically in the same effect; with no claim, the switch creates none (`46672ea8`). |
+| `runtime.force_stop` | mutation | `project` | `runtime:administer on project` | - | `agents: false` | entry: as `runtime.stop` | yes | H C; M excluded (owner decision `fb1567d5`) | Only a human breaks a claim: on `H` (the dashboard) and `C`; never on `M`, in any mode, because in open and token mode the dashboard and MCP share the installation actor and the rule is enforced by listener (owner decision `fb1567d5`). An agent blocked by a claim waits for its expiry. Stops a run started under another session's claim. Foreign processes stay protected; it does not authorize killing an unverified process and does not silently release a claim. |
 | `runtime.metrics` | read | none | `collection(project:read)` | - | - | - | no | H M C | Per project resource samples. |
 
 ### 3.5 Configuration
@@ -318,7 +323,7 @@ stay as lifecycle invariants ([section 4.1](#41-lifecycle-invariants-and-the-cla
 | Id | Kind | Resources | Requirement | Needs | Flags | Commit | Retain | Surfaces | Projection and notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `test_preset.list` | query | `project` | `tests:read on project` | `query` | - | - | no | H M C | OPEN-14: lists all presets with an `enqueueable` flag. The flag is an advisory result of current eligibility (including `tests:run` and environment restrictions), never a permission and never guaranteed admission. No raw commands or values. Bounded: 64 trees, 256 presets, 64 KiB. |
-| `test_run.enqueue` | mutation | `project` | `tests:run on project` | - | - | declared: a non-clean environment and a full queue are refused before the enqueue | yes | H M C | No claim is required and none is acquired. Existing reservation and worktree rules stay ([section 4.1](#41-lifecycle-invariants-and-the-claim-rule)). Records the originating session, principal and credential. Dispatch rechecks the requester. |
+| `test_run.enqueue` | mutation | `project` | `tests:run on project` | `coordination` | - | declared: a non-clean environment and a full queue are refused before the enqueue | yes | H M C | No claim is required and none is acquired. Existing reservation and worktree rules stay ([section 4.1](#41-lifecycle-invariants-and-the-claim-rule)). Records the originating session, principal and credential. Dispatch rechecks the requester. |
 | `test_run.read` | read | `test_run` | `tests:read on test_run` | - | - | - | no | H M C | Project-wide safe status DTO for every caller. It never grows fields because the caller holds `config:read` or `logs:read`. No output tail, no raw command. |
 | `test_run.logs` | read | `test_run` | `allOf(tests:read on test_run, logs:read on test_run)` | - | - | - | no | H M C | Redacted, bounded lines. Application output cannot be certified secret-free. |
 | `test_run.cancel` | mutation | `test_run` | `allOf(tests:run on test_run, run_originating_session on test_run)` | `coordination` | - | declared: a terminal run is refused before the intent is recorded | yes | H M C | Cancellation intent only; the run stays running until cleanup is confirmed. |
@@ -420,7 +425,7 @@ authorization rule. All writes retain and take an optional key.
 | `backup.remote_retry` | mutation | none | `installation backups:manage` | - | - | declared: generation check before the retry | yes | H M C | |
 | `backup.remote_rebind` | mutation | none | `installation backups:manage` | - | - | declared: needs a completed restore, checked before the rebind | yes | C offline only; H and M excluded (OPEN-11) | Needs the exclusive controller lock: stopped-controller maintenance of the local operator. |
 | `user_backup.overview` | read | none | `allOf(collection(knowledge:export), collection(attachments:read))`, items filtered by `schedule_owner` | `schedule_owner`, `OWNER-B` | - | - | no | H M C | An account sees its own schedules; items need both permissions on their project; full authority sees all. Owner filtering happens before pagination and release ([section 4.4](#44-export-schedules-ownership)). |
-| `user_backup.save` | mutation | `project`, `schedule` | `allOf(knowledge:export on project, attachments:read on project, schedule_owner on schedule)` | `schedule_owner`, `OWNER-B`, `NEW-OPEN-2` | - | declared: policy gate and limits before the write | yes | H M C | Durable owner plus immutable job specification. On a change of project both the old binding (resolved from `schedule`) and the new one (`project`) are authorized. Absent `schedule` on create. |
+| `user_backup.save` | mutation | `project`, `schedule` | `allOf(knowledge:export on project, attachments:read on project, schedule_owner on schedule)` | `schedule_owner`, `expected_transition`, `OWNER-B` | - | declared: policy gate and limits before the write | yes | H M C | Durable owner plus immutable job specification. On a change of project both the old binding (resolved from `schedule`) and the new one (`project`) are authorized, at the effect and again on release and replay (declared expected transition of `schedule`). Absent `schedule` on create. A schedule created by the local operator in better-auth is owned by `operator` (`46672ea8`, owner `fb1567d5`). |
 | `user_backup.status` | read | none | `allOf(collection(knowledge:export), collection(attachments:read))`, items filtered by `schedule_owner` | `schedule_owner`, `OWNER-B` | - | - | no | H M C | As `user_backup.overview`. |
 | `user_backup.artifact` | read | `schedule` | `allOf(knowledge:export on schedule, attachments:read on schedule, schedule_owner on schedule)` | `schedule_owner`, `OWNER-B` | - | - | no | H M C | Releases artifact content: a data release, authorized at release; the server resolves the artifact to its schedule and project. |
 | `user_export.recovery_list` | read | none | `installation backups:manage` | - | - | - | no | H M C | Today operator socket only. Field allowlist ([section 4.9](#49-sensitive-output-allowlists)). |
@@ -458,8 +463,8 @@ OPEN-24).
 | `remote_verification.get` | read | `request` (kind `remote_request`) | `tests:run on request` | `remote_request` | - | - | no | H M C | Request, attempt, cancellation flag, uncertainty flag, bounded latest report. Field allowlist ([section 4.9](#49-sensitive-output-allowlists)). |
 | `remote_verification.get_logs` | read | `request` (kind `remote_request`) | `tests:run on request` | `remote_request` | - | - | no | H M C | Last uploaded output only. Field allowlist. |
 | `remote_verification.cancel` | mutation | `request` (kind `remote_request`) | `allOf(tests:run on request, request_submitter on request)` | `remote_request`, `request_submitter` | - | declared: unknown request refused before the intent | yes | H M C | Persists intent even when the worker is offline. |
-| `worker.poll` | mutation | none | per candidate request: `worker:execute` on the request's project for the executor, and `tests:run` on the same project for the stored submitter, evaluated separately | `remote_request`, `request_submitter` | - | declared: the assignment is recorded only after both evaluations succeed | no | H on the worker listener only; M, C and the ordinary API listener excluded | Not `collection(worker:execute)`. The executor is an authenticated agent account bound to an active registration; project and preset compatibility are checked; the assignment is recorded; each item is released separately ([section 4.6](#46-remote-verification-and-workers)). Machine-to-machine protocol with its own versioning, framing and sequence numbers. |
-| `worker.report` | mutation | `worker_attempt` | `allOf(worker:execute on worker_attempt, worker_assignment on worker_attempt)` | - | - | declared: sequence check before the report is accepted | no | H on the worker listener only; M and C excluded | Preserves exact assignment, sequence, immutable commit and cleanup checks. Finalization and cleanup of an assignment already begun complete after a revocation. |
+| `worker.poll` | mutation | none | per candidate request: `worker:execute` on the request's project for the executor, and `tests:run` on the same project for the stored submitter, evaluated separately | `remote_request`, `request_submitter`, `coordination` | - | declared: the assignment is recorded only after both evaluations succeed | no | H on the worker listener only; M, C and the ordinary API listener excluded | Not `collection(worker:execute)`. In better-auth the executor is an authenticated agent account; in open and token mode it is the installation actor on the worker listener; in every mode it is bound to an active registration; project and preset compatibility are checked; the assignment is recorded; each item is released separately ([section 4.6](#46-remote-verification-and-workers)). Machine-to-machine protocol with its own versioning, framing and sequence numbers. |
+| `worker.report` | mutation | `worker_attempt` | `allOf(worker:execute on worker_attempt, worker_assignment on worker_attempt)` | `coordination` | - | declared: sequence check before the report is accepted | no | H on the worker listener only; M and C excluded | Preserves exact assignment, sequence, immutable commit and cleanup checks. Finalization and cleanup of an assignment already begun complete after a revocation. |
 | `worker.register` | mutation | `project` | `installation workers:manage` | `OWNER-A` | - | declared: project and preset checks before the write | yes | C offline only today; an online form for `admin` is `OWNER-A` | Registers a worker for a project and presets. No token is issued and no caller grants are written. |
 | `worker.recovery_inspect` | read | `worker_attempt` | `installation workers:manage` | - | - | - | no | C offline only; H and M excluded (OPEN-11) | Stopped-controller process recovery on the host. |
 | `worker.recovery_reconcile` | mutation | `worker_attempt` | `installation workers:manage` | - | - | declared: recovery assessment before the audit write | yes | C offline only; H and M excluded (OPEN-11) | As `worker.recovery_inspect`. |
@@ -483,7 +488,7 @@ claim before relying on a server.
 | --- | --- |
 | No claim | anyone holding the permission |
 | A claim held by the caller's coordination session | the caller |
-| A claim held by another session | nobody, until it is released or force-released (`claim.force_release`, `runtime:administer`) |
+| A claim held by another session | nobody, until it is released, expires, or is force-released by a human (`claim.force_release`, `runtime:administer`, dashboard or CLI only, `fb1567d5`) |
 
 Full authority does not pass the predicate: protection of foreign claims is the
 point. "No claim required" never means "a foreign reservation can be ignored".
@@ -518,10 +523,10 @@ invariants below without the predicate.
 | `runtime.start` | The worktree is a discovered worktree of the project and the claim, if any, pins it. Capacity: a free slot or a refusal. An occupied port never proves ownership. Another project's capacity pressure can evict an unclaimed server; the eviction rechecks the absence of a claim. |
 | `runtime.restart` | Keeps the capacity slot and an existing claim. The stop is past the point of no typed refusal; the claim's absence is rechecked again before the start. A refusal after the stop reports the real effect state (`committed`), never a silent success. |
 | `runtime.stop` | Stops only verified owned process trees. An existing claim stays held. A failed stop leaves cleanup unconfirmed (`cleanup_unconfirmed`). |
-| `runtime.switch` | The destination is a discovered worktree of the same project. Claim transition: `NEW-OPEN-1`. |
+| `runtime.switch` | The destination is a discovered worktree of the same project. The holder's claim moves to the destination atomically with the switch (declared expected transition of `claim`); with no claim none is created. Claim absence is rechecked before each effect as for `runtime.restart`. |
 | `runtime.force_stop` | Stops a run started under another session's claim. Never signals an unverified foreign process; never releases the claim. |
 | `claim.acquire` | Refuses a conflicting holder and an unavailable worktree. Never starts a server. |
-| `claim.release`, `claim.force_release` | Do not stop the server. Force release is audited. |
+| `claim.release`, `claim.force_release` | Do not stop the server. Force release is audited, human-only and never on MCP (`fb1567d5`); an agent waits for the claim's expiry. |
 | Configuration mutations of section 3.5 | The existing reservation check (a foreign claim refuses the write), the worktree check, the stopped-server precondition where the source states it (environment, selected-profile edit, Godot configuration), the revision compare-and-set, and the recheck immediately before the commit. |
 | `test_run.enqueue` | No claim is required and none is acquired. Existing reservation and worktree rules stay: an enqueue against a worktree reserved by another session is handled exactly as today (`reservationId` and the reservation check). Dispatch rechecks the requester and the queue. |
 | `storage.refresh`, `storage.cache_delete`, `godot_web.rebuild` | Path validation to discovered worktrees; queue and lifecycle guards; recheck before the removal or the dispatch; background work keeps the requester's immutable authority. |
@@ -591,8 +596,15 @@ For `user_backup.*` (`ce8aa214` F3, `29cf8fa5` delta 5 and OPEN-12).
 
 - A schedule has a durable owner and an immutable job specification, never a
   stored session. Account actors own their schedules; in open and token mode
-  the owner is recorded as `installation`. The owner of a schedule created by
-  the local operator in better-auth mode: `NEW-OPEN-2`.
+  the owner is recorded as `installation`. A schedule created by the local
+  operator in better-auth mode is owned by `operator`: only full-authority
+  actors can read, change or fetch it, and no account sees it, in listings,
+  errors or artifact releases (`46672ea8`, accepted by the owner in
+  `fb1567d5`).
+- Changing a schedule's project is a declared expected transition of the
+  `schedule` slot ([section 2.2](#22-expected-transition-receipts-planned-extension-2)):
+  original and resulting project and owner are retained, and both bindings are
+  authorized on release and replay.
 - Each schedule, execution and artifact is a server-resolved resource (the
   slot `schedule`, a resource kind the replies require and do not name) that
   resolves to exactly one project and carries its owner as a relation. The
@@ -651,7 +663,7 @@ OPEN-10, OPEN-13, `ce8aa214` F6 and required change 8.
 | --- | --- | --- |
 | Submit | `remote_verification.submit` | `tests:run` on the project; the submitter is stored |
 | Read, cancel | `remote_verification.get`, `get_logs`, `cancel` | `tests:run` on the request (kind `remote_request`, resolves to its project and version); cancel adds `request_submitter` (the caller is the stored submitter) |
-| Assign new work | `worker.poll` | two evaluations: the executor's own context (an authenticated agent account holding `executor`, bound to an active registration; `worker:execute` on the request's project; project and preset compatibility) and, separately, the stored submitter's current grants (`tests:run`) through an application authorization interface, without replacing the executor's context; the assignment is recorded; each item is released on its own |
+| Assign new work | `worker.poll` | two evaluations: the executor's own context (in better-auth, an authenticated agent account holding `executor`; in open and token mode, the installation actor on the worker listener; in every mode bound to an active registration; `worker:execute` on the request's project; project and preset compatibility) and, separately, the stored submitter's current grants (`tests:run`) through an application authorization interface, without replacing the executor's context; the assignment is recorded; each item is released on its own |
 | Deliver cancellation | within the worker exchange (`worker.poll`, `worker.report`) | the persisted cancellation intent is delivered to the assignment's worker; it is not authorization to start new work |
 | Report, finalize, clean up | `worker.report` | `worker_assignment` and `worker:execute` on the attempt; exact assignment, sequence, immutable commit and cleanup checks; finalization and cleanup of an assignment already begun complete after a revocation; no new assignment is made |
 
@@ -728,7 +740,10 @@ error path, in replayed receipts and in events: a refusal, a receipt or an event
 carries nothing the caller could not see in the read. "Safe" or "bounded" alone
 does not gate commands, logs, holder identities or authentication material.
 This table fixes categories; the exact fields are fixed in the implementing
-pull request ([section 9.3](#93-deferred-implementation)).
+pull request ([section 9.3](#93-deferred-implementation)). Everything in the
+"Gated" column is excluded from the release until that pull request names the
+exact field and its permission; a family pull request must not copy an internal
+DTO to fill it.
 
 | Operation | Allowed to every holder of its permission | Gated |
 | --- | --- | --- |
@@ -816,7 +831,7 @@ decisions `9ba49f3c` (numbered 1 to 4 there), `2c641ff7`, `4ac7fb45`, `42019833`
 accepted target `5583b882`/`1367c632` (points 1 to 9 of the common goal);
 contract v1 `032aa386`. A reference `OPEN-<n>` points to the decision on that
 former open item in [section 9.1](#91-decided). The markers `OWNER-A`,
-`OWNER-B`, `NEW-OPEN-1` and `NEW-OPEN-2` mark what is not decided.
+and `OWNER-B` mark what is not decided.
 
 ### 5.1 Family 1: runtime and claims
 
@@ -833,10 +848,10 @@ former open item in [section 9.1](#91-decided). The markers `OWNER-A`,
 | 1.9 | runtime.start: `start_project`; account `start`; HTTP `operation:"start"` | REPLACED BY `runtime.start` | `runtime:control` and, when a claim exists, its holder (OPEN-1, owner decision `42019833`). No claim is required: the token dashboard's one-click start stays, and agents no longer have to claim first. HTTP gains the idempotency key and the receipt. |
 | 1.10 | runtime.restart: `restart_project`; account; HTTP | REPLACED BY `runtime.restart` | As 1.9. The claim's absence is rechecked again after the stop. |
 | 1.11 | runtime.stop: `stop_project`; account; HTTP | REPLACED BY `runtime.stop` | As 1.9. Stopping a server that another session claimed is `claim.force_release` first or `runtime.force_stop`. |
-| 1.12 | runtime.switch: HTTP `operation:"switch"` only | REPLACED BY `runtime.switch` | As 1.9; now on MCP and CLI too. What a switch does to a claim pinned to the old worktree: `NEW-OPEN-1`. |
+| 1.12 | runtime.switch: HTTP `operation:"switch"` only | REPLACED BY `runtime.switch` | As 1.9; now on MCP and CLI too. The holder's claim moves with the switch; no claim, none created (`46672ea8`). |
 | 1.13 | reservation.acquire: HTTP human lock, owner `local-user` | REPLACED BY `claim.acquire` | One claim kind. The `local-user` owner and the separate human lock disappear; the token browser holds claims through a coordination session opened per tab (OPEN-2). |
 | 1.14 | reservation.release: HTTP | REPLACED BY `claim.release` | As 1.13. |
-| 1.15 | reservation.force_release: HTTP, any authenticated caller | REPLACED BY `claim.force_release` | Needs `runtime:administer` (source: `releaseReservation(..., force)` bypasses owner and kind checks, `sqlite-state-store.ts:1413-1415`). Declared expected transition. |
+| 1.15 | reservation.force_release: HTTP, any authenticated caller | REPLACED BY `claim.force_release` | Needs `runtime:administer` (source: `releaseReservation(..., force)` bypasses owner and kind checks, `sqlite-state-store.ts:1413-1415`). Declared expected transition. Human only, never on MCP (`fb1567d5`). |
 | 1.R | mcp.resources: five `worktree-switcher://` URIs (not counted in the 204) | REPLACED BY `project.list`, `project.status`, `project.worktrees`, `capacity.read`, `test_queue.read` | Resources stay read views of these operations and authorize at call time (contract v1, answer g). |
 
 ### 5.2 Family 2: project administration
@@ -991,7 +1006,7 @@ matrix's order; `7.38` to `7.41` are its four CLI-only items.
 | Row | Current operation | Disposition | Target and behaviour change |
 | --- | --- | --- | --- |
 | 10.1 | user_backup.overview: HTTP | REPLACED BY `user_backup.overview` | Needs export and attachment read per project and `schedule_owner` filtering. The installation token is accepted (rejected today). Agent-owned schedules are unavailable under the six roles: `OWNER-B`. |
-| 10.2 | user_backup.save: HTTP | REPLACED BY `user_backup.save` | Durable owner; both bindings authorized on a project change; recheck at dispatch. `OWNER-B`; owner of a local operator's schedule: `NEW-OPEN-2`. |
+| 10.2 | user_backup.save: HTTP | REPLACED BY `user_backup.save` | Durable owner; both bindings authorized on a project change; recheck at dispatch. `OWNER-B`. Expected transition on a change of project; a local operator's schedule is owned by `operator` (`46672ea8`). |
 | 10.3 | user_backup.status: HTTP | REPLACED BY `user_backup.status` | As 10.1. `OWNER-B`. |
 | 10.4 | user_backup.artifact: HTTP | REPLACED BY `user_backup.artifact` | Owner-checked; publication rechecked. `OWNER-B`. |
 | 10.5 | user_export.recovery_list: socket; CLI | REPLACED BY `user_export.recovery_list` | Needs `backups:manage`; now on HTTP and MCP. |
@@ -1138,14 +1153,14 @@ secret-safe: `config.environment_values_set`, `profile.values_set`,
 `test_profile.values_set`, `vault.import`, `vault.update`, `account.enroll`,
 `account.recover`, `account.token_issue`, `coordination.open`); `coordination.renew`,
 `coordination.close`, `capacity.set`, `test_queue.set`, `worker.poll` and
-`worker.report` do not. Operations with `agents: false`: 15
-(`knowledge.approve_memory`, `vault.recover_key` and the 13 account and role
-operations). Operations with `freshLogin`: 12 (the same two and 10 account and
-role mutations). Rows carrying a marker in the `Needs` column: 54, of which 50
+`worker.report` do not. Operations with `agents: false`: 17
+(`knowledge.approve_memory`, `vault.recover_key`, `claim.force_release`,
+`runtime.force_stop` and the 13 account and role operations). Operations with `freshLogin`: 12 (the same two and 10 account and
+role mutations). Rows carrying a marker in the `Needs` column: 56, of which 52
 name a planned extension (`query` 5, `bounded_stream` 2, `expected_transition`
-4, `claim_holder_if_claimed` 17, `any_project` 3, `schedule_owner` 4,
+6, `claim_holder_if_claimed` 17, `any_project` 3, `schedule_owner` 4,
 `remote_request` 4, `request_submitter` 2, `secret_safe_retention` 9,
-`token_delivery` 1, `intent_origin` 1, `coordination` 7; a row may carry
+`token_delivery` 1, `intent_origin` 1, `coordination` 10; a row may carry
 several) and 4 carry only `OWNER-A`.
 
 The first draft had 139 operations (62 reads, 74 mutations, 2 waits, 1
@@ -1210,9 +1225,8 @@ row because the matrix has none; they exist because the records require them.
 The resource row `1.R` (MCP resources, not counted in the 204) is also
 REPLACED BY the read operations it mirrors. Rows 7.40 and 7.41 are LOCAL
 without a provisional mark: Hub import stays a local maintenance command
-(OPEN-10). Eight rows carry an undecided marker in their cells: `1.12`
-(`NEW-OPEN-1`), `7.38`, `7.39` and `12.7` (`OWNER-A`), and `10.1` to `10.4`
-(`OWNER-B`; `10.2` also `NEW-OPEN-2`). They keep the class shown; the table does
+(OPEN-10). Seven rows carry an undecided marker in their cells: `7.38`, `7.39` and
+`12.7` (`OWNER-A`), and `10.1` to `10.4` (`OWNER-B`). They keep the class shown; the table does
 not pretend that their surface or owner is settled. The first draft had 35 rows
 with an open marker; the rest are decided and carry only a decision reference
 `OPEN-<n>`.
@@ -1464,6 +1478,14 @@ up are added.
 46. **Administrative inspection and stop.** Inspecting a run needs `tests:read`
     with command, log, holder and audit fields gated; stopping keeps queued
     cancellation, join, owned cleanup retry and safe none. Rows 4.10, 4.11.
+47. **Only a human breaks a claim.** `claim.force_release` and
+    `runtime.force_stop` are human-only and never on MCP, in every mode; in open
+    and token mode the dashboard and the CLI keep them. An agent blocked by
+    another session's claim waits for the claim to expire (owner decision
+    `fb1567d5`). Rows 1.11, 1.15.
+48. **A switch carries its claim.** When the holder switches a claimed server to
+    another worktree, the claim moves with it; an unclaimed switch creates no
+    claim. Row 1.12.
 
 Most consequential, in order: 1 (no compatibility layer), 2 and 5 and 31
 (claims protect but never start, and runtime control respects them), 3 (legacy
@@ -1534,9 +1556,9 @@ Requirement forms that need a planned extension:
 | `intent_origin` | `test_run.lookup_intent` |
 | Kind `query` | `project.worktrees`, `test_preset.list`, `test_run.lookup_intent`, `directory.browse`, `backup.preview` |
 | Bounded one-event stream | `project.wait`, `test_run.wait` |
-| Expected transition | `registration.move`, `registration.detach`, `claim.release`, `claim.force_release` |
+| Expected transition | `registration.move`, `registration.detach`, `claim.release`, `claim.force_release`, `runtime.switch`, `user_backup.save` |
 | Secret-safe retention | the nine operations of section 4.3; token delivery for `account.token_issue` |
-| Coordination sessions | `coordination.*`, `claim.acquire`, `claim.renew`, `claim.release`, `test_run.cancel` |
+| Coordination sessions | `coordination.*`, `claim.acquire`, `claim.renew`, `claim.release`, `test_run.enqueue`, `test_run.cancel`, `worker.poll` (assignment creation), `worker.report` |
 
 No general disjunction (`anyOf`) and no conditional requirement is needed:
 OPEN-4 uses `any_project` and a separate detail operation; OPEN-7 and OPEN-13
@@ -1567,7 +1589,7 @@ decision is in the sections it names.
 | OPEN-9 | `events.subscribe` is a registry stream with SSE as adapter; controller-wide events are aggregates under `any_project`; MCP keeps `project.wait` | agent | `e06943b7`, corrected by `29cf8fa5` |
 | OPEN-10 | Raw host paths and Hub import stay local; Hub import uses local offline operator authentication with validation and provenance retained. The account-facing form of bundle transfer is **owner question A** | agent (remainder: owner) | `e06943b7`, corrected by `29cf8fa5`; `ce8aa214` F6, F13 |
 | OPEN-11 | Operations that need the exclusive controller lock (`backup.remote_rebind`, `worker.recovery_inspect`, `worker.recovery_reconcile`) stay offline operator commands. `worker.register` is **owner question A** | agent (remainder: owner) | `e06943b7`; `ce8aa214` F6; `29cf8fa5` |
-| OPEN-12 | Durable owner, immutable job specification, current grants at dispatch, `schedule_owner`, no installation fallback; agent-owned schedules are **owner question B**; local operator's schedule owner is `NEW-OPEN-2` | agent (remainder: owner) | `e06943b7`, `ce8aa214` F3, F4, `29cf8fa5` delta 5 |
+| OPEN-12 | Durable owner, immutable job specification, current grants at dispatch, `schedule_owner`, no installation fallback; agent-owned schedules are **owner question B**; local operator's schedule is owned by `operator` (`46672ea8`, `fb1567d5`) | agent (remainder: owner) | `e06943b7`, `ce8aa214` F3, F4, `29cf8fa5` delta 5 |
 | OPEN-13 | Merged project DTO carries safe Knowledge metadata; two import operations: `knowledge.project_import` and `project.create_from_import` | agent | `e06943b7`, `ce8aa214` required change 8 |
 | OPEN-14 | `test_preset.list` lists all presets with an advisory `enqueueable` flag; `tests:read` | agent | `e06943b7`; `ce8aa214` |
 | OPEN-15 | `storage.refresh` needs `storage:manage`; `godot_web.rebuild` needs `runtime:control` | agent | `e06943b7`; `ce8aa214` |
@@ -1643,30 +1665,23 @@ request of slice 4 carries the contract extensions of section 1.2.
 | D7 | Removal of `projects:remove` from code, documentation and fixtures together | the first pull request of slice 4 |
 | D8 | Source-reading residues from the matrix: the position inside `startRuntime` after readiness, which `restore-operations.ts` authorize calls run after awaits, the history, summary, metrics and comparison schemas, and the Hub import internals | the family pull request that touches them |
 
-### 9.4 NEW OPEN
+### 9.4 Decided after the revision
 
-Two places the four replies do not decide. Neither was resolved by the author of
-this page.
+The revision found two places the four replies did not decide. Both were decided
+afterwards; there is no open item other than owner questions A and B.
 
-**NEW-OPEN-1. What `runtime.switch` does to a claim pinned to the old worktree.**
-Rows: `runtime.switch` (1.12). `ce8aa214` says a switch needs explicit
-worktree and claim transition semantics and that claim ownership alone does not
-authorize an arbitrary different path; the owner and `29cf8fa5` decide the
-holder predicate but not the transition. Options: (a) a switch by the holder
-moves the claim to the new worktree in the same step, declared as an expected
-transition of the `claim` slot; (b) a switch is refused while a claim pins
-another worktree, and the holder releases and acquires again; (c) the claim keeps
-protecting the project, not a worktree, and a switch never changes it. This
-changes only `runtime.switch` and, for (a), its declared transition.
-
-**NEW-OPEN-2. The owner of an export schedule created by the local operator in
-better-auth mode.** Rows: `user_backup.save` (10.2). `29cf8fa5` records
-`installation` as owner in open and token mode and says full authority manages
-all schedules; it does not say who owns a schedule that the local operator
-creates when accounts exist. Options: (a) a recorded `operator` owner that is not
-an account; (b) the operator may manage schedules but not create them (they are
-created through an account); (c) the operator creates a schedule on behalf of a
-named account that becomes its owner.
+- **NEW-OPEN-1, `runtime.switch` and a claim pinned to the old worktree.**
+  Decided by the lead (`46672ea8`): when a claim exists only its holder switches,
+  and the claim moves to the destination worktree atomically in the same effect,
+  declared as an expected transition of the `claim` slot; with no claim the switch
+  creates none. The owner added (`fb1567d5`): only a human breaks someone else's
+  claim, through the dashboard or the CLI; an agent waits for the claim's expiry.
+  Hence `claim.force_release` and `runtime.force_stop` are `agents: false` and
+  excluded from MCP in every mode.
+- **NEW-OPEN-2, owner of a schedule created by the local operator in
+  better-auth.** Decided by the lead (`46672ea8`) and accepted by the owner
+  (`fb1567d5`): the owner is `operator`; only full-authority actors can read,
+  change or fetch it; no account sees it.
 
 ## 10. Proposed cut of slice 4
 
