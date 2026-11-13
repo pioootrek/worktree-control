@@ -21,7 +21,7 @@ independent review with eleven required changes is `575a4fe8`, and contract v1
 (binding) is `032aa386`. The review of the first implementation and the
 parent decisions A to L are in reply `ad5ac74a`. Decisions M and N are in
 `9d5ae2f7`; the second review, decisions O to V and the acceptance rule are in
-`6b95f3db`.
+`6b95f3db`; the third review and decisions W and X are in `9403b43c`.
 
 Code: `src/shared/contracts/operations.ts` (browser-safe vocabulary) and
 `src/server/modules/operations/` (public API in `index.ts`).
@@ -45,9 +45,48 @@ impossible. Decisions, permission sets, relations, requirements and the
 exported vocabularies are frozen and never shared between decisions. Resource
 slot names are restricted, so no reserved property name can reach a prototype.
 A value that trusted code throws or returns malformed never escapes
-unsanitized and never leaves a lease, reservation or stream source held. The
-module does not try to resist deliberately hostile in-process code beyond
+unsanitized. The runner always calls the release of a lease it owns, gives
+back the reservation of an attempt that never crossed its commit point, and
+disposes a stream source it opened. Two cases can still leave something held,
+and both are reported rather than hidden:
+
+- A lease or stream source whose release or disposal fails (throws, rejects,
+  times out, or returns a promise where a synchronous answer is required) may
+  stay held. The runner calls it once, reports `cleanup_unconfirmed` or the
+  disposal observer, and does not retry.
+- A reservation whose own removal fails stays `reserved`, and a record whose
+  final write fails stays `started`. Later requests see `request_in_progress`
+  until the store adapter clears them (see
+  [Obligations of later slices](#obligations-of-later-slices)).
+
+The module does not try to resist deliberately hostile in-process code beyond
 that.
+
+### Synchronous callbacks
+
+Decision W. A callback whose contract is synchronous is checked at run time,
+because an `async` function satisfies a `void` return type. If it returns a
+promise or another thenable, whether that would reject or fulfil, the runner
+marks its rejection as handled and treats the call as failed. It never counts
+such a step as done. Asynchronous work belongs in the effect, not in these
+callbacks. The checked call sites and their answers:
+
+| Call | A thenable means |
+| --- | --- |
+| `finalize`, `Lease.release` | a failed step: the record is `unknown`, the caller gets `cleanup_unconfirmed`, a retry gets `outcome_unknown` |
+| `IdempotencyStore` `get`, `put`, `release` | a failed store call, handled as if it had thrown (see [Idempotency](#idempotency)) |
+| `parse`, `resources`, `project`, `projectEvent` | `internal` with reason `parse_not_synchronous`, `resources_not_synchronous` or `projection_not_synchronous` |
+| an `admitted` effect, `read` | as described under [Operations and the runner](#operations-and-the-runner) |
+| `open` of a stream, or an iterator that is itself a thenable | `internal`/`invalid_stream` |
+| `OperationRuntime.now`, `OperationRuntime.grants`, `GrantsSnapshot` methods | `internal` with reason `runtime_not_synchronous` or `grants_not_synchronous` |
+| `ResourceResolver.resolve` | a failed lookup (see [Requirements and decisions](#requirements-and-decisions)) |
+| `ResourceResolver.listProjects` in `session.describe` | `internal`/`resolver_not_synchronous` |
+| `CredentialVerifier` `verify`, `current` | no credential: `unauthenticated` |
+| a listener's `open()`, the offline `lockHeld()` | closed: only a synchronous `true` keeps a listener open or the lock held |
+| `OperationObserver.streamDisposalFailed` | ignored, as any observer result |
+
+The iterator methods `next()` and `return()` are asynchronous by contract and
+are handled under [Streams](#streams).
 
 ## Actors and authentication
 
@@ -155,7 +194,11 @@ The `agents: false` and `freshLogin` flags complete the requirement.
 `decide` is pure and runs in this order:
 
 1. **Masking.** Every slot the requirement names must be resolved, and every
-   resource the operation references must be visible to the caller. Masking
+   resource the operation references must be visible to the caller. This
+   step only sees resources that `resolveAll` returned. The answer is
+   independent of the references' order and of hidden resources because
+   `resolveAll` first applies the three passes of decision X, described
+   below. Masking
    iterates every own slot of the resources record. A malformed record (a
    prototype other than `Object.prototype` or `null`, a symbol key, an invalid
    slot name) fails closed. Otherwise the decision is `not_found` with reason
@@ -181,6 +224,30 @@ Vault entries, Knowledge records and worker attempts each to exactly one
 project or to not-found. It never searches another namespace. `resolveAll`
 returns a frozen record with a `null` prototype that holds deep, frozen copies.
 It treats a malformed or mismatched answer as not-found.
+
+Decision X. `resolveAll` handles the references in three passes, so that no
+answer depends on the order of the references or on whether a resource the
+caller cannot see exists:
+
+1. **Syntax.** Every reference is checked before any lookup. Any malformed
+   reference is `invalid_request`, whatever exists. With several malformed
+   references, the reason is the first of `invalid_resource_reference`,
+   `unknown_resource_kind` and `invalid_resource_id` that any of them has.
+2. **Lookup.** The resolver is called for every reference, without stopping
+   at a miss or a failure.
+3. **One answer.** A failed lookup wins over a miss: the resolver threw, or
+   returned a thenable (`internal`/`resolver_not_synchronous`). The failure of
+   the first failing slot in code-unit order is released after sanitization,
+   whatever the other references are. Otherwise any missing reference is
+   `not_found`/`resource_not_found`. Every resolved resource then goes
+   through masking in `decide`, which gives the same `not_found` for an
+   invisible one. Category, status, reason, retry and effect are identical.
+
+Every decision point resolves through this path: admission, the recheck
+before an effect and before an idle commit point, the release, a replay, a
+stream open and each stream event. A resolver whose own failure depends on
+whether the failing reference exists can still reveal that. Resolvers
+return `null` for a missing reference and throw only on a fault.
 
 Resource slot names must match `^[A-Za-z][A-Za-z0-9_]{0,63}$` (decision Q).
 `OperationRegistry.register` checks the slot names of the requirement.
@@ -218,8 +285,12 @@ transport.
    effect with its commit point (see [Commit point](#commit-point)).
 4. Complete an effect that began under reserved admission, without an
    authority check, in this order (decision R): finalize, release the lease,
-   then write the idempotency record. A failed finalization or lease release
-   writes `unknown`, never `completed`.
+   then write the idempotency record. A step counts as done only when its
+   synchronous callback returned normally (decision W). A finalization or
+   lease release that throws or returns a promise or other thenable writes
+   `unknown`, never `completed`. The caller gets `cleanup_unconfirmed`, and a
+   retry gets `outcome_unknown`. A `completed` write that lands but then
+   throws is overwritten with `unknown`.
 5. Revalidate, re-resolve and decide, then release through the projector.
 
 Finalization, audit and owned cleanup of an effect that began complete even
@@ -333,12 +404,20 @@ A later request with the same key gets:
 | `completed` | replay, as below |
 | none | a fresh run |
 
-An attempt that fails before its commit point releases its own reservation, so
+A failed store call is any call that throws or returns a thenable (decision W).
+The runner owns the reservation before it writes it, so a `reserved` or
+`started` write that lands and then throws is still given back. An attempt
+that fails before its commit point releases its own reservation, so
 a retry runs fresh. If that release fails, the reservation stays and later
 requests see `request_in_progress`. If an attempt crossed its commit point but
 its final record could not be written, the runner tries once more to write
 `unknown`. If that also fails, the record stays `started`, and later requests
-see `request_in_progress`, never a replay.
+see `request_in_progress`, never a replay. The guarantee needs a store that
+fails at most once per attempt. If a `completed` write lands and then throws
+and the `unknown` write after it also fails, the record stays `completed`. If
+a store returns a thenable and finishes the write later, that write can land
+after the runner's `unknown`. Store adapters must be synchronous and must not
+report failure for a write that landed.
 
 A replay is a release of historical data. It requires a fresh decision on the
 current authority and current resolution. It is then decided again against
