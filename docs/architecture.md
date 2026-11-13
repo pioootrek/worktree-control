@@ -1,6 +1,6 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-11-08"
+last_reviewed: "2026-11-12"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
@@ -127,6 +127,146 @@ A local operator can inspect and stop one exact run over the owner-only admin
 socket with `worktree-control test-run`; the job manager decides and applies the
 effect under admission and never adopts a group it did not spawn. See
 [single-run administration](test-run-administration.md).
+
+Each locally executed run receives a private temporary directory. At start
+the controller first sweeps the roots that an earlier instance recorded in
+`run-directory-root.json` (version 3) in its state directory. It then creates a
+root with `mkdtemp` under the OS temporary directory (`wtc-XXXXXX`, mode 0700),
+writes a random 256-bit token to the marker file `.wtc-root` (mode 0600) inside
+it, synchronizes the root and its parent directory so that the marker's entry
+is durable, and only then records the path, the token and the boot id of this
+start (Linux `/proc/sys/kernel/random/boot_id`, otherwise `null`). A recorded
+root is touched only when its path is absolute and normalized, its name starts
+with `wtc-`, `lstat` shows a real directory owned by the controller's user, and
+its marker is a regular file with a single link, owned by that user and opened
+without following links, whose content equals the recorded token (compared in
+constant time; tokens are never logged). The same check applies to the live
+root whenever a run directory is created or removed, and when the root is
+removed at shutdown. Anything else is left untouched and logged as
+`run_directory.previous_root_skipped` with a reason. Its entry stays recorded
+while the path exists and is dropped once nothing exists at it, whatever its
+name. A record in any other shape, including earlier formats, is ignored
+(`run_directory.record_ignored`) and never used for deletion. The controller
+keeps one private copy of the ignored record beside it,
+`run-directory-root.ignored.json` (mode 0600, at most 64 KiB, overwritten each
+time), names it in the event, and never reads it. Directories without a
+matching record are never touched, so controllers with separate state
+directories never delete each other's roots.
+
+This identity check protects against a damaged or stale record: a path that
+names a home directory or repository, or a temporary path later reused by
+another directory. It does not protect against a malicious process of the same
+user. A test runs as that user and can delete or copy the marker. A deleted
+marker makes the sweep skip the root, a logged leak rather than a deletion.
+
+Identity alone does not prove that a root is unused. Test processes are spawned
+detached, so after the controller is killed outside a supervising cgroup they
+can still run and use their `TMPDIR`. Right after a successful spawn the queue
+therefore binds the run directory to the run's process group (the detached
+child's pid; Windows has no group id) and the record is written durably. When
+the directory is removed, its binding is dropped. If that write fails, the
+controller logs `run_directory.binding_not_recorded` and the run continues;
+its directory then counts as one whose liveness is unknown. At the next start,
+a run directory directly inside an identified root is **proven quiescent**
+only in two cases:
+
+- The root's recorded boot id and the current boot id are both known and
+  differ. Every process of that boot is gone, so the whole root is removed
+  without probing.
+- Its binding names a group id that is a safe integer greater than 1, and a
+  zero-signal probe of that group (`kill(-group, 0)`) fails with `ESRCH`.
+
+The probe only ever sends signal 0. It never stops or adopts a process. A
+successful probe, `EPERM`, or a binding that is missing, `null` or invalid
+means the group may be alive, and the directory is kept. Quiescent run
+directories are removed, and the root is removed once only its marker is left.
+A root that keeps a run directory stays recorded with the bindings of what it
+kept and is logged once per start as `run_directory.previous_root_retained`
+with reason `liveness_unknown` and the kept and removed counts. A later start
+removes it once the groups are gone. A start examines at most 4,096 entries of
+one root. A binding leaves the record only when its directory was removed or is
+confirmed absent from a complete listing, so the bindings of entries a
+truncated listing did not reach stay recorded for a later start. Listing the
+root and removing its top-level files and links observe the same deadline as
+the removal of a tree. When it passes, the sweep stops, the root stays recorded
+with its remaining bindings, and the controller logs
+`run_directory.previous_root_skipped` with reason `sweep_budget_exhausted`
+(`removal_deadline` when the deadline of one root passes first). A reused
+group id can only delay the sweep. A process that left its run's process
+group is outside this proof, as it is outside process cleanup. Where the platform provides no group id or boot
+id, such roots stay for the operator. To recover one by hand, take its path
+from the event or the record, confirm that nothing uses it (for example
+`pgrep -g <group>` for each recorded group and `lsof +D <path>`), remove the
+directory, and restart the controller. That start drops the entry of a path
+that no longer exists.
+
+The record holds at most 64 roots and 64 KiB. A root that still exists is
+never dropped from it. When a new root would exceed either limit, the
+controller creates no root and logs `run_directory.record_full` with the
+record file, the entries and bytes the record would need, and both limits.
+Local runs then fail before spawn with `run_directory_unavailable`. The
+operator reviews the paths named by `run_directory.previous_root_skipped` and
+`run_directory.previous_root_retained` events, removes those that are not
+needed, and restarts the controller. Entries whose path no longer exists are
+dropped at that start. A binding that would push the record past 64 KiB is not
+recorded and is logged.
+
+Just before spawn, in the same admitted phase as the running state, the run gets
+a short 0700 subdirectory (for example `/tmp/wtc-AbC123/r1`, short enough for
+Unix socket paths) and `TMPDIR`, `TMP` and `TEMP` point to it. These values
+override a test profile's values; stored profiles stay valid. Finalization
+removes the directory after the owned process group is confirmed stopped, or
+after spawn failed, and before the run releases its slot and its worktree. Run
+directories are never named like the marker, and the marker is removed last,
+with the root. Removal uses asynchronous, streamed, bounded calls and checks
+each target with `lstat`: only a directory owned by the controller's user that
+is the verified root or directly inside it, never following links or crossing
+devices. It holds one open directory at any depth and repairs owner permissions
+a test removed, including mode 0000. A directory without owner read permission
+can only be repaired by path, so its device and inode are verified again after
+`chmod`. The sweep only reaches that repair for run directories proven
+quiescent, which keeps the precondition of this path-based fallback. If the
+emptied root cannot be removed after its marker was unlinked (for example
+because the temporary parent lost write permission) and it is still the same
+directory, the marker is written back with the same token. A crash between the
+marker's unlink and the root's removal leaves a recorded root without a marker.
+Every later start skips it with `marker_missing`, and the operator removes it by
+hand after checking that it is empty.
+
+Each removal attempt (one run directory, the live root at shutdown, or one
+recorded root at startup) has a deadline of 120 seconds, shared by its whole
+traversal and every unlink batch. The startup sweep also has a total budget of
+120 seconds across all recorded roots. When the deadline passes, removal waits
+for its pending unlinks, keeps the root's marker, and fails with
+`run_directory_removal_deadline`. This bounds a producer that keeps recreating
+entries. Roots that the startup budget does not reach stay recorded and are
+logged as `run_directory.previous_root_skipped` with reason
+`sweep_budget_exhausted`. In the queue, a run directory whose removal failed
+three times, or once at its deadline, leaves the run with its process outcome
+and process-cleanup state. The run gains the reason code
+`run_directory_cleanup_failed`, the controller logs
+`test_run.run_directory_cleanup_failed`, the slot is released, and the
+directory is left for a later startup sweep. Admission stays open. Orderly
+shutdown removes the root after every owned group has stopped. If a group's
+cleanup is unconfirmed, the root stays recorded. Without a root, local runs
+fail before spawn with `run_directory_unavailable`. Remote-worker attempts keep
+their own per-attempt directories and are unchanged. This is temporary-file
+hygiene, not a sandbox. A process that escapes its owned group can still race
+path-based removal, and work outside `TMPDIR` is not covered.
+
+The startup sweep runs before the controller reports ready, so a large
+leftover root delays startup, at most by the sweep budget.
+`pnpm test:run-directory-scale` measures removal on the OS temporary directory
+and on a disk-backed directory inside the checkout. On a Linux host with a
+RAM-backed tmpfs, an ext4 root disk and Node.js 24, 200,000 empty files in four
+directories took about 2.4 seconds on tmpfs and 2.9 seconds on disk. A chain of
+400 nested directories took about 0.2 seconds. 20,000 sibling directories with
+one file each took about 10 seconds on tmpfs and 15 seconds on disk, and 5,000
+of them took about a quarter of that, so time grows linearly with the number of
+siblings. The longest event-loop delay was about 14 ms at a 10 ms sampling
+resolution, and at most 33 file descriptors were open. Leftover roots exist only
+after a crash or a failed removal, so the sweep stays in the startup path for
+now.
 
 Scoped finite verification adds independent `tests:run` authorization in the
 verification application module. Migration 44 writes an immutable requester

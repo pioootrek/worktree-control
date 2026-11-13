@@ -14,3 +14,4 @@ export { humanTestRequesterSchema } from "./human-requester";
 export { ScopedVerificationService } from "./scoped-verification";
 export { administrativeStopAction, nextStep, resolveRun, type AdministrableTestJobs, type AdministrativeStopAction, type RunPersistenceState, type RunResolution, type RunResolutionReason, type RunResolutionState, type TestRunOwnershipEvidence } from "./run-ownership";
 export { TestRunAdministration, type TestRunAdministrationAudit, type TestRunAdministrationAuditEntry, type TestRunAdministrationRecord, type AdministrativeOperator, type TestRunInspection, type TestRunStopResult, type StopAction, TestRunAdministrationError, requesterKind } from "./run-administration";
+export { RUN_DIRECTORY_CLEANUP_FAILED, RUN_DIRECTORY_REMOVAL_DEADLINE, RUN_DIRECTORY_UNAVAILABLE, RUN_DIRECTORY_VARIABLES, withRunDirectory, type RunDirectories } from "./run-directory";

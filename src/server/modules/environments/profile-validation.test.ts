@@ -14,6 +14,10 @@ describe("environment profile input policy", () => {
     expect(() => validateEnvironment({ [name]: "value" })).toThrow("zarządzana przez kontroler");
   });
 
+  it("keeps accepting temporary-directory names that the queue overrides per run", () => {
+    expect(validateEnvironment({ TMPDIR: "/var/tmp/app", TMP: "/var/tmp/app", TEMP: "/var/tmp/app" })).toEqual({ TEMP: "/var/tmp/app", TMP: "/var/tmp/app", TMPDIR: "/var/tmp/app" });
+  });
+
   it.each([" leading", "trailing ", "line\nbreak", "null\0byte"])("rejects invalid values without trimming them", (value) => {
     expect(() => validateEnvironment({ APP_VALUE: value })).toThrow("Nieprawidłowa wartość");
   });

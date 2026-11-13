@@ -18,7 +18,7 @@ const SOURCE_REASON_CODES = new Set([
   "dirty_source", "source_changed_before_start", "source_changed_during_execution",
   "source_preflight_failed", "source_finish_failed", "legacy_evidence_unavailable",
   "controller_interrupted", "source_evidence_incomplete", "missing_worktree",
-  "status_limit_exceeded", "source_observation_failed",
+  "status_limit_exceeded", "source_observation_failed", "run_directory_cleanup_failed",
 ]);
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const identity = (value: string, max: number) => value.length <= max ? value : `sha256:${digest(value)}`;

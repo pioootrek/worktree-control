@@ -8,7 +8,7 @@ import type { StateStore, VerificationRequester } from "./state-store";
 import { admissionOf, admitWithRetry, type DatabaseAdmission } from "./database-admission";
 
 import { OwnedProcessGroup } from "./owned-process-group";
-import { emptyTelemetry, emptyRunResources, resourceReason, observeRunResources, TEST_RESOURCE_INTERVAL_MS, type RunResourceObservation, type RunResourceOptions, RunTelemetryRecorder, verificationClock, PreparationSession, PreparationError, type VerificationClock, type EnqueueTestInput, administrativeStopAction, type AdministrableTestJobs, type AdministrativeStopAction, type TestRunOwnershipEvidence } from "./modules/verification";
+import { emptyTelemetry, emptyRunResources, resourceReason, observeRunResources, TEST_RESOURCE_INTERVAL_MS, type RunResourceObservation, type RunResourceOptions, RunTelemetryRecorder, verificationClock, PreparationSession, PreparationError, type VerificationClock, type EnqueueTestInput, administrativeStopAction, type AdministrableTestJobs, type AdministrativeStopAction, type TestRunOwnershipEvidence, RUN_DIRECTORY_CLEANUP_FAILED, RUN_DIRECTORY_REMOVAL_DEADLINE, RUN_DIRECTORY_UNAVAILABLE, withRunDirectory, type RunDirectories } from "./modules/verification";
 import { compareSource, legacySourceEvidence, pendingSourceEvidence, qualifySource, type TestSourceObserver } from "./test-source-attribution";
 
 const MAX_LOG_LINES = 200;
@@ -18,6 +18,8 @@ const LOG_PERSISTENCE_INTERVAL_MS = 250;
 const PROCESS_GROUP_CLEANUP_ATTEMPTS = 3;
 const PROCESS_GROUP_CLEANUP_RETRY_MS = 100;
 const OUTPUT_CLOSE_GRACE_MS = 1_000;
+const RUN_DIRECTORY_CLEANUP_ATTEMPTS = 3;
+const RUN_DIRECTORY_CLEANUP_RETRY_MS = 250;
 
 interface ActiveRun {
   child: ChildProcess;
@@ -61,6 +63,9 @@ export class TestJobManager implements AdministrableTestJobs {
   private pathAdmission: (paths: string[]) => void = () => undefined;
   private requesterAuthorizer: ((run: TestRun, requester: VerificationRequester) => void) | null = null;
   private sourceObserver: TestSourceObserver | null = null;
+  private runDirectories: RunDirectories | null = null;
+  /** Private directory of each locally spawned run, held until finalization removes it. */
+  private readonly runDirectoryPaths = new Map<string, string>();
   private logMaintenance: Promise<void> = Promise.resolve();
   private pruneOperation: Promise<void> | null = null;
   private pumping = false;
@@ -117,6 +122,16 @@ export class TestJobManager implements AdministrableTestJobs {
 
   configureSourceObserver(observer: TestSourceObserver): void {
     this.sourceObserver = observer;
+  }
+
+  /**
+   * Gives every locally executed run a private TMPDIR/TMP/TEMP directory that is
+   * removed after its owned process group stops. Remote-worker attempts, which
+   * bring their own per-attempt directories through `preparation`, are unchanged.
+   */
+  configureRunDirectories(directories: RunDirectories): void {
+    if (this.runDirectories) throw new Error("Run directories are already configured.");
+    this.runDirectories = directories;
   }
 
   replay(actor: string, idempotencyKey: string, projectId: string, worktreePath: string, presetId: string): TestRun | null {
@@ -374,6 +389,9 @@ export class TestJobManager implements AdministrableTestJobs {
       }
       // Accepted checkpoints settle before the owner may close the store.
       await Promise.allSettled([...this.writes.values()].map(write => write.chain));
+      // Only after every owned process group is confirmed stopped; otherwise the
+      // recorded root stays for the next start's sweep. The adapter logs a failure.
+      if (this.active.size === 0) await this.runDirectories?.close().catch(() => undefined);
     }
   }
 
@@ -465,7 +483,9 @@ export class TestJobManager implements AdministrableTestJobs {
       const observer = preparation?.observe ?? this.observers.get(run.id) ?? this.sourceObserver;
       if (!observer || !run.source.enqueue) {
         if (!preparation) this.preparing.delete(run.id);
-        await this.admission.run(() => this.start(run));
+        // Wrapped so that the admission never waits for a failed spawn's finalization.
+        const { unspawned } = await this.admission.run(() => ({ unspawned: this.start(run) }));
+        await unspawned;
         return;
       }
       run.source.preflight = await observer(run, "preflight");
@@ -494,11 +514,12 @@ export class TestJobManager implements AdministrableTestJobs {
         return;
       }
       // Recheck, commit `starting` provenance, persist running state and spawn in one admitted phase.
-      await this.admission.run(() => {
-        if (this.closed || this.read(run.id)?.phase !== "queued") return;
+      const { unspawned } = await this.admission.run(() => {
+        if (this.closed || this.read(run.id)?.phase !== "queued") return { unspawned: undefined };
         if (!preparation) this.preparing.delete(run.id);
-        this.start(run);
+        return { unspawned: this.start(run) };
       });
+      await unspawned;
     } catch (error) {
       if (this.persistenceFailure) throw error;
       if (session?.cleanupUnconfirmed || error instanceof PreparationError && error.cleanupUnconfirmed) {
@@ -550,13 +571,31 @@ export class TestJobManager implements AdministrableTestJobs {
     }
   }
 
-  /** Must run admitted: `starting` provenance and the running state are durable before spawn. */
-  private start(run: TestRun): void {
-    if (this.closed || this.read(run.id)?.phase !== "queued") return;
+  /**
+   * Must run admitted: `starting` provenance and the running state are durable before spawn.
+   * When spawn throws, returns that run's finalization, which never rejects. The run holds
+   * its slot and worktree in `preparing` until it settles, so its directory is removed first.
+   */
+  private start(run: TestRun): Promise<void> | undefined {
+    if (this.closed || this.read(run.id)?.phase !== "queued") return undefined;
     this.authorizeRequester(run);
     this.pathAdmission([run.worktreePath, run.cwd]);
     this.preparationSessions.get(run.id)?.throwIfAborted();
     this.preparations.get(run.id)?.starting?.();
+    let environment = this.environments.get(run.id) ?? {};
+    let directoryError: unknown = null;
+    if (this.runDirectories && !this.preparations.has(run.id)) {
+      try {
+        const directory = this.runDirectories.create();
+        this.runDirectoryPaths.set(run.id, directory);
+        // The controller's directory wins over any profile value for these names.
+        environment = withRunDirectory(environment, directory);
+        run.environmentVariableNames = Object.keys(environment).sort((left, right) => left.localeCompare(right));
+      } catch (error) {
+        directoryError = error;
+        this.logs.controller("test_run.run_directory_unavailable", { runId: run.id, error: String(error) });
+      }
+    }
     this.telemetry.mark(run, "prepareFinishedAt");
     run.phase = "running";
     run.startedAt = this.clock.wallNow();
@@ -564,12 +603,13 @@ export class TestJobManager implements AdministrableTestJobs {
     this.persistNow(run);
     let child: ChildProcess;
     try {
+      if (directoryError) throw new Error(RUN_DIRECTORY_UNAVAILABLE);
       child = spawn(run.executable, run.args, {
         cwd: run.cwd,
         // The resolved policy is the complete environment: nothing of the controller's own
         // process environment reaches a test unless its profile asked for it. Next.js declares
         // ProcessEnv.NODE_ENV as required, but Node child processes permit it to be omitted.
-        env: (this.environments.get(run.id) ?? {}) as NodeJS.ProcessEnv,
+        env: environment as NodeJS.ProcessEnv,
         detached: process.platform !== "win32",
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
@@ -580,12 +620,14 @@ export class TestJobManager implements AdministrableTestJobs {
       run.phase = "failed";
       run.error = error instanceof Error ? error.message : String(error);
       run.finishedAt = this.clock.wallNow();
-      void this.finish(run).catch((error: unknown) => {
+      // The caller released the slot for a run about to become active; take it back. `prepare` releases it.
+      this.preparing.add(run.id);
+      return this.finish(run).catch((error: unknown) => {
         this.logs.controller("test_run.finalization_failed", { runId: run.id, error: String(error) });
         this.recordPersistenceFailure(run, error);
       });
-      return;
     }
+    this.bindRunDirectory(run, child);
     const timeout = setTimeout(() => {
       const active = this.active.get(run.id);
       if (!active || active.exited) return;
@@ -823,6 +865,7 @@ export class TestJobManager implements AdministrableTestJobs {
         }
         this.preparations.delete(run.id);
       }
+      await this.removeRunDirectory(run);
       const settle = this.settlements.get(run.id);
       this.settlements.delete(run.id);
       this.observers.delete(run.id);
@@ -862,6 +905,50 @@ export class TestJobManager implements AdministrableTestJobs {
     });
     this.finalizations.set(run.id, completion);
     return completion;
+  }
+
+  /**
+   * Records which process group uses the run's directory, so that a later
+   * controller start removes it only once that group is gone. A detached POSIX
+   * child leads its own group; Windows has no group id. Without a pid the spawn
+   * failed and finalization removes the directory.
+   */
+  private bindRunDirectory(run: TestRun, child: ChildProcess): void {
+    const directory = this.runDirectoryPaths.get(run.id);
+    if (!directory || !this.runDirectories || child.pid === undefined) return;
+    try { this.runDirectories.bind(directory, process.platform === "win32" ? null : child.pid); }
+    catch (error) { this.logs.controller("test_run.run_directory_binding_failed", { runId: run.id, error: String(error) }); }
+  }
+
+  /**
+   * Runs during finalization: the owned process group is confirmed stopped (or
+   * never existed) and the run still holds its queue slot, so leftovers of
+   * several runs cannot accumulate. A failure keeps the process outcome and
+   * process-cleanup state; the root's startup sweep removes the directory later.
+   * An attempt that exceeded its removal deadline is final: retrying would hold
+   * the slot for another full deadline.
+   */
+  private async removeRunDirectory(run: TestRun): Promise<void> {
+    const directory = this.runDirectoryPaths.get(run.id);
+    if (!directory || !this.runDirectories) return;
+    let lastError: unknown;
+    let attempts = 0;
+    for (let attempt = 1; attempt <= RUN_DIRECTORY_CLEANUP_ATTEMPTS; attempt += 1) {
+      attempts = attempt;
+      try {
+        await this.runDirectories.remove(directory);
+        this.runDirectoryPaths.delete(run.id);
+        return;
+      } catch (error) {
+        lastError = error;
+        if ((error as { code?: unknown } | null)?.code === RUN_DIRECTORY_REMOVAL_DEADLINE) break;
+        if (attempt < RUN_DIRECTORY_CLEANUP_ATTEMPTS) await new Promise(resolve => setTimeout(resolve, RUN_DIRECTORY_CLEANUP_RETRY_MS));
+      }
+    }
+    this.runDirectoryPaths.delete(run.id);
+    run.source.reasonCodes = [...new Set([...run.source.reasonCodes, RUN_DIRECTORY_CLEANUP_FAILED])];
+    const code = (lastError as { code?: unknown } | null)?.code;
+    this.logs.controller("test_run.run_directory_cleanup_failed", { runId: run.id, attempts, code: typeof code === "string" ? code : null, error: String(lastError) });
   }
 
   private recordPersistenceFailure(run: TestRun, error: unknown): void {
