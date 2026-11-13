@@ -294,11 +294,17 @@ export class OperationRunner {
       outcome?: EffectOutcome<R>;
       lease?: Lease;
       reservation?: { store: IdempotencyStore; key: IdempotencyKey; attempt: string; fingerprint: string };
-      /** The record holds this attempt's final state (`completed` or `unknown`). */
-      recorded: boolean;
+      /**
+       * This attempt's final record (decision Z). `pending` until the
+       * completion callback writes it; `written` once a final state
+       * (`completed` or `unknown`) was confirmed; `unconfirmed` when that
+       * callback's write and its repair both failed, which leaves the record
+       * to the store adapter. Only `pending` lets `finally` write.
+       */
+      final: "pending" | "written" | "unconfirmed";
       /** Resources of the phase that admitted the effect (its commit point). */
       resources?: ResolvedResources;
-    } = { effect: "not_started", recorded: false };
+    } = { effect: "not_started", final: "pending" };
     /**
      * Releases a held lease exactly once. `false` when the release threw or
      * returned a thenable (decision W): its rejection is absorbed and the
@@ -472,9 +478,20 @@ export class OperationRunner {
             try { synchronous(operation.finalize?.(input, settled, { resources: effectResources }), "finalize_not_synchronous"); } catch { failed = true; }
             if (!releaseLease()) failed = true;
             if (reservation) {
-              synchronous(reservation.store.put({ ...reservation.key }, settled.ok && !failed
-                ? finalRecord("completed", effectResources, settled.value) : finalRecord("unknown", effectResources)), "idempotency_store_not_synchronous");
-              state.recorded = true;
+              // Decision Z: from here this callback owns the final write; `finally` never writes for this attempt.
+              state.final = "unconfirmed";
+              const write = (record: IdempotencyRecord) =>
+                synchronous(reservation.store.put({ ...reservation.key }, record), "idempotency_store_not_synchronous");
+              try {
+                write(settled.ok && !failed ? finalRecord("completed", effectResources, settled.value) : finalRecord("unknown", effectResources));
+              } catch {
+                // The write may have landed (a `completed` one included). Repaired at once, in this same admitted
+                // callback, so no other admission can read a `completed` record in between. If this write fails too,
+                // the record is left to the store adapter's obligations.
+                failed = true;
+                write(finalRecord("unknown", effectResources));
+              }
+              state.final = "written";
             }
             if (failed) throw new OperationError("unavailable", "finalization_unconfirmed", { effect: "cleanup_unconfirmed" });
           });
@@ -498,7 +515,8 @@ export class OperationRunner {
     } finally {
       releaseLease();
       const reservation = state.reservation;
-      if (reservation && !state.recorded) {
+      // Only for attempts whose completion callback never ran: once it ran, it alone wrote (or failed to write) the final record.
+      if (reservation && state.final === "pending") {
         try {
           if (state.effect === "not_started") {
             // An attempt that never crossed its commit point gives its reservation back, so a retry runs fresh.

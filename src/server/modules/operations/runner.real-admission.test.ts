@@ -7,7 +7,7 @@ import { SqliteStateStore } from "@/server/infrastructure/sqlite/sqlite-state-st
 import type { IdleCommitScope, MutationOperation, PhaseScope } from "./operation";
 import { createWorld, MemoryIdempotency, P } from "./operations-fixture";
 import { onProject } from "./requirements";
-import { OperationRunner } from "./runner";
+import { OperationRunner, type RunResult } from "./runner";
 
 /**
  * The runner on the real connection gate (`SqliteStateStore.admission` over a
@@ -108,5 +108,52 @@ describe("operation runner on the real admission gate", () => {
       category: "not_found", status: 404, reason: "resource_not_found", retry: "none", effect: "not_started" } });
     expect(log.effects).toBe(1);
     expect(idempotency.states()).toEqual(["completed"]);
+  });
+
+  it("never lets a retry admitted right after the completion read completed when that write lands and throws (decision Z)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "operations-runner-")); roots.push(root);
+    const store = new SqliteStateStore(join(root, "state.sqlite3"), undefined, { admissionTimeoutMs: 500 });
+    cleanups.push(() => store.close());
+    const world = createWorld();
+    const projectA = P("project-a");
+    world.resolver.addProject(projectA).put({ kind: "registration", id: "reg-1" }, projectA);
+    const alice = world.human("alice");
+    world.grants.grant({ accountId: alice.id, role: "operator", scope: { kind: "project", projectId: projectA } });
+    const idempotency = new MemoryIdempotency();
+    idempotency.failAfterWrite.add("completed");
+    const runner = new OperationRunner({ ...world.runtime({ idempotency }), admission: store.admission });
+    const log = { effects: 0, read: [] as string[] };
+    type Input = { registrationId: string };
+    const operation: MutationOperation<Input, { projectId: ProjectId }, { projectId: ProjectId }> = {
+      id: "fixture.real_gate_final_write",
+      kind: "mutation",
+      requirement: { require: onProject("runtime:control", "registration") },
+      parse: raw => ({ registrationId: String((raw as Input).registrationId) }),
+      resources: input => ({ registration: { kind: "registration", id: input.registrationId } }),
+      effect: { mode: "admitted", run: (_input: Input, scope: PhaseScope) => { log.effects++; return { projectId: scope.resources.registration.projectId }; } },
+      retain: true,
+      publicKeys: ["projectId"],
+      project: result => result,
+    };
+    const run = () => runner.run(operation, alice.context, { registrationId: "reg-1" }, { idempotencyKey: "k-1" });
+    const get = idempotency.get.bind(idempotency), put = idempotency.put.bind(idempotency);
+    idempotency.get = key => { const record = get(key); log.read.push(record?.state ?? "none"); return record; };
+    const pending: { started: boolean; retry?: Promise<RunResult<{ projectId: ProjectId }>> } = { started: false };
+    idempotency.put = (key, record) => {
+      if (record.state === "completed" && !pending.started) {
+        pending.started = true;
+        // The identical retry is admitted, outside the original's admitted operation, as soon as the completion callback returns.
+        queueMicrotask(() => { pending.retry = store.admission.outside(() => run()); });
+      }
+      put(key, record);
+    };
+    expect(await run()).toEqual({ ok: false, error: {
+      category: "unavailable", status: 503, reason: "finalization_unconfirmed", retry: "inspect_first", effect: "cleanup_unconfirmed" } });
+    expect(pending.retry).toBeDefined();
+    expect(await pending.retry!).toEqual({ ok: false, error: {
+      category: "outcome_unknown", status: 409, reason: "previous_attempt_outcome_unknown", retry: "inspect_first", effect: "unknown" } });
+    expect(log.read).toEqual(["none", "unknown"]);
+    expect(log.effects).toBe(1);
+    expect(idempotency.states()).toEqual(["unknown"]);
   });
 });
