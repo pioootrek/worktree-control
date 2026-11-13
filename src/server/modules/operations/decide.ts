@@ -14,6 +14,19 @@ export interface DecisionInput {
   now: number;
 }
 
+/**
+ * A decision input whose effective permissions were computed beforehand. The
+ * runner computes them before it resolves any reference (decision Y), so the
+ * decision itself reads no adapter.
+ */
+export interface PermittedDecisionInput {
+  authority: CurrentAuthority;
+  requirement: OperationRequirement;
+  resources: ResolvedResources;
+  permissions: EffectivePermissions;
+  now: number;
+}
+
 export type Denial = { readonly allowed: false; category: Extract<ErrorCategory, "forbidden" | "login_stale" | "not_found" | "claim_held" | "conflict">; reason: string };
 export type Decision = Readonly<{ allowed: true; permissions: EffectivePermissions }> | Denial;
 
@@ -96,7 +109,7 @@ function predicateHolds(name: PredicateName, authority: CurrentAuthority, resour
 }
 
 /** Runs only after masking: every referenced resource exists and is visible. */
-function evaluate(requirement: Requirement, input: DecisionInput, permissions: EffectivePermissions): Denial | null {
+function evaluate(requirement: Requirement, input: PermittedDecisionInput, permissions: EffectivePermissions): Denial | null {
   const { authority, resources } = input;
   const full = isFullAuthority(authority.actor);
   switch (requirement.kind) {
@@ -142,7 +155,17 @@ function evaluate(requirement: Requirement, input: DecisionInput, permissions: E
  */
 export function decide(input: DecisionInput): Decision {
   const { authority, requirement, resources, grants, now } = input;
-  const permissions = effectivePermissions(authority.actor, grants);
+  return decideWith({ authority, requirement, resources, now, permissions: effectivePermissions(authority.actor, grants) });
+}
+
+/**
+ * `decide` on effective permissions computed beforehand. Pure module code: it
+ * calls no adapter and reads only the frozen authority, the frozen requirement,
+ * the frozen resolution copies and the permission set's closures, so a
+ * decision after resolution can only end in one of its own answers (decision Y).
+ */
+export function decideWith(input: PermittedDecisionInput): Decision {
+  const { authority, requirement, resources, permissions, now } = input;
   const all = everyResource(resources);
   if (!all) return notFound();
   for (const name of requiredSlots(requirement.require)) if (!isSlotName(name) || !slot(resources, name)) return notFound();

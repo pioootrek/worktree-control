@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { idleWithCompletion, type DatabaseAdmission } from "@/server/database-admission";
 import type { EffectState, PublicOperationError } from "@/shared/contracts/operations";
 import { currentAuthority, type AuthenticationContext, type CurrentAuthority } from "./authentication-context";
-import { decide } from "./decide";
+import { decideWith } from "./decide";
 import { admissionFailureOf, classifyBeforeCommit, OperationError, publicError } from "./errors";
-import type { EffectivePermissions, GrantsSnapshot } from "./grants";
+import { effectivePermissions, type EffectivePermissions, type GrantsSnapshot } from "./grants";
 import type { EffectOutcome, Lease, MutationOperation, Operation, PhaseScope, ReadOperation, StreamOperation } from "./operation";
 import { canonicalJson, createReleaseContext, releaseError, releaseValue, serializeRelease, type ReleaseContext } from "./release";
 import { collectionPermissions, type OperationRequirement, type ResolvedResources, type ResourceRef } from "./requirements";
@@ -95,7 +95,7 @@ export type StreamItem<T> = { event: T } | { error: PublicOperationError };
 interface Phase {
   authority: CurrentAuthority;
   resources: ResolvedResources;
-  grants: GrantsSnapshot;
+  /** Computed before resolution; every later decision of this phase reuses it and reads no adapter. */
   permissions: EffectivePermissions;
   release: ReleaseContext;
   now: number;
@@ -181,16 +181,26 @@ export class OperationRunner {
 
   private get deadline(): number { return this.runtime.completionDeadlineMs ?? 60_000; }
 
-  /** Must run inside an admitted phase. Throws a typed denial. */
+  /**
+   * Must run inside an admitted phase. Throws a typed denial.
+   *
+   * Decision Y: everything that can fail independently of the referenced
+   * resources runs first: authority revalidation, the clock, the grants
+   * snapshot and the effective permissions (every `GrantsSnapshot` call).
+   * Only then are the references resolved, so a fault before resolution gives
+   * the same answer whatever exists. After resolution only the pure
+   * `decideWith` runs before the answer; a denial is one of its answers.
+   */
   private admit(context: AuthenticationContext, requirement: OperationRequirement, refs: Readonly<Record<string, ResourceRef>>): Phase {
     const authority = currentAuthority(context);
-    const resources = resolveAll(this.runtime.resolver, refs);
     const now = synchronous(this.runtime.now(), "runtime_not_synchronous");
-    const grants = synchronous(this.runtime.grants(), "runtime_not_synchronous");
-    const decision = decide({ authority, requirement, resources, grants, now });
+    const grants: GrantsSnapshot = synchronous(this.runtime.grants(), "runtime_not_synchronous");
+    const permissions = effectivePermissions(authority.actor, grants);
+    const resources = resolveAll(this.runtime.resolver, refs);
+    const decision = decideWith({ authority, requirement, resources, permissions, now });
     if (!decision.allowed) throw new OperationError(decision.category, decision.reason);
     const release = createReleaseContext(authority, decision.permissions, resources, collectionPermissions(requirement.require));
-    return { authority, resources, grants, permissions: decision.permissions, now, release };
+    return { authority, resources, permissions: decision.permissions, now, release };
   }
 
   /** A fresh decision that also requires an unchanged resolution and no abort. Must run inside an admitted phase. */
@@ -234,11 +244,13 @@ export class OperationRunner {
   /**
    * Replay is a release of historical data: decided against the resources
    * resolved when the result was retained, and only while the current
-   * resolution is unchanged.
+   * resolution is unchanged. Runs after `admit` allowed the current
+   * resolution; the historical decision reuses that phase's permissions and
+   * calls no adapter (decision Y).
    */
   private replay<I, R, P extends object>(operation: MutationOperation<I, R, P>, phase: Phase, record: IdempotencyRecord): P {
     const historical = record.resources;
-    const decision = decide({ authority: phase.authority, requirement: operation.requirement, resources: historical, grants: phase.grants, now: phase.now });
+    const decision = decideWith({ authority: phase.authority, requirement: operation.requirement, resources: historical, permissions: phase.permissions, now: phase.now });
     if (!decision.allowed) throw new OperationError(decision.category, decision.reason);
     if (!sameResolution(historical, phase.resources)) throw new OperationError("conflict", "resource_changed");
     const release = createReleaseContext(phase.authority, decision.permissions, historical, collectionPermissions(operation.requirement.require));
