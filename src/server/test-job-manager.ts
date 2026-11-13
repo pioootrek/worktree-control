@@ -483,7 +483,9 @@ export class TestJobManager implements AdministrableTestJobs {
       const observer = preparation?.observe ?? this.observers.get(run.id) ?? this.sourceObserver;
       if (!observer || !run.source.enqueue) {
         if (!preparation) this.preparing.delete(run.id);
-        await this.admission.run(() => this.start(run));
+        // Wrapped so that the admission never waits for a failed spawn's finalization.
+        const { unspawned } = await this.admission.run(() => ({ unspawned: this.start(run) }));
+        await unspawned;
         return;
       }
       run.source.preflight = await observer(run, "preflight");
@@ -512,11 +514,12 @@ export class TestJobManager implements AdministrableTestJobs {
         return;
       }
       // Recheck, commit `starting` provenance, persist running state and spawn in one admitted phase.
-      await this.admission.run(() => {
-        if (this.closed || this.read(run.id)?.phase !== "queued") return;
+      const { unspawned } = await this.admission.run(() => {
+        if (this.closed || this.read(run.id)?.phase !== "queued") return { unspawned: undefined };
         if (!preparation) this.preparing.delete(run.id);
-        this.start(run);
+        return { unspawned: this.start(run) };
       });
+      await unspawned;
     } catch (error) {
       if (this.persistenceFailure) throw error;
       if (session?.cleanupUnconfirmed || error instanceof PreparationError && error.cleanupUnconfirmed) {
@@ -568,9 +571,13 @@ export class TestJobManager implements AdministrableTestJobs {
     }
   }
 
-  /** Must run admitted: `starting` provenance and the running state are durable before spawn. */
-  private start(run: TestRun): void {
-    if (this.closed || this.read(run.id)?.phase !== "queued") return;
+  /**
+   * Must run admitted: `starting` provenance and the running state are durable before spawn.
+   * When spawn throws, returns that run's finalization, which never rejects. The run holds
+   * its slot and worktree in `preparing` until it settles, so its directory is removed first.
+   */
+  private start(run: TestRun): Promise<void> | undefined {
+    if (this.closed || this.read(run.id)?.phase !== "queued") return undefined;
     this.authorizeRequester(run);
     this.pathAdmission([run.worktreePath, run.cwd]);
     this.preparationSessions.get(run.id)?.throwIfAborted();
@@ -613,11 +620,12 @@ export class TestJobManager implements AdministrableTestJobs {
       run.phase = "failed";
       run.error = error instanceof Error ? error.message : String(error);
       run.finishedAt = this.clock.wallNow();
-      void this.finish(run).catch((error: unknown) => {
+      // The caller released the slot for a run about to become active; take it back. `prepare` releases it.
+      this.preparing.add(run.id);
+      return this.finish(run).catch((error: unknown) => {
         this.logs.controller("test_run.finalization_failed", { runId: run.id, error: String(error) });
         this.recordPersistenceFailure(run, error);
       });
-      return;
     }
     this.bindRunDirectory(run, child);
     const timeout = setTimeout(() => {

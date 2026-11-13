@@ -199,6 +199,8 @@ export class RunDirectoryRoot implements RunDirectories {
     this.assertRoot(await lstat(this.path));
     const stats = await lstatMissing(path);
     if (stats) {
+      // A file system mounted at the run directory is never entered; it stays recorded.
+      if (stats.dev !== this.identity.dev) throw new UnsafeRemovalError("mount_point");
       assertOwnedDirectory(stats);
       await removeOwnedTree(path, stats, { deadline: this.deadline() });
     }
