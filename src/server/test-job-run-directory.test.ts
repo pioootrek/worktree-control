@@ -65,10 +65,11 @@ async function fixture(options: { directories?: (root: RunDirectoryRoot) => RunD
   manager.configureRunDirectories(options.directories ? options.directories(root) : root);
   const worktree = (path: string): Worktree => ({ path, head: "abcdef123456", shortHead: "abcdef1", branch: "main", detached: false, locked: false, prunable: false, dirty: false });
   let worktrees = 0;
-  const enqueue = (script: string, environment: Record<string, string> = {}, timeoutMs = 10_000, executable = process.execPath) => {
+  /** Each run gets its own worktree unless `worktreeName` names a shared one. */
+  const enqueue = (script: string, environment: Record<string, string> = {}, timeoutMs = 10_000, executable = process.execPath, worktreeName?: string) => {
     const command: TestCommand = { preset: { id: "node:test", name: "test", adapter: "node", timeoutMs }, executable, args: ["-e", script], cwd: base };
     worktrees += 1;
-    return manager.enqueue({ projectId: project.id, worktree: worktree(join(base, `worktree-${worktrees}`)), command, environment: resolved(environment), actor: "local-user" });
+    return manager.enqueue({ projectId: project.id, worktree: worktree(join(base, worktreeName ?? `worktree-${worktrees}`)), command, environment: resolved(environment), actor: "local-user" });
   };
   const seen = async (runId: string): Promise<Seen> => {
     let value: Seen | null = null;
@@ -166,6 +167,42 @@ describe("per-run private temporary directory", () => {
     const run = enqueue("", {}, 10_000, join(root.path, "missing-executable"));
     await terminal(run.id, "failed");
     expect(store.getTestRun(run.id)?.environmentVariableNames).toEqual(expect.arrayContaining(["TMPDIR"]));
+    expect(runDirectoriesIn(root)).toEqual([]);
+    await close();
+  });
+
+  it.each([
+    { case: "the queue slot", limit: 1, worktreeName: undefined },
+    { case: "the worktree", limit: 2, worktreeName: "shared" },
+  ])("holds $case until a run whose spawn threw has its directory removed", async ({ limit, worktreeName }) => {
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const removals: string[] = [];
+    const { store, manager, root, enqueue, terminal, close } = await fixture({
+      directories: real => ({
+        create: () => real.create(),
+        bind: (path, group) => real.bind(path, group),
+        remove: async path => {
+          removals.push(path);
+          if (removals.length === 1) await held;
+          await real.remove(path);
+        },
+        close: () => real.close(),
+      }),
+    });
+    manager.setLimit(limit);
+    // A NUL byte in an argument makes spawn throw synchronously, after the directory exists.
+    const failed = enqueue("process.exit(0);\0", {}, 10_000, process.execPath, worktreeName);
+    await vi.waitFor(() => expect(removals).toHaveLength(1));
+    expect(runDirectoriesIn(root)).toHaveLength(1);
+    const next = enqueue("process.exit(0);", {}, 10_000, process.execPath, worktreeName);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect(store.getTestRun(next.id)).toMatchObject({ phase: "queued", startedAt: null });
+    release();
+    await terminal(failed.id, "failed");
+    expect(store.getTestRun(failed.id)?.telemetry?.termination).toBe("spawn_error");
+    await terminal(next.id, "passed");
+    expect(removals).toHaveLength(2);
     expect(runDirectoriesIn(root)).toEqual([]);
     await close();
   });

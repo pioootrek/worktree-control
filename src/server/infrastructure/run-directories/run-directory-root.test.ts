@@ -20,6 +20,26 @@ vi.mock("@/server/private-storage", async (importOriginal) => {
   };
 });
 
+/**
+ * Asynchronous `lstat` results, adjusted per path by a test (a test cannot
+ * mount a file system), and the asynchronous unlinks issued; the real calls still run.
+ */
+const filesystem = vi.hoisted(() => ({
+  lstat: null as null | ((path: string, stats: Stats) => Stats),
+  unlinked: [] as string[],
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    lstat: async (path: string, ...rest: unknown[]) => {
+      const stats = await (actual.lstat as (...args: unknown[]) => Promise<Stats>)(path, ...rest);
+      return filesystem.lstat ? filesystem.lstat(String(path), stats) : stats;
+    },
+    unlink: async (path: string) => { filesystem.unlinked.push(String(path)); return actual.unlink(path); },
+  };
+});
+
 const IGNORED_COPY = "run-directory-root.ignored.json";
 const RECORD_MAX_BYTES = 64 * 1024;
 const groups = new ProcessGroups();
@@ -36,6 +56,8 @@ function restoreAccess(path: string): void {
 
 afterEach(async () => {
   storage.calls.splice(0);
+  filesystem.lstat = null;
+  filesystem.unlinked.splice(0);
   expect(await groups.stopAll()).toEqual([]);
   for (const directory of scratch.splice(0)) {
     restoreAccess(directory);
@@ -138,6 +160,28 @@ describe("run directory root", () => {
     await root.close();
     expect(existsSync(root.path)).toBe(false);
     outsideIntact();
+  });
+
+  it("never enters a run directory on another device and keeps it recorded", async () => {
+    const { open, record } = fixture();
+    const root = await open();
+    const run = root.create();
+    root.bind(run, await groups.exited());
+    writeFileSync(join(run, "file"), "x");
+    mkdirSync(join(run, "nested"));
+    writeFileSync(join(run, "nested", "file"), "y");
+    filesystem.unlinked.splice(0);
+    // As if the test had mounted a file system exactly at its run directory: everything in it reports that device.
+    const mounted = (path: string) => path === run || path.startsWith(`${run}/`);
+    filesystem.lstat = (path, stats) => (mounted(path) ? Object.assign(stats, { dev: stats.dev + 1 }) : stats);
+    await expect(root.remove(run)).rejects.toThrow("mount_point");
+    expect(filesystem.unlinked.filter(path => path.startsWith(`${run}/`))).toEqual([]);
+    expect(readFileSync(join(run, "file"), "utf8")).toBe("x");
+    expect(readFileSync(join(run, "nested", "file"), "utf8")).toBe("y");
+    expect(record().roots[0]!.runs.map(entry => entry.name)).toEqual([basename(run)]);
+    filesystem.lstat = null;
+    await root.close();
+    expect(existsSync(root.path)).toBe(false);
   });
 
   it("refuses any target that is not directly inside the root", async () => {
