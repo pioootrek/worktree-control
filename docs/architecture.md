@@ -211,27 +211,27 @@ needed, and restarts the controller. Entries whose path no longer exists are
 dropped at that start. A binding that would push the record past 64 KiB is not
 recorded and is logged.
 
-Just before spawn, in the same admitted phase as the running state, the run
-gets a short 0700 subdirectory (for example `/tmp/wtc-AbC123/r1`, short enough
-for Unix socket paths) and `TMPDIR`, `TMP` and `TEMP` point to it. These values
+Just before spawn, in the same admitted phase as the running state, the run gets
+a short 0700 subdirectory (for example `/tmp/wtc-AbC123/r1`, short enough for
+Unix socket paths) and `TMPDIR`, `TMP` and `TEMP` point to it. These values
 override a test profile's values; stored profiles stay valid. Finalization
-removes the directory after the owned process group is confirmed stopped and
-before the run releases its slot. Run directories are never named like the
-marker, and the marker is removed last, with the root. Removal uses
-asynchronous, streamed, bounded calls and checks each target with `lstat`: only
-a directory owned by the controller's user that is the verified root or directly
-inside it, never following links or crossing devices. It holds one open
-directory at any depth and repairs owner permissions a test removed, including
-mode 0000. A directory without owner read permission can only be repaired by
-path, so its device and inode are verified again after `chmod`. The sweep only
-reaches that repair for run directories proven quiescent, which keeps the
-precondition of this path-based fallback. If the emptied root cannot be
-removed after its marker was unlinked (for example because the temporary
-parent lost write permission) and it is still the same directory, the marker is
-written back with the same token. A crash between the marker's unlink and the
-root's removal leaves a recorded root without a marker. Every later start
-skips it with `marker_missing`, and the operator removes it by hand after
-checking that it is empty.
+removes the directory after the owned process group is confirmed stopped, or
+after spawn failed, and before the run releases its slot and its worktree. Run
+directories are never named like the marker, and the marker is removed last,
+with the root. Removal uses asynchronous, streamed, bounded calls and checks
+each target with `lstat`: only a directory owned by the controller's user that
+is the verified root or directly inside it, never following links or crossing
+devices. It holds one open directory at any depth and repairs owner permissions
+a test removed, including mode 0000. A directory without owner read permission
+can only be repaired by path, so its device and inode are verified again after
+`chmod`. The sweep only reaches that repair for run directories proven
+quiescent, which keeps the precondition of this path-based fallback. If the
+emptied root cannot be removed after its marker was unlinked (for example
+because the temporary parent lost write permission) and it is still the same
+directory, the marker is written back with the same token. A crash between the
+marker's unlink and the root's removal leaves a recorded root without a marker.
+Every later start skips it with `marker_missing`, and the operator removes it by
+hand after checking that it is empty.
 
 Each removal attempt (one run directory, the live root at shutdown, or one
 recorded root at startup) has a deadline of 120 seconds, shared by its whole
@@ -259,13 +259,14 @@ leftover root delays startup, at most by the sweep budget.
 `pnpm test:run-directory-scale` measures removal on the OS temporary directory
 and on a disk-backed directory inside the checkout. On a Linux host with a
 RAM-backed tmpfs, an ext4 root disk and Node.js 24, 200,000 empty files in four
-directories took about 2.4 seconds on both. A chain of 400 nested directories
-took about 0.2 seconds. 20,000 sibling directories with one file each took
-about 10 seconds on tmpfs and 15 seconds on disk, and 5,000 of them took about
-a quarter of that, so time grows linearly with the number of siblings. The
-longest event-loop delay was about 14 ms at a 10 ms sampling resolution, and at
-most 33 file descriptors were open. Leftover roots exist only after a crash or
-a failed removal, so the sweep stays in the startup path for now.
+directories took about 2.4 seconds on tmpfs and 2.9 seconds on disk. A chain of
+400 nested directories took about 0.2 seconds. 20,000 sibling directories with
+one file each took about 10 seconds on tmpfs and 15 seconds on disk, and 5,000
+of them took about a quarter of that, so time grows linearly with the number of
+siblings. The longest event-loop delay was about 14 ms at a 10 ms sampling
+resolution, and at most 33 file descriptors were open. Leftover roots exist only
+after a crash or a failed removal, so the sweep stays in the startup path for
+now.
 
 Scoped finite verification adds independent `tests:run` authorization in the
 verification application module. Migration 44 writes an immutable requester
