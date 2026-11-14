@@ -29,7 +29,10 @@ function setup(options: { reader?: (store: ProviderSessionReader) => ProviderSes
   world.resolver.addProject(projectA).put(REGISTRATION, projectA);
   const provider = createProviderWorld(world.clock);
   const reader = options.reader ? options.reader(provider.store) : provider.store;
-  const verifier = new ProviderSessionVerifier({ providerId: PROVIDER_ID, reader, now: () => world.clock.now, stagedCapacity: 8, stagedTtlMs: 5_000 });
+  /** What the injected eligibility check answers; tests replace it. Passed through unchanged, whatever it returns. */
+  const eligibility: { answer: () => unknown } = { answer: () => true };
+  const verifier = new ProviderSessionVerifier({ providerId: PROVIDER_ID, reader, now: () => world.clock.now, stagedCapacity: 8, stagedTtlMs: 5_000,
+    eligible: () => eligibility.answer() as boolean });
   const boundary = createListenerBoundary({ mode: "better-auth", listener: "api", verifier, open: () => true });
   const skew = options.runnerSkewMs ?? 0;
   const runner = new OperationRunner({ ...world.runtime(), now: () => world.clock.now + skew });
@@ -63,7 +66,7 @@ function setup(options: { reader?: (store: ProviderSessionReader) => ProviderSes
     world.admission.onAdmit = event => { if (event.n === start + 2) change(); };
   };
   const evidenceTime = (session: VerifiedProviderSession) => Date.parse(provider.store.evidenceRows.get(session.sessionId)!.authenticatedAt);
-  return { world, provider, verifier, boundary, runner, person, mint, mintFailure, run, beforeEffect, evidenceTime };
+  return { world, provider, verifier, boundary, runner, person, mint, mintFailure, run, beforeEffect, evidenceTime, eligibility };
 }
 
 describe("slice 2 gate 1: three login methods", () => {
@@ -297,7 +300,9 @@ describe("slice 2 gate 5: revocation and change", () => {
     });
   }
 
-  it("a relinked mapping, which the provider rule does not see, is another credential", () => {
+  // Defensive: the SQLite queries never rewrite a mapping. `authentication_provider_subjects` has the primary key
+  // (provider_id, subject), and `link` inserts once and `revoke` only revokes, so a changed link time is unreachable today.
+  it("a relinked mapping, which the provider rule does not see, is another credential (defensive: unreachable through the SQLite queries)", () => {
     const { world, person, provider, mint, verifier } = setup();
     const session = provider.passwordLogin(person());
     const context = mint(session);
@@ -364,6 +369,8 @@ describe("slice 2 gate 7: no substitution", () => {
     for (const path of ["agent_token", "installation_token", "anonymous_installation", "operator_unix", "operator_offline"] as const) {
       expect(verifier.current({ ...aliceAnswer!.identity, path })).toBeNull();
     }
+    // Defensive, not a reachable workflow: two active mappings to one principal violate the SQLite unique index
+    // `authentication_provider_subjects_principal` (provider_id, principal_id) WHERE status = 'active'.
     // Alice's session relinked to Bob's principal is not Bob's credential, nor still Alice's.
     provider.store.mappings.set(alice.subject, { ...provider.store.mappings.get(bob.subject)! });
     expect(verifier.current(aliceAnswer!.identity)).toBeNull();
@@ -460,10 +467,121 @@ describe("provider session verifier: handoff and failures", () => {
 
   it("validates its options and has no defaults", () => {
     const reader: ProviderSessionReader = { currentSession: () => null };
-    const valid = { providerId: PROVIDER_ID, reader, now: () => 0, stagedCapacity: 1, stagedTtlMs: 1 };
+    const valid = { providerId: PROVIDER_ID, reader, now: () => 0, stagedCapacity: 1, stagedTtlMs: 1, eligible: () => true };
     expect(() => new ProviderSessionVerifier(valid)).not.toThrow();
-    for (const change of [{ providerId: "" }, { reader: {} }, { now: 0 }, { stagedCapacity: 0 }, { stagedTtlMs: 1.5 }, { stagedCapacity: undefined }]) {
+    const { eligible: _eligible, ...withoutEligible } = valid;
+    expect(() => new ProviderSessionVerifier(withoutEligible as never)).toThrow(TypeError);
+    for (const change of [{ providerId: "" }, { reader: {} }, { now: 0 }, { stagedCapacity: 0 }, { stagedTtlMs: 1.5 }, { stagedCapacity: undefined },
+      { eligible: undefined }, { eligible: true }]) {
       expect(() => new ProviderSessionVerifier({ ...valid, ...change } as never)).toThrow(TypeError);
     }
+  });
+});
+
+describe("provider session verifier: provider eligibility", () => {
+  /** The committed rows of a session, to show that only eligibility changed. */
+  const rows = (provider: Provider, session: VerifiedProviderSession) => JSON.stringify(provider.store.currentSession(PROVIDER_ID, session.sessionId));
+  const NOT_TRUE: readonly [string, () => unknown][] = [
+    ["throws", () => { throw new Error("disposed /var/lib/secret.sqlite3 token=abc"); }],
+    ["returns a promise", () => Promise.reject(new Error("async /secret"))],
+    ["returns 1", () => 1],
+    ["returns \"true\"", () => "true"],
+    ["returns undefined", () => undefined],
+    ["returns false", () => false],
+  ];
+
+  it("stage refuses while the provider is not eligible", () => {
+    const { person, provider, verifier, eligibility } = setup();
+    const session = provider.passwordLogin(person());
+    for (const [name, answer] of NOT_TRUE) {
+      eligibility.answer = answer;
+      expect(verifier.stage(session), name).toBeNull();
+    }
+    expect(verifier.staged).toBe(0);
+    eligibility.answer = () => true;
+    expect(verifier.stage(session)).not.toBeNull();
+  });
+
+  it("eligibility withdrawn after staging: verify refuses and the handle is consumed", () => {
+    for (const [name, answer] of NOT_TRUE) {
+      const { person, provider, verifier, boundary, eligibility } = setup();
+      const session = provider.passwordLogin(person());
+      const before = rows(provider, session);
+      const handle = verifier.stage(session)!;
+      eligibility.answer = answer;
+      let failure: unknown = null;
+      try { boundary.mint(presented({ providerSession: { secret: handle }, browserHeaders: true })); } catch (error) { failure = error; }
+      expect(failure, name).toBeInstanceOf(OperationError);
+      expect(failure, name).toMatchObject({ category: "unauthenticated", reason: "invalid_credential", message: "unauthenticated: invalid_credential" });
+      expect((failure as Error).cause, name).toBeUndefined();
+      expect(verifier.staged, name).toBe(0);
+      // Consumed: eligibility coming back does not revive the handle.
+      eligibility.answer = () => true;
+      expect(verifier.verify("provider_session", handle), name).toBeNull();
+      expect(rows(provider, session), name).toBe(before);
+    }
+  });
+
+  it("eligibility withdrawn after mint: unauthenticated at admission, before the effect and at release", async () => {
+    for (const point of ["admission", "before effect", "release"] as const) {
+      const { person, provider, mint, run, beforeEffect, eligibility } = setup();
+      const session = provider.passwordLogin(person());
+      const before = rows(provider, session);
+      const context = mint(session);
+      expect(context.revalidate().actor).toEqual({ kind: "human", accountId: "alice" });
+      const withdraw = () => { eligibility.answer = () => false; };
+      if (point === "admission") withdraw();
+      if (point === "before effect") beforeEffect(withdraw);
+      const { result, log } = await run(context, PLAIN, point === "release" ? { duringEffect: withdraw } : {});
+      if (point === "release") {
+        expect(result).toMatchObject({ ok: false, error: { category: "unauthenticated", reason: "credential_no_longer_valid", effect: "committed" } });
+        expect(log.effects).toEqual(["start project-a"]);
+      } else {
+        expect(result).toEqual(GONE);
+        expect(log.effects).toEqual([]);
+      }
+      expect(log.lockHeld).toBe(false);
+      expect(() => context.revalidate()).toThrow("unauthenticated: credential_no_longer_valid");
+      expect(rows(provider, session)).toBe(before);
+    }
+  });
+
+  it("an eligibility check that throws, returns a promise or a non-boolean refuses without passing anything on", async () => {
+    for (const [name, answer] of NOT_TRUE) {
+      const { person, provider, verifier, mint, run, eligibility } = setup();
+      const session = provider.passwordLogin(person());
+      const context = mint(session);
+      const identity = verifier.verify("provider_session", verifier.stage(session))!.identity;
+      const handle = verifier.stage(session)!;
+      eligibility.answer = answer;
+      expect(verifier.verify("provider_session", handle), name).toBeNull();
+      expect(verifier.current(identity), name).toBeNull();
+      let failure: unknown = null;
+      try { context.revalidate(); } catch (error) { failure = error; }
+      expect(failure, name).toMatchObject({ category: "unauthenticated", reason: "credential_no_longer_valid", message: "unauthenticated: credential_no_longer_valid" });
+      expect((failure as Error).cause, name).toBeUndefined();
+      const { result } = await run(context, PLAIN);
+      expect(result, name).toEqual(GONE);
+      expect(JSON.stringify(result), name).not.toMatch(/secret|token=|async/);
+    }
+  });
+
+  it("eligibility coming back is not latched: the same credential answers again from committed state", async () => {
+    const { world, person, provider, verifier, mint, run, eligibility } = setup();
+    const loginAt = world.clock.now;
+    const session = provider.passwordLogin(person());
+    const context = mint(session);
+    const identity = verifier.verify("provider_session", verifier.stage(session))!.identity;
+    eligibility.answer = () => false;
+    expect(verifier.current(identity)).toBeNull();
+    expect((await run(context, PLAIN)).result).toEqual(GONE);
+    eligibility.answer = () => true;
+    // Same session, same committed facts, same generation: the context minted before the withdrawal is valid again.
+    expect(verifier.current(identity)?.identity).toEqual(identity);
+    expect(context.revalidate()).toMatchObject({ actor: { kind: "human", accountId: "alice" }, evidence: { authenticatedAt: loginAt } });
+    expect((await run(context)).result).toMatchObject({ ok: true });
+    // Freshness still comes only from the evidence: the pause renewed nothing.
+    world.clock.now = loginAt + FRESH_LOGIN_WINDOW_MS;
+    expect((await run(context)).result).toMatchObject(STALE);
   });
 });

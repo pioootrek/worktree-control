@@ -6,7 +6,7 @@ import {
 import { accountId } from "@/shared/contracts/operations";
 import type { AcceptedPath } from "../acceptance";
 import type { CredentialIdentity, CredentialVerifier, VerifiedCredential } from "../authentication-context";
-import { absorb, isThenable } from "../synchronous";
+import { absorb, holds, isThenable } from "../synchronous";
 
 /**
  * Committed provider session state, read synchronously on the controller's
@@ -27,6 +27,14 @@ export interface ProviderSessionVerifierOptions {
   stagedCapacity: number;
   /** How long a staged session may wait for `verify`. Required, no default. */
   stagedTtlMs: number;
+  /**
+   * Whether the provider may answer for its sessions at all right now: the
+   * runtime is not disposed, supports session authority and its storage is
+   * available. Required, no default. Called on every `stage`, `verify` and
+   * `current`; only a synchronous `true` lets the call continue. A throw, a
+   * thenable or any other value refuses. Never cached.
+   */
+  eligible: () => boolean;
 }
 
 /** A provider session the provider resolved, staged for one `verify`. Holds no cookie or token. */
@@ -62,6 +70,11 @@ interface Current { state: ProviderSessionState; authority: ProviderSessionAutho
  * with it. A cookie, a session ID or any other string presented as the secret
  * is not a staged handle and verifies nothing.
  *
+ * Every call first asks the injected `eligible` check. While it does not
+ * answer `true`, `stage` refuses, `verify` consumes the handle and answers
+ * `null`, and `current` answers `null`. Nothing is latched: once it answers
+ * `true` again, `current` answers from committed state as before.
+ *
  * `verify` and `current` are synchronous and never throw: a reader that
  * throws or returns a promise, a malformed state and a malformed clock all
  * answer `null`, without passing the thrown value on.
@@ -72,11 +85,13 @@ export class ProviderSessionVerifier implements CredentialVerifier {
   readonly #now: () => number;
   readonly #capacity: number;
   readonly #ttl: number;
+  readonly #eligibleCheck: () => boolean;
   readonly #staged = new Map<string, StagedClaim>();
 
   constructor(options: ProviderSessionVerifierOptions) {
-    const { providerId, reader, now, stagedCapacity, stagedTtlMs } = options ?? ({} as ProviderSessionVerifierOptions);
-    if (!isText(providerId) || typeof reader?.currentSession !== "function" || typeof now !== "function" || !positive(stagedCapacity) || !positive(stagedTtlMs)) {
+    const { providerId, reader, now, stagedCapacity, stagedTtlMs, eligible } = options ?? ({} as ProviderSessionVerifierOptions);
+    if (!isText(providerId) || typeof reader?.currentSession !== "function" || typeof now !== "function" || !positive(stagedCapacity) || !positive(stagedTtlMs)
+      || typeof eligible !== "function") {
       throw new TypeError("Invalid provider session verifier options.");
     }
     this.#providerId = providerId;
@@ -84,6 +99,7 @@ export class ProviderSessionVerifier implements CredentialVerifier {
     this.#now = now;
     this.#capacity = stagedCapacity;
     this.#ttl = stagedTtlMs;
+    this.#eligibleCheck = eligible;
   }
 
   /** Number of staged handles not yet consumed or expired. */
@@ -92,11 +108,13 @@ export class ProviderSessionVerifier implements CredentialVerifier {
   /**
    * Stages a session the provider resolved for this request. Returns the
    * handle to present as the secret, or `null` for another provider, a
-   * malformed claim, a broken clock or a full registry. Copies the claim's
+   * malformed claim, a broken clock, a full registry or while the provider
+   * is not eligible. Copies the claim's
    * fields; nothing the caller keeps can change it afterwards.
    */
   stage(session: VerifiedProviderSession): string | null {
     try {
+      if (!this.#eligible()) return null;
       const now = this.#clock();
       if (now === null || typeof session !== "object" || session === null) return null;
       const { providerId, sessionId, subject, createdAt } = session;
@@ -114,11 +132,13 @@ export class ProviderSessionVerifier implements CredentialVerifier {
 
   verify(path: AcceptedPath, secret: string | null): VerifiedCredential | null {
     try {
+      const eligible = this.#eligible();
       if (path !== PATH || typeof secret !== "string") return null;
       const claim = this.#staged.get(secret);
       if (!claim) return null;
       // One use, whatever follows.
       this.#staged.delete(secret);
+      if (!eligible) return null;
       const now = this.#clock();
       if (now === null || claim.expires <= now) return null;
       const current = this.#current(claim.sessionId, now);
@@ -133,6 +153,7 @@ export class ProviderSessionVerifier implements CredentialVerifier {
 
   current(identity: CredentialIdentity): VerifiedCredential | null {
     try {
+      if (!this.#eligible()) return null;
       if (typeof identity !== "object" || identity === null) return null;
       const { path, credentialId, generation } = identity;
       if (path !== PATH || !isText(credentialId, MAX_SESSION_ID) || !Number.isSafeInteger(generation)) return null;
@@ -146,6 +167,11 @@ export class ProviderSessionVerifier implements CredentialVerifier {
     }
   }
 
+  /** Point in time, never cached. Only a synchronous `true`; a throw or a thenable (absorbed) is `false`. */
+  #eligible(): boolean {
+    try { return holds(this.#eligibleCheck()); } catch { return false; }
+  }
+
   #clock(): number | null {
     const now = settled(this.#now());
     return typeof now === "number" && Number.isFinite(now) ? now : null;
@@ -157,8 +183,9 @@ export class ProviderSessionVerifier implements CredentialVerifier {
 
   /**
    * Committed state of one session, if it authorizes now. `evaluateSessionAuthority`
-   * is the rule; the further checks are those the runtime makes before it
-   * issues a provider actor (`#issueActor`, `isCurrentProviderSession`).
+   * is the rule; the further checks are the principal and evidence checks
+   * the runtime's `#issueActor` makes. The runtime's eligibility checks are
+   * the injected `eligible`, asked before this.
    */
   #current(sessionId: string, now: number): Current | null {
     const state = settled(this.#reader.currentSession(this.#providerId, sessionId));
