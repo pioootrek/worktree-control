@@ -2,12 +2,11 @@ import { readFileSync } from "node:fs";
 import type { GitCommandAdmission, GitWorktreeReader } from "@/server/git-worktrees";
 import type { IdentityService } from "@/server/modules/identity";
 import type { ProjectLifecycle } from "@/server/modules/lifecycle";
-import { RemoteVerificationController, RemoteVerificationWorker, type WorkerRecoveryService } from "@/server/modules/remote-verification";
-import { SystemRemoteVerificationWorkspacePreparer, SystemRemoteWorkerExecution } from "@/server/infrastructure/git";
+import { RemoteVerificationController, type WorkerRecoveryService } from "@/server/modules/remote-verification";
+import { createRemoteWorker } from "@/server/bootstrap/remote-worker";
 import type { SqliteStateStore } from "@/server/sqlite-store";
-import { ProjectTestCommandResolver } from "@/server/test-command";
 import type { TestJobManager } from "@/server/test-job-manager";
-import { createRemoteVerificationServer, HttpRemoteWorkerTransport } from "@/server/transports/remote-verification-http";
+import { createRemoteVerificationServer } from "@/server/transports/remote-verification-http";
 import { readRemoteWorkerToken, type RemoteVerificationConfig } from "./remote-verification";
 
 export function createRemoteVerificationRuntime(config: RemoteVerificationConfig | null, dependencies: {
@@ -24,10 +23,7 @@ export function createRemoteVerificationRuntime(config: RemoteVerificationConfig
   }) : null;
   const workerConfig = config.worker;
   if (workerConfig) readRemoteWorkerToken(workerConfig.tokenFile);
-  const worker = workerConfig ? new RemoteVerificationWorker(workerConfig.workerId, store.remoteConnection, jobs, id => store.getTestRun(id),
-    new SystemRemoteWorkerExecution(workerConfig.workerId, workerConfig.mappings, store, lifecycle, git, new ProjectTestCommandResolver(),
-      new SystemRemoteVerificationWorkspacePreparer(workerConfig.workspaceRoot, admission), workerConfig.workspaceRoot, recovery),
-    new HttpRemoteWorkerTransport(workerConfig.origin, workerConfig.workerId, () => readRemoteWorkerToken(workerConfig.tokenFile), workerConfig.allowLoopbackHttpFixture), receipt => recovery.isReconciled(receipt), store.admission) : null;
+  const worker = workerConfig ? createRemoteWorker(workerConfig, () => readRemoteWorkerToken(workerConfig.tokenFile), { store, jobs, lifecycle, git, admission, recovery }) : null;
   return {
     controller,
     async start() {
