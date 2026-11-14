@@ -80,17 +80,21 @@ Requirement vocabulary used in the `Requirement` column: `authenticated`;
 `P on slot` (a project permission on a resource slot); `installation P`;
 `allOf(...)`; `collection(P)`; the predicates `claim_holder`,
 `run_originating_session` and `worker_assignment`; and the flags `agents: false`
-and `freshLogin`. These exist in the code. Requirement forms and predicates that
-exist only as decisions (`any_project(P)`, `claim_holder_if_claimed`,
-`schedule_owner`, `request_submitter`, `intent_origin`) are written the same way
-and are always accompanied by a marker in the `Needs` column. Full authority
+and `freshLogin`. These are the vocabulary of the first contract pull request
+(#128). The forms and predicates added by the contract extensions
+(`any_project(P)`, `claim_holder_if_claimed`, `schedule_owner`,
+`request_submitter`, `intent_origin`) are written the same way and are always
+accompanied by a marker in the `Needs` column; they are implemented and
+unmounted since #129. Full authority
 (`installation`, `operator`) passes permissions and flags. It does not pass
 resource resolution or the predicates, which protect foreign claims, runs,
 assignments and owned schedules.
 
-`Needs` column. Empty (`-`) means the row can be expressed in the implemented
-vocabulary and execution shapes. Otherwise it names the planned extension from
-[section 1.2](#12-planned-contract-extensions) that the row depends on:
+`Needs` column. Empty (`-`) means the row can be expressed in the vocabulary
+and execution shapes of the first contract pull request. Otherwise it names the
+contract extension from [section 1.2](#12-planned-contract-extensions) that the
+row depends on; the `Status` column there says whether the extension is
+implemented (all but `coordination` are):
 `query`, `bounded_stream`, `expected_transition`, `claim_holder_if_claimed`,
 `any_project`, `schedule_owner`, `remote_request`, `request_submitter`,
 `secret_safe_retention`, `token_delivery`, `intent_origin`, `coordination`.
@@ -116,10 +120,12 @@ CLI-only items `7.38` to `7.41`.
 
 ## 1. Implemented vocabulary and planned contract extensions
 
-### 1.1 What the code can express today
+### 1.1 What the first contract pull request could express
 
 From `src/shared/contracts/operations.ts` and
-`src/server/modules/operations/` at `e1cd3fd1`:
+`src/server/modules/operations/` at `e1cd3fd1` (PR #128). The code on main
+also has every extension that [section 1.2](#12-planned-contract-extensions)
+marks as implemented:
 
 | Part | Implemented |
 | --- | --- |
@@ -135,9 +141,9 @@ From `src/shared/contracts/operations.ts` and
 ### 1.2 Planned contract extensions
 
 These are design decisions of `29cf8fa5` (deltas 1 to 9) plus the two
-additions of the same reply (`intent_origin`, `coordination.*`). They were
-not implemented in PR #128. The first pull request of slice 4
-([section 10](#10-proposed-cut-of-slice-4)) implements extensions 1 to 7, 9
+additions of the same reply (`intent_origin`, `coordination.*`). PR #128 did
+not implement them. PR #129, the first pull request of slice 4
+([section 10](#10-proposed-cut-of-slice-4)), implemented extensions 1 to 7, 9
 and 10 in the unmounted module, as recorded in the `Status` column and
 described in [the authorization contract](authorization-contract.md#contract-extensions-of-slice-4).
 No product operation, transport or store adapter uses them yet. A row that
@@ -211,7 +217,8 @@ Identifiers are `family.verb`, lower case. A resource slot names what the
 operation acts on; each slot resolves to exactly one project or to not-found.
 Where a requirement mentions a planned form (`claim_holder_if_claimed`,
 `any_project`, `schedule_owner`, `request_submitter`, `intent_origin`), the
-`Needs` column names it; the form is a decision of `29cf8fa5`, not code.
+`Needs` column names it; the form is a decision of `29cf8fa5`, implemented and
+unmounted since #129 ([section 1.2](#12-planned-contract-extensions)).
 
 Every catalogue table has the same columns: `Id`, `Kind`, `Resources`,
 `Requirement`, `Needs`, `Flags`, `Commit`, `Retain`, `Surfaces`, and
@@ -1547,7 +1554,7 @@ accepted by the owner (`17802524`). `workers:manage` is reachable through
 `worker.register`; its recovery operations are stopped-controller maintenance
 and stay operator-only under OPEN-11.
 
-Requirement forms that need a planned extension:
+Requirement forms that need a contract extension of section 1.2:
 
 | Form | Operations |
 | --- | --- |
@@ -1623,17 +1630,18 @@ Both answered by the owner (`17802524`), accepting the recommendations of
 ### 9.3 Deferred implementation
 
 Designs are specified above; the code belongs to a later slice. The first pull
-request of slice 4 carries the contract extensions of section 1.2.
+request of slice 4 (#129) carried the contract extensions of section 1.2 and
+closed D7.
 
 | Id | Item | Belongs to |
 | --- | --- | --- |
 | D1 | Coordination sessions (OPEN-2): the session store, transport wiring, browser tab storage, CLI private file, expiry and restart behaviour, and what `coordination.close` does to the session's claims | the slice that builds the first consumer (claims) |
-| D2 | Original-intent lookup (OPEN-21, task `6d680061`): `intent_origin`, digest versioning, the autofix adapter's authentication as the original principal | the test-runs slice |
+| D2 | Original-intent lookup (OPEN-21, task `6d680061`): the `test_run.lookup_intent` query, the intent store and its digest adapter, the autofix adapter's authentication as the original principal. The predicate `intent_origin` and digest version 1 are implemented (#129) | the test-runs slice |
 | D3 | Restore admission and handoff adapter (OPEN-23): exact adapter, the specialized handoff's last check, post-shutdown completion authority | the backups slice |
 | D4 | `vault.recover_key`: read the Vault code in slice 4; the operation preserves encryption and cannot expose plaintext or resurrect grants; what a failed or interrupted recovery leaves | the Vault slice |
 | D5 | Exact field allowlists of every sensitive read (section 4.9 fixes categories) and the projector of `test_run.admin_inspect` | each family's pull request |
-| D6 | Secret-safe store details: the source and rotation of the digest key, protected storage of receipts (section 4.3) | the first pull request of slice 4 |
-| D7 | Removal of `projects:remove` from code, documentation and fixtures together | the first pull request of slice 4 |
+| D6 | Secret-safe store details: the source and rotation of the digest key, protected storage of receipts (section 4.3). Keyed-digest fingerprints and receipt-only retention are implemented (#129) | the store adapter (item 2 of [section 10](#10-proposed-cut-of-slice-4)) |
+| D7 | Removal of `projects:remove` from code, documentation and fixtures together | done in the first pull request of slice 4 (#129) |
 | D8 | Source-reading residues from the matrix: the position inside `startRuntime` after readiness, which `restore-operations.ts` authorize calls run after awaits, the history, summary, metrics and comparison schemas, and the Hub import internals | the family pull request that touches them |
 
 ### 9.4 Decided after the revision
@@ -1662,9 +1670,14 @@ Treat the catalogue as a draft inventory, not as a single implementation pull
 request or a fixed final count. The aim is about 12 to 15 reviewable pull
 requests, split by security boundary rather than equal row count.
 
+State on 2026-11-14: item 1 is merged (#129). Slice 2 (session freshness) and
+slice 3 (projects, roles and the fence) run before item 2, which depends on
+both (plan revision 2, Knowledge reply `156522ad`).
+
 1. Contract integration prerequisites: the reviewed deltas of section 1.2,
    admission interfaces for asynchronous work, expected-transition receipts and
-   the secret-safe retention design. No production family yet.
+   the secret-safe retention design. No production family yet. Done in #129,
+   except coordination sessions, which belong to item 2.
 2. Production adapters and bootstrap: credential verifier, active-grants
    snapshot, typed and versioned resolver, bounded synchronous idempotency store
    with restart repair, coordination-session lifecycle and the trusted TCP, unix,
@@ -1696,8 +1709,8 @@ requests, split by security boundary rather than equal row count.
     release boundaries.
 12. Vault read, write, audit and key recovery integration, including encrypted
     retention and registration mapping and AAD preservation.
-13. User schedules and artifacts and Knowledge transfer, resolving the owner,
-    role and surface decisions first (questions A and B).
+13. User schedules and artifacts and Knowledge transfer, following the owner's
+    answers to questions A and B (`17802524`).
 14. Installation backups, restore, rebind and the recovery handoff.
 15. Remote submitter operations and the worker protocol and recovery; split
     submitter versus executor integration if necessary, but verify their joint
