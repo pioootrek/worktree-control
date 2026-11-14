@@ -41,6 +41,39 @@ reply `f7c90101-30e3-4b1e-b7d5-a7b17f797474`, project `k7a-worktree-switcher`.
 
 See the [remaining implementation slices](knowledge/AGENTS.md) (Knowledge attachment `64ab7a29d6c4ae015d5cd794c58a8a68`).
 
+### Worker-only process
+
+`worktree-control worker start --config FILE` runs a machine as a worker only.
+It is experimental and speaks the unchanged version 1 protocol. It takes the
+singleton controller lock on its data directory and opens the store like
+`start`, including migrations, the security fence and restore handoff
+completion. It accepts `--data-dir`, `--state-dir`, `--backup-dir` and
+`--backup-before-migration`. It then runs file logs, run directories, the test
+queue, Git reading, worker recovery and the outbound poll loop. Unconfirmed
+remote cleanup still blocks test admission at startup.
+
+It starts no dashboard or API server, MCP server, admin socket,
+remote-verification listener, Knowledge services, backups or schedules, Godot
+preview or development vault. It issues no installation token. Its only
+standard output line names the worker id and server origin. `SIGINT` and
+`SIGTERM` stop polling, then follow the controller's shutdown order. A job in
+flight is cancelled locally and reported as `uncertain` after the next start.
+
+The configuration file is separate from `--remote-verification-config`:
+`{"version": 1, "workerId", "origin", "credentialFile", "workspaceRoot",
+"allowLoopbackHttpFixture"?, "mappings": [...]}`. Unknown keys, including
+`listener`, are rejected; mappings use the embedded schema. The credential file
+must be an owner-only regular file. It holds one opaque token of 16 to 2048
+visible ASCII characters, so a legacy worker token and a later installation or
+agent token both pass.
+
+Local operator commands run with the worker stopped, because the worker holds
+the lock. On a fresh data directory, `project add` needs no credential.
+`auth token generate` issues an installation token. That token, passed as
+`WORKTREE_CONTROL_TOKEN`, authorizes `remote-verification provision`,
+`inspect` and `reconcile`. Provisioning imports the broker's worker principal
+with `worker.principalId`; the worker credential comes from the broker.
+
 ## Owner need and priority
 
 The owner wants to work with an LLM remotely, including from a lightweight
