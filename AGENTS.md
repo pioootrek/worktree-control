@@ -65,7 +65,9 @@ schema 49. Choose the base branch by what the change does:
   expectations that change with them.
 - **`main`:** unmounted additions (no production import, no schema step, no
   behaviour change), documentation, CI fixes and unrelated work. Code on
-  `main` depends on schema 49 at most.
+  `main` depends on schema 49 at most. A security fix for released versions
+  also goes to `main`, on the owner's word, as the `link_runtime`
+  restriction did; it reaches the integration branch through the next sync.
 
 `main` reaches the integration branch through a `sync/main-<date>` pull
 request with a merge commit; run the gate again on the merged head. Its
