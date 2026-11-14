@@ -1,6 +1,6 @@
 ---
 audience: "owner, implementers and reviewers of the authentication and authorization unification"
-last_reviewed: "2026-11-13"
+last_reviewed: "2026-11-14"
 source_of_truth: "implemented, unmounted authorization contract for the unreleased breaking auth unification; Knowledge task 040062b4"
 status: "active"
 ---
@@ -144,6 +144,86 @@ credential in open mode, any credential on `unix` or `offline`, and browser
 headers on `unix`. The former `legacy` mode is not a contract mode. Pre-login,
 MFA ceremonies, public status and static assets are not operations and are
 never registered, so they produce no actor. Nothing in this slice routes them.
+
+### Provider sessions
+
+Slice 2 adds `ProviderSessionVerifier`
+(`src/server/modules/operations/adapters/provider-session-verifier.ts`), the
+`CredentialVerifier` for the `provider_session` path. It answers `null` for
+every other path. Like the rest of the module it is unmounted: no transport
+creates it, and it is not exported from the module's `index.ts`.
+
+**Handoff.** The provider verifies its cookie asynchronously and outside this
+module, so `verify` cannot do that itself (decision W). A transport passes the
+`VerifiedProviderSession` that the provider resolved to `stage`. `stage`
+copies the session ID, subject, creation time and claimed method, and returns
+a random 256-bit handle. The transport presents that handle as the provider
+session secret. `verify` accepts a handle once, and only before `stagedTtlMs`
+has passed. A cookie, a session ID or any other string is not a handle and
+verifies nothing. The registry holds at most `stagedCapacity` handles. When it
+is full, `stage` refuses a new handle; it never evicts an unexpired one. Both
+limits are required options with no default.
+
+**Committed state only.** The staged claim never authorizes anything. `verify`
+and `current` read the session again through an injected
+`ProviderSessionReader`. Its `currentSession(providerId, sessionId)` has the
+shape of the provider storage method of the same name. The adapter opens no
+connection and imports no SQLite code. It decides through
+`evaluateSessionAuthority`, the provider's single rule, at the adapter's own
+clock. It then makes the checks that the runtime makes before it issues a
+provider actor:
+
+- the principal kind is `owner` or `human`;
+- the principal ID is present and the mapping's link time is canonical;
+- the evidence belongs to this session and subject.
+
+`verify` also refuses when the staged subject, creation time or method
+disagrees with committed state, as the runtime's own resolution does.
+
+**Answer.** A valid session yields:
+
+- the actor `{ kind: "human", accountId }` of the committed principal. An
+  owner principal is a human too, because the target has no owner sessions;
+- `ProviderEvidence.authenticatedAt`, which is `Date.parse` of the committed
+  evidence's `authenticatedAt` and nothing else. A refresh or a session
+  exchange does not change it. For `password_totp` it is the time of the
+  password stage, so a TOTP code entered late can already be stale;
+- `coordinationSession: null`.
+
+The identity is `{ path: "provider_session", credentialId: <session ID>,
+generation }`. The generation is the first 48 bits of a SHA-256 over every
+committed fact the session's authority depends on: the provider, session,
+subject, principal and its kind, the mapping's link time, the session's
+creation time, every evidence field, the account generation and policy
+revision, and the current factor binding. A refresh changes none of these.
+
+`current(identity)` reads the identity's session again. It answers only when
+that session still authorizes and its generation is unchanged. Otherwise it
+answers `null`. That covers a session that was removed, expired or relinked,
+one past its original deadline, and one whose account generation, policy
+revision, factor binding or account consistency changed. The boundary then
+fails with `unauthenticated`/`credential_no_longer_valid` at admission, before
+an effect or at release. A change that the provider rule does not see, such
+as a relinked mapping, still changes the generation. A new login is another
+session and so another credential: it never upgrades a context minted earlier.
+
+**Failures.** `verify` and `current` never throw. A reader that throws or
+returns a promise, a malformed state, a malformed claim and a clock that is
+not a finite number all answer `null`. A thrown value is not passed on.
+
+The contract's fresh-login rule is unchanged. It runs on the runner's clock;
+the provider rule runs on the adapter's clock. With one clock, the provider
+rule already refuses evidence from the future, so the caller gets
+`unauthenticated` rather than `login_stale`.
+
+The gate tests in `provider-session-verifier.test.ts` cover all three login
+methods, refresh, inheritance on password change, re-login, the 600000 ms
+boundary and every change above. They mint through `createListenerBoundary`
+(`better-auth`, `api`) and run through the runner. Sessions and evidence come
+from the real `AccountProtection` and `SessionIssuance`. The fixture writes
+the rows below them by hand: an in-memory double of the SQLite row adapter,
+native users, sessions, TOTP secrets, passkey rows, challenges, refresh,
+revocation and the changes listed above.
 
 ## Permissions and roles
 
@@ -929,11 +1009,23 @@ These are not implemented here. The slices that mount the contract own them.
   not.
 - **Bootstrap.** It injects an `OperationObserver` that logs stream disposal
   failures.
+- **Provider session transport.** The browser transport resolves the cookie
+  through the provider runtime, then stages the result and mints the context
+  in the same request. It creates one `ProviderSessionVerifier` with the
+  provider storage as its reader, and gives the reader and the runner the same
+  clock. It must call `verify` and `current` where `currentSession` may read:
+  the storage requires core admission. It must not release a `credentialId`,
+  because for a provider session it is the session's row ID.
+- **Operation-bound proof.** Slice 2 does not remove the Ed25519 owner proof.
+  Fresh login replaces it only once a transport mounts the provider-session
+  verifier.
 
 ## Not implemented
 
-- Store adapters: the grants snapshot, resolver, credential verifier and
-  idempotency store exist only as ports and in-memory test doubles.
+- Store adapters: the grants snapshot, resolver and idempotency store exist
+  only as ports and in-memory test doubles. Of the credential verifier, only
+  the provider-session half exists (see [Provider sessions](#provider-sessions));
+  the agent-token and installation-token verifiers do not.
 - Coordination-session issuance and storage (`coordination.*`), any
   transport, and every product operation of the catalogue except
   `session.describe`. The extensions of slice 4 are exercised by test
