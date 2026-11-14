@@ -1,9 +1,10 @@
 // Spawns the real `worktree-control worker start` entry against an in-process fixture server.
 import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { acquireControllerLock } from "@/server/controller-lock";
@@ -47,6 +48,7 @@ function listeningSockets(pid: number): string[] {
 
 describe.skipIf(process.platform !== "linux")("worker-only process (real CLI entry, isolated fixtures)", () => {
   const root = mkdtempSync(join(tmpdir(), "wtc-worker-process-"));
+  const roots = [root, realpathSync(root)].map(path => `${path}${sep}`);
   const dataDirectory = join(root, "worker-data"), stateDirectory = join(root, "worker-state");
   const paths = resolveAppPaths(dataDirectory, stateDirectory);
   const environment: NodeJS.ProcessEnv = {
@@ -61,6 +63,10 @@ describe.skipIf(process.platform !== "linux")("worker-only process (real CLI ent
   let origin = "";
   let configFile = "";
   let credential = "";
+  let installationToken = "";
+  let serverRequests = 0;
+  /** Every verification request this suite submits; each one leaves a worker receipt. */
+  const submitted: string[] = [];
   let passingSha = "", longSha = "";
   let worker: { child: ChildProcess; stdout: string[]; stderr: string[] } | null = null;
 
@@ -101,7 +107,42 @@ describe.skipIf(process.platform !== "linux")("worker-only process (real CLI ent
   const gone = (pid: number) => {
     try { process.kill(pid, 0); }
     catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
-    return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.startsWith("Z ") ?? false;
+    try { return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.startsWith("Z ") ?? false; }
+    catch { return true; }
+  };
+  /** This suite's `check.cjs` under its temporary directory; a recycled pid is never signalled. */
+  const isFixtureJob = (pid: number) => {
+    try {
+      const cwd = readlinkSync(`/proc/${pid}/cwd`).replace(/ \(deleted\)$/, "");
+      return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean)
+        .some(arg => { const path = resolve(cwd, arg); return path.endsWith(`${sep}check.cjs`) && roots.some(prefix => path.startsWith(prefix)); });
+    } catch { return false; }
+  };
+  const waitUntil = async (condition: () => boolean, timeoutMs: number) => {
+    const deadline = Date.now() + timeoutMs;
+    while (!condition()) {
+      if (Date.now() >= deadline) return false;
+      await delay(100);
+    }
+    return true;
+  };
+  /** SIGTERM first, so the worker's own shutdown stops its job's process group; SIGKILL only after a bounded wait. */
+  const terminateWorker = async (child: ChildProcess) => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = once(child, "exit").then(() => true);
+    child.kill("SIGTERM");
+    if (await Promise.race([exited, delay(30_000).then(() => false)])) return;
+    child.kill("SIGKILL");
+    await exited;
+  };
+  /** Jobs run in their own detached process groups and can outlive a killed worker. */
+  const terminateFixtureJob = async (pid: number) => {
+    for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+      if (gone(pid) || !isFixtureJob(pid)) return;
+      try { process.kill(pid, signal); } catch { /* Exited after the identity check. */ }
+      if (await waitUntil(() => gone(pid), 5_000)) return;
+    }
+    if (!gone(pid) && isFixtureJob(pid)) throw new Error(`Fixture job ${pid} survived SIGKILL.`);
   };
 
   beforeAll(async () => {
@@ -132,6 +173,7 @@ describe.skipIf(process.platform !== "linux")("worker-only process (real CLI ent
     brokerStore.saveRemotePrincipalProjectGrant({ principalId: owner.principalId, projectId: "remote-project", permissions: ["submit", "read"], revokedAt: null }, "fixture");
     controller = new RemoteVerificationController(brokerStore, brokerStore.remoteConnection, identity);
     const server = createRemoteVerificationServer({ controller, identity, allowLoopbackHttpFixture: true });
+    server.server.on("request", () => { serverRequests++; });
     await new Promise<void>(done => server.server.listen(0, "127.0.0.1", done));
     closeServer = server.close;
     origin = `http://127.0.0.1:${(server.server.address() as { port: number }).port}`;
@@ -140,7 +182,7 @@ describe.skipIf(process.platform !== "linux")("worker-only process (real CLI ent
     await cli(["project", "add", human, "--name", "Worker fixture", "--preset", "none"]);
     const projects = JSON.parse((await cli(["project", "list", "--json"])).stdout) as Array<{ id: string; repositoryPath: string }>;
     expect(projects).toHaveLength(1);
-    const installationToken = (JSON.parse((await cli(["auth", "token", "generate"])).stdout) as { token: string }).token;
+    installationToken = (JSON.parse((await cli(["auth", "token", "generate"])).stdout) as { token: string }).token;
     const provision = join(root, "provision.json");
     writeFileSync(provision, JSON.stringify({ project: { id: "remote-project", name: "Fixture", sourceRemote: "origin" }, worker: { id: "worker", name: "Fixture", principalId: workerPrincipal.id },
       localProjectId: projects[0]!.id, presetIds: ["node:test"], callerPrincipalIds: [] }));
@@ -154,11 +196,15 @@ describe.skipIf(process.platform !== "linux")("worker-only process (real CLI ent
   }, 240_000);
 
   afterAll(async () => {
-    for (const child of children) child.kill("SIGKILL");
+    const failures: unknown[] = [];
+    for (const settled of await Promise.allSettled([...children].map(terminateWorker))) if (settled.status === "rejected") failures.push(settled.reason);
+    for (const pid of startedPids()) await terminateFixtureJob(pid).catch((error: unknown) => failures.push(error));
     await closeServer?.();
     brokerStore?.close();
-    rmSync(root, { recursive: true, force: true });
-  });
+    // Last, and only once nothing recorded by the fixture still runs from it.
+    if (!failures.length) rmSync(root, { recursive: true, force: true });
+    if (failures.length) throw new AggregateError(failures, `Worker process fixtures did not stop; ${root} was kept for inspection.`);
+  }, 120_000);
 
   it("starts from a fresh data directory, holds no listening socket and reports its idle memory", async () => {
     worker = await startWorker();
@@ -187,6 +233,7 @@ describe.skipIf(process.platform !== "linux")("worker-only process (real CLI ent
 
   it("completes a verification that succeeds", async () => {
     const request = controller.submit({ projectId: "remote-project", workerId: "worker", commitSha: passingSha, presetId: "node:test", idempotencyKey: "passing" }, owner);
+    submitted.push(request.id);
     await vi.waitFor(() => expect(attemptPhase(request.id)).toBe("succeeded"), { timeout: 60_000, interval: 100 });
     const status = controller.status(request.id, owner);
     expect(status.request.phase).toBe("completed");
@@ -195,6 +242,7 @@ describe.skipIf(process.platform !== "linux")("worker-only process (real CLI ent
 
   it("cancels a verification while it runs and stops its process", async () => {
     const request = controller.submit({ projectId: "remote-project", workerId: "worker", commitSha: longSha, presetId: "node:test", idempotencyKey: "cancelled" }, owner);
+    submitted.push(request.id);
     await vi.waitFor(() => expect(startedPids()).toHaveLength(1), { timeout: 60_000, interval: 100 });
     await vi.waitFor(() => expect(attemptPhase(request.id)).toBe("running"), { timeout: 30_000, interval: 100 });
     controller.cancel(request.id, owner);
@@ -208,9 +256,39 @@ describe.skipIf(process.platform !== "linux")("worker-only process (real CLI ent
     acquireControllerLock(paths.controllerLockPath).release();
   }, 60_000);
 
+  it("fails a startup that breaks after the store opens, releasing the lock without polling", async () => {
+    // An owned write through the store's fenced connection; no public operation stores malformed JSON.
+    const testQueueSetting = (replacement?: string) => {
+      const local = new SqliteStateStore(paths.databasePath);
+      try {
+        const database = (local as unknown as { database: { prepare(sql: string): { get(): { value_json: string } | undefined; run(value: string): { changes: number } } } }).database;
+        if (replacement === undefined) return database.prepare("SELECT value_json FROM controller_settings WHERE key = 'test_queue'").get()?.value_json;
+        expect(database.prepare("UPDATE controller_settings SET value_json = ? WHERE key = 'test_queue'").run(replacement).changes).toBe(1);
+        return replacement;
+      } finally { local.close(); }
+    };
+    const original = testQueueSetting();
+    expect(original).toEqual(expect.any(String));
+    testQueueSetting("{");
+    try {
+      const requests = serverRequests, contact = lastContact();
+      const failing = spawnWorker();
+      const [code] = await once(failing.child, "exit") as [number | null];
+      expect(code).toBe(1);
+      expect(failing.stdout.join("")).toBe("");
+      expect(failing.stderr.join("")).toMatch(/JSON/);
+      expect(failing.stderr.join("")).not.toContain(credential);
+      acquireControllerLock(paths.controllerLockPath).release();
+      expect({ requests: serverRequests, contact: lastContact() }).toEqual({ requests, contact });
+    } finally {
+      testQueueSetting(original!);
+    }
+  }, 120_000);
+
   it("stops a job in flight on SIGTERM and reports it as uncertain after the next start", async () => {
     worker = await startWorker();
     const request = controller.submit({ projectId: "remote-project", workerId: "worker", commitSha: longSha, presetId: "node:test", idempotencyKey: "in-flight" }, owner);
+    submitted.push(request.id);
     await vi.waitFor(() => expect(startedPids()).toHaveLength(2), { timeout: 60_000, interval: 100 });
     await vi.waitFor(() => expect(attemptPhase(request.id)).toBe("running"), { timeout: 30_000, interval: 100 });
     const pid = startedPids()[1]!;
@@ -235,4 +313,22 @@ describe.skipIf(process.platform !== "linux")("worker-only process (real CLI ent
     expect(afterRestart.attempt?.phase).toBe("uncertain");
     expect(await stop(worker)).toEqual([0, null]);
   }, 180_000);
+
+  it("inspects recovery receipts only with an owner session from the public CLI while stopped", async () => {
+    const refused = (error: unknown) => (error as { code?: number; stderr?: string });
+    // The installation token authorizes provisioning but neither recovery command.
+    const inspectWithToken = await cli(["remote-verification", "inspect"], { WORKTREE_CONTROL_TOKEN: installationToken }).then(() => null, refused);
+    expect(inspectWithToken?.code).toBe(1);
+    const reconcileWithToken = await cli(["remote-verification", "reconcile", "--attempt-id", "fixture-attempt", "--operation-id", "fixture-operation"],
+      { WORKTREE_CONTROL_TOKEN: installationToken }).then(() => null, refused);
+    expect(reconcileWithToken?.stderr).toContain("owner_session_required");
+    // A fresh worker data directory has no owner; the offline bootstrap creates the first one.
+    const ownerToken = (JSON.parse((await cli(["identity", "bootstrap-owner", "--label", "Worker recovery"])).stdout) as { token: string }).token;
+    const receipts = JSON.parse((await cli(["remote-verification", "inspect"], { WORKTREE_CONTROL_OWNER_TOKEN: ownerToken })).stdout) as Array<{ attemptId: string; workerId: string }>;
+    const attempts = submitted.map(id => controller.status(id, owner).attempt?.id);
+    expect(attempts).toHaveLength(3);
+    expect(receipts.map(receipt => receipt.attemptId).sort()).toEqual([...attempts].sort());
+    expect(receipts.every(receipt => receipt.workerId === "worker")).toBe(true);
+    acquireControllerLock(paths.controllerLockPath).release();
+  }, 120_000);
 });
