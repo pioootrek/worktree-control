@@ -53,6 +53,34 @@ Read only the references relevant to the task:
 - Bound logs, history, scans, and subscriptions, and dispose owned resources.
   Log events must not trigger repeated full Git scans.
 
+## Integration branch
+
+The authorization unification (Knowledge task `040062b4`) lands on
+`integration/auth-unification` until its release. `main` stays releasable at
+schema 49. Choose the base branch by what the change does:
+
+- **`integration/auth-unification`:** a schema step (numbers 50 and above
+  belong to it), a change of authorization or security-fence behaviour, the
+  deletion of an old authorization path, and the tests and package-acceptance
+  expectations that change with them.
+- **`main`:** unmounted additions (no production import, no schema step, no
+  behaviour change), documentation, CI fixes and unrelated work. Code on
+  `main` depends on schema 49 at most.
+
+`main` reaches the integration branch through a `sync/main-<date>` pull
+request with a merge commit; run the gate again on the merged head. Its
+history is append-only: merge commits through pull requests.
+
+Run an integration build on synthetic fixtures and released-baseline artifacts
+only, with its own data, attachment, witness, restore and key paths and a
+clean environment. Steps after 49 are provisional until the release candidate,
+so rebuild fixtures after editing one, and treat every database such a build
+has migrated as disposable.
+
+The gate, who merges, and the reasons are in Knowledge reply `84abdf8a`,
+section 7, of discussion `8a2683b8`. Merges into `main`, releases and
+publication need the owner's word.
+
 ## Local instructions
 
 Read the nearest `AGENTS.md` before editing a subtree. Add a local guide only
