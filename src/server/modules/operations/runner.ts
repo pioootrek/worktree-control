@@ -250,6 +250,19 @@ function withoutTransitions(requirement: Requirement, declared: ReadonlySet<stri
     default: return requirement;
   }
 }
+/**
+ * Whether the current resolution of a declared slot (`null`: missing) matches
+ * a reported result, against its commit-point resolution: `removed` needs it
+ * missing, `unchanged` the same version and project, `changed` a new version
+ * with the reported project and relation.
+ */
+function matchesReport(result: TransitionResult, now: ResolvedResource | null, before: ResolvedResource): boolean {
+  if (result.kind === "removed") return now === null;
+  if (!now) return false;
+  if (result.kind === "unchanged") return now.version === before.version && now.projectId === before.projectId;
+  return now.version !== before.version && now.projectId === result.projectId && sameRelation(now.relation, result.relation);
+}
+
 const began = (effect: EffectState | null) => effect !== null && effect !== "not_started";
 
 /** An admission refused because the caller aborted is a cancellation, not contention. Never throws. */
@@ -518,6 +531,41 @@ export class OperationRunner {
   }
 
   /**
+   * `IdleEffectScope.recheck()` past the commit point of an operation with
+   * expected transitions: the release rules applied between steps of its
+   * effect. Resolves the current state (only a declared slot may be missing),
+   * then decides on the commit-point resolution with the full requirement
+   * (historical authority) and on the resulting resolution so far without
+   * predicates on declared slots and without requirements on slots confirmed
+   * removed. The resulting resolution takes, for each declared slot, its
+   * current resolution when that matches the result reported so far, and its
+   * commit-point resolution when nothing was reported. Finally the current
+   * resolution must equal the resulting one, so every undeclared slot is
+   * unchanged and every declared slot is unchanged or as reported; otherwise
+   * `conflict`/`resource_changed`. Must run inside an admitted phase.
+   */
+  private transitionRecheck(context: AuthenticationContext, gate: Gate, refs: Readonly<Record<string, ResourceRef>>, slots: readonly string[],
+    commit: ResolvedResources, reported: ReadonlyMap<string, TransitionResult>, signal: AbortSignal | undefined): void {
+    const prepared = this.prepare(context, gate);
+    const declared = new Set(slots);
+    const current = resolveAllowingMissing(this.runtime.resolver, refs, declared);
+    this.decided(prepared, gate.requirement, commit);
+    const confirmed = Object.create(null) as Record<string, ResolvedResource | null>;
+    let mismatch = false;
+    for (const name of slots) {
+      const result = reported.get(name), before = slotOf(commit, name), now = slotOf(current, name) ?? null;
+      if (!result) continue;
+      if (!before || !matchesReport(result, now, before)) { mismatch = true; continue; }
+      Object.defineProperty(confirmed, name, { value: now, enumerable: true });
+    }
+    const removed = new Set(Object.keys(confirmed).filter(name => confirmed[name] === null));
+    const resulting = resultingResolution(commit, confirmed);
+    this.decided(prepared, { ...gate.requirement, require: withoutTransitions(gate.requirement.require, declared, removed) }, resulting);
+    if (mismatch || !sameResolution(resulting, current)) throw new OperationError("conflict", "resource_changed");
+    if (signal?.aborted) throw cancelled();
+  }
+
+  /**
    * Confirms the reported results of the declared slots with the resolver.
    * `null` when any slot is unreported, differs from its report, or the
    * resolver fails. Never throws. Must run inside an admitted phase.
@@ -534,11 +582,7 @@ export class OperationRunner {
       const confirmed = Object.create(null) as Record<string, ResolvedResource | null>;
       for (const name of slots) {
         const result = reported.get(name), now = slotOf(current, name) ?? null, before = slotOf(commit, name);
-        if (!result || !before) return null;
-        if (result.kind === "removed") { if (now) return null; }
-        else if (!now) return null;
-        else if (result.kind === "unchanged") { if (now.version !== before.version || now.projectId !== before.projectId) return null; }
-        else if (now.version === before.version || now.projectId !== result.projectId || !sameRelation(now.relation, result.relation)) return null;
+        if (!result || !before || !matchesReport(result, now, before)) return null;
         Object.defineProperty(confirmed, name, { value: now, enumerable: true });
       }
       return Object.freeze(confirmed);
@@ -830,12 +874,17 @@ export class OperationRunner {
         if (!copy) throw new OperationError("internal", "invalid_transition");
         state.reported.set(name, copy);
       };
-      /** `IdleEffectScope.recheck`: a fresh decision in its own admitted phase against the commit-point resolution. */
+      /**
+       * `IdleEffectScope.recheck`: a fresh decision in its own admitted phase against the
+       * commit-point resolution. Past the commit point, declared transition slots follow the
+       * release rules (`transitionRecheck`), so the effect's own reported steps do not refuse it.
+       */
       const recheck = (): Promise<void> => {
         if (crossing.closed) return Promise.reject(closed());
         const expected = state.resources ?? initial.resources;
         const pending = admission.run(() => {
-          this.recheck(context, gate, refs, expected, signal);
+          if (transitions && crossing.crossed) this.transitionRecheck(context, gate, refs, transitions, expected, state.reported, signal);
+          else this.recheck(context, gate, refs, expected, signal);
           if (crossing.closed) throw closed();
         }, { signal }).catch((error: unknown) => {
           const refusal = classifyBeforeCommit(cancellationOr(error, "not_started", signal));

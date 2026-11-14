@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectId } from "@/shared/contracts/operations";
-import { OperationRegistry, type AdmittedCommitScope, type EffectScope, type MutationOperation, type TransitionResult } from "./operation";
+import { OperationRegistry, type AdmittedCommitScope, type EffectScope, type IdleEffectScope, type MutationOperation, type TransitionResult } from "./operation";
 import { createWorld, MemoryIdempotency, P } from "./operations-fixture";
 import { allOf, claimHolder, onProject, type ResolvedResources, type ResourceRef } from "./requirements";
 import { OperationRunner } from "./runner";
@@ -245,6 +245,55 @@ describe("expected transitions: registration.detach and registration.move", () =
       if (lost === "none") expect(replay).toEqual({ ok: true, value: { registrationId: REG.id }, replayed: true });
       else expect(replay, lost).toEqual({ ok: false, error: { category: "not_found", status: 404, reason: "resource_not_found", retry: "none", effect: "not_started" } });
     }
+  });
+
+  /** `move` as an idle effect in two steps with `recheck()` between them; `between` runs after the first step. */
+  const twoStepMove = (fixture: ReturnType<typeof createWorld>, log: { steps: string[] }, between: () => void = () => undefined): MutationOperation<RegInput, RegResult, RegResult> => ({
+    ...move(fixture),
+    id: "fixture.registration_move_two_steps",
+    effect: { mode: "idle", run: async (input: RegInput, scope: IdleEffectScope) => {
+      fixture.resolver.move(REG, projectB);
+      log.steps.push("moved");
+      scope.transition("source", { kind: "changed", projectId: projectB, relation: null });
+      between();
+      await scope.recheck();
+      log.steps.push("second step");
+      return { registrationId: input.registrationId };
+    } },
+  });
+
+  it("recheck() after the effect's own reported transition accepts it and still refuses other changes", async () => {
+    const { world: fixture, alice, runner, idempotency } = world();
+    const log = { steps: [] as string[] };
+    expect(await runner.run(twoStepMove(fixture, log), alice.context, { registrationId: REG.id }, key("k-1")))
+      .toEqual({ ok: true, value: { registrationId: REG.id }, replayed: false });
+    expect(log.steps).toEqual(["moved", "second step"]);
+    expect(idempotency.states()).toEqual(["completed"]);
+
+    // An unrelated change of the undeclared destination between the steps still refuses the next one.
+    const other = world();
+    const refused = { steps: [] as string[] };
+    const racing = twoStepMove(other.world, refused, () => other.world.resolver.put({ kind: "project", id: projectB }, projectB));
+    expect(await other.runner.run(racing, other.alice.context, { registrationId: REG.id }, key("k-1")))
+      .toEqual({ ok: false, error: { category: "conflict", status: 409, reason: "resource_changed", retry: "none", effect: "committed" } });
+    expect(refused.steps).toEqual(["moved"]);
+    expect(other.idempotency.states()).toEqual(["unknown"]);
+
+    // So does a change of the declared slot other than the one reported.
+    const third = world();
+    const contradicted = { steps: [] as string[] };
+    const elsewhere = twoStepMove(third.world, contradicted, () => third.world.resolver.move(REG, projectA));
+    expect(await third.runner.run(elsewhere, third.alice.context, { registrationId: REG.id }))
+      .toEqual({ ok: false, error: { category: "conflict", status: 409, reason: "resource_changed", retry: "none", effect: "committed" } });
+    expect(contradicted.steps).toEqual(["moved"]);
+
+    // And a caller who lost the source project between the steps learns nothing more.
+    const fourth = world();
+    const revoked = { steps: [] as string[] };
+    const revoking = twoStepMove(fourth.world, revoked, () => fourth.world.grants.revokeAll(fourth.alice.id));
+    expect(await fourth.runner.run(revoking, fourth.alice.context, { registrationId: REG.id }))
+      .toEqual({ ok: false, error: { category: "not_found", status: 404, reason: "resource_not_found", retry: "none", effect: "committed" } });
+    expect(revoked.steps).toEqual(["moved"]);
   });
 
   it("move without the declared transition cannot deliver its receipt", async () => {
