@@ -131,6 +131,50 @@ describe("authentication context", () => {
     expect(failure(() => boundary.mint(presented({ bearers: [{ class: "installation_token", secret: "token" }] })))).toBe("unauthenticated:installation_token_in_account_mode");
   });
 
+  it("treats a verifier that throws as no answer, without passing the thrown value on", () => {
+    const caught = (call: () => unknown): unknown => { try { call(); } catch (error) { return error; } return null; };
+    const leak = new Error("SQLITE_BUSY /var/lib/secret.sqlite3 token=abc");
+    const answer: VerifiedCredential = { identity: { path: "agent_token", credentialId: "c-bot", generation: 1 }, actor: { kind: "agent", accountId: A("bot") },
+      evidence: null, coordinationSession: null };
+    const presentedToken = presented({ bearers: [{ class: "agent_token", secret: "t" }] });
+    const outcome = (error: unknown) => {
+      const value = error as OperationError & { cause?: unknown };
+      return { type: value?.constructor, category: value?.category, reason: value?.reason, message: value?.message, cause: value?.cause, keys: Object.keys(value ?? {}) };
+    };
+    const at = (verifier: CredentialVerifier) => createListenerBoundary({ mode: "better-auth", listener: "mcp", verifier, open: () => true });
+    const getterThrows = { get identity(): never { throw leak; }, actor: answer.actor, evidence: null, coordinationSession: null } as unknown as VerifiedCredential;
+
+    // At mint: the same refusal as a null answer.
+    const nullAtMint = caught(() => at({ verify: () => null, current: () => answer }).mint(presentedToken));
+    expect(nullAtMint).toMatchObject({ category: "unauthenticated", reason: "invalid_credential" });
+    for (const verify of [() => { throw leak; }, () => getterThrows]) {
+      const thrownAtMint = caught(() => at({ verify, current: () => answer }).mint(presentedToken));
+      expect(outcome(thrownAtMint)).toEqual(outcome(nullAtMint));
+      expect(thrownAtMint).not.toBe(leak);
+      expect((thrownAtMint as Error).cause).toBeUndefined();
+      expect(String((thrownAtMint as Error).stack)).not.toMatch(/SQLITE_BUSY|secret|token=/);
+    }
+
+    // At revalidation: the same refusal as a null answer.
+    const revalidating = (current: () => VerifiedCredential | null) => {
+      let calls = 0;
+      return at({ verify: () => answer, current: () => (++calls === 1 ? answer : current()) }).mint(presentedToken);
+    };
+    const nullContext = revalidating(() => null);
+    expect(nullContext.revalidate().actor).toEqual({ kind: "agent", accountId: "bot" });
+    const nullAtCurrent = caught(() => nullContext.revalidate());
+    expect(nullAtCurrent).toMatchObject({ category: "unauthenticated", reason: "credential_no_longer_valid" });
+    for (const current of [() => { throw leak; }, () => getterThrows]) {
+      const context = revalidating(current);
+      expect(context.revalidate().actor).toEqual({ kind: "agent", accountId: "bot" });
+      const thrownAtCurrent = caught(() => context.revalidate());
+      expect(outcome(thrownAtCurrent)).toEqual(outcome(nullAtCurrent));
+      expect(thrownAtCurrent).not.toBe(leak);
+      expect((thrownAtCurrent as Error).cause).toBeUndefined();
+      expect(String((thrownAtCurrent as Error).stack)).not.toMatch(/SQLITE_BUSY|secret|token=/);
+    }
+  });
+
   it("is never serialized", () => {
     const world = createWorld();
     const context = world.human("alice").context;
