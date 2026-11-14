@@ -40,6 +40,35 @@ function resolveImport(from: string, specifier: string): string | undefined {
 
 const graph = new Map(files.map((file) => [file, imports(file).map((specifier) => ({ specifier, target: resolveImport(file, specifier) }))]));
 
+/** Transitive local files and package specifiers reachable from `entry`, type-only imports included. */
+function reachable(entry: string): { files: string[]; packages: string[] } {
+  const seen = new Set([entry]);
+  const packages = new Set<string>();
+  const queue = [entry];
+  for (const file of queue) {
+    for (const { specifier, target } of graph.get(file) ?? []) {
+      if (!target) packages.add(specifier);
+      else if (!seen.has(target)) { seen.add(target); queue.push(target); }
+    }
+  }
+  return { files: [...seen].map(localName), packages: [...packages] };
+}
+
+// The worker-only process ships without the dashboard, MCP and account provider (W2 packaging).
+// Knowledge, backups, dev-vault and the authentication module stay reachable through the SQLite
+// store, restore handoff recovery and the test queue; excluding them needs changes in those modules.
+const WORKER_FORBIDDEN_FILES = [
+  /^server\/http-server\.ts$/, /^server\/mcp-http-server\.ts$/, /^server\/transports\/mcp\//, /^server\/control-service\.ts$/,
+  /^server\/modules\/godot-web\//, /^server\/modules\/dashboard\//,
+  /^server\/bootstrap\/authentication-provider-lifetime\.ts$/, /^server\/authentication-provider-configuration\.ts$/,
+  /^(app|features|components)\//,
+];
+const WORKER_FORBIDDEN_PACKAGES = /^(@modelcontextprotocol\/sdk|next|react|react-dom|better-auth)(\/|$)/;
+function workerFenceViolations(entry: string): string[] {
+  const { files: reached, packages } = reachable(resolve(root, entry));
+  return [...reached.filter((file) => WORKER_FORBIDDEN_FILES.some((pattern) => pattern.test(file))), ...packages.filter((name) => WORKER_FORBIDDEN_PACKAGES.test(name))];
+}
+
 describe("codebase boundaries", () => {
   it("keeps browser code and shared contracts independent of privileged code", () => {
     const violations: string[] = [];
@@ -69,6 +98,15 @@ describe("codebase boundaries", () => {
       }
     }
     expect(violations).toEqual([]);
+  });
+
+  it("keeps server-only code out of the worker process import graph", () => {
+    for (const entry of ["server/bootstrap/worker-process.ts", "cli/worker-command.ts"]) expect(workerFenceViolations(entry), entry).toEqual([]);
+    // The fence detects violations: the full controller entry reaches every required exclusion.
+    expect(workerFenceViolations("cli/index.ts")).toEqual(expect.arrayContaining([
+      "server/http-server.ts", "server/mcp-http-server.ts", "server/control-service.ts", "@modelcontextprotocol/sdk/server/mcp.js",
+    ]));
+    expect(workerFenceViolations("cli/index.ts").some((violation) => violation.startsWith("server/transports/mcp/"))).toBe(true);
   });
 
   it("keeps local imports acyclic, including type dependencies", () => {
