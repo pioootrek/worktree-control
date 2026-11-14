@@ -13,6 +13,11 @@ Read only the references relevant to the task:
 - Runtime, persistence, or lifecycle changes: [architecture](docs/architecture.md).
 - Adding or extracting modules: [codebase organization](docs/codebase-organization.md).
   Its destination map is incremental, not the current directory layout.
+- Authorization, roles, the MCP contract, or moving an operation onto the
+  shared registry: [authorization contract](docs/authorization-contract.md) and
+  [operation dispositions](docs/authorization-operation-dispositions.md). They
+  define the accepted target of the next breaking release; current behaviour
+  is in [authentication](docs/authentication.md).
 - Remote workers, memory, or coordination: [expansion assessment](docs/architecture-effort-assessment.md)
   and its linked feature plan. Planned features are not implemented contracts.
 - Before non-trivial work: read current tasks and relevant memory in Knowledge
