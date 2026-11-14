@@ -306,24 +306,6 @@ export class IdentityQueries implements IdentityStore {
     } : null;
   }
 
-  saveKnowledgeProjectRuntimeLink(link: KnowledgeProjectRuntimeLink, actor: string): void {
-    this.database.transaction(() => {
-      this.database.prepare(`
-        INSERT INTO knowledge_project_runtime_links(knowledge_project_id, runtime_project_id, linked_at, unlinked_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(knowledge_project_id) DO UPDATE SET
-          runtime_project_id = excluded.runtime_project_id,
-          linked_at = excluded.linked_at,
-          unlinked_at = excluded.unlinked_at
-      `).run(link.projectId, link.runtimeProjectId, link.linkedAt, link.unlinkedAt);
-      this.audit("knowledge.runtime_link_saved", actor, {
-        projectId: link.projectId,
-        runtimeProjectId: link.runtimeProjectId,
-        unlinkedAt: link.unlinkedAt,
-      });
-    })();
-  }
-
   private audit(eventType: string, actor: string, details: unknown): void {
     this.database.prepare(`
       INSERT INTO controller_audit_events(event_type, actor, details_json, created_at)
