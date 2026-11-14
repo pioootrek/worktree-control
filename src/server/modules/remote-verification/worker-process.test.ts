@@ -267,9 +267,10 @@ describe.skipIf(process.platform !== "linux")("worker-only process (real CLI ent
   }, 60_000);
 
   // An owned write through the store's fenced connection; no public operation stores malformed JSON.
-  const withDatabase = <T>(use: (database: { prepare(sql: string): { get(...values: unknown[]): unknown; run(...values: unknown[]): { changes: number } } }) => T): T => {
+  type FixtureDatabase = { prepare(sql: string): { get(...values: unknown[]): unknown; run(...values: unknown[]): { changes: number } } };
+  const withDatabase = <T>(operate: (database: FixtureDatabase) => T): T => {
     const local = new SqliteStateStore(paths.databasePath);
-    try { return use((local as unknown as { database: Parameters<typeof use>[0] }).database); }
+    try { return operate((local as unknown as { database: FixtureDatabase }).database); }
     finally { local.close(); }
   };
   const recordedRoots = () => {
