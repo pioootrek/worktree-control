@@ -1,4 +1,4 @@
-import { acquireControllerLock, type ControllerLock } from "@/server/controller-lock";
+import { acquireControllerLock } from "@/server/controller-lock";
 import { openControllerStore, type MigrationBackupOptions } from "@/server/controller-storage";
 import { GitCommandAdmission, SystemGitWorktreeReader } from "@/server/git-worktrees";
 import { LinuxWorkerRecoveryHost } from "@/server/infrastructure/git";
@@ -12,6 +12,7 @@ import { ProcessManager } from "@/server/process-manager";
 import { TestJobManager } from "@/server/test-job-manager";
 import { createControllerShutdown } from "./controller-shutdown";
 import { createRemoteWorker, type RemoteWorkerSettings } from "./remote-worker";
+import { abandonWorkerStartup, type StartupCleanupStep } from "./worker-startup-cleanup";
 
 export interface WorkerProcessOptions {
   paths: AppPaths;
@@ -29,31 +30,6 @@ export interface WorkerProcess {
   shutdown(stopping?: () => void): Promise<void>;
 }
 
-/** A pending rejection and exit code alone cannot keep Node, and so the owner lock, alive. */
-const retainedOwners = new Set<{ resource: unknown; lifetime: ReturnType<typeof setInterval> }>();
-function retainOwnership(resource: unknown): void {
-  const retained = { resource, lifetime: setInterval(() => { void retained.resource; }, 60_000) };
-  retainedOwners.add(retained);
-  process.exitCode = 1;
-}
-
-/**
- * Runs every cleanup step of a failed startup, newest first, even after one rejects. As in
- * controller startup, the lock is released only when all of them succeeded; otherwise ownership
- * is retained for operator recovery and the failures join the original error.
- */
-async function abandonStartup(error: unknown, opened: Array<() => void | Promise<void>>, lock: ControllerLock): Promise<unknown> {
-  const failures: unknown[] = [];
-  for (const close of opened.reverse()) {
-    try { await close(); } catch (failure) { failures.push(failure); }
-  }
-  if (!failures.length) {
-    try { lock.release(); return error; } catch (failure) { failures.push(failure); }
-  }
-  retainOwnership(lock);
-  return new AggregateError([error, ...failures], "Worker startup failed and its cleanup is unconfirmed; ownership retained. Operator recovery is required.");
-}
-
 /**
  * Worker-only composition: the controller's lock, store, logs, run directories, test queue, Git
  * and lifecycle, plus the outbound worker. No HTTP, MCP, admin socket, remote-verification
@@ -63,7 +39,7 @@ export async function startWorkerProcess(options: WorkerProcessOptions): Promise
   const { paths } = options;
   const lock = acquireControllerLock(paths.controllerLockPath);
   // Everything that can fail runs here, before the lifetime timer and the first poll.
-  const opened: Array<() => void | Promise<void>> = [];
+  const opened: StartupCleanupStep[] = [];
   const compose = async () => {
     const handoff = recoverBackupHandoff(paths.databasePath, paths.knowledgeAttachmentDirectory, options.backupPolicy);
     const owned = await openControllerStore(paths.databasePath, { ...options.migrationBackup, applicationVersion: options.applicationVersion, attachmentDirectory: paths.knowledgeAttachmentDirectory });
@@ -77,9 +53,14 @@ export async function startWorkerProcess(options: WorkerProcessOptions): Promise
       logs.controller("run_directory.root_unavailable", { error: String(error) });
       return unavailableRunDirectories();
     });
+    // Until the test queue owns the root, a failure here (its constructor included) closes it.
+    let rootHandedOver = false;
+    opened.push(() => rootHandedOver ? undefined : runDirectories.close());
     const tests = new TestJobManager(owned, logs);
     opened.push(() => tests.shutdown());
     tests.configureRunDirectories(runDirectories);
+    // From here the queue's shutdown closes it, once its owned process groups are confirmed stopped.
+    rootHandedOver = true;
     const recovery = new WorkerRecoveryService(owned.remoteConnection, new LinuxWorkerRecoveryHost(paths.databasePath));
     tests.configurePathAdmission(checked => recovery.assertPathsAvailable(checked));
     // Same startup rule as the controller: unconfirmed remote cleanup blocks all test admission.
@@ -95,9 +76,11 @@ export async function startWorkerProcess(options: WorkerProcessOptions): Promise
     logs.controller("worker.started", { workerId: options.settings.workerId, origin: new URL(options.settings.origin).origin });
     return { owned, logs, processes, lifecycle, tests, git, worker, admissionBlockReason };
   };
+  // Before the first poll nothing is admitted or running, so a failed startup never keeps the
+  // process alive: it cleans up, always attempts the lock release, and rejects.
   const { owned, logs, processes, lifecycle, tests, git, worker, admissionBlockReason } = await compose()
-    .catch(async (error: unknown) => { throw await abandonStartup(error, opened, lock); });
-  // The worker's poll timer is unreferenced; this keeps the process, and on failed cleanup its
+    .catch((error: unknown) => abandonWorkerStartup(error, opened, lock));
+  // The worker's poll timer is unreferenced; this keeps the process, and after a failed shutdown its
   // ownership, alive. It is cleared only after the whole shutdown, lock release included, succeeds.
   const lifetime = setInterval(() => undefined, 60_000);
   worker.start();
