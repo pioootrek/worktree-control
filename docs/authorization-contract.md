@@ -164,21 +164,56 @@ verifies nothing. The registry holds at most `stagedCapacity` handles. When it
 is full, `stage` refuses a new handle; it never evicts an unexpired one. Both
 limits are required options with no default.
 
+The adapter does not and cannot establish that the provider resolved the
+session it is given for this request. `stage` checks only the claim's shape
+and provider ID, and `verify` checks the claim against committed state. It is the
+caller's obligation that only the provider's own resolution result for the
+current request reaches `stage`.
+
+**Eligibility.** A required option `eligible: () => boolean` has no default;
+the constructor rejects options without it. `stage`, `verify` and `current`
+call it on every invocation, and continue only when it returns the literal
+`true`. A throw, a thenable (whose rejection is absorbed) and any other value,
+a truthy one included, refuse: `stage` and `current` answer `null`, and
+`verify` consumes the handle and answers `null`. The answer is never cached
+or latched. When the check answers `true` again, `current` answers from
+committed state as before. A context minted before the withdrawal then
+revalidates again, as long as its session still authorizes with the same
+generation. This matches the runtime's own check, which is also a predicate
+evaluated at one point in time. A handle consumed while the provider was not
+eligible stays consumed.
+
 **Committed state only.** The staged claim never authorizes anything. `verify`
 and `current` read the session again through an injected
 `ProviderSessionReader`. Its `currentSession(providerId, sessionId)` has the
 shape of the provider storage method of the same name. The adapter opens no
 connection and imports no SQLite code. It decides through
 `evaluateSessionAuthority`, the provider's single rule, at the adapter's own
-clock. It then makes the checks that the runtime makes before it issues a
-provider actor:
+clock. Of the runtime's checks before it issues a provider actor and when it
+revalidates one (`isCurrentProviderSession`), the adapter makes these:
 
+- the provider is eligible, through the injected check above;
+- the session ID is at most 512 characters long and is read for the
+  adapter's own provider ID;
 - the principal kind is `owner` or `human`;
 - the principal ID is present and the mapping's link time is canonical;
-- the evidence belongs to this session and subject.
+- the evidence belongs to this session and subject, and its authentication
+  time parses;
+- the subject, principal and its kind, the mapping's link time, the session's
+  creation time and every evidence field are unchanged since the credential
+  was verified. The adapter compares them through the generation, described
+  below.
 
 `verify` also refuses when the staged subject, creation time or method
 disagrees with committed state, as the runtime's own resolution does.
+
+One runtime check differs. The runtime refuses an actor once the session
+expiry it captured at issue has passed. The adapter keeps no expiry. It reads
+the native expiry again on every call, and the expiry from when the context
+was minted is not retained. A refresh inside the immutable original deadline
+therefore keeps an already minted context valid. A refresh extends neither
+login freshness, which comes only from the evidence's authentication time,
+nor the original deadline.
 
 **Answer.** A valid session yields:
 
@@ -204,21 +239,30 @@ one past its original deadline, and one whose account generation, policy
 revision, factor binding or account consistency changed. The boundary then
 fails with `unauthenticated`/`credential_no_longer_valid` at admission, before
 an effect or at release. A change that the provider rule does not see, such
-as a relinked mapping, still changes the generation. A new login is another
-session and so another credential: it never upgrades a context minted earlier.
+as a relinked mapping, still changes the generation. That is a defence only:
+the SQLite queries insert a subject mapping once and only revoke it, and a
+partial unique index allows one active mapping per principal, so no workflow
+relinks a mapping today. A new login is another session and so another
+credential: it never upgrades a context minted earlier.
 
-**Failures.** `verify` and `current` never throw. A reader that throws or
-returns a promise, a malformed state, a malformed claim and a clock that is
-not a finite number all answer `null`. A thrown value is not passed on.
+**Failures.** `verify` and `current` never throw. An eligibility check or a
+reader that throws or returns a promise, a malformed state, a malformed claim
+and a clock that is not a finite number all answer `null`. A thrown value is
+not passed on.
 
 The contract's fresh-login rule is unchanged. It runs on the runner's clock;
-the provider rule runs on the adapter's clock. With one clock, the provider
-rule already refuses evidence from the future, so the caller gets
-`unauthenticated` rather than `login_stale`.
+the provider rule runs on the adapter's clock. With one shared clock that
+never moves backwards, or with identical timestamps, the provider rule already
+refuses evidence from the future, so the caller gets `unauthenticated` rather
+than `login_stale`. The adapter and the runner read the clock separately, so
+their two reads can straddle a backward step. The provider rule can then
+accept evidence that the fresh-login rule, at a time before the
+authentication, refuses as from the future, and the caller gets
+`login_stale`. Both outcomes refuse.
 
 The gate tests in `provider-session-verifier.test.ts` cover all three login
 methods, refresh, inheritance on password change, re-login, the 600000 ms
-boundary and every change above. They mint through `createListenerBoundary`
+boundary, every change above and the eligibility check. They mint through `createListenerBoundary`
 (`better-auth`, `api`) and run through the runner. Sessions and evidence come
 from the real `AccountProtection` and `SessionIssuance`. The fixture writes
 the rows below them by hand: an in-memory double of the SQLite row adapter,
@@ -1011,11 +1055,15 @@ These are not implemented here. The slices that mount the contract own them.
   failures.
 - **Provider session transport.** The browser transport resolves the cookie
   through the provider runtime, then stages the result and mints the context
-  in the same request. It creates one `ProviderSessionVerifier` with the
-  provider storage as its reader, and gives the reader and the runner the same
-  clock. It must call `verify` and `current` where `currentSession` may read:
-  the storage requires core admission. It must not release a `credentialId`,
-  because for a provider session it is the session's row ID.
+  in the same request. Only that resolution result may reach `stage`. It
+  creates one `ProviderSessionVerifier` with the provider storage as its
+  reader, and gives the reader and the runner the same clock. It binds
+  `eligible` to the runtime's disposal state, session-authority support and
+  storage availability. The runtime does not yet expose these as one public
+  synchronous predicate; that slice adds it. It must call `verify` and
+  `current` where `currentSession` may read: the storage requires core
+  admission. It must not release a `credentialId`, because for a provider
+  session it is the session's row ID.
 - **Operation-bound proof.** Slice 2 does not remove the Ed25519 owner proof.
   Fresh login replaces it only once a transport mounts the provider-session
   verifier.
