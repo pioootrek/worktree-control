@@ -7,10 +7,10 @@ status: "active"
 
 # DEV environment vault
 
-Planned role integration is described in the
-[identity and authorization plan](identity-authorization-plan.md). It preserves
-the signed owner and exact-grant boundaries below; those roles are not yet
-implemented and do not enable execution use.
+The [authorization contract](authorization-contract.md) is the accepted
+target for vault access: in the next breaking release access follows the
+`secrets` role, and the request and approval flow and the signed owner proof
+below are removed. Until that release the boundaries below apply.
 
 The vault stores encrypted DEV environment profiles and supports explicit
 owner approval of agent requests from the CLI or the dashboard **DEV vault**

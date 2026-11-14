@@ -1,11 +1,20 @@
 ---
 audience: "owner, implementers and reviewers of human, agent and ENV access"
-last_reviewed: "2026-11-08"
+last_reviewed: "2026-11-14"
 source_of_truth: "planned identity, role and environment authorization contracts and acceptance gates"
 status: "active"
 ---
 
 # Identity, roles and environment authorization plan
+
+> [!IMPORTANT]
+> **Being replaced.** The [authorization contract](authorization-contract.md)
+> and its [operation dispositions](authorization-operation-dispositions.md)
+> are the accepted target. The next breaking release removes owner sessions,
+> runtime delegations, credential ceilings, sponsors and Ed25519 owner proof,
+> and the ENV roles below give way to the `secrets` role. Until that release
+> this page still describes how the installed controller behaves; plan new
+> work against the contract.
 
 ## Current A5 account integration
 

@@ -22,11 +22,11 @@ operations, separate owner authentication, key provisioning and limits.
 Existing literal profiles and separate test environments remain unchanged and
 unencrypted; nothing automatically imports them into the vault.
 
-The [identity and authorization plan](identity-authorization-plan.md) proposes
-independent ENV executor, reader, change-author and custodian roles. Roles do
-not replace existing signed owner proof or exact grants and do not enable use
-delivery. Knowledge task `6645ffce-dc9e-4a88-ab94-6b2cf9ca34b6` owns that role
-integration under the existing environment-profile parent.
+The separate ENV roles once proposed in the
+[identity and authorization plan](identity-authorization-plan.md) are
+superseded by the [authorization contract](authorization-contract.md): in the
+next breaking release vault access follows the `secrets` role. Knowledge task
+`6645ffce-dc9e-4a88-ab94-6b2cf9ca34b6` is archived as superseded.
 
 The [source note](knowledge/AGENTS.md) (Knowledge attachment `2356069c892acf5e1160da52a3cab688`)
 preserves the supplied archive and its six milestone proposals. Original stack

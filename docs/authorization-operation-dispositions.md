@@ -1,14 +1,14 @@
 ---
 audience: "owner, implementers and reviewers of the authentication and authorization unification"
-last_reviewed: "2026-11-13"
-source_of_truth: "revised draft disposition of every current operation under the unreleased authorization contract; Knowledge task 040062b4, discussion 8a2683b8, replies e06943b7, 42019833, ce8aa214 and 29cf8fa5"
+last_reviewed: "2026-11-14"
+source_of_truth: "accepted disposition of every current operation under the unreleased authorization contract; Knowledge task 040062b4, discussion 8a2683b8, replies e06943b7, 42019833, ce8aa214 and 29cf8fa5"
 status: "active"
 ---
 
 # Authorization operation dispositions
 
-**Revised draft. Review `ce8aa214` is applied; a focused re-review is pending.
-It describes an unreleased breaking change.** Nothing in the product follows
+**Accepted. It describes an unreleased breaking change.** Review `ce8aa214`
+is applied and the focused re-review accepted it. Nothing in the product follows
 this page yet. It is the slice 1 deliverable that
 [the authorization contract](authorization-contract.md) lists under "Not
 implemented": the disposition of every operation that exists today.
@@ -33,9 +33,10 @@ confirmed or extended by the owner (`46672ea8`, `fb1567d5`;
 [section 9.4](#94-decided-after-the-revision)). Everything else the first draft
 left open is decided and recorded in [section 9.1](#91-decided).
 
-**Implemented versus planned.** The code in the draft pull request #128 can
-express only what [section 1](#1-implemented-vocabulary-and-planned-contract-extensions)
-lists as implemented. Every catalogue row that needs something else carries a
+**Implemented versus planned.** The contract code (merged in #128 and #129,
+still unmounted) can express only what
+[section 1](#1-implemented-vocabulary-and-planned-contract-extensions) lists as
+implemented. Every catalogue row that needs something else carries a
 marker in its `Needs` column, so a reader can tell what that code can already
 express.
 
