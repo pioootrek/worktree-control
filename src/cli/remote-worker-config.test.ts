@@ -1,8 +1,10 @@
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { remoteVerificationConfigSchema } from "./remote-verification";
+import { readRemoteWorkerToken, remoteVerificationConfigSchema } from "./remote-verification";
 import { loadWorkerProcessConfig, readWorkerCredential, workerProcessConfigSchema } from "./remote-worker-config";
 import { parseWorkerStartArgs, WORKER_USAGE } from "./worker-command";
 
@@ -73,6 +75,35 @@ describe("worker credential file", () => {
       expect(() => readWorkerCredential(write(value)), JSON.stringify(value)).toThrow("Invalid worker credential file.");
     }
   });
+
+  it("keeps the shared reader's messages for the embedded legacy token and a missing path", () => {
+    const token = legacyToken;
+    const target = write(`${token}\n`);
+    expect(readRemoteWorkerToken(target)).toBe(token);
+    const link = join(directory(), "link");
+    symlinkSync(target, link);
+    expect(() => readRemoteWorkerToken(link)).toThrow("Worker token must be in an owner-only regular file.");
+    expect(() => readRemoteWorkerToken(write(token, 0o640))).toThrow("Worker token must be in an owner-only regular file.");
+    expect(() => readWorkerCredential(join(directory(), "missing"))).toThrow(/^ENOENT: no such file or directory, lstat /);
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a FIFO without waiting for a writer", async () => {
+    const fifo = join(directory(), "credential");
+    execFileSync("mkfifo", ["-m", "600", fifo]);
+    // A blocking open would wait for this writer, so a regression shows as a delay instead of a hang.
+    const writer = spawn(process.execPath, ["-e", "setTimeout(() => require('node:fs').openSync(process.argv[1], 'w'), 5000)", fifo], { stdio: "ignore" });
+    try {
+      const started = Date.now();
+      expect(() => readWorkerCredential(fifo)).toThrow("Worker credential must be in an owner-only regular file.");
+      expect(Date.now() - started).toBeLessThan(2_000);
+    } finally {
+      if (writer.exitCode === null && writer.signalCode === null) {
+        const exited = once(writer, "exit");
+        writer.kill("SIGKILL");
+        await exited;
+      }
+    }
+  }, 15_000);
 });
 
 describe("worker start arguments", () => {

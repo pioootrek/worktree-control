@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, type Stats } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { remoteDependencySetupSchema, remotePreparationTimeoutSchema } from "@/server/modules/remote-verification";
@@ -30,12 +30,46 @@ export function loadWorkerProcessConfig(path: string): WorkerProcessConfig {
   catch { throw new Error("Invalid worker configuration."); }
 }
 
-/** Reject shared or symlinked credential files rather than silently repairing permissions. */
+// Not defined on every platform. Without O_NOFOLLOW the path is checked with lstat before opening.
+const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
+const NON_BLOCKING = constants.O_NONBLOCK ?? 0;
+
+function assertOwnerOnlyRegularFile(metadata: Stats, label: string): void {
+  if (!metadata.isFile() || metadata.mode & 0o077 || typeof process.getuid === "function" && metadata.uid !== process.getuid()) throw new Error(`${label} must be in an owner-only regular file.`);
+}
+
+/**
+ * Reject shared or symlinked credential files rather than silently repairing permissions. The path
+ * is opened once, without following a symlink or waiting for a FIFO writer; that descriptor is the
+ * one validated and read, and at most one byte past the limit is read.
+ */
 export function readOwnerOnlyCredentialFile(path: string, maxBytes: number, label: string): string {
-  const metadata = lstatSync(path);
-  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.mode & 0o077 || typeof process.getuid === "function" && metadata.uid !== process.getuid()) throw new Error(`${label} must be in an owner-only regular file.`);
-  if (metadata.size > maxBytes) throw new Error(`Invalid ${label.toLowerCase()} file.`);
-  return readFileSync(path, "utf8").trim();
+  if (!NO_FOLLOW) assertOwnerOnlyRegularFile(lstatSync(path), label);
+  let descriptor: number;
+  try { descriptor = openSync(path, constants.O_RDONLY | NO_FOLLOW | NON_BLOCKING); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // A final symlink: ELOOP on Linux and macOS, EMLINK on FreeBSD.
+    if (code === "ELOOP" || code === "EMLINK") throw new Error(`${label} must be in an owner-only regular file.`);
+    // Report a missing, special or shared path as before; otherwise the open error itself.
+    assertOwnerOnlyRegularFile(lstatSync(path), label);
+    throw error;
+  }
+  try {
+    const metadata = fstatSync(descriptor);
+    assertOwnerOnlyRegularFile(metadata, label);
+    if (metadata.size > maxBytes) throw new Error(`Invalid ${label.toLowerCase()} file.`);
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const read = readSync(descriptor, buffer, length, buffer.length - length, null);
+      if (read === 0) break;
+      length += read;
+    }
+    // The file grew after fstat.
+    if (length > maxBytes) throw new Error(`Invalid ${label.toLowerCase()} file.`);
+    return buffer.toString("utf8", 0, length).trim();
+  } finally { closeSync(descriptor); }
 }
 
 /**
