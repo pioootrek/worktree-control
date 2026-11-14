@@ -59,19 +59,23 @@ jobs:
         shell: bash
         run: |
           # Azure's mirror delivered ~26 MB at ~40 kB/s in both attempts of run 40330287767.
-          # Keep the runner image's HTTPS fallbacks and its existing archive trust configuration.
-          # Layout: actions/runner-images, ubuntu24/20261012.334, configure-apt-sources.sh.
+          # Speed-up only: drop the plain-HTTP Azure mirror when the runner image lists
+          # HTTPS fallbacks behind it (actions/runner-images, configure-apt-sources.sh).
+          # Any other layout keeps the image's package sources unchanged and is printed,
+          # so a new image never fails the build here (image 20261103.629 varied by runner).
           mirrors=/etc/apt/apt-mirrors.txt
           sources=/etc/apt/sources.list.d/ubuntu.sources
-          if ! grep -Fxq 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' "$sources" ||
-             ! cmp -s "$mirrors" <(printf '%s\t%s\n' \
-               'http://azure.archive.ubuntu.com/ubuntu/' 'priority:1' \
-               'https://archive.ubuntu.com/ubuntu/' 'priority:2' \
-               'https://security.ubuntu.com/ubuntu/' 'priority:3'); then
-            echo '::error::Unsupported Ubuntu APT mirror layout; review the runner image before changing package sources.'
-            exit 1
+          azure='^http://([a-z0-9-]+\.)?azure\.archive\.ubuntu\.com/ubuntu/[[:space:]]'
+          if grep -Fxq 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' "$sources" 2>/dev/null &&
+             grep -Eq "$azure" "$mirrors" 2>/dev/null &&
+             grep -Ev "$azure" "$mirrors" | grep -q '^https://'; then
+            sudo sed -E -i "\|$azure|d" "$mirrors"
+            echo 'APT mirrors in use:'
+            cat "$mirrors"
+          else
+            echo '::warning::Unrecognized Ubuntu APT mirror layout; keeping the runner image package sources.'
+            grep -H '' "$sources" "$mirrors" 2>/dev/null || true
           fi
-          sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' "$mirrors"
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:https
       - run: pnpm test:integration
