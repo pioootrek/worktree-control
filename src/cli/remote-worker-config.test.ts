@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readRemoteWorkerToken, remoteVerificationConfigSchema } from "./remote-verification";
 import { loadWorkerProcessConfig, readWorkerCredential, workerProcessConfigSchema } from "./remote-worker-config";
 import { parseWorkerStartArgs, WORKER_USAGE } from "./worker-command";
@@ -85,6 +85,45 @@ describe("worker credential file", () => {
     expect(() => readRemoteWorkerToken(link)).toThrow("Worker token must be in an owner-only regular file.");
     expect(() => readRemoteWorkerToken(write(token, 0o640))).toThrow("Worker token must be in an owner-only regular file.");
     expect(() => readWorkerCredential(join(directory(), "missing"))).toThrow(/^ENOENT: no such file or directory, lstat /);
+  });
+
+  // Mode 000 keeps the file owner-only and regular while the open fails for a non-root owner.
+  // Root opens it anyway, and the descriptor path reports the same size error.
+  it.skipIf(process.platform === "win32")("keeps the legacy size message for an owner-only file that cannot be opened", () => {
+    const oversized = write(legacyToken.repeat(20), 0o000);
+    expect(() => readRemoteWorkerToken(oversized)).toThrow(/^Invalid worker token file\.$/);
+    expect(() => readWorkerCredential(write("x".repeat(4097), 0o000))).toThrow(/^Invalid worker credential file\.$/);
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("reports the open error for an unopenable file within the limit, as the legacy reader did", () => {
+    expect(() => readRemoteWorkerToken(write(legacyToken, 0o000))).toThrow(/^EACCES: permission denied, open /);
+  });
+
+  it("refuses to read a credential where an atomic no-follow open is unavailable", async () => {
+    const file = write("opaque-credential-value");
+    vi.resetModules();
+    const opened = vi.fn(), inspected = vi.fn();
+    vi.doMock("node:fs", async importOriginal => {
+      const actual = await importOriginal<typeof import("node:fs")>();
+      return {
+        ...actual,
+        constants: { ...actual.constants, O_NOFOLLOW: undefined },
+        openSync: (...args: Parameters<typeof actual.openSync>) => { opened(args[0]); return actual.openSync(...args); },
+        lstatSync: ((...args: Parameters<typeof actual.lstatSync>) => { inspected(args[0]); return actual.lstatSync(...args); }) as unknown as typeof actual.lstatSync,
+      };
+    });
+    try {
+      const reader = await import("./remote-worker-config");
+      const refusal = (() => { try { reader.readWorkerCredential(file); } catch (error) { return error as Error; } return null; })();
+      expect(refusal?.message).toBe("Worker credential cannot be read safely on this platform: opening a file without following a symlink is unsupported.");
+      expect(refusal?.message).not.toContain("opaque-credential-value");
+      // No fallback: the path is neither inspected nor opened.
+      expect(opened).not.toHaveBeenCalledWith(file);
+      expect(inspected).not.toHaveBeenCalledWith(file);
+    } finally {
+      vi.doUnmock("node:fs");
+      vi.resetModules();
+    }
   });
 
   it.skipIf(process.platform === "win32")("rejects a FIFO without waiting for a writer", async () => {

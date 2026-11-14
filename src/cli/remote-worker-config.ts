@@ -30,8 +30,9 @@ export function loadWorkerProcessConfig(path: string): WorkerProcessConfig {
   catch { throw new Error("Invalid worker configuration."); }
 }
 
-// Not defined on every platform. Without O_NOFOLLOW the path is checked with lstat before opening.
-const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
+// Not defined on every platform (Windows). Without it no atomic no-follow open exists, so the
+// reader refuses instead of checking the path and then opening it (a symlink race).
+const NO_FOLLOW: number | undefined = constants.O_NOFOLLOW;
 const NON_BLOCKING = constants.O_NONBLOCK ?? 0;
 
 function assertOwnerOnlyRegularFile(metadata: Stats, label: string): void {
@@ -44,15 +45,18 @@ function assertOwnerOnlyRegularFile(metadata: Stats, label: string): void {
  * one validated and read, and at most one byte past the limit is read.
  */
 export function readOwnerOnlyCredentialFile(path: string, maxBytes: number, label: string): string {
-  if (!NO_FOLLOW) assertOwnerOnlyRegularFile(lstatSync(path), label);
+  if (NO_FOLLOW === undefined) throw new Error(`${label} cannot be read safely on this platform: opening a file without following a symlink is unsupported.`);
   let descriptor: number;
   try { descriptor = openSync(path, constants.O_RDONLY | NO_FOLLOW | NON_BLOCKING); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     // A final symlink: ELOOP on Linux and macOS, EMLINK on FreeBSD.
     if (code === "ELOOP" || code === "EMLINK") throw new Error(`${label} must be in an owner-only regular file.`);
-    // Report a missing, special or shared path as before; otherwise the open error itself.
-    assertOwnerOnlyRegularFile(lstatSync(path), label);
+    // Report a missing, special, shared or oversized path as the earlier lstat-first reader did;
+    // otherwise the open error itself. This metadata is used for messages only, never for reading.
+    const metadata = lstatSync(path);
+    assertOwnerOnlyRegularFile(metadata, label);
+    if (metadata.size > maxBytes) throw new Error(`Invalid ${label.toLowerCase()} file.`);
     throw error;
   }
   try {
