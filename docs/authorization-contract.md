@@ -129,6 +129,12 @@ fails with `unauthenticated` when the listener has closed, the credential is
 revoked or rotated, the actor differs or the coordination session changed. It
 never falls back to another credential and never substitutes another actor.
 
+A verifier that throws gives no answer. That covers a throw from `verify` or
+`current` and a throw from a getter on the object they return. The boundary
+handles it exactly as a `null` answer: `unauthenticated` with reason
+`invalid_credential` at mint and `credential_no_longer_valid` at revalidation.
+The thrown value is not attached to the error and is not passed on.
+
 `acceptanceTable` lists every accepted mode × listener × credential
 combination. `resolveAcceptance` rejects everything else:
 
@@ -193,8 +199,7 @@ clock. Of the runtime's checks before it issues a provider actor and when it
 revalidates one (`isCurrentProviderSession`), the adapter makes these:
 
 - the provider is eligible, through the injected check above;
-- the session ID is at most 512 characters long and is read for the
-  adapter's own provider ID;
+- the session is read for the adapter's own provider ID;
 - the principal kind is `owner` or `human`;
 - the principal ID is present and the mapping's link time is canonical;
 - the evidence belongs to this session and subject, and its authentication
@@ -206,6 +211,11 @@ revalidates one (`isCurrentProviderSession`), the adapter makes these:
 
 `verify` also refuses when the staged subject, creation time or method
 disagrees with committed state, as the runtime's own resolution does.
+
+The adapter also refuses a session ID longer than 512 characters before any
+read. Actor issue and `isCurrentProviderSession` have no such limit; the cap
+is the one the runtime applies to a retained session
+(`validateRetainedRuntimeSession`). The adapter is stricter here.
 
 One runtime check differs. The runtime refuses an actor once the session
 expiry it captured at issue has passed. The adapter keeps no expiry. It reads
