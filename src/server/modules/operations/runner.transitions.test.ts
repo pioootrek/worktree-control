@@ -142,6 +142,25 @@ describe("expected transitions: claim.release", () => {
     }
   });
 
+  it("a retried key is decided on the record's resolution before its state is reported", async () => {
+    const notFound = { ok: false, error: { category: "not_found", status: 404, reason: "resource_not_found", retry: "none", effect: "not_started" } };
+    for (const variant of ["unknown", "started", "reserved", "fingerprint"] as const) {
+      const { world: fixture, alice, runner, idempotency } = world();
+      const operation = claimRelease(fixture, { report: "none" });
+      // The first attempt ends `unknown` (its transition was never reported).
+      expect(await runner.run(operation, alice.context, { claimId: CLAIM.id }, key("k-1")), variant)
+        .toMatchObject({ ok: false, error: { reason: "transition_unconfirmed" } });
+      if (variant === "started" || variant === "reserved") for (const record of idempotency.entries.values()) record.state = variant;
+      // With access, the record's state is reported.
+      const retry = () => runner.run(operation, alice.context, { claimId: variant === "fingerprint" ? "claim-2" : CLAIM.id }, key("k-1"));
+      expect(await retry(), variant).toMatchObject({ ok: false, error: {
+        reason: variant === "unknown" ? "previous_attempt_outcome_unknown" : variant === "fingerprint" ? "idempotency_conflict" : "request_in_progress" } });
+      // Without it, nothing about the attempt is: not even a conflict or an unknown outcome.
+      fixture.grants.revokeAll(alice.id);
+      expect(await retry(), variant).toEqual(notFound);
+    }
+  });
+
   it("a change the handler reports but never made is not confirmed", async () => {
     const { world: fixture, alice, runner } = world();
     const result = await runner.run(claimRelease(fixture, { change: false }), alice.context, { claimId: CLAIM.id });

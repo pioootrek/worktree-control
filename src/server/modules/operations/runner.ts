@@ -731,6 +731,10 @@ export class OperationRunner {
             // operation's own transition, so the record is read before anything is resolved.
             const record = lookup();
             if (record) {
+              // Decided on the record's own resolution (its commit point once started) before its
+              // state is reported: a caller who lost access to what the attempt was authorized
+              // against learns nothing about it, not even a conflict or an unknown outcome.
+              this.decided(prepared, gate.requirement, record.resources);
               return { kind: "replay" as const, value: existing(record, () => {
                 if (!record.transitions) throw new OperationError("internal", "invalid_idempotency_record");
                 return this.projectRetained(operation, record.result, this.transitionRelease(prepared, gate, refs, record.resources, record.transitions));
