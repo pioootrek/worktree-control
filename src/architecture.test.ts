@@ -54,7 +54,9 @@ function reachable(entry: string): { files: string[]; packages: string[] } {
   return { files: [...seen].map(localName), packages: [...packages] };
 }
 
-// The worker-only process ships without the dashboard, MCP and account provider (W2 packaging).
+// The worker composition and its command exclude the dashboard, MCP and account provider. This
+// fences those modules, not the launched entry: `worker start` still runs through `cli/index.ts`,
+// which loads the controller code without starting it, until packaging adds a dedicated entry.
 // Knowledge, backups, dev-vault and the authentication module stay reachable through the SQLite
 // store, restore handoff recovery and the test queue; excluding them needs changes in those modules.
 const WORKER_FORBIDDEN_FILES = [

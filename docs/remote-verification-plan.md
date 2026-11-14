@@ -67,12 +67,30 @@ must be an owner-only regular file. It holds one opaque token of 16 to 2048
 visible ASCII characters, so a legacy worker token and a later installation or
 agent token both pass.
 
+If startup fails after the lock is taken, the worker stops everything it
+started before the first poll. It releases the lock only when every cleanup
+step succeeds. Otherwise it keeps running with the lock held and exit status 1
+for operator recovery, as `start` does.
+
 Local operator commands run with the worker stopped, because the worker holds
 the lock. On a fresh data directory, `project add` needs no credential.
 `auth token generate` issues an installation token. That token, passed as
-`WORKTREE_CONTROL_TOKEN`, authorizes `remote-verification provision`,
-`inspect` and `reconcile`. Provisioning imports the broker's worker principal
-with `worker.principalId`; the worker credential comes from the broker.
+`WORKTREE_CONTROL_TOKEN`, authorizes `remote-verification provision`, which
+imports the broker's worker principal with `worker.principalId`. The worker
+credential comes from the broker.
+
+`remote-verification inspect` and `reconcile` require an owner session, passed
+as `WORKTREE_CONTROL_OWNER_TOKEN`. The installation token is refused by both. A
+worker-only data directory has no owner at first: `identity bootstrap-owner`
+creates one and prints its session token once. `identity recover-owner` issues
+a new session for that owner. Both run offline with the worker stopped. The
+accepted authorization target removes owner sessions, so these two commands
+need a replacement in that release.
+
+`worker start` still runs through the shared CLI entry. That entry loads the
+controller's HTTP, MCP and `ControlService` code but does not start it. The
+architecture test fences the worker composition, not this entry. A dedicated
+worker entry follows with packaging.
 
 ## Owner need and priority
 
