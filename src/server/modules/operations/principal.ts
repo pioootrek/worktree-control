@@ -31,8 +31,11 @@ export interface PrincipalDecisionInput {
  * The stored principal has no credential, coordination session or provider
  * evidence, so it never passes a session predicate, `intent_origin` or a
  * fresh-login requirement. An account is evaluated as the kind the grants
- * store records for it now; an unknown or disabled account holds nothing.
- * `installation` and `operator` hold full authority. Returns the decision;
+ * store records for it now; an unknown or disabled account holds nothing and
+ * is never allowed: a reference it would need is `not_found` (masking), and
+ * a requirement that needs no grant (`authenticated`) is
+ * `forbidden`/`principal_unavailable`. `installation` and `operator` hold
+ * full authority. Returns the decision;
  * never throws for a denial. A malformed principal or requirement is
  * `forbidden`/`invalid_principal`.
  */
@@ -42,18 +45,24 @@ export function decideForPrincipal(input: PrincipalDecisionInput): Decision {
   try { requirement = frozenOperationRequirement(input.requirement); } catch { requirement = null; }
   if (!principal || !requirement) return Object.freeze({ allowed: false as const, category: "forbidden" as const, reason: "invalid_principal" });
   let actor: Actor;
+  let unavailable = false;
   if (principal.kind === "installation") actor = Object.freeze({ kind: "installation" as const });
   else if (principal.kind === "operator") actor = Object.freeze({ kind: "operator" as const, via: "unix" as const });
   else {
     const stored = synchronous(input.grants.accountKind(principal.accountId), "grants_not_synchronous");
-    // An unknown or disabled account is evaluated with no grants at all: `effectivePermissions` yields nothing for it.
+    // An unknown or disabled account has no actor kind. It is decided as an account holding no grants
+    // (`effectivePermissions` yields nothing for it), so masking answers first, and fails closed even
+    // where no grant is needed (`authenticated`, `agents: false`).
+    unavailable = stored !== "human" && stored !== "agent";
     actor = stored === "agent"
       ? Object.freeze({ kind: "agent" as const, accountId: principal.accountId })
       : Object.freeze({ kind: "human" as const, accountId: principal.accountId });
   }
   const authority: CurrentAuthority = Object.freeze({ actor, mode: input.mode, listener: input.listener, evidence: null, coordinationSession: null });
-  return decideWith({
+  const decision = decideWith({
     authority, requirement, resources: input.resources, now: input.now, projects: input.projects, credential: null,
     permissions: effectivePermissions(actor, input.grants),
   });
+  if (unavailable && decision.allowed) return Object.freeze({ allowed: false as const, category: "forbidden" as const, reason: "principal_unavailable" });
+  return decision;
 }

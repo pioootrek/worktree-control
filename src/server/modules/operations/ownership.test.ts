@@ -8,7 +8,7 @@ import { decideForPrincipal } from "./principal";
 import { createReleaseContext } from "./release";
 import { effectivePermissions } from "./grants";
 import {
-  allOf, intentOrigin, onProject, requestSubmitter, scheduleOwner,
+  allOf, authenticated, intentOrigin, onProject, requestSubmitter, scheduleOwner,
   type IntentOrigin, type OperationRequirement, type ResourceRef, type StoredPrincipal,
 } from "./requirements";
 import { resolveAll } from "./resolver";
@@ -171,6 +171,29 @@ describe("remote_request and request_submitter", () => {
       .toEqual({ allowed: false, category: "login_stale", reason: "fresh_login_required" });
     expect(decideForPrincipal({ ...base, principal: { kind: "mallory" } as unknown as StoredPrincipal, requirement: needs }))
       .toEqual({ allowed: false, category: "forbidden", reason: "invalid_principal" });
+  });
+
+  it("stored principals: an unknown or disabled account fails closed where no grant is needed", () => {
+    const { world: fixture, alice } = world();
+    const base = { resources: {}, grants: fixture.grants, now: fixture.clock.now, mode: "better-auth" as const, listener: "worker" as const };
+    const unknown = { kind: "account" as const, accountId: A("nobody") };
+    const unavailable = { allowed: false, category: "forbidden", reason: "principal_unavailable" };
+    expect(decideForPrincipal({ ...base, principal: unknown, requirement: { require: authenticated() } })).toEqual(unavailable);
+    expect(decideForPrincipal({ ...base, principal: unknown, requirement: { require: authenticated(), agents: false } })).toEqual(unavailable);
+    // Disabled: the grants store no longer records a kind for the account, whatever grants remain stored.
+    fixture.grants.kinds.delete(alice.id);
+    const disabled = { kind: "account" as const, accountId: alice.id };
+    expect(decideForPrincipal({ ...base, principal: disabled, requirement: { require: authenticated() } })).toEqual(unavailable);
+    expect(decideForPrincipal({ ...base, principal: disabled, requirement: { require: authenticated(), agents: false } })).toEqual(unavailable);
+    // A referenced resource is still masked first, as for any account holding nothing.
+    const resources = resolveAll(fixture.resolver, { project: { kind: "project", id: projectA } });
+    expect(decideForPrincipal({ ...base, resources, principal: disabled, requirement: { require: onProject("tests:run", "project") } }))
+      .toEqual({ allowed: false, category: "not_found", reason: "resource_not_found" });
+    // A known account still passes an `authenticated` requirement, and `agents: false` still refuses an agent.
+    const robot = fixture.agent("robot");
+    expect(decideForPrincipal({ ...base, principal: { kind: "account", accountId: robot.id }, requirement: { require: authenticated() } })).toMatchObject({ allowed: true });
+    expect(decideForPrincipal({ ...base, principal: { kind: "account", accountId: robot.id }, requirement: { require: authenticated(), agents: false } }))
+      .toEqual({ allowed: false, category: "forbidden", reason: "human_only" });
   });
 
   it("is closed outside the synchronous admitted phase", async () => {
