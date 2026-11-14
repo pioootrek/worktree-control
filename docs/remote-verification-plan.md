@@ -45,9 +45,9 @@ See the [remaining implementation slices](knowledge/AGENTS.md) (Knowledge attach
 
 `worktree-control worker start --config FILE` runs a machine as a worker only.
 It is experimental and speaks the unchanged version 1 protocol. It takes the
-singleton controller lock on its data directory and opens the store like
-`start`, including migrations, the security fence and restore handoff
-completion. It accepts `--data-dir`, `--state-dir`, `--backup-dir` and
+singleton controller lock, `controller.lock` in its state directory, and opens
+the store like `start`, including migrations, the security fence and restore
+handoff completion. It accepts `--data-dir`, `--state-dir`, `--backup-dir` and
 `--backup-before-migration`. It then runs file logs, run directories, the test
 queue, Git reading, worker recovery and the outbound poll loop. Unconfirmed
 remote cleanup still blocks test admission at startup.
@@ -63,14 +63,20 @@ The configuration file is separate from `--remote-verification-config`:
 `{"version": 1, "workerId", "origin", "credentialFile", "workspaceRoot",
 "allowLoopbackHttpFixture"?, "mappings": [...]}`. Unknown keys, including
 `listener`, are rejected; mappings use the embedded schema. The credential file
-must be an owner-only regular file. It holds one opaque token of 16 to 2048
-visible ASCII characters, so a legacy worker token and a later installation or
-agent token both pass.
+must be an owner-only regular file. It is opened once without following a
+symlink; where the platform has no such open (Windows), the credential is
+refused. It holds one opaque token of 16 to 2048 visible ASCII characters, so a
+legacy worker token and a later installation or agent token both pass.
 
-If startup fails after the lock is taken, the worker stops everything it
-started before the first poll. It releases the lock only when every cleanup
-step succeeds. Otherwise it keeps running with the lock held and exit status 1
-for operator recovery, as `start` does.
+If startup fails after the lock is taken and before the first poll, the worker
+has admitted no job and owns no process tree. It runs every cleanup step for
+what it opened, newest first, continuing after a failed step, and then always
+attempts to release the lock. It exits with status 1 and reports the original
+error; when a cleanup step or the release also failed, it adds that cleanup did
+not complete and how many steps failed. It never keeps running after a failed
+startup. A failed shutdown after polling has
+started is different: the worker keeps the lock and keeps running with exit
+status 1 for operator recovery.
 
 Local operator commands run with the worker stopped, because the worker holds
 the lock. On a fresh data directory, `project add` needs no credential.
