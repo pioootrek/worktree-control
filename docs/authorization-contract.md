@@ -938,7 +938,7 @@ These are not implemented here. The slices that mount the contract own them.
   transport, and every product operation of the catalogue except
   `session.describe`. The extensions of slice 4 are exercised by test
   fixtures only.
-- The disposition of the 204 current operations: a revised draft under review
-  in [authorization operation dispositions](authorization-operation-dispositions.md).
+- Moving the 204 current operations onto the registry, as decided in the
+  accepted [authorization operation dispositions](authorization-operation-dispositions.md).
 - Admin without `secrets` and reader with `logs:read` do not guarantee
   non-disclosure of secrets that an application prints into its logs.
