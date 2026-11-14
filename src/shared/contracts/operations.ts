@@ -40,7 +40,7 @@ export const projectPermissions = Object.freeze([
 export type ProjectPermission = typeof projectPermissions[number];
 
 export const installationPermissions = Object.freeze([
-  "accounts:manage", "projects:create", "projects:remove",
+  "accounts:manage", "projects:create",
   "capacity:read", "capacity:write", "settings:write",
   "backups:manage", "workers:manage", "diagnostics:read", "vault:recover",
 ] as const);

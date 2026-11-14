@@ -149,6 +149,9 @@ export class FakeAdmission implements DatabaseAdmission {
   outside<T>(operation: () => T): T { return operation(); }
 }
 
+/** A fixed test key for the idempotency fingerprint digest (32 bytes). Test-only. */
+export const FIXTURE_FINGERPRINT_KEY: Uint8Array = new Uint8Array(32).fill(7);
+
 export const P = (value: string) => projectId(value);
 export const A = (value: string) => accountId(value);
 const noCredentials: PresentedCredentials = { bearers: [], providerSession: null, legacySecret: false, browserHeaders: false };
@@ -198,9 +201,10 @@ export function createWorld(options: { now?: number } = {}) {
   /** Every disposal failure the runner reported, in order. */
   const disposalFailures: { operationId: string; kind: string }[] = [];
   const observer: OperationObserver = { streamDisposalFailed: event => { disposalFailures.push({ ...event }); } };
-  const runtime = (extra: { completionDeadlineMs?: number; idempotency?: IdempotencyStore; disposeTimeoutMs?: number } = {}): OperationRuntime => ({
+  const runtime = (extra: { completionDeadlineMs?: number; idempotency?: IdempotencyStore; disposeTimeoutMs?: number; fingerprintKey?: Uint8Array; queryDeadlineMs?: number } = {}): OperationRuntime => ({
     admission, resolver, grants: () => grants, now: () => clock.now, completionDeadlineMs: extra.completionDeadlineMs ?? 50,
     idempotency: extra.idempotency, disposeTimeoutMs: extra.disposeTimeoutMs ?? 50, observer,
+    fingerprintKey: extra.fingerprintKey ?? FIXTURE_FINGERPRINT_KEY, queryDeadlineMs: extra.queryDeadlineMs,
   });
   return { verifier, grants, resolver, admission, clock, listenerOpen, boundary, human, agent, installation, operator, runtime, disposalFailures };
 }

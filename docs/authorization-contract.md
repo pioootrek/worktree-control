@@ -22,12 +22,19 @@ independent review with eleven required changes is `575a4fe8`, and contract v1
 parent decisions A to L are in reply `ad5ac74a`. Decisions M and N are in
 `9d5ae2f7`; the second review, decisions O to V and the acceptance rule are in
 `6b95f3db`; the third review and decisions W and X are in `9403b43c`; the
-fourth review and decisions Y and Z are in `e33c6ace`.
+fourth review and decisions Y and Z are in `e33c6ace`. The contract
+extensions of slice 4 (described under
+[Contract extensions of slice 4](#contract-extensions-of-slice-4)) implement
+the planned deltas of `29cf8fa5`, which answer review `ce8aa214` (F1, F2, F3,
+F7, F8, F10). Owner decisions `42019833` (a claim is protection, not
+permission) and `fb1567d5` (only a human breaks a claim, never on MCP) and
+lead decision `46672ea8` apply.
 
 Code: `src/shared/contracts/operations.ts` (browser-safe vocabulary) and
 `src/server/modules/operations/` (public API in `index.ts`).
 
-This page states what the code enforces. Everything else is listed under
+This page states what the code enforces, including the
+[contract extensions of slice 4](#contract-extensions-of-slice-4). Everything else is listed under
 [Obligations of later slices](#obligations-of-later-slices) and
 [Not implemented](#not-implemented).
 
@@ -86,7 +93,8 @@ callbacks. The checked call sites and their answers:
 | `open` of a stream, or an iterator that is itself a thenable | `internal`/`invalid_stream` |
 | `OperationRuntime.now`, `OperationRuntime.grants`, `GrantsSnapshot` methods | `internal` with reason `runtime_not_synchronous` or `grants_not_synchronous` |
 | `ResourceResolver.resolve` | a failed lookup (see [Requirements and decisions](#requirements-and-decisions)) |
-| `ResourceResolver.listProjects` in `session.describe` | `internal`/`resolver_not_synchronous` |
+| `ResourceResolver.listProjects` in `session.describe` and for `any_project` | `internal`/`resolver_not_synchronous` |
+| `plan` of a query, `timeoutMs` of a wait, `receipt` of a secret-bearing operation | `internal` with reason `plan_not_synchronous` or `wait_not_synchronous`; a receipt is a failed completion step (`cleanup_unconfirmed`) |
 | `CredentialVerifier` `verify`, `current` | no credential: `unauthenticated` |
 | a listener's `open()`, the offline `lockHeld()` | closed: only a synchronous `true` keeps a listener open or the lock held |
 | `OperationObserver.streamDisposalFailed` | ignored, as any observer result |
@@ -146,9 +154,11 @@ The permission list is closed. Project permissions: `project:read`,
 `knowledge:write`, `knowledge:approve`, `knowledge:export`, `knowledge:import`,
 `attachments:read`, `attachments:write`, `secrets:read`, `secrets:write`,
 `roles:manage` and `worker:execute`. Installation permissions:
-`accounts:manage`, `projects:create`, `projects:remove`, `capacity:read`,
-`capacity:write`, `settings:write`, `backups:manage`, `workers:manage`,
-`diagnostics:read` and `vault:recover`.
+`accounts:manage`, `projects:create`, `capacity:read`, `capacity:write`,
+`settings:write`, `backups:manage`, `workers:manage`, `diagnostics:read` and
+`vault:recover`. `projects:remove` was dropped (`29cf8fa5` delta 9, OPEN-3):
+there is no hard delete of a project, and a requirement naming it is rejected
+at registration.
 
 | Role | Scope | Recipient | Permissions |
 | --- | --- | --- | --- |
@@ -192,8 +202,13 @@ of these forms:
 - `allOf`, a conjunction over one or several resources;
 - `collection`, filtered per item at release (several are allowed; an item
   needs all of them);
-- a named predicate: `claim_holder`, `run_originating_session` or
-  `worker_assignment`.
+- `any_project(permission)`, for aggregates (see
+  [Aggregates](#aggregates));
+- `same_project(slots)`: every named slot resolves to one and the same
+  project;
+- a named predicate: `claim_holder`, `run_originating_session`,
+  `worker_assignment`, `claim_holder_if_claimed`, `schedule_owner`,
+  `request_submitter` or `intent_origin`.
 
 The `agents: false` and `freshLogin` flags complete the requirement.
 
@@ -212,7 +227,11 @@ adapter and runs in this order:
    slot name) fails closed. Otherwise the decision is `not_found` with reason
    `resource_not_found`. The answer is the same for a missing and an invisible
    resource. It does not depend on the flags or on the order of conjunction
-   branches.
+   branches. Ownership masking follows: a schedule of another owner
+   (`schedule_owner`), an intent of another principal or credential
+   (`intent_origin`) and slots bound by `same_project` that resolve to
+   different projects are `not_found` too, decided before every other part of
+   the requirement.
 2. The human-only flag: `forbidden`/`human_only` for an agent.
 3. The requirement: `forbidden`/`permission_denied`, or a predicate's own
    denial. Predicates are evaluated only on visible resources.
@@ -220,16 +239,19 @@ adapter and runs in this order:
    `forbidden`/`fresh_login_unavailable` for an agent.
 
 Visibility follows decision M above. Every decision is a new frozen value.
-Full authority passes permissions, the human-only flag and fresh
-login. It is still subject to resource resolution and to the predicates that
-protect foreign claims, runs and assignments.
+Full authority passes permissions, `any_project`, the human-only flag and
+fresh login, and manages every schedule. It is still subject to resource
+resolution and to the predicates that protect foreign claims (including
+`claim_holder_if_claimed`), runs, assignments, submitted requests and
+intents.
 
 Fresh login holds when `0 <= now - authenticatedAt < 600000`. The value comes
 only from current provider evidence; missing or malformed evidence is stale.
 
 The `ResourceResolver` port maps registrations, claims, test runs, profiles,
-Vault entries, Knowledge records and worker attempts each to exactly one
-project or to not-found. It never searches another namespace. `resolveAll`
+Vault entries, Knowledge records, worker attempts, project claim slots
+(`project_claim`), schedules, remote requests (`remote_request`) and saved
+test-run intents (`test_intent`) each to exactly one project or to not-found. It never searches another namespace. `resolveAll`
 returns a frozen record with a `null` prototype that holds deep, frozen copies.
 It treats a malformed or mismatched answer as not-found.
 
@@ -253,9 +275,12 @@ caller cannot see exists:
 
 Decision Y. In every admitted phase that decides, the runner first does
 everything that can fail independently of the referenced resources:
-authority revalidation, the clock (`OperationRuntime.now`), the grants
-snapshot (`OperationRuntime.grants`) and the effective permissions, which make
-every `GrantsSnapshot` call. Only then does `resolveAll` run its three passes.
+authority revalidation and the listener exclusion, the clock
+(`OperationRuntime.now`), the grants snapshot (`OperationRuntime.grants`), the
+effective permissions, which make every `GrantsSnapshot` call, and, only for a
+requirement with an `any_project` part, the current project list
+(`ResourceResolver.listProjects`). Only then does `resolveAll` run its three
+passes.
 A fault before resolution therefore gives the same answer whatever exists, and
 the resolver is not called. After resolution only `decideWith` runs before the
 answer. It reads the frozen authority, the frozen requirement, the frozen
@@ -271,8 +296,9 @@ on whether the failing reference exists can still reveal that. Resolvers
 return `null` for a missing reference and throw only on a fault.
 
 Every decision point resolves through this path: admission, the recheck
-before an effect and before an idle commit point, the release, a replay, a
-stream open and each stream event. A replay is decided after its phase's
+before an effect and before an idle commit point, `recheck()` inside an idle
+effect, the release, a replay, a stream open, each stream event and both
+admitted phases of a query. A replay is decided after its phase's
 admission allowed the current resolution, reusing that phase's permissions.
 `session.describe` references no resource; it lists projects only after an
 allowed decision.
@@ -289,14 +315,17 @@ adapter.
 
 ## Operations and the runner
 
-An operation is `Operation<Input, InternalResult, PublicResult>`. It is either
-a `read` or a `mutation`. `StreamOperation` covers streams. The
+An operation is `Operation<Input, InternalResult, PublicResult>`. It is a
+`read`, a `query` or a `mutation`. `StreamOperation` covers streams, including
+bounded one-event waits. There is no `wait` kind. The
 `OperationRegistry` rejects duplicate and malformed IDs. It also rejects
 requirements with unknown permissions, predicates or slot names, empty
-conjunctions, invalid public keys and malformed effects. It registers a frozen
-copy whose requirement, allowlist and effect are deeply frozen. The only real
-operation is `session.describe`, which is frozen and registered on no
-transport.
+conjunctions, invalid public keys, malformed effects, transition lists,
+secret hooks, wait bounds and listener exclusions. It registers a frozen copy
+whose requirement, allowlist, effect, transition list, wait bounds and
+exclusions are frozen. The only real operation is `session.describe`, which is
+frozen and registered on no transport. Every other operation in the tests is a
+fixture.
 
 `OperationRunner` runs a mutation as these admitted phases, built on
 `src/server/database-admission.ts`:
@@ -363,6 +392,11 @@ Decision N. The operation definition fixes the commit point through
 A malformed `commitPoint` is rejected at registration, and at run time before
 anything happens, as `internal`/`invalid_operation`.
 
+Every effect scope also has `transition(slot, result)` (see
+[Expected transitions](#expected-transitions)), and the scope of an `idle`
+effect has `recheck()` (see
+[Claims and multi-step effects](#claims-and-multi-step-effects)).
+
 ### Streams
 
 Streams open after an admitted decision. Each event is awaited outside
@@ -392,16 +426,22 @@ phase. Decision T:
 
 ## Idempotency
 
-A mutation accepts an idempotency key only when it declares `retain` and the
-runtime has an `IdempotencyStore`.
+A mutation accepts an idempotency key only when it declares `retain`, the
+runtime has an `IdempotencyStore` and a fingerprint key
+(`OperationRuntime.fingerprintKey`, at least 32 bytes, copied at
+construction). Without the key, a request with an idempotency key is
+`unavailable`/`idempotency_unavailable`; the operation still runs without one.
 
 An operation that declares `retain` accepts only JSON-domain input, with or
 without a key (decision V). The raw input passes the strict release serializer
 (see [Release and errors](#release-and-errors)). Anything else is
 `invalid_request`/`invalid_input` before any admission. `parse` receives the
-serializer's canonical copy. The fingerprint is the canonical text of that
-copy: JSON with object keys sorted by code unit, where `-0` is `0`. Key order
-therefore never matters, and a `Date` is never equal to its string. A key on any other operation is
+serializer's canonical copy. The canonical text of that copy is JSON with
+object keys sorted by code unit, where `-0` is `0`. Key order therefore never
+matters, and a `Date` is never equal to its string. The stored fingerprint is
+a keyed digest of the operation ID and that text, `hmac-sha256:v1:<hex>`
+(`29cf8fa5` delta 7). The text itself is never stored, and the same input
+under another key never matches. A key on any other operation is
 `invalid_request`/`idempotency_not_supported`. Without a store it is
 `unavailable`/`idempotency_unavailable`. Reads and streams never take a key.
 
@@ -464,7 +504,10 @@ the resources stored with the result. If the original project is no longer
 visible to the caller, the answer is `not_found`. If the current resolution
 differs from the stored one (moved, deleted and recreated, or changed
 relation), the answer is `conflict`/`resource_changed`. Only then is the
-stored result projected and released.
+stored result projected and released. An operation with expected transitions
+replays as described under [Expected transitions](#expected-transitions); a
+secret-bearing operation replays its receipt (see
+[Secret-bearing operations](#secret-bearing-operations)).
 
 Retained internal results must be structured-cloneable plain data. Store
 adapter obligations are listed under
@@ -537,6 +580,246 @@ a thrown value is guarded too. Whatever a handler, projector, finalizer or
 stream source throws, `run` resolves to a well-formed error, and so do a
 replay and every stream error item. `run` never rejects.
 
+## Contract extensions of slice 4
+
+These implement the planned deltas of `29cf8fa5` and the two additions of the
+same reply (`intent_origin`; coordination sessions are not part of this). All
+of it is unmounted, like the rest of the module.
+
+### Queries
+
+Kind `query` (delta 1, review F1). Discovery, hashing and filesystem reads
+cannot run inside a synchronous `read`. A query runs in three steps:
+
+1. In one admitted phase: decide, then `plan(input, scope)`, which captures
+   synchronously what the work needs.
+2. Outside admission: `work(plan, signal)`. A caller that already holds
+   admission, which the first phase joined, is suspended through `idle` for
+   the work, so other admissions and authentication-provider borrows proceed
+   while it waits. The signal aborts on caller
+   cancellation (`unavailable`/`request_cancelled`, `retry`) and at the
+   deadline (`unavailable`/`query_timed_out`, `retry`). The deadline is
+   `OperationRuntime.queryDeadlineMs` (default 30 s); an operation's own
+   `timeoutMs` can only shorten it. A result or failure that settles after the
+   abort is ignored and never becomes an unhandled rejection.
+3. In a new admitted phase (after re-admission, for a suspended caller):
+   decide again, require the resolution unchanged
+   (`conflict`/`resource_changed`) and the request not aborted, then project
+   and release. A failure of the work is released only after this decision,
+   so a caller who lost access learns nothing from it.
+
+A query takes no idempotency key. Nothing it does may be an effect.
+
+### Waits
+
+A wait is a `StreamOperation` with `wait: { maxWaiters, timeoutMs(input) }`.
+It delivers at most one event, released under the same per-event decision as
+every stream event:
+
+- At most `maxWaiters` waits of one operation ID are open per runner. Another
+  is `busy`/`too_many_waiters` with `retry`, before admission. A slot is
+  released exactly once, however the wait ends, including a refused opening.
+- `timeoutMs(input)` must be an integer from 1 to `MAX_WAIT_TIMEOUT_MS`
+  (20000), otherwise `invalid_request`/`invalid_wait_timeout`. At the timeout
+  the stream ends with `done` and no event.
+- After its one event, the stream ends; the next read is `done`.
+- On timeout and after the event, the source is disposed as when the consumer
+  ends the stream (decision T).
+
+### Expected transitions
+
+Delta 2, review F2. A mutation may list in `transitions` the slots whose
+resource its own effect changes or removes, for example the holder relation
+of `claim.release` or the mapping of `registration.detach`. Without this, the
+release decision on the current resolution would refuse the operation's own
+receipt (`claim_not_held`, `not_found` or `resource_changed`).
+
+- Past its commit point and before it settles, the handler reports each
+  declared slot's result with `transition(slot, result)`: `unchanged`,
+  `removed`, or `changed` with the resulting project and relation. A call
+  before the commit point is `internal`/`transition_before_commit`, for an
+  undeclared slot `internal`/`undeclared_transition`, after settling
+  `internal`/`effect_scope_closed`.
+- In the completion phase, before the lease is released, the runner confirms
+  each report with the resolver. `removed` needs the reference missing;
+  `unchanged` needs the same version and project; `changed` needs a new
+  version with the reported project and relation. An unreported slot, a
+  mismatch or a resolver failure leaves the result unconfirmed: the record
+  becomes `unknown` and the caller gets `conflict`/`transition_unconfirmed`
+  with effect `committed`.
+- The confirmed resolution of each declared slot is stored with a `completed`
+  record (`IdempotencyRecord.transitions`, `null` for a removed slot).
+- Release and replay resolve the current state, where only a declared slot may
+  be missing. They then decide twice: on the resolution recorded at the commit
+  point, with the full requirement (historical authority), and on the
+  resulting resolution, without predicates on declared slots and without
+  requirements on removed slots. Finally the current resolution must equal
+  the resulting one: the confirmed result for every declared slot, the commit
+  point for every other slot. Any other change, including an unrelated
+  concurrent change of an undeclared slot, is `conflict`/`resource_changed`.
+  Resolver version changes are never suppressed.
+- For an operation with transitions, the idempotency record is read before
+  the current resolution, because after the operation's own transition the
+  current state legitimately differs from the commit point. Before anything
+  about the record is reported (`idempotency_conflict`,
+  `previous_attempt_outcome_unknown`, `request_in_progress` or a replay), the
+  requirement is decided on the record's own resolution: the admission's,
+  or the commit point's once the attempt started. A caller who lost access to
+  it gets `not_found`, never a conflict or an unknown outcome.
+- The projector receives the commit-point resolution only, so a receipt can
+  carry nothing the caller could not see before the effect. Which fields the
+  receipt holds stays the operation's choice.
+- If the effect failed, the transition is unconfirmed or cleanup is
+  unconfirmed, the runner still decides on the commit-point resolution before
+  it releases the error.
+
+### Claims and multi-step effects
+
+Delta 3, owner decision `42019833`. The predicate `claim_holder_if_claimed`
+holds when the slot's `claim` relation has no holder, or when its holder is
+the caller's coordination session (identifier, generation and credential).
+Otherwise it is `claim_held`/`claim_held_by_another_session`. Full authority
+is not exempt, and a caller without a coordination session only passes an
+absent claim.
+
+- Absence is a resolved fact, never a missing resource. Resource kind
+  `project_claim` is the claim slot of one project; its identifier is the
+  project identifier. It resolves while the project exists, to that project,
+  with a `claim` relation whose holder is `null` when no claim exists. Its
+  version changes whenever the claim changes, so a claim that appears between
+  phases also fails the unchanged-resolution rule.
+- `same_project("project", "claim")` binds the slots to one project. A claim of
+  another project is `not_found`, even when both are visible.
+- The scope of an `idle` effect has `recheck()`: it re-enters admission,
+  revalidates authority, reads current grants, re-resolves every resource and
+  requires the resolution of the commit point unchanged and the request not
+  aborted. A handler calls it while holding the lifecycle coordination (its
+  lease from `acquire`), immediately before each further effect, for example
+  after the stop inside a restart. It rejects with the denial. A rejection
+  that the handler rethrows unchanged past its commit point is released with
+  its own category and reason and effect `committed`: the earlier steps
+  happened and the refused one never began. The record becomes `unknown`, so a
+  retry inspects first. A handler that swallows the rejection and continues
+  acts against a denial, which the runner cannot prevent.
+- For an operation with expected transitions, `recheck()` past the commit
+  point applies the release rules of
+  [Expected transitions](#expected-transitions) to the steps so far. It
+  decides on the commit-point resolution with the full requirement, then on
+  the resulting resolution so far without predicates on declared slots and
+  without requirements on slots confirmed removed. A declared slot must be
+  unchanged or match the result its handler already reported with
+  `transition()`; every undeclared slot must be unchanged. Otherwise it is
+  `conflict`/`resource_changed`. A handler therefore reports a step's
+  transition before it calls `recheck()` for the next step.
+
+### Aggregates
+
+Delta 4, review F7. `any_project(permission)` holds for full authority,
+also on an installation without projects, and for an account that holds the
+permission on at least one current, visible project. A grant on a project that
+no longer exists does not count, and visibility alone (`secrets` or
+`executor` only) does not either. An `admin` passes only when a project
+exists. It is decided at every decision point, not by a projector, and it is
+independent of `collection`, which allows the call and filters items. A
+decision without a project list fails closed with
+`forbidden`/`project_list_unavailable`.
+
+### Durable ownership
+
+Delta 5, review F3, decisions `46672ea8` and `fb1567d5`. A stored principal
+is an account, `installation` or `operator`. `durablePrincipal(authority)`
+records the owner: the account of a human or agent, `operator` for the
+operator in better-auth mode, and `installation` otherwise (in open and token
+mode the operator and the installation are one principal).
+
+- Resource kind `schedule` carries its owner (relation `schedule`).
+- `schedule_owner` lets an account act only on schedules it owns. Any other
+  owner, including `installation` and `operator`, is masked as `not_found`
+  before the rest of the requirement, so a foreign schedule looks exactly like
+  a missing or invisible one. Full authority manages every schedule.
+- `ReleaseContext.owns(owner)` filters listed items by owner before
+  pagination: full authority owns every item, an account only its own.
+
+### Remote requests and stored principals
+
+Delta 6, review F8. Resource kind `remote_request` carries its stored
+submitter. `request_submitter` holds when the caller's durable principal is
+the submitter, otherwise `forbidden`/`not_submitter`; full authority is not
+exempt.
+
+The application authorization interface `decideForPrincipal` (also
+`PhaseScope.authorizePrincipal`) decides a requirement for a stored principal
+on its current grants, without replacing or changing the caller's context. An
+account is evaluated as the kind the grants store records now; an unknown or
+disabled account holds nothing and is never allowed. A resource it would need
+is masked as `not_found`, and a requirement that needs no grant
+(`authenticated`, also with `agents: false`) is
+`forbidden`/`principal_unavailable`. `installation` and `operator` hold full
+authority. A stored principal has no credential, coordination session or
+provider evidence, so it never passes a session predicate, `intent_origin` or
+fresh login. A malformed principal is `forbidden`/`invalid_principal`.
+`authorizePrincipal` works only while the admitted phase runs synchronously;
+afterwards, and in an `idle` effect, it throws `internal`/`phase_closed`.
+
+### Original intent
+
+Delta for OPEN-21. Resource kind `test_intent` carries the saved origin:
+principal, credential identifier and generation, project, worktree, preset,
+key, the origin digest and its digest version. The runner reads the caller's
+credential identity from the context registry; `CurrentAuthority` is
+unchanged. `intent_origin` holds when:
+
+- the origin's principal is the caller's durable principal, the credential
+  identifier and generation are the caller's, and the origin's project is the
+  resource's project. Otherwise the answer is `not_found`, masked like a
+  missing intent. A new coordination session under the same credential
+  passes; a rotated credential or another principal does not, and an operator,
+  which has no credential, never adopts an intent;
+- the digest version is supported (`INTENT_DIGEST_VERSIONS`, today only 1),
+  otherwise `forbidden`/`intent_digest_unsupported`;
+- the digest equals `intentOriginDigest(version, origin)`, otherwise
+  `forbidden`/`intent_digest_mismatch`. Version 1 is SHA-256 of a JSON array
+  binding the other fields.
+
+The version 1 digest is defined here, because no existing digest of task
+`6d680061` was found in this repository. An adapter that stores intents must
+use it, or add a version.
+
+### Secret-bearing operations
+
+Delta 7, review F10. A mutation with `secret: { receipt, projectReceipt }`
+must declare `retain`.
+
+- The first response is `project(result)`, which may deliver a secret once,
+  for example a token.
+- The store keeps only `receiptValue(receipt(result))`: a flat record of at
+  most 32 keys whose values are `null`, booleans, safe integers,
+  identifier-like strings (no spaces, quotes, slashes or `=`, at most 200
+  characters) or arrays of at most 256 such strings or integers. Nothing else
+  is retained, not the input and not the result. The fingerprint is a keyed
+  digest as for every retained operation.
+- A replay is reauthorized as before and returns `projectReceipt(receipt)`,
+  checked against the same allowlist. It never returns the secret.
+- A receipt that fails the check retains nothing: the record becomes
+  `unknown`, the caller gets `cleanup_unconfirmed`, and a retry gets
+  `outcome_unknown`.
+- The check stops a whole result or nested data from being retained by
+  accident. It cannot tell a secret that looks like an identifier from an
+  identifier: the operation chooses the receipt's fields.
+
+### Listener exclusion
+
+Owner decision `fb1567d5`. An operation may declare `excludedListeners`. In
+open and token mode the dashboard and MCP share the installation actor, so
+`claim.force_release` and `runtime.force_stop` exclude `mcp` in every mode.
+
+- `OperationRegistry.availableOn(id, listener)` and `idsOn(listener)` let a
+  transport register only what it may serve. An unknown ID is not available.
+- The runner refuses an excluded listener as
+  `not_found`/`operation_not_registered` before it parses the input, using
+  the listener recorded when the context was minted. Every admitted phase
+  checks the revalidated listener again.
+
 ## Accepted deviations
 
 The independent review in `ad5ac74a` assessed these choices of the first
@@ -561,9 +844,9 @@ implementation.
 The `run_originating_session` predicate only compares the caller's
 coordination session with the run's recorded origin session and credential.
 It is the rule for ordinary cancel from the originating session. It is **not**
-the I1 original-intent lookup. That lookup uses the saved origin-session
-digest with an explicit digest version from task `6d680061`, and this module
-does not implement it.
+the I1 original-intent lookup. That lookup is the `intent_origin` predicate
+(see [Original intent](#original-intent)); the query operation that uses it is
+not implemented.
 
 ## Unmounted guard
 
@@ -628,11 +911,22 @@ These are not implemented here. The slices that mount the contract own them.
 - **Coordination sessions and leases.** Issuance, lease secret, renewal,
   expiry, generation changes, disconnect and restart. The module only compares
   a `CoordinationSessionRef` that a verifier returns.
+- **Resolver adapter for the new kinds.** A `project_claim` resolves while its
+  project exists and carries a `claim` relation with a `null` holder when no
+  claim exists; its version changes with every claim change. `schedule`,
+  `remote_request` and `test_intent` carry their stored principal or origin.
+- **Store adapter for transitions and receipts.** A `completed` record keeps
+  its confirmed transitions; the source and rotation of the fingerprint key
+  (D6) belong to the adapter.
+- **Transports.** Register only operations that `availableOn` allows for the
+  listener, and never register `claim.force_release` or `runtime.force_stop`
+  on MCP.
 - **Background authorization specifications.** Queued or scheduled work keeps
   an immutable authorization specification and an owner reference, never a
   closure over a request.
-- **The I1 original-intent lookup.** It uses the saved origin-session digest
-  with an explicit digest version from task `6d680061`.
+- **The I1 original-intent lookup.** The predicate is implemented; the
+  `test_run.lookup_intent` query, the intent store and its digest adapter are
+  not.
 - **Bootstrap.** It injects an `OperationObserver` that logs stream disposal
   failures.
 
@@ -640,6 +934,10 @@ These are not implemented here. The slices that mount the contract own them.
 
 - Store adapters: the grants snapshot, resolver, credential verifier and
   idempotency store exist only as ports and in-memory test doubles.
+- Coordination-session issuance and storage (`coordination.*`), any
+  transport, and every product operation of the catalogue except
+  `session.describe`. The extensions of slice 4 are exercised by test
+  fixtures only.
 - The disposition of the 204 current operations: a revised draft under review
   in [authorization operation dispositions](authorization-operation-dispositions.md).
 - Admin without `secrets` and reader with `logs:read` do not guarantee

@@ -4,10 +4,10 @@ import {
   type ActorKind, type InstallationPermission, type ProjectId, type ProjectPermission, type PublicOperationError,
 } from "@/shared/contracts/operations";
 import { isFullAuthority, type CoordinationSessionRef, type CurrentAuthority } from "./authentication-context";
-import { projectVisible } from "./decide";
+import { durablePrincipal, projectVisible } from "./decide";
 import { OperationError } from "./errors";
 import type { EffectivePermissions } from "./grants";
-import type { ResolvedResources } from "./requirements";
+import type { ResolvedResources, StoredPrincipal } from "./requirements";
 
 export const MAX_PAGE_SIZE = 100;
 /** Nesting bound of a released value. */
@@ -29,6 +29,12 @@ export interface ReleaseContext {
   /** The caller's coordination session ID, for "own claim/run" projections. Never released itself. */
   ownsSession(session: Pick<CoordinationSessionRef, "id" | "credentialId"> | null): boolean;
   can(permission: ProjectPermission, projectId: ProjectId): boolean;
+  /**
+   * Durable ownership for per-item owner filtering (schedules, artifacts):
+   * full authority owns every item; an account only items it owns. Apply
+   * before pagination, as `filter` does.
+   */
+  owns(owner: StoredPrincipal | null): boolean;
   canInstallation(permission: InstallationPermission): boolean;
   visible(projectId: ProjectId): boolean;
   /**
@@ -70,6 +76,11 @@ export function createReleaseContext(authority: CurrentAuthority, permissions: E
     resources,
     ownsSession: other => !!other && !!session && other.id === session.id && other.credentialId === session.credentialId,
     can,
+    owns: owner => {
+      if (full) return true;
+      const own = durablePrincipal(authority);
+      return !!owner && owner.kind === "account" && own.kind === "account" && owner.accountId === own.accountId;
+    },
     canInstallation: permission => full || permissions.installation.has(permission),
     visible,
     filter: (items, projectOf, permission) => items.filter(item => releasable(projectOf(item), permission)),

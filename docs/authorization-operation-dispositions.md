@@ -127,31 +127,34 @@ From `src/shared/contracts/operations.ts` and
 | Predicates | `claim_holder`, `run_originating_session`, `worker_assignment` |
 | Resource kinds | `project`, `registration`, `claim`, `test_run`, `profile`, `vault_entry`, `knowledge_record`, `worker_attempt` |
 | Flags | `agents: false`, `freshLogin` |
-| Permissions | the closed list of 24 project and 10 installation permissions, including `projects:remove` |
+| Permissions | the closed list of 24 project and 9 installation permissions |
 | Roles | `reader`, `operator`, `maintainer`, `secrets`, `executor`, `admin` |
 | Replay and release | authorize and compare the original resource resolution (project, version, relation) again after the effect and on replay |
 
 ### 1.2 Planned contract extensions
 
 These are design decisions of `29cf8fa5` (deltas 1 to 9) plus the two
-additions of the same reply (`intent_origin`, `coordination.*`). They are
-**not implemented in PR #128**. They become the first pull request of slice 4
-([section 10](#10-proposed-cut-of-slice-4)). A row that needs one of them says
-so in its `Needs` column.
+additions of the same reply (`intent_origin`, `coordination.*`). They were
+not implemented in PR #128. The first pull request of slice 4
+([section 10](#10-proposed-cut-of-slice-4)) implements extensions 1 to 7, 9
+and 10 in the unmounted module, as recorded in the `Status` column and
+described in [the authorization contract](authorization-contract.md#contract-extensions-of-slice-4).
+No product operation, transport or store adapter uses them yet. A row that
+needs one of them says so in its `Needs` column.
 
-| # | Extension | Marker in `Needs` | What it adds |
-| --- | --- | --- | --- |
-| 1 | Kind `query` and waits as bounded one-event streams | `query`, `bounded_stream` | `query`: authorization in an admitted phase, asynchronous work outside admission, then a fresh decision with unchanged resolution before release. `project.wait` and `test_run.wait` are streams of at most one event with waiter limits and cancellation. There is no `wait` kind. Discovery, hashing and filesystem reads (`project.worktrees`, `test_preset.list`, `backup.preview`, `directory.browse`) are queries. See [section 2](#2-execution-shapes-and-expected-transitions). |
-| 2 | Expected transitions | `expected_transition` | An operation may declare which resource slots its effect changes or removes (`registration.move`, `registration.detach`, `claim.release`, `claim.force_release`, `runtime.switch`, `user_backup.save`). |
-| 3 | Predicate `claim_holder_if_claimed` | `claim_holder_if_claimed` | Owner decision OPEN-1 (`42019833`): with no claim anyone holding the permission may act; when a claim exists only its holder may; anyone else needs `claim.force_release` (`runtime:administer`). Needs a way to resolve an absent claim safely. |
-| 4 | Requirement kind `any_project(permission)` | `any_project` | Aggregates (`capacity.read`, `test_queue.read`, controller-wide events) require `project:read` on at least one project. Installation detail is a separate operation requiring `capacity:read`. |
-| 5 | Predicate `schedule_owner` | `schedule_owner` | Durable account ownership of an export schedule, evaluated on a server-resolved schedule resource. |
-| 6 | Resource kind `remote_request`, predicate `request_submitter`, two-principal evaluation | `remote_request`, `request_submitter` | Assignment evaluates the executor's context and, separately, the stored submitter's current grants through an application authorization interface. |
-| 7 | Secret-safe retention and once-only token delivery | `secret_safe_retention`, `token_delivery` | Keyed-digest fingerprints; ids-and-revisions receipts for secret-bearing operations; a token is delivered once. |
-| 8 | Separate profile structure and literal-value operations | none | Catalogue structure only; the split operations use the implemented requirement forms. |
-| 9 | Drop `projects:remove` | none | The permission leaves the closed vocabulary; code, documentation and fixtures change together in the first slice 4 pull request. `authorization-contract.md` and the code still list it today. |
-| 10 | Predicate `intent_origin` | `intent_origin` | Original principal, credential, project, worktree, preset, key and the saved origin digest with its version, for `test_run.lookup_intent`. |
-| 11 | Operations `coordination.open`, `coordination.renew`, `coordination.close` and the session store | `coordination` | Server-issued coordination sessions. Today the contract only compares a `CoordinationSessionRef` that a verifier returns. |
+| # | Extension | Marker in `Needs` | What it adds | Status |
+| --- | --- | --- | --- | --- |
+| 1 | Kind `query` and waits as bounded one-event streams | `query`, `bounded_stream` | `query`: authorization in an admitted phase, asynchronous work outside admission, then a fresh decision with unchanged resolution before release. `project.wait` and `test_run.wait` are streams of at most one event with waiter limits and cancellation. There is no `wait` kind. Discovery, hashing and filesystem reads (`project.worktrees`, `test_preset.list`, `backup.preview`, `directory.browse`) are queries. See [section 2](#2-execution-shapes-and-expected-transitions). | implemented, unmounted |
+| 2 | Expected transitions | `expected_transition` | An operation may declare which resource slots its effect changes or removes (`registration.move`, `registration.detach`, `claim.release`, `claim.force_release`, `runtime.switch`, `user_backup.save`). | implemented, unmounted |
+| 3 | Predicate `claim_holder_if_claimed` | `claim_holder_if_claimed` | Owner decision OPEN-1 (`42019833`): with no claim anyone holding the permission may act; when a claim exists only its holder may; anyone else needs `claim.force_release` (`runtime:administer`). Needs a way to resolve an absent claim safely. | implemented, unmounted: resource kind `project_claim`, requirement `same_project` and `recheck()` between steps of an effect |
+| 4 | Requirement kind `any_project(permission)` | `any_project` | Aggregates (`capacity.read`, `test_queue.read`, controller-wide events) require `project:read` on at least one project. Installation detail is a separate operation requiring `capacity:read`. | implemented, unmounted |
+| 5 | Predicate `schedule_owner` | `schedule_owner` | Durable account ownership of an export schedule, evaluated on a server-resolved schedule resource. | implemented, unmounted: resource kind `schedule` |
+| 6 | Resource kind `remote_request`, predicate `request_submitter`, two-principal evaluation | `remote_request`, `request_submitter` | Assignment evaluates the executor's context and, separately, the stored submitter's current grants through an application authorization interface. | implemented, unmounted: `decideForPrincipal` and `PhaseScope.authorizePrincipal` |
+| 7 | Secret-safe retention and once-only token delivery | `secret_safe_retention`, `token_delivery` | Keyed-digest fingerprints; ids-and-revisions receipts for secret-bearing operations; a token is delivered once. | implemented, unmounted; the key's source and rotation (D6) stay with the store adapter |
+| 8 | Separate profile structure and literal-value operations | none | Catalogue structure only; the split operations use the implemented requirement forms. | nothing to implement in the contract |
+| 9 | Drop `projects:remove` | none | The permission leaves the closed vocabulary; code, documentation and fixtures change together in the first slice 4 pull request. | implemented: removed from the code, the tests and both authorization documents |
+| 10 | Predicate `intent_origin` | `intent_origin` | Original principal, credential, project, worktree, preset, key and the saved origin digest with its version, for `test_run.lookup_intent`. | implemented, unmounted: resource kind `test_intent`, digest version 1; the lookup query is not |
+| 11 | Operations `coordination.open`, `coordination.renew`, `coordination.close` and the session store | `coordination` | Server-issued coordination sessions. Today the contract only compares a `CoordinationSessionRef` that a verifier returns. | not implemented (D1) |
 
 The planned contract changes do not need a general `anyOf` or a conditional
 requirement: the splits of extension 8 and the two import operations replace
@@ -1528,7 +1531,6 @@ operator command, so that no account reaches the permission through it.
 | `worker:execute` | `worker.poll` (the executor's evaluation, per item), `worker.report` |
 | `accounts:manage` | `account.create`, `account.enroll`, `account.list`, `account.get`, `account.disable`, `account.recover`, `account.token_issue`, `account.token_revoke`, `admin_role.grant`, `admin_role.revoke` |
 | `projects:create` | `project.create`, `directory.browse`; `project.create_from_import` (o) |
-| `projects:remove` | **no operation**; dropped from the vocabulary (planned extension 9, OPEN-3) |
 | `capacity:read` | `capacity.detail_read` |
 | `capacity:write` | `capacity.set` |
 | `settings:write` | `test_queue.set` |
@@ -1537,7 +1539,7 @@ operator command, so that no account reaches the permission through it.
 | `diagnostics:read` | `diagnostics.mcp` |
 | `vault:recover` | `vault.recover_key` |
 
-Permissions with no operation: `projects:remove`. Permission whose only
+Every permission has at least one operation. Permission whose only
 consumer is an operator-only surface in this release, so that no account reaches
 it: `knowledge:import` (and `project.create_from_import` for `projects:create`),
 accepted by the owner (`17802524`). `workers:manage` is reachable through

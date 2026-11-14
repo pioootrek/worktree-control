@@ -1,6 +1,9 @@
 import type { AccountId, ProjectId } from "@/shared/contracts/operations";
 import { OperationError } from "./errors";
-import { isSlotName, resourceKinds, type ResolvedResource, type ResolvedResources, type ResourceRef, type ResourceRelation } from "./requirements";
+import {
+  isSlotName, resourceKinds,
+  type IntentOrigin, type ResolvedResource, type ResolvedResources, type ResourceRef, type ResourceRelation, type StoredPrincipal,
+} from "./requirements";
 import { absorb, isThenable } from "./synchronous";
 
 /**
@@ -24,8 +27,31 @@ function copySession(value: unknown): { id: string; generation: number; credenti
   return isText(id) && Number.isSafeInteger(generation) && isText(credentialId) ? Object.freeze({ id, generation: generation as number, credentialId }) : undefined;
 }
 
+/** Deep, frozen copy of a stored principal; `undefined` when malformed. Reads own data properties only. */
+export function copyPrincipal(value: unknown): StoredPrincipal | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const kind = own(value, "kind");
+  if (kind === "installation" || kind === "operator") return Object.freeze({ kind });
+  if (kind !== "account") return undefined;
+  const accountId = own(value, "accountId");
+  return isText(accountId) ? Object.freeze({ kind, accountId: accountId as AccountId }) : undefined;
+}
+
+function copyOrigin(value: unknown): IntentOrigin | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const principal = copyPrincipal(own(value, "principal"));
+  const fields = ["credentialId", "projectId", "worktree", "preset", "key", "digest"].map(name => own(value, name));
+  const credentialGeneration = own(value, "credentialGeneration"), digestVersion = own(value, "digestVersion");
+  if (!principal || !fields.every(isText) || !Number.isSafeInteger(credentialGeneration) || !Number.isSafeInteger(digestVersion)) return undefined;
+  const [credentialId, projectId, worktree, preset, key, digest] = fields as string[];
+  return Object.freeze({
+    principal, credentialId, credentialGeneration: credentialGeneration as number, projectId: projectId as ProjectId,
+    worktree, preset, key, digest, digestVersion: digestVersion as number,
+  });
+}
+
 /** Deep, frozen copy of a relation; `undefined` when malformed. */
-function copyRelation(value: unknown): ResourceRelation | null | undefined {
+export function copyRelation(value: unknown): ResourceRelation | null | undefined {
   if (value === null || value === undefined) return null;
   if (typeof value !== "object") return undefined;
   const source = value as Record<string, unknown>;
@@ -46,6 +72,18 @@ function copyRelation(value: unknown): ResourceRelation | null | undefined {
       const { accountId, sessionId } = source.assignee as Record<string, unknown>;
       if (!(accountId === null || isText(accountId)) || !isText(sessionId)) return undefined;
       return Object.freeze({ kind: "worker_attempt", assignee: Object.freeze({ accountId: accountId as AccountId | null, sessionId }) });
+    }
+    case "schedule": {
+      const owner = copyPrincipal(source.owner);
+      return owner ? Object.freeze({ kind: "schedule", owner }) : undefined;
+    }
+    case "remote_request": {
+      const submitter = copyPrincipal(source.submitter);
+      return submitter ? Object.freeze({ kind: "remote_request", submitter }) : undefined;
+    }
+    case "test_intent": {
+      const origin = copyOrigin(source.origin);
+      return origin ? Object.freeze({ kind: "test_intent", origin }) : undefined;
     }
     default: return undefined;
   }
@@ -107,6 +145,20 @@ const byName = (left: string, right: string) => (left < right ? -1 : left > righ
  *    masks an invisible resource.
  */
 export function resolveAll(resolver: ResourceResolver, refs: Readonly<Record<string, ResourceRef>>): ResolvedResources {
+  return resolveWith(resolver, refs, new Set());
+}
+
+/**
+ * `resolveAll` where the slots in `optional` may be missing: such a slot is
+ * left out of the result instead of answering `not_found`. Used only for the
+ * declared transition slots of a release or replay, whose resulting state may
+ * be removal. Syntax, failure precedence and every other slot are unchanged.
+ */
+export function resolveAllowingMissing(resolver: ResourceResolver, refs: Readonly<Record<string, ResourceRef>>, optional: ReadonlySet<string>): ResolvedResources {
+  return resolveWith(resolver, refs, optional);
+}
+
+function resolveWith(resolver: ResourceResolver, refs: Readonly<Record<string, ResourceRef>>, optional: ReadonlySet<string>): ResolvedResources {
   const names = slotsOf(refs).sort(byName);
   // 1. Syntax.
   const references: ResourceRef[] = [];
@@ -133,7 +185,9 @@ export function resolveAll(resolver: ResourceResolver, refs: Readonly<Record<str
   // 3. One answer.
   const failure = answers.find(answer => "failed" in answer);
   if (failure && "failed" in failure) throw failure.failed;
-  if (answers.some(answer => !("found" in answer) || !answer.found)) throw new OperationError("not_found", "resource_not_found");
+  if (answers.some((answer, index) => (!("found" in answer) || !answer.found) && !optional.has(names[index]))) {
+    throw new OperationError("not_found", "resource_not_found");
+  }
   const resolved = Object.create(null) as Record<string, ResolvedResource>;
   answers.forEach((answer, index) => {
     if ("found" in answer && answer.found) Object.defineProperty(resolved, names[index], { value: answer.found, enumerable: true });
@@ -185,4 +239,44 @@ export function sameResolution(before: ResolvedResources, after: ResolvedResourc
     const a = own(before, name) as ResolvedResource | undefined, b = own(after, name) as ResolvedResource | undefined;
     return !!a && !!b && a.ref.kind === b.ref.kind && a.ref.id === b.ref.id && a.projectId === b.projectId && a.version === b.version;
   });
+}
+
+function samePrincipal(left: StoredPrincipal, right: StoredPrincipal): boolean {
+  if (left.kind !== right.kind) return false;
+  return left.kind !== "account" || (right.kind === "account" && left.accountId === right.accountId);
+}
+
+type RelationOf<K extends ResourceRelation["kind"]> = Extract<ResourceRelation, { kind: K }>;
+
+/** Structural equality of two validated relations (or both `null`). */
+export function sameRelation(left: ResourceRelation | null, right: ResourceRelation | null): boolean {
+  if (left === null || right === null) return left === right;
+  if (left.kind !== right.kind) return false;
+  switch (left.kind) {
+    case "claim": {
+      const a = left.holder, b = (right as RelationOf<"claim">).holder;
+      return !a || !b ? a === b : a.id === b.id && a.generation === b.generation && a.credentialId === b.credentialId;
+    }
+    case "test_run": {
+      const a = left.origin, b = (right as RelationOf<"test_run">).origin;
+      return !a || !b ? a === b : a.sessionId === b.sessionId && a.credentialId === b.credentialId;
+    }
+    case "worker_attempt": {
+      const a = left.assignee, b = (right as RelationOf<"worker_attempt">).assignee;
+      return !a || !b ? a === b : a.accountId === b.accountId && a.sessionId === b.sessionId;
+    }
+    case "schedule": return samePrincipal(left.owner, (right as RelationOf<"schedule">).owner);
+    case "remote_request": return samePrincipal(left.submitter, (right as RelationOf<"remote_request">).submitter);
+    case "test_intent": {
+      const a = left.origin, b = (right as RelationOf<"test_intent">).origin;
+      return samePrincipal(a.principal, b.principal) && a.credentialId === b.credentialId && a.credentialGeneration === b.credentialGeneration
+        && a.projectId === b.projectId && a.worktree === b.worktree && a.preset === b.preset && a.key === b.key
+        && a.digest === b.digest && a.digestVersion === b.digestVersion;
+    }
+  }
+}
+
+/** Validated, frozen copy of one resolution read back from a store; `null` when malformed. */
+export function copyResolvedResource(value: unknown): ResolvedResource | null {
+  return copyResolved(value);
 }
