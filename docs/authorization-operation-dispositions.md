@@ -127,7 +127,7 @@ From `src/shared/contracts/operations.ts` and
 | Predicates | `claim_holder`, `run_originating_session`, `worker_assignment` |
 | Resource kinds | `project`, `registration`, `claim`, `test_run`, `profile`, `vault_entry`, `knowledge_record`, `worker_attempt` |
 | Flags | `agents: false`, `freshLogin` |
-| Permissions | the closed list of 24 project and 10 installation permissions, including `projects:remove` |
+| Permissions | the closed list of 24 project and 9 installation permissions |
 | Roles | `reader`, `operator`, `maintainer`, `secrets`, `executor`, `admin` |
 | Replay and release | authorize and compare the original resource resolution (project, version, relation) again after the effect and on replay |
 
@@ -152,7 +152,7 @@ needs one of them says so in its `Needs` column.
 | 6 | Resource kind `remote_request`, predicate `request_submitter`, two-principal evaluation | `remote_request`, `request_submitter` | Assignment evaluates the executor's context and, separately, the stored submitter's current grants through an application authorization interface. | implemented, unmounted: `decideForPrincipal` and `PhaseScope.authorizePrincipal` |
 | 7 | Secret-safe retention and once-only token delivery | `secret_safe_retention`, `token_delivery` | Keyed-digest fingerprints; ids-and-revisions receipts for secret-bearing operations; a token is delivered once. | implemented, unmounted; the key's source and rotation (D6) stay with the store adapter |
 | 8 | Separate profile structure and literal-value operations | none | Catalogue structure only; the split operations use the implemented requirement forms. | nothing to implement in the contract |
-| 9 | Drop `projects:remove` | none | The permission leaves the closed vocabulary; code, documentation and fixtures change together in the first slice 4 pull request. | implemented: removed from the code, the tests and `authorization-contract.md`; other sections of this page still mention it |
+| 9 | Drop `projects:remove` | none | The permission leaves the closed vocabulary; code, documentation and fixtures change together in the first slice 4 pull request. | implemented: removed from the code, the tests and both authorization documents |
 | 10 | Predicate `intent_origin` | `intent_origin` | Original principal, credential, project, worktree, preset, key and the saved origin digest with its version, for `test_run.lookup_intent`. | implemented, unmounted: resource kind `test_intent`, digest version 1; the lookup query is not |
 | 11 | Operations `coordination.open`, `coordination.renew`, `coordination.close` and the session store | `coordination` | Server-issued coordination sessions. Today the contract only compares a `CoordinationSessionRef` that a verifier returns. | not implemented (D1) |
 
@@ -1531,7 +1531,6 @@ operator command, so that no account reaches the permission through it.
 | `worker:execute` | `worker.poll` (the executor's evaluation, per item), `worker.report` |
 | `accounts:manage` | `account.create`, `account.enroll`, `account.list`, `account.get`, `account.disable`, `account.recover`, `account.token_issue`, `account.token_revoke`, `admin_role.grant`, `admin_role.revoke` |
 | `projects:create` | `project.create`, `directory.browse`; `project.create_from_import` (o) |
-| `projects:remove` | **no operation**; dropped from the vocabulary (planned extension 9, OPEN-3) |
 | `capacity:read` | `capacity.detail_read` |
 | `capacity:write` | `capacity.set` |
 | `settings:write` | `test_queue.set` |
@@ -1540,7 +1539,7 @@ operator command, so that no account reaches the permission through it.
 | `diagnostics:read` | `diagnostics.mcp` |
 | `vault:recover` | `vault.recover_key` |
 
-Permissions with no operation: `projects:remove`. Permission whose only
+Every permission has at least one operation. Permission whose only
 consumer is an operator-only surface in this release, so that no account reaches
 it: `knowledge:import` (and `project.create_from_import` for `projects:create`),
 accepted by the owner (`17802524`). `workers:manage` is reachable through

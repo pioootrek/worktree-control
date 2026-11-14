@@ -593,13 +593,17 @@ cannot run inside a synchronous `read`. A query runs in three steps:
 
 1. In one admitted phase: decide, then `plan(input, scope)`, which captures
    synchronously what the work needs.
-2. Outside admission: `work(plan, signal)`. The signal aborts on caller
+2. Outside admission: `work(plan, signal)`. A caller that already holds
+   admission, which the first phase joined, is suspended through `idle` for
+   the work, so other admissions and authentication-provider borrows proceed
+   while it waits. The signal aborts on caller
    cancellation (`unavailable`/`request_cancelled`, `retry`) and at the
    deadline (`unavailable`/`query_timed_out`, `retry`). The deadline is
    `OperationRuntime.queryDeadlineMs` (default 30 s); an operation's own
    `timeoutMs` can only shorten it. A result or failure that settles after the
    abort is ignored and never becomes an unhandled rejection.
-3. In a new admitted phase: decide again, require the resolution unchanged
+3. In a new admitted phase (after re-admission, for a suspended caller):
+   decide again, require the resolution unchanged
    (`conflict`/`resource_changed`) and the request not aborted, then project
    and release. A failure of the work is released only after this decision,
    so a caller who lost access learns nothing from it.
@@ -656,7 +660,12 @@ receipt (`claim_not_held`, `not_found` or `resource_changed`).
   Resolver version changes are never suppressed.
 - For an operation with transitions, the idempotency record is read before
   the current resolution, because after the operation's own transition the
-  current state legitimately differs from the commit point.
+  current state legitimately differs from the commit point. Before anything
+  about the record is reported (`idempotency_conflict`,
+  `previous_attempt_outcome_unknown`, `request_in_progress` or a replay), the
+  requirement is decided on the record's own resolution: the admission's,
+  or the commit point's once the attempt started. A caller who lost access to
+  it gets `not_found`, never a conflict or an unknown outcome.
 - The projector receives the commit-point resolution only, so a receipt can
   carry nothing the caller could not see before the effect. Which fields the
   receipt holds stays the operation's choice.
@@ -692,6 +701,16 @@ absent claim.
   happened and the refused one never began. The record becomes `unknown`, so a
   retry inspects first. A handler that swallows the rejection and continues
   acts against a denial, which the runner cannot prevent.
+- For an operation with expected transitions, `recheck()` past the commit
+  point applies the release rules of
+  [Expected transitions](#expected-transitions) to the steps so far. It
+  decides on the commit-point resolution with the full requirement, then on
+  the resulting resolution so far without predicates on declared slots and
+  without requirements on slots confirmed removed. A declared slot must be
+  unchanged or match the result its handler already reported with
+  `transition()`; every undeclared slot must be unchanged. Otherwise it is
+  `conflict`/`resource_changed`. A handler therefore reports a step's
+  transition before it calls `recheck()` for the next step.
 
 ### Aggregates
 
@@ -732,7 +751,10 @@ The application authorization interface `decideForPrincipal` (also
 `PhaseScope.authorizePrincipal`) decides a requirement for a stored principal
 on its current grants, without replacing or changing the caller's context. An
 account is evaluated as the kind the grants store records now; an unknown or
-disabled account holds nothing. `installation` and `operator` hold full
+disabled account holds nothing and is never allowed. A resource it would need
+is masked as `not_found`, and a requirement that needs no grant
+(`authenticated`, also with `agents: false`) is
+`forbidden`/`principal_unavailable`. `installation` and `operator` hold full
 authority. A stored principal has no credential, coordination session or
 provider evidence, so it never passes a session predicate, `intent_origin` or
 fresh login. A malformed principal is `forbidden`/`invalid_principal`.
