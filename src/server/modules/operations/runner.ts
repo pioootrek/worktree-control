@@ -651,31 +651,34 @@ export class OperationRunner {
       }, { signal });
       if (signal?.aborted) throw cancelled();
 
-      // 2. The asynchronous work, outside admission, bounded and cancellable.
-      const controller = new AbortController();
-      const limit = Math.min((timeout as number | undefined) ?? Number.POSITIVE_INFINITY, this.runtime.queryDeadlineMs ?? 30_000);
-      let timedOut = false;
-      const onAbort = () => controller.abort();
-      signal?.addEventListener("abort", onAbort, { once: true });
-      const timer = setTimeout(() => { timedOut = true; controller.abort(); }, limit);
-      timer.unref?.();
-      let outcome: { ok: true; value: R } | { ok: false; error: unknown };
-      try {
-        let pending: Promise<R>;
-        try { pending = Promise.resolve((work as (plan: unknown, signal: AbortSignal) => Promise<R>).call(operation, first.plan, controller.signal)); }
-        catch (error) { pending = Promise.reject(error); }
+      // 2. The asynchronous work, outside admission, bounded and cancellable. A caller that
+      //    already holds admission (`run` joins it) is suspended through `idle`, so other
+      //    admissions, provider borrows included, proceed while the work waits.
+      const outcome = await admission.idle(async (): Promise<{ ok: true; value: R } | { ok: false; error: unknown }> => {
+        const controller = new AbortController();
+        const limit = Math.min((timeout as number | undefined) ?? Number.POSITIVE_INFINITY, this.runtime.queryDeadlineMs ?? 30_000);
+        let timedOut = false;
+        const onAbort = () => controller.abort();
+        signal?.addEventListener("abort", onAbort, { once: true });
+        const timer = setTimeout(() => { timedOut = true; controller.abort(); }, limit);
+        timer.unref?.();
         try {
-          const settled = await untilAbort(pending, controller.signal);
-          if (!settled) throw timedOut && !signal?.aborted ? new OperationError("unavailable", "query_timed_out", { retry: "retry" }) : cancelled();
-          outcome = { ok: true, value: settled.value };
-        } catch (error) {
-          if (controller.signal.aborted) throw timedOut && !signal?.aborted ? new OperationError("unavailable", "query_timed_out", { retry: "retry" }) : cancelled();
-          outcome = { ok: false, error };
+          let pending: Promise<R>;
+          try { pending = Promise.resolve((work as (plan: unknown, signal: AbortSignal) => Promise<R>).call(operation, first.plan, controller.signal)); }
+          catch (error) { pending = Promise.reject(error); }
+          try {
+            const settled = await untilAbort(pending, controller.signal);
+            if (!settled) throw timedOut && !signal?.aborted ? new OperationError("unavailable", "query_timed_out", { retry: "retry" }) : cancelled();
+            return { ok: true, value: settled.value };
+          } catch (error) {
+            if (controller.signal.aborted) throw timedOut && !signal?.aborted ? new OperationError("unavailable", "query_timed_out", { retry: "retry" }) : cancelled();
+            return { ok: false, error };
+          }
+        } finally {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
         }
-      } finally {
-        clearTimeout(timer);
-        signal?.removeEventListener("abort", onAbort);
-      }
+      });
 
       // 3. A fresh decision on an unchanged resolution before anything is released.
       const value = await admission.run(() => {

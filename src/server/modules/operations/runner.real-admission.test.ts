@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ProjectId } from "@/shared/contracts/operations";
 import { SqliteStateStore } from "@/server/infrastructure/sqlite/sqlite-state-store";
-import type { IdleCommitScope, MutationOperation, PhaseScope } from "./operation";
+import type { IdleCommitScope, MutationOperation, PhaseScope, QueryOperation } from "./operation";
 import { createWorld, MemoryIdempotency, P } from "./operations-fixture";
 import { onProject } from "./requirements";
 import { OperationRunner, type RunResult } from "./runner";
@@ -67,6 +67,50 @@ describe("operation runner on the real admission gate", () => {
     const result = await store.admission.run(() => runner.run(operation, alice.context, { registrationId: "reg-1" }));
     expect(result).toEqual({ ok: false, error: { category: "busy", status: 503, reason: "admission_refused", retry: "retry", effect: "not_started" } });
     expect(log).toEqual({ held: false, releases: 1, effects: 0 });
+  });
+
+  it("suspends an inherited admission during query work, so a provider borrow completes while the work waits", async () => {
+    const root = mkdtempSync(join(tmpdir(), "operations-runner-")); roots.push(root);
+    const store = new SqliteStateStore(join(root, "state.sqlite3"), undefined, { admissionTimeoutMs: 500 });
+    cleanups.push(() => store.close());
+    const storage = store.authenticationProviderStorage();
+    const world = createWorld();
+    const projectA = P("project-a");
+    world.resolver.addProject(projectA).put({ kind: "registration", id: "reg-1" }, projectA);
+    const alice = world.human("alice");
+    world.grants.grant({ accountId: alice.id, role: "reader", scope: { kind: "project", projectId: projectA } });
+    const runner = new OperationRunner({ ...world.runtime(), admission: store.admission, queryDeadlineMs: 2_000 });
+    const log = { borrowed: false, phases: [] as string[] };
+    type Input = { registrationId: string };
+    const operation: QueryOperation<Input, { projectId: ProjectId; borrowed: boolean }, { projectId: ProjectId; borrowed: boolean }, { projectId: ProjectId }> = {
+      id: "fixture.real_gate_query",
+      kind: "query",
+      requirement: { require: onProject("project:read", "registration") },
+      parse: raw => ({ registrationId: String((raw as Input).registrationId) }),
+      resources: input => ({ registration: { kind: "registration", id: input.registrationId } }),
+      plan: (_input, scope) => { log.phases.push("plan"); return { projectId: scope.resources.registration.projectId }; },
+      async work(plan) {
+        // The pending work waits on a provider borrow, which needs the connection the caller was admitted on.
+        await storage.borrow(async () => { log.borrowed = true; });
+        log.phases.push("work");
+        return { projectId: plan.projectId, borrowed: log.borrowed };
+      },
+      publicKeys: ["projectId", "borrowed"],
+      project: result => { log.phases.push("project"); return result; },
+    };
+
+    // The caller already holds admission, which `run` joins; the work must not keep it.
+    const result = await store.admission.run(() => runner.run(operation, alice.context, { registrationId: "reg-1" }));
+    expect(result).toEqual({ ok: true, value: { projectId: projectA, borrowed: true }, replayed: false });
+    expect(log).toEqual({ borrowed: true, phases: ["plan", "work", "project"] });
+
+    // The fresh decision after re-admission still applies: revoked during the work, nothing is released.
+    const revoking: typeof operation = { ...operation, async work(plan) {
+      await storage.borrow(async () => { world.grants.revokeAll(alice.id); });
+      return { projectId: plan.projectId, borrowed: true };
+    } };
+    expect(await store.admission.run(() => runner.run(revoking, alice.context, { registrationId: "reg-1" })))
+      .toEqual({ ok: false, error: { category: "not_found", status: 404, reason: "resource_not_found", retry: "none", effect: null } });
   });
 
   it("takes a fresh admission for a declared commit inside the idle effect, and refuses it after revocation", async () => {
