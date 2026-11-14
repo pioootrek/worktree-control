@@ -3,7 +3,7 @@ import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_pro
 import { once } from "node:events";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -110,12 +110,20 @@ describe.skipIf(process.platform !== "linux")("worker-only process (real CLI ent
     try { return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.startsWith("Z ") ?? false; }
     catch { return true; }
   };
-  /** This suite's `check.cjs` under its temporary directory; a recycled pid is never signalled. */
+  const underRoot = (path: string) => roots.some(prefix => path.startsWith(prefix));
+  /**
+   * A Node process whose script argument is this suite's `check.cjs` and whose working directory
+   * is under this suite's temporary root. This narrows, but cannot close, the window in which the
+   * pid exits and is reused between this check and the signal: Node exposes no process handle
+   * (pidfd) that would bind the signal to the checked process.
+   */
   const isFixtureJob = (pid: number) => {
     try {
-      const cwd = readlinkSync(`/proc/${pid}/cwd`).replace(/ \(deleted\)$/, "");
-      return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean)
-        .some(arg => { const path = resolve(cwd, arg); return path.endsWith(`${sep}check.cjs`) && roots.some(prefix => path.startsWith(prefix)); });
+      const cwd = readlinkSync(`/proc/${pid}/cwd`);
+      const [, script, ...rest] = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+      if (!script || script.startsWith("-") || rest.some(Boolean) || !underRoot(`${cwd}${sep}`)) return false;
+      const path = resolve(cwd, script);
+      return basename(path) === "check.cjs" && underRoot(path);
     } catch { return false; }
   };
   const waitUntil = async (condition: () => boolean, timeoutMs: number) => {
@@ -130,10 +138,11 @@ describe.skipIf(process.platform !== "linux")("worker-only process (real CLI ent
   const terminateWorker = async (child: ChildProcess) => {
     if (child.exitCode !== null || child.signalCode !== null) return;
     const exited = once(child, "exit").then(() => true);
+    const within = (ms: number) => Promise.race([exited, delay(ms).then(() => false)]);
     child.kill("SIGTERM");
-    if (await Promise.race([exited, delay(30_000).then(() => false)])) return;
+    if (await within(30_000)) return;
     child.kill("SIGKILL");
-    await exited;
+    if (!await within(10_000)) throw new Error(`Worker ${child.pid} did not exit after SIGKILL; its cleanup is unconfirmed.`);
   };
   /** Jobs run in their own detached process groups and can outlive a killed worker. */
   const terminateFixtureJob = async (pid: number) => {
@@ -199,8 +208,9 @@ describe.skipIf(process.platform !== "linux")("worker-only process (real CLI ent
     const failures: unknown[] = [];
     for (const settled of await Promise.allSettled([...children].map(terminateWorker))) if (settled.status === "rejected") failures.push(settled.reason);
     for (const pid of startedPids()) await terminateFixtureJob(pid).catch((error: unknown) => failures.push(error));
-    await closeServer?.();
-    brokerStore?.close();
+    // Independent of the steps above: run even after one of them failed.
+    try { await closeServer?.(); } catch (error) { failures.push(error); }
+    try { brokerStore?.close(); } catch (error) { failures.push(error); }
     // Last, and only once nothing recorded by the fixture still runs from it.
     if (!failures.length) rmSync(root, { recursive: true, force: true });
     if (failures.length) throw new AggregateError(failures, `Worker process fixtures did not stop; ${root} was kept for inspection.`);
@@ -256,32 +266,71 @@ describe.skipIf(process.platform !== "linux")("worker-only process (real CLI ent
     acquireControllerLock(paths.controllerLockPath).release();
   }, 60_000);
 
-  it("fails a startup that breaks after the store opens, releasing the lock without polling", async () => {
-    // An owned write through the store's fenced connection; no public operation stores malformed JSON.
-    const testQueueSetting = (replacement?: string) => {
-      const local = new SqliteStateStore(paths.databasePath);
-      try {
-        const database = (local as unknown as { database: { prepare(sql: string): { get(): { value_json: string } | undefined; run(value: string): { changes: number } } } }).database;
-        if (replacement === undefined) return database.prepare("SELECT value_json FROM controller_settings WHERE key = 'test_queue'").get()?.value_json;
-        expect(database.prepare("UPDATE controller_settings SET value_json = ? WHERE key = 'test_queue'").run(replacement).changes).toBe(1);
-        return replacement;
-      } finally { local.close(); }
-    };
-    const original = testQueueSetting();
-    expect(original).toEqual(expect.any(String));
-    testQueueSetting("{");
+  // An owned write through the store's fenced connection; no public operation stores malformed JSON.
+  const withDatabase = <T>(use: (database: { prepare(sql: string): { get(...values: unknown[]): unknown; run(...values: unknown[]): { changes: number } } }) => T): T => {
+    const local = new SqliteStateStore(paths.databasePath);
+    try { return use((local as unknown as { database: Parameters<typeof use>[0] }).database); }
+    finally { local.close(); }
+  };
+  const recordedRoots = () => {
+    const record = join(stateDirectory, "run-directory-root.json");
+    return existsSync(record) ? (JSON.parse(readFileSync(record, "utf8")) as { roots: Array<{ path: string }> }).roots.map(root => root.path).sort() : [];
+  };
+  const controllerLog = () => readFileSync(join(paths.logDirectory, "controller.log"), "utf8");
+  /** Root paths named by one event in the controller log written after `offset`. */
+  const loggedRoots = (event: string, offset: number) => controllerLog().slice(offset).split("\n")
+    .flatMap(line => { const at = line.indexOf(`${event} {`); return at < 0 ? [] : [(JSON.parse(line.slice(at + event.length + 1)) as { root: string }).root]; });
+
+  const failedStartups = [
+    {
+      // TestJobManager's constructor recovers interrupted runs, which parses each run row.
+      name: "in the test queue constructor, after the run-directory root opened",
+      corrupt: () => withDatabase(database => {
+        const run = database.prepare("SELECT id, phase, args_json FROM test_runs WHERE phase = 'passed' LIMIT 1").get() as { id: string; phase: string; args_json: string };
+        expect(database.prepare("UPDATE test_runs SET phase = 'running', args_json = '{' WHERE id = ?").run(run.id).changes).toBe(1);
+        return () => withDatabase(restore => expect(restore.prepare("UPDATE test_runs SET phase = ?, args_json = ? WHERE id = ?").run(run.phase, run.args_json, run.id).changes).toBe(1));
+      }),
+    },
+    {
+      // Read by the first queue status, after the queue owns the root.
+      name: "after the test queue owns the run-directory root",
+      corrupt: () => withDatabase(database => {
+        const original = (database.prepare("SELECT value_json FROM controller_settings WHERE key = 'test_queue'").get() as { value_json: string }).value_json;
+        expect(database.prepare("UPDATE controller_settings SET value_json = '{' WHERE key = 'test_queue'").run().changes).toBe(1);
+        return () => withDatabase(restore => expect(restore.prepare("UPDATE controller_settings SET value_json = ? WHERE key = 'test_queue'").run(original).changes).toBe(1));
+      }),
+    },
+  ];
+
+  it.each(failedStartups)("fails a startup that breaks $name, cleaning up and releasing the lock without polling", async ({ corrupt }) => {
+    const restore = corrupt();
     try {
-      const requests = serverRequests, contact = lastContact();
+      const requests = serverRequests, contact = lastContact(), roots = recordedRoots(), logOffset = controllerLog().length;
+      expect(existsSync(paths.controllerLockPath)).toBe(false);
       const failing = spawnWorker();
       const [code] = await once(failing.child, "exit") as [number | null];
       expect(code).toBe(1);
       expect(failing.stdout.join("")).toBe("");
       expect(failing.stderr.join("")).toMatch(/JSON/);
+      expect(failing.stderr.join("")).not.toContain("cleanup did not complete");
       expect(failing.stderr.join("")).not.toContain(credential);
+      // Explicit release: the lock implementation unlinks its file on release, while a process that
+      // exits holding it leaves the file (naming its dead pid) until the next acquisition reclaims it.
+      // Nothing acquires between the child's exit and this check.
+      expect(existsSync(paths.controllerLockPath)).toBe(false);
+      expect(existsSync(`${paths.controllerLockPath}.acquiring`)).toBe(false);
+      // The root this start created was removed and dropped from the record again.
+      const created = loggedRoots("run_directory.root_created", logOffset);
+      expect(created).toHaveLength(1);
+      expect(loggedRoots("run_directory.root_removed", logOffset)).toEqual(created);
+      expect(existsSync(created[0]!)).toBe(false);
+      // A start may drop entries of roots that vanished; it never leaves its own or a new one.
+      expect(recordedRoots()).not.toContain(created[0]);
+      expect(recordedRoots().every(path => roots.includes(path))).toBe(true);
       acquireControllerLock(paths.controllerLockPath).release();
       expect({ requests: serverRequests, contact: lastContact() }).toEqual({ requests, contact });
     } finally {
-      testQueueSetting(original!);
+      restore();
     }
   }, 120_000);
 
