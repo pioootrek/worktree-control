@@ -184,6 +184,15 @@ function copyIdentity(value: unknown): CredentialIdentity | null {
 
 interface Verified { identity: CredentialIdentity; actor: Actor; evidence: ProviderEvidence | null; session: CoordinationSessionRef | null }
 
+/**
+ * One verifier call and the copy of its answer. A throw, from the verifier or
+ * from a getter on what it returned, is no answer: `null`, and the thrown
+ * value goes nowhere.
+ */
+function ask(path: AcceptedPath, call: () => VerifiedCredential | null): Verified | null {
+  try { return copyVerification(path, call()); } catch { return null; }
+}
+
 /** Copies and validates one verifier answer for `path`. `null` when anything is malformed or does not fit the path. */
 function copyVerification(path: AcceptedPath, value: VerifiedCredential | null): Verified | null {
   // A verifier is synchronous (decision W): a thenable answer is no answer, and its rejection is absorbed.
@@ -267,12 +276,12 @@ export function createListenerBoundary(options: {
       const secret = path === "provider_session" ? presented.providerSession?.secret ?? null
         : path === "anonymous_installation" ? null : presented.bearers[0]?.secret ?? null;
       // The baseline is a deep, frozen copy taken once at mint.
-      const baseline = copyVerification(path, verifier.verify(path, secret));
+      const baseline = ask(path, () => verifier.verify(path, secret));
       if (!baseline) throw unauthenticated("invalid_credential");
       const current = (): CurrentAuthority => {
         if (!holds(open())) throw unauthenticated("listener_closed");
         // The verifier receives its own copy of the identity, never the baseline object.
-        const now = copyVerification(path, verifier.current({ ...baseline.identity }));
+        const now = ask(path, () => verifier.current({ ...baseline.identity }));
         if (!now || !sameIdentity(baseline.identity, now.identity) || !sameActor(baseline.actor, now.actor)) {
           throw unauthenticated("credential_no_longer_valid");
         }
