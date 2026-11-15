@@ -15,6 +15,8 @@ import { OwnedSqliteDatabase } from "./owned-database";
 import { establishSqliteSecurityFence, maintainSqliteSecurityFence, quarantineAuthority } from "./security-maintenance";
 import { hashFile, parseManifest, validateBackup, validateSnapshot } from "./backup-validation";
 import { applyUpgradeMarkerMigration } from "./upgrade-marker-migration";
+import { applyProjectMappingMigration } from "./mapping-structure-migration";
+import { ProjectDirectoryQueries } from "./project-directory-queries";
 import { applySqliteUpgrade, inspectSqliteUpgrade } from "./upgrade-maintenance";
 import { assertUpgradeAvailable, readUpgradePlan, removeUpgradePlan, structuralSteps, upgradeTarget, UpgradeError, writeUpgradePlan } from "./upgrade-plan";
 import { SecurityFence } from "./security-fence";
@@ -63,13 +65,18 @@ const GATE_IMPORTERS: Readonly<Record<string, string>> = Object.freeze({
   [GATE_READER]: "reads the switch in schemaTarget, through a static import of provisionalSchemaEnabled only",
 });
 const READ_FUNCTION = "provisionalSchemaEnabled";
-const STEP_MODULES = Object.freeze(["src/server/infrastructure/sqlite/upgrade-marker-migration.ts", "src/server/infrastructure/sqlite/security-coverage.ts"]);
+const STEP_MODULES = Object.freeze(["src/server/infrastructure/sqlite/upgrade-marker-migration.ts", "src/server/infrastructure/sqlite/security-coverage.ts",
+  "src/server/infrastructure/sqlite/mapping-structure-migration.ts", "src/server/infrastructure/sqlite/project-directory-queries.ts"]);
+/** No non-test file imports the project directory (step 51): it is not mounted. */
 const STEP_IMPORTERS: Readonly<Record<string, string>> = Object.freeze({
-  "src/server/infrastructure/sqlite/security-coverage.ts": "lists the fence coverage of each step, including step 50",
-  "src/server/infrastructure/sqlite/migrations.ts": "applies step 50 when initializeSchema is given the target",
-  "src/server/infrastructure/sqlite/schema-inspection.ts": "recognises step 50 and builds its reference at the ceiling",
-  "src/server/infrastructure/sqlite/fixtures/schema-rewind.ts": "rewinds a synthetic step-50 fixture",
-  "src/server/infrastructure/sqlite/upgrade-plan.ts": "names step 50 and its checksum among the structural steps an upgrade plan lists",
+  "src/server/infrastructure/sqlite/security-coverage.ts": "lists the fence coverage and the other triggers of each step, including steps 50 and 51",
+  "src/server/infrastructure/sqlite/migrations.ts": "applies steps 50 and 51 when initializeSchema is given the target",
+  "src/server/infrastructure/sqlite/schema-inspection.ts": "recognises steps 50 and 51 and builds their reference at the ceiling",
+  "src/server/infrastructure/sqlite/fixtures/schema-rewind.ts": "rewinds synthetic step-50 and step-51 fixtures",
+  "src/server/infrastructure/sqlite/upgrade-plan.ts": "names steps 50 and 51 and their checksums among the structural steps an upgrade plan lists",
+  "src/server/infrastructure/sqlite/database-validation.ts": "validates the step-51 clock, stamps, parents and journal at version 51",
+  "src/server/infrastructure/sqlite/security-maintenance.ts": "clears the step-51 mappings in the quarantine at target 51",
+  "src/server/infrastructure/sqlite/project-directory-queries.ts": "passes the step-51 gate with the step's version",
 });
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
 const TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
@@ -189,37 +196,39 @@ const tree = (root: string): Record<string, string> => Object.fromEntries(readdi
 }));
 
 describe("provisional schema steps stay switched off", () => {
-  it("keeps schema 49 supported, step 50 provisional and the switch off by default", () => {
+  it("keeps schema 49 supported, steps 50 and 51 provisional and the switch off by default", () => {
     expect(SUPPORTED_SCHEMA_VERSION).toBe(49);
-    expect(PROVISIONAL_SCHEMA_VERSION).toBe(50);
+    expect(PROVISIONAL_SCHEMA_VERSION).toBe(51);
     expect(provisionalSchemaEnabled()).toBe(false);
     expect(schemaTarget()).toBe(49);
     expect(schemaTarget(49)).toBe(49);
     expect(() => schemaTarget(50)).toThrow(UNSUPPORTED);
-    for (const invalid of [48, 51, 49.5, Number.NaN]) expect(() => schemaTarget(invalid)).toThrow(UNSUPPORTED);
+    for (const invalid of [48, 51, 52, 49.5, Number.NaN]) expect(() => schemaTarget(invalid)).toThrow(UNSUPPORTED);
   });
 
-  it("refuses target or ceiling 50 at every public entry point while the switch is off, with the unsupported-target error", async () => {
+  it.each([50, 51])("refuses target or ceiling %i at every public entry point while the switch is off, with the unsupported-target error", async target => {
     expect(provisionalSchemaEnabled()).toBe(false);
     const fixture = current49(), data = realpathSync(fixture.paths.dataDirectory), files = tree(data);
     const memory = new Database(":memory:"), current = new Database(fixture.paths.databasePath, { readonly: true });
     try {
       const refusals = {
-        schemaTarget: () => schemaTarget(50),
-        initializeSchema: () => initializeSchema(memory, undefined, undefined, { target: 50 }),
+        schemaTarget: () => schemaTarget(target),
+        initializeSchema: () => initializeSchema(memory, undefined, undefined, { target }),
         applyUpgradeMarkerMigration: () => applyUpgradeMarkerMigration(memory, true),
-        inspectSchema: () => inspectSchema(current, 50),
-        OwnedSqliteDatabase: () => new OwnedSqliteDatabase(fixture.paths.databasePath, false, 50),
-        maintainSqliteSecurityFence: () => maintainSqliteSecurityFence(fixture.paths, { action: "inspect" }, HANDOFF, 50),
-        quarantineAuthority: () => quarantineAuthority(memory, "receipt", "token", 50),
-        parseManifest: () => parseManifest({ ...fixture.manifest, database: { ...fixture.manifest.database, schemaVersion: 50 } }, 50),
-        validateSnapshot: () => validateSnapshot(fixture.snapshot, parseManifest(fixture.manifest), 50),
-        validateBackup: () => validateBackup(fixture.backup, parseManifest(fixture.manifest), false, 50),
-        upgradeTarget: () => upgradeTarget(50),
-        inspectSqliteUpgrade: () => inspectSqliteUpgrade(fixture.paths, 50),
-        applySqliteUpgrade: () => applySqliteUpgrade(fixture.paths, { expect: "0".repeat(64) }, UNUSED_BACKUP, 50),
+        applyProjectMappingMigration: () => applyProjectMappingMigration(memory),
+        ProjectDirectoryQueries: () => new ProjectDirectoryQueries(memory),
+        inspectSchema: () => inspectSchema(current, target),
+        OwnedSqliteDatabase: () => new OwnedSqliteDatabase(fixture.paths.databasePath, false, target),
+        maintainSqliteSecurityFence: () => maintainSqliteSecurityFence(fixture.paths, { action: "inspect" }, HANDOFF, target),
+        quarantineAuthority: () => quarantineAuthority(memory, "receipt", "token", target),
+        parseManifest: () => parseManifest({ ...fixture.manifest, database: { ...fixture.manifest.database, schemaVersion: target } }, target),
+        validateSnapshot: () => validateSnapshot(fixture.snapshot, parseManifest(fixture.manifest), target),
+        validateBackup: () => validateBackup(fixture.backup, parseManifest(fixture.manifest), false, target),
+        upgradeTarget: () => upgradeTarget(target),
+        inspectSqliteUpgrade: () => inspectSqliteUpgrade(fixture.paths, target),
+        applySqliteUpgrade: () => applySqliteUpgrade(fixture.paths, { expect: "0".repeat(64) }, UNUSED_BACKUP, target),
         // Synchronously, before any lock or file.
-        establishSqliteSecurityFence: () => establishSqliteSecurityFence(fixture.paths, { action: "establish", expect: "0".repeat(64) }, HANDOFF, UNUSED_BACKUP, 50),
+        establishSqliteSecurityFence: () => establishSqliteSecurityFence(fixture.paths, { action: "establish", expect: "0".repeat(64) }, HANDOFF, UNUSED_BACKUP, target),
       };
       const unsupported = message(() => schemaTarget(51));
       expect(unsupported).toBe(UNSUPPORTED);
@@ -230,7 +239,7 @@ describe("provisional schema steps stay switched off", () => {
       // The upgrade needs step 50: at the default target it is unsupported too, with
       // its own code, and neither refusal took a lock or wrote a plan directory.
       for (const refusal of [() => inspectSqliteUpgrade(fixture.paths), () => applySqliteUpgrade(fixture.paths, { expect: "0".repeat(64) }, UNUSED_BACKUP),
-        () => inspectSqliteUpgrade(fixture.paths, 50), () => applySqliteUpgrade(fixture.paths, { expect: "0".repeat(64) }, UNUSED_BACKUP, 50)]) {
+        () => inspectSqliteUpgrade(fixture.paths, target), () => applySqliteUpgrade(fixture.paths, { expect: "0".repeat(64) }, UNUSED_BACKUP, target)]) {
         expect(refusal).toThrowError(expect.objectContaining({ name: "UpgradeError", code: "upgrade_unsupported", message: unsupported }));
       }
       expect(new UpgradeError("upgrade_unsupported", "none").message).toBe(unsupported);
@@ -363,11 +372,12 @@ describe("provisional schema steps stay switched off", () => {
     beforeEach(() => { restore = enableProvisionalSchema(); });
     afterEach(() => { restore(); });
 
-    it("accepts target 50, still refuses anything above it, and restores the previous state", () => {
+    it("accepts targets 50 and 51, still refuses anything above them, and restores the previous state", () => {
       expect(provisionalSchemaEnabled()).toBe(true);
       expect(schemaTarget()).toBe(49);
       expect(schemaTarget(50)).toBe(50);
-      for (const invalid of [48, 51, 49.5, Number.NaN]) expect(() => schemaTarget(invalid)).toThrow(UNSUPPORTED);
+      expect(schemaTarget(51)).toBe(51);
+      for (const invalid of [48, 52, 49.5, 50.5, Number.NaN]) expect(() => schemaTarget(invalid)).toThrow(UNSUPPORTED);
       // Nested use restores the outer state, not "off".
       const inner = enableProvisionalSchema();
       inner();

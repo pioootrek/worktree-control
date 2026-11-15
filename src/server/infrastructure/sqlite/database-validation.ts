@@ -4,6 +4,7 @@ import { humanRuntimePermissionsSchema, runtimeMembershipSetSchema } from "@/sha
 import type Database from "better-sqlite3";
 import { TestRunQueries } from "./test-run-queries";
 import { AuthenticationQueries } from "./authentication-queries";
+import { projectMappingViolation } from "./mapping-structure-migration";
 
 export function validateDatabase(database: Database.Database, version: number): void {
   const integrity = database.pragma("integrity_check(1)") as Array<{ integrity_check: string }>;
@@ -23,6 +24,12 @@ export function validateDatabase(database: Database.Database, version: number): 
     const plan = rows[0]?.plan_hash;
     if (rows.length !== 1 || rows[0].singleton !== 1 || (rows[0].state !== "pending" && rows[0].state !== "complete") || rows[0].canonical !== 1
       || (rows[0].state === "pending" ? plan !== null : plan !== null && !(typeof plan === "string" && /^[0-9a-f]{64}$/.test(plan)))) fail("upgrade marker");
+  }
+  // Provisional step 51: the mapping clock, the stamps and parents of registrations
+  // and remote identities, and the decision journal (see mapping-structure-migration.ts).
+  if (version >= 51) {
+    const rule = projectMappingViolation(database);
+    if (rule) fail(rule);
   }
   if (version >= 4 && database.prepare(`SELECT 1 FROM reservations WHERE released_at IS NULL AND NOT (
     (kind='human' AND expires_at IS NULL AND maximum_expires_at IS NULL AND token_hash IS NULL)
