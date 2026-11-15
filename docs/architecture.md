@@ -1310,3 +1310,34 @@ hash and compare as before. A binary that knows only format 1 refuses a format-2
 record as recovery required instead of misreading it. An upgrade never writes
 `receipt` or `recoveredAt`. They keep the last establish or resume, and
 `securityRecoveryBoundary` returns the same value before and after an upgrade.
+
+### Pre-establishment backup (integration branch only)
+
+`establishSqliteSecurityFence` runs `auth fence establish` with an injected
+backup function, which the upgrade's backup also uses. No command or bootstrap
+path calls it yet: `auth fence establish` still takes no backup, and the
+activation composes it. It shares the one implementation of
+`maintainSqliteSecurityFence`, which keeps its synchronous signature and
+behaviour. The order is:
+
+1. Both locks and ownership, the status, the `--expect` comparison, the
+   handoff preflight, the trusted no-op (which takes no backup),
+   `establishmentAllowed` and owner continuity, as establish does today.
+2. The backup, through the owner's read-only connection, accepted only as this
+   run's bound copy (step 5 of the upgrade, from the shared
+   `takeBoundBackup`). A pre-fence source has no checkpoint, so its copy must
+   have none either. Only the snapshot's origin binds it: this run wrote it
+   through the owned connection under both locks, and the second preflight
+   shows that the source did not move. Nothing can show that the snapshot file
+   was not overwritten in place with an older state of the same database at the
+   same schema version.
+3. The preflight again, which must equal `--expect`.
+4. The pending witness, the migration and the receipts, as without a backup.
+
+A backup that fails, does not validate or is not this run's is refused as
+`SecurityFenceBackupError`. Its code is `security_fence_establishment_required`,
+the state the database is still in, and its message names the backup. A moved
+preflight after the backup is `security_fence_preflight_changed`. In both cases
+the database, its sidecars and the absent witness are unchanged, and establish
+can run again. A failure after the pending witness leaves the backup in place.
+`inspect` and `resume` take no backup.

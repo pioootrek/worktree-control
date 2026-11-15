@@ -16,7 +16,7 @@ import { SqliteStateStore } from "./sqlite-state-store";
 import { OwnedSqliteDatabase, ReopenedDatabaseChangedError } from "./owned-database";
 import { getOwnedRestoreStatus, restoreRoot } from "./restore-recovery";
 import { SecurityFence, SecurityFenceError, securityFenceBinding, securityFenceRoot, securityRecoveryBoundary } from "./security-fence";
-import { maintainSqliteSecurityFence } from "./security-maintenance";
+import { establishSqliteSecurityFence, maintainSqliteSecurityFence } from "./security-maintenance";
 import { configureDurability, validateDatabase } from "./database-validation";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
@@ -1048,6 +1048,73 @@ describe("explicit offline upgrade: interrupted apply", () => {
     expect(witness(paths)).toMatchObject({ format: 2, state: "pending", upgrade: { plan: noted } });
     expect(files(paths).plan).toBe(plan);
     expect(inspect(paths)).toMatchObject({ state: "fenced", nextStep: "auth fence resume" });
+  });
+
+  it("an interrupted establishment with its backup: resume, inspect and apply end where an uninterrupted establish, inspect and apply do, apart from the resume's quarantine", async () => {
+    const establish = (paths: AppPaths, calls?: string[]) => establishSqliteSecurityFence(paths, { action: "establish", expect: fenceInspect(paths).preflight }, HANDOFF, backups(paths, calls), TARGET);
+    const without = (value: object, keys: string[]) => Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
+    /**
+     * `final` without what a resume adds by design: the authentication policy it
+     * rotates, its audit event (and the sequence value that event takes), the
+     * witness's recovery time, and the receipts, whose names depend on the
+     * number of runs. Those are returned apart, for the explicit comparison.
+     */
+    const settle = (paths: AppPaths) => {
+      const { database, witness: fence } = final(paths);
+      const { controller_audit_events: events, controller_settings: settings, sqlite_sequence: sequence, ...rows } = database.rows as Record<string, Array<Record<string, unknown>>>;
+      return {
+        same: { catalogue: database.catalogue, rows, settings: settings.filter(row => row.key !== "authentication"), witness: { ...without(fence, ["receipt", "recoveredAt", "upgrade"]), upgrade: without(fence.upgrade!, ["receipt"]) },
+          events: events.filter(event => event.event_type !== "authentication.security_quarantined").map(event => ({ ...without(event, ["id"]), details_json: without(event.details_json as object, ["receipt"]) })) },
+        authentication: JSON.parse(settings.find(row => row.key === "authentication")!.value_json as string),
+        quarantined: events.filter(event => event.event_type === "authentication.security_quarantined").map(event => ({ ...without(event, ["id"]), details_json: without(event.details_json as object, ["receipt"]) })),
+        sequence: (sequence ?? []).map(row => ({ name: row.name, seq: row.seq })), recoveredAt: fence.recoveredAt,
+      };
+    };
+    /** The raw receipts: the witness's, its upgrade's, and those of the quarantine and upgrade events. */
+    const receipts = (paths: AppPaths) => {
+      const { receipt, upgrade } = witness(paths);
+      const events = read(paths, db => db.prepare("SELECT event_type,details_json FROM controller_audit_events WHERE event_type IN ('authentication.security_quarantined','authentication.upgrade_applied') ORDER BY id").all() as Array<{ event_type: string; details_json: string }>);
+      return { witness: receipt, upgrade: upgrade?.receipt, events: events.map(event => [event.event_type, (JSON.parse(event.details_json) as { receipt: string }).receipt]) };
+    };
+
+    // Uninterrupted: establish with its backup at the target, then inspect and apply.
+    const reference = preFence();
+    expect(await establish(reference)).toMatchObject({ trusted: true, changed: true, quarantined: false, schemaVersion: 50, backup: expect.any(String) });
+    expect(inspect(reference)).toMatchObject({ state: "upgrade_needed", marker: "pending", schemaVersion: 50 });
+    const unchanged = recovery(reference);
+    assertUpgraded(reference, await apply(reference, inspect(reference).planHash!), unchanged);
+
+    // Interrupted after the pending witness, before the schema transaction.
+    const paths = preFence(), before = read(paths, all), calls: string[] = [];
+    let injected = false;
+    vi.spyOn(SecurityFence, "registerMaintenanceObserver").mockImplementation(() => { injected = true; throw new Error("fixture fault after the pending witness"); });
+    expect(await failure(() => establish(paths, calls))).toMatchObject({ name: "SecurityFenceError", code: "security_fence_pending", committed: false });
+    expect(injected).toBe(true); vi.restoreAllMocks();
+    expect(read(paths, all)).toEqual(before);
+    expect(witness(paths)).toMatchObject({ format: 1, state: "pending" });
+    expect(calls).toHaveLength(1);
+    expect(() => validateBackup(calls[0]!, parseManifest(readBoundedJson(join(calls[0]!, "manifest.json"), BACKUP_LIMITS.manifestBytes, true), TARGET), true, TARGET)).not.toThrow();
+    expect(inspect(paths)).toMatchObject({ state: "fenced", nextStep: "auth fence resume" });
+    expect(resume(paths)).toMatchObject({ trusted: true, quarantined: true, schemaVersion: 50 });
+    expect(inspect(paths)).toMatchObject({ state: "upgrade_needed", marker: "pending", schemaVersion: 50 });
+    const previous = recovery(paths);
+    assertUpgraded(paths, await apply(paths, inspect(paths).planHash!), previous);
+
+    const recovered = settle(paths), expected = settle(reference);
+    expect(recovered.same).toEqual(expected.same);
+    // What the resume adds: the rotated policy, its audit event and the sequence value it took, and the recovery time.
+    expect(expected.authentication).toEqual({ mode: "token", token: null, generation: 0 });
+    expect(recovered.authentication).toEqual({ mode: "token", generation: 1, token: null });
+    expect(expected.quarantined).toEqual([]);
+    expect(recovered.quarantined).toEqual([{ event_type: "authentication.security_quarantined", actor: "local-cli", details_json: { mode: "token" }, created_at: "<time>" }]);
+    expect(recovered.sequence).toEqual(expected.sequence.map(row => row.name === "controller_audit_events" ? { ...row, seq: (row.seq as number) + 1 } : row));
+    expect(expected.recoveredAt).toBeNull();
+    expect(recovered.recoveredAt).toBe("<time>");
+    // The receipts relate as they should: the witness keeps the last establish or resume, its upgrade the apply's.
+    const mine = receipts(paths), theirs = receipts(reference);
+    expect(mine.events).toEqual([["authentication.security_quarantined", mine.witness], ["authentication.upgrade_applied", mine.upgrade]]);
+    expect(theirs.events).toEqual([["authentication.upgrade_applied", theirs.upgrade]]);
+    expect(theirs.witness).toEqual(expect.any(String));
   });
 
   it("success not seen by the operator: the same --expect answers already applied with the plan hash", async () => {
