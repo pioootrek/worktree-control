@@ -63,9 +63,10 @@ export function quarantineAuthority(database: Database.Database, receipt: string
     UPDATE remote_verification_attempts SET phase='cancel_requested',version=version+1,last_reported_at='${now}' WHERE phase IN ('assigned','preparing','running');
   `);
   // Provisional step 50: a quarantined installation needs the data upgrade again,
-  // whatever the marker said. The acts run after every schema step, so the
-  // marker exists here both when this transaction created it and before.
-  if (version >= 50) database.prepare("UPDATE upgrade_marker SET state='pending',changed_at=? WHERE singleton=1").run(now);
+  // whatever the marker said, and no applied plan stands for it any more. The
+  // acts run after every schema step, so the marker exists here both when this
+  // transaction created it and before.
+  if (version >= 50) database.prepare("UPDATE upgrade_marker SET state='pending',changed_at=?,plan_hash=NULL WHERE singleton=1").run(now);
   // Mode is an explicit protected decision, never a restored selection or fallback.
   // All shared and legacy verifier material is removed; first-run issuance is fresh.
   database.prepare("UPDATE controller_settings SET value_json=?,updated_at=? WHERE key='authentication'")

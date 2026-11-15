@@ -551,7 +551,7 @@ describe("provisional upgrade marker under the security fence (target 50)",()=>{
         .toEqual({during:"confirmed",after:"confirmed",epochChanged:false});
       expect(observe("UPDATE upgrade_marker SET state='pending',changed_at='2026-11-15T00:00:00.000Z'")).toEqual(covered);
       expect(observe("DELETE FROM upgrade_marker")).toEqual(covered);
-      expect(observe("INSERT INTO upgrade_marker VALUES(1,'complete','2026-11-15T00:00:00.000Z')")).toEqual(covered);
+      expect(observe("INSERT INTO upgrade_marker VALUES(1,'complete','2026-11-15T00:00:00.000Z',NULL)")).toEqual(covered);
       expect(fence.execute(()=>db.prepare("SELECT state FROM upgrade_marker").pluck().all(),true)).toEqual(["complete"]);
     }finally{db.close();}
   });

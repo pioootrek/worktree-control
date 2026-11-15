@@ -55,9 +55,14 @@ const STEP_49_TABLES = ["reservations", "test_runs", "human_runtime_leases", "hu
 const MARKER_TABLE = `CREATE TABLE upgrade_marker (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
   state TEXT NOT NULL CHECK(state IN ('pending','complete')),
-  changed_at TEXT NOT NULL
+  changed_at TEXT NOT NULL,
+  plan_hash TEXT CHECK(plan_hash IS NULL OR (typeof(plan_hash)='text' AND length(plan_hash)=64 AND length(CAST(plan_hash AS BLOB))=64 AND NOT plan_hash GLOB '*[^0-9a-f]*')),
+  CHECK(state='complete' OR plan_hash IS NULL)
 )`;
-const COMPLETE_ROW = "INSERT INTO upgrade_marker VALUES(1,'complete','2026-11-15T00:00:00.000Z')";
+const COMPLETE_ROW = "INSERT INTO upgrade_marker VALUES(1,'complete','2026-11-15T00:00:00.000Z',NULL)";
+/** A marker table without constraints, for rows the genuine table would refuse. */
+const LOOSE_MARKER = "CREATE TABLE upgrade_marker (singleton INTEGER, state TEXT, changed_at TEXT, plan_hash)";
+const PLAN = "a".repeat(64);
 /** Replace the marker table (and drop its triggers) for structural or invalid-row fixtures. */
 function rebuildMarker(database: Database.Database, ddl: string, rows = "", restoreTriggers = false) {
   for (const trigger of upgradeMarkerTriggers) database.exec(`DROP TRIGGER ${trigger.name}`);
@@ -101,6 +106,9 @@ describe("provisional schema step 50: upgrade marker", () => {
     expect(upgradeMarkerMigration.sql).toContain("INSERT INTO upgrade_marker(singleton,state,changed_at) VALUES(1,?,");
     for (const trigger of upgradeMarkerTriggers) expect(upgradeMarkerMigration.sql).toContain(trigger.sql);
     expect(upgradeMarkerChecksum).toMatch(/^[0-9a-f]{64}$/);
+    // Pinned while provisional: a change to the step's text is a visible edit here.
+    expect(upgradeMarkerChecksum).toBe("d720c5eef040ff328401426cc18fefb560a6be7460cc355a789f169d5d07315c");
+    expect(upgradeMarkerMigration.sql.startsWith(`${MARKER_TABLE};\n`)).toBe(true);
     expect(securityFenceMigration).toMatchObject({ version: 49, name: "external-security-checkpoint" });
   });
 
@@ -152,7 +160,7 @@ describe("provisional schema step 50: upgrade marker", () => {
         .toEqual([{ name: securityFenceMigration.name, checksum: securityFenceChecksum }, { name: upgradeMarkerMigration.name, checksum: upgradeMarkerChecksum }]);
       // The fence covers the marker: every write reaches the missing observer.
       for (const statement of ["UPDATE upgrade_marker SET state='complete'", "DELETE FROM upgrade_marker",
-        "INSERT INTO upgrade_marker VALUES(2,'complete','2026-11-15T00:00:00.000Z')"]) {
+        "INSERT INTO upgrade_marker VALUES(2,'complete','2026-11-15T00:00:00.000Z',NULL)"]) {
         expect(() => database.exec(statement)).toThrow(/no such function: worktree_security_pending/);
       }
       expect(marker(database)).toHaveLength(1);
@@ -206,15 +214,16 @@ describe("provisional schema step 50: upgrade marker", () => {
   it.each([
     ["an extra column", (db: Database.Database) => db.exec("ALTER TABLE upgrade_marker ADD COLUMN extra TEXT")],
     ["a missing column", (db: Database.Database) => db.exec("ALTER TABLE upgrade_marker DROP COLUMN changed_at")],
-    ["a widened constraint", (db: Database.Database) => rebuildMarker(db, `CREATE TABLE upgrade_marker (
-  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-  state TEXT NOT NULL CHECK(state IN ('pending','complete','skipped')),
-  changed_at TEXT NOT NULL
-)`, "INSERT INTO upgrade_marker VALUES(1,'pending','2026-11-15T00:00:00.000Z')", true)],
-    ["an added constraint", (db: Database.Database) => rebuildMarker(db, `CREATE TABLE upgrade_marker (
+    ["a widened constraint", (db: Database.Database) => rebuildMarker(db, MARKER_TABLE.replace("('pending','complete')", "('pending','complete','skipped')"),
+      "INSERT INTO upgrade_marker VALUES(1,'pending','2026-11-15T00:00:00.000Z',NULL)", true)],
+    ["an added constraint", (db: Database.Database) => rebuildMarker(db, MARKER_TABLE.replace("changed_at TEXT NOT NULL,", "changed_at TEXT NOT NULL CHECK(changed_at<>''),"),
+      "INSERT INTO upgrade_marker VALUES(1,'pending','2026-11-15T00:00:00.000Z',NULL)", true)],
+    ["a plan hash without its constraint", (db: Database.Database) => rebuildMarker(db, MARKER_TABLE.replace(/ CHECK\(plan_hash IS NULL[^\n]*\),\n/, ",\n"),
+      "INSERT INTO upgrade_marker VALUES(1,'pending','2026-11-15T00:00:00.000Z',NULL)", true)],
+    ["a missing plan-hash column", (db: Database.Database) => rebuildMarker(db, `CREATE TABLE upgrade_marker (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
   state TEXT NOT NULL CHECK(state IN ('pending','complete')),
-  changed_at TEXT NOT NULL CHECK(changed_at<>'')
+  changed_at TEXT NOT NULL
 )`, "INSERT INTO upgrade_marker VALUES(1,'pending','2026-11-15T00:00:00.000Z')", true)],
     ["a missing trigger", (db: Database.Database) => db.exec("DROP TRIGGER security_upgrade_marker_update")],
     ["an altered trigger body", (db: Database.Database) => db.exec("DROP TRIGGER security_upgrade_marker_delete; CREATE TRIGGER security_upgrade_marker_delete BEFORE DELETE ON upgrade_marker BEGIN SELECT 1; END")],
@@ -294,12 +303,17 @@ describe("provisional schema step 50: upgrade marker", () => {
 
   it.each([
     ["no row", (db: Database.Database) => db.exec("DELETE FROM upgrade_marker")],
-    ["two rows", (db: Database.Database) => rebuildMarker(db, "CREATE TABLE upgrade_marker (singleton INTEGER, state TEXT, changed_at TEXT)",
-      "INSERT INTO upgrade_marker VALUES(1,'pending','2026-11-15T00:00:00.000Z'),(1,'complete','2026-11-15T00:00:00.000Z')")],
-    ["another singleton", (db: Database.Database) => rebuildMarker(db, "CREATE TABLE upgrade_marker (singleton INTEGER, state TEXT, changed_at TEXT)",
-      "INSERT INTO upgrade_marker VALUES(2,'complete','2026-11-15T00:00:00.000Z')")],
-    ["an invalid state", (db: Database.Database) => rebuildMarker(db, "CREATE TABLE upgrade_marker (singleton INTEGER, state TEXT, changed_at TEXT)",
-      "INSERT INTO upgrade_marker VALUES(1,'skipped','2026-11-15T00:00:00.000Z')")],
+    ["two rows", (db: Database.Database) => rebuildMarker(db, LOOSE_MARKER,
+      "INSERT INTO upgrade_marker VALUES(1,'pending','2026-11-15T00:00:00.000Z',NULL),(1,'complete','2026-11-15T00:00:00.000Z',NULL)")],
+    ["another singleton", (db: Database.Database) => rebuildMarker(db, LOOSE_MARKER,
+      "INSERT INTO upgrade_marker VALUES(2,'complete','2026-11-15T00:00:00.000Z',NULL)")],
+    ["an invalid state", (db: Database.Database) => rebuildMarker(db, LOOSE_MARKER,
+      "INSERT INTO upgrade_marker VALUES(1,'skipped','2026-11-15T00:00:00.000Z',NULL)")],
+    ["a pending marker with a plan hash", (db: Database.Database) => rebuildMarker(db, LOOSE_MARKER, `INSERT INTO upgrade_marker VALUES(1,'pending','2026-11-15T00:00:00.000Z','${PLAN}')`)],
+    ["an uppercase plan hash", (db: Database.Database) => rebuildMarker(db, LOOSE_MARKER, `INSERT INTO upgrade_marker VALUES(1,'complete','2026-11-15T00:00:00.000Z','${PLAN.toUpperCase()}')`)],
+    ["a short plan hash", (db: Database.Database) => rebuildMarker(db, LOOSE_MARKER, `INSERT INTO upgrade_marker VALUES(1,'complete','2026-11-15T00:00:00.000Z','${PLAN.slice(1)}')`)],
+    ["a plan hash stored as a BLOB", (db: Database.Database) => rebuildMarker(db, LOOSE_MARKER, `INSERT INTO upgrade_marker VALUES(1,'complete','2026-11-15T00:00:00.000Z',CAST('${PLAN}' AS BLOB))`)],
+    ["an empty plan hash", (db: Database.Database) => rebuildMarker(db, LOOSE_MARKER, "INSERT INTO upgrade_marker VALUES(1,'complete','2026-11-15T00:00:00.000Z','')")],
     ["a timestamp without milliseconds", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at='2026-11-15T00:00:00Z'")],
     ["a timestamp with a space", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at='2026-11-15 00:00:00.000'")],
     ["an impossible date", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at='2026-02-30T00:00:00.000Z'")],
@@ -313,6 +327,34 @@ describe("provisional schema step 50: upgrade marker", () => {
       mutate(database);
       expect(() => validateDatabase(database, 50)).toThrow("SQLite application invariant failed (upgrade marker); startup stopped.");
       expect(() => validateDatabase(database, 49)).not.toThrow();
+    } finally { database.close(); }
+  });
+
+  it("records a plan hash only on a complete marker: the table refuses the others, validation accepts both complete forms", () => {
+    const database = unmanagedFixtureDatabase(":memory:");
+    try {
+      fresh50(database);
+      // A fresh complete marker has no plan hash; an applied one has a lowercase SHA-256.
+      expect(marker(database)[0].state).toBe("complete");
+      expect(database.prepare("SELECT plan_hash FROM upgrade_marker").pluck().get()).toBeNull();
+      database.exec(`UPDATE upgrade_marker SET plan_hash='${PLAN}'`);
+      expect(() => validateDatabase(database, 50)).not.toThrow();
+      expect(() => inspectSchema(database, TARGET)).not.toThrow();
+      for (const statement of [`UPDATE upgrade_marker SET state='pending'`, `UPDATE upgrade_marker SET plan_hash='${PLAN.toUpperCase()}'`,
+        `UPDATE upgrade_marker SET plan_hash='${PLAN.slice(1)}'`, `UPDATE upgrade_marker SET plan_hash=CAST('${PLAN}' AS BLOB)`, "UPDATE upgrade_marker SET plan_hash=''",
+        `UPDATE upgrade_marker SET plan_hash='${"g".repeat(64)}'`]) {
+        expect(() => database.exec(statement), statement).toThrow(/CHECK constraint failed/);
+      }
+      // SQLite's text length and GLOB stop at NUL: the byte length makes the table
+      // refuse what validateDatabase refuses, also through a bound parameter.
+      for (const value of [`${PLAN}\0`, `${PLAN}\0suffix`, `${PLAN.slice(4)}\0abc`, "\u00e9".repeat(64)]) {
+        expect(() => database.prepare("UPDATE upgrade_marker SET plan_hash=?").run(value), JSON.stringify(value)).toThrow(/CHECK constraint failed/);
+        expect(() => database.prepare("INSERT OR REPLACE INTO upgrade_marker(singleton,state,changed_at,plan_hash) VALUES(1,'complete',strftime('%Y-%m-%dT%H:%M:%fZ','now'),?)").run(value)).toThrow(/CHECK constraint failed/);
+      }
+      expect(database.prepare("SELECT plan_hash FROM upgrade_marker").pluck().get()).toBe(PLAN);
+      database.exec("UPDATE upgrade_marker SET state='pending',plan_hash=NULL");
+      expect(() => validateDatabase(database, 50)).not.toThrow();
+      expect(() => database.exec(`UPDATE upgrade_marker SET plan_hash='${PLAN}'`)).toThrow(/CHECK constraint failed/);
     } finally { database.close(); }
   });
 

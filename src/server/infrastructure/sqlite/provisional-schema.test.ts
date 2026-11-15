@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, extname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +15,9 @@ import { OwnedSqliteDatabase } from "./owned-database";
 import { maintainSqliteSecurityFence, quarantineAuthority } from "./security-maintenance";
 import { hashFile, parseManifest, validateBackup, validateSnapshot } from "./backup-validation";
 import { applyUpgradeMarkerMigration } from "./upgrade-marker-migration";
+import { applySqliteUpgrade, inspectSqliteUpgrade } from "./upgrade-maintenance";
+import { assertUpgradeAvailable, readUpgradePlan, removeUpgradePlan, structuralSteps, upgradeTarget, UpgradeError, writeUpgradePlan } from "./upgrade-plan";
+import { SecurityFence } from "./security-fence";
 
 /**
  * Provisional schema steps stay switched off (C1b).
@@ -65,6 +69,7 @@ const STEP_IMPORTERS: Readonly<Record<string, string>> = Object.freeze({
   "src/server/infrastructure/sqlite/migrations.ts": "applies step 50 when initializeSchema is given the target",
   "src/server/infrastructure/sqlite/schema-inspection.ts": "recognises step 50 and builds its reference at the ceiling",
   "src/server/infrastructure/sqlite/fixtures/schema-rewind.ts": "rewinds a synthetic step-50 fixture",
+  "src/server/infrastructure/sqlite/upgrade-plan.ts": "names step 50 and its checksum among the structural steps an upgrade plan lists",
 });
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
 const TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
@@ -176,6 +181,7 @@ function current49() {
   return { paths, backup, snapshot, manifest };
 }
 const HANDOFF = { preflight: () => undefined, acknowledge: () => undefined };
+const UNUSED_BACKUP = async (): Promise<never> => { throw new Error("fixture backup must not run"); };
 
 describe("provisional schema steps stay switched off", () => {
   it("keeps schema 49 supported, step 50 provisional and the switch off by default", () => {
@@ -204,6 +210,9 @@ describe("provisional schema steps stay switched off", () => {
         parseManifest: () => parseManifest({ ...fixture.manifest, database: { ...fixture.manifest.database, schemaVersion: 50 } }, 50),
         validateSnapshot: () => validateSnapshot(fixture.snapshot, parseManifest(fixture.manifest), 50),
         validateBackup: () => validateBackup(fixture.backup, parseManifest(fixture.manifest), false, 50),
+        upgradeTarget: () => upgradeTarget(50),
+        inspectSqliteUpgrade: () => inspectSqliteUpgrade(fixture.paths, 50),
+        applySqliteUpgrade: () => applySqliteUpgrade(fixture.paths, { expect: "0".repeat(64) }, UNUSED_BACKUP, 50),
       };
       const unsupported = message(() => schemaTarget(51));
       expect(unsupported).toBe(UNSUPPORTED);
@@ -211,11 +220,57 @@ describe("provisional schema steps stay switched off", () => {
       // Nothing was applied: the empty database stays empty, the schema-49 one unchanged.
       expect(memory.prepare("SELECT count(*) FROM sqlite_master").pluck().get()).toBe(0);
       expect(inspectSchema(current)).toEqual({ version: 49, fresh: false });
+      // The upgrade needs step 50: at the default target it is unsupported too, with
+      // its own code, and neither refusal took a lock or wrote a plan directory.
+      for (const refusal of [() => inspectSqliteUpgrade(fixture.paths), () => applySqliteUpgrade(fixture.paths, { expect: "0".repeat(64) }, UNUSED_BACKUP),
+        () => inspectSqliteUpgrade(fixture.paths, 50), () => applySqliteUpgrade(fixture.paths, { expect: "0".repeat(64) }, UNUSED_BACKUP, 50)]) {
+        expect(refusal).toThrowError(expect.objectContaining({ name: "UpgradeError", code: "upgrade_unsupported", message: unsupported }));
+      }
+      expect(new UpgradeError("upgrade_unsupported", "none").message).toBe(unsupported);
+      expect(existsSync(`${fixture.paths.databasePath}.upgrade`)).toBe(false);
+      expect(existsSync(fixture.paths.controllerLockPath)).toBe(false);
     } finally { memory.close(); current.close(); }
     // The same entry points accept the default, so the refusal is the target's.
     const owner = new OwnedSqliteDatabase(fixture.paths.databasePath);
     try { expect(owner.inspection.version).toBe(49); } finally { owner.close(); }
     expect(() => validateBackup(fixture.backup, parseManifest(fixture.manifest))).not.toThrow();
+  });
+
+  it("refuses every upgrade-specific helper of the fence and the plan while the switch is off, before any file is read or written", () => {
+    expect(provisionalSchemaEnabled()).toBe(false);
+    const fixture = current49(), data = realpathSync(fixture.paths.dataDirectory), path = join(data, "state.sqlite3");
+    /** Every entry under the data directory: kind, bytes, mode and modification time. */
+    const tree = (root: string): Record<string, string> => Object.fromEntries(readdirSync(root, { recursive: true, encoding: "utf8" }).sort().map(name => {
+      const entry = join(root, name), stat = lstatSync(entry, { bigint: true });
+      return [name, [stat.isFile() ? createHash("sha256").update(readFileSync(entry)).digest("hex") : stat.isDirectory() ? "directory" : "other", stat.mode, stat.mtimeNs].join(":")];
+    }));
+    const database = new Database(path);
+    try {
+      // A trusted schema-49 witness: what beginUpgrade would replace with a format-2 pending one.
+      SecurityFence.attach(path, database, true);
+      const before = tree(data);
+      expect(Object.keys(before)).toContain(join("state.sqlite3.security", "witness.json"));
+      const receipt = "00000000-0000-4000-8000-000000000000";
+      const plan = { kind: "worktree-control/upgrade-plan" as const, format: 1 as const, binding: "a".repeat(64), installation: "b".repeat(64), base: "c".repeat(64), source: 49, target: 49, steps: structuralSteps(49, 49), acts: [] };
+      const refusals = {
+        assertUpgradeAvailable: () => assertUpgradeAvailable(),
+        beginUpgrade: () => SecurityFence.beginUpgrade(path, { receipt, plan: "0".repeat(64), at: new Date().toISOString() }),
+        registerUpgradeObserver: () => SecurityFence.registerUpgradeObserver(path, database, receipt),
+        upgradeReceiptPending: () => SecurityFence.upgradeReceipt(path, database, receipt, "pending"),
+        upgradeReceiptConfirmed: () => SecurityFence.upgradeReceipt(path, database, receipt, "confirmed"),
+        writeUpgradePlan: () => writeUpgradePlan(path, plan),
+        readUpgradePlan: () => readUpgradePlan(path),
+        removeUpgradePlan: () => removeUpgradePlan(path),
+      };
+      for (const [entry, refusal] of Object.entries(refusals)) {
+        expect(refusal, entry).toThrowError(expect.objectContaining({ name: "UpgradeError", code: "upgrade_unsupported", message: UNSUPPORTED }));
+      }
+      expect(tree(data)).toEqual(before);
+      expect(existsSync(`${path}.upgrade`)).toBe(false);
+      // The witness is still the trusted format-1 record.
+      expect(() => SecurityFence.inspect(path, database, false)).not.toThrow();
+      expect(JSON.parse(readFileSync(join(`${path}.security`, "witness.json"), "utf8")).payload).toMatchObject({ format: 1, state: "confirmed" });
+    } finally { database.close(); }
   });
 
   it("finds no gate import outside the reader, and no step-module import outside the listed files", () => {
