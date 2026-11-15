@@ -638,7 +638,8 @@ describe("default maintenance of a step-50 database (provisional switch off)",()
     read(provisional,db=>{expect(db.prepare("SELECT max(version) FROM schema_migrations").pluck().get()).toBe(50);expect(db.prepare("SELECT state FROM upgrade_marker").pluck().all()).toEqual(["pending"]);});
     const before=state(provisional),beforeUnknown=state(unknown);
     const refused=failure(()=>maintainSqliteSecurityFence(provisional,command,HANDOFF));
-    expect(refused).toEqual({name:"SecurityFenceError",code:"security_fence_pending",committed:undefined});
+    // committed defaults to false in AuthenticationProviderError: nothing was committed.
+    expect(refused).toEqual({name:"SecurityFenceError",code:"security_fence_pending",committed:false});
     expect(failure(()=>maintainSqliteSecurityFence(unknown,command,HANDOFF))).toEqual(refused);
     // The production composition gives the same answer.
     expect(failure(()=>maintainSecurityFence(provisional,command))).toEqual(refused);
