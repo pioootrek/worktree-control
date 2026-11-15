@@ -11,11 +11,26 @@ import { getOwnedRestoreStatus } from "./restore-recovery";
 
 const hex = z.string().regex(/^[0-9a-f]{64}$/);
 const policySchema = z.object({ mode: z.enum(["legacy", "token", "open", "better-auth"]), generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) }).strict();
-const recordSchema = z.object({ format: z.literal(1), binding: hex, installation: hex, epoch: hex,
+const recordV1 = z.object({ format: z.literal(1), binding: hex, installation: hex, epoch: hex,
   state: z.enum(["pending", "confirmed"]), file:z.object({device:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),inode:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)}).strict(), policy: policySchema, owner: z.string().min(1).max(160).nullable(),
   restore: z.uuid().nullable(), receipt: z.uuid().nullable(), recoveredAt: z.iso.datetime().nullable(),
 }).strict();
+/** What the explicit offline upgrade (`upgrade-maintenance.ts`) applied: its run
+ * receipt, the hash of the executed plan and when the run started. */
+const upgradeSchema = z.object({ receipt: z.uuid(), plan: hex, at: z.iso.datetime() }).strict();
+/**
+ * Format 2 is format 1 plus a required upgrade receipt, added last. Format 1 is
+ * unchanged byte for byte: every record without an upgrade is still written and
+ * hashed as format 1, so existing witnesses decode, verify and compare as before.
+ * A binary that knows only format 1 refuses a format-2 record at `format`, as
+ * recovery required; it never reads it as format 1 without the upgrade.
+ * `receipt` and `recoveredAt` keep their meaning (the last establish/resume) in
+ * both formats; an upgrade never writes them.
+ */
+const recordV2 = recordV1.extend({ format: z.literal(2), upgrade: upgradeSchema }).strict();
+const recordSchema = z.discriminatedUnion("format", [recordV1, recordV2]);
 type Record = z.infer<typeof recordSchema>;
+export type SecurityUpgradeReceipt = z.infer<typeof upgradeSchema>;
 const envelope = z.object({ payload: recordSchema, sha256: hex }).strict();
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export type SecurityFenceCode = "security_fence_owner_running" | "security_fence_establishment_required" | "security_fence_recovery_required" | "security_fence_pending" | "security_fence_preflight_changed";
@@ -35,6 +50,8 @@ const imageStamp=(database:string)=>[database,`${database}-wal`].map(path=>{
   catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return "missing";throw error;}
 }).join("|");
 const binding = (database: string) => hash(["worktree-control/security-fence/v1", database, witnessPath(database)]);
+/** The witness binding of a canonical database path; it differs for every other database file. */
+export const securityFenceBinding = (database: string): string => binding(database);
 const restore = (database: string) => getOwnedRestoreStatus(database)?.operationId ?? null;
 function checkpoint(database: Database.Database): { installation: string; epoch: string } {
   return database.prepare("SELECT installation,epoch FROM security_checkpoint WHERE singleton=1").get() as {installation:string;epoch:string};
@@ -163,6 +180,40 @@ export class SecurityFence implements SqliteExecutionBoundary {
     // A corrupt witness may be replaced only here by the explicit operator action;
     // private path/alias checks still apply, with no repair of ownership or mode.
     const payload: Record = {format:1,binding:binding(path),...checkpoint(database),state:phase,file:fileIdentity(path),policy:policy(database),owner:ownerIdentity(database),restore:restore(path),receipt,recoveredAt:read(path)?.recoveredAt ?? null};
+    try { publish(path,payload); }
+    catch(error) {
+      if(phase==="confirmed")try{publish(path,{...payload,state:"pending"});}catch{/* Preserve uncertainty. */}
+      throw error;
+    }
+  }
+  /**
+   * The explicit offline upgrade's pending witness, published before its schema
+   * transaction. It is the current trusted record (the caller has verified it)
+   * in format 2 with this run's upgrade receipt: `receipt` and `recoveredAt` of
+   * an earlier establish or resume stay as they are. Pending alone fences the
+   * database until {@link upgradeReceipt} confirms it.
+   */
+  static beginUpgrade(path: string, upgrade: SecurityUpgradeReceipt): void {
+    const previous = read(path);
+    if (!previous || previous.state !== "confirmed") throw new SecurityFenceError("security_fence_recovery_required");
+    const parsed = upgradeSchema.parse(upgrade);
+    // Field order is the schema's: the record hash is taken over this object.
+    publish(path, { format: 2, binding: previous.binding, installation: previous.installation, epoch: previous.epoch, state: "pending", file: previous.file,
+      policy: previous.policy, owner: previous.owner, restore: previous.restore, receipt: previous.receipt, recoveredAt: previous.recoveredAt,
+      upgrade: { receipt: parsed.receipt, plan: parsed.plan, at: parsed.at } });
+  }
+  static registerUpgradeObserver(path: string, database: Database.Database, receipt: string): void {
+    const record = read(path);
+    if (!record || record.state !== "pending" || record.format !== 2 || record.upgrade.receipt !== receipt) throw new SecurityFenceError("security_fence_recovery_required");
+    database.function("worktree_security_pending", () => 0);
+  }
+  /** The upgrade's counterpart of {@link maintenanceReceipt}: the witness of the
+   * upgraded database, keeping the earlier recovery receipt and this run's upgrade. */
+  static upgradeReceipt(path: string, database: Database.Database, receipt: string, phase: "pending" | "confirmed"): void {
+    const previous = read(path);
+    if (!previous || previous.format !== 2 || previous.upgrade.receipt !== receipt) throw new SecurityFenceError("security_fence_recovery_required");
+    const payload: Record = {format:2,binding:binding(path),...checkpoint(database),state:phase,file:fileIdentity(path),policy:policy(database),owner:ownerIdentity(database),restore:restore(path),
+      receipt:previous.receipt,recoveredAt:previous.recoveredAt,upgrade:previous.upgrade};
     try { publish(path,payload); }
     catch(error) {
       if(phase==="confirmed")try{publish(path,{...payload,state:"pending"});}catch{/* Preserve uncertainty. */}

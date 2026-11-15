@@ -12,6 +12,12 @@ import { schemaTarget } from "./migration-registry";
  * earlier schema, and again after `auth fence resume` (the quarantine). Who can
  * set it to `complete` skips the data upgrade, so the table is fenced like the
  * schema-49 authority tables.
+ *
+ * `plan_hash` is the hash of the upgrade plan whose apply set the marker to
+ * `complete` (see `upgrade-maintenance.ts`), so a repeated apply can answer
+ * "already applied" after the plan file is gone. `pending` has none; a
+ * `complete` without one is a fresh installation, which never needed a plan.
+ * The quarantine clears it together with setting `pending`.
  */
 export const UPGRADE_MARKER_VERSION = 50;
 /** Fence coverage added by step 50. The frozen schema-49 list is not extended. */
@@ -23,7 +29,9 @@ export const upgradeMarkerTriggers = UPGRADE_MARKER_SECURITY_TABLES.flatMap(tabl
 const table = `CREATE TABLE upgrade_marker (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
   state TEXT NOT NULL CHECK(state IN ('pending','complete')),
-  changed_at TEXT NOT NULL
+  changed_at TEXT NOT NULL,
+  plan_hash TEXT CHECK(plan_hash IS NULL OR (typeof(plan_hash)='text' AND length(plan_hash)=64 AND NOT plan_hash GLOB '*[^0-9a-f]*')),
+  CHECK(state='complete' OR plan_hash IS NULL)
 )`;
 /** The only part that differs between a fresh and a migrated database is the bound state. */
 const initialRow = "INSERT INTO upgrade_marker(singleton,state,changed_at) VALUES(1,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))";

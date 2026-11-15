@@ -1085,18 +1085,134 @@ the module. Non-literal specifiers under `src` fail the separate unmounted
 guard, outside its own allow-list.
 
 Step 50 adds the single-row `upgrade_marker` table: state `pending` or
-`complete`, and the time of its last change. The upgrade marker is separate from
-the schema version. A database initialised from empty starts `complete`. A
-database migrated from an earlier schema starts `pending`, and resume sets it to
-`pending` again inside its quarantine. Both have the same structure. Whoever can
-set the marker to `complete` skips the data upgrade, so the step adds the three
-fence triggers of step 49 for this table. That coverage is a separate list by
-version; the schema-49 list is unchanged. The step writes its row before those
-triggers exist and writes no fenced table, so it can run in ordinary startup
-before the fence attaches. No reader or command uses the marker yet.
+`complete`, the time of its last change, and `plan_hash`, the hash of the
+upgrade plan whose apply set it to `complete`. The upgrade marker is separate
+from the schema version. A database initialised from empty starts `complete`
+without a plan hash. A database migrated from an earlier schema starts
+`pending`, and resume sets it to `pending` again inside its quarantine and
+clears the plan hash. Both have the same structure. Whoever can set the marker
+to `complete` skips the data upgrade, so the step adds the three fence triggers
+of step 49 for this table. That coverage is a separate list by version; the
+schema-49 list is unchanged. The step writes its row before those triggers
+exist and writes no fenced table, so it can run in ordinary startup before the
+fence attaches.
+
+The plan hash is 64 lowercase hexadecimal characters, enforced by the table and
+by validation at 50: `pending` has none, and `complete` has one unless it is
+the `complete` of a fresh installation. A fresh and an applied `complete` are
+told apart only by that null, and nothing else needs to tell them apart: only
+the upgrade writes a hash, and a fresh installation never needed a plan. The
+explicit upgrade below is the only writer of `complete` after initialisation.
 
 Inspection at ceiling 50 compares the stored `CREATE` text of the marker table
 and of its three triggers with the text the step executes, byte for byte.
 SQLite stores that text unchanged, and the comparison keeps the case and spacing
 inside string literals. Recognition of schema 49 and earlier, including the
 schema-49 triggers, is unchanged.
+
+### Explicit offline upgrade (integration branch only)
+
+This section describes `integration/auth-unification`, not a release. The
+machinery is in `upgrade-plan.ts` and `upgrade-maintenance.ts` under
+`src/server/infrastructure/sqlite/`. No command, composition or startup path
+uses it: every entry point needs a schema target of at least 50 and refuses as
+unsupported, before any lock or file, while the provisional switch is off.
+Later pull requests add its data acts and register the commands.
+
+An installation's database is in one of four states. The fence decides trust
+exactly as `SecurityFence.preflight` does. A confirmed witness that carries an
+earlier recovery receipt is trusted like any other confirmed witness.
+
+| State | Recognised by | Operator's next step |
+| --- | --- | --- |
+| Current | trusted fence, marker `complete` | nothing |
+| Upgrade needed | trusted fence, marker absent (schema 49) or `pending` | `upgrade inspect`, then `upgrade apply --expect <plan hash>` |
+| Pre-fence | no fence, establishment allowed | `auth fence establish`, then upgrade |
+| Fenced | anything else: a pending, mismatched or missing witness on fenced data, or an unacknowledged restore | `auth fence resume`, then upgrade |
+
+`upgrade inspect` takes both singleton locks as the fence maintenance does and
+is read-only on the database. Only in "upgrade needed" it writes one plan,
+replacing any earlier one, and returns it with its hash. In every other state it
+writes nothing and reports the next step. The plan holds:
+
+- `kind` (`worktree-control/upgrade-plan`) and `format` (1);
+- `binding`, the fence's binding of the canonical database path, and
+  `installation` from `security_checkpoint`, so a plan cannot be applied to
+  another database;
+- `base`, the preflight hash over the database, its WAL and the witness;
+- `source` and `target` schema versions;
+- `steps`, the version, name and checksum of every structural step apply runs;
+- `acts`, the ordered data acts.
+
+The plan hash is the SHA-256 of the plan's canonical JSON: keys sorted by
+UTF-16 code units, no whitespace, and only strings, safe integers, booleans,
+null, arrays and plain objects. It carries no timestamp, so two inspects of an
+unchanged database give the same hash. The plan has no act kind yet, so its act
+list is empty, and a plan with any act is refused as malformed. A later kind
+supplies its proposal from the read-only source database, its execution inside
+the schema transaction, the line the operator reads and a strict payload
+schema. The hash covers every act.
+
+The plan file is `plan.json` in the private directory `<database>.upgrade`,
+beside the database and outside the fence's `.security` directory. It is written
+with the durable private-storage helpers and read with mode, ownership and
+alias checks, without following links. It is parsed strictly, with no duplicate
+keys, and its envelope hash must match the canonical payload. The bound is
+8 MiB and 50 000 acts, the same as the backup manifest. Later project mappings
+and role decisions are one act of a few hundred bytes per registration or grant.
+Inspect reaps a bounded batch of leftover temporaries from an interrupted write
+and refuses links and unknown entries.
+
+`upgrade apply --expect <plan hash>` runs in this order:
+
+1. Take both locks.
+2. Require "upgrade needed". When the state is "current" and the marker records
+   the same plan hash, answer "already applied" and change nothing. Refuse
+   every other state with its next step.
+3. Check owner continuity.
+4. Read the plan. Refuse it when it is missing or malformed, when its hash
+   differs from `--expect`, when its binding names another database, when its
+   base differs from the current preflight, or when its steps differ from the
+   code's.
+5. Write the backup through an injected function and validate it at the target
+   ceiling, then require the preflight to equal the base again. The backup reads
+   through the read-only connection with the SQLite Backup API, which writes
+   neither the database nor its WAL. A probe confirmed this for an empty WAL and
+   for a WAL left by a crashed writer. The read-only open itself creates an
+   empty WAL and a shared-memory index. Both inspect and apply compute the
+   preflight while that connection is open, so the base is stable.
+6. Publish a pending witness with the upgrade receipt and register the
+   maintenance observer.
+7. In one schema transaction, run the structural steps, the plan's acts in
+   order, the marker update to `complete` with the plan hash, and last an
+   `authentication.upgrade_applied` audit event. That event carries the receipt
+   and the plan hash and is this run's commit evidence.
+8. Validate at the target, publish the pending and then the confirmed witness,
+   and delete the plan file.
+
+| Failure point | Database | Witness | Operator's next step |
+| --- | --- | --- | --- |
+| Before the pending witness (steps 1–5) | unchanged | unchanged | apply again with the same plan |
+| After the pending witness, before the commit | unchanged | pending | `auth fence resume` at the target, then inspect and apply |
+| After the commit, before the confirmed witness | upgraded | pending | reported as committed; resume sets the marker to `pending`, then inspect and apply |
+| Confirmed witness not durable (publication falls back to pending) | upgraded | pending | as the previous row |
+| Success not seen | upgraded | confirmed | apply with the same `--expect` answers "already applied" |
+
+Errors are `UpgradeError` values with a code, the next step, and `committed`
+only when this run's transaction is proven committed by a raised schema
+version or its audit event. The codes are `upgrade_unsupported`,
+`upgrade_invalid_input`, `upgrade_owner_running`, `upgrade_wrong_state` (with
+the state), `upgrade_owner_changed`, `upgrade_plan_missing`,
+`upgrade_plan_invalid`, `upgrade_plan_foreign`, `upgrade_plan_mismatch`,
+`upgrade_base_changed`, `upgrade_step_mismatch`, `upgrade_plan_storage`,
+`upgrade_backup_failed` and `upgrade_outcome_uncertain`. Messages carry no
+secrets, paths or file contents.
+
+The witness gains format 2: format 1 plus a required `upgrade` field (receipt,
+plan hash and start time). Apply writes it, and ordinary fenced writes carry it
+forward. Establish and resume write format 1 without it. A record without an
+upgrade stays format 1 byte for byte, so existing witnesses decode, verify their
+hash and compare as before. A binary that knows only format 1 refuses a format-2
+record as recovery required instead of misreading it. An upgrade never writes
+`receipt` or `recoveredAt`. They keep the last establish or resume, and
+`securityRecoveryBoundary` returns the same value before and after an upgrade.
