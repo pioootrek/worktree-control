@@ -105,7 +105,6 @@ function fixture(installationAuthority?: InstallationAuthority) {
       return true;
     },
     getKnowledgeProjectRuntimeLink: (projectId) => links.get(projectId) ?? null,
-    saveKnowledgeProjectRuntimeLink: (link) => { links.set(link.projectId, link); },
   };
   const service = new IdentityService(store, () => NOW, () => AGENT_CREDENTIAL_ID, () => "b".repeat(64), installationAuthority);
   return { service, principals, credentials, projects, grants };
@@ -355,6 +354,32 @@ describe("IdentityService", () => {
     current = false;
     expectCode(() => service.createAgent(installation), "invalid_credential");
     expectCode(() => service.authorizeKnowledge(installation, project.id, "knowledge:read"), "invalid_credential");
+  });
+
+  it("lets only the owner and the current installation change a runtime link", () => {
+    let current = true;
+    const { service } = fixture({ isCurrentInstallationActor: () => current });
+    const owner = service.authenticateBearer(OWNER_TOKEN);
+    expect(() => service.authorizeKnowledgeRuntimeLink(owner)).not.toThrow();
+    for (const authenticationMethod of ["installation_token", "none"] as const) {
+      const installation: AuthenticatedPrincipal = { principalId: "installation", principalKind: "installation", credentialId: "installation", authenticationMethod };
+      expect(() => service.authorizeKnowledgeRuntimeLink(installation)).not.toThrow();
+    }
+    const agent = service.authenticateBearer(service.issueAgentToken({ principalId: "agent-1", label: "agent" }, owner).token);
+    expectCode(() => service.authorizeKnowledgeRuntimeLink(agent), "knowledge_forbidden");
+
+    current = false;
+    expectCode(() => service.authorizeKnowledgeRuntimeLink({
+      principalId: "installation", principalKind: "installation", credentialId: "installation", authenticationMethod: "installation_token",
+    }), "invalid_credential");
+  });
+
+  it("refuses a worker a runtime link", () => {
+    const { service } = fixture();
+    const owner = service.authenticateBearer(OWNER_TOKEN);
+    const worker = service.createWorker(owner);
+    const actor = service.authenticateBearer(service.issueWorkerToken({ principalId: worker.id, label: "worker" }, owner).token);
+    expectCode(() => service.authorizeKnowledgeRuntimeLink(actor), "knowledge_forbidden");
   });
 
   it("rejects an installation actor when no installation authority is wired", () => {
