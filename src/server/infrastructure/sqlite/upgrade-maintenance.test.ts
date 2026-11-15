@@ -1162,7 +1162,7 @@ describe("inspection-only owner: a refused reopen of a rollback-journal database
     const copy = join(temporary("upgrade-journal-"), "copy.sqlite3");
     copyFileSync(path, copy);
     const writer = new Database(copy, { fileMustExist: true });
-    let journal: Buffer;
+    let journal = Buffer.alloc(0);
     try {
       const insert = writer.prepare("INSERT INTO controller_audit_events(event_type,actor,details_json,created_at) VALUES('fixture.journal','fixture',?,?)");
       for (let row = 0; row < 200; row++) insert.run(JSON.stringify({ row, padding: "x".repeat(500) }), new Date().toISOString());

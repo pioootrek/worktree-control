@@ -55,6 +55,44 @@ function databaseProvenance(path: string): DatabaseProvenance {
   try { return getOwnedRestoreStatus(path) ? "restored" : "ordinary"; } catch { return "unconfirmed"; }
 }
 
+/** Begins a read transaction and reads: until the connection closes, SQLite holds a shared lock on its file. */
+function holdSharedLock(reader: Database.Database): void {
+  reader.exec("BEGIN");
+  reader.prepare("SELECT count(*) FROM sqlite_master").get();
+}
+/** Attempts at a reader whose file the pathname named before and after it read. */
+const SHIELD_ATTEMPTS = 3;
+/**
+ * Closes a refused writable connection without writing any file. One that
+ * executed nothing has opened no WAL or journal, and its close changes nothing.
+ * One that has read may checkpoint its file on close unless a reader in this
+ * process holds a shared lock on it; SQLite skips that checkpoint itself when
+ * the file no longer sits at the pathname. So readers are opened on what the
+ * pathname names now, until one opened and read while the pathname named the
+ * same file throughout, and they stay open across the close. When no reader
+ * can read what the pathname names, only the guard can hold this connection's
+ * file, which it does whenever the identity check saw no swap.
+ */
+function closeUnverified(path: string, writable: Database.Database, executed: boolean): void {
+  if (!executed) { writable.close(); return; }
+  const shields: Database.Database[] = [];
+  try {
+    for (let attempt = 0; attempt < SHIELD_ATTEMPTS; attempt++) {
+      try {
+        const named = lstatSync(path);
+        const shield = new Database(path, { readonly: true, fileMustExist: true });
+        shields.push(shield);
+        holdSharedLock(shield);
+        const now = lstatSync(path);
+        if (now.dev === named.dev && now.ino === named.ino) break;
+      } catch { /* Nothing readable at the pathname now; try again within the bound. */ }
+    }
+    writable.close();
+  } finally {
+    for (const shield of shields) shield.close();
+  }
+}
+
 /** One connection and database lock, transferable from inspection to migration. */
 export class OwnedSqliteDatabase {
   private connection: Database.Database;
@@ -136,11 +174,26 @@ export class OwnedSqliteDatabase {
    *
    * Then it closes the inspected connection, opens the pathname again and runs
    * `verify` on the new connection before anything else uses it. The pathname
-   * must name the same file before and after the open. While `verify` runs, a
-   * guard connection that has read holds SQLite's shared lock: when `verify`
-   * refuses, the writable connection closes first and cannot checkpoint a WAL
-   * into whatever file now sits at the pathname. The refused file may keep an
-   * empty WAL and a shared-memory file that the opens created.
+   * must name the same file before the guard opens and after the writable
+   * connection opens. No refusal may write a file: a writable connection writes
+   * on close only after it has executed something (it checkpoints a WAL and
+   * deletes it, or has rolled back a hot journal on its first read), and not
+   * while another connection in this process holds a shared lock on the same
+   * file or once its file no longer sits at the pathname. So:
+   *
+   * - the guard, a read-only connection, holds an open read transaction (a
+   *   shared lock in either journal mode) from before the writable open until
+   *   the end;
+   * - the writable connection executes nothing until the file identity
+   *   matched, so a refusal of the identity closes it without effect, whatever
+   *   file it opened;
+   * - when `verify` refuses, the writable connection has read, and its file may
+   *   differ from the guard's if the pathname was swapped and swapped back
+   *   around the identity check; {@link closeUnverified} first opens readers on
+   *   whatever file the pathname names now.
+   *
+   * The refused file may keep an empty WAL and a shared-memory file that the
+   * opens created. Read-only connections never checkpoint or truncate a WAL.
    */
   enableVerifiedWrites(verify: (database: Database.Database) => void): Database.Database {
     if (!this.inspectOnly) throw new Error("Only an inspection-only owner verifies its reopened database.");
@@ -152,15 +205,16 @@ export class OwnedSqliteDatabase {
     this.connection.close();
     const before = lstatSync(path);
     const guard = new Database(path, { readonly: true, fileMustExist: true });
-    let writable: Database.Database | undefined;
+    let writable: Database.Database | undefined, executed = false;
     try {
-      guard.prepare("SELECT count(*) FROM sqlite_master").get();
+      holdSharedLock(guard);
       writable = new Database(path, { fileMustExist: true });
       const after = lstatSync(path);
       if (after.dev !== before.dev || after.ino !== before.ino) throw new ReopenedDatabaseChangedError();
+      executed = true;
       verify(writable);
     } catch (error) {
-      try { writable?.close(); } finally { guard.close(); }
+      try { if (writable) closeUnverified(path, writable, executed); } finally { guard.close(); }
       throw error;
     }
     guard.close();

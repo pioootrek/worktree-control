@@ -1222,21 +1222,46 @@ and refuses links and unknown entries.
    verified journal's directories, which is all recovery does for it), and
    normalise the modes of the database and its sidecars as ordinary ownership
    would have. Then close the read-only connection and open the pathname
-   again, with a guard connection that has read: the pathname must name the
-   same file before and after the open, and before the durability settings,
-   the observer or any write the reopened database must be the inspected one.
-   Its file identity, checkpoint, policy, owner and restore must equal the
-   pending witness's copy of the trusted record, and its source image must
-   equal step 6's. A probe showed that opening, reading and setting the
-   durability pragmas through a writable connection change neither the
-   database nor its WAL; only its close checkpoints, and the guard's shared
-   lock prevents that close from checkpointing into a refused file. A mismatch
-   writes nothing to the database, leaves the pending witness and is
-   `upgrade_source_changed` (not committed, state "fenced", next step `auth
-   fence resume`). The check cannot detect a change that is undone before it
-   runs, a swap of files during the open that is swapped back, or a raw write
-   made after it, while the transaction runs; the refused file may keep an
-   empty WAL and a shared-memory index.
+   again: first a read-only guard connection, which holds an open read
+   transaction and so SQLite's shared lock on its file, then the writable
+   connection. The pathname must name the same file before the guard opens and
+   after the writable open, and before the durability settings, the observer
+   or any write the reopened database must be the inspected one. Its file
+   identity, checkpoint, policy, owner and restore must equal the pending
+   witness's copy of the trusted record, and its source image must equal step
+   6's. A mismatch leaves the pending witness and is `upgrade_source_changed`
+   (not committed, state "fenced", next step `auth fence resume`).
+
+   No refusal writes the file it refused, nor the inspected file wherever it
+   was moved. Probes of better-sqlite3 13.0.3 (SQLite 3.53.4) on WAL databases
+   whose WAL held uncheckpointed frames showed what that rests on. Opening a
+   writable connection executes nothing, and closing it without having
+   executed anything changes no file. Opening, reading and setting the
+   durability pragmas change neither the database nor its WAL. A writable
+   connection that has read checkpoints the WAL into its file and deletes the
+   WAL when it closes, unless another connection in the process holds a shared
+   lock on the same file, or the file no longer sits at the pathname (SQLite
+   checks this itself). In rollback-journal mode, its first read rolls back a
+   hot journal into the file unless such a lock is held. A read-only
+   connection never checkpoints, truncates or rolls back. So the writable
+   connection executes nothing until the file identity matched, and a refusal
+   before that closes it without effect, whichever file it opened. When the
+   verification refuses, the guard holds the lock on its file, and before the
+   writable connection closes, read-only connections are opened on whatever
+   the pathname names then, until one has read while the pathname named the
+   same file throughout. They stay open across the close.
+
+   The checks cannot detect a change that is undone before they run, a swap of
+   files around the identity check that is swapped back, or a raw write made
+   after them, while the transaction runs. Without access to SQLite's file
+   descriptors, one case remains unprotected. After the pathname was swapped
+   and swapped back around the identity check, the writable connection may
+   have read a file other than the guard's. If the pathname names that file
+   when the connection closes and no reader holds it, the close checkpoints
+   into it. That needs the pathname to have named another file during each
+   reader's open and read, or no reader to be able to read the file there (it
+   was overwritten in place, or a hot journal was planted beside it). The
+   refused file may keep an empty WAL and a shared-memory index.
 9. In one schema transaction, run the structural steps, the plan's acts in
    order, the marker update to `complete` with the plan hash, and last an
    `authentication.upgrade_applied` audit event. That event carries the receipt
