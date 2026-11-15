@@ -21,8 +21,8 @@ export type SecurityMaintenanceCommand =
   | { action: "establish"; expect: string }
   | { action: "resume"; expect: string; mode: "token" | "open" | "better-auth" };
 
-/** Quarantine ALL restored authentication material. Runs as the acts of the schema
- * transaction, so the structure becomes current only together with it. */
+/** Runs as the acts of the schema transaction, so the structure becomes current
+ * only together with the quarantine. */
 function quarantineAuthority(database: Database.Database, receipt: string, mode: "token" | "open" | "better-auth"): void {
   const now = new Date().toISOString();
   const old=JSON.parse((database.prepare("SELECT value_json FROM controller_settings WHERE key='authentication'").get() as {value_json:string}).value_json);
