@@ -57,10 +57,15 @@ const normal = (db: Database.Database) => {
   delete rows.security_checkpoint;
   return { catalogue, rows: Object.fromEntries(Object.entries(rows).map(([name, list]) => [name, (list as Array<Record<string, unknown>>).map(row => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, scrub(value)])))])) };
 };
-/** The database and WAL bytes, the witness and the plan file: what a refusal must leave unchanged. */
+/**
+ * The database and WAL bytes, the witness and the plan file: what a refusal must leave unchanged.
+ * SQLite's read-only open of a WAL database creates an empty WAL when none exists; an empty WAL
+ * holds no frames, so a missing and an empty WAL are the same database state.
+ */
 const files = (paths: AppPaths) => {
   const optional = (path: string) => existsSync(path) ? sha(readFileSync(path)) : "missing";
-  return { database: optional(paths.databasePath), wal: optional(`${paths.databasePath}-wal`), witness: existsSync(witnessPath(paths)) ? readFileSync(witnessPath(paths), "utf8") : "missing",
+  const wal = `${paths.databasePath}-wal`;
+  return { database: optional(paths.databasePath), wal: !existsSync(wal) || lstatSync(wal).size === 0 ? "empty" : optional(wal), witness: existsSync(witnessPath(paths)) ? readFileSync(witnessPath(paths), "utf8") : "missing",
     plan: existsSync(planFile(paths)) ? readFileSync(planFile(paths), "utf8") : "missing" };
 };
 const HANDOFF = { preflight: (database: string) => { preflightSecurityRecoveryHandoff(database); }, acknowledge: acknowledgeRecoveredBackupHandoff };
@@ -395,10 +400,10 @@ describe("explicit offline upgrade: apply refusals change nothing", () => {
     const changed = { ...status.plan!, steps: [{ ...status.plan!.steps[0], checksum: "0".repeat(64) }] };
     const hash = writeUpgradePlan(canonical(paths), changed);
     expect((await refused(paths, () => apply(paths, hash))).result).toMatchObject({ code: "upgrade_step_mismatch", nextStep: "upgrade inspect" });
-    const renamed = { ...status.plan!, steps: [{ ...status.plan!.steps[0], name: "other-step" }] };
-    expect((await refused(paths, () => apply(paths, writeUpgradePlan(canonical(paths), renamed)))).result).toMatchObject({ code: "upgrade_step_mismatch" });
-    const skipped = { ...status.plan!, source: 50, steps: [] };
-    expect((await refused(paths, () => apply(paths, writeUpgradePlan(canonical(paths), skipped)))).result).toMatchObject({ code: "upgrade_step_mismatch" });
+    const renamed = writeUpgradePlan(canonical(paths), { ...status.plan!, steps: [{ ...status.plan!.steps[0], name: "other-step" }] });
+    expect((await refused(paths, () => apply(paths, renamed))).result).toMatchObject({ code: "upgrade_step_mismatch" });
+    const skipped = writeUpgradePlan(canonical(paths), { ...status.plan!, source: 50, steps: [] });
+    expect((await refused(paths, () => apply(paths, skipped))).result).toMatchObject({ code: "upgrade_step_mismatch" });
   });
 
   it.each([
