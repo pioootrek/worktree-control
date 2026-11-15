@@ -9,6 +9,7 @@ import { OwnedSqliteDatabase } from "./owned-database";
 import { configureDurability, assertDurability, validateDatabase } from "./database-validation";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
+import type Database from "better-sqlite3";
 
 const commandSchema=z.discriminatedUnion("action",[
   z.object({action:z.literal("inspect")}).strict(),
@@ -19,6 +20,52 @@ export type SecurityMaintenanceCommand =
   | { action: "inspect" }
   | { action: "establish"; expect: string }
   | { action: "resume"; expect: string; mode: "token" | "open" | "better-auth" };
+
+/** Quarantine ALL restored authentication material. Runs as the acts of the schema
+ * transaction, so the structure becomes current only together with it. */
+function quarantineAuthority(database: Database.Database, receipt: string, mode: "token" | "open" | "better-auth"): void {
+  const now = new Date().toISOString();
+  const old=JSON.parse((database.prepare("SELECT value_json FROM controller_settings WHERE key='authentication'").get() as {value_json:string}).value_json);
+  if(!Number.isSafeInteger(old.generation) || old.generation>=Number.MAX_SAFE_INTEGER
+    || database.prepare("SELECT 1 FROM authentication_account_policies WHERE generation>=9007199254740991 OR policy_revision>=9007199254740991 LIMIT 1").get()) throw new SecurityFenceError("security_fence_recovery_required");
+  // Quarantine ALL restored authentication material. Keep principals, IDs,
+  // roles, membership rows, attribution, intent/run history, budgets and TOTP
+  // steps. Regrant/reissue/recover are subsequent explicit protected acts.
+  database.exec(`
+    UPDATE principal_credentials SET status='revoked', revoked_at=coalesce(revoked_at,'${now}');
+    UPDATE knowledge_project_grants SET revoked_at=coalesce(revoked_at,'${now}');
+    UPDATE knowledge_role_bindings SET revoked_at=coalesce(revoked_at,'${now}'),revision=revision+1,updated_at='${now}';
+    UPDATE runtime_delegations SET revoked_at=coalesce(revoked_at,'${now}'),revision=revision+1,updated_at='${now}';
+    UPDATE runtime_human_memberships SET revoked_at=coalesce(revoked_at,'${now}'),revision=revision+1,updated_at='${now}';
+    UPDATE remote_principal_project_grants SET revoked_at=coalesce(revoked_at,'${now}');
+    UPDATE remote_worker_project_grants SET revoked_at=coalesce(revoked_at,'${now}');
+    UPDATE authentication_ba_account SET password=NULL,accessToken=NULL,refreshToken=NULL,idToken=NULL;
+    DELETE FROM authentication_ba_session;
+    DELETE FROM authentication_ba_verification;
+    DELETE FROM authentication_ba_passkey;
+    DELETE FROM authentication_ba_two_factor;
+    UPDATE authentication_ba_user SET twoFactorEnabled=0;
+    UPDATE authentication_account_policies SET generation=generation+1,policy_revision=policy_revision+1,totp_selected=0,passkey_selected=0,updated_at='${now}';
+    UPDATE authentication_factor_contexts SET used=1;
+    UPDATE authentication_factor_receipts SET state='failed' WHERE state='charged';
+    UPDATE reservations SET released_at=coalesce(released_at,'${now}');
+    UPDATE remote_verification_requests SET phase='cancelled',updated_at='${now}' WHERE phase IN ('pending','assigned');
+    UPDATE remote_verification_attempts SET phase='cancel_requested',version=version+1,last_reported_at='${now}' WHERE phase IN ('assigned','preparing','running');
+  `);
+  // Mode is an explicit protected decision, never a restored selection or fallback.
+  // All shared and legacy verifier material is removed; first-run issuance is fresh.
+  database.prepare("UPDATE controller_settings SET value_json=?,updated_at=? WHERE key='authentication'")
+    .run(JSON.stringify({mode,generation:old.generation+1,token:null}),now);
+  new TestRunQueries(database).markInterruptedTestRuns();
+  // The last act and this run's durable commit evidence (see the catch below).
+  database.prepare("INSERT INTO controller_audit_events(event_type,actor,details_json,created_at) VALUES('authentication.security_quarantined','local-cli',?,?)")
+    .run(JSON.stringify({receipt,mode}),now);
+}
+
+/** True only when this run's quarantine committed: its audit event carries the receipt. */
+function quarantineCommitted(database: Database.Database, receipt: string): boolean {
+  return Boolean(database.prepare("SELECT 1 FROM controller_audit_events WHERE event_type='authentication.security_quarantined' AND json_extract(details_json,'$.receipt')=? LIMIT 1").get(receipt));
+}
 
 /** Offline only. This function acquires BOTH singleton locks; no transport boolean grants trust.
  * It never contacts HTTP/MCP, loads provider code, starts listeners, or starts/stops processes.
@@ -34,6 +81,7 @@ export function maintainSqliteSecurityFence(paths: AppPaths, command: SecurityMa
   }
   let owner: OwnedSqliteDatabase | undefined;
   let committed = false;
+  let receipt: string | undefined;
   try {
     owner = new OwnedSqliteDatabase(paths.databasePath);
     const databasePath = owner.canonicalPath;
@@ -46,71 +94,41 @@ export function maintainSqliteSecurityFence(paths: AppPaths, command: SecurityMa
     if (status.trusted) return {...status, changed:false};
     if (command.action === "establish" && !status.establishmentAllowed) throw new SecurityFenceError("security_fence_recovery_required");
     const ownerId=SecurityFence.assertOwnerContinuity(databasePath,owner.database);
-    const receipt = randomUUID();
-    SecurityFence.beginMaintenance(databasePath, receipt, command.action === "resume" ? new Date().toISOString() : null,ownerId);
+    const runReceipt = receipt = randomUUID();
+    SecurityFence.beginMaintenance(databasePath, runReceipt, command.action === "resume" ? new Date().toISOString() : null,ownerId);
     const database = owner.enableWrites();
     configureDurability(database);
-    SecurityFence.registerMaintenanceObserver(databasePath,database,receipt);
-    initializeSchema(database, owner.inspection.fresh, inspectSchema);
-    const now = new Date().toISOString();
-    if (command.action === "resume") {
-      database.transaction(() => {
-        const old=JSON.parse((database.prepare("SELECT value_json FROM controller_settings WHERE key='authentication'").get() as {value_json:string}).value_json);
-        if(!Number.isSafeInteger(old.generation) || old.generation>=Number.MAX_SAFE_INTEGER
-          || database.prepare("SELECT 1 FROM authentication_account_policies WHERE generation>=9007199254740991 OR policy_revision>=9007199254740991 LIMIT 1").get()) throw new SecurityFenceError("security_fence_recovery_required");
-        // Quarantine ALL restored authentication material. Keep principals, IDs,
-        // roles, membership rows, attribution, intent/run history, budgets and TOTP
-        // steps. Regrant/reissue/recover are subsequent explicit protected acts.
-        database.exec(`
-          UPDATE principal_credentials SET status='revoked', revoked_at=coalesce(revoked_at,'${now}');
-          UPDATE knowledge_project_grants SET revoked_at=coalesce(revoked_at,'${now}');
-          UPDATE knowledge_role_bindings SET revoked_at=coalesce(revoked_at,'${now}'),revision=revision+1,updated_at='${now}';
-          UPDATE runtime_delegations SET revoked_at=coalesce(revoked_at,'${now}'),revision=revision+1,updated_at='${now}';
-          UPDATE runtime_human_memberships SET revoked_at=coalesce(revoked_at,'${now}'),revision=revision+1,updated_at='${now}';
-          UPDATE remote_principal_project_grants SET revoked_at=coalesce(revoked_at,'${now}');
-          UPDATE remote_worker_project_grants SET revoked_at=coalesce(revoked_at,'${now}');
-          UPDATE authentication_ba_account SET password=NULL,accessToken=NULL,refreshToken=NULL,idToken=NULL;
-          DELETE FROM authentication_ba_session;
-          DELETE FROM authentication_ba_verification;
-          DELETE FROM authentication_ba_passkey;
-          DELETE FROM authentication_ba_two_factor;
-          UPDATE authentication_ba_user SET twoFactorEnabled=0;
-          UPDATE authentication_account_policies SET generation=generation+1,policy_revision=policy_revision+1,totp_selected=0,passkey_selected=0,updated_at='${now}';
-          UPDATE authentication_factor_contexts SET used=1;
-          UPDATE authentication_factor_receipts SET state='failed' WHERE state='charged';
-          UPDATE reservations SET released_at=coalesce(released_at,'${now}');
-          UPDATE remote_verification_requests SET phase='cancelled',updated_at='${now}' WHERE phase IN ('pending','assigned');
-          UPDATE remote_verification_attempts SET phase='cancel_requested',version=version+1,last_reported_at='${now}' WHERE phase IN ('assigned','preparing','running');
-        `);
-        // Mode is an explicit protected decision, never a restored selection or fallback.
-        // All shared and legacy verifier material is removed; first-run issuance is fresh.
-        database.prepare("UPDATE controller_settings SET value_json=?,updated_at=? WHERE key='authentication'")
-          .run(JSON.stringify({mode:command.mode,generation:old.generation+1,token:null}),now);
-        new TestRunQueries(database).markInterruptedTestRuns();
-        database.prepare("INSERT INTO controller_audit_events(event_type,actor,details_json,created_at) VALUES('authentication.security_quarantined','local-cli',?,?)")
-          .run(JSON.stringify({receipt,mode:command.mode}),now);
-      }).immediate();
-      committed = true;
-    }
+    SecurityFence.registerMaintenanceObserver(databasePath,database,runReceipt);
+    // Resume commits the schema steps and the quarantine in ONE transaction: no
+    // committed state has a current structure with the old authority intact.
+    const mode = command.action === "resume" ? command.mode : undefined;
+    initializeSchema(database, owner.inspection.fresh, inspectSchema,
+      mode ? { acts: current => quarantineAuthority(current, runReceipt, mode) } : {});
+    if (mode) committed = true;
     assertDurability(database);
     validateDatabase(database,49);
-    SecurityFence.maintenanceReceipt(databasePath,database,receipt,"pending");
+    SecurityFence.maintenanceReceipt(databasePath,database,runReceipt,"pending");
     // Handoff acknowledgement is AFTER quarantine and BEFORE the final receipt.
     // A failure leaves a pending witness and cannot resume an old identity.
     if (command.action === "resume") handoff.acknowledge(databasePath);
-    SecurityFence.maintenanceReceipt(databasePath,database,receipt,"confirmed");
+    SecurityFence.maintenanceReceipt(databasePath,database,runReceipt,"confirmed");
     owner.completeInitialization();
-    return {...SecurityFence.preflight(databasePath,database,49),changed:true,receipt,quarantined:command.action === "resume"};
+    return {...SecurityFence.preflight(databasePath,database,49),changed:true,receipt:runReceipt,quarantined:command.action === "resume"};
   } catch (error) {
-    // Initialization owns one outer transaction. Prove a committed migration from
-    // its durable version marker, even if its post-commit/finally work threw.
-    // Rolled-back migration statements and the external pending witness alone
+    // Initialization owns one outer transaction, which for resume also holds the
+    // quarantine. Prove a committed change from durable facts written in it, even
+    // if its post-commit/finally work threw: a raised schema version marker, or
+    // this run's quarantine audit event (a resume at the current version changes
+    // no version). Rolled-back statements and the external pending witness alone
     // do not prove a committed database change. Use only the still-owned connection.
     if (!committed && owner?.database.open && !owner.database.inTransaction) {
       try {
         const row = owner.database.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number };
         committed = row.version > owner.inspection.version;
       } catch { /* Preserve the original failure when commit evidence cannot be read. */ }
+      if (!committed && receipt && command.action === "resume") {
+        try { committed = quarantineCommitted(owner.database, receipt); } catch { /* As above. */ }
+      }
     }
     if (error instanceof SecurityFenceError) throw committed && !error.committed ? new SecurityFenceError(error.code as ConstructorParameters<typeof SecurityFenceError>[0],true) : error;
     if(error instanceof ControllerAlreadyRunningError)throw new SecurityFenceError("security_fence_owner_running");

@@ -355,7 +355,25 @@ const schema = `
     VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 `;
 
-export function initializeSchema(database: Database.Database, fresh = !database.prepare("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").get(), validateStructure?: (database: Database.Database) => void): void {
+/** Options for {@link initializeSchema}. */
+export interface SchemaInitializationOptions {
+  /**
+   * Data acts that commit atomically with the schema steps. They run inside the
+   * outer immediate transaction after every schema step and before
+   * `validateDatabase` and `validateStructure`; a throw from a step, an act or
+   * validation rolls back all of them.
+   *
+   * SQLite cannot enable foreign keys inside a transaction, so acts run with
+   * enforcement off, like the steps. Before the acts the database must have no
+   * foreign-key violation. After them, the ON DELETE CASCADE and SET NULL
+   * actions that enforcement would have applied to rows whose parent the acts
+   * deleted are applied, and the final foreign-key check refuses anything else
+   * (a RESTRICT or NO ACTION parent). Acts must not change a referenced key.
+   */
+  acts?: (database: Database.Database) => void;
+}
+
+export function initializeSchema(database: Database.Database, fresh = !database.prepare("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").get(), validateStructure?: (database: Database.Database) => void, options: SchemaInitializationOptions = {}): void {
   if (database.inTransaction) throw new Error("Schema initialization requires its own transaction.");
   // Historical migration 25 rebuilds a referenced parent. Disable FK outside
   // the outer transaction, then check every FK before committing any step.
@@ -387,10 +405,46 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyHumanTestRunMigration(database);
       applyHumanConfigurationMigration(database);
       applySecurityFenceMigration(database);
+      if (options.acts) {
+        // Only violations the acts create may receive an ON DELETE action below.
+        if (database.prepare("PRAGMA foreign_key_check").get()) throw new Error("SQLite foreign key check failed; startup stopped.");
+        options.acts(database);
+        applyForeignKeyDeleteActions(database);
+      }
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();
   } finally { database.pragma(`foreign_keys = ${foreignKeys ? "ON" : "OFF"}`); }
+}
+
+/** Bound on cascade depth; anything left is refused by the final foreign-key check. */
+const FOREIGN_KEY_ACTION_ROUNDS = 64;
+const quoteIdentifier = (name: string) => `"${name.replaceAll("\"", "\"\"")}"`;
+
+/**
+ * Applies, to a fixpoint, the ON DELETE CASCADE and SET NULL actions SQLite
+ * would have run for the rows reported by `foreign_key_check`. Called only
+ * inside the schema transaction, after acts on a database that had no
+ * violation before them. Other actions are left for the final check to refuse.
+ */
+function applyForeignKeyDeleteActions(database: Database.Database): void {
+  const keys = new Map<string, Array<{ id: number; from: string; on_delete: string }>>();
+  for (let round = 0; round < FOREIGN_KEY_ACTION_ROUNDS; round++) {
+    const violations = database.prepare("PRAGMA foreign_key_check").all() as Array<{ table: string; rowid: number | null; fkid: number }>;
+    let changes = 0;
+    for (const violation of violations) {
+      if (violation.rowid === null) continue;
+      let list = keys.get(violation.table);
+      if (!list) keys.set(violation.table, list = database.prepare(`PRAGMA foreign_key_list(${quoteIdentifier(violation.table)})`).all() as Array<{ id: number; from: string; on_delete: string }>);
+      const columns = list.filter(key => key.id === violation.fkid);
+      const table = quoteIdentifier(violation.table);
+      if (columns[0]?.on_delete === "CASCADE") changes += database.prepare(`DELETE FROM ${table} WHERE rowid=?`).run(violation.rowid).changes;
+      else if (columns[0]?.on_delete === "SET NULL") {
+        changes += database.prepare(`UPDATE ${table} SET ${columns.map(key => `${quoteIdentifier(key.from)}=NULL`).join(",")} WHERE rowid=?`).run(violation.rowid).changes;
+      }
+    }
+    if (!changes) return;
+  }
 }
 
 function applyMigrations(database: Database.Database, fresh: boolean): void {
