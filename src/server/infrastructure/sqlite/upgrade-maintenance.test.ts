@@ -1055,17 +1055,18 @@ describe("explicit offline upgrade: interrupted apply", () => {
     const without = (value: object, keys: string[]) => Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
     /**
      * `final` without what a resume adds by design: the authentication policy it
-     * rotates, its audit event (and the sequence value that event takes), the
-     * witness's recovery time, and the receipts, whose names depend on the
-     * number of runs. Those are returned apart, for the explicit comparison.
+     * rotates (the setting and the witness's copy of its mode and generation),
+     * its audit event (and the sequence value that event takes), the witness's
+     * recovery time, and the receipts, whose names depend on the number of runs.
+     * Those are returned apart, for the explicit comparison.
      */
     const settle = (paths: AppPaths) => {
       const { database, witness: fence } = final(paths);
       const { controller_audit_events: events, controller_settings: settings, sqlite_sequence: sequence, ...rows } = database.rows as Record<string, Array<Record<string, unknown>>>;
       return {
-        same: { catalogue: database.catalogue, rows, settings: settings.filter(row => row.key !== "authentication"), witness: { ...without(fence, ["receipt", "recoveredAt", "upgrade"]), upgrade: without(fence.upgrade!, ["receipt"]) },
+        same: { catalogue: database.catalogue, rows, settings: settings.filter(row => row.key !== "authentication"), witness: { ...without(fence, ["receipt", "recoveredAt", "upgrade", "policy"]), upgrade: without(fence.upgrade!, ["receipt"]) },
           events: events.filter(event => event.event_type !== "authentication.security_quarantined").map(event => ({ ...without(event, ["id"]), details_json: without(event.details_json as object, ["receipt"]) })) },
-        authentication: JSON.parse(settings.find(row => row.key === "authentication")!.value_json as string),
+        authentication: JSON.parse(settings.find(row => row.key === "authentication")!.value_json as string), policy: fence.policy,
         quarantined: events.filter(event => event.event_type === "authentication.security_quarantined").map(event => ({ ...without(event, ["id"]), details_json: without(event.details_json as object, ["receipt"]) })),
         sequence: (sequence ?? []).map(row => ({ name: row.name, seq: row.seq })), recoveredAt: fence.recoveredAt,
       };
@@ -1105,6 +1106,9 @@ describe("explicit offline upgrade: interrupted apply", () => {
     // What the resume adds: the rotated policy, its audit event and the sequence value it took, and the recovery time.
     expect(expected.authentication).toEqual({ mode: "token", token: null, generation: 0 });
     expect(recovered.authentication).toEqual({ mode: "token", generation: 1, token: null });
+    // The witness records the policy it was confirmed with: the setting's mode and generation.
+    expect(expected.policy).toEqual({ mode: "token", generation: 0 });
+    expect(recovered.policy).toEqual({ mode: "token", generation: 1 });
     expect(expected.quarantined).toEqual([]);
     expect(recovered.quarantined).toEqual([{ event_type: "authentication.security_quarantined", actor: "local-cli", details_json: { mode: "token" }, created_at: "<time>" }]);
     expect(recovered.sequence).toEqual(expected.sequence.map(row => row.name === "controller_audit_events" ? { ...row, seq: (row.seq as number) + 1 } : row));
