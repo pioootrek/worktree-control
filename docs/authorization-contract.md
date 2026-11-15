@@ -1,6 +1,6 @@
 ---
 audience: "owner, implementers and reviewers of the authentication and authorization unification"
-last_reviewed: "2026-11-14"
+last_reviewed: "2026-11-15"
 source_of_truth: "implemented, unmounted authorization contract for the unreleased breaking auth unification; Knowledge task 040062b4"
 status: "active"
 ---
@@ -320,6 +320,11 @@ project, may execute assignments there, and gets `forbidden` when it tries to
 read. An account holding only `secrets` sees the project and holds only
 `secrets:read` and `secrets:write` there.
 
+A resource without a project (parentless, see
+[Parentless resources](#parentless-resources)) is visible to full authority
+only. No account sees it, whatever it holds: an installation-scope grant such
+as `admin`, which makes every project visible, does not reach it.
+
 Grants do not expire; revocation is removal. The `GrantsSnapshot` port
 contains active grants only. Returning nothing else is the snapshot adapter's
 obligation, to be tested with that adapter in slice 3. Stored grants have no
@@ -339,7 +344,8 @@ of these forms:
 - `any_project(permission)`, for aggregates (see
   [Aggregates](#aggregates));
 - `same_project(slots)`: every named slot resolves to one and the same
-  project;
+  project (a parentless slot never satisfies it, not even with another
+  parentless slot);
 - a named predicate: `claim_holder`, `run_originating_session`,
   `worker_assignment`, `claim_holder_if_claimed`, `schedule_owner`,
   `request_submitter` or `intent_origin`.
@@ -370,11 +376,13 @@ adapter and runs in this order:
 3. The requirement: `forbidden`/`permission_denied`, or a predicate's own
    denial. Predicates are evaluated only on visible resources.
 4. Fresh login: `login_stale`/`fresh_login_required`, or
-   `forbidden`/`fresh_login_unavailable` for an agent.
+   `forbidden`/`fresh_login_unavailable` for an agent. A stored principal
+   decided through `decideForPrincipal` never passes it (see
+   [Remote requests and stored principals](#remote-requests-and-stored-principals)).
 
 Visibility follows decision M above. Every decision is a new frozen value.
-Full authority passes permissions, `any_project`, the human-only flag and
-fresh login, and manages every schedule. It is still subject to resource
+A live full-authority caller passes permissions, `any_project`, the human-only
+flag and fresh login, and manages every schedule. It is still subject to resource
 resolution and to the predicates that protect foreign claims (including
 `claim_holder_if_claimed`), runs, assignments, submitted requests and
 intents.
@@ -385,9 +393,42 @@ only from current provider evidence; missing or malformed evidence is stale.
 The `ResourceResolver` port maps registrations, claims, test runs, profiles,
 Vault entries, Knowledge records, worker attempts, project claim slots
 (`project_claim`), schedules, remote requests (`remote_request`) and saved
-test-run intents (`test_intent`) each to exactly one project or to not-found. It never searches another namespace. `resolveAll`
+test-run intents (`test_intent`) each to exactly one project, to no project
+(`projectId: null`, see [Parentless resources](#parentless-resources)) or to
+not-found. It never searches another namespace. `resolveAll`
 returns a frozen record with a `null` prototype that holds deep, frozen copies.
-It treats a malformed or mismatched answer as not-found.
+It treats a malformed or mismatched answer as not-found. A `projectId` that is
+neither a non-empty string nor `null` (absent, empty, another type) is
+malformed.
+
+### Parentless resources
+
+A resolved resource may state explicitly that it has no project:
+`projectId: null`, for example a registration without a parent project. It is
+a resolved fact, not a missing resource. A resolver never invents a project ID
+for it and never puts another ID in its place.
+
+- Full authority (a live `installation` or `operator`, and a stored principal
+  holding full authority) sees it. Project-permission and collection
+  requirements on it hold as they do for full authority on any project.
+- Every account, a human holding `admin` and an agent included, gets
+  `not_found`/`resource_not_found`, the answer for a missing resource. Masking
+  checks every own slot, so a parentless slot masks the whole call whatever
+  the other slots are and whichever slot the requirement names. Ownership and
+  relation predicates never run for an account on it.
+- `same_project` never holds for a parentless slot. A saved intent always
+  names its project, so a parentless `test_intent` resolution never matches
+  its origin and is masked by `intent_origin` for every caller.
+- `copyResolution`, retained idempotency records, transition results
+  (`changed` with `projectId: null`) and `sameResolution` keep the state
+  exactly. A change from no project to a project, or back, is a mapping
+  change: it carries a new version and is caught by every recheck, replay and
+  transition comparison as `conflict`/`resource_changed`.
+- `ReleaseContext.visible(null)` and `can(permission, null)` hold for full
+  authority only; `filter` and `page` keep an item whose `projectOf` is `null`
+  for full authority only. `any_project` counts only real projects from
+  `listProjects`, and `session.describe` lists only those, so a parentless
+  resource is never listed among projects.
 
 Decision X. `resolveAll` handles the references in three passes, so that no
 answer depends on the order of the references or on whether a resource the
@@ -667,7 +708,8 @@ a known effect state, read only from an own data property.
 
 In collections, `ReleaseContext.filter` and `page` keep an item only when its
 project is visible and grants the requested permission and every collection
-permission of the requirement. Filtering happens before pagination. The cursor
+permission of the requirement. An item without a project is kept for full
+authority only. Filtering happens before pagination. The cursor
 encodes only the key of the last released item, and no total count is
 returned.
 
@@ -770,7 +812,8 @@ receipt (`claim_not_held`, `not_found` or `resource_changed`).
 
 - Past its commit point and before it settles, the handler reports each
   declared slot's result with `transition(slot, result)`: `unchanged`,
-  `removed`, or `changed` with the resulting project and relation. A call
+  `removed`, or `changed` with the resulting project (or `null` for no
+  project) and relation. A call
   before the commit point is `internal`/`transition_before_commit`, for an
   undeclared slot `internal`/`undeclared_transition`, after settling
   `internal`/`effect_scope_closed`.
@@ -888,10 +931,25 @@ account is evaluated as the kind the grants store records now; an unknown or
 disabled account holds nothing and is never allowed. A resource it would need
 is masked as `not_found`, and a requirement that needs no grant
 (`authenticated`, also with `agents: false`) is
-`forbidden`/`principal_unavailable`. `installation` and `operator` hold full
-authority. A stored principal has no credential, coordination session or
-provider evidence, so it never passes a session predicate, `intent_origin` or
-fresh login. A malformed principal is `forbidden`/`invalid_principal`.
+`forbidden`/`principal_unavailable`.
+
+A stored `installation` or `operator` holds full authority only in a mode
+whose acceptance table admits that actor kind (`modeAdmitsActor`, read from
+`acceptanceTable`): the installation in open and token mode, the operator in
+every mode. The mode is checked before any full-authority actor is built. A
+stored `installation` in better-auth mode, left over from an earlier mode,
+holds nothing and is decided exactly as an unknown account: `not_found` for a
+resource it would need, `forbidden`/`principal_unavailable` where no grant is
+needed.
+
+A stored principal has no credential, coordination session or provider
+evidence, so it never passes a session predicate, `intent_origin` or fresh
+login. A requirement with `freshLogin` is never allowed for any stored
+principal kind in any mode: masking and every other denial answer first,
+then `principal_unavailable` for a principal that holds nothing, and otherwise
+`forbidden`/`fresh_login_unavailable`. A live full-authority caller stays
+exempt from fresh login, and `session.describe` reports it as `exempt`. A
+malformed principal is `forbidden`/`invalid_principal`.
 `authorizePrincipal` works only while the admitted phase runs synchronously;
 afterwards, and in an `idle` effect, it throws `internal`/`phase_closed`.
 

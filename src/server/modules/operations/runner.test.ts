@@ -428,7 +428,7 @@ describe("operation runner: outcome-safe errors", () => {
     // Own keys are exactly the allowlist, so only the inherited toJSON could add the secret: an allowlist check alone would pass it.
     const inherited = { ...operation, project: (result: StartInternal) => Object.assign(
       Object.create({ toJSON: () => ({ projectId: result.projectId, started: true, processSecret: result.processSecret }) }) as object,
-      { projectId: result.projectId, started: true }) as { projectId: ProjectId; started: boolean } };
+      { projectId: result.projectId, started: true }) as { projectId: ProjectId | null; started: boolean } };
     expect(Object.keys(inherited.project({ projectId: projectA, pid: 1, processSecret: "s" })).sort()).toEqual(["projectId", "started"]);
     for (const bypass of [hidden, inherited]) {
       const result = await runner.run(bypass, alice.context, input);
@@ -652,7 +652,7 @@ describe("operation runner: streams", () => {
 describe("operation runner: reads", () => {
   it("rejects an idempotency key and releases strictly", async () => {
     const { world, alice, runner } = setup();
-    const read: ReadOperation<Record<string, never>, { projectId: ProjectId }, { projectId: ProjectId }> = {
+    const read: ReadOperation<Record<string, never>, { projectId: ProjectId | null }, { projectId: ProjectId | null }> = {
       id: "fixture.read", kind: "read", requirement: { require: onProject("project:read", "registration") },
       parse: () => ({}), resources: () => ({ registration: REGISTRATION }),
       read: (_input, scope) => ({ projectId: scope.resources.registration.projectId }),

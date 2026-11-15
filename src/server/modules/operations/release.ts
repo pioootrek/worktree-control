@@ -4,7 +4,7 @@ import {
   type ActorKind, type InstallationPermission, type ProjectId, type ProjectPermission, type PublicOperationError,
 } from "@/shared/contracts/operations";
 import { isFullAuthority, type CoordinationSessionRef, type CurrentAuthority } from "./authentication-context";
-import { durablePrincipal, projectVisible } from "./decide";
+import { durablePrincipal, isProjectId, projectVisible } from "./decide";
 import { OperationError } from "./errors";
 import type { EffectivePermissions } from "./grants";
 import type { ResolvedResources, StoredPrincipal } from "./requirements";
@@ -28,7 +28,11 @@ export interface ReleaseContext {
   readonly resources: ResolvedResources;
   /** The caller's coordination session ID, for "own claim/run" projections. Never released itself. */
   ownsSession(session: Pick<CoordinationSessionRef, "id" | "credentialId"> | null): boolean;
-  can(permission: ProjectPermission, projectId: ProjectId): boolean;
+  /**
+   * Whether `permission` is held on a project. `null` is "no project" (a
+   * parentless item): held by full authority only, never by an account.
+   */
+  can(permission: ProjectPermission, projectId: ProjectId | null): boolean;
   /**
    * Durable ownership for per-item owner filtering (schedules, artifacts):
    * full authority owns every item; an account only items it owns. Apply
@@ -36,19 +40,22 @@ export interface ReleaseContext {
    */
   owns(owner: StoredPrincipal | null): boolean;
   canInstallation(permission: InstallationPermission): boolean;
-  visible(projectId: ProjectId): boolean;
+  /** Visibility of a project (decision M); `null` (no project) is visible to full authority only. */
+  visible(projectId: ProjectId | null): boolean;
   /**
    * Per-item filter: keeps items whose project is visible and grants
    * `permission` and every collection permission of the operation's requirement.
+   * An item whose `projectOf` is `null` (parentless) is kept for full
+   * authority only, and is never counted as a project.
    */
-  filter<T>(items: readonly T[], projectOf: (item: T) => ProjectId, permission: ProjectPermission): T[];
+  filter<T>(items: readonly T[], projectOf: (item: T) => ProjectId | null, permission: ProjectPermission): T[];
   /**
    * Filters per item first (as `filter`), then paginates by a stable key. The
    * cursor only encodes the key of the last released item, and there is no
    * total count, so invisible items affect neither the page, the cursor nor its absence.
    */
   page<T>(items: readonly T[], options: {
-    projectOf: (item: T) => ProjectId; keyOf: (item: T) => string; permission: ProjectPermission; limit: number; cursor: string | null;
+    projectOf: (item: T) => ProjectId | null; keyOf: (item: T) => string; permission: ProjectPermission; limit: number; cursor: string | null;
   }): Page<T>;
 }
 
@@ -66,9 +73,10 @@ export function createReleaseContext(authority: CurrentAuthority, permissions: E
   const full = isFullAuthority(authority.actor);
   const session = authority.coordinationSession;
   const required = Object.freeze([...collectionPermissions]);
-  const can = (permission: ProjectPermission, projectId: ProjectId) => full || permissions.project(projectId).has(permission);
-  const visible = (projectId: ProjectId) => projectVisible(authority, permissions, projectId);
-  const releasable = (projectId: ProjectId, permission: ProjectPermission) =>
+  // An account never reads permissions for "no project": `permissions.project` would answer its installation-wide set.
+  const can = (permission: ProjectPermission, projectId: ProjectId | null) => full || (isProjectId(projectId) && permissions.project(projectId).has(permission));
+  const visible = (projectId: ProjectId | null) => projectVisible(authority, permissions, projectId);
+  const releasable = (projectId: ProjectId | null, permission: ProjectPermission) =>
     visible(projectId) && can(permission, projectId) && required.every(each => can(each, projectId));
   const context: ReleaseContext = {
     actorKind: authority.actor.kind,

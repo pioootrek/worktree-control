@@ -44,7 +44,7 @@ describe("operation runner on the real admission gate", () => {
     let providerDone: Promise<unknown> = Promise.resolve();
     cleanups.push(async () => { providerRelease.open(); await providerDone.catch(() => undefined); });
     const log = { held: false, releases: 0, effects: 0 };
-    const operation: MutationOperation<{ registrationId: string }, { projectId: ProjectId }, { projectId: ProjectId }> = {
+    const operation: MutationOperation<{ registrationId: string }, { projectId: ProjectId | null }, { projectId: ProjectId | null }> = {
       id: "fixture.real_gate_start",
       kind: "mutation",
       requirement: { require: onProject("runtime:control", "registration") },
@@ -82,7 +82,7 @@ describe("operation runner on the real admission gate", () => {
     const runner = new OperationRunner({ ...world.runtime(), admission: store.admission, queryDeadlineMs: 2_000 });
     const log = { borrowed: false, phases: [] as string[] };
     type Input = { registrationId: string };
-    const operation: QueryOperation<Input, { projectId: ProjectId; borrowed: boolean }, { projectId: ProjectId; borrowed: boolean }, { projectId: ProjectId }> = {
+    const operation: QueryOperation<Input, { projectId: ProjectId | null; borrowed: boolean }, { projectId: ProjectId | null; borrowed: boolean }, { projectId: ProjectId | null }> = {
       id: "fixture.real_gate_query",
       kind: "query",
       requirement: { require: onProject("project:read", "registration") },
@@ -126,7 +126,7 @@ describe("operation runner on the real admission gate", () => {
     const runner = new OperationRunner({ ...world.runtime({ idempotency }), admission: store.admission });
     const log = { effects: 0, states: [] as string[][] };
     const preflight: { revoke: boolean } = { revoke: false };
-    const operation: MutationOperation<{ registrationId: string }, { projectId: ProjectId }, { projectId: ProjectId }> = {
+    const operation: MutationOperation<{ registrationId: string }, { projectId: ProjectId | null }, { projectId: ProjectId | null }> = {
       id: "fixture.real_gate_commit",
       kind: "mutation",
       requirement: { require: onProject("runtime:control", "registration") },
@@ -168,7 +168,7 @@ describe("operation runner on the real admission gate", () => {
     const runner = new OperationRunner({ ...world.runtime({ idempotency }), admission: store.admission });
     const log = { effects: 0, read: [] as string[] };
     type Input = { registrationId: string };
-    const operation: MutationOperation<Input, { projectId: ProjectId }, { projectId: ProjectId }> = {
+    const operation: MutationOperation<Input, { projectId: ProjectId | null }, { projectId: ProjectId | null }> = {
       id: "fixture.real_gate_final_write",
       kind: "mutation",
       requirement: { require: onProject("runtime:control", "registration") },
@@ -182,7 +182,7 @@ describe("operation runner on the real admission gate", () => {
     const run = () => runner.run(operation, alice.context, { registrationId: "reg-1" }, { idempotencyKey: "k-1" });
     const get = idempotency.get.bind(idempotency), put = idempotency.put.bind(idempotency);
     idempotency.get = key => { const record = get(key); log.read.push(record?.state ?? "none"); return record; };
-    const pending: { started: boolean; retry?: Promise<RunResult<{ projectId: ProjectId }>> } = { started: false };
+    const pending: { started: boolean; retry?: Promise<RunResult<{ projectId: ProjectId | null }>> } = { started: false };
     idempotency.put = (key, record) => {
       if (record.state === "completed" && !pending.started) {
         pending.started = true;

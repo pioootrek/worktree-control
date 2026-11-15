@@ -56,8 +56,9 @@ function slot(resources: ResolvedResources, name: string): ResolvedResource | un
 
 /**
  * Every resource of a well-formed resources record, or `null` when the record
- * is malformed (a non-plain prototype, a symbol key, an invalid slot name or a
- * non-object entry). A malformed record fails closed as `not_found`.
+ * is malformed (a non-plain prototype, a symbol key, an invalid slot name, a
+ * non-object entry, or a project that is neither a non-empty string nor the
+ * explicit parentless `null`). A malformed record fails closed as `not_found`.
  */
 function everyResource(resources: ResolvedResources): ResolvedResource[] | null {
   if (typeof resources !== "object" || resources === null) return null;
@@ -68,7 +69,9 @@ function everyResource(resources: ResolvedResources): ResolvedResource[] | null 
     if (!isSlotName(key)) return null;
     const descriptor = Object.getOwnPropertyDescriptor(resources, key);
     const value: unknown = descriptor && "value" in descriptor ? descriptor.value : undefined;
-    if (typeof value !== "object" || value === null || typeof (value as ResolvedResource).projectId !== "string") return null;
+    if (typeof value !== "object" || value === null) return null;
+    const projectId: unknown = (value as ResolvedResource).projectId;
+    if (projectId !== null && (typeof projectId !== "string" || projectId.length === 0)) return null;
     found.push(value as ResolvedResource);
   }
   return found;
@@ -88,10 +91,19 @@ export function freshLoginState(authority: CurrentAuthority, now: number): Fresh
  * Visibility (decision M): a project is visible to full authority, to an
  * account holding `admin`, and to an account holding at least one active
  * project role on it. Visibility grants no permission.
+ *
+ * `null` is "no project" (a parentless resource or item): visible to full
+ * authority only. No account sees it, whatever it holds; in particular an
+ * installation-scope grant (`admin`), which makes every project visible,
+ * does not reach a resource without a project.
  */
-export function projectVisible(authority: CurrentAuthority, permissions: EffectivePermissions, projectId: ProjectId): boolean {
-  return isFullAuthority(authority.actor) || permissions.visible(projectId);
+export function projectVisible(authority: CurrentAuthority, permissions: EffectivePermissions, projectId: ProjectId | null): boolean {
+  if (isFullAuthority(authority.actor)) return true;
+  return isProjectId(projectId) && permissions.visible(projectId);
 }
+
+/** A project ID as this module accepts one: a non-empty string. `null` (no project) and anything else are not. */
+export const isProjectId = (value: unknown): value is ProjectId => typeof value === "string" && value.length > 0;
 
 /**
  * The principal recorded for a caller's durable ownership (schedule owner,
@@ -146,6 +158,7 @@ function ownershipMasked(requirement: Requirement, input: PermittedDecisionInput
     if (!resource || !relation) continue;
     if (predicate === "schedule_owner" && relation.kind === "schedule" && !full && !samePrincipal(relation.owner, durablePrincipal(authority))) return true;
     if (predicate === "intent_origin" && relation.kind === "test_intent") {
+      // An intent always originates in a project; a parentless resolution (`null`) never equals the origin's project, so it is masked.
       const origin = relation.origin, credential = input.credential ?? null;
       if (!samePrincipal(origin.principal, durablePrincipal(authority)) || !credential || credential.credentialId !== origin.credentialId
         || credential.generation !== origin.credentialGeneration || origin.projectId !== resource.projectId) return true;
@@ -154,11 +167,17 @@ function ownershipMasked(requirement: Requirement, input: PermittedDecisionInput
   return false;
 }
 
+/**
+ * `same_project` holds when every named slot resolves to one and the same
+ * project. A parentless slot belongs to no project, so it never satisfies
+ * `same_project`, not even together with another parentless slot: "no
+ * project" is not a shared project.
+ */
 function sameProjects(requirement: Requirement, resources: ResolvedResources): boolean {
   if (requirement.kind === "all") return requirement.of.every(part => sameProjects(part, resources));
   if (requirement.kind !== "same_project") return true;
   const projects = new Set(requirement.resources.map(name => slot(resources, name)?.projectId));
-  return projects.size === 1 && !projects.has(undefined);
+  return projects.size === 1 && [...projects].every(isProjectId);
 }
 
 function predicateHolds(name: PredicateName, authority: CurrentAuthority, resource: ResolvedResource): Denial | null {
@@ -224,7 +243,8 @@ function evaluate(requirement: Requirement, input: PermittedDecisionInput, permi
       if (full) return null;
       const projects = input.projects;
       if (!projects) return deny("forbidden", "project_list_unavailable");
-      return projects.some(projectId => permissions.visible(projectId) && permissions.project(projectId).has(requirement.permission))
+      // Only real projects count; a stray `null` or malformed entry is never a project the account holds anything on.
+      return projects.some(projectId => isProjectId(projectId) && permissions.visible(projectId) && permissions.project(projectId).has(requirement.permission))
         ? null : deny("forbidden", "permission_denied");
     }
     case "installation":
@@ -232,7 +252,10 @@ function evaluate(requirement: Requirement, input: PermittedDecisionInput, permi
     case "project": {
       const resource = slot(resources, requirement.resource);
       if (!resource) return notFound();
-      return full || permissions.project(resource.projectId).has(requirement.permission) ? null : deny("forbidden", "permission_denied");
+      if (full) return null;
+      // Masking already answered `not_found` for a parentless slot; this keeps an account from ever reading permissions for "no project".
+      if (!isProjectId(resource.projectId)) return notFound();
+      return permissions.project(resource.projectId).has(requirement.permission) ? null : deny("forbidden", "permission_denied");
     }
     case "predicate": {
       const resource = slot(resources, requirement.resource);
@@ -259,6 +282,9 @@ function evaluate(requirement: Requirement, input: PermittedDecisionInput, permi
  * every referenced resource must be visible. Otherwise the decision is
  * `not_found`/`resource_not_found`, identical for a missing and an invisible
  * resource, independent of flags and of the order of conjunction branches.
+ * A parentless resource (`projectId: null`) is visible to full authority
+ * only, so for an account any parentless slot, whichever slot the
+ * requirement names, masks the whole call as `not_found`.
  * Only then can `forbidden`, `login_stale`, `claim_held` or `conflict` reveal
  * anything, and only about a resource the caller can already see.
  *
@@ -288,7 +314,7 @@ export function decideWith(input: PermittedDecisionInput): Decision {
   const all = everyResource(resources);
   if (!all) return notFound();
   for (const name of requiredSlots(requirement.require)) if (!isSlotName(name) || !slot(resources, name)) return notFound();
-  // Every own slot, whatever its name: nothing referenced escapes masking.
+  // Every own slot, whatever its name: nothing referenced escapes masking. A parentless slot is visible to full authority only.
   for (const resource of all) if (!projectVisible(authority, permissions, resource.projectId)) return notFound();
   if (ownershipMasked(requirement.require, input)) return notFound();
   if (requirement.agents === false && authority.actor.kind === "agent") return deny("forbidden", "human_only");

@@ -62,6 +62,16 @@ export const acceptanceTable: readonly AcceptanceRow[] = Object.freeze([
 ]);
 
 /**
+ * Whether a mode accepts any path that produces an actor of this kind, read
+ * from `acceptanceTable` (there is no second table of modes). The installation
+ * actor exists only in open and token mode; the operator in every mode. An
+ * unknown mode admits nothing.
+ */
+export function modeAdmitsActor(mode: unknown, kind: ActorKind): boolean {
+  return acceptanceTable.some(entry => entry.mode === mode && pathActorKind[entry.path] === kind);
+}
+
+/**
  * Routes that are deliberately not operations: they never produce an actor
  * (in particular never an installation actor) and never reach the registry.
  */

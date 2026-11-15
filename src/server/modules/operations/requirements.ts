@@ -6,7 +6,8 @@ import type { CoordinationSessionRef } from "./authentication-context";
 
 /**
  * Typed reference to something an operation acts on. Each kind resolves in its
- * own namespace to exactly one project or to not-found.
+ * own namespace to exactly one project, to "no project" (parentless) or to
+ * not-found.
  */
 export type ResourceKind =
   | "project" | "registration" | "claim" | "test_run" | "profile" | "vault_entry" | "knowledge_record" | "worker_attempt"
@@ -62,7 +63,15 @@ export type ResourceRelation =
 
 export interface ResolvedResource {
   readonly ref: ResourceRef;
-  readonly projectId: ProjectId;
+  /**
+   * The project the resource belongs to, or `null` when it explicitly has no
+   * project (parentless, for example a registration without a parent
+   * project). `null` is a resolved fact, never a missing or malformed value:
+   * a resolver states it deliberately and never invents a ProjectId or
+   * substitutes another ID. Only full authority can see a parentless
+   * resource; to every account it is `not_found`, like a missing one.
+   */
+  readonly projectId: ProjectId | null;
   /**
    * Changes whenever the resource's project mapping or relation changes, and is
    * never reused for the same reference, including after delete and recreate.

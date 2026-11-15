@@ -202,10 +202,11 @@ function copyResolved(value: unknown): ResolvedResource | null {
   const ref = source.ref, projectId = source.projectId, version = source.version;
   if (typeof ref !== "object" || ref === null) return null;
   const kind = (ref as Record<string, unknown>).kind, id = (ref as Record<string, unknown>).id;
-  if (!(resourceKinds as readonly unknown[]).includes(kind) || !isText(id) || !isText(projectId) || !Number.isSafeInteger(version)) return null;
+  // `null` is the explicit parentless state; anything else that is not a non-empty string (absent, empty, another type) is malformed.
+  if (!(resourceKinds as readonly unknown[]).includes(kind) || !isText(id) || !(projectId === null || isText(projectId)) || !Number.isSafeInteger(version)) return null;
   const relation = copyRelation(source.relation);
   if (relation === undefined) return null;
-  return Object.freeze({ ref: Object.freeze({ kind: kind as ResourceRef["kind"], id }), projectId: projectId as ProjectId, version: version as number, relation });
+  return Object.freeze({ ref: Object.freeze({ kind: kind as ResourceRef["kind"], id }), projectId: projectId as ProjectId | null, version: version as number, relation });
 }
 
 /**
@@ -228,7 +229,9 @@ export function copyResolution(value: unknown): ResolvedResources | null {
 
 /**
  * Whether every slot still maps to the same reference, project and relation
- * version. Compares every own slot of both records, whatever its name.
+ * version. Compares every own slot of both records, whatever its name. A
+ * parentless slot (`projectId: null`) equals only a parentless slot: a change
+ * between no project and a project is a mapping change like any other.
  */
 export function sameResolution(before: ResolvedResources, after: ResolvedResources): boolean {
   let left: string[], right: string[];
