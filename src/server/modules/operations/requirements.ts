@@ -6,7 +6,8 @@ import type { CoordinationSessionRef } from "./authentication-context";
 
 /**
  * Typed reference to something an operation acts on. Each kind resolves in its
- * own namespace to exactly one project or to not-found.
+ * own namespace to exactly one project, to "no project" (parentless) or to
+ * not-found.
  */
 export type ResourceKind =
   | "project" | "registration" | "claim" | "test_run" | "profile" | "vault_entry" | "knowledge_record" | "worker_attempt"
@@ -43,7 +44,13 @@ export interface IntentOrigin {
   principal: StoredPrincipal;
   credentialId: string;
   credentialGeneration: number;
-  projectId: ProjectId;
+  /**
+   * The project the intent was saved in, or `null` for an intent on a
+   * parentless resource. Always stated explicitly: a missing value is
+   * malformed. `intent_origin` requires it to equal the resolved project
+   * exactly (`null` matches only `null`).
+   */
+  projectId: ProjectId | null;
   worktree: string;
   preset: string;
   key: string;
@@ -62,7 +69,15 @@ export type ResourceRelation =
 
 export interface ResolvedResource {
   readonly ref: ResourceRef;
-  readonly projectId: ProjectId;
+  /**
+   * The project the resource belongs to, or `null` when it explicitly has no
+   * project (parentless, for example a registration without a parent
+   * project). `null` is a resolved fact, never a missing or malformed value:
+   * a resolver states it deliberately and never invents a ProjectId or
+   * substitutes another ID. Only full authority can see a parentless
+   * resource; to every account it is `not_found`, like a missing one.
+   */
+  readonly projectId: ProjectId | null;
   /**
    * Changes whenever the resource's project mapping or relation changes, and is
    * never reused for the same reference, including after delete and recreate.
@@ -104,7 +119,11 @@ export type Requirement =
    * authority passes, also on an installation without projects.
    */
   | { kind: "any_project"; permission: ProjectPermission }
-  /** Every named slot resolves to one and the same project; otherwise `not_found`. */
+  /**
+   * Every named slot is present and all resolve to one value: the same
+   * project, or all no project (parentless, reachable for full authority
+   * only). Otherwise `not_found`.
+   */
   | { kind: "same_project"; resources: readonly string[] }
   | { kind: "predicate"; predicate: PredicateName; resource: string };
 

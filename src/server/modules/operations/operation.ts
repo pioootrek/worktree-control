@@ -36,7 +36,8 @@ export interface PhaseScope {
 export type TransitionResult =
   | { kind: "unchanged" }
   | { kind: "removed" }
-  | { kind: "changed"; projectId: ProjectId; relation: ResourceRelation | null };
+  /** `projectId: null`: the slot is now parentless (no project); a change to or from it is a reparenting like any other. */
+  | { kind: "changed"; projectId: ProjectId | null; relation: ResourceRelation | null };
 
 /** Scope of every effect. */
 export interface EffectScope extends PhaseScope {

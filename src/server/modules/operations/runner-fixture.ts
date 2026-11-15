@@ -24,8 +24,8 @@ export function deferred<T = void>() {
 export const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
 export interface StartInput { registrationId: string }
-export interface StartInternal { projectId: ProjectId; pid: number; processSecret: string }
-export type StartOperation = MutationOperation<StartInput, StartInternal, { projectId: ProjectId; started: boolean }>;
+export interface StartInternal { projectId: ProjectId | null; pid: number; processSecret: string }
+export type StartOperation = MutationOperation<StartInput, StartInternal, { projectId: ProjectId | null; started: boolean }>;
 
 /**
  * Fake effect operation: waits for a project lock, starts a "process" (the
@@ -74,7 +74,7 @@ export function fakeStart(world: ReturnType<typeof createWorld>, hooks: {
         if (world.admission.admitted) throw new Error("The SQL-free effect must run outside admission.");
         log.attempts++;
         await hooks.effect?.();
-        log.effects.push(`start ${scope.resources.registration.projectId}`);
+        log.effects.push(`start ${scope.resources.registration.projectId ?? "(no project)"}`);
         hooks.duringEffect?.();
         return { projectId: scope.resources.registration.projectId, pid: 4242, processSecret: "pid-secret-token" };
       },

@@ -8,7 +8,7 @@ import { decideForPrincipal } from "./principal";
 import { createReleaseContext } from "./release";
 import { effectivePermissions } from "./grants";
 import {
-  allOf, authenticated, intentOrigin, onProject, requestSubmitter, scheduleOwner,
+  allOf, anyProject, authenticated, installation as installationRequirement, intentOrigin, onProject, requestSubmitter, scheduleOwner,
   type IntentOrigin, type OperationRequirement, type ResourceRef, type StoredPrincipal,
 } from "./requirements";
 import { resolveAll } from "./resolver";
@@ -167,8 +167,9 @@ describe("remote_request and request_submitter", () => {
     expect(decideForPrincipal({ ...base, principal: { kind: "account", accountId: alice.id }, requirement: needs })).toMatchObject({ allowed: true });
     expect(decideForPrincipal({ ...base, principal: { kind: "account", accountId: A("nobody") }, requirement: needs })).toMatchObject({ allowed: false, category: "not_found" });
     expect(decideForPrincipal({ ...base, principal: { kind: "operator" }, requirement: needs })).toMatchObject({ allowed: true });
+    // A stored principal has no provider evidence: fresh login is unavailable to it, never merely stale (C0b).
     expect(decideForPrincipal({ ...base, principal: { kind: "account", accountId: alice.id }, requirement: { ...needs, freshLogin: true } }))
-      .toEqual({ allowed: false, category: "login_stale", reason: "fresh_login_required" });
+      .toEqual({ allowed: false, category: "forbidden", reason: "fresh_login_unavailable" });
     expect(decideForPrincipal({ ...base, principal: { kind: "mallory" } as unknown as StoredPrincipal, requirement: needs }))
       .toEqual({ allowed: false, category: "forbidden", reason: "invalid_principal" });
   });
@@ -212,6 +213,115 @@ describe("remote_request and request_submitter", () => {
     };
     expect(await runner.run(idle, alice.context, {})).toMatchObject({ ok: false, error: { category: "outcome_unknown", reason: "phase_closed" } });
     expect(() => kept.scope!.authorizePrincipal({ kind: "installation" }, { require: onProject("tests:run", "request") })).toThrow(/phase_closed/);
+  });
+});
+
+describe("stored full-authority principals and fresh login (C0b)", () => {
+  const REQUEST = { kind: "remote_request" as const, id: "request-1" };
+  const LOOSE = { kind: "registration" as const, id: "reg-loose" };
+  const notFoundDecision = { allowed: false, category: "not_found", reason: "resource_not_found" };
+  const unavailable = { allowed: false, category: "forbidden", reason: "principal_unavailable" };
+  const freshUnavailable = { allowed: false, category: "forbidden", reason: "fresh_login_unavailable" };
+  const modes = ["open", "token", "better-auth"] as const;
+
+  function stored() {
+    const { world: fixture, alice } = world();
+    fixture.resolver.put(LOOSE, null);
+    const resolve = (refs: Record<string, ResourceRef>) => resolveAll(fixture.resolver, refs);
+    const decideIn = (mode: string, principal: StoredPrincipal, requirement: OperationRequirement, resources = resolve({}), projects?: readonly ProjectId[]) =>
+      decideForPrincipal({ principal, requirement, resources, grants: fixture.grants, now: fixture.clock.now, projects,
+        mode: mode as (typeof modes)[number], listener: "worker" });
+    return { fixture, alice, resolve, decideIn };
+  }
+
+  it("a stored installation holds full authority in open and token mode only", () => {
+    const { resolve, decideIn } = stored();
+    const installation: StoredPrincipal = { kind: "installation" };
+    const inA = resolve({ project: { kind: "project", id: projectA } });
+    const loose = resolve({ item: LOOSE });
+    for (const mode of ["open", "token"] as const) {
+      expect(decideIn(mode, installation, { require: onProject("tests:run", "project") }, inA), mode).toMatchObject({ allowed: true });
+      expect(decideIn(mode, installation, { require: authenticated() }), mode).toMatchObject({ allowed: true });
+      expect(decideIn(mode, installation, { require: installationRequirement("accounts:manage") }), mode).toMatchObject({ allowed: true });
+      expect(decideIn(mode, installation, { require: anyProject("tests:run") }, resolve({}), []), mode).toMatchObject({ allowed: true });
+      expect(decideIn(mode, installation, { require: onProject("project:read", "item") }, loose), mode).toMatchObject({ allowed: true });
+    }
+    // better-auth: the installation actor does not exist there, so the stored principal holds nothing.
+    expect(decideIn("better-auth", installation, { require: onProject("tests:run", "project") }, inA)).toEqual(notFoundDecision);
+    expect(decideIn("better-auth", installation, { require: onProject("project:read", "item") }, loose)).toEqual(notFoundDecision);
+    // Any referenced slot is masked, even one the requirement does not name.
+    expect(decideIn("better-auth", installation, { require: authenticated() }, inA)).toEqual(notFoundDecision);
+    expect(decideIn("better-auth", installation, { require: authenticated() })).toEqual(unavailable);
+    expect(decideIn("better-auth", installation, { require: authenticated(), agents: false })).toEqual(unavailable);
+    expect(decideIn("better-auth", installation, { require: installationRequirement("accounts:manage") }))
+      .toEqual({ allowed: false, category: "forbidden", reason: "permission_denied" });
+    expect(decideIn("better-auth", installation, { require: anyProject("tests:run") }, resolve({}), [projectA]))
+      .toEqual({ allowed: false, category: "forbidden", reason: "permission_denied" });
+    // An unknown mode admits nothing either.
+    expect(decideIn("legacy", installation, { require: authenticated() })).toEqual(unavailable);
+    // The operator exists in every mode and is unchanged.
+    for (const mode of modes) {
+      expect(decideIn(mode, { kind: "operator" }, { require: onProject("tests:run", "project") }, inA), mode).toMatchObject({ allowed: true });
+      expect(decideIn(mode, { kind: "operator" }, { require: onProject("project:read", "item") }, loose), mode).toMatchObject({ allowed: true });
+      expect(decideIn(mode, { kind: "operator" }, { require: authenticated() }), mode).toMatchObject({ allowed: true });
+    }
+  });
+
+  it("no stored principal satisfies freshLogin, in any mode; masking answers first", () => {
+    const { alice, resolve, decideIn } = stored();
+    const inA = resolve({ project: { kind: "project", id: projectA } });
+    const inB = resolve({ project: { kind: "project", id: projectB } });
+    const loose = resolve({ project: LOOSE });
+    const fresh: OperationRequirement = { require: onProject("project:read", "project"), freshLogin: true };
+    const freshOnly: OperationRequirement = { require: authenticated(), freshLogin: true };
+    const principals: [string, StoredPrincipal][] = [
+      ["installation", { kind: "installation" }], ["operator", { kind: "operator" }], ["account", { kind: "account", accountId: alice.id }],
+    ];
+    for (const mode of modes) {
+      for (const [name, principal] of principals) {
+        const label = `${name} in ${mode}`;
+        const holdsNothing = name === "installation" && mode === "better-auth";
+        // Allowed without the flag (except where it holds nothing), refused with it.
+        expect(decideIn(mode, principal, { require: fresh.require }, inA).allowed, label).toBe(!holdsNothing);
+        expect(decideIn(mode, principal, fresh, inA), label).toEqual(holdsNothing ? notFoundDecision : freshUnavailable);
+        expect(decideIn(mode, principal, freshOnly), label).toEqual(holdsNothing ? unavailable : freshUnavailable);
+        // Masking first: a slot the requirement needs but that is not resolved, an invisible project, a parentless resource for an account.
+        expect(decideIn(mode, principal, fresh), label).toEqual(notFoundDecision);
+        expect(decideIn(mode, principal, fresh, inB), label).toEqual(name === "account" || holdsNothing ? notFoundDecision : freshUnavailable);
+        expect(decideIn(mode, principal, fresh, loose), label).toEqual(name === "account" || holdsNothing ? notFoundDecision : freshUnavailable);
+      }
+    }
+  });
+
+  it("through the runner: a live installation is exempt from fresh login, the same installation stored is not, and better-auth gives it nothing", async () => {
+    const { world: fixture, runner } = world();
+    const robot = fixture.agent("robot", "worker");
+    fixture.grants.grant({ accountId: robot.id, role: "executor", scope: { kind: "project", projectId: projectA } });
+    fixture.resolver.put(REQUEST, projectA, { kind: "remote_request", submitter: { kind: "installation" } });
+    const submitterNeeds: OperationRequirement = { require: onProject("tests:run", "request") };
+    const seen: unknown[] = [];
+    const poll = (requirement: OperationRequirement): MutationOperation<object, { assigned: boolean }, { assigned: boolean }> => ({
+      id: "fixture.worker_poll", kind: "mutation", requirement,
+      parse: () => ({}), resources: () => ({ request: REQUEST }),
+      effect: { mode: "admitted", run: (_input: object, scope: EffectScope) => {
+        const relation = scope.resources.request.relation;
+        if (relation?.kind !== "remote_request") throw new Error("no submitter");
+        const plain = decideForPrincipalViaScope(scope, relation.submitter, submitterNeeds);
+        const fresh = decideForPrincipalViaScope(scope, relation.submitter, { ...submitterNeeds, freshLogin: true });
+        seen.push({ plain, fresh });
+        return { assigned: plain.allowed };
+      } },
+      publicKeys: ["assigned"], project: value => value,
+    });
+    // Token mode: the caller is a live installation, exempt from the fresh login of its own requirement.
+    const token = fixture.installation("worker").context;
+    expect(await runner.run(poll({ require: onProject("worker:execute", "request"), freshLogin: true }), token, {}))
+      .toEqual({ ok: true, value: { assigned: true }, replayed: false });
+    expect(seen.pop()).toEqual({ plain: { allowed: true, permissions: expect.anything() }, fresh: freshUnavailable });
+    // better-auth: an agent polls; the installation submitter left over from token mode holds nothing.
+    expect(await runner.run(poll({ require: onProject("worker:execute", "request") }), robot.context, {}))
+      .toEqual({ ok: true, value: { assigned: false }, replayed: false });
+    expect(seen.pop()).toEqual({ plain: notFoundDecision, fresh: notFoundDecision });
   });
 });
 

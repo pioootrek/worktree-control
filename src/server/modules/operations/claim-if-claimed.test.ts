@@ -97,7 +97,7 @@ describe("claim_holder_if_claimed: the decision", () => {
 });
 
 interface RestartInput { projectId: string }
-interface RestartResult { projectId: ProjectId }
+interface RestartResult { projectId: ProjectId | null }
 
 /** `runtime.restart`: declared commit point before the stop; the claim's absence is rechecked before the start. */
 function restart(fixture: ReturnType<typeof createWorld>, hooks: { betweenSteps?: () => void; skipRecheck?: boolean } = {}) {

@@ -24,8 +24,8 @@ function world() {
   return { world: fixture, alice };
 }
 
-interface Worktrees { projectId: ProjectId; paths: string[]; secretToken: string }
-type WorktreeQuery = QueryOperation<{ registrationId: string }, Worktrees, { projectId: ProjectId; paths: string[] }, { projectId: ProjectId }>;
+interface Worktrees { projectId: ProjectId | null; paths: string[]; secretToken: string }
+type WorktreeQuery = QueryOperation<{ registrationId: string }, Worktrees, { projectId: ProjectId | null; paths: string[] }, { projectId: ProjectId | null }>;
 
 /** `project.worktrees`: discovery runs outside admission. */
 function worktrees(fixture: ReturnType<typeof createWorld>, work: (signal: AbortSignal) => Promise<void> = async () => undefined) {

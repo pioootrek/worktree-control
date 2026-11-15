@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FRESH_LOGIN_WINDOW_MS, installationPermissions, projectPermissions } from "@/shared/contracts/operations";
+import { FRESH_LOGIN_WINDOW_MS, installationPermissions, projectPermissions, type ProjectId } from "@/shared/contracts/operations";
 import { OperationRegistry, type ReadOperation } from "./operation";
 import { createWorld, P } from "./operations-fixture";
 import { OperationRunner } from "./runner";
@@ -15,6 +15,19 @@ function world() {
 }
 
 describe("session.describe", () => {
+  it("never lists a non-project entry of the project list, not even to full authority", async () => {
+    const w = world();
+    const list = w.resolver.listProjects.bind(w.resolver);
+    // No compliant resolver does this; `visible(null)` holds for full authority, so only the filter keeps "no project" out.
+    w.resolver.listProjects = () => [...list(), null as unknown as ProjectId, "" as ProjectId];
+    const admin = w.human("admin");
+    w.grants.grant({ accountId: admin.id, role: "admin", scope: { kind: "installation" } });
+    for (const [name, context] of [["installation", w.installation("api").context], ["operator", w.operator()], ["admin", admin.context]] as const) {
+      const described = await w.runner.run(sessionDescribe, context, {});
+      expect(described.ok && described.value.projects.map(project => project.projectId), name).toEqual([projectA, projectB]);
+    }
+  });
+
   it("works for a human account with zero roles", async () => {
     const w = world();
     const alice = w.human("alice");
