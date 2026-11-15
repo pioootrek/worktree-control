@@ -14,6 +14,12 @@ export function validateDatabase(database: Database.Database, version: number): 
     const rows = database.prepare("SELECT singleton,installation,epoch FROM security_checkpoint LIMIT 2").all() as Array<{singleton:number;installation:string;epoch:string}>;
     if (rows.length !== 1 || rows[0].singleton !== 1 || !/^[0-9a-f]{64}$/.test(rows[0].installation) || !/^[0-9a-f]{64}$/.test(rows[0].epoch)) fail("security checkpoint");
   }
+  // Provisional step 50: exactly one marker row, a known state and a canonical timestamp.
+  if (version >= 50) {
+    const rows = database.prepare(`SELECT singleton,state,changed_at IS strftime('%Y-%m-%dT%H:%M:%fZ',changed_at) AS canonical
+      FROM upgrade_marker LIMIT 2`).all() as Array<{singleton:unknown;state:unknown;canonical:number}>;
+    if (rows.length !== 1 || rows[0].singleton !== 1 || (rows[0].state !== "pending" && rows[0].state !== "complete") || rows[0].canonical !== 1) fail("upgrade marker");
+  }
   if (version >= 4 && database.prepare(`SELECT 1 FROM reservations WHERE released_at IS NULL AND NOT (
     (kind='human' AND expires_at IS NULL AND maximum_expires_at IS NULL AND token_hash IS NULL)
     OR (kind='agent' AND expires_at IS NOT NULL AND maximum_expires_at IS NOT NULL AND token_hash IS NOT NULL AND idempotency_key IS NOT NULL)) LIMIT 1`).get()) fail("active lease");

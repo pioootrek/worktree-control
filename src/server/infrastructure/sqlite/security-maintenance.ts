@@ -9,6 +9,7 @@ import { OwnedSqliteDatabase } from "./owned-database";
 import { configureDurability, assertDurability, validateDatabase } from "./database-validation";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
+import { schemaTarget } from "./migration-registry";
 import type Database from "better-sqlite3";
 
 const commandSchema=z.discriminatedUnion("action",[
@@ -24,7 +25,8 @@ export type SecurityMaintenanceCommand =
 /** Runs as the acts of the schema transaction, so the structure becomes current
  * only together with the quarantine. Exported for the differential test that
  * runs the same statements under foreign-key enforcement. */
-export function quarantineAuthority(database: Database.Database, receipt: string, mode: "token" | "open" | "better-auth"): void {
+export function quarantineAuthority(database: Database.Database, receipt: string, mode: "token" | "open" | "better-auth", target?: number): void {
+  const version = schemaTarget(target);
   const now = new Date().toISOString();
   const old=JSON.parse((database.prepare("SELECT value_json FROM controller_settings WHERE key='authentication'").get() as {value_json:string}).value_json);
   if(!Number.isSafeInteger(old.generation) || old.generation>=Number.MAX_SAFE_INTEGER
@@ -60,6 +62,10 @@ export function quarantineAuthority(database: Database.Database, receipt: string
     UPDATE remote_verification_requests SET phase='cancelled',updated_at='${now}' WHERE phase IN ('pending','assigned');
     UPDATE remote_verification_attempts SET phase='cancel_requested',version=version+1,last_reported_at='${now}' WHERE phase IN ('assigned','preparing','running');
   `);
+  // Provisional step 50: a quarantined installation needs the data upgrade again,
+  // whatever the marker said. The acts run after every schema step, so the
+  // marker exists here both when this transaction created it and before.
+  if (version >= 50) database.prepare("UPDATE upgrade_marker SET state='pending',changed_at=? WHERE singleton=1").run(now);
   // Mode is an explicit protected decision, never a restored selection or fallback.
   // All shared and legacy verifier material is removed; first-run issuance is fresh.
   database.prepare("UPDATE controller_settings SET value_json=?,updated_at=? WHERE key='authentication'")
@@ -85,11 +91,14 @@ function quarantineCommitted(database: Database.Database, receipt: string): bool
 
 /** Offline only. This function acquires BOTH singleton locks; no transport boolean grants trust.
  * It never contacts HTTP/MCP, loads provider code, starts listeners, or starts/stops processes.
+ * `target` (default `SUPPORTED_SCHEMA_VERSION`) is both the recognition ceiling and the
+ * schema target of establish and resume.
  */
-export function maintainSqliteSecurityFence(paths: AppPaths, command: SecurityMaintenanceCommand, handoff: { preflight(database:string):void; acknowledge(database:string):void }) {
+export function maintainSqliteSecurityFence(paths: AppPaths, command: SecurityMaintenanceCommand, handoff: { preflight(database:string):void; acknowledge(database:string):void }, target?: number) {
   const parsed=commandSchema.safeParse(command);
   if(!parsed.success)throw new ProviderAdminError("invalid_input");
   command=parsed.data;
+  const version=schemaTarget(target);
   let lock;
   try { lock=acquireControllerLock(paths.controllerLockPath); } catch(error) {
     if(error instanceof ControllerAlreadyRunningError)throw new SecurityFenceError("security_fence_owner_running");
@@ -99,7 +108,7 @@ export function maintainSqliteSecurityFence(paths: AppPaths, command: SecurityMa
   let committed = false;
   let receipt: string | undefined;
   try {
-    owner = new OwnedSqliteDatabase(paths.databasePath);
+    owner = new OwnedSqliteDatabase(paths.databasePath, false, version);
     const databasePath = owner.canonicalPath;
     const status = SecurityFence.preflight(databasePath, owner.database, owner.inspection.version);
     if (command.action === "inspect") return status;
@@ -118,18 +127,18 @@ export function maintainSqliteSecurityFence(paths: AppPaths, command: SecurityMa
     // Resume commits the schema steps and the quarantine in ONE transaction: no
     // committed state has a current structure with the old authority intact.
     const mode = command.action === "resume" ? command.mode : undefined;
-    initializeSchema(database, owner.inspection.fresh, inspectSchema,
-      mode ? { acts: current => quarantineAuthority(current, runReceipt, mode) } : {});
+    initializeSchema(database, owner.inspection.fresh, current => inspectSchema(current, version),
+      mode ? { target: version, acts: current => quarantineAuthority(current, runReceipt, mode, version) } : { target: version });
     if (mode) committed = true;
     assertDurability(database);
-    validateDatabase(database,49);
+    validateDatabase(database,version);
     SecurityFence.maintenanceReceipt(databasePath,database,runReceipt,"pending");
     // Handoff acknowledgement is AFTER quarantine and BEFORE the final receipt.
     // A failure leaves a pending witness and cannot resume an old identity.
     if (command.action === "resume") handoff.acknowledge(databasePath);
     SecurityFence.maintenanceReceipt(databasePath,database,runReceipt,"confirmed");
     owner.completeInitialization();
-    return {...SecurityFence.preflight(databasePath,database,49),changed:true,receipt:runReceipt,quarantined:command.action === "resume"};
+    return {...SecurityFence.preflight(databasePath,database,version),changed:true,receipt:runReceipt,quarantined:command.action === "resume"};
   } catch (error) {
     // Initialization owns one outer transaction, which for resume also holds the
     // quarantine. Prove a committed change from durable facts written in it, even

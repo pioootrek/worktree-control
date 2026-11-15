@@ -1,4 +1,6 @@
-import { securityFenceMigration, securityFenceChecksum, securityTriggers } from "./security-fence-migration";
+import { securityFenceMigration, securityFenceChecksum } from "./security-fence-migration";
+import { upgradeMarkerMigration, upgradeMarkerChecksum } from "./upgrade-marker-migration";
+import { SECURITY_COVERAGE } from "./security-coverage";
 import { humanConfigurationMigration, humanConfigurationChecksum } from "./human-configuration-migration";
 import { humanTestRunMigration, humanTestRunChecksum } from "./human-test-run-migration";
 import { humanRuntimeMigration, humanRuntimeChecksum } from "./human-runtime-migration";
@@ -22,7 +24,7 @@ import { testPresetTimeoutMigration, testPresetTimeoutChecksum } from "./test-pr
 import { taskCurrentStateMigration, taskCurrentStateChecksum } from "./task-current-state-migration";
 import { initializeSchema } from "./migrations";
 
-import { registryChecksum, registryMigration, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
+import { registryChecksum, registryMigration, schemaTarget } from "./migration-registry";
 export { SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 export interface SchemaInspection { version: number; fresh: boolean }
 type Column = { name: string; type: string; notnull: number; pk: number };
@@ -30,7 +32,9 @@ type ForeignKey = { table: string; from: string; to: string; on_delete: string; 
 
 // Historical installations may already have tables from the bootstrap DDL. Require
 // them only after their introducing migration, but validate any that are present.
+// A table introduced above the inspection ceiling is unknown at that ceiling.
 const tableVersions: Record<string, number> = {
+  upgrade_marker: 50,
   security_checkpoint: 49,
   human_test_run_requesters: 47, human_test_run_intents: 47,
   human_runtime_leases: 46, human_runtime_intents: 46,
@@ -86,8 +90,15 @@ const historicalLeaseCheck = "(kind='human'andexpires_atisnull)or(kind='agent'an
 interface TableShape { columns: Column[]; foreignKeys: ForeignKey[]; checks: string[]; uniqueKeys: string[]; indexes: string[] }
 // Tables from migration 38 on are never in bootstrap DDL; their explicit indexes are part of the contract.
 const STRICT_TABLES_FROM = 38;
+// Tables and fence triggers from migration 50 on must also match their reference
+// CREATE text byte for byte. SQLite stores that text as the step executed it
+// (normalising only the leading keywords), and only our own step creates these
+// objects, so no normalisation is needed; normalizedSql would also fold the case
+// and whitespace inside string literals such as CHECK(state IN ('pending',...)).
+const EXACT_FROM = 50;
+// Released recognition below EXACT_FROM: whitespace removed and lowercased, literals included.
 const normalizedSql = (sql: string) => sql.replace(/\s+/g, "").toLowerCase();
-const recognizedSecurityTriggers=new Map(securityTriggers.map(trigger=>[trigger.name,normalizedSql(trigger.sql)]));
+const knownTables = (ceiling: number) => Object.fromEntries(Object.entries(tableVersions).filter(([, introduced]) => introduced <= ceiling));
 function explicitIndexes(database: Database.Database, table: string): string[] {
   return (database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL").all(table) as Array<{ sql: string }>)
     .map(({ sql }) => normalizedSql(sql)).sort();
@@ -117,26 +128,35 @@ function uniqueKeys(database: Database.Database, table: string): string[] {
     return (database.prepare(`PRAGMA index_info("${name}")`).all() as Array<{ name: string }>).map(c => c.name).join(",");
   });
 }
-let reference: Map<string, TableShape> | undefined;
-function knownStructure(): Map<string, TableShape> {
-  if (reference) return reference;
+const references = new Map<number, Map<string, TableShape & { sql: string }>>();
+function knownStructure(ceiling: number): Map<string, TableShape & { sql: string }> {
+  const cached = references.get(ceiling);
+  if (cached) return cached;
   const database = new Database(":memory:");
   try {
-    initializeSchema(database);
-    reference = new Map(Object.keys(tableVersions).map(table => [table, {
+    initializeSchema(database, undefined, undefined, { target: ceiling });
+    const reference = new Map(Object.keys(knownTables(ceiling)).map(table => [table, {
       columns: database.prepare(`PRAGMA table_info("${table}")`).all() as Column[],
       foreignKeys: database.prepare(`PRAGMA foreign_key_list("${table}")`).all() as ForeignKey[],
       checks: checks((database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql),
       uniqueKeys: uniqueKeys(database, table),
       indexes: explicitIndexes(database, table),
+      sql: (database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql,
     }]));
+    references.set(ceiling, reference);
     return reference;
   } finally { database.close(); }
 }
 function refuse(detail = ""): never { throw new Error(`Unsupported or unrecognized database schema${detail ? ` (${detail})` : ""}. Use a compatible release or inspect an isolated copy; the source was not migrated.`); }
 
-/** Read-only recognition, before persistent PRAGMA, DDL or authentication setup. */
-export function inspectSchema(database: Database.Database): SchemaInspection {
+/**
+ * Read-only recognition, before persistent PRAGMA, DDL or authentication setup.
+ * `ceiling` (default `SUPPORTED_SCHEMA_VERSION`, validated with `schemaTarget`)
+ * is the highest version recognised; a newer database is refused as unknown.
+ */
+export function inspectSchema(database: Database.Database, ceiling?: number): SchemaInspection {
+  const maximum = schemaTarget(ceiling);
+  const known = knownTables(maximum);
   if (database.pragma("application_id", {simple:true}) !== 0 || database.pragma("user_version", {simple:true}) !== 0) refuse();
   const objects = database.prepare("SELECT name, type FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1025").all() as Array<{ name: string; type: string }>;
   if (objects.length > 1024) refuse("schema object limit");
@@ -144,8 +164,8 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
   if (!objects.some(x => x.type === "table" && x.name === "schema_migrations")) refuse();
   const registry = database.prepare("PRAGMA table_info(schema_migrations)").all() as Column[];
   if (![2, 4].includes(registry.length) || registry[0].name !== "version" || registry[0].type !== "INTEGER" || registry[0].pk !== 1 || registry[1].name !== "applied_at" || registry[1].type !== "TEXT" || registry[1].notnull !== 1) refuse();
-  const migrations = database.prepare("SELECT version, applied_at FROM schema_migrations ORDER BY version LIMIT ?").all(SUPPORTED_SCHEMA_VERSION + 1) as Array<{ version: number; applied_at: string }>;
-  if (!migrations.length || migrations.length > SUPPORTED_SCHEMA_VERSION || migrations.some((x, i) => x.version !== i + 1 || typeof x.applied_at !== "string" || !x.applied_at)) refuse();
+  const migrations = database.prepare("SELECT version, applied_at FROM schema_migrations ORDER BY version LIMIT ?").all(maximum + 1) as Array<{ version: number; applied_at: string }>;
+  if (!migrations.length || migrations.length > maximum || migrations.some((x, i) => x.version !== i + 1 || typeof x.applied_at !== "string" || !x.applied_at)) refuse();
   const version = migrations.length;
   if ((version >= 28) !== (registry.length === 4)) refuse("migration registry");
   if (version >= 28) {
@@ -168,6 +188,7 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : x.version === 42 ? x.name !== humanPrincipalMigration.name || x.checksum !== humanPrincipalChecksum
       : x.version === 43 ? x.name !== godotWebMigration.name || x.checksum !== godotWebChecksum
       : x.version === 44 ? x.name !== testRunRequesterMigration.name || x.checksum !== testRunRequesterChecksum
+      : x.version === 50 ? x.name !== upgradeMarkerMigration.name || x.checksum !== upgradeMarkerChecksum
       : x.version === 49 ? x.name !== securityFenceMigration.name || x.checksum !== securityFenceChecksum
       : x.version === 48 ? x.name !== humanConfigurationMigration.name || x.checksum !== humanConfigurationChecksum
       : x.version === 47 ? x.name !== humanTestRunMigration.name || x.checksum !== humanTestRunChecksum
@@ -176,12 +197,13 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
       : true)) refuse("migration checksum or name");
   }
   const tables = new Set(objects.filter(x => x.type === "table").map(x => x.name));
-  if (objects.some(x => x.type === "view") || [...tables].some(x => !(x in tableVersions))) refuse();
+  if (objects.some(x => x.type === "view") || [...tables].some(x => !(x in known))) refuse();
 
-  for (const [table, introduced] of Object.entries(tableVersions)) {
+  for (const [table, introduced] of Object.entries(known)) {
     if (!tables.has(table)) { if (version >= introduced) refuse(); continue; }
     if (introduced >= STRICT_TABLES_FROM && version < introduced) refuse(`${table} precedes its migration`);
-    const expected = knownStructure().get(table)!;
+    const expected = knownStructure(maximum).get(table)!;
+    if (introduced >= EXACT_FROM && (database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql !== expected.sql) refuse(`shape of ${table}`);
     const columns = database.prepare(`PRAGMA table_info("${table}")`).all() as Column[];
     for (const column of columns) {
       if (table === "reservations" && column.name === "provider_bound" && version < 46) refuse("human lease marker precedes migration 46");
@@ -253,8 +275,14 @@ export function inspectSchema(database: Database.Database): SchemaInspection {
   const ownershipIndex = database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='one_active_reservation_per_project'").get() as {sql:string}|undefined;
   if (!ownershipIndex || !/createuniqueindex(?:ifnotexists)?one_active_reservation_per_projectonreservations\(project_id\)wherereleased_atisnull/i.test(ownershipIndex.sql.replace(/\s+/g,""))) refuse();
   const actualTriggers = database.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger'").all() as Array<{name:string;sql:string}>;
-  if (actualTriggers.length !== (version >= 49 ? securityTriggers.length : 0)
-    || actualTriggers.some(actual => recognizedSecurityTriggers.get(actual.name)!==normalizedSql(actual.sql))) refuse("security triggers");
+  // The expected set is a function of the version: schema-49 coverage, then each later step's.
+  // Schema-49 triggers keep the released normalised comparison; later steps' compare exactly.
+  const expectedTriggers = new Map(SECURITY_COVERAGE.filter(step => step.version <= version).flatMap(step => step.triggers
+    .map(trigger => [trigger.name, { sql: step.version >= EXACT_FROM ? trigger.sql : normalizedSql(trigger.sql), exact: step.version >= EXACT_FROM }] as const)));
+  if (actualTriggers.length !== expectedTriggers.size || actualTriggers.some(actual => {
+    const expected = expectedTriggers.get(actual.name);
+    return !expected || expected.sql !== (expected.exact ? actual.sql : normalizedSql(actual.sql));
+  })) refuse("security triggers");
   return { version, fresh: false };
 }
 

@@ -4,16 +4,18 @@ import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { z } from "zod";
 import { inspectSchema, snapshotAttachments, SUPPORTED_SCHEMA_VERSION } from "./schema-inspection";
+import { schemaTarget } from "./migration-registry";
 import { validateDatabase } from "./database-validation";
 import { syncDirectory } from "../../private-storage";
 
 export const BACKUP_LIMITS = { manifestBytes: 8 * 1024 * 1024, attachments: 50_000, fileBytes: 64 * 1024 ** 3, totalBytes: 128 * 1024 ** 3, entries: 100_000 } as const;
 const size = z.number().int().min(0).max(BACKUP_LIMITS.fileBytes);
 export const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
-export const backupManifestSchema = z.object({
+/** The manifest accepted up to one schema ceiling; see {@link parseManifest}. */
+const manifestSchema = (ceiling: number) => z.object({
   formatVersion: z.literal(1), applicationVersion: z.string().min(1).max(128),
   createdAt: z.iso.datetime({ offset: true }),
-  database: z.object({ file: z.literal("state.sqlite3"), size, sha256: sha256Schema, schemaVersion: z.number().int().min(1).max(SUPPORTED_SCHEMA_VERSION) }).strict(),
+  database: z.object({ file: z.literal("state.sqlite3"), size, sha256: sha256Schema, schemaVersion: z.number().int().min(1).max(ceiling) }).strict(),
   attachments: z.array(z.object({ file: z.string().regex(/^[a-f0-9]{2}\/[a-f0-9]{64}$/), size, sha256: sha256Schema }).strict()).max(BACKUP_LIMITS.attachments),
 }).strict().superRefine((manifest, context) => {
   const seen = new Set<string>(); let total = manifest.database.size;
@@ -23,6 +25,8 @@ export const backupManifestSchema = z.object({
   }
   if (total > BACKUP_LIMITS.totalBytes) context.addIssue({ code: "custom", message: "Backup exceeds staging budget." });
 });
+export const backupManifestSchema = manifestSchema(SUPPORTED_SCHEMA_VERSION);
+const manifestSchemas = new Map<number, typeof backupManifestSchema>([[SUPPORTED_SCHEMA_VERSION, backupManifestSchema]]);
 export type ControllerBackupManifest = z.infer<typeof backupManifestSchema>;
 
 /** No links or special files, including each ancestor inside the selected tree. */
@@ -65,16 +69,21 @@ export function readBoundedJson(path: string, limit: number, privateMode = false
     const value: unknown = JSON.parse(text); assertUnambiguousJson(text); return value;
   } finally { closeSync(fd); }
 }
-export function parseManifest(value: unknown): ControllerBackupManifest {
-  const parsed = backupManifestSchema.safeParse(value);
+/** `ceiling` (default `SUPPORTED_SCHEMA_VERSION`) is the highest accepted schema version. */
+export function parseManifest(value: unknown, ceiling?: number): ControllerBackupManifest {
+  const maximum = schemaTarget(ceiling);
+  let schema = manifestSchemas.get(maximum);
+  if (!schema) manifestSchemas.set(maximum, schema = manifestSchema(maximum));
+  const parsed = schema.safeParse(value);
   if (!parsed.success) throw new Error("Unsupported or invalid backup manifest (types, paths, versions or limits).");
   return parsed.data;
 }
 
 /** Exact tree shape: no undeclared payloads or SQLite sidecars in a snapshot. */
-export function validateBackup(root: string, manifest: ControllerBackupManifest, privateMode = false): void {
+export function validateBackup(root: string, manifest: ControllerBackupManifest, privateMode = false, ceiling?: number): void {
+  schemaTarget(ceiling);
   validateBackupFiles(root, manifest, privateMode);
-  validateSnapshot(join(root, "state.sqlite3"), manifest);
+  validateSnapshot(join(root, "state.sqlite3"), manifest, ceiling);
 }
 export function validateBackupFiles(root: string, manifest: ControllerBackupManifest, privateMode = false): void {
   directory(root, privateMode);
@@ -112,10 +121,12 @@ export function validateAttachmentFiles(attachmentRoot: string, attachments: Con
   }
   if (found.size !== expected.size) throw new Error("Backup attachment manifest is incomplete.");
 }
-export function validateSnapshot(path: string, manifest: ControllerBackupManifest): void {
+/** `ceiling` (default `SUPPORTED_SCHEMA_VERSION`) is passed to {@link inspectSchema}. */
+export function validateSnapshot(path: string, manifest: ControllerBackupManifest, ceiling?: number): void {
+  schemaTarget(ceiling);
   const database = new Database(path, { readonly: true, fileMustExist: true });
   try {
-    const actual = inspectSchema(database).version;
+    const actual = inspectSchema(database, ceiling).version;
     if (actual !== manifest.database.schemaVersion) throw new Error("Unsupported or inconsistent database schema version.");
     validateDatabase(database, actual);
     const required = snapshotAttachments(database);

@@ -1,4 +1,5 @@
 import { applySecurityFenceMigration } from "./security-fence-migration";
+import { applyUpgradeMarkerMigration } from "./upgrade-marker-migration";
 import { applyHumanConfigurationMigration } from "./human-configuration-migration";
 import { applyHumanTestRunMigration } from "./human-test-run-migration";
 import { applyHumanRuntimeMigration } from "./human-runtime-migration";
@@ -16,7 +17,7 @@ import { applyDevVaultMigration } from "./dev-vault-migration";
 import { applyGodotWebMigration } from "./godot-web-migration";
 import { applyRemoteConnectionMigration } from "./remote-connection-migration";
 import type Database from "better-sqlite3";
-import { applyRegistryMigration, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
+import { applyRegistryMigration, schemaTarget } from "./migration-registry";
 import { applyTelemetryMigration } from "./test-summary-migration";
 import { applyVerificationProjectMigration, rebuildTable } from "./verification-project-migration";
 import { applyTestPresetTimeoutMigration } from "./test-preset-timeout-migration";
@@ -372,16 +373,26 @@ export interface SchemaInitializationOptions {
    * database without a violation.
    */
   acts?: (database: Database.Database) => void;
+  /**
+   * The highest step to apply, validated with `schemaTarget`. Defaults to
+   * `SUPPORTED_SCHEMA_VERSION`; a higher, provisional step is applied only when
+   * named here. The acts and `validateDatabase` run at this version.
+   */
+  target?: number;
 }
 
 export function initializeSchema(database: Database.Database, fresh = !database.prepare("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").get(), validateStructure?: (database: Database.Database) => void, options: SchemaInitializationOptions = {}): void {
   if (database.inTransaction) throw new Error("Schema initialization requires its own transaction.");
+  const target = schemaTarget(options.target);
   // Historical migration 25 rebuilds a referenced parent. Disable FK outside
   // the outer transaction, then check every FK before committing any step.
   const foreignKeys = database.pragma("foreign_keys", { simple: true });
   database.pragma("foreign_keys = OFF");
   try {
     database.transaction(() => {
+      // Read inside the transaction: only a database that is empty here starts
+      // with a complete upgrade marker, whatever `fresh` the caller passed.
+      const empty = !database.prepare("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").get();
       database.exec(schema);
       applyMigrations(database, fresh);
       applyRegistryMigration(database);
@@ -406,13 +417,14 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyHumanTestRunMigration(database);
       applyHumanConfigurationMigration(database);
       applySecurityFenceMigration(database);
+      if (target >= 50) applyUpgradeMarkerMigration(database, empty);
       if (options.acts) {
         // Acts begin from a consistent database, so a violation found by the
         // check in validateDatabase below is the acts' own. Nothing repairs it.
         if (database.prepare("PRAGMA foreign_key_check").get()) throw new Error("SQLite foreign key check failed; startup stopped.");
         options.acts(database);
       }
-      validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
+      validateDatabase(database, target);
       validateStructure?.(database);
     }).immediate();
   } finally { database.pragma(`foreign_keys = ${foreignKeys ? "ON" : "OFF"}`); }
