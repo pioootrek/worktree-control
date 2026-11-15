@@ -1,6 +1,6 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-11-12"
+last_reviewed: "2026-11-15"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
@@ -464,8 +464,17 @@ are still read, with a deprecation warning, when the new name is unset.
 
 The controller opens one database connection, enables foreign keys and WAL,
 uses prepared statements, and runs numbered migrations before accepting
-requests. A state-directory lock prevents two controller instances with the
-same runtime configuration from owning the process set. Stored PIDs are hints
+requests. All schema steps share one immediate transaction with foreign keys
+off and a foreign-key check before commit. A caller may add data acts to that
+transaction after the steps and before validation. SQLite cannot enable foreign
+keys inside a transaction, so no ON DELETE action runs for the acts: an act
+deletes or updates every dependent row its statements would leave without a
+parent. Nothing is repaired for it. Any violation left after the acts fails the
+check before commit and rolls back the steps and the acts. Acts start only from
+a database without a violation.
+
+A state-directory lock prevents two controller instances with the same runtime
+configuration from owning the process set. Stored PIDs are hints
 only; restart reconciliation verifies process identity before acting on them.
 
 Reservation acquisition uses a short `BEGIN IMMEDIATE` transaction: expire old
@@ -1033,8 +1042,9 @@ OS-owner trust model.
 
 Protected offline `auth fence inspect/establish/resume` uses both singleton locks
 and an exact preflight. Resume quarantines restored credentials, sessions, factors,
-passwords, grants, leases and pending work, preserves the same owner and history,
-then acknowledges the existing handoff and publishes a durable receipt. No public
+passwords, grants, leases and pending work as data acts of the schema
+transaction, so pending schema steps and the quarantine commit together. It
+preserves the same owner and history, then acknowledges the existing handoff and publishes a durable receipt. No public
 session or token can perform it. Captured mode/token policy remains historical
 evidence; resumed mode is explicit, and old verifiers stay invalid. Schedules and
 vault use an additional receipt floor while retaining their separate signed proof.

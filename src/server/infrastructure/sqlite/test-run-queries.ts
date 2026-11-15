@@ -72,6 +72,41 @@ export function mapTestRun(row: TestRunRow): TestRun {
   };
 }
 
+/** One project's finished runs beyond its newest 50. Keeps remote completion
+ * evidence until its immutable report is durable, even if networking is
+ * stalled; at most 1000 receipts can pin extra rows. */
+const PROJECT_RETENTION_EXCESS = `
+  SELECT id FROM test_runs WHERE id IN (
+    SELECT id FROM test_runs WHERE project_id = ? AND phase NOT IN ('queued', 'running')
+    AND NOT EXISTS (SELECT 1 FROM test_run_summaries s WHERE s.run_id=test_runs.id AND s.terminal=0)
+    ORDER BY queued_at DESC, id DESC LIMIT -1 OFFSET 50
+  )
+  AND id NOT IN (
+    SELECT json_extract(payload_json, '$.localRunId') FROM remote_worker_receipts
+    WHERE json_extract(payload_json, '$.localRunId') IS NOT NULL
+    AND coalesce(json_extract(payload_json, '$.reports[#-1].phase'), '')
+      NOT IN ('succeeded', 'failed', 'cancelled', 'uncertain')
+  )`;
+/** Every project's finished runs beyond its newest 50, after recovery. */
+const RECOVERY_RETENTION_EXCESS = `
+  SELECT id FROM (
+    SELECT id, ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY queued_at DESC, id DESC) AS rank
+    FROM test_runs WHERE phase NOT IN ('queued', 'running')
+  ) WHERE rank > 50`;
+
+/**
+ * Deletes the selected runs and, first, their requester rows. The rows go
+ * explicitly rather than by ON DELETE CASCADE, so trimming is the same with
+ * foreign keys on and with them off (as inside the schema transaction, where
+ * resume recovers runs). The selection reads no requester table, so all three
+ * statements select the same runs.
+ */
+function deleteTestRuns(database: Database.Database, selection: string, ...parameters: string[]): void {
+  database.prepare(`DELETE FROM test_run_requesters WHERE run_id IN (${selection})`).run(...parameters);
+  database.prepare(`DELETE FROM human_test_run_requesters WHERE run_id IN (${selection})`).run(...parameters);
+  database.prepare(`DELETE FROM test_runs WHERE id IN (${selection})`).run(...parameters);
+}
+
 /** Borrows the owner connection; never opens or closes a database. */
 export class TestRunQueries {
   constructor(private readonly database: Database.Database) {}
@@ -231,21 +266,7 @@ export class TestRunQueries {
     if (["passed", "failed", "cancelled", "timed_out", "interrupted"].includes(run.phase)
       && (!run.telemetry || run.telemetry.availability === "legacy_unknown" || run.telemetry.finalizedAt || run.telemetry.recoveredAt)) {
       summaries.prune(run.projectId);
-      // Keep remote completion evidence until its immutable report is durable,
-      // even if networking is stalled. At most 1000 receipts can pin extra rows.
-      this.database.prepare(`
-        DELETE FROM test_runs WHERE id IN (
-          SELECT id FROM test_runs WHERE project_id = ? AND phase NOT IN ('queued', 'running')
-          AND NOT EXISTS (SELECT 1 FROM test_run_summaries s WHERE s.run_id=test_runs.id AND s.terminal=0)
-          ORDER BY queued_at DESC, id DESC LIMIT -1 OFFSET 50
-        )
-        AND id NOT IN (
-          SELECT json_extract(payload_json, '$.localRunId') FROM remote_worker_receipts
-          WHERE json_extract(payload_json, '$.localRunId') IS NOT NULL
-          AND coalesce(json_extract(payload_json, '$.reports[#-1].phase'), '')
-            NOT IN ('succeeded', 'failed', 'cancelled', 'uncertain')
-        )
-      `).run(run.projectId);
+      deleteTestRuns(this.database, PROJECT_RETENTION_EXCESS, run.projectId);
     }
   }
 
@@ -299,14 +320,7 @@ export class TestRunQueries {
         // Recovery cannot observe the lost process's exit, cleanup or monotonic intervals.
         this.saveRunAndSummary(run);
       }
-      this.database.prepare(`
-        DELETE FROM test_runs WHERE id IN (
-          SELECT id FROM (
-            SELECT id, ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY queued_at DESC, id DESC) AS rank
-            FROM test_runs WHERE phase NOT IN ('queued', 'running')
-          ) WHERE rank > 50
-        )
-      `).run();
+      deleteTestRuns(this.database, RECOVERY_RETENTION_EXCESS);
     })();
   }
 }

@@ -355,7 +355,26 @@ const schema = `
     VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 `;
 
-export function initializeSchema(database: Database.Database, fresh = !database.prepare("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").get(), validateStructure?: (database: Database.Database) => void): void {
+/** Options for {@link initializeSchema}. */
+export interface SchemaInitializationOptions {
+  /**
+   * Data acts that commit atomically with the schema steps. They run inside the
+   * outer immediate transaction after every schema step and before
+   * `validateDatabase` and `validateStructure`; a throw from a step, an act or
+   * validation rolls back all of them.
+   *
+   * SQLite cannot enable foreign keys inside a transaction, so acts run with
+   * enforcement off, like the steps: no ON DELETE action runs for them. An act
+   * must itself delete or update every dependent row its statements leave
+   * without a parent. Nothing is repaired for it: any foreign-key violation
+   * left after the acts fails the foreign-key check in `validateDatabase`
+   * before commit and rolls back the steps and the acts. Acts start from a
+   * database without a violation.
+   */
+  acts?: (database: Database.Database) => void;
+}
+
+export function initializeSchema(database: Database.Database, fresh = !database.prepare("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").get(), validateStructure?: (database: Database.Database) => void, options: SchemaInitializationOptions = {}): void {
   if (database.inTransaction) throw new Error("Schema initialization requires its own transaction.");
   // Historical migration 25 rebuilds a referenced parent. Disable FK outside
   // the outer transaction, then check every FK before committing any step.
@@ -387,6 +406,12 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyHumanTestRunMigration(database);
       applyHumanConfigurationMigration(database);
       applySecurityFenceMigration(database);
+      if (options.acts) {
+        // Acts begin from a consistent database, so a violation found by the
+        // check in validateDatabase below is the acts' own. Nothing repairs it.
+        if (database.prepare("PRAGMA foreign_key_check").get()) throw new Error("SQLite foreign key check failed; startup stopped.");
+        options.acts(database);
+      }
       validateDatabase(database, SUPPORTED_SCHEMA_VERSION);
       validateStructure?.(database);
     }).immediate();

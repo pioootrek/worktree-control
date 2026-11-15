@@ -1,6 +1,6 @@
 ---
 audience: "people running Worktree Control and choosing how callers authenticate"
-last_reviewed: "2026-11-08"
+last_reviewed: "2026-11-15"
 source_of_truth: "authentication modes, identities, optional account mode and protected recovery for the 0.2.0 release candidate"
 status: "active"
 ---
@@ -640,7 +640,7 @@ the project configuration revision. Existing compatibility configuration
 writes increment it alongside scoped changes; no old credential gains actions.
 Migration 44 adds immutable test requester attribution on the same connection,
 atomically with initial enqueue. It backfills no jobs or credentials. Retention
-cascades requester rows with their detailed jobs; full backups preserve them.
+deletes requester rows with their detailed jobs; full backups preserve them.
 
 Opening an older database with this version applies the pending migrations. Plan an
 installation upgrade with a stopped-controller backup and a compatible restore
@@ -1273,15 +1273,25 @@ worktree-control auth fence inspect --data-dir /private/installation
 worktree-control auth fence resume --expect <preflight-hash> --mode token --data-dir /private/installation
 ```
 
-Resume first publishes a pending receipt. One sole-connection transaction removes
+Resume first publishes a pending receipt. One sole-connection transaction applies
+any pending schema steps and, in the same commit, removes
 all restored provider passwords/tokens, native sessions, TOTP/passkeys and
 challenge authority; revokes principal credentials and all project/role/runtime
 and worker grants; advances account generations and membership revisions; releases
 leases; interrupts pending finite jobs with the existing truthful writer; and
-cancels pending remote work. It retains IDs, kinds, roles, membership rows, audit,
+cancels pending remote work. Foreign keys are off in that transaction, so it
+deletes the dependents of what it removes itself: session evidence and issuance
+markers, passkey trust and staged passkeys, and the requester rows of the
+detailed jobs that retention trims. It retains IDs, kinds, roles, membership rows, audit,
 run/intention attribution, TOTP steps, budgets and encrypted vault content.
 The same existing owner is preserved, and a readable external owner anchor must
 match. No owner, credential, project permission or ENV grant is created.
+
+No committed state has the current schema with the restored authority still
+intact. A failure before that commit leaves the schema and the authority as they
+were. A failure after it reports `committed:true`; the transaction's
+`authentication.security_quarantined` audit event carries the run's receipt and
+proves the commit even when the schema version did not change.
 
 Only after quarantine and handoff acknowledgement does the owner publish the
 confirmed receipt. Repeated resume on that unchanged confirmed state is a no-op.

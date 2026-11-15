@@ -274,3 +274,117 @@ describe("durable SQLite initialization and migration", () => {
     expect(()=>new SqliteStateStore(f.path)).toThrow(/Unsafe|aliases/);expect(readFileSync(other,"utf8")).toBe("keep");expect(lstatSync(other).mode&0o777).toBe(0o644);released(f.path);
   });
 });
+
+/** Every table row and the whole catalogue, independent of WAL/header bytes. */
+function contents(db: Database.Database, except: string[] = []) {
+  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as Array<{ name: string }>).map(({ name }) => name).filter(name => !except.includes(name));
+  return { catalogue: db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name").all(),
+    rows: Object.fromEntries(tables.map(name => [name, db.prepare(`SELECT * FROM "${name}" ORDER BY rowid`).all()])) };
+}
+function snapshot(path: string) { let result: ReturnType<typeof contents> | undefined; raw(path, db => { result = contents(db); }); return result!; }
+const version = (db: Database.Database) => (db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version;
+const audit = (db: Database.Database, type: string) => db.prepare("INSERT INTO controller_audit_events(event_type,actor,details_json,created_at) VALUES(?,'fixture','{}','2026-11-15T00:00:00.000Z')").run(type);
+/** The maintenance observer's no-op stands in for the fence on covered rows. */
+function writable(path: string) {
+  const owned = new OwnedSqliteDatabase(path), db = owned.enableWrites(); configureDurability(db);
+  db.function("worktree_security_pending", () => 0); return { owned, db };
+}
+
+describe("schema initialization data acts", () => {
+  it("rolls back the schema steps with a throwing act and leaves the database as before", () => {
+    const f = fixture(26), before = snapshot(f.path), { owned, db } = writable(f.path), seen: string[] = [];
+    expect(() => initializeSchema(db, false, () => { seen.push("structure"); }, { acts: current => {
+      seen.push(`acts:${version(current)}:${current.inTransaction}`); audit(current, "fixture.act"); throw new Error("fixture act fault");
+    } })).toThrow("fixture act fault");
+    // Acts saw every step applied in the open transaction; validation never ran.
+    expect(seen).toEqual([`acts:${SUPPORTED_SCHEMA_VERSION}:true`]);
+    expect(db.inTransaction).toBe(false); expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
+    owned.close(); released(f.path);
+    expect(snapshot(f.path)).toEqual(before);
+    raw(f.path, check => {
+      expect(version(check)).toBe(26);
+      // Step 28 adds provenance columns; step 49 creates the security checkpoint.
+      expect(check.prepare("PRAGMA table_info(schema_migrations)").all()).toHaveLength(2);
+      expect(check.prepare("SELECT 1 FROM sqlite_master WHERE name='security_checkpoint'").get()).toBeUndefined();
+      expect(check.prepare("SELECT 1 FROM controller_audit_events WHERE event_type='fixture.act'").get()).toBeUndefined();
+    });
+  });
+
+  it("commits acts with the schema steps after them and before validation; no acts changes nothing", () => {
+    const f = fixture(26), { owned, db } = writable(f.path), seen: string[] = [];
+    initializeSchema(db, false, current => { seen.push(`structure:${current.prepare("SELECT count(*) n FROM controller_audit_events WHERE event_type='fixture.act'").pluck().get()}`); inspectSchema(current); },
+      { acts: current => { seen.push("acts"); audit(current, "fixture.act"); } });
+    expect(seen).toEqual(["acts", "structure:1"]); expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
+    const committed = contents(db);
+    // A caller without acts at the current version commits no change.
+    initializeSchema(db, false, inspectSchema); initializeSchema(db, false, inspectSchema, {});
+    expect(contents(db)).toEqual(committed);
+    owned.close();
+    raw(f.path, check => { expect(version(check)).toBe(SUPPORTED_SCHEMA_VERSION); expect(check.prepare("SELECT count(*) n FROM controller_audit_events WHERE event_type='fixture.act'").pluck().get()).toBe(1); });
+  });
+
+  it.each(["structure", "foreign-key"] as const)("rolls back successful acts and the steps when %s validation fails after them", kind => {
+    const f = fixture(26), before = snapshot(f.path), { owned, db } = writable(f.path);
+    let acted = false;
+    expect(() => initializeSchema(db, false, current => { inspectSchema(current); if (kind === "structure") throw new Error("fixture late validation"); }, { acts: current => {
+      audit(current, "fixture.act"); acted = true;
+      // Enforcement is off in the transaction; the final foreign-key check refuses this row.
+      if (kind === "foreign-key") current.exec("INSERT INTO principal_credentials(id,principal_id,kind,label,token_prefix,verifier_hash,status,created_at) VALUES('orphan','missing','agent_token','x','x',printf('%064d',0),'active','now')");
+    } })).toThrow(kind === "structure" ? "fixture late validation" : /foreign key check failed/);
+    expect(acted).toBe(true); owned.close(); released(f.path);
+    expect(snapshot(f.path)).toEqual(before);
+  });
+
+  it("refuses an open outer transaction with or without acts and runs nothing", () => {
+    const db = unmanagedFixtureDatabase(":memory:"); let acted = false;
+    try {
+      db.exec("BEGIN");
+      expect(() => initializeSchema(db, true, undefined, { acts: () => { acted = true; } })).toThrow(/own transaction/);
+      expect(() => initializeSchema(db, true)).toThrow(/own transaction/);
+      expect(acted).toBe(false); expect(db.inTransaction).toBe(true);
+      db.exec("ROLLBACK");
+      expect(db.prepare("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").get()).toBeUndefined();
+    } finally { db.close(); }
+  });
+
+  it("refuses acts on a database that already violates a foreign key, before running them", () => {
+    const f = fixture(26), { owned, db } = writable(f.path);
+    initializeSchema(db, false, inspectSchema);
+    db.pragma("foreign_keys = OFF");
+    db.exec("INSERT INTO audit_events(project_id,event_type,actor,details_json,created_at) VALUES('missing','fixture','fixture','{}','now')");
+    db.pragma("foreign_keys = ON");
+    let acted = false;
+    expect(() => initializeSchema(db, false, inspectSchema, { acts: () => { acted = true; } })).toThrow(/foreign key check failed/);
+    expect(acted).toBe(false);
+    // Acts never start from a violation, and the pre-existing orphan is left as found.
+    expect(db.prepare("SELECT count(*) FROM audit_events WHERE project_id='missing'").pluck().get()).toBe(1);
+    owned.close();
+  });
+
+  // Acts run with enforcement off and nothing repairs them: each violation an act
+  // leaves fails the check before commit, and steps and acts roll back together.
+  it.each([
+    ["inserts a child without a parent", "INSERT INTO audit_events(project_id,event_type,actor,details_json,created_at) VALUES('missing','fixture','fixture','{}','now')"],
+    ["points a child at a missing parent", "UPDATE audit_events SET project_id='missing' WHERE project_id='kept'"],
+    ["deletes a parent and leaves its child", "DELETE FROM projects WHERE id='kept'"],
+  ] as const)("rolls back the steps and acts when an act %s; nothing is repaired", (_, statement) => {
+    const f = fixture(26);
+    raw(f.path, db => db.exec(`INSERT INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at)
+        VALUES('kept','Kept','/code/kept',3214,'pnpm','["run","dev"]','/',45000,'now','now');
+      INSERT INTO audit_events(project_id,event_type,actor,details_json,created_at) VALUES('kept','fixture','fixture','{}','now');`));
+    const before = snapshot(f.path), { owned, db } = writable(f.path);
+    let acted = false;
+    expect(() => initializeSchema(db, false, inspectSchema, { acts: current => {
+      audit(current, "fixture.act"); current.exec(statement); acted = true;
+    } })).toThrow(/foreign key check failed/);
+    expect(acted).toBe(true); expect(db.inTransaction).toBe(false); expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
+    owned.close(); released(f.path);
+    // The schema stays at 26, the parent and child are as seeded, and no row was deleted or nulled for the act.
+    expect(snapshot(f.path)).toEqual(before);
+    raw(f.path, check => {
+      expect(version(check)).toBe(26);
+      expect(check.prepare("SELECT project_id FROM audit_events").pluck().all()).toEqual(["kept"]);
+      expect(check.prepare("SELECT id FROM projects").pluck().all()).toEqual(["kept"]);
+    });
+  });
+});
