@@ -16,7 +16,7 @@ import { unhandledDuring } from "./runner-fixture";
  */
 
 type Input = { registrationId: string };
-type Public = { projectId: ProjectId };
+type Public = { projectId: ProjectId | null };
 const projectA = P("project-a");
 const REGISTRATION = { kind: "registration" as const, id: "reg-1" };
 const INPUT: Input = { registrationId: REGISTRATION.id };

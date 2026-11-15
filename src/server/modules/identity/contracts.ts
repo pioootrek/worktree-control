@@ -139,7 +139,6 @@ export interface IdentityStore {
   listKnowledgeRoleBindings(principalId: string): KnowledgeRoleBinding[];
   saveKnowledgeRoleBinding(binding: KnowledgeRoleBinding, expectedRevision: number, actor: string): boolean;
   getKnowledgeProjectRuntimeLink(projectId: string): KnowledgeProjectRuntimeLink | null;
-  saveKnowledgeProjectRuntimeLink(link: KnowledgeProjectRuntimeLink, actor: string): void;
 }
 
 /**

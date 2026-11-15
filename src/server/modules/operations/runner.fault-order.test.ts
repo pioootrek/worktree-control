@@ -22,7 +22,7 @@ type Target = "missing" | "invisible";
 const MISSING = { kind: "registration" as const, id: "reg-missing" };
 const INVISIBLE = { kind: "registration" as const, id: "reg-b" };
 type Input = { registrationId: string };
-type Public = { projectId: ProjectId };
+type Public = { projectId: ProjectId | null };
 
 const requirement = { require: onProject("runtime:control", "registration") };
 const refsOf = (input: Input): Readonly<Record<string, ResourceRef>> => ({ registration: { kind: "registration", id: input.registrationId } });

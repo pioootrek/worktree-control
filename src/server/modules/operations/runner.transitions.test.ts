@@ -30,7 +30,7 @@ function world() {
 }
 
 interface ClaimInput { claimId: string }
-interface ClaimResult { claimId: string; projectId: ProjectId }
+interface ClaimResult { claimId: string; projectId: ProjectId | null }
 type ClaimRelease = MutationOperation<ClaimInput, ClaimResult, { claimId: string; released: boolean }>;
 
 /** `claim.release`: the effect removes the holder relation its own requirement (`claim_holder`) relies on. */

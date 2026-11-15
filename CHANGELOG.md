@@ -3,6 +3,20 @@
 All notable changes to `worktree-control` are recorded here. The project is
 pre-1.0: the CLI, configuration and data model may change between minor versions.
 
+## Unreleased
+
+### Changed
+
+- **Runtime links are owner or installation only.** `knowledge_link_runtime`
+  (linking, re-pointing or unlinking the runtime project of a Knowledge
+  project) now refuses agents, workers and ordinary accounts with
+  `knowledge_forbidden`, even when they hold `knowledge:write`. Before, an
+  agent with `knowledge:write` on its own Knowledge project could attach any
+  unlinked runtime project to it. Affects account mode (`better-auth`) and
+  agent tokens; in `open` and `token` mode the installation links as before.
+  Existing links are untouched. See
+  [authentication](docs/authentication.md).
+
 ## 0.2.0 - 2026-11-09
 
 Optional individual accounts with per-project permissions,

@@ -417,9 +417,11 @@ export class IdentityService {
     })) throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
   }
 
+  /** Linking, re-pointing and unlinking a runtime project: the owner or the current installation only. */
   authorizeKnowledgeRuntimeLink(actor: AuthenticatedPrincipal): void {
     this.requireCurrentAuthentication(actor);
-    if (this.store.getPrincipal(actor.principalId)?.kind === "human") throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
+    const installation = actor.principalKind === "installation" && this.installationAuthority?.isCurrentInstallationActor(actor) === true;
+    if (actor.principalKind !== "owner" && !installation) throw new IdentityError("knowledge_forbidden", "Brak dostępu do projektu wiedzy.");
   }
 
   private subject(actor: AuthenticatedPrincipal): AuthorizationSubject {

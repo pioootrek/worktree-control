@@ -1007,9 +1007,12 @@ The old identity grant/role setters and revokers refuse human targets, including
 direct calls to their storage methods. Read the current private list after an
 unknown result before deciding on a new command; no command is replayed automatically.
 
-`knowledge:write` retains A1 project archive/restore semantics. Ordinary humans
-cannot mutate runtime links. The shared service refuses before runtime lookup or
-retained replay, giving the same safe denial for known and unknown runtime IDs.
+`knowledge:write` retains A1 project archive/restore semantics. Linking,
+re-pointing and unlinking a runtime project additionally require the owner or
+the current installation, in open and token mode alike. Agents, workers and
+ordinary humans are refused even with `knowledge:write`. The shared service
+refuses before runtime lookup or retained replay, giving the same safe denial
+for known and unknown runtime IDs.
 Reading an existing linked ID is navigation metadata and grants no runtime access.
 
 Disable performs a conditional active-to-revoked transition plus audit. It is
