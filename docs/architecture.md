@@ -1060,14 +1060,15 @@ provisional until the release candidate and is not activated: the supported
 schema version stays 49, ordinary startup applies and recognises nothing beyond
 it, and a step-50 database is refused like any unknown newer schema.
 
-`PROVISIONAL_SCHEMA_VERSION` (50) is the highest step the code knows.
+`PROVISIONAL_SCHEMA_VERSION` (51, see step 51 below) is the highest step the code
+knows.
 `initializeSchema`, `inspectSchema`, the owned database, offline fence
 maintenance, the quarantine and backup manifest validation take an optional
 target or ceiling that defaults to `SUPPORTED_SCHEMA_VERSION`. Each target and
 ceiling passes through `schemaTarget`. That function refuses any value above
 `SUPPORTED_SCHEMA_VERSION` unless a process-wide switch in
 `provisional-schema-gate.ts` is on. The switch is off by default and only tests
-turn it on, so a target of 50 has no effect in production, whichever alias,
+turn it on, so a target above 49 has no effect in production, whichever alias,
 re-export or wrapper passes it. Activation raises `SUPPORTED_SCHEMA_VERSION`;
 the switch then no longer matters for that step.
 
@@ -1078,7 +1079,7 @@ test recognises static imports (type-only and side-effect imports included),
 `export ... from`, `import x = require()`, `import()` types, and `import()`
 or `require()` calls with a literal specifier. It resolves relative, `@/`,
 absolute and `file:` specifiers to a file. A second rule allows imports of the
-step-50 modules only in a listed set of adapter files. The guard does not cover
+provisional step modules only in a listed set of adapter files. The guard does not cover
 non-literal specifiers, files outside `src/`, test files, or files that are not
 scripts. It also does not see code that reaches the switch without importing
 the module. Non-literal specifiers under `src` fail the separate unmounted
@@ -1112,6 +1113,134 @@ and of its three triggers with the text the step executes, byte for byte.
 SQLite stores that text unchanged, and the comparison keeps the case and spacing
 inside string literals. Recognition of schema 49 and earlier, including the
 schema-49 triggers, is unchanged.
+
+### Provisional project mapping structure, schema step 51 (integration branch only)
+
+This section describes `integration/auth-unification`, not a release. Step 51 is
+provisional until the release candidate and is not activated. It is applied and
+recognised only with an explicit target of 51 and the provisional switch on,
+exactly like step 50, and a step-51 database is refused like any unknown newer
+schema by default and at ceiling 50.
+
+In the project mapping, `knowledge_projects` is the project (a `ProjectId`),
+`projects` is the registration of a repository on this machine (a
+`RegistrationId`), and `remote_project_identities` is a project as remote
+workers know it. Step 51 adds structure only: it creates no project, sets no
+parent, stamps no existing row and writes no journal row. Every data decision is
+an act of an operator-approved upgrade plan, which a later change adds.
+
+The step adds these parts, in `mapping-structure-migration.ts`:
+
+- `project_mapping_clock`, a single-row table with the installation-wide mapping
+  clock: an integer from 0 to 9007199254740991 (`Number.MAX_SAFE_INTEGER`). The
+  step writes its row, with 0, before the table's triggers exist.
+- Three columns on `projects` and on `remote_project_identities`:
+  `parent_project_id` (nullable, a foreign key to `knowledge_projects(id)`),
+  `incarnation` and `mapping_version` (integers, `NOT NULL DEFAULT 0`, bounded by
+  a `CHECK`). A row without a parent is valid (parentless). Rows that exist when
+  the step runs keep 0 in both stamps until an act or the quarantine stamps them.
+- `project_mapping_journal`, the append-only decision journal of the later
+  acts. It records the subject (a registration or a remote identity, its ID and
+  incarnation), the project, the basis (`created_project`, `accepted_link` for
+  a registration, `accepted_binding` for a remote identity, or
+  `journal_reuse`), the plan hash, the run receipt and the time. It has no
+  foreign keys, because the history outlives a removed registration.
+- The three fence triggers of step 49 for the clock and the journal, in a
+  coverage entry for step 51, and a separate list of the step's other triggers.
+
+Every stamp is the next value of the clock: the clock is advanced, then its
+value is used. `incarnation` is the value issued when the row was created and
+never changes after it is stamped. `mapping_version` is the value of the row's
+creation or of its last mapping change (a parent set or cleared). The step's
+triggers enforce this:
+
+- An `INSERT` that brings a stamp of its own is refused. After every other
+  `INSERT`, a trigger advances the clock and stamps both columns of the new row.
+  So the existing writers (`project add` and remote provisioning), which do not
+  know these columns, still get a fresh incarnation. A row deleted and created
+  again with the same ID gets a new, larger one. The insert's own `changes` and
+  `lastInsertRowid` are unaffected.
+- An incarnation changes only from 0 to a value the clock has issued, with a
+  mapping version no smaller than it.
+- A changed mapping version must be larger than before and equal to the
+  clock's current value. A changed parent needs a larger mapping version. An
+  update of any other column leaves both stamps alone.
+- The clock only advances, and its row is neither replaced nor deleted.
+- The journal refuses `UPDATE`, `DELETE` and an `INSERT` whose sequence
+  already exists. This refuses every replacing form (`INSERT OR REPLACE`,
+  `REPLACE INTO`, an upsert), whatever `recursive_triggers` says.
+
+Every refusal is `RAISE(ABORT)`. Inside a trigger, SQLite applies the conflict
+algorithm of the statement that fired it, so without these refusals an
+`INSERT OR IGNORE` at an exhausted clock would skip the clock update and reuse
+the last stamp. At the maximum the insert fails; the clock never wraps.
+
+The structure guards against defects in the application, not against a raw
+rewrite of the file, a dropped trigger, a write to `sqlite_sequence` or a
+restore. An `INSERT` into the journal with an explicit sequence above the last
+one is still possible. The journal sequence orders records; it is not a version.
+
+The step writes only DDL against tables that are already fenced, its own clock
+row before the clock's triggers exist, and `schema_migrations`. So it can run in
+ordinary startup before the fence attaches. Afterwards, every write to the
+clock, the journal and the new columns reaches the fence.
+
+Recognition at ceiling 51 compares the two new tables, their indexes and every
+new trigger byte for byte, as for step 50. The expected trigger set is still a
+function of the version: fence coverage and the step's other triggers, and
+nothing else. The new columns on the two older tables are recognised exactly.
+Their table's text was shaped by earlier, released steps, so it keeps the
+released comparison. From 51 on, that text must end with exactly the text the
+step appended: the three definitions with their `CHECK` and foreign key. A
+column that a step from 50 on adds to an older table must also carry the
+reference's default, which the released comparison does not compare. It must
+not exist before its version, which the released rule requires only of tables
+from step 38 on. Older columns and tables are recognised as before.
+
+Validation at 51 requires the following:
+
+- The clock row exists once and holds a safe integer of at least 0.
+- Every stamp is a safe integer from 0 to the clock. The mapping version is no
+  smaller than the incarnation, both stamps are 0 or both are greater than 0,
+  and only a stamped row has a parent.
+- No two rows of one table share a non-zero incarnation.
+- Every parent names an existing project, as the foreign-key check also
+  requires.
+- Every journal row has typed and bounded fields: lowercase hexadecimal plan
+  hash and lowercase UUID receipt, both length-checked in bytes, a canonical
+  time, a legal kind and basis, an incarnation from 1 to the clock, and a
+  sequence within `sqlite_sequence`.
+
+`auth fence resume` at target 51 clears the mapping in its one schema and
+quarantine transaction. It advances the clock, clears every parent, and sets
+every mapping version to the clock's new value. A row that is still unstamped
+gets an incarnation of its own, from the old clock value plus one upward. The
+clock advances by the number of such rows, or by one when there are none. Issued
+incarnations, `knowledge_projects` and the journal stay as they are, and the
+quarantine writes no journal row. A clock that cannot advance (missing,
+malformed, behind a stamp, or at its maximum) refuses with
+`security_fence_recovery_required` and rolls back everything, schema steps
+included. At the default target and at 50 the quarantine runs exactly the
+statements it ran before. The explicit offline upgrade lists step 51 among its
+structural steps; it adds no act.
+
+`project-directory-queries.ts` is a typed, read-only project directory. Nothing
+mounts it, and its construction passes the provisional gate. It looks up a
+registration, a remote identity and a project by ID, and the registrations and
+remote identities of a project. It returns storage facts only: the parent
+project or null and both stamps, with unstamped rows returned as 0. Each lookup
+reads its own table and never falls back to another. Its branded ID types are
+declared locally while the operations contract is unmounted, because the
+unmounted guard refuses every import of `src/shared/contracts/operations.ts`.
+
+The stamps have limits. `mapping_version` is a bounded change stamp, and not by
+itself the `version` of a `ResolvedResource`. A later adapter composes that
+version and must also account for relation changes. Stamps are unique and
+increasing only within one linear history of the database. A restore of an
+older database rewinds the clock, which may then issue values it issued before.
+The recovery boundary is the quarantine, which re-stamps every row. So anything
+that keeps a version across requests must be emptied or invalidated by the
+quarantine. That is an obligation of the change that adds such a store.
 
 ### Explicit offline upgrade (integration branch only)
 
