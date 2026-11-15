@@ -16,7 +16,7 @@ import { SqliteStateStore } from "./sqlite-state-store";
 import { OwnedSqliteDatabase, ReopenedDatabaseChangedError } from "./owned-database";
 import { getOwnedRestoreStatus, restoreRoot } from "./restore-recovery";
 import { SecurityFence, SecurityFenceError, securityFenceBinding, securityFenceRoot, securityRecoveryBoundary } from "./security-fence";
-import { maintainSqliteSecurityFence } from "./security-maintenance";
+import { establishSqliteSecurityFence, maintainSqliteSecurityFence } from "./security-maintenance";
 import { configureDurability, validateDatabase } from "./database-validation";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
@@ -25,6 +25,7 @@ import { enableProvisionalSchema } from "./provisional-schema-gate";
 import { hashFile, parseManifest, readBoundedJson, validateBackup, BACKUP_LIMITS } from "./backup-validation";
 import { upgradeMarkerChecksum, upgradeMarkerMigration } from "./upgrade-marker-migration";
 import { applySqliteUpgrade, inspectSqliteUpgrade, type UpgradeBackup, type UpgradeBackupSource } from "./upgrade-maintenance";
+import { takeBoundBackup } from "./backup-binding";
 import {
   assertUpgradeAvailable, canonicalJson, describeUpgradeActs, executeUpgradeActs, parseUpgradePlan, proposeUpgradeActs, readUpgradePlan, structuralSteps,
   UPGRADE_ACT_KINDS, UPGRADE_PLAN_LIMITS, upgradePlanHash, upgradePlanPath, upgradePlanRoot, writeUpgradePlan,
@@ -545,6 +546,70 @@ describe("explicit offline upgrade: apply refusals change nothing", () => {
     expect(parseManifest(readBoundedJson(join(result.backup!, "manifest.json"), BACKUP_LIMITS.manifestBytes, true), TARGET).database.schemaVersion).toBe(49);
   });
 
+  /**
+   * This run's own tree, with its snapshot written straight into the tree's
+   * database file and a manifest made before the snapshot finished: the bytes it
+   * will have are those of a reference copy taken first, through another
+   * read-only connection to the same unchanged source, into a new empty file as
+   * the snapshot is (two Backup API copies of an unchanged database are
+   * byte-identical). The file keeps the bytes the Backup API writes (no
+   * journal-mode switch, which needs the finished file). With `wait` false the
+   * callback returns while its snapshot is still running; `observed` records the
+   * root and whether the snapshot had completed when the callback returned.
+   */
+  const ownTree = (wait: boolean, observed: { root?: string; completedAtReturn?: boolean } = {}): UpgradeBackup => async (source, context) => {
+    const root = join(temporary("upgrade-own-"), "backup"), file = join(root, "state.sqlite3");
+    const reference = join(temporary("upgrade-reference-"), "reference.sqlite3"); closeSync(openSync(reference, "wx", 0o600));
+    const live = unmanagedFixtureDatabase(context.database, { readonly: true, fileMustExist: true });
+    try { await live.backup(reference); } finally { live.close(); }
+    mkdirSync(join(root, "attachments"), { recursive: true, mode: 0o700 });
+    const manifest = { formatVersion: 1, applicationVersion: "test", createdAt: new Date().toISOString(), database: { file: "state.sqlite3", ...hashFile(reference), schemaVersion: context.schemaVersion }, attachments: [] };
+    writeFileSync(join(root, "manifest.json"), JSON.stringify(manifest), { mode: 0o600 });
+    closeSync(openSync(file, "wx", 0o600));
+    let completed = false;
+    const snapshot = source.backup(file).then(() => { completed = true; });
+    if (wait) await snapshot; else snapshot.catch(() => undefined);
+    observed.root = root; observed.completedAtReturn = completed;
+    return { root, manifest };
+  };
+  it("refuses this run's own tree whose snapshot was still running when the callback returned, by the completion guard alone", async () => {
+    // The variant above returns a tree unrelated to its snapshot, which the file
+    // identity check refuses too. Here the tree is the one the snapshot is
+    // written into, so only the completion guard tells.
+    const paths = installation(true), noted = inspect(paths).planHash!, content = read(paths, all);
+    const unfinished: { root?: string; completedAtReturn?: boolean } = {};
+    const { result } = await refused(paths, () => apply(paths, noted, ownTree(false, unfinished)));
+    expect(result).toMatchObject({ code: "upgrade_backup_failed", nextStep: "upgrade apply", committed: false });
+    expect(unfinished.completedAtReturn).toBe(false);
+    // The refusal drained the copy before refusing: the refused tree is now
+    // complete and passes every later check. Its file is the one the snapshot
+    // was written into; its stored manifest is the returned one and validates
+    // at the target ceiling; the copy holds the source's schema version, its
+    // content and its checkpoint.
+    const root = unfinished.root!, manifest = parseManifest(readBoundedJson(join(root, "manifest.json"), BACKUP_LIMITS.manifestBytes, true), TARGET);
+    expect(manifest.database).toMatchObject({ schemaVersion: 49, ...hashFile(join(root, "state.sqlite3")) });
+    expect(() => validateBackup(root, manifest, true, TARGET)).not.toThrow();
+    const copy = new Database(join(root, "state.sqlite3"), { readonly: true, fileMustExist: true });
+    try { expect(inspectSchema(copy, TARGET).version).toBe(49); expect(all(copy)).toEqual(content); } finally { copy.close(); }
+    // The helper itself refuses with the completion guard's message. The
+    // callback took exactly one snapshot and it completed, so of the guard's
+    // three conditions only "still running when the callback returned" holds.
+    const owner = new OwnedSqliteDatabase(paths.databasePath, false, TARGET);
+    try {
+      const direct: { root?: string; completedAtReturn?: boolean } = {}, waited: { root?: string; completedAtReturn?: boolean } = {};
+      await expect(takeBoundBackup(owner, owner.canonicalPath, owner.inspection.version, TARGET, ownTree(false, direct))).rejects.toThrow("The backup is not this run's single completed snapshot.");
+      expect(direct.completedAtReturn).toBe(false);
+      expect(() => validateBackup(direct.root!, parseManifest(readBoundedJson(join(direct.root!, "manifest.json"), BACKUP_LIMITS.manifestBytes, true), TARGET), true, TARGET)).not.toThrow();
+      // The same callback, waiting for its snapshot, is accepted.
+      expect(await takeBoundBackup(owner, owner.canonicalPath, owner.inspection.version, TARGET, ownTree(true, waited))).toBe(waited.root);
+      expect(waited.completedAtReturn).toBe(true);
+    } finally { owner.close(); }
+    // And applies the same plan.
+    const waited: { root?: string; completedAtReturn?: boolean } = {};
+    expect(await apply(paths, noted, ownTree(true, waited))).toMatchObject({ alreadyApplied: false, planHash: noted, backup: waited.root });
+    expect(waited.completedAtReturn).toBe(true);
+  });
+
   it("refuses as base changed a raw change to the database made while the backup callback runs, with nothing written", async () => {
     // The callback runs under both singleton locks, so no cooperating owner can
     // write; what remains is a write outside them, here a raw change of the file.
@@ -1048,6 +1113,77 @@ describe("explicit offline upgrade: interrupted apply", () => {
     expect(witness(paths)).toMatchObject({ format: 2, state: "pending", upgrade: { plan: noted } });
     expect(files(paths).plan).toBe(plan);
     expect(inspect(paths)).toMatchObject({ state: "fenced", nextStep: "auth fence resume" });
+  });
+
+  it("an interrupted establishment with its backup: resume, inspect and apply end where an uninterrupted establish, inspect and apply do, apart from the resume's quarantine", async () => {
+    const establish = (paths: AppPaths, calls?: string[]) => establishSqliteSecurityFence(paths, { action: "establish", expect: fenceInspect(paths).preflight }, HANDOFF, backups(paths, calls), TARGET);
+    const without = (value: object, keys: string[]) => Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
+    /**
+     * `final` without what a resume adds by design: the authentication policy it
+     * rotates (the setting and the witness's copy of its mode and generation),
+     * its audit event (and the sequence value that event takes), the witness's
+     * recovery time, and the receipts, whose names depend on the number of runs.
+     * Those are returned apart, for the explicit comparison.
+     */
+    const settle = (paths: AppPaths) => {
+      const { database, witness: fence } = final(paths);
+      const { controller_audit_events: events, controller_settings: settings, sqlite_sequence: sequence, ...rows } = database.rows as Record<string, Array<Record<string, unknown>>>;
+      return {
+        same: { catalogue: database.catalogue, rows, settings: settings.filter(row => row.key !== "authentication"), witness: { ...without(fence, ["receipt", "recoveredAt", "upgrade", "policy"]), upgrade: without(fence.upgrade!, ["receipt"]) },
+          events: events.filter(event => event.event_type !== "authentication.security_quarantined").map(event => ({ ...without(event, ["id"]), details_json: without(event.details_json as object, ["receipt"]) })) },
+        authentication: JSON.parse(settings.find(row => row.key === "authentication")!.value_json as string), policy: fence.policy,
+        quarantined: events.filter(event => event.event_type === "authentication.security_quarantined").map(event => ({ ...without(event, ["id"]), details_json: without(event.details_json as object, ["receipt"]) })),
+        sequence: (sequence ?? []).map(row => ({ name: row.name, seq: row.seq })), recoveredAt: fence.recoveredAt,
+      };
+    };
+    /** The raw receipts: the witness's, its upgrade's, and those of the quarantine and upgrade events. */
+    const receipts = (paths: AppPaths) => {
+      const { receipt, upgrade } = witness(paths);
+      const events = read(paths, db => db.prepare("SELECT event_type,details_json FROM controller_audit_events WHERE event_type IN ('authentication.security_quarantined','authentication.upgrade_applied') ORDER BY id").all() as Array<{ event_type: string; details_json: string }>);
+      return { witness: receipt, upgrade: upgrade?.receipt, events: events.map(event => [event.event_type, (JSON.parse(event.details_json) as { receipt: string }).receipt]) };
+    };
+
+    // Uninterrupted: establish with its backup at the target, then inspect and apply.
+    const reference = preFence();
+    expect(await establish(reference)).toMatchObject({ trusted: true, changed: true, quarantined: false, schemaVersion: 50, backup: expect.any(String) });
+    expect(inspect(reference)).toMatchObject({ state: "upgrade_needed", marker: "pending", schemaVersion: 50 });
+    const unchanged = recovery(reference);
+    assertUpgraded(reference, await apply(reference, inspect(reference).planHash!), unchanged);
+
+    // Interrupted after the pending witness, before the schema transaction.
+    const paths = preFence(), before = read(paths, all), calls: string[] = [];
+    let injected = false;
+    vi.spyOn(SecurityFence, "registerMaintenanceObserver").mockImplementation(() => { injected = true; throw new Error("fixture fault after the pending witness"); });
+    expect(await failure(() => establish(paths, calls))).toMatchObject({ name: "SecurityFenceError", code: "security_fence_pending", committed: false });
+    expect(injected).toBe(true); vi.restoreAllMocks();
+    expect(read(paths, all)).toEqual(before);
+    expect(witness(paths)).toMatchObject({ format: 1, state: "pending" });
+    expect(calls).toHaveLength(1);
+    expect(() => validateBackup(calls[0]!, parseManifest(readBoundedJson(join(calls[0]!, "manifest.json"), BACKUP_LIMITS.manifestBytes, true), TARGET), true, TARGET)).not.toThrow();
+    expect(inspect(paths)).toMatchObject({ state: "fenced", nextStep: "auth fence resume" });
+    expect(resume(paths)).toMatchObject({ trusted: true, quarantined: true, schemaVersion: 50 });
+    expect(inspect(paths)).toMatchObject({ state: "upgrade_needed", marker: "pending", schemaVersion: 50 });
+    const previous = recovery(paths);
+    assertUpgraded(paths, await apply(paths, inspect(paths).planHash!), previous);
+
+    const recovered = settle(paths), expected = settle(reference);
+    expect(recovered.same).toEqual(expected.same);
+    // What the resume adds: the rotated policy, its audit event and the sequence value it took, and the recovery time.
+    expect(expected.authentication).toEqual({ mode: "token", token: null, generation: 0 });
+    expect(recovered.authentication).toEqual({ mode: "token", generation: 1, token: null });
+    // The witness records the policy it was confirmed with: the setting's mode and generation.
+    expect(expected.policy).toEqual({ mode: "token", generation: 0 });
+    expect(recovered.policy).toEqual({ mode: "token", generation: 1 });
+    expect(expected.quarantined).toEqual([]);
+    expect(recovered.quarantined).toEqual([{ event_type: "authentication.security_quarantined", actor: "local-cli", details_json: { mode: "token" }, created_at: "<time>" }]);
+    expect(recovered.sequence).toEqual(expected.sequence.map(row => row.name === "controller_audit_events" ? { ...row, seq: (row.seq as number) + 1 } : row));
+    expect(expected.recoveredAt).toBeNull();
+    expect(recovered.recoveredAt).toBe("<time>");
+    // The receipts relate as they should: the witness keeps the last establish or resume, its upgrade the apply's.
+    const mine = receipts(paths), theirs = receipts(reference);
+    expect(mine.events).toEqual([["authentication.security_quarantined", mine.witness], ["authentication.upgrade_applied", mine.upgrade]]);
+    expect(theirs.events).toEqual([["authentication.upgrade_applied", theirs.upgrade]]);
+    expect(theirs.witness).toEqual(expect.any(String));
   });
 
   it("success not seen by the operator: the same --expect answers already applied with the plan hash", async () => {

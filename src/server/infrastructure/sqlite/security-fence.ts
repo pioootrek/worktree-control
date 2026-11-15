@@ -47,6 +47,22 @@ export class SecurityFenceError extends AuthenticationProviderError {
     this.name = "SecurityFenceError";
   }
 }
+/**
+ * Establishment refused because its pre-establishment backup failed, did not
+ * validate or is not this run's copy of the source. The database and its WAL
+ * are unchanged and nothing is pending (what ownership and a read-only open may
+ * create or normalise happens as in every establish, and the backup function's
+ * own output may remain): the database still needs establishment, so the code is
+ * the one `auth fence inspect` and startup report for it, and the closed set of
+ * codes is unchanged. Only the message and the class tell the cause.
+ */
+export class SecurityFenceBackupError extends SecurityFenceError {
+  constructor() {
+    super("security_fence_establishment_required");
+    this.message = "security_fence_establishment_required: The pre-establishment backup failed; nothing was changed. Run protected offline auth fence inspect, then establish again with its current preflight.";
+    this.name = "SecurityFenceBackupError";
+  }
+}
 export const securityFenceRoot = (database: string) => `${database}.security`;
 const witnessPath = (database: string) => join(securityFenceRoot(database), "witness.json");
 const fileIdentity=(database:string)=>{const stat=lstatSync(database);return {device:stat.dev,inode:stat.ino};};

@@ -12,7 +12,7 @@ import { enableProvisionalSchema, provisionalSchemaEnabled } from "./provisional
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { OwnedSqliteDatabase } from "./owned-database";
-import { maintainSqliteSecurityFence, quarantineAuthority } from "./security-maintenance";
+import { establishSqliteSecurityFence, maintainSqliteSecurityFence, quarantineAuthority } from "./security-maintenance";
 import { hashFile, parseManifest, validateBackup, validateSnapshot } from "./backup-validation";
 import { applyUpgradeMarkerMigration } from "./upgrade-marker-migration";
 import { applySqliteUpgrade, inspectSqliteUpgrade } from "./upgrade-maintenance";
@@ -182,6 +182,11 @@ function current49() {
 }
 const HANDOFF = { preflight: () => undefined, acknowledge: () => undefined };
 const UNUSED_BACKUP = async (): Promise<never> => { throw new Error("fixture backup must not run"); };
+/** Every entry under a directory: kind, bytes, mode and modification time. */
+const tree = (root: string): Record<string, string> => Object.fromEntries(readdirSync(root, { recursive: true, encoding: "utf8" }).sort().map(name => {
+  const entry = join(root, name), stat = lstatSync(entry, { bigint: true });
+  return [name, [stat.isFile() ? createHash("sha256").update(readFileSync(entry)).digest("hex") : stat.isDirectory() ? "directory" : "other", stat.mode, stat.mtimeNs].join(":")];
+}));
 
 describe("provisional schema steps stay switched off", () => {
   it("keeps schema 49 supported, step 50 provisional and the switch off by default", () => {
@@ -194,9 +199,9 @@ describe("provisional schema steps stay switched off", () => {
     for (const invalid of [48, 51, 49.5, Number.NaN]) expect(() => schemaTarget(invalid)).toThrow(UNSUPPORTED);
   });
 
-  it("refuses target or ceiling 50 at every public entry point while the switch is off, with the unsupported-target error", () => {
+  it("refuses target or ceiling 50 at every public entry point while the switch is off, with the unsupported-target error", async () => {
     expect(provisionalSchemaEnabled()).toBe(false);
-    const fixture = current49();
+    const fixture = current49(), data = realpathSync(fixture.paths.dataDirectory), files = tree(data);
     const memory = new Database(":memory:"), current = new Database(fixture.paths.databasePath, { readonly: true });
     try {
       const refusals = {
@@ -213,6 +218,8 @@ describe("provisional schema steps stay switched off", () => {
         upgradeTarget: () => upgradeTarget(50),
         inspectSqliteUpgrade: () => inspectSqliteUpgrade(fixture.paths, 50),
         applySqliteUpgrade: () => applySqliteUpgrade(fixture.paths, { expect: "0".repeat(64) }, UNUSED_BACKUP, 50),
+        // Synchronously, before any lock or file.
+        establishSqliteSecurityFence: () => establishSqliteSecurityFence(fixture.paths, { action: "establish", expect: "0".repeat(64) }, HANDOFF, UNUSED_BACKUP, 50),
       };
       const unsupported = message(() => schemaTarget(51));
       expect(unsupported).toBe(UNSUPPORTED);
@@ -229,21 +236,22 @@ describe("provisional schema steps stay switched off", () => {
       expect(new UpgradeError("upgrade_unsupported", "none").message).toBe(unsupported);
       expect(existsSync(`${fixture.paths.databasePath}.upgrade`)).toBe(false);
       expect(existsSync(fixture.paths.controllerLockPath)).toBe(false);
+      // No file under the data directory was created, changed or touched.
+      expect(tree(data)).toEqual(files);
     } finally { memory.close(); current.close(); }
     // The same entry points accept the default, so the refusal is the target's.
     const owner = new OwnedSqliteDatabase(fixture.paths.databasePath);
     try { expect(owner.inspection.version).toBe(49); } finally { owner.close(); }
     expect(() => validateBackup(fixture.backup, parseManifest(fixture.manifest))).not.toThrow();
+    // Establishment with a backup at the default target needs no switch: it
+    // passes the target and reaches the preflight comparison, before any backup.
+    await expect(establishSqliteSecurityFence(fixture.paths, { action: "establish", expect: "0".repeat(64) }, HANDOFF, UNUSED_BACKUP))
+      .rejects.toMatchObject({ name: "SecurityFenceError", code: "security_fence_preflight_changed" });
   });
 
   it("refuses every upgrade-specific helper of the fence and the plan while the switch is off, before any file is read or written", () => {
     expect(provisionalSchemaEnabled()).toBe(false);
     const fixture = current49(), data = realpathSync(fixture.paths.dataDirectory), path = join(data, "state.sqlite3");
-    /** Every entry under the data directory: kind, bytes, mode and modification time. */
-    const tree = (root: string): Record<string, string> => Object.fromEntries(readdirSync(root, { recursive: true, encoding: "utf8" }).sort().map(name => {
-      const entry = join(root, name), stat = lstatSync(entry, { bigint: true });
-      return [name, [stat.isFile() ? createHash("sha256").update(readFileSync(entry)).digest("hex") : stat.isDirectory() ? "directory" : "other", stat.mode, stat.mtimeNs].join(":")];
-    }));
     const database = new Database(path);
     try {
       // A trusted schema-49 witness: what beginUpgrade would replace with a format-2 pending one.

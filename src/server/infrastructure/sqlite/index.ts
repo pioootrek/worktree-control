@@ -6,5 +6,6 @@ export { hashFile, parseManifest, readBoundedJson, syncTree, validateBackup, val
 export { getOwnedRestoreStatus, prepareOwnedRestore, recoverOwnedRestore, restoreActorSchema, restoreRoot, type RestoreActor } from "./restore-recovery";
 export { openRemoteRecoveryInspection } from "./remote-connection-inspection";
 
-export { SecurityFence, SecurityFenceError, securityRecoveryBoundary } from "./security-fence";
-export { maintainSqliteSecurityFence, type SecurityMaintenanceCommand } from "./security-maintenance";
+export { SecurityFence, SecurityFenceBackupError, SecurityFenceError, securityRecoveryBoundary } from "./security-fence";
+export { establishSqliteSecurityFence, maintainSqliteSecurityFence, type SecurityMaintenanceCommand, type SecurityMaintenanceResult } from "./security-maintenance";
+export type { MaintenanceBackup, MaintenanceBackupSource } from "./backup-binding";

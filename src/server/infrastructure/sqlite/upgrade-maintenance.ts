@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync } from "node:fs";
-import { join } from "node:path";
 import Database from "better-sqlite3";
 import { z } from "zod";
 import type { AppPaths } from "../../paths";
@@ -10,7 +9,8 @@ import { OwnedSqliteDatabase, ReopenedDatabaseChangedError, UnfinishedRestoreErr
 import { assertDurability, configureDurability, validateDatabase } from "./database-validation";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
-import { BACKUP_LIMITS, hashFile, parseManifest, readBoundedJson, validateBackup } from "./backup-validation";
+import { BACKUP_LIMITS, hashFile } from "./backup-validation";
+import { takeBoundBackup, type MaintenanceBackup, type MaintenanceBackupSource } from "./backup-binding";
 import {
   canonicalJson, describeUpgradeActs, executeUpgradeActs, proposeUpgradeActs, readUpgradePlan, removeUpgradePlan, structuralSteps,
   UPGRADE_PLAN_FORMAT, UPGRADE_PLAN_KIND, UpgradeError, upgradePlanPath, upgradeTarget, writeUpgradePlan,
@@ -49,18 +49,16 @@ export interface UpgradeInspection extends UpgradeStatus {
   planHash?: string;
   acts?: string[];
 }
-/**
- * What the injected backup may use: a read-only Backup API copy of the owned
- * connection. `backup` takes exactly one snapshot; a second call is refused.
- */
-export interface UpgradeBackupSource { backup(destination: string, options?: { progress: () => number }): Promise<void>; schemaVersion(): number }
+/** The upgrade's names for the shared maintenance backup (see `backup-binding.ts`). */
+export type UpgradeBackupSource = MaintenanceBackupSource;
 /**
  * Writes the pre-upgrade backup (the composition passes `createControllerBackup`
  * with its destination) and returns its root and manifest. The upgrade accepts
- * the tree only as a copy of this source made in this run (see `writeBackup`)
- * and validates it itself at the target ceiling before changing anything.
+ * the tree only as a copy of this source made in this run (see
+ * `takeBoundBackup`) and validates it itself at the target ceiling before
+ * changing anything.
  */
-export type UpgradeBackup = (source: UpgradeBackupSource, context: { database: string; schemaVersion: number }) => Promise<{ root: string; manifest: unknown }>;
+export type UpgradeBackup = MaintenanceBackup;
 export interface UpgradeApplyResult {
   state: "current";
   /** True when the database already recorded this plan: nothing changed in this run. */
@@ -169,64 +167,6 @@ function upgradeCommitted(database: Database.Database, receipt: string): boolean
 }
 
 /**
- * The pre-upgrade backup, bound to this source and this run. The callback gets a
- * Backup API source that takes exactly one snapshot and records the device and
- * inode of the file the snapshot was written to once the copy completed.
- * `createControllerBackup` switches that file's journal mode in place and
- * renames its staging directory to the destination, so the file keeps its
- * identity but not its path or bytes. The returned tree is accepted only if the
- * snapshot completed before the callback returned; its database file is that
- * file (same device and inode); its manifest is its own and valid; the tree
- * validates; and the copy holds the live source's schema version and checkpoint
- * (installation and epoch), so no authority write separates the two.
- */
-async function writeBackup(owner: OwnedSqliteDatabase, path: string, source: number, target: number, backup: UpgradeBackup): Promise<string> {
-  const taken: { calls: number; settled: boolean; snapshot?: { device: number; inode: number }; running?: Promise<void> } = { calls: 0, settled: false };
-  const api: UpgradeBackupSource = {
-    backup: (destination, options) => {
-      if (++taken.calls > 1) return Promise.reject(new Error("The upgrade takes exactly one snapshot."));
-      const running = (async () => {
-        if (typeof destination !== "string") throw new Error("Invalid backup destination.");
-        await owner.backup(destination, options);
-        const stat = lstatSync(destination);
-        if (!stat.isFile()) throw new Error("The snapshot is not a regular file.");
-        taken.snapshot = { device: stat.dev, inode: stat.ino };
-      })().finally(() => { taken.settled = true; });
-      // Also handled here, so a rejection the callback ignores is never unhandled.
-      running.catch(() => undefined);
-      taken.running = running;
-      return running;
-    },
-    schemaVersion: () => source,
-  };
-  let created: Awaited<ReturnType<UpgradeBackup>>, unfinished: boolean;
-  try {
-    created = await backup(api, { database: path, schemaVersion: source });
-    unfinished = !taken.settled;
-  } finally {
-    // Never leave a Backup API copy running on the connection the upgrade closes.
-    await taken.running?.catch(() => undefined);
-  }
-  const snapshot = taken.snapshot;
-  if (taken.calls !== 1 || unfinished || !snapshot) throw new Error("The backup is not this run's single completed snapshot.");
-  if (!created || typeof created.root !== "string") throw new Error("Backup returned no tree.");
-  const manifest = parseManifest(created.manifest, target);
-  if (manifest.database.schemaVersion !== source) throw new Error("Backup schema version differs from the database.");
-  // The tree's own manifest is the one returned, and the tree matches it.
-  const stored = parseManifest(readBoundedJson(join(created.root, "manifest.json"), BACKUP_LIMITS.manifestBytes, true), target);
-  if (JSON.stringify(stored) !== JSON.stringify(manifest)) throw new Error("Backup manifest differs from the returned one.");
-  const file = join(created.root, "state.sqlite3"), stat = lstatSync(file);
-  if (!stat.isFile() || stat.dev !== snapshot.device || stat.ino !== snapshot.inode) throw new Error("The backup's database is not this run's snapshot.");
-  validateBackup(created.root, manifest, true, target);
-  const copy = new Database(file, { readonly: true, fileMustExist: true });
-  try {
-    const point = checkpoint(copy), live = checkpoint(owner.database);
-    if (inspectSchema(copy, target).version !== source || point.installation !== live.installation || point.epoch !== live.epoch) throw new Error("The snapshot is not of this source's current state.");
-  } finally { copy.close(); }
-  return created.root;
-}
-
-/**
  * After a failed publication of the pending witness, under the ownership still
  * held: true only when the fence is still trusted and the preflight (database,
  * WAL and witness bytes) still equals the plan's base. A rename that happened
@@ -279,7 +219,7 @@ async function applyUpgrade(paths: AppPaths, expect: string, backup: UpgradeBack
     if (plan.base !== status.preflight) throw new UpgradeError("upgrade_base_changed", "upgrade inspect");
     if (plan.source !== source || plan.target !== version || canonicalJson(plan.steps) !== canonicalJson(structuralSteps(source, version))) throw new UpgradeError("upgrade_step_mismatch", "upgrade inspect");
     let backupRoot: string;
-    try { backupRoot = await writeBackup(owner, path, source, version, backup); } catch { throw new UpgradeError("upgrade_backup_failed", "upgrade apply"); }
+    try { backupRoot = await takeBoundBackup(owner, path, source, version, backup); } catch { throw new UpgradeError("upgrade_backup_failed", "upgrade apply"); }
     // The final preflight. The Backup API copy reads through the read-only
     // connection, which writes neither the database nor its WAL, so the base
     // must still hold exactly. The source image is taken first, so a change

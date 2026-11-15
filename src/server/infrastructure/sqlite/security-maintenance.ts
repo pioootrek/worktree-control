@@ -4,12 +4,13 @@ import { TestRunQueries } from "./test-run-queries";
 import { randomUUID } from "node:crypto";
 import type { AppPaths } from "../../paths";
 import { acquireControllerLock, ControllerAlreadyRunningError } from "../../controller-lock";
-import { SecurityFence, SecurityFenceError } from "./security-fence";
+import { SecurityFence, SecurityFenceBackupError, SecurityFenceError } from "./security-fence";
 import { OwnedSqliteDatabase } from "./owned-database";
 import { configureDurability, assertDurability, validateDatabase } from "./database-validation";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { schemaTarget } from "./migration-registry";
+import { takeBoundBackup, type MaintenanceBackup } from "./backup-binding";
 import type Database from "better-sqlite3";
 
 const commandSchema=z.discriminatedUnion("action",[
@@ -93,9 +94,76 @@ function quarantineCommitted(database: Database.Database, receipt: string): bool
 /** Offline only. This function acquires BOTH singleton locks; no transport boolean grants trust.
  * It never contacts HTTP/MCP, loads provider code, starts listeners, or starts/stops processes.
  * `target` (default `SUPPORTED_SCHEMA_VERSION`) is both the recognition ceiling and the
- * schema target of establish and resume.
+ * schema target of establish and resume. It takes no backup; see
+ * {@link establishSqliteSecurityFence} for establishment with one.
  */
 export function maintainSqliteSecurityFence(paths: AppPaths, command: SecurityMaintenanceCommand, handoff: { preflight(database:string):void; acknowledge(database:string):void }, target?: number) {
+  const run = maintenance(paths, command, handoff, target);
+  const step = run.next();
+  // Without a backup step the maintenance never yields.
+  if (!step.done) { run.return(undefined as never); throw new Error("Security maintenance yielded without a backup step."); }
+  return step.value;
+}
+export type SecurityMaintenanceResult = ReturnType<typeof maintainSqliteSecurityFence>;
+const establishSchema=z.object({action:z.literal("establish"),expect:z.string().regex(/^[0-9a-f]{64}$/)}).strict();
+
+/**
+ * Offline. `auth fence establish` with a durable pre-establishment backup, for
+ * the activation to compose (integration branch: no command or bootstrap path
+ * calls it yet). Everything `maintainSqliteSecurityFence` does for establish
+ * happens in the same order and through the same code: both locks and
+ * ownership, the status, the `expect` comparison, `handoff.preflight`, the
+ * trusted no-op (which takes no backup), `establishmentAllowed` and owner
+ * continuity. Then `backup` runs on the owner's read-only connection and its
+ * tree is accepted only as this run's bound copy of this source (see
+ * `takeBoundBackup`); then the preflight must equal `expect` again; only then
+ * are the pending witness published, the structure migrated and the receipts
+ * published.
+ *
+ * A backup that fails, does not validate or is not this run's is refused as
+ * {@link SecurityFenceBackupError} with the database and its WAL unchanged and
+ * nothing pending; a moved preflight after it is
+ * `security_fence_preflight_changed`. Either way establish can be run again.
+ * As in every establish, ordinary ownership may already have created its lock
+ * files, recovered an interrupted restore and narrowed file modes, and a
+ * read-only open may have created an empty WAL and a shared-memory file; the
+ * backup function's own output may remain. The result is the establishment's,
+ * with the accepted backup's root (null for the trusted no-op).
+ *
+ * The command and the target are checked synchronously, before any lock or file.
+ */
+export function establishSqliteSecurityFence(paths: AppPaths, command: { action: "establish"; expect: string }, handoff: { preflight(database:string):void; acknowledge(database:string):void }, backup: MaintenanceBackup, target?: number): Promise<SecurityMaintenanceResult & { backup: string | null }> {
+  const parsed=establishSchema.safeParse(command);
+  if(!parsed.success || typeof backup !== "function")throw new ProviderAdminError("invalid_input");
+  const version=schemaTarget(target);
+  let root: string | null = null;
+  const run = maintenance(paths, parsed.data, handoff, version, async (owner, path) => {
+    root = await takeBoundBackup(owner, path, owner.inspection.version, version, backup);
+  });
+  return drive(run).then(result => ({ ...result, backup: root }));
+}
+
+/** Runs the maintenance to its end, awaiting the backup step under the locks it holds. */
+async function drive<T>(run: Generator<Promise<void>, T, unknown>): Promise<T> {
+  let step = run.next();
+  while (!step.done) {
+    let failed = false, failure: unknown;
+    try { await step.value; } catch (error) { failed = true; failure = error; }
+    // A failure re-enters the maintenance at its backup step, inside its error handling.
+    step = failed ? run.throw(failure) : run.next();
+  }
+  return step.value;
+}
+
+/**
+ * The one implementation of inspect, establish and resume. It yields only for
+ * the backup step of an establishment, which only {@link establishSqliteSecurityFence}
+ * supplies: the caller awaits it and resumes the maintenance, which still holds
+ * both locks and the owned connection.
+ */
+function* maintenance(paths: AppPaths, command: SecurityMaintenanceCommand, handoff: { preflight(database:string):void; acknowledge(database:string):void }, target?: number,
+  backup?: (owner: OwnedSqliteDatabase, database: string) => Promise<void>) {
+  // The return type is inferred, so the synchronous entry point's stays what it was.
   const parsed=commandSchema.safeParse(command);
   if(!parsed.success)throw new ProviderAdminError("invalid_input");
   command=parsed.data;
@@ -120,6 +188,18 @@ export function maintainSqliteSecurityFence(paths: AppPaths, command: SecurityMa
     if (status.trusted) return {...status, changed:false};
     if (command.action === "establish" && !status.establishmentAllowed) throw new SecurityFenceError("security_fence_recovery_required");
     const ownerId=SecurityFence.assertOwnerContinuity(databasePath,owner.database);
+    if (backup && command.action === "establish") {
+      // The pre-establishment backup, before anything is written. A failure
+      // leaves the database, its WAL and the absent witness as they were.
+      try { yield backup(owner, databasePath); } catch { throw new SecurityFenceBackupError(); }
+      // The backup read through the owned read-only connection, which writes
+      // neither the database nor its WAL (probed for the Backup API), so the
+      // preflight must still equal the operator's exactly. That connection was
+      // open at the first preflight too, so an empty WAL a read-only open
+      // creates already existed then and cannot differ here.
+      const after = SecurityFence.preflight(databasePath, owner.database, owner.inspection.version);
+      if (after.preflight !== status.preflight || after.trusted || !after.establishmentAllowed) throw new SecurityFenceError("security_fence_preflight_changed");
+    }
     const runReceipt = receipt = randomUUID();
     SecurityFence.beginMaintenance(databasePath, runReceipt, command.action === "resume" ? new Date().toISOString() : null,ownerId);
     const database = owner.enableWrites();

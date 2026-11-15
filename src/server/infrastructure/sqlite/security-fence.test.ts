@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SqliteStateStore } from "./sqlite-state-store";
 import { resolveAppPaths } from "../../paths";
 import { maintainSecurityFence } from "../../bootstrap/security-maintenance";
-import { SecurityFence, securityFenceRoot } from "./security-fence";
+import { SecurityFence, SecurityFenceBackupError, securityFenceBinding, securityFenceRoot } from "./security-fence";
 import * as validation from "./database-validation";
 import { AuthenticationService } from "../../modules/authentication";
 import { IdentityService } from "../../modules/identity";
@@ -20,9 +20,12 @@ import { createControllerBackup, restoreControllerBackup } from "../../controlle
 import { securityTriggers } from "./security-fence-migration";
 import { inspectSchema } from "./schema-inspection";
 import { applyRegistryMigration } from "./migration-registry";
-import { maintainSqliteSecurityFence, quarantineAuthority } from "./security-maintenance";
+import { establishSqliteSecurityFence, maintainSqliteSecurityFence, quarantineAuthority } from "./security-maintenance";
+import { takeBoundBackup, type MaintenanceBackup } from "./backup-binding";
+import { OwnedSqliteDatabase } from "./owned-database";
+import { BACKUP_LIMITS, hashFile, parseManifest, readBoundedJson, validateBackup } from "./backup-validation";
 import { initializeSchema } from "./migrations";
-import { PROVISIONAL_SCHEMA_VERSION } from "./migration-registry";
+import { PROVISIONAL_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { enableProvisionalSchema, provisionalSchemaEnabled } from "./provisional-schema-gate";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
 
@@ -645,5 +648,286 @@ describe("default maintenance of a step-50 database (provisional switch off)",()
     expect(failure(()=>maintainSecurityFence(provisional,command))).toEqual(refused);
     expect(state(provisional)).toEqual(before);
     expect(state(unknown)).toEqual(beforeUnknown);
+  });
+});
+
+describe("establishment with a pre-establishment backup (default target)",()=>{
+  /** A pre-fence schema-28 installation, the schema of the public 0.1.1 release: frozen schema 26,
+   * the unchanged index (27) and the provenance registry (28), with historical authority. */
+  function baseline28() {
+    const root=mkdtempSync(join(tmpdir(),"security-establish-28-"));roots.push(root);
+    const paths=resolveAppPaths(join(root,"data"));mkdirSync(paths.dataDirectory,{mode:0o700});
+    const db=unmanagedFixtureDatabase(paths.databasePath);
+    try{
+      db.exec(readFileSync(new URL("./fixtures/schema-v26.sql",import.meta.url),"utf8"));
+      db.exec(`CREATE INDEX IF NOT EXISTS knowledge_import_sources_target ON knowledge_import_sources(project_id,target_kind,target_id);
+        INSERT INTO schema_migrations(version,applied_at) VALUES(27,'2026-11-01T00:00:00.000Z')`);
+      applyRegistryMigration(db);
+      // Step 28 records the time it ran; a fixed past instant keeps every historical timestamp fixed.
+      db.prepare("UPDATE schema_migrations SET applied_at=? WHERE version=28").run("2026-11-01T00:00:01.000Z");
+      db.exec("INSERT INTO remote_principals VALUES('historical-owner','owner','active')");
+      db.prepare(`INSERT INTO principal_credentials(id,principal_id,kind,label,token_prefix,verifier_hash,status,created_at)
+        VALUES('historical-credential','historical-owner','owner_session','fixture','fixture',?,'active','2026-11-01T00:00:00.000Z')`).run("a".repeat(64));
+    }finally{db.close();}
+    chmodSync(paths.databasePath,0o600);return paths;
+  }
+  /** The composition's backup: createControllerBackup into a new destination beside the data directory. */
+  const controllerBackup=(paths:ReturnType<typeof resolveAppPaths>,calls:string[]=[]):MaintenanceBackup=>async source=>{
+    const destination=join(paths.dataDirectory,"..",`pre-establish-${randomUUID()}`);calls.push(destination);
+    return {root:destination,manifest:await createControllerBackup(source,destination,{applicationVersion:"test",attachmentDirectory:paths.knowledgeAttachmentDirectory})};
+  };
+  const establish=(paths:ReturnType<typeof resolveAppPaths>,backup:MaintenanceBackup)=>establishSqliteSecurityFence(paths,{action:"establish",expect:inspect(paths).preflight},HANDOFF,backup);
+  const sha=(path:string)=>fs.existsSync(path)?createHash("sha256").update(readFileSync(path)).digest("hex"):"missing";
+  /** What a refusal must leave as it was: the database, every sidecar, and no fence directory. */
+  /** A missing and an empty WAL are the same state: a read-only open of a WAL database creates an empty one. */
+  const untouched=(paths:ReturnType<typeof resolveAppPaths>)=>({...Object.fromEntries(["","-wal","-shm","-journal",".initializing"].map(suffix=>[`database${suffix}`,sha(paths.databasePath+suffix)])),
+    "database-wal":fs.existsSync(`${paths.databasePath}-wal`)&&fs.lstatSync(`${paths.databasePath}-wal`).size>0?sha(`${paths.databasePath}-wal`):"empty",
+    security:fs.existsSync(securityFenceRoot(paths.databasePath))?"present":"missing"});
+  const refusal=async(operation:()=>Promise<unknown>)=>{
+    try{await operation();}catch(error){const {name,code,committed,message}=error as {name:string;code:string;committed:boolean;message:string};
+      return {name,code,committed,message,backupRefusal:error instanceof SecurityFenceBackupError};}
+    throw new Error("expected a refusal");
+  };
+  const BACKUP_REFUSED={name:"SecurityFenceBackupError",code:"security_fence_establishment_required",committed:false,message:expect.stringMatching(/backup failed.*establish again/),backupRefusal:true};
+  /** A valid backup tree of an installation, taken through ordinary ownership before establishment runs. */
+  async function priorBackup(paths:ReturnType<typeof resolveAppPaths>) {
+    const owner=new OwnedSqliteDatabase(paths.databasePath),destination=join(paths.dataDirectory,"..",`prior-${randomUUID()}`);
+    try{return {root:destination,manifest:await createControllerBackup(owner,destination,{applicationVersion:"test",attachmentDirectory:paths.knowledgeAttachmentDirectory})};}finally{owner.close();}
+  }
+  /**
+   * This run's own tree, with its snapshot written straight into the tree's
+   * database file and a manifest made before the snapshot finished: the bytes it
+   * will have are those of a reference copy taken first, through another
+   * read-only connection to the same unchanged source, into a new empty file as
+   * the snapshot is (two Backup API copies of an unchanged database are
+   * byte-identical). The file keeps the bytes the Backup API writes (no
+   * journal-mode switch, which needs the finished file). With `wait` false the
+   * function returns while its snapshot is still running; `observed` records
+   * the root and whether the snapshot had completed when the function returned.
+   * Once the copy has finished, the tree passes every check that follows the
+   * completion guard in `takeBoundBackup`.
+   */
+  const ownTree=(paths:ReturnType<typeof resolveAppPaths>,wait:boolean,observed:{root?:string;completedAtReturn?:boolean}={}):MaintenanceBackup=>async(source,context)=>{
+    const root=join(paths.dataDirectory,"..",`own-${randomUUID()}`),file=join(root,"state.sqlite3");
+    const scratch=mkdtempSync(join(tmpdir(),"security-establish-reference-"));roots.push(scratch);
+    const reference=join(scratch,"reference.sqlite3");fs.closeSync(fs.openSync(reference,"wx",0o600));
+    const live=unmanagedFixtureDatabase(context.database,{readonly:true,fileMustExist:true});
+    try{await live.backup(reference);}finally{live.close();}
+    mkdirSync(join(root,"attachments"),{recursive:true,mode:0o700});
+    const manifest={formatVersion:1,applicationVersion:"test",createdAt:new Date().toISOString(),
+      database:{file:"state.sqlite3",...hashFile(reference),schemaVersion:context.schemaVersion},attachments:[]};
+    writeFileSync(join(root,"manifest.json"),JSON.stringify(manifest),{mode:0o600});
+    fs.closeSync(fs.openSync(file,"wx",0o600));
+    let completed=false;
+    const snapshot=source.backup(file).then(()=>{completed=true;});
+    if(wait)await snapshot;else snapshot.catch(()=>undefined);
+    observed.root=root;observed.completedAtReturn=completed;
+    return {root,manifest};
+  };
+  /** Takes this run's snapshot into a scratch file, then returns another tree. */
+  const substitute=(tree:{root:string;manifest:unknown}):MaintenanceBackup=>async source=>{
+    const scratch=mkdtempSync(join(tmpdir(),"security-establish-scratch-"));roots.push(scratch);
+    await source.backup(join(scratch,"snapshot.sqlite3"));return tree;
+  };
+  const ISO=/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/;
+  /** The instants just before and just after a run. */
+  type Window={from:string;to:string};
+  const timed=async<T,>(operation:()=>Promise<T>|T)=>{const from=new Date().toISOString(),value=await operation();return {value,window:{from,to:new Date().toISOString()}};};
+  type Generated=(value:unknown,row:Record<string,unknown>,run:{source:number;window:Window;name:(kind:string,value:unknown)=>unknown})=>unknown;
+  /**
+   * The only values establishment generates, by table and column: the
+   * `applied_at` of each step the run applied (above the source version), which
+   * must be an instant of that run, and the checkpoint's random installation
+   * and epoch, named by first appearance so that the witness's copies of them
+   * get the same names. Every other value of every table, the `applied_at` of
+   * the historical steps and every other historical timestamp included,
+   * compares exactly.
+   */
+  const GENERATED:Readonly<Record<string,Readonly<Record<string,Generated>>>>={
+    schema_migrations:{applied_at:(value,row,{source,window})=>(row.version as number)<=source?value
+      :typeof value==="string"&&ISO.test(value)&&value>=window.from&&value<=window.to?"<applied by this run>":value},
+    security_checkpoint:{installation:(value,_row,{name})=>name("installation",value),epoch:(value,_row,{name})=>name("epoch",value)},
+  };
+  /** The established database (see GENERATED) and witness of a run from `source` within `window`. */
+  const established=(paths:ReturnType<typeof resolveAppPaths>,source:number,window:Window)=>{
+    const ids=new Map<string,string>();
+    const name=(kind:string,value:unknown)=>{if(typeof value!=="string")return value;if(!ids.has(value))ids.set(value,`${kind}#${ids.size+1}`);return ids.get(value);};
+    const database=read(paths,db=>{const {catalogue,rows}=all(db);return {catalogue,rows:Object.fromEntries(Object.entries(rows).map(([table,list])=>[table,
+      (list as Array<Record<string,unknown>>).map(row=>Object.fromEntries(Object.entries(row).map(([column,value])=>[column,GENERATED[table]?.[column]?GENERATED[table][column](value,row,{source,window,name}):value])))]))};});
+    const {payload}=JSON.parse(readFileSync(witness(paths.databasePath),"utf8")),stat=fs.lstatSync(paths.databasePath);
+    return {database,witness:{...payload,installation:name("installation",payload.installation),epoch:name("epoch",payload.epoch),receipt:typeof payload.receipt==="string"?"<receipt>":payload.receipt,
+      binding:payload.binding===securityFenceBinding(paths.databasePath)?"<this database>":payload.binding,
+      file:payload.file.device===stat.dev&&payload.file.inode===stat.ino?"<this file>":payload.file}};
+  };
+  /** Historical timestamps the fixtures write as fixed past instants, in authority and settings tables. */
+  const HISTORICAL=[["principal_credentials","created_at"],["authentication_provider_subjects","linked_at"],["authentication_passkey_trust","trusted_at"],
+    ["reservations","created_at"],["controller_settings","updated_at"]] as const;
+  /** The `applied_at` of the steps up to `source`, and each HISTORICAL column of `tables` (default: those the database has). */
+  const historical=(paths:ReturnType<typeof resolveAppPaths>,source:number,tables?:readonly string[])=>read(paths,db=>({
+    migrations:db.prepare("SELECT version,applied_at FROM schema_migrations WHERE version<=? ORDER BY version").all(source) as Array<{version:number;applied_at:string}>,
+    columns:Object.fromEntries(HISTORICAL.filter(([table])=>tables?tables.includes(table):has(db,table))
+      .map(([table,column])=>[`${table}.${column}`,db.prepare(`SELECT "${column}" FROM "${table}" ORDER BY rowid`).pluck().all() as string[]])),
+  }));
+  /** A maintenance result without this run's receipt, the preflight and the backup root. */
+  const outcome=(value:object)=>Object.fromEntries(Object.entries(value).filter(([key])=>!["receipt","preflight","backup"].includes(key)));
+
+  it.each([["schema 28 (the public 0.1.1 release)",()=>baseline28(),28],["schema 40 with authority",()=>genuine40(),40]] as const)
+  ("establishes %s with this run's validated backup exactly as without one",async(_name,build,version)=>{
+    const paths=build(),twin=build(),before=read(paths,all),past=historical(paths,version);
+    // The fixture's historical timestamps are fixed past instants, distinct from any run's.
+    expect(past.migrations.map(row=>row.version)).toEqual(Array.from({length:version},(_,index)=>index+1));
+    expect(past.columns["principal_credentials.created_at"]).toContain("2026-11-01T00:00:00.000Z");
+    const start=new Date().toISOString();
+    for(const value of [...past.migrations.map(row=>row.applied_at),...Object.values(past.columns).flat()])expect(value<start&&ISO.test(value),value).toBe(true);
+    const {value:result,window}=await timed(()=>establish(paths,controllerBackup(paths)));
+    expect(result).toMatchObject({trusted:true,changed:true,quarantined:false,schemaVersion:49,backup:expect.any(String)});
+    // The backup holds the pre-establishment schema and content, and validates against its own manifest.
+    const manifest=parseManifest(readBoundedJson(join(result.backup!,"manifest.json"),BACKUP_LIMITS.manifestBytes,true));
+    expect(manifest.database.schemaVersion).toBe(version);
+    expect(()=>validateBackup(result.backup!,manifest,true)).not.toThrow();
+    const copy=new Database(join(result.backup!,"state.sqlite3"),{readonly:true,fileMustExist:true});
+    try{expect(inspectSchema(copy).version).toBe(version);expect(all(copy)).toEqual(before);expect(has(copy,"security_checkpoint")).toBe(false);}finally{copy.close();}
+    // The fence is the one the synchronous establishment produces.
+    const {value:plain,window:plainWindow}=await timed(()=>maintainSecurityFence(twin,{action:"establish",expect:inspect(twin).preflight}));
+    expect(outcome(result)).toEqual(outcome(plain));
+    const fenced=established(paths,version,window);
+    expect(fenced).toEqual(established(twin,version,plainWindow));
+    // Every step above the source was applied by this run, at an instant of it.
+    expect((fenced.database.rows.schema_migrations as Array<Record<string,unknown>>).filter(row=>(row.version as number)>version).map(row=>row.applied_at))
+      .toEqual(Array.from({length:SUPPORTED_SCHEMA_VERSION-version},()=>"<applied by this run>"));
+    // The checkpoint the witness holds is the database's.
+    expect(fenced.database.rows.security_checkpoint).toEqual([{singleton:1,installation:fenced.witness.installation,epoch:fenced.witness.epoch}]);
+    // The historical timestamps are still there, unchanged.
+    const now=historical(paths,version,Object.keys(past.columns).map(key=>key.split(".")[0]!));
+    expect(now.migrations).toEqual(past.migrations);
+    for(const [key,values] of Object.entries(past.columns))expect(now.columns[key],key).toEqual(expect.arrayContaining(values));
+    expect(witnessState(paths)).toBe("confirmed");
+    expect(inspect(paths)).toMatchObject({trusted:true,code:"security_fence_current"});
+  });
+
+  it("refuses a backup that fails or is not this run's bound copy, with everything unchanged, and establishes on the next run",async()=>{
+    const paths=baseline28(),twin=baseline28();
+    const foreign=await priorBackup(twin),older=await priorBackup(paths);
+    // A further raw change makes `older` an older state of this database.
+    const db=unmanagedFixtureDatabase(paths.databasePath);try{db.exec("INSERT INTO remote_principals VALUES('later-agent','agent','active')");}finally{db.close();}
+    const current=await priorBackup(paths);
+    expect(()=>validateBackup(current.root,parseManifest(current.manifest),true)).not.toThrow();
+    const variants:Array<[string,MaintenanceBackup]>=[
+      ["the backup function throws",async()=>{throw new Error("fixture backup fault");}],
+      ["a tree without taking the snapshot",async()=>current],
+      ["a tree after taking two snapshots",async(source,context)=>{const first=await controllerBackup(paths)(source,context);
+        await expect(controllerBackup(paths)(source,context)).rejects.toThrow();return first;}],
+      ["a backup of another database",substitute(foreign)],
+      ["an older backup of this database",substitute(older)],
+      ["a manifest the tree does not match",async(source,context)=>{const created=await controllerBackup(paths)(source,context);
+        return {...created,manifest:{...(created.manifest as Record<string,unknown>),applicationVersion:"other"}};}],
+      ["a tree that does not validate",async(source,context)=>{const created=await controllerBackup(paths)(source,context),file=join(created.root,"state.sqlite3");
+        writeFileSync(file,Buffer.concat([readFileSync(file),Buffer.alloc(1)]));return created;}],
+      ["a snapshot left running when the function returned",async source=>{void source.backup(join(paths.dataDirectory,"..",`running-${randomUUID()}.sqlite3`));return current;}],
+    ];
+    const before=untouched(paths),preflight=inspect(paths).preflight;
+    expect(before.security).toBe("missing");
+    for(const [name,backup] of variants){
+      expect(await refusal(()=>establishSqliteSecurityFence(paths,{action:"establish",expect:preflight},HANDOFF,backup)),name).toEqual(BACKUP_REFUSED);
+      expect(untouched(paths),name).toEqual(before);
+      expect(inspect(paths),name).toMatchObject({trusted:false,establishmentAllowed:true,preflight});
+    }
+    expect(await establish(paths,controllerBackup(paths))).toMatchObject({trusted:true,changed:true,backup:expect.any(String)});
+    expect(inspect(paths).trusted).toBe(true);
+  });
+
+  it("refuses this run's own tree whose snapshot was still running when the function returned, by the completion guard alone",async()=>{
+    // The case above returns a tree unrelated to its snapshot, which the file
+    // identity check refuses too. Here the tree is the one the snapshot is
+    // written into, so only the completion guard tells.
+    const paths=baseline28(),content=read(paths,all),before=untouched(paths),preflight=inspect(paths).preflight;
+    const unfinished:{root?:string;completedAtReturn?:boolean}={};
+    expect(await refusal(()=>establishSqliteSecurityFence(paths,{action:"establish",expect:preflight},HANDOFF,ownTree(paths,false,unfinished)))).toEqual(BACKUP_REFUSED);
+    expect(unfinished.completedAtReturn).toBe(false);
+    expect(untouched(paths)).toEqual(before);
+    expect(inspect(paths)).toMatchObject({trusted:false,establishmentAllowed:true,preflight});
+    // The refusal drained the copy before refusing: the refused tree is now
+    // complete and passes every later check. Its file is the one the snapshot
+    // was written into; its stored manifest is the returned one and validates;
+    // the copy holds the source's schema version and content and, like the
+    // source, no checkpoint.
+    const root=unfinished.root!,manifest=parseManifest(readBoundedJson(join(root,"manifest.json"),BACKUP_LIMITS.manifestBytes,true));
+    expect(manifest.database).toMatchObject({schemaVersion:28,...hashFile(join(root,"state.sqlite3"))});
+    expect(()=>validateBackup(root,manifest,true)).not.toThrow();
+    const copy=new Database(join(root,"state.sqlite3"),{readonly:true,fileMustExist:true});
+    try{expect(inspectSchema(copy).version).toBe(28);expect(all(copy)).toEqual(content);expect(has(copy,"security_checkpoint")).toBe(false);}finally{copy.close();}
+    // The helper itself refuses with the completion guard's message. The
+    // function took exactly one snapshot and it completed, so of the guard's
+    // three conditions only "still running when the function returned" holds.
+    const owner=new OwnedSqliteDatabase(paths.databasePath);
+    try{
+      const direct:{root?:string;completedAtReturn?:boolean}={},waited:{root?:string;completedAtReturn?:boolean}={};
+      await expect(takeBoundBackup(owner,owner.canonicalPath,owner.inspection.version,SUPPORTED_SCHEMA_VERSION,ownTree(paths,false,direct))).rejects.toThrow("The backup is not this run's single completed snapshot.");
+      expect(direct.completedAtReturn).toBe(false);
+      expect(()=>validateBackup(direct.root!,parseManifest(readBoundedJson(join(direct.root!,"manifest.json"),BACKUP_LIMITS.manifestBytes,true)),true)).not.toThrow();
+      // The same function, waiting for its snapshot, is accepted.
+      expect(await takeBoundBackup(owner,owner.canonicalPath,owner.inspection.version,SUPPORTED_SCHEMA_VERSION,ownTree(paths,true,waited))).toBe(waited.root);
+      expect(waited.completedAtReturn).toBe(true);
+    }finally{owner.close();}
+    // And establishes.
+    const waited:{root?:string;completedAtReturn?:boolean}={};
+    expect(await establish(paths,ownTree(paths,true,waited))).toMatchObject({trusted:true,changed:true,backup:waited.root});
+    expect(waited.completedAtReturn).toBe(true);
+    expect(inspect(paths).trusted).toBe(true);
+  });
+
+  it("refuses as preflight changed a raw change to the database made inside the backup function, with nothing written",async()=>{
+    const paths=baseline28(),calls:string[]=[];
+    let changed:ReturnType<typeof untouched>|undefined;
+    const backup=controllerBackup(paths,calls);
+    expect(await refusal(()=>establish(paths,async(source,context)=>{
+      const created=await backup(source,context);
+      const bytes=readFileSync(paths.databasePath);bytes.writeUInt32BE((bytes.readUInt32BE(24)+7)>>>0,24);writeFileSync(paths.databasePath,bytes);
+      changed=untouched(paths);return created;
+    }))).toMatchObject({name:"SecurityFenceError",code:"security_fence_preflight_changed",committed:false});
+    expect(untouched(paths)).toEqual(changed);
+    expect(changed?.security).toBe("missing");
+    // The backup was taken and stays valid; a new preflight establishes.
+    expect(()=>validateBackup(calls[0]!,parseManifest(readBoundedJson(join(calls[0]!,"manifest.json"),BACKUP_LIMITS.manifestBytes,true)),true)).not.toThrow();
+    expect(await establish(paths,controllerBackup(paths))).toMatchObject({trusted:true,changed:true});
+  });
+
+  it("fails the backup before any pending witness, and keeps the valid backup when the pending witness fails after it",async()=>{
+    const paths=baseline28(),before=untouched(paths),content=read(paths,all);
+    const begin=vi.spyOn(SecurityFence,"beginMaintenance");
+    expect(await refusal(()=>establish(paths,async()=>{throw new Error("fixture backup fault");}))).toEqual(BACKUP_REFUSED);
+    expect(begin).not.toHaveBeenCalled();
+    expect(fs.existsSync(securityFenceRoot(paths.databasePath))).toBe(false);
+    expect(untouched(paths)).toEqual(before);
+    vi.restoreAllMocks();
+    // A failure at the pending witness, after it was published: the backup taken before stays.
+    const original=SecurityFence.beginMaintenance,calls:string[]=[];
+    vi.spyOn(SecurityFence,"beginMaintenance").mockImplementation((...args)=>{original(...args);throw new Error("fixture pending witness fault");});
+    expect(await refusal(()=>establish(paths,controllerBackup(paths,calls)))).toMatchObject({name:"SecurityFenceError",code:"security_fence_pending",committed:false});
+    vi.restoreAllMocks();
+    expect(calls).toHaveLength(1);
+    const manifest=parseManifest(readBoundedJson(join(calls[0]!,"manifest.json"),BACKUP_LIMITS.manifestBytes,true));
+    expect(()=>validateBackup(calls[0]!,manifest,true)).not.toThrow();
+    const copy=new Database(join(calls[0]!,"state.sqlite3"),{readonly:true,fileMustExist:true});
+    try{expect(all(copy)).toEqual(content);}finally{copy.close();}
+    expect(read(paths,all)).toEqual(content);
+    expect(witnessState(paths)).toBe("pending");
+    expect(inspect(paths)).toMatchObject({trusted:false,establishmentAllowed:false});
+    expect(resume(paths)).toMatchObject({trusted:true,quarantined:true});
+  });
+
+  it("takes no backup for the trusted no-op, and accepts no backup for inspect or resume",async()=>{
+    const f=fixture();f.store.close();
+    const backup=vi.fn<MaintenanceBackup>(async()=>{throw new Error("not called");});
+    // The store's WAL database: its shared-memory index may change on a read-only open, so the database bytes and the witness compare.
+    const status=inspect(f.paths),before=sha(f.paths.databasePath),witnessBytes=readFileSync(witness(f.paths.databasePath));
+    expect(await establishSqliteSecurityFence(f.paths,{action:"establish",expect:status.preflight},HANDOFF,backup)).toMatchObject({trusted:true,changed:false,backup:null});
+    expect(backup).not.toHaveBeenCalled();
+    const invalid=[{action:"inspect"},{action:"resume",expect:status.preflight,mode:"token"},{action:"establish",expect:"NOT-A-HASH"}] as unknown as Array<{action:"establish";expect:string}>;
+    for(const command of invalid)expect(()=>establishSqliteSecurityFence(f.paths,command,HANDOFF,backup)).toThrowError(expect.objectContaining({code:"invalid_input"}));
+    expect(()=>establishSqliteSecurityFence(f.paths,{action:"establish",expect:status.preflight},HANDOFF,undefined as unknown as MaintenanceBackup)).toThrowError(expect.objectContaining({code:"invalid_input"}));
+    expect(backup).not.toHaveBeenCalled();
+    expect(sha(f.paths.databasePath)).toBe(before);
+    expect(readFileSync(witness(f.paths.databasePath))).toEqual(witnessBytes);
   });
 });
