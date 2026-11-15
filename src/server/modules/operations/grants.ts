@@ -82,6 +82,11 @@ function permissionsOf(installation: Iterable<InstallationPermission>, everyProj
 
 const isText = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 
+/** Permissions that hold nothing and make no project visible. Fresh frozen values on every call. */
+export function noPermissions(): EffectivePermissions {
+  return permissionsOf([], [], new Map(), () => false);
+}
+
 /**
  * Effective permissions of an actor. Full authority holds everything. For a
  * human or agent, each stored grant counts only if the account's stored kind
@@ -95,7 +100,7 @@ export function effectivePermissions(actor: Actor, grants: GrantsSnapshot): Effe
   if (actor.kind === "installation" || actor.kind === "operator") {
     return permissionsOf(installationPermissions, [...projectPermissions], new Map(), () => true);
   }
-  const none = () => permissionsOf([], [], new Map(), () => false);
+  const none = noPermissions;
   // The snapshot is synchronous (decision W): a thenable is `internal`, never an empty or partial grant set.
   const storedKind = synchronous(grants.accountKind(actor.accountId), "grants_not_synchronous");
   if (storedKind === null || storedKind !== actor.kind) return none();

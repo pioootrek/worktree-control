@@ -27,9 +27,27 @@ function setup(ids: string[] = []) {
   store.saveKnowledgeProject({ id: "project-1", name: "Knowledge", status: "active", revision: 1, createdAt: NOW, updatedAt: NOW }, "test");
   store.saveKnowledgeProjectGrant({ principalId: "agent-1", projectId: "project-1", permissions: ["knowledge:read", "knowledge:write"], revokedAt: null }, "test");
   const actor: AuthenticatedPrincipal = { principalId: "agent-1", principalKind: "agent", credentialId: "credential-1", authenticationMethod: "agent_token" };
+  store.savePrincipal({ id: "owner-1", kind: "owner", status: "active" }, "test");
+  store.saveCredential({ ...credential, id: "owner-credential", principalId: "owner-1", kind: "owner_session", tokenPrefix: "wts_owner-credential", verifierHash: "b".repeat(64) }, "test");
+  store.saveKnowledgeProjectGrant({ principalId: "owner-1", projectId: "project-1", permissions: ["knowledge:read", "knowledge:write"], revokedAt: null }, "test");
+  const owner: AuthenticatedPrincipal = { principalId: "owner-1", principalKind: "owner", credentialId: "owner-credential", authenticationMethod: "owner_session" };
   let next = 0;
-  const service = new KnowledgeService(store, new IdentityService(store, () => NOW), () => NOW, () => ids[next++] ?? `id-${next}`);
-  return { directory, path, store, service, actor };
+  const installationAuthority = { isCurrentInstallationActor: (candidate: AuthenticatedPrincipal) => candidate.principalId === "installation" };
+  const providerSessions = { isCurrentProviderSession: () => true };
+  const identity = new IdentityService(store, () => NOW, undefined, undefined, installationAuthority, undefined, providerSessions);
+  const service = new KnowledgeService(store, identity, () => NOW, () => ids[next++] ?? `id-${next}`);
+  return { directory, path, store, service, actor, owner };
+}
+
+function installationActor(authenticationMethod: "installation_token" | "none"): AuthenticatedPrincipal {
+  return { principalId: "installation", principalKind: "installation", credentialId: "installation", authenticationMethod };
+}
+
+/** An ordinary human with an active operator membership that includes knowledge:write. */
+function humanActor(store: SqliteStateStore, projectId = "project-1"): AuthenticatedPrincipal {
+  store.humanAccounts().createHumanPrincipal({ id: "human-1", kind: "human", status: "active" }, "local-cli");
+  store.humanAccounts().saveHumanMembership({ principalId: "human-1", scope: { kind: "knowledge-project", id: projectId }, role: "operator", permissions: ["knowledge:read", "knowledge:write"], expectedRevision: 0 }, "local-cli", NOW);
+  return { principalId: "human-1", principalKind: "human", credentialId: null, authenticationMethod: "provider_session" } as unknown as AuthenticatedPrincipal;
 }
 
 afterEach(() => {
@@ -111,9 +129,9 @@ describe("knowledge service SQLite flow", () => {
   });
 
   it("preserves knowledge when its linked runtime project is removed", () => {
-    const { store, service, actor } = setup(["thread-1"]);
+    const { store, service, actor, owner } = setup(["thread-1"]);
     const runtime = store.addProject({ name: "Runtime", repositoryPath: "/tmp/knowledge-runtime", port: 4321, executable: "pnpm", args: ["run", "dev"] });
-    store.saveKnowledgeProjectRuntimeLink({ projectId: "project-1", runtimeProjectId: runtime.id, linkedAt: NOW, unlinkedAt: null }, "test");
+    service.setRuntimeLink("project-1", runtime.id, 1, { idempotencyKey: "link" }, owner);
     service.createThread("project-1", { title: "Durable", body: "Keep me" }, { idempotencyKey: "thread" }, actor);
 
     store.removeProject(runtime.id, "test");
@@ -124,13 +142,13 @@ describe("knowledge service SQLite flow", () => {
   });
 
   it("archives by revision and can explicitly relink an existing knowledge project", () => {
-    const { store, service, actor } = setup();
+    const { store, service, actor, owner } = setup();
     const first = store.addProject({ name: "First", repositoryPath: "/tmp/knowledge-runtime-first", port: 4322, executable: "pnpm", args: ["run", "dev"] });
     const second = store.addProject({ name: "Second", repositoryPath: "/tmp/knowledge-runtime-second", port: 4323, executable: "pnpm", args: ["run", "dev"] });
-    service.setRuntimeLink("project-1", first.id, 1, { idempotencyKey: "link-first" }, actor);
-    expect(() => service.setRuntimeLink("project-1", second.id, 1, { idempotencyKey: "stale-link" }, actor))
+    service.setRuntimeLink("project-1", first.id, 1, { idempotencyKey: "link-first" }, owner);
+    expect(() => service.setRuntimeLink("project-1", second.id, 1, { idempotencyKey: "stale-link" }, owner))
       .toThrowError(expect.objectContaining({ code: "revision_conflict", currentRevision: 2 }));
-    expect(service.setRuntimeLink("project-1", second.id, 2, { idempotencyKey: "link-second" }, actor).value.link.runtimeProjectId).toBe(second.id);
+    expect(service.setRuntimeLink("project-1", second.id, 2, { idempotencyKey: "link-second" }, owner).value.link.runtimeProjectId).toBe(second.id);
 
     const archived = service.archiveProject("project-1", 3, { idempotencyKey: "archive" }, actor);
     expect(archived.value).toMatchObject({ status: "archived", revision: 4 });
@@ -145,16 +163,100 @@ describe("knowledge service SQLite flow", () => {
   });
 
   it("maps invalid runtime links to knowledge errors", () => {
-    const { store, service, actor } = setup();
-    expect(() => service.setRuntimeLink("project-1", "missing", 1, { idempotencyKey: "missing" }, actor))
+    const { store, service, owner } = setup();
+    expect(() => service.setRuntimeLink("project-1", "missing", 1, { idempotencyKey: "missing" }, owner))
       .toThrowError(expect.objectContaining<Partial<KnowledgeError>>({ code: "not_found" }));
 
     const runtime = store.addProject({ name: "Runtime", repositoryPath: "/tmp/knowledge-runtime-shared", port: 4324, executable: "pnpm", args: ["run", "dev"] });
-    service.setRuntimeLink("project-1", runtime.id, 1, { idempotencyKey: "first-link" }, actor);
+    service.setRuntimeLink("project-1", runtime.id, 1, { idempotencyKey: "first-link" }, owner);
     store.saveKnowledgeProject({ id: "project-2", name: "Second", status: "active", revision: 1, createdAt: NOW, updatedAt: NOW }, "test");
-    store.saveKnowledgeProjectGrant({ principalId: "agent-1", projectId: "project-2", permissions: ["knowledge:read", "knowledge:write"], revokedAt: null }, "test");
-    expect(() => service.setRuntimeLink("project-2", runtime.id, 1, { idempotencyKey: "duplicate-link" }, actor))
+    store.saveKnowledgeProjectGrant({ principalId: "owner-1", projectId: "project-2", permissions: ["knowledge:read", "knowledge:write"], revokedAt: null }, "test");
+    expect(() => service.setRuntimeLink("project-2", runtime.id, 1, { idempotencyKey: "duplicate-link" }, owner))
       .toThrowError(expect.objectContaining<Partial<KnowledgeError>>({ code: "invalid_request" }));
+    store.close();
+  });
+
+  it("refuses an agent with knowledge:write to link, re-point or unlink a runtime project", () => {
+    const { store, service, actor, owner } = setup();
+    const first = store.addProject({ name: "First", repositoryPath: "/tmp/knowledge-agent-first", port: 4325, executable: "pnpm", args: ["run", "dev"] });
+    const second = store.addProject({ name: "Second", repositoryPath: "/tmp/knowledge-agent-second", port: 4326, executable: "pnpm", args: ["run", "dev"] });
+    store.saveKnowledgeProject({ id: "project-2", name: "Unlinked", status: "active", revision: 1, createdAt: NOW, updatedAt: NOW }, "test");
+    store.saveKnowledgeProjectGrant({ principalId: "agent-1", projectId: "project-2", permissions: ["knowledge:read", "knowledge:write"], revokedAt: null }, "test");
+    service.setRuntimeLink("project-1", first.id, 1, { idempotencyKey: "owner-link" }, owner);
+    const snapshot = () => ({
+      projects: ["project-1", "project-2"].map(id => store.getKnowledgeProject(id)),
+      links: ["project-1", "project-2"].map(id => store.getKnowledgeProjectRuntimeLink(id)),
+      history: ["project-1", "project-2"].map(id => store.listHistory(id, "project", id, 25, 0).items),
+      owners: [first.id, second.id].map(id => store.getRuntimeLinkOwner(id)),
+    });
+    const before = snapshot();
+    const forbidden = expect.objectContaining({ code: "knowledge_forbidden" });
+
+    expect(() => service.setRuntimeLink("project-2", second.id, 1, { idempotencyKey: "link" }, actor)).toThrowError(forbidden);
+    expect(() => service.setRuntimeLink("project-1", second.id, 2, { idempotencyKey: "re-point" }, actor)).toThrowError(forbidden);
+    expect(() => service.setRuntimeLink("project-1", null, 2, { idempotencyKey: "unlink" }, actor)).toThrowError(forbidden);
+    expect(() => service.execute({ operation: "link_runtime", input: { projectId: "project-1", runtimeProjectId: null, expectedRevision: 2, idempotencyKey: "unlink-envelope" } }, actor)).toThrowError(forbidden);
+
+    expect(snapshot()).toEqual(before);
+    expect(before.links[0]).toMatchObject({ runtimeProjectId: first.id });
+    expect(before.links[1]).toBeNull();
+    store.close();
+  });
+
+  it("gives a refused caller the same error whether or not the runtime project exists", () => {
+    const { store, service, actor } = setup();
+    const human = humanActor(store);
+    const runtime = store.addProject({ name: "Runtime", repositoryPath: "/tmp/knowledge-refused", port: 4327, executable: "pnpm", args: ["run", "dev"] });
+    const refusal = (caller: AuthenticatedPrincipal, runtimeProjectId: string) => {
+      try {
+        service.setRuntimeLink("project-1", runtimeProjectId, 1, { idempotencyKey: `probe-${runtimeProjectId}` }, caller);
+      } catch (error) {
+        return { name: (error as Error).name, code: (error as { code?: string }).code, message: (error as Error).message };
+      }
+      throw new Error("expected a refusal");
+    };
+    for (const caller of [actor, human]) {
+      const known = refusal(caller, runtime.id);
+      expect(known.code).toBe("knowledge_forbidden");
+      expect(refusal(caller, "missing-runtime")).toEqual(known);
+    }
+    expect(store.getKnowledgeProjectRuntimeLink("project-1")).toBeNull();
+    expect(store.getKnowledgeProject("project-1")).toMatchObject({ revision: 1 });
+    store.close();
+  });
+
+  it("refuses an ordinary human with knowledge:write a runtime link", () => {
+    const { store, service } = setup();
+    const human = humanActor(store);
+    const runtime = store.addProject({ name: "Runtime", repositoryPath: "/tmp/knowledge-human", port: 4328, executable: "pnpm", args: ["run", "dev"] });
+    // The membership does carry write access to the Knowledge project itself.
+    expect(service.createThread("project-1", { title: "Human", body: "Allowed" }, { idempotencyKey: "human-thread" }, human).value.title).toBe("Human");
+    expect(() => service.setRuntimeLink("project-1", runtime.id, 1, { idempotencyKey: "human-link" }, human))
+      .toThrowError(expect.objectContaining({ code: "knowledge_forbidden" }));
+    expect(store.getKnowledgeProjectRuntimeLink("project-1")).toBeNull();
+    store.close();
+  });
+
+  it("lets the owner and the installation in token and open mode link, re-point and unlink with history", () => {
+    const { store, service, owner } = setup();
+    const first = store.addProject({ name: "First", repositoryPath: "/tmp/knowledge-allowed-first", port: 4329, executable: "pnpm", args: ["run", "dev"] });
+    const second = store.addProject({ name: "Second", repositoryPath: "/tmp/knowledge-allowed-second", port: 4330, executable: "pnpm", args: ["run", "dev"] });
+
+    expect(service.setRuntimeLink("project-1", first.id, 1, { idempotencyKey: "owner-link" }, owner).value.link.runtimeProjectId).toBe(first.id);
+    expect(service.setRuntimeLink("project-1", second.id, 2, { idempotencyKey: "token-re-point" }, installationActor("installation_token")).value.link.runtimeProjectId).toBe(second.id);
+    expect(service.setRuntimeLink("project-1", null, 3, { idempotencyKey: "open-unlink" }, installationActor("none")).value.link).toMatchObject({ runtimeProjectId: null, unlinkedAt: NOW });
+    expect(service.execute({ operation: "link_runtime", input: { projectId: "project-1", runtimeProjectId: first.id, expectedRevision: 4, idempotencyKey: "owner-relink" } }, owner))
+      .toMatchObject({ value: { link: { runtimeProjectId: first.id }, project: { revision: 5 } } });
+
+    expect(store.getKnowledgeProjectRuntimeLink("project-1")).toMatchObject({ runtimeProjectId: first.id, unlinkedAt: null });
+    const history = store.listHistory("project-1", "project", "project-1", 25, 0).items;
+    expect(history.map(({ operation, revision, principalId, authenticationMethod }) => ({ operation, revision, principalId, authenticationMethod }))
+      .sort((left, right) => left.revision - right.revision)).toEqual([
+      { operation: "linked", revision: 2, principalId: "owner-1", authenticationMethod: "owner_session" },
+      { operation: "linked", revision: 3, principalId: "installation", authenticationMethod: "installation_token" },
+      { operation: "unlinked", revision: 4, principalId: "installation", authenticationMethod: "none" },
+      { operation: "linked", revision: 5, principalId: "owner-1", authenticationMethod: "owner_session" },
+    ]);
     store.close();
   });
 

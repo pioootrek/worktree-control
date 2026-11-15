@@ -14,7 +14,8 @@ import type { GrantsSnapshot, StoredGrant } from "./grants";
 import type { ResolvedResource, ResourceKind, ResourceRef, ResourceRelation } from "./requirements";
 import type { ResourceResolver } from "./resolver";
 
-interface Entry { projectId: ProjectId; version: number; relation: ResourceRelation | null }
+/** `projectId: null` is a parentless resource (no project). */
+interface Entry { projectId: ProjectId | null; version: number; relation: ResourceRelation | null }
 
 /**
  * Separate maps per namespace; no lookup ever crosses into another map.
@@ -36,14 +37,14 @@ export class InMemoryResolver implements ResourceResolver {
     this.#entries.get("project")?.delete(id);
     return this;
   }
-  put(ref: ResourceRef, projectId: ProjectId, relation: ResourceRelation | null = null): this {
+  put(ref: ResourceRef, projectId: ProjectId | null, relation: ResourceRelation | null = null): this {
     const map = this.#entries.get(ref.kind) ?? new Map<string, Entry>();
     map.set(ref.id, { projectId, version: ++this.#version, relation });
     this.#entries.set(ref.kind, map);
     return this;
   }
-  /** Moves a resource to another project, as a registration move would. */
-  move(ref: ResourceRef, projectId: ProjectId): this {
+  /** Moves a resource to another project (or to none, `null`), as a registration move would. */
+  move(ref: ResourceRef, projectId: ProjectId | null): this {
     const entry = this.#entries.get(ref.kind)?.get(ref.id);
     if (!entry) throw new Error("Unknown fixture resource.");
     return this.put(ref, projectId, entry.relation);

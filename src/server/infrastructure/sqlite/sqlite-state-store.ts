@@ -1030,10 +1030,6 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     return this.identity.getKnowledgeProjectRuntimeLink(projectId);
   }
 
-  saveKnowledgeProjectRuntimeLink(link: KnowledgeProjectRuntimeLink, actor: string): void {
-    this.identity.saveKnowledgeProjectRuntimeLink(link, actor);
-  }
-
   findIdempotentResult<T>(operation: string, context: KnowledgeMutationContext): KnowledgeMutationResult<T> | null {
     return this.knowledge.findIdempotentResult<T>(operation, context);
   }

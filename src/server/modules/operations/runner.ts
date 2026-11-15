@@ -193,9 +193,10 @@ function copyTransitionResult(value: unknown): TransitionResult | null {
   if (typeof value !== "object" || value === null) return null;
   const { kind, projectId, relation } = value as Record<string, unknown>;
   if (kind === "unchanged" || kind === "removed") return Object.freeze({ kind });
-  if (kind !== "changed" || typeof projectId !== "string" || projectId.length === 0) return null;
+  // `null` is the explicit parentless state; an absent, empty or non-string project is malformed.
+  if (kind !== "changed" || (projectId !== null && (typeof projectId !== "string" || projectId.length === 0))) return null;
   const copied = copyRelation(relation);
-  return copied === undefined ? null : Object.freeze({ kind, projectId: projectId as ProjectId, relation: copied });
+  return copied === undefined ? null : Object.freeze({ kind, projectId: projectId as ProjectId | null, relation: copied });
 }
 
 /** Validated copy of a record's confirmed transitions; throws when malformed. */

@@ -16,7 +16,7 @@ const PASSWORD = "correct horse battery staple";
 const TOKEN = "wct_live_6f1d9c8e2b7a4c3d";
 
 interface IssueInput { accountId: string; password: string }
-interface Issued { accountId: string; tokenId: string; revision: number; token: string; projectId: ProjectId }
+interface Issued { accountId: string; tokenId: string; revision: number; token: string; projectId: ProjectId | null }
 type IssueOperation = MutationOperation<IssueInput, Issued, { accountId: string; tokenId: string; revision: number; token?: string }>;
 
 /** `account.token_issue`-like: the input carries a secret and the result delivers one. */

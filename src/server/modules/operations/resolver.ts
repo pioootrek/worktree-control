@@ -37,15 +37,23 @@ export function copyPrincipal(value: unknown): StoredPrincipal | undefined {
   return isText(accountId) ? Object.freeze({ kind, accountId: accountId as AccountId }) : undefined;
 }
 
+/**
+ * Deep, frozen copy of an intent origin; `undefined` when malformed. The
+ * project is a non-empty string or an explicit `null` (an intent on a
+ * parentless resource); a missing or `undefined` project, like any other
+ * value, is malformed.
+ */
 function copyOrigin(value: unknown): IntentOrigin | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const principal = copyPrincipal(own(value, "principal"));
-  const fields = ["credentialId", "projectId", "worktree", "preset", "key", "digest"].map(name => own(value, name));
+  const fields = ["credentialId", "worktree", "preset", "key", "digest"].map(name => own(value, name));
+  const projectId = own(value, "projectId");
   const credentialGeneration = own(value, "credentialGeneration"), digestVersion = own(value, "digestVersion");
-  if (!principal || !fields.every(isText) || !Number.isSafeInteger(credentialGeneration) || !Number.isSafeInteger(digestVersion)) return undefined;
-  const [credentialId, projectId, worktree, preset, key, digest] = fields as string[];
+  if (!principal || !fields.every(isText) || !(projectId === null || isText(projectId))
+    || !Number.isSafeInteger(credentialGeneration) || !Number.isSafeInteger(digestVersion)) return undefined;
+  const [credentialId, worktree, preset, key, digest] = fields as string[];
   return Object.freeze({
-    principal, credentialId, credentialGeneration: credentialGeneration as number, projectId: projectId as ProjectId,
+    principal, credentialId, credentialGeneration: credentialGeneration as number, projectId: projectId as ProjectId | null,
     worktree, preset, key, digest, digestVersion: digestVersion as number,
   });
 }
@@ -202,10 +210,11 @@ function copyResolved(value: unknown): ResolvedResource | null {
   const ref = source.ref, projectId = source.projectId, version = source.version;
   if (typeof ref !== "object" || ref === null) return null;
   const kind = (ref as Record<string, unknown>).kind, id = (ref as Record<string, unknown>).id;
-  if (!(resourceKinds as readonly unknown[]).includes(kind) || !isText(id) || !isText(projectId) || !Number.isSafeInteger(version)) return null;
+  // `null` is the explicit parentless state; anything else that is not a non-empty string (absent, empty, another type) is malformed.
+  if (!(resourceKinds as readonly unknown[]).includes(kind) || !isText(id) || !(projectId === null || isText(projectId)) || !Number.isSafeInteger(version)) return null;
   const relation = copyRelation(source.relation);
   if (relation === undefined) return null;
-  return Object.freeze({ ref: Object.freeze({ kind: kind as ResourceRef["kind"], id }), projectId: projectId as ProjectId, version: version as number, relation });
+  return Object.freeze({ ref: Object.freeze({ kind: kind as ResourceRef["kind"], id }), projectId: projectId as ProjectId | null, version: version as number, relation });
 }
 
 /**
@@ -228,7 +237,9 @@ export function copyResolution(value: unknown): ResolvedResources | null {
 
 /**
  * Whether every slot still maps to the same reference, project and relation
- * version. Compares every own slot of both records, whatever its name.
+ * version. Compares every own slot of both records, whatever its name. A
+ * parentless slot (`projectId: null`) equals only a parentless slot: a change
+ * between no project and a project is a mapping change like any other.
  */
 export function sameResolution(before: ResolvedResources, after: ResolvedResources): boolean {
   let left: string[], right: string[];

@@ -154,12 +154,13 @@ describe("identity and knowledge access SQLite persistence", () => {
     store.saveKnowledgeProject({
       id: "knowledge-a", name: "Knowledge A", status: "active", revision: 1, createdAt: NOW, updatedAt: NOW,
     }, "owner-1");
-    store.saveKnowledgeProjectRuntimeLink({
+    const installation = { principalId: "installation", principalKind: "installation", credentialId: "installation", authenticationMethod: "installation_token" } as const;
+    store.setKnowledgeProjectRuntimeLink({
       projectId: "knowledge-a", runtimeProjectId: runtime.id, linkedAt: NOW, unlinkedAt: null,
-    }, "owner-1");
+    }, 1, { actor: installation, projectId: "knowledge-a", idempotencyKey: "link", requestHash: "a".repeat(64) });
 
     store.removeProject(runtime.id, "owner-1");
-    expect(store.getKnowledgeProject("knowledge-a")).toMatchObject({ id: "knowledge-a", revision: 1 });
+    expect(store.getKnowledgeProject("knowledge-a")).toMatchObject({ id: "knowledge-a", revision: 2 });
     expect(store.getKnowledgeProjectRuntimeLink("knowledge-a")).toEqual({
       projectId: "knowledge-a", runtimeProjectId: null, linkedAt: NOW, unlinkedAt: expect.any(String),
     });

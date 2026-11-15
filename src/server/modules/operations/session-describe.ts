@@ -3,7 +3,7 @@ import {
   type ProjectId, type SessionDescription,
 } from "@/shared/contracts/operations";
 import { isFullAuthority } from "./authentication-context";
-import { freshLoginState } from "./decide";
+import { freshLoginState, isProjectId } from "./decide";
 import { OperationError } from "./errors";
 import type { ReadOperation } from "./operation";
 import { pick } from "./release";
@@ -36,7 +36,9 @@ const definition: ReadOperation<Record<string, never>, SessionDescription, Sessi
   read(_input, scope) {
     const { authority, release, resolver, now } = scope;
     const { actor } = authority;
-    const visible = [...new Set(synchronous(resolver.listProjects(), "resolver_not_synchronous"))].filter(id => release.visible(id)).sort();
+    // Only real project IDs: a stray `null` ("no project") or malformed entry is never listed, not even to full authority, for which `visible(null)` holds.
+    const listed: readonly unknown[] = synchronous(resolver.listProjects(), "resolver_not_synchronous");
+    const visible = [...new Set(listed)].filter(isProjectId).filter(id => release.visible(id)).sort();
     const projects = visible.slice(0, MAX_DESCRIBED_PROJECTS).map((projectId: ProjectId) => ({
       projectId, permissions: projectPermissions.filter(permission => release.can(permission, projectId)),
     }));

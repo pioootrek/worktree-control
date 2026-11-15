@@ -1670,9 +1670,10 @@ Treat the catalogue as a draft inventory, not as a single implementation pull
 request or a fixed final count. The aim is about 12 to 15 reviewable pull
 requests, split by security boundary rather than equal row count.
 
-State on 2026-11-14: item 1 is merged (#129). Slice 2 (session freshness) and
-slice 3 (projects, roles and the fence) run before item 2, which depends on
-both (plan revision 2, Knowledge reply `156522ad`).
+State on 2026-11-14: item 1 (#129) and slice 2 (session freshness, #133) are
+merged. Slice 3 (projects, roles and the fence) runs next, on the branch
+`integration/auth-unification`, and item 2 depends on both (plan revision 2,
+Knowledge reply `156522ad`; slice 3 plan, reply `84abdf8a`).
 
 1. Contract integration prerequisites: the reviewed deltas of section 1.2,
    admission interfaces for asynchronous work, expected-transition receipts and
