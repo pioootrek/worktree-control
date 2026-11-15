@@ -13,7 +13,7 @@ import { maintainSecurityFence } from "../../bootstrap/security-maintenance";
 import { AuthenticationService } from "../../modules/authentication";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
 import { SqliteStateStore } from "./sqlite-state-store";
-import { OwnedSqliteDatabase } from "./owned-database";
+import { OwnedSqliteDatabase, ReopenedDatabaseChangedError } from "./owned-database";
 import { getOwnedRestoreStatus, restoreRoot } from "./restore-recovery";
 import { SecurityFence, SecurityFenceError, securityFenceBinding, securityFenceRoot, securityRecoveryBoundary } from "./security-fence";
 import { maintainSqliteSecurityFence } from "./security-maintenance";
@@ -905,6 +905,151 @@ describe("explicit offline upgrade: interrupted apply", () => {
     expect(inspect(paths)).toMatchObject({ state: "fenced", nextStep: "auth fence resume" });
   });
 
+  /**
+   * A WAL database whose WAL holds committed frames its main file lacks, as a
+   * writer that never closed leaves it: a copy of `source` and its WAL gets one
+   * more audit row through a writer with automatic checkpoints off, and the
+   * copy's files are copied again while that writer still holds them. Asserted
+   * here, so no test built on it passes vacuously: the WAL is not empty, the
+   * main file alone lacks the row, and with the WAL it holds it.
+   */
+  const uncheckpointed = (source: string, mutate?: (bytes: Buffer) => void) => {
+    const root = temporary("upgrade-wal-"), staged = join(root, "writer.sqlite3"), file = join(root, "uncheckpointed.sqlite3"), marker = randomUUID();
+    copyFileSync(source, staged);
+    if (existsSync(`${source}-wal`) && lstatSync(`${source}-wal`).size > 0) copyFileSync(`${source}-wal`, `${staged}-wal`);
+    const writer = new Database(staged, { fileMustExist: true });
+    try {
+      expect(writer.pragma("journal_mode", { simple: true })).toBe("wal");
+      writer.pragma("wal_autocheckpoint = 0");
+      writer.prepare("INSERT INTO controller_audit_events(event_type,actor,details_json,created_at) VALUES('fixture.uncheckpointed','fixture',?,?)")
+        .run(JSON.stringify({ marker, padding: "x".repeat(6000) }), new Date().toISOString());
+      copyFileSync(staged, file); copyFileSync(`${staged}-wal`, `${file}-wal`);
+    } finally { writer.close(); }
+    if (mutate) { const bytes = readFileSync(file); mutate(bytes); writeFileSync(file, bytes); }
+    chmodSync(file, 0o600); chmodSync(`${file}-wal`, 0o600);
+    const database = readFileSync(file), wal = readFileSync(`${file}-wal`);
+    const holds = (main: Buffer, log?: Buffer) => {
+      const probe = join(temporary("upgrade-wal-probe-"), "probe.sqlite3");
+      writeFileSync(probe, main); if (log) writeFileSync(`${probe}-wal`, log);
+      const db = new Database(probe, { readonly: true, fileMustExist: true });
+      try { return Boolean(db.prepare("SELECT 1 FROM controller_audit_events WHERE event_type='fixture.uncheckpointed' AND json_extract(details_json,'$.marker')=?").get(marker)); } finally { db.close(); }
+    };
+    expect(wal.length).toBeGreaterThan(0);
+    expect(holds(database)).toBe(false);
+    expect(holds(database, wal)).toBe(true);
+    return { file, database, wal };
+  };
+  /**
+   * A schema-49 installation whose WAL holds such frames (written beside its
+   * unchanged main file, so the fence still trusts it), with its plan inspected.
+   */
+  const walInstallation = () => {
+    const paths = installation(), path = canonical(paths), frames = uncheckpointed(path);
+    expect(sha(frames.database)).toBe(sha(readFileSync(path)));
+    writeFileSync(`${path}-wal`, frames.wal, { mode: 0o600 });
+    const status = inspect(paths);
+    expect(status).toMatchObject({ state: "upgrade_needed" });
+    return { paths, path, noted: status.planHash!, original: frames };
+  };
+  /** The database file and its WAL at `file`, hashed. */
+  const bytes = (file: string) => ({ database: sha(readFileSync(file)), wal: existsSync(`${file}-wal`) ? sha(readFileSync(`${file}-wal`)) : "missing" });
+  /** Renames a database with its WAL and shared-memory files. */
+  const move = (from: string, to: string) => { for (const suffix of ["", "-wal", "-shm"]) if (existsSync(from + suffix)) renameSync(from + suffix, to + suffix); };
+  type ReopenWindow = "closed" | "identity-before" | "guard-read" | "identity-after" | "verify" | "observed";
+  /**
+   * Runs each step once, at its window of the reopen (armed once the pending
+   * witness was published): `closed` right after the inspected connection
+   * closed; `identity-before` right after the first identity read of the
+   * pathname, before the guard opens; `guard-read` right after the guard's
+   * read, before the writable open; `identity-after` right before the second
+   * identity read, after the writable open; `verify` at the start of `verify`;
+   * `observed` after its observer read the reopened database. A step that
+   * throws makes `verify` refuse.
+   */
+  const reopenWindows = (paths: AppPaths, steps: Partial<Record<ReopenWindow, () => void>>) => {
+    const path = canonical(paths), fired: ReopenWindow[] = [];
+    let armed = false, closed = false, guardRead = false, identities = 0;
+    const fire = (window: ReopenWindow) => { const step = steps[window]; if (step && !fired.includes(window)) { fired.push(window); step(); } };
+    const begin = SecurityFence.beginUpgrade, observe = SecurityFence.registerUpgradeObserver;
+    const close = Database.prototype.close, prepare = Database.prototype.prepare, lstat = fs.lstatSync;
+    vi.spyOn(SecurityFence, "beginUpgrade").mockImplementation((...args) => { begin.apply(SecurityFence, args); armed = true; });
+    vi.spyOn(SecurityFence, "registerUpgradeObserver").mockImplementation((...args) => { fire("verify"); observe.apply(SecurityFence, args); fire("observed"); });
+    vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) {
+      const inspected = armed && !closed && this.readonly && this.name === path;
+      const result = close.call(this);
+      if (inspected) { closed = true; fire("closed"); }
+      return result;
+    } as typeof close);
+    vi.spyOn(Database.prototype, "prepare").mockImplementation(function (this: Database.Database, source: string) {
+      const statement = prepare.call(this, source);
+      if (closed && !guardRead && this.readonly && this.name === path) {
+        guardRead = true;
+        const get = statement.get.bind(statement);
+        statement.get = ((...args: unknown[]) => { const row = get(...args); fire("guard-read"); return row; }) as typeof statement.get;
+      }
+      return statement;
+    } as typeof prepare);
+    vi.spyOn(fs, "lstatSync").mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+      const identity = closed && identities < 2 && String(target) === path ? ++identities : 0;
+      if (identity === 2) fire("identity-after");
+      const result = lstat(target, options as never);
+      if (identity === 1) fire("identity-before");
+      return result;
+    }) as never);
+    return () => fired;
+  };
+  const SOURCE_CHANGED = { name: "UpgradeError", code: "upgrade_source_changed", nextStep: "auth fence resume", committed: false, state: "fenced" };
+  /**
+   * Each window in which the pathname can be swapped, with a replacement (another
+   * installation) and an original that both hold a non-empty WAL of frames not in
+   * their main files: the refusal writes neither, wherever each one ends up.
+   * `guard` and `writable` name the file each connection opened, `closing` the
+   * file at the pathname when the refused writable connection closes.
+   */
+  it.each([
+    ["before the first identity read", { closed: "swap" }, { guard: "replacement", writable: "replacement", closing: "replacement" }],
+    ["between the identity read and the guard open", { "identity-before": "swap" }, { guard: "replacement", writable: "replacement", closing: "replacement" }],
+    ["between the guard's read and the writable open", { "guard-read": "swap" }, { guard: "original", writable: "replacement", closing: "replacement" }],
+    ["between the writable open and the identity check", { "identity-after": "swap" }, { guard: "original", writable: "original", closing: "replacement" }],
+    ["during verify, after its reads", { observed: "swap" }, { guard: "original", writable: "original", closing: "replacement" }],
+    ["swapped in before the writable open, back for the check and in again during verify", { "guard-read": "swap", "identity-after": "back", verify: "swap" },
+      { guard: "original", writable: "replacement", closing: "replacement" }],
+    ["swapped in before the guard, back before the writable open, and verify refusing after its reads", { "identity-before": "swap", "guard-read": "back", observed: "refuse" },
+      { guard: "replacement", writable: "original", closing: "original" }],
+  ] as const)("a replacement %s: the refusal writes neither file", async (_name, plan, connections) => {
+    const { paths, path, noted, original } = walInstallation(), plan0 = files(paths).plan;
+    const replacement = uncheckpointed(installation().databasePath);
+    const asideOriginal = join(paths.dataDirectory, "original.sqlite3"), asideReplacement = join(paths.dataDirectory, "replacement.sqlite3");
+    move(replacement.file, asideReplacement);
+    const actions = {
+      swap: () => { move(path, asideOriginal); move(asideReplacement, path); },
+      back: () => { move(path, asideReplacement); move(asideOriginal, path); },
+      refuse: () => { throw new Error("fixture verify refusal"); },
+    };
+    const fired = reopenWindows(paths, Object.fromEntries(Object.entries(plan).map(([window, action]) => [window, actions[action as keyof typeof actions]])));
+    expect(await failure(() => apply(paths, noted))).toEqual(SOURCE_CHANGED);
+    expect([...fired()].sort()).toEqual(Object.keys(plan).sort()); vi.restoreAllMocks();
+    const at = (which: "original" | "replacement") => existsSync(which === "original" ? asideOriginal : asideReplacement) ? (which === "original" ? asideOriginal : asideReplacement) : path;
+    expect(bytes(at("replacement"))).toEqual({ database: sha(replacement.database), wal: sha(replacement.wal) });
+    expect(bytes(at("original"))).toEqual({ database: sha(original.database), wal: sha(original.wal) });
+    expect(at(connections.closing)).toBe(path);
+    expect(witness(paths)).toMatchObject({ format: 2, state: "pending", upgrade: { plan: noted } });
+    expect(files(paths).plan).toBe(plan0);
+  });
+  it("a byte-different copy of the same installation with a non-empty WAL, written in place: detected only by verify, and neither file is written", async () => {
+    const { paths, path, noted } = walInstallation(), plan = files(paths).plan, inode = lstatSync(path).ino;
+    // The main file with a changed change counter, and a WAL with one more uncheckpointed row.
+    const replacement = uncheckpointed(path, main => main.writeUInt32BE((main.readUInt32BE(24) + 7) >>> 0, 24));
+    const fired = reopenWindows(paths, { closed: () => { writeFileSync(path, replacement.database); writeFileSync(`${path}-wal`, replacement.wal); } });
+    expect(await failure(() => apply(paths, noted))).toEqual(SOURCE_CHANGED);
+    expect(fired()).toEqual(["closed"]); vi.restoreAllMocks();
+    expect(lstatSync(path).ino).toBe(inode);
+    expect(bytes(path)).toEqual({ database: sha(replacement.database), wal: sha(replacement.wal) });
+    expect(witness(paths)).toMatchObject({ format: 2, state: "pending", upgrade: { plan: noted } });
+    expect(files(paths).plan).toBe(plan);
+    expect(inspect(paths)).toMatchObject({ state: "fenced", nextStep: "auth fence resume" });
+  });
+
   it("success not seen by the operator: the same --expect answers already applied with the plan hash", async () => {
     const paths = installation(), noted = inspect(paths).planHash!;
     await apply(paths, noted);
@@ -1005,4 +1150,44 @@ describe("explicit offline upgrade: witness compatibility", () => {
     const moved = unmanagedFixtureDatabase(paths.databasePath, { readonly: true });
     try { refuses(moved); } finally { moved.close(); }
   });
+});
+
+describe("inspection-only owner: a refused reopen of a rollback-journal database", () => {
+  it("the guard's read transaction keeps a hot journal planted during verify from being rolled back into the file", () => {
+    const paths = installation(), path = canonical(paths);
+    const convert = new Database(path, { fileMustExist: true });
+    try { convert.pragma("journal_mode = DELETE"); } finally { convert.close(); }
+    // A hot journal from a copy whose committed pages differ from this file's:
+    // its spilled transaction is copied while the writer still holds it.
+    const copy = join(temporary("upgrade-journal-"), "copy.sqlite3");
+    copyFileSync(path, copy);
+    const writer = new Database(copy, { fileMustExist: true });
+    let journal: Buffer;
+    try {
+      const insert = writer.prepare("INSERT INTO controller_audit_events(event_type,actor,details_json,created_at) VALUES('fixture.journal','fixture',?,?)");
+      for (let row = 0; row < 200; row++) insert.run(JSON.stringify({ row, padding: "x".repeat(500) }), new Date().toISOString());
+      writer.pragma("cache_size = 1");
+      writer.exec("BEGIN");
+      writer.prepare("UPDATE controller_audit_events SET details_json=json_set(details_json,'$.padding','y') WHERE event_type='fixture.journal'").run();
+      journal = readFileSync(`${copy}-journal`);
+    } finally { writer.close(); }
+    expect(journal.length).toBeGreaterThan(0);
+    const database = sha(readFileSync(path));
+    // Without the guard's lock, the writable connection's first read would roll it back here.
+    const plain = join(temporary("upgrade-journal-plain-"), "plain.sqlite3");
+    copyFileSync(path, plain); writeFileSync(`${plain}-journal`, journal);
+    const unguarded = new Database(plain, { fileMustExist: true });
+    try { unguarded.prepare("SELECT count(*) FROM sqlite_master").get(); } finally { unguarded.close(); }
+    expect(sha(readFileSync(plain))).not.toBe(database);
+    const owner = new OwnedSqliteDatabase(paths.databasePath, false, undefined, { inspectOnly: true });
+    try {
+      expect(() => owner.enableVerifiedWrites(reopened => {
+        writeFileSync(`${path}-journal`, journal, { mode: 0o600 });
+        reopened.prepare("SELECT count(*) FROM sqlite_master").get();
+        throw new ReopenedDatabaseChangedError();
+      })).toThrow();
+    } finally { owner.close(); }
+    expect(sha(readFileSync(path))).toBe(database);
+    expect(sha(readFileSync(`${path}-journal`))).toBe(sha(journal));
+  }, 30_000);
 });
